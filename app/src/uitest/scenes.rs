@@ -1284,7 +1284,7 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list", [1280.0, 800.0]));
     #[cfg(feature = "fleet")]
-    v.push(fleet_start_scene("fleet_start_form", [1280.0, 1120.0]));
+    v.push(fleet_start_scene("fleet_start_form", [1440.0, 820.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
     #[cfg(feature = "fleet")]

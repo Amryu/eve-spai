@@ -674,6 +674,8 @@ pub(crate) struct FormAct {
     pub delete_preset: Option<usize>,
     pub save_preset: Option<String>,
     pub auto_channels: bool,
+    pub free_channels: bool,
+    pub force_channels: bool,
     pub edited: bool,
     pub start: bool,
     pub ping: bool,
@@ -696,48 +698,61 @@ fn start_page(
 
     // The two buttons that do something live in their own strip rather than at the end of the
     // form: a form long enough to scroll would otherwise hide the thing it is for.
-    egui::Panel::bottom("fleet_start_actions").show_inside(ui, |ui| {
-        ui.add_space(4.0);
+    egui::Panel::bottom("fleet_start_actions").frame(bar_frame(ui)).show_inside(ui, |ui| {
+        // Below this the two groups would sit on top of each other, so they stack instead.
+        let roomy = ui.available_width() >= 560.0;
         ui.horizontal_wrapped(|ui| {
-            let ready = st.start_request().is_some();
-                let track = ui
-                .add_enabled(
-                    can_start && ready,
-                    egui::Button::new(format!(
-                        "{}  Track fleet",
-                        egui_phosphor::regular::ROCKET_LAUNCH
-                    )),
-                )
-                .on_hover_text("Records the request this would send. Nothing leaves the app.");
-            let track = if !can_start {
-                track.on_disabled_hover_text("Your account does not have the startFleet permission.")
+            save_preset_button(ui, act);
+            let layout = if roomy {
+                egui::Layout::right_to_left(egui::Align::Center)
             } else {
-                track.on_disabled_hover_text("Give the fleet a name first.")
+                egui::Layout::left_to_right(egui::Align::Center)
             };
-            if track.clicked() {
-                act.start = true;
+            if !roomy {
+                ui.end_row();
             }
-            if ui
-                .add_enabled(
-                    can_start,
-                    egui::Button::new(format!(
-                        "{}  Request ping",
-                        egui_phosphor::regular::PAPER_PLANE_TILT
-                    )),
-                )
-                .on_disabled_hover_text("Your account does not have the startFleet permission.")
-                .clicked()
-            {
-                act.ping = true;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(layout, |ui| {
                 ui.label(
                     egui::RichText::new("recorded, not sent")
                         .color(crate::theme::standing::WARNING),
                 );
+                if ui
+                    .add_enabled(
+                        can_start,
+                        egui::Button::new(format!(
+                            "{}  Request ping",
+                            egui_phosphor::regular::PAPER_PLANE_TILT
+                        )),
+                    )
+                    .on_disabled_hover_text(
+                        "Your account does not have the startFleet permission.",
+                    )
+                    .clicked()
+                {
+                    act.ping = true;
+                }
+                let ready = st.start_request().is_some();
+                let track = ui
+                    .add_enabled(
+                        can_start && ready,
+                        egui::Button::new(format!(
+                            "{}  Track fleet",
+                            egui_phosphor::regular::ROCKET_LAUNCH
+                        )),
+                    )
+                    .on_hover_text("Records the request this would send. Nothing leaves the app.");
+                let track = if !can_start {
+                    track.on_disabled_hover_text(
+                        "Your account does not have the startFleet permission.",
+                    )
+                } else {
+                    track.on_disabled_hover_text("Give the fleet a name first.")
+                };
+                if track.clicked() {
+                    act.start = true;
+                }
             });
         });
-        ui.add_space(4.0);
     });
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
@@ -784,167 +799,284 @@ fn preset_bar(
             }
         }
     });
-    ui.horizontal(|ui| {
-        let id = ui.id().with("preset_name");
-        let mut label: String = ui.data(|d| d.get_temp(id).unwrap_or_default());
+}
+
+/// An action strip sits against the edge of the view, so it keeps the panel's side margins and
+/// trims the vertical ones to the gap the buttons already carry.
+#[cfg(feature = "fleet")]
+fn bar_frame(ui: &egui::Ui) -> egui::Frame {
+    let f = egui::Frame::side_top_panel(ui.style());
+    egui::Frame { inner_margin: egui::Margin { top: 4, bottom: 4, ..f.inner_margin }, ..f }
+}
+
+/// Naming the current form and keeping it. Lives in the action strip so the form can scroll past
+/// it without taking the controls along.
+#[cfg(feature = "fleet")]
+fn save_preset_button(ui: &mut egui::Ui, act: &mut FormAct) {
+    let id = ui.id().with("preset_name");
+    let mut label: String = ui.data(|d| d.get_temp(id).unwrap_or_default());
+    let open_id = id.with("open");
+    let mut open: bool = ui.data(|d| d.get_temp(open_id).unwrap_or(false));
+    if ui
+        .add(egui::Button::new(format!(
+            "{}  Save as preset",
+            egui_phosphor::regular::BOOKMARK_SIMPLE
+        )))
+        .on_hover_text("Keep this form as a preset for next time.")
+        .clicked()
+    {
+        open = !open;
+    }
+    if open {
         ui.add(
-            egui::TextEdit::singleline(&mut label)
-                .hint_text("Save the form as...")
-                .desired_width(180.0),
+            egui::TextEdit::singleline(&mut label).hint_text("Preset name").desired_width(160.0),
         );
         let ready = !label.trim().is_empty();
         if ui
-            .add_enabled(ready, egui::Button::new(format!("{}  Save", egui_phosphor::regular::COPY)))
+            .add_enabled(ready, egui::Button::new("Save"))
             .on_disabled_hover_text("Name the preset first.")
             .clicked()
         {
             act.save_preset = Some(label.trim().to_owned());
             label.clear();
+            open = false;
         }
-        ui.data_mut(|d| d.insert_temp(id, label));
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(id, label);
+        d.insert_temp(open_id, open);
     });
 }
 
-/// The fields themselves.
+/// Width every control in the form shares, so the column reads as one edge rather than a ragged
+/// one.
+#[cfg(feature = "fleet")]
+const FIELD_W: f32 = 260.0;
+/// Label gutter beside it.
+#[cfg(feature = "fleet")]
+const LABEL_W: f32 = 110.0;
+/// What one labelled field costs across, grid spacing included.
+#[cfg(feature = "fleet")]
+const FORM_COL_W: f32 = LABEL_W + 8.0 + FIELD_W;
+
+/// The fields themselves, in two columns when there is room for two.
+///
+/// The split is what the fleet is on the left and how it runs on the right, so a narrow window
+/// stacking them still reads in a sensible order.
 #[cfg(feature = "fleet")]
 fn form_grid(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
+    if ui.available_width() >= 2.0 * FORM_COL_W + 24.0 {
+        ui.columns(2, |cols| {
+            form_identity(&mut cols[0], st, act);
+            form_running(&mut cols[1], st, act);
+        });
+    } else {
+        form_identity(ui, st, act);
+        ui.add_space(6.0);
+        form_running(ui, st, act);
+    }
+}
+
+/// What the fleet is: its name, what it flies, who it is for, where it forms.
+#[cfg(feature = "fleet")]
+fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     let seed = st.seed.clone();
-    let auto = st.draft.auto;
     let d = &mut st.draft;
-    egui::Grid::new("fleet_start_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Name");
-        act.edited |= ui
-            .add(egui::TextEdit::singleline(&mut d.form.name).desired_width(260.0))
-            .changed();
-        ui.end_row();
-
-        ui.label("Description");
-        act.edited |= ui
-            .add(
-                egui::TextEdit::multiline(&mut d.form.description)
-                    .desired_rows(2)
-                    .desired_width(260.0),
-            )
-            .changed();
-        ui.end_row();
-
-        ui.label("Setup");
-        let current = seed
-            .setups
-            .iter()
-            .find(|s| s.id.0 == d.form.setup_id)
-            .map(|s| s.name.trim().to_owned())
-            .unwrap_or_else(|| "== Choose a setup ==".to_owned());
-        egui::ComboBox::from_id_salt("fleet_setup").width(260.0).selected_text(current).show_ui(
-            ui,
-            |ui| {
-                act.edited |= ui.selectable_value(&mut d.form.setup_id, 0, "== Choose a setup ==")
-                    .changed();
-                for s in &seed.setups {
-                    act.edited |=
-                        ui.selectable_value(&mut d.form.setup_id, s.id.0, s.name.trim()).changed();
-                }
-            },
-        );
-        ui.end_row();
-
-        ui.label("SIG");
-        let sig = d
-            .form
-            .group_id
-            .and_then(|g| seed.sigs.iter().find(|s| s.id == g.0 as i64))
-            .map(|s| s.label.clone())
-            .unwrap_or_else(|| "== None ==".to_owned());
-        egui::ComboBox::from_id_salt("fleet_sig").width(260.0).selected_text(sig).show_ui(ui, |ui| {
-            act.edited |= ui.selectable_value(&mut d.form.group_id, None, "== None ==").changed();
-            for s in &seed.sigs {
-                let id = Some(crate::fleets::model::GroupId(s.id as i32));
-                act.edited |= ui.selectable_value(&mut d.form.group_id, id, &s.label).changed();
-            }
-        });
-        ui.end_row();
-
-        act.edited |= channel_row(ui, "Mumble", "fleet_mumble", &seed.mumble_channels,
-                                  &mut d.form.mumble_channel_id, auto.mumble);
-        act.edited |= channel_row(ui, "Logi", "fleet_logi", &seed.logi_channels,
-                                  &mut d.form.logi_channel_id, auto.logi);
-        act.edited |= channel_row(ui, "Boost", "fleet_boost", &seed.boost_channels,
-                                  &mut d.form.boost_channel_id, auto.boost);
-
-        ui.label("");
-        if ui
-            .button(format!("{}  Pick free comms", egui_phosphor::regular::ARROWS_CLOCKWISE))
-            .on_hover_text("Take the lowest free channel for anything already claimed.")
-            .clicked()
-        {
-            act.auto_channels = true;
-        }
-        ui.end_row();
-
-        ui.label("Auto close");
-        ui.horizontal(|ui| {
-            let mut kind = d.form.auto_close_type.unwrap_or(1);
-            act.edited |= ui.selectable_value(&mut kind, 0, "Start").changed();
-            act.edited |= ui.selectable_value(&mut kind, 1, "FC left").changed();
-            d.form.auto_close_type = Some(kind);
-            let mut mins = d.form.auto_close_time.unwrap_or(30);
+    egui::Grid::new("fleet_form_identity")
+        .num_columns(2)
+        .min_col_width(LABEL_W)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Name");
             act.edited |= ui
-                .add(egui::DragValue::new(&mut mins).range(1..=600).suffix(" min"))
+                .add(egui::TextEdit::singleline(&mut d.form.name).desired_width(FIELD_W))
                 .changed();
-            d.form.auto_close_time = Some(mins);
-        });
-        ui.end_row();
+            ui.end_row();
 
-        ui.label("Formup");
-        ui.horizontal(|ui| {
-            let current =
-                d.formup.as_ref().map(|l| l.label.clone()).unwrap_or_else(|| "none".to_owned());
-            egui::ComboBox::from_id_salt("fleet_formup").width(180.0).selected_text(current).show_ui(
+            ui.label("Description");
+            act.edited |= ui
+                .add(
+                    egui::TextEdit::multiline(&mut d.form.description)
+                        .desired_rows(2)
+                        .desired_width(FIELD_W),
+                )
+                .changed();
+            ui.end_row();
+
+            ui.label("Setup");
+            let current = seed
+                .setups
+                .iter()
+                .find(|s| s.id.0 == d.form.setup_id)
+                .map(|s| s.name.trim().to_owned())
+                .unwrap_or_else(|| "== Choose a setup ==".to_owned());
+            egui::ComboBox::from_id_salt("fleet_setup")
+                .width(FIELD_W)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    act.edited |= ui
+                        .selectable_value(&mut d.form.setup_id, 0, "== Choose a setup ==")
+                        .changed();
+                    for s in &seed.setups {
+                        act.edited |= ui
+                            .selectable_value(&mut d.form.setup_id, s.id.0, s.name.trim())
+                            .changed();
+                    }
+                });
+            ui.end_row();
+
+            ui.label("SIG");
+            let sig = d
+                .form
+                .group_id
+                .and_then(|g| seed.sigs.iter().find(|s| s.id == g.0 as i64))
+                .map(|s| s.label.clone())
+                .unwrap_or_else(|| "== None ==".to_owned());
+            egui::ComboBox::from_id_salt("fleet_sig").width(FIELD_W).selected_text(sig).show_ui(
                 ui,
                 |ui| {
+                    act.edited |=
+                        ui.selectable_value(&mut d.form.group_id, None, "== None ==").changed();
+                    for s in &seed.sigs {
+                        let id = Some(crate::fleets::model::GroupId(s.id as i32));
+                        act.edited |=
+                            ui.selectable_value(&mut d.form.group_id, id, &s.label).changed();
+                    }
+                },
+            );
+            ui.end_row();
+
+            ui.label("Formup");
+            let current =
+                d.formup.as_ref().map(|l| l.label.clone()).unwrap_or_else(|| "none".to_owned());
+            egui::ComboBox::from_id_salt("fleet_formup")
+                .width(FIELD_W)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
                     for sys in &seed.systems {
                         if ui.selectable_label(false, &sys.label).clicked() {
                             d.formup = Some(sys.clone());
                             act.edited = true;
                         }
                     }
-                },
-            );
-        });
-        ui.end_row();
+                });
+            ui.end_row();
 
-        ui.label("Options");
-        ui.vertical(|ui| {
-            act.edited |= ui.checkbox(&mut d.form.set_motd, "Set the fleet MOTD").changed();
-            act.edited |=
-                ui.checkbox(&mut d.form.is_corporation_fleet, "Corporation fleet").changed();
-            act.edited |= ui
-                .checkbox(&mut d.use_backup, "Use the backup key")
-                .on_hover_text("Tracks through the backup ESI key rather than this character.")
-                .changed();
-            act.edited |= ui
-                .checkbox(
-                    &mut d.form.ignore_participation_requirements,
-                    "Ignore participation requirements",
+            ui.label("Doctrine notes");
+            let mut notes = d.form.doctrine_notes.clone().unwrap_or_default();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut notes)
+                        .hint_text("Optional, shown in the ping")
+                        .desired_width(FIELD_W),
                 )
-                .changed();
+                .changed()
+            {
+                d.form.doctrine_notes = Some(notes).filter(|s| !s.trim().is_empty());
+                act.edited = true;
+            }
+            ui.end_row();
         });
-        ui.end_row();
+}
 
-        ui.label("Doctrine notes");
-        let mut notes = d.form.doctrine_notes.clone().unwrap_or_default();
+/// How it runs: comms, when it closes itself, and the switches.
+#[cfg(feature = "fleet")]
+fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
+    let seed = st.seed.clone();
+    let auto = st.draft.auto;
+    let d = &mut st.draft;
+    egui::Grid::new("fleet_form_running")
+        .num_columns(2)
+        .min_col_width(LABEL_W)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            // A hand-picked channel is what "Force configured" puts back, so the choice is recorded
+            // as configured and stops reading as a switch.
+            if channel_row(ui, "Mumble", "fleet_mumble", &seed.mumble_channels,
+                           &mut d.form.mumble_channel_id, auto.mumble) {
+                d.configured.mumble = d.form.mumble_channel_id;
+                d.auto.mumble = false;
+                act.edited = true;
+            }
+            if channel_row(ui, "Logi", "fleet_logi", &seed.logi_channels,
+                           &mut d.form.logi_channel_id, auto.logi) {
+                d.configured.logi = d.form.logi_channel_id;
+                d.auto.logi = false;
+                act.edited = true;
+            }
+            if channel_row(ui, "Boost", "fleet_boost", &seed.boost_channels,
+                           &mut d.form.boost_channel_id, auto.boost) {
+                d.configured.boost = d.form.boost_channel_id;
+                d.auto.boost = false;
+                act.edited = true;
+            }
+
+            ui.label("Auto close");
+            ui.horizontal(|ui| {
+                let mut kind = d.form.auto_close_type.unwrap_or(1);
+                act.edited |= selectable_chip(ui, kind == 0, "Start").clicked().then(|| {
+                    kind = 0;
+                }).is_some();
+                act.edited |= selectable_chip(ui, kind == 1, "FC left").clicked().then(|| {
+                    kind = 1;
+                }).is_some();
+                d.form.auto_close_type = Some(kind);
+                let mut mins = d.form.auto_close_time.unwrap_or(30);
+                act.edited |=
+                    ui.add(egui::DragValue::new(&mut mins).range(1..=600).suffix(" min")).changed();
+                d.form.auto_close_time = Some(mins);
+            });
+            ui.end_row();
+
+            ui.label("Options");
+            ui.vertical(|ui| {
+                act.edited |= ui.checkbox(&mut d.form.set_motd, "Set the fleet MOTD").changed();
+                act.edited |=
+                    ui.checkbox(&mut d.form.is_corporation_fleet, "Corporation fleet").changed();
+                act.edited |= ui
+                    .checkbox(&mut d.use_backup, "Use the backup key")
+                    .on_hover_text("Tracks through the backup ESI key rather than this character.")
+                    .changed();
+                act.edited |= ui
+                    .checkbox(
+                        &mut d.form.ignore_participation_requirements,
+                        "Ignore participation requirements",
+                    )
+                    .changed();
+            });
+            ui.end_row();
+        });
+
+    // Outside the grid: three buttons wrap freely at a narrow width, where a grid cell would
+    // overlap the row beneath it.
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
         if ui
-            .add(
-                egui::TextEdit::singleline(&mut notes)
-                    .hint_text("Optional, shown in the ping")
-                    .desired_width(260.0),
-            )
-            .changed()
+            .button(format!("{}  Auto", egui_phosphor::regular::MAGIC_WAND))
+            .on_hover_text("Keep the channels already chosen and replace only the ones that are taken.")
+            .clicked()
         {
-            d.form.doctrine_notes = Some(notes).filter(|s| !s.trim().is_empty());
-            act.edited = true;
+            act.auto_channels = true;
         }
-        ui.end_row();
+        if ui
+            .button(format!("{}  Pick free comms", egui_phosphor::regular::ARROWS_CLOCKWISE))
+            .on_hover_text("Start again from the lowest free channel for all three.")
+            .clicked()
+        {
+            act.free_channels = true;
+        }
+        let configured = st.draft.configured != crate::fleets::state::Configured::default();
+        if ui
+            .add_enabled(
+                configured,
+                egui::Button::new(format!("{}  Force configured", egui_phosphor::regular::LOCK)),
+            )
+            .on_disabled_hover_text("Nothing was configured to go back to.")
+            .on_hover_text("Put back the channels this preset asked for, taken or not.")
+            .clicked()
+        {
+            act.force_channels = true;
+        }
     });
 }
 
@@ -977,8 +1109,10 @@ fn channel_row(
             }
         });
         if auto {
-            ui.label(egui::RichText::new("auto").weak())
-                .on_hover_text("Picked because it was free.");
+            ui.label(
+                egui::RichText::new("switched").color(crate::theme::standing::WARNING),
+            )
+            .on_hover_text("The channel asked for was taken, so this free one was picked.");
         }
         if slot.is_some_and(|id| list.iter().any(|c| c.id == id && c.is_in_use)) {
             ui.label(
@@ -1000,7 +1134,7 @@ fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut 
         ui.horizontal_wrapped(|ui| {
             for t in tags.iter().filter(|t| t.is_primary == primary) {
                 let on = st.draft.tags.contains(&t.id);
-                if ui.selectable_label(on, t.name.trim()).clicked() {
+                if selectable_chip(ui, on, t.name.trim()).clicked() {
                     if on {
                         st.draft.tags.remove(&t.id);
                     } else {
@@ -1243,10 +1377,8 @@ fn tracking_page(
         ui.add_space(4.0);
     });
 
-    egui::Panel::bottom("fleet_actions").show_inside(ui, |ui| {
-        ui.add_space(4.0);
+    egui::Panel::bottom("fleet_actions").frame(bar_frame(ui)).show_inside(ui, |ui| {
         action_bar(ui, st, read_only, act_on);
-        ui.add_space(4.0);
     });
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {

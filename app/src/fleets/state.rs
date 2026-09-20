@@ -94,6 +94,17 @@ pub struct Draft {
     pub formup: Option<Labelled>,
     pub use_backup: bool,
     pub auto: AutoPicked,
+    /// What a preset or the user actually asked for, which auto-picking overrides and
+    /// `force_configured` puts back.
+    pub configured: Configured,
+}
+
+/// The comms a preset or the user chose, before anything was taken off them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Configured {
+    pub mumble: Option<ChannelId>,
+    pub logi: Option<ChannelId>,
+    pub boost: Option<ChannelId>,
 }
 
 #[derive(Default)]
@@ -224,6 +235,11 @@ impl FleetState {
         d.form.mumble_channel_id = p.mumble_channel_id.map(ChannelId);
         d.form.logi_channel_id = p.logi_channel_id.map(ChannelId);
         d.form.boost_channel_id = p.boost_channel_id.map(ChannelId);
+        d.configured = Configured {
+            mumble: d.form.mumble_channel_id,
+            logi: d.form.logi_channel_id,
+            boost: d.form.boost_channel_id,
+        };
         d.form.auto_close_type = Some(p.auto_close_type);
         d.form.auto_close_time = Some(p.auto_close_time);
         d.form.is_corporation_fleet = p.is_corporation_fleet;
@@ -257,10 +273,37 @@ impl FleetState {
 
     /// Picks free comms for the three channels, leaving a hand-set one alone.
     pub fn auto_channels(&mut self) {
+        self.pick_channels(true);
+    }
+
+    /// Takes the lowest free channel for all three, whatever is selected now. The reset, for when
+    /// the form was filled from a preset whose channels are all wrong for tonight.
+    pub fn free_channels(&mut self) {
+        self.pick_channels(false);
+    }
+
+    /// Puts back what the preset or the user asked for, in use or not. Some fleets have to share a
+    /// channel, and the dashboard will let them.
+    pub fn force_configured(&mut self) {
+        let c = self.draft.configured;
+        if let Some(id) = c.mumble {
+            self.draft.form.mumble_channel_id = Some(id);
+        }
+        if let Some(id) = c.logi {
+            self.draft.form.logi_channel_id = Some(id);
+        }
+        if let Some(id) = c.boost {
+            self.draft.form.boost_channel_id = Some(id);
+        }
+        self.draft.auto = AutoPicked::default();
+    }
+
+    fn pick_channels(&mut self, keep_current: bool) {
+        let keep = |id: Option<ChannelId>| if keep_current { id } else { None };
         let (mumble, logi, boost) = (
-            pick_free(&self.seed.mumble_channels, self.draft.form.mumble_channel_id),
-            pick_free(&self.seed.logi_channels, self.draft.form.logi_channel_id),
-            pick_free(&self.seed.boost_channels, self.draft.form.boost_channel_id),
+            pick_free(&self.seed.mumble_channels, keep(self.draft.form.mumble_channel_id)),
+            pick_free(&self.seed.logi_channels, keep(self.draft.form.logi_channel_id)),
+            pick_free(&self.seed.boost_channels, keep(self.draft.form.boost_channel_id)),
         );
         self.draft.form.mumble_channel_id = mumble.id;
         self.draft.form.logi_channel_id = logi.id;
@@ -558,6 +601,51 @@ mod tests {
 
     /// The rule that picks comms: keep a free choice, take the lowest free id otherwise, and never
     /// hand out a standing channel or one somebody is on.
+    /// Auto keeps what is free and replaces only what is taken; picking free starts over; forcing
+    /// puts the preset's own channels back whatever else is on them.
+    #[test]
+    fn the_three_comms_buttons_do_three_different_things() {
+        let mut st = state();
+        let busy = st
+            .seed
+            .mumble_channels
+            .iter()
+            .find(|c| c.is_in_use)
+            .map(|c| c.id)
+            .expect("a busy channel in the seed");
+        let free = st
+            .seed
+            .mumble_channels
+            .iter()
+            .find(|c| !c.is_in_use && !c.name.to_lowercase().contains("standing"))
+            .map(|c| c.id)
+            .expect("a free channel in the seed");
+
+        // Auto leaves a free choice alone.
+        st.draft.form.mumble_channel_id = Some(free);
+        st.draft.configured.mumble = Some(free);
+        st.auto_channels();
+        assert_eq!(st.draft.form.mumble_channel_id, Some(free));
+        assert!(!st.draft.auto.mumble, "a kept channel is not a switch");
+
+        // And replaces a taken one, saying so.
+        st.draft.form.mumble_channel_id = Some(busy);
+        st.draft.configured.mumble = Some(busy);
+        st.auto_channels();
+        assert_ne!(st.draft.form.mumble_channel_id, Some(busy));
+        assert!(st.draft.auto.mumble);
+
+        // Forcing puts the taken one back and stops calling it a switch.
+        st.force_configured();
+        assert_eq!(st.draft.form.mumble_channel_id, Some(busy));
+        assert!(!st.draft.auto.mumble);
+
+        // Picking free ignores what is selected, even when it is free.
+        st.draft.form.mumble_channel_id = Some(free);
+        st.free_channels();
+        assert_eq!(st.draft.form.mumble_channel_id, Some(free), "the lowest free one is this one");
+    }
+
     #[test]
     fn free_channels_are_picked_by_id_and_never_the_standing_one() {
         let ch = |id: i32, name: &str, busy: bool| ChannelItem {
