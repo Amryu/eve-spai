@@ -118,9 +118,9 @@ impl SpaiApp {
                             self.route_save_folder.clone()
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.route_save_folder, String::new(), "(root)");
+                            ui.menu_value(&mut self.route_save_folder, String::new(), "(root)");
                             for f in &folders {
-                                ui.selectable_value(&mut self.route_save_folder, f.clone(), f);
+                                ui.menu_value(&mut self.route_save_folder, f.clone(), f);
                             }
                         });
                     if ui
@@ -151,9 +151,9 @@ impl SpaiApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("View");
-                    ui.selectable_value(&mut self.route_view, RouteView::ByName, "By Name");
-                    ui.selectable_value(&mut self.route_view, RouteView::ByFolder, "By Folder");
-                    ui.selectable_value(&mut self.route_view, RouteView::BySystem, "By System");
+                    ui.menu_value(&mut self.route_view, RouteView::ByName, "By Name");
+                    ui.menu_value(&mut self.route_view, RouteView::ByFolder, "By Folder");
+                    ui.menu_value(&mut self.route_view, RouteView::BySystem, "By System");
                 });
                 ui.add(
                     egui::TextEdit::singleline(&mut self.route_search)

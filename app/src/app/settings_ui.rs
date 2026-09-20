@@ -523,7 +523,7 @@ impl SpaiApp {
                 .show_ui(ui, |ui| {
                     for lvl in [Info, Warning, Danger, Critical] {
                         changed |= ui
-                            .selectable_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
+                            .menu_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
                             .changed();
                     }
                 });
@@ -635,11 +635,11 @@ impl SpaiApp {
                     })
                     .show_ui(ui, |ui| {
                         changed |= ui
-                            .selectable_value(&mut ru.severity_override, None, "keep")
+                            .menu_value(&mut ru.severity_override, None, "keep")
                             .changed();
                         for lvl in [Info, Warning, Danger, Critical] {
                             changed |= ui
-                                .selectable_value(
+                                .menu_value(
                                     &mut ru.severity_override,
                                     Some(lvl),
                                     format!("{lvl:?}"),
@@ -931,7 +931,7 @@ impl SpaiApp {
                                 .selected_text(format!("{val:?}"))
                                 .show_ui(ui, |ui| {
                                     for lvl in [Info, Warning, Danger, Critical] {
-                                        if ui.selectable_value(val, lvl, format!("{lvl:?}")).changed() {
+                                        if ui.menu_value(val, lvl, format!("{lvl:?}")).changed() {
                                             ch = true;
                                         }
                                     }
@@ -1091,12 +1091,12 @@ impl SpaiApp {
                                 egui::ComboBox::from_id_salt(("coal_of", i))
                                     .selected_text(current.clone().unwrap_or_else(|| "—".to_owned()))
                                     .show_ui(ui, |ui| {
-                                        if ui.selectable_label(current.is_none(), "— independent").clicked() {
+                                        if ui.menu_label(current.is_none(), "— independent").clicked() {
                                             ally_assign = Some((a.name.clone(), None));
                                         }
                                         for c in &self.settings.coalitions {
                                             if ui
-                                                .selectable_label(
+                                                .menu_label(
                                                     current.as_deref() == Some(c.name.as_str()),
                                                     &c.name,
                                                 )
@@ -1616,21 +1616,21 @@ impl SpaiApp {
                             })
                             .show_ui(ui, |ui| {
                                 changed |= ui
-                                    .selectable_value(
+                                    .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::Auto,
                                         format!("Auto ({imp_target})"),
                                     )
                                     .changed();
                                 changed |= ui
-                                    .selectable_value(
+                                    .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::DscanInfo,
                                         "dscan.info",
                                     )
                                     .changed();
                                 changed |= ui
-                                    .selectable_value(
+                                    .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::Adashboard,
                                         "adashboard.info (Imperium)",
@@ -1753,9 +1753,9 @@ impl SpaiApp {
                                     OnTop::Never => "Never",
                                 })
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.selectable_value(&mut a.on_top, OnTop::Always, "Always").changed();
-                                    changed |= ui.selectable_value(&mut a.on_top, OnTop::Smart, "Smart (only when EVE is active)").changed();
-                                    changed |= ui.selectable_value(&mut a.on_top, OnTop::Never, "Never").changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Always, "Always").changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Smart, "Smart (only when EVE is active)").changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Never, "Never").changed();
                                 });
                         });
                         changed |= ui

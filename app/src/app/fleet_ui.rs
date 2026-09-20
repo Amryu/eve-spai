@@ -405,6 +405,15 @@ impl SpaiApp {
             // the one thing worth knowing before the button is pressed.
             act.check_boss = true;
         }
+        if let Some(name) = act.search_character.clone() {
+            if name.len() >= 3 {
+                self.fleet.lock().unwrap_or_else(|e| e.into_inner()).found_characters.begin();
+                self.fleet_dispatch(Cmd::Search {
+                    kind: crate::fleets::backend::SearchKind::Character,
+                    value: name,
+                });
+            }
+        }
         if act.check_boss {
             let (who, use_backup) = {
                 let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -584,7 +593,7 @@ impl SpaiApp {
                                 } else {
                                     format!("{name}  ({n})")
                                 };
-                                if ui.selectable_label(picked == s.id.0, label).clicked() {
+                                if ui.menu_label(picked == s.id.0, label).clicked() {
                                     picked = s.id.0;
                                 }
                             }
@@ -661,7 +670,7 @@ impl SpaiApp {
                                                 .show_ui(ui, |ui| {
                                                     for b in COMBAT_BURSTS {
                                                         changed |= ui
-                                                            .selectable_value(
+                                                            .menu_value(
                                                                 &mut rule.charge,
                                                                 b.label().to_owned(),
                                                                 format!(
@@ -677,7 +686,7 @@ impl SpaiApp {
                                                         .filter(|(_, b)| COMBAT_BURSTS.contains(b))
                                                     {
                                                         changed |= ui
-                                                            .selectable_value(
+                                                            .menu_value(
                                                                 &mut rule.charge,
                                                                 (*n).to_owned(),
                                                                 *n,
@@ -694,7 +703,7 @@ impl SpaiApp {
                                                 .show_ui(ui, |ui| {
                                                     for p in Priority::ALL {
                                                         if ui
-                                                            .selectable_value(
+                                                            .menu_value(
                                                                 &mut prio,
                                                                 p,
                                                                 p.label(),
@@ -911,15 +920,26 @@ fn fleet_row(ui: &mut egui::Ui, row: &FleetRow, now: i64) -> bool {
 /// A tag in its own colour, mapping the server's class names onto the app's palette.
 #[cfg(feature = "fleet")]
 fn fleet_tag_chip(ui: &mut egui::Ui, tag: &TagItem) {
+    ui.label(egui::RichText::new(tag.name.trim()).color(tag_colour(ui, tag)));
+}
+
+/// A tag's colour. The two that say what kind of fleet it is are fixed, because the seed carries
+/// no colour class for them and grey is the wrong answer for both.
+#[cfg(feature = "fleet")]
+fn tag_colour(ui: &egui::Ui, tag: &TagItem) -> egui::Color32 {
     use crate::theme::standing;
-    let colour = match tag.colour_class.as_str() {
+    match tag.name.trim().to_uppercase().as_str() {
+        "STRATEGIC" => return standing::HOSTILE,
+        "PEACETIME" => return standing::WARNING,
+        _ => {}
+    }
+    match tag.colour_class.as_str() {
         "red" => standing::HOSTILE,
         "green" => standing::FRIENDLY,
         "yellow" => standing::WARNING,
         "blue" => ui.visuals().hyperlink_color,
         _ => ui.visuals().weak_text_color(),
-    };
-    ui.label(egui::RichText::new(tag.name.trim()).color(colour));
+    }
 }
 
 /// How long the form waits after the last edit before rendering the ping again.
@@ -951,6 +971,8 @@ pub(crate) struct FormAct {
     pub check_boss: bool,
     /// A preset the Quick Fleet picker chose, which loads the form and goes to it.
     pub quick_preset: Option<usize>,
+    /// A character name to look up for the snowflake row.
+    pub search_character: Option<String>,
     pub edited: bool,
     pub start: bool,
     pub ping: bool,
@@ -1123,7 +1145,9 @@ fn preset_bar(
 #[cfg(feature = "fleet")]
 fn bar_frame(ui: &egui::Ui) -> egui::Frame {
     let f = egui::Frame::side_top_panel(ui.style());
-    egui::Frame { inner_margin: egui::Margin { top: 4, bottom: 4, ..f.inner_margin }, ..f }
+    // More above than below: the panel draws its separator on the top edge, and flush against the
+    // buttons it reads as an underline on the form rather than the top of a strip.
+    egui::Frame { inner_margin: egui::Margin { top: 9, bottom: 5, ..f.inner_margin }, ..f }
 }
 
 /// Naming the current form and keeping it. Lives in the action strip so the form can scroll past
@@ -1159,11 +1183,11 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
         );
         let combo = egui::ComboBox::from_id_salt("preset_folder_pick").width(0.0);
         combo.show_ui(ui, |ui| {
-            if ui.selectable_label(folder.is_empty(), "Top level").clicked() {
+            if ui.menu_label(folder.is_empty(), "Top level").clicked() {
                 folder.clear();
             }
             for f in folders {
-                if ui.selectable_label(&folder == f, f).clicked() {
+                if ui.menu_label(&folder == f, f).clicked() {
                     folder = f.clone();
                 }
             }
@@ -1252,11 +1276,11 @@ fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mu
                     .selected_text(current)
                     .show_ui(ui, |ui| {
                         if let Some((id, name)) = &signed_in {
-                            ui.selectable_value(&mut pick, None, format!("{name}  (signed in)"));
+                            ui.menu_value(&mut pick, None, format!("{name}  (signed in)"));
                             let _ = id;
                         }
                         for c in seed.characters.iter().filter(|c| !c.is_hidden) {
-                            ui.selectable_value(&mut pick, Some(c.id), &c.name);
+                            ui.menu_value(&mut pick, Some(c.id), &c.name);
                         }
                     });
                 if pick != st.draft.fc_character {
@@ -1297,11 +1321,11 @@ fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mu
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     act.edited |= ui
-                        .selectable_value(&mut d.form.setup_id, 0, "== Choose a setup ==")
+                        .menu_value(&mut d.form.setup_id, 0, "== Choose a setup ==")
                         .changed();
                     for s in &seed.setups {
                         act.edited |= ui
-                            .selectable_value(&mut d.form.setup_id, s.id.0, s.name.trim())
+                            .menu_value(&mut d.form.setup_id, s.id.0, s.name.trim())
                             .changed();
                     }
                 });
@@ -1318,11 +1342,11 @@ fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mu
                 ui,
                 |ui| {
                     act.edited |=
-                        ui.selectable_value(&mut d.form.group_id, None, "== None ==").changed();
+                        ui.menu_value(&mut d.form.group_id, None, "== None ==").changed();
                     for s in &seed.sigs {
                         let id = Some(crate::fleets::model::GroupId(s.id as i32));
                         act.edited |=
-                            ui.selectable_value(&mut d.form.group_id, id, &s.label).changed();
+                            ui.menu_value(&mut d.form.group_id, id, &s.label).changed();
                     }
                 },
             );
@@ -1336,7 +1360,7 @@ fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mu
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for sys in &seed.systems {
-                        if ui.selectable_label(false, &sys.label).clicked() {
+                        if ui.menu_label(false, &sys.label).clicked() {
                             d.formup = Some(sys.clone());
                             act.edited = true;
                         }
@@ -1514,14 +1538,14 @@ fn channel_row(
             .map(|c| c.name.trim().to_owned())
             .unwrap_or_else(|| "none".to_owned());
         egui::ComboBox::from_id_salt(salt).width(180.0).selected_text(current).show_ui(ui, |ui| {
-            changed |= ui.selectable_value(slot, None, "none").changed();
+            changed |= ui.menu_value(slot, None, "none").changed();
             for c in list {
                 let text = if c.is_in_use {
                     egui::RichText::new(format!("{}  in use", c.name.trim())).weak()
                 } else {
                     egui::RichText::new(c.name.trim().to_owned())
                 };
-                changed |= ui.selectable_value(slot, Some(c.id), text).changed();
+                changed |= ui.menu_value(slot, Some(c.id), text).changed();
             }
         });
         if auto {
@@ -1598,7 +1622,8 @@ fn headline_tags(
                 continue;
             };
             let on = selected.contains(&t.id);
-            if selectable_chip(ui, on, t.name.trim()).clicked() && !on {
+            let text = egui::RichText::new(t.name.trim()).color(tag_colour(ui, t)).strong();
+            if selectable_chip(ui, on, text).clicked() && !on {
                 // One primary tag, so picking one drops whatever else was there.
                 for other in pool {
                     selected.remove(&other.id);
@@ -1655,11 +1680,14 @@ fn tag_field(
             for t in chosen {
                 if ui
                     .add(
-                        egui::Button::new(format!(
-                            "{}  {}",
-                            t.name.trim(),
-                            egui_phosphor::regular::X
-                        ))
+                        egui::Button::new(
+                            egui::RichText::new(format!(
+                                "{}  {}",
+                                t.name.trim(),
+                                egui_phosphor::regular::X
+                            ))
+                            .color(tag_colour(ui, t)),
+                        )
                         .fill(ui.visuals().selection.bg_fill)
                         .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)),
                     )
@@ -1677,10 +1705,17 @@ fn tag_field(
         .on_hover_text(if single { "Choose the primary tag" } else { "Choose secondary tags" });
     let _ = inner;
 
+    // As wide as the window allows: the tags are short, so a wide popup fits three or four to a
+    // row instead of one, and the whole list is visible without scrolling at all.
+    let screen = ui.ctx().content_rect();
+    let width = (screen.width() - 80.0).clamp(280.0, 720.0);
+    let height = (screen.height() * 0.5).clamp(180.0, 420.0);
+
     egui::Popup::from_toggle_button_response(&open_button)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .width(260.0)
+        .width(width)
         .show(|ui| {
+            ui.set_min_width(width);
             let search_id = ui.id().with((salt, "search"));
             let mut query: String = ui.data(|d| d.get_temp(search_id).unwrap_or_default());
             let edit = ui.add(
@@ -1692,34 +1727,41 @@ fn tag_field(
                 ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
             }
             ui.separator();
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                let mut any = false;
-                for t in pool {
-                    let name = t.name.trim();
-                    if !tag_matches(name, &query) {
-                        continue;
-                    }
-                    any = true;
-                    let on = selected.contains(&t.id);
-                    if ui.selectable_label(on, name).clicked() {
-                        if on {
-                            selected.remove(&t.id);
-                        } else {
-                            if single {
-                                // Exactly one primary, so the others in this pool go.
-                                for other in pool {
-                                    selected.remove(&other.id);
-                                }
+            egui::ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    let mut any = false;
+                    ui.horizontal_wrapped(|ui| {
+                        for t in pool {
+                            let name = t.name.trim();
+                            if !tag_matches(name, &query) {
+                                continue;
                             }
-                            selected.insert(t.id);
+                            any = true;
+                            let on = selected.contains(&t.id);
+                            let text = egui::RichText::new(name).color(tag_colour(ui, t));
+                            if selectable_chip(ui, on, text).clicked() {
+                                if on {
+                                    selected.remove(&t.id);
+                                } else {
+                                    if single {
+                                        // Exactly one primary, so the others in this pool go.
+                                        for other in pool {
+                                            selected.remove(&other.id);
+                                        }
+                                    }
+                                    selected.insert(t.id);
+                                }
+                                changed = true;
+                            }
                         }
-                        changed = true;
+                    });
+                    if !any {
+                        ui.label(egui::RichText::new("Nothing matches.").weak());
                     }
-                }
-                if !any {
-                    ui.label(egui::RichText::new("Nothing matches.").weak());
-                }
-            });
+                });
         });
 
     if let Some(id) = remove {
@@ -1734,40 +1776,40 @@ fn tag_field(
 fn snowflake_rows(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     use crate::fleets::model::{Snowflake, SnowflakeType};
     let can = st.can(Perm::ManageFleetSnowflakes);
-    let characters = st.seed.characters.clone();
+    let hits = st.found_characters.clone();
+
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Snowflakes").strong());
-        if ui
-            .add_enabled(can, egui::Button::new(format!("{}  Add", egui_phosphor::regular::PLUS)))
-            .on_disabled_hover_text(
-                "Your account does not have the manageFleetSnowflakes permission.",
-            )
-            .clicked()
-        {
-            if let Some(c) = characters.first() {
-                st.draft.snowflakes.push(Snowflake {
-                    id: 0,
-                    character_id: c.id,
-                    character_name: c.name.clone(),
-                    kind: SnowflakeType::Fc,
-                });
-                act.edited = true;
-            }
-        }
+        ui.label(egui::RichText::new("who gets named in the ping").weak());
     });
+
     let mut drop: Option<usize> = None;
+    if st.draft.snowflakes.is_empty() {
+        ui.label(egui::RichText::new("None.").weak());
+    }
     for (i, s) in st.draft.snowflakes.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt(("snowflake", i))
-                .width(110.0)
-                .selected_text(s.kind.label())
-                .show_ui(ui, |ui| {
-                    for k in SnowflakeType::ALL {
-                        act.edited |= ui.selectable_value(&mut s.kind, k, k.label()).changed();
-                    }
-                });
-            ui.label(&s.character_name);
-            if ui.small_button(egui_phosphor::regular::X).clicked() {
+            cell(ui, 110.0, |ui| {
+                egui::ComboBox::from_id_salt(("snowflake", i))
+                    .width(100.0)
+                    .selected_text(s.kind.label())
+                    .show_ui(ui, |ui| {
+                        for k in SnowflakeType::ALL {
+                            act.edited |= ui.menu_value(&mut s.kind, k, k.label()).changed();
+                        }
+                    });
+            });
+            cell(ui, 180.0, |ui| {
+                ui.label(&s.character_name);
+            });
+            if ui
+                .add_enabled(can, egui::Button::new(egui_phosphor::regular::TRASH).frame(false))
+                .on_disabled_hover_text(
+                    "Your account does not have the manageFleetSnowflakes permission.",
+                )
+                .on_hover_text(format!("Drop {}", s.character_name))
+                .clicked()
+            {
                 drop = Some(i);
             }
         });
@@ -1775,6 +1817,86 @@ fn snowflake_rows(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &m
     if let Some(i) = drop {
         st.draft.snowflakes.remove(i);
         act.edited = true;
+    }
+
+    // Typed, searched, then added: a snowflake names a real character in the ping, so a name
+    // nobody has is worse than none at all.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let name_id = ui.id().with("snowflake_name");
+        let mut name: String = ui.data(|d| d.get_temp(name_id).unwrap_or_default());
+        let kind_id = ui.id().with("snowflake_kind");
+        let mut kind: SnowflakeType = ui.data(|d| d.get_temp(kind_id).unwrap_or_default());
+
+        cell(ui, 110.0, |ui| {
+            egui::ComboBox::from_id_salt("snowflake_new_kind")
+                .width(100.0)
+                .selected_text(kind.label())
+                .show_ui(ui, |ui| {
+                    for k in SnowflakeType::ALL {
+                        ui.menu_value(&mut kind, k, k.label());
+                    }
+                });
+        });
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .hint_text("Character name")
+                .desired_width(180.0),
+        );
+        if edit.changed() {
+            act.search_character = Some(name.trim().to_owned());
+        }
+        if hits.loading {
+            ui.label(egui::RichText::new("looking").weak());
+        }
+        ui.data_mut(|d| {
+            d.insert_temp(name_id, name.clone());
+            d.insert_temp(kind_id, kind);
+        });
+
+        // Exactly one match on the typed name is the only case that can be added without a pick.
+        let exact = hits.value.as_ref().and_then(|v| {
+            v.iter().find(|l| l.label.trim().eq_ignore_ascii_case(name.trim()))
+        });
+        let already = |id: i64| st.draft.snowflakes.iter().any(|s| s.character_id == id);
+        let ready = can && exact.is_some_and(|l| !already(l.id));
+        let add = ui
+            .add_enabled(ready, egui::Button::new(format!("{}  Add", egui_phosphor::regular::PLUS)))
+            .on_disabled_hover_text(if !can {
+                "Your account does not have the manageFleetSnowflakes permission."
+            } else if name.trim().is_empty() {
+                "Type a character name."
+            } else if exact.is_none() {
+                "No character by that name."
+            } else {
+                "Already a snowflake."
+            });
+        if add.clicked() {
+            if let Some(l) = exact {
+                st.draft.snowflakes.push(Snowflake {
+                    id: 0,
+                    character_id: l.id,
+                    character_name: l.label.clone(),
+                    kind,
+                });
+                act.edited = true;
+                ui.data_mut(|d| d.insert_temp(name_id, String::new()));
+            }
+        }
+    });
+
+    // Anything the search turned up that is not the exact name, one click away.
+    if let Some(v) = hits.value.as_ref().filter(|v| v.len() > 1) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Did you mean").weak());
+            for l in v.iter().take(6) {
+                if selectable_chip(ui, false, l.label.trim()).clicked() {
+                    ui.data_mut(|d| {
+                        d.insert_temp(ui.id().with("snowflake_name"), l.label.clone())
+                    });
+                }
+            }
+        });
     }
 }
 
@@ -1877,16 +1999,6 @@ fn danger(action: &Action) -> Danger {
     }
 }
 
-/// The word a severe action has to be typed out with, so it cannot be a stray click.
-#[cfg(feature = "fleet")]
-fn confirm_word(action: &Action) -> Option<&'static str> {
-    match action {
-        Action::Close => Some("CLOSE"),
-        Action::KickAll => Some("KICK ALL"),
-        _ => None,
-    }
-}
-
 /// What a severe action costs, spelled out rather than implied.
 #[cfg(feature = "fleet")]
 fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
@@ -1949,21 +2061,15 @@ mod confirm_tests {
         assert!(!tag_matches("Structure Bash", "bash roam"));
     }
 
-    /// Closing a fleet and emptying it are the two that need typing out; the rest are one dialog.
+    /// How loud each action is, and what its dialog says it costs.
     #[test]
-    fn only_the_worst_actions_ask_for_a_word() {
-        assert_eq!(confirm_word(&Action::Close), Some("CLOSE"));
-        assert_eq!(confirm_word(&Action::KickAll), Some("KICK ALL"));
-        assert_eq!(confirm_word(&Action::KickCapsules), None);
-        assert_eq!(confirm_word(&Action::Kick { character_id: 1, exclude: false }), None);
-
+    fn the_worst_actions_say_what_they_cost() {
         assert_eq!(danger(&Action::Close), Danger::Severe);
         assert_eq!(danger(&Action::KickAll), Danger::Severe);
         assert_eq!(danger(&Action::KickCapsules), Danger::Caution);
         assert_eq!(danger(&Action::SetMotd), Danger::None);
         assert_eq!(danger(&Action::AddWing), Danger::None);
 
-        // Everything that asks for a word also says what it costs.
         for a in [Action::Close, Action::KickAll] {
             let line = confirm_consequence(&a, 42).expect("a consequence");
             assert!(line.contains("42"), "{line}");
@@ -2220,7 +2326,7 @@ fn fleet_sidebar(
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for s in &seed.setups {
-                        ui.selectable_value(&mut e.setup_id, s.id, s.name.trim());
+                        ui.menu_value(&mut e.setup_id, s.id, s.name.trim());
                     }
                 });
             ui.end_row();
@@ -2238,14 +2344,14 @@ fn fleet_sidebar(
                 egui::ComboBox::from_id_salt(salt).width(190.0).selected_text(current).show_ui(
                     ui,
                     |ui| {
-                        ui.selectable_value(slot, None, "none");
+                        ui.menu_value(slot, None, "none");
                         for c in list {
                             let text = if c.is_in_use {
                                 egui::RichText::new(format!("{}  in use", c.name.trim())).weak()
                             } else {
                                 egui::RichText::new(c.name.trim().to_owned())
                             };
-                            ui.selectable_value(slot, Some(c.id), text);
+                            ui.menu_value(slot, Some(c.id), text);
                         }
                     },
                 );
@@ -2515,9 +2621,15 @@ fn members_view(
     let mut drop_on: Option<(i64, Seat)> = None;
     // A roster reads as a table, so the rows sit closer together than the app's default rhythm.
     ui.spacing_mut().item_spacing.y = 2.0;
+    // Every column but the name is anchored to this edge, so the tree's indentation eats into the
+    // name and nothing else steps right as it nests.
+    let left = ui.max_rect().left();
 
-    commander_seat(ui, open, Seat::Boss, comp.commander.as_ref(), can_move, can_kick, act_on,
-                   &mut drop_on);
+    // Indented like a wing, so the fleet commander has the same left rail as everything under it.
+    ui.indent("fleet_boss", |ui| {
+        commander_seat(ui, open, left, Seat::Boss, comp.commander.as_ref(), can_move, can_kick,
+                       act_on, &mut drop_on);
+    });
 
     for wing in &comp.wings {
         let pilots: usize = wing.squads.iter().map(|s| s.members.len() + usize::from(s.commander.is_some())).sum::<usize>()
@@ -2526,8 +2638,8 @@ fn members_view(
             .id_salt(("wing", wing.id.0))
             .default_open(true)
             .show(ui, |ui| {
-                commander_seat(ui, open, Seat::WingCommander(wing.id), wing.commander.as_ref(),
-                               can_move, can_kick, act_on, &mut drop_on);
+                commander_seat(ui, open, left, Seat::WingCommander(wing.id),
+                               wing.commander.as_ref(), can_move, can_kick, act_on, &mut drop_on);
                 for squad in &wing.squads {
                     let n = squad.members.len() + usize::from(squad.commander.is_some());
                     egui::CollapsingHeader::new(format!("{}   {n}", squad.name))
@@ -2537,6 +2649,7 @@ fn members_view(
                             commander_seat(
                                 ui,
                                 open,
+                                left,
                                 Seat::SquadCommander(wing.id, squad.id),
                                 squad.commander.as_ref(),
                                 can_move,
@@ -2553,8 +2666,9 @@ fn members_view(
                                         ui.label(egui::RichText::new("Empty").weak());
                                     }
                                     for m in &squad.members {
-                                        member_row(ui, open, m, Seat::Squad(wing.id, squad.id),
-                                                   None, can_move, can_kick, act_on);
+                                        member_row(ui, open, left, m,
+                                                   Seat::Squad(wing.id, squad.id), None,
+                                                   can_move, can_kick, act_on);
                                     }
                                 });
                             if let Some(p) = dropped {
@@ -2583,6 +2697,7 @@ fn members_view(
 fn commander_seat(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
+    left: f32,
     seat: crate::fleets::model::Seat,
     holder: Option<&crate::fleets::model::Member>,
     can_move: bool,
@@ -2598,7 +2713,9 @@ fn commander_seat(
     let (_, dropped) = ui.dnd_drop_zone::<DragPilot, _>(egui::Frame::NONE, |ui| {
         ui.set_min_width(ui.available_width());
         match holder {
-            Some(m) => member_row(ui, open, m, seat, Some(title), can_move, can_kick, act_on),
+            Some(m) => {
+                member_row(ui, open, left, m, seat, Some(title), can_move, can_kick, act_on)
+            }
             None => {
                 ui.horizontal(|ui| {
                     seat_badge(ui, title, seat);
@@ -2629,12 +2746,19 @@ struct DragPilot {
 const COL: [f32; 4] = [190.0, 150.0, 120.0, 90.0];
 /// The FC / WC / SC column, present on every roster row so the names align.
 #[cfg(feature = "fleet")]
-const BADGE_W: f32 = 30.0;
+const BADGE_W: f32 = 36.0;
+/// The name column at the top of the tree. Nesting comes out of this one.
+#[cfg(feature = "fleet")]
+const NAME_W: f32 = 230.0;
+/// Ship icon beside a hull name.
+#[cfg(feature = "fleet")]
+const SHIP_ICON: f32 = 18.0;
 
 /// Which seat a roster row is, when it is one.
 #[cfg(feature = "fleet")]
 fn seat_badge(ui: &mut egui::Ui, title: &str, seat: crate::fleets::model::Seat) {
     cell(ui, BADGE_W, |ui| {
+        ui.add_space(6.0);
         ui.label(egui::RichText::new(title).strong().color(ui.visuals().hyperlink_color))
             .on_hover_text(seat.label());
     });
@@ -2659,6 +2783,7 @@ fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
 fn member_row(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
+    left: f32,
     m: &crate::fleets::model::Member,
     seat: crate::fleets::model::Seat,
     badge: Option<&str>,
@@ -2666,54 +2791,75 @@ fn member_row(
     can_kick: bool,
     act_on: &mut Vec<Action>,
 ) {
+    use crate::fleets::doctrine::Standing;
     let standing = crate::fleets::doctrine::classify(
         m.ship_type_id,
         &m.ship_group,
         open.doctrine.as_ref(),
     );
-    ui.horizontal(|ui| {
-        let id = egui::Id::new(("fleet_pilot", m.character_id));
-        // Every row carries the badge column, filled or not, so a commander's name starts at the
-        // same edge as the pilots under them.
-        match badge {
-            Some(b) => seat_badge(ui, b, seat),
-            None => cell(ui, BADGE_W, |_| {}),
-        }
-        cell(ui, COL[0], |ui| {
-            if can_move {
-                let payload = DragPilot { character_id: m.character_id, seat };
-                ui.dnd_drag_source(id, payload, |ui| {
-                    ui.label(format!("{}  {}", egui_phosphor::regular::DOTS_SIX_VERTICAL, m.name));
-                })
-                .response
-                .on_hover_text("Drag onto another squad to move this pilot.");
-            } else {
-                ui.label(&m.name);
+    // A tint rather than coloured text: on a red or orange theme a hostile-coloured ship name is
+    // barely a shade away from a normal one.
+    let tint = (standing == Standing::Unexpected).then(|| {
+        crate::theme::standing::HOSTILE.gamma_multiply(0.18)
+    });
+    let frame = match tint {
+        Some(c) => egui::Frame::NONE.fill(c).inner_margin(egui::Margin::symmetric(0, 1)),
+        None => egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 1)),
+    };
+    frame.show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let id = egui::Id::new(("fleet_pilot", m.character_id));
+            // Every row carries the badge column, filled or not, so a commander's name starts at
+            // the same edge as the pilots under them.
+            match badge {
+                Some(b) => seat_badge(ui, b, seat),
+                None => cell(ui, BADGE_W, |_| {}),
+            }
+            // The nesting is paid for out of the name column, so the ship, group, role and kick
+            // sit on the same edge whatever depth the row is at.
+            let indent = (ui.max_rect().left() - left).max(0.0);
+            cell(ui, (NAME_W - indent).max(60.0), |ui| {
+                if can_move {
+                    let payload = DragPilot { character_id: m.character_id, seat };
+                    ui.dnd_drag_source(id, payload, |ui| {
+                        ui.label(format!(
+                            "{}  {}",
+                            egui_phosphor::regular::DOTS_SIX_VERTICAL,
+                            m.name
+                        ));
+                    })
+                    .response
+                    .on_hover_text("Drag onto another squad to move this pilot.");
+                } else {
+                    ui.label(&m.name);
+                }
+            });
+            cell(ui, COL[1], |ui| {
+                ui.add(
+                    egui::Image::new(eve_type_icon_url(m.ship_type_id, SHIP_ICON))
+                        .fit_to_exact_size(egui::Vec2::splat(SHIP_ICON)),
+                );
+                ui.label(&m.ship_type_name).on_hover_text(standing.label());
+            });
+            cell(ui, COL[2], |ui| {
+                ui.label(egui::RichText::new(&m.ship_group).weak());
+            });
+            cell(ui, COL[3], |ui| {
+                ui.label(egui::RichText::new(&m.role).weak());
+            });
+            if ui
+                .add_enabled(
+                    can_kick,
+                    egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false),
+                )
+                .on_disabled_hover_text("Your account does not have the kickMember permission.")
+                .on_hover_text(format!("Kick {}", m.name))
+                .clicked()
+            {
+                act_on.push(Action::Kick { character_id: m.character_id, exclude: false });
             }
         });
-        cell(ui, COL[1], |ui| {
-            ui.label(
-                egui::RichText::new(&m.ship_type_name).color(standing_colour(ui, standing)),
-            )
-            .on_hover_text(standing.label());
-        });
-        cell(ui, COL[2], |ui| {
-            ui.label(egui::RichText::new(&m.ship_group).weak());
-        });
-        cell(ui, COL[3], |ui| {
-            ui.label(egui::RichText::new(&m.role).weak());
-        });
-        if ui
-            .add_enabled(
-                can_kick,
-                egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false),
-            )
-            .on_disabled_hover_text("Your account does not have the kickMember permission.")
-            .on_hover_text(format!("Kick {}", m.name))
-            .clicked()
-        {
-            act_on.push(Action::Kick { character_id: m.character_id, exclude: false });
-        }
     });
 }
 
@@ -2991,9 +3137,6 @@ impl SpaiApp {
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {
         let Some((id, action, question, pilots)) = self.fleet_confirm.clone() else { return };
-        let word = confirm_word(&action);
-        let typed_id = egui::Id::new("fleet_confirm_typed");
-        let mut typed: String = ctx.data(|d| d.get_temp(typed_id).unwrap_or_default());
         let mut decided: Option<bool> = None;
         egui::Modal::new(egui::Id::new("fleet_confirm")).show(ctx, |ui| {
             ui.set_max_width(380.0);
@@ -3007,43 +3150,30 @@ impl SpaiApp {
             ui.label(
                 egui::RichText::new("This build records the request and sends nothing.").weak(),
             );
-            if let Some(w) = word {
-                ui.add_space(6.0);
-                ui.label(format!("Type {w} to confirm."));
-                ui.add(egui::TextEdit::singleline(&mut typed).desired_width(200.0));
-            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
                     decided = Some(false);
                 }
-                let armed = word.is_none_or(|w| typed.trim().eq_ignore_ascii_case(w));
                 if ui
-                    .add_enabled(
-                        armed,
+                    .add(
                         egui::Button::new(
                             egui::RichText::new("Do it").color(crate::theme::standing::HOSTILE),
                         )
                         .stroke(egui::Stroke::new(1.0, crate::theme::standing::HOSTILE)),
                     )
-                    .on_disabled_hover_text("Type the word above first.")
                     .clicked()
                 {
                     decided = Some(true);
                 }
             });
         });
-        ctx.data_mut(|d| d.insert_temp(typed_id, typed));
         match decided {
             Some(true) => {
                 self.fleet_confirm = None;
-                ctx.data_mut(|d| d.insert_temp(typed_id, String::new()));
                 self.fleet_dispatch(Cmd::Act(id, action));
             }
-            Some(false) => {
-                self.fleet_confirm = None;
-                ctx.data_mut(|d| d.insert_temp(typed_id, String::new()));
-            }
+            Some(false) => self.fleet_confirm = None,
             None => {}
         }
     }

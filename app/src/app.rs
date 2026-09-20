@@ -3029,13 +3029,13 @@ impl SpaiApp {
                         .width(combo_w)
                         .height(popup_h)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
+                            ui.menu_value(
                                 &mut self.active_character,
                                 "No character".to_owned(),
                                 "No character",
                             );
                             for c in &self.characters {
-                                ui.selectable_value(
+                                ui.menu_value(
                                     &mut self.active_character,
                                     c.name.clone(),
                                     &c.name,
@@ -4228,6 +4228,53 @@ fn forget_button(ui: &mut egui::Ui, name: &str, blocked: Option<&str>) -> bool {
 /// nudge the row. egui's selectable_label hides the frame when inactive+unselected (Button::selectable
 /// sets frame_when_inactive(selected)); a plain Button keeps frame_when_inactive on by default, giving
 /// a stable box across idle/hover/selected.
+/// `selectable_label` and `selectable_value`, minus the border egui adds under the cursor.
+///
+/// An unframed button gets a stroke when it is hovered, and the stroke counts towards its size, so
+/// every widget after it on the row steps sideways as the pointer passes. Dropping the stroke
+/// keeps the geometry identical in both states and looks the same: the hover fill is what reads as
+/// hover, not a one-pixel outline.
+pub(crate) trait SteadySelect {
+    fn menu_label<'a>(&mut self, selected: bool, text: impl egui::IntoAtoms<'a>)
+        -> egui::Response;
+
+    fn menu_value<'a, V: PartialEq>(
+        &mut self,
+        current: &mut V,
+        value: V,
+        text: impl egui::IntoAtoms<'a>,
+    ) -> egui::Response;
+}
+
+impl SteadySelect for egui::Ui {
+    fn menu_label<'a>(
+        &mut self,
+        selected: bool,
+        text: impl egui::IntoAtoms<'a>,
+    ) -> egui::Response {
+        self.add(
+            egui::Button::new(text)
+                .selected(selected)
+                .frame_when_inactive(selected)
+                .stroke(egui::Stroke::NONE),
+        )
+    }
+
+    fn menu_value<'a, V: PartialEq>(
+        &mut self,
+        current: &mut V,
+        value: V,
+        text: impl egui::IntoAtoms<'a>,
+    ) -> egui::Response {
+        let mut resp = self.menu_label(*current == value, text);
+        if resp.clicked() && *current != value {
+            *current = value;
+            resp.mark_changed();
+        }
+        resp
+    }
+}
+
 fn selectable_chip<'a>(
     ui: &mut egui::Ui,
     selected: bool,
@@ -5126,7 +5173,7 @@ fn mean_logo_color(img: &egui::ColorImage) -> Option<egui::Color32> {
     Some(egui::Color32::from_rgb(c(r), c(g), c(b)))
 }
 
-fn eve_type_icon_url(id: impl std::fmt::Display, px: f32) -> String {
+pub(crate) fn eve_type_icon_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/types/{id}/icon?size={}", eve_img_size(px))
 }
 
@@ -5900,9 +5947,9 @@ fn route_item_row(
                     edit_folder.clone()
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(edit_folder, String::new(), "(root)");
+                    ui.menu_value(edit_folder, String::new(), "(root)");
                     for f in folders {
-                        ui.selectable_value(edit_folder, f.clone(), f);
+                        ui.menu_value(edit_folder, f.clone(), f);
                     }
                 });
             if ui.button("Save").clicked() {
@@ -6228,7 +6275,7 @@ fn ontop_pin_ui(ui: &mut egui::Ui, id: &str) {
     let key = egui::Id::new(("ontop", id));
     let mut on = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(true));
     if ui
-        .selectable_label(on, egui_phosphor::regular::PUSH_PIN)
+        .menu_label(on, egui_phosphor::regular::PUSH_PIN)
         .on_hover_text(if on { "Always on top (on)" } else { "Always on top (off)" })
         .clicked()
     {
@@ -6772,17 +6819,17 @@ fn sound_picker(
             value.clone()
         };
         egui::ComboBox::from_id_salt(("sound_picker", salt)).selected_text(label).show_ui(ui, |ui| {
-            if allow_default && ui.selectable_label(is_default, "Default").clicked() {
+            if allow_default && ui.menu_label(is_default, "Default").clicked() {
                 value.clear();
                 changed = true;
             }
-            if ui.selectable_label(is_off, "Off").clicked() {
+            if ui.menu_label(is_off, "Off").clicked() {
                 *value = "off".to_owned();
                 changed = true;
             }
             for &p in crate::sound::PRESETS {
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(value.eq_ignore_ascii_case(p), p).clicked() {
+                    if ui.menu_label(value.eq_ignore_ascii_case(p), p).clicked() {
                         *value = p.to_owned();
                         changed = true;
                     }
@@ -6791,7 +6838,7 @@ fn sound_picker(
                     }
                 });
             }
-            if ui.selectable_label(is_file, format!("{} Custom file…", icon::FOLDER_OPEN)).clicked() {
+            if ui.menu_label(is_file, format!("{} Custom file…", icon::FOLDER_OPEN)).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("audio", &["wav", "mp3", "ogg", "flac"])
                     .pick_file()

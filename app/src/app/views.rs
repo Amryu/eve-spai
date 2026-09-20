@@ -515,7 +515,7 @@ impl SpaiApp {
                         Some(crate::lookup::LookupState::Done(r)) => r.name,
                         _ => name.clone(),
                     };
-                    if ui.selectable_label(self.lookup_active == i, label).clicked() {
+                    if ui.menu_label(self.lookup_active == i, label).clicked() {
                         self.lookup_active = i;
                     }
                     if ui.add(egui::Button::new(icon::X).frame(false)).on_hover_text("Close tab").clicked() {
@@ -994,8 +994,8 @@ impl SpaiApp {
         }
         ui.horizontal(|ui| {
             ui.label("Sort:");
-            ui.selectable_value(&mut self.pilot_sort, PilotSort::MostLost, "Most lost");
-            ui.selectable_value(&mut self.pilot_sort, PilotSort::Recent, "Recent");
+            ui.menu_value(&mut self.pilot_sort, PilotSort::MostLost, "Most lost");
+            ui.menu_value(&mut self.pilot_sort, PilotSort::Recent, "Recent");
         });
 
         let mut agg: std::collections::HashMap<i64, (u32, i64)> = std::collections::HashMap::new();
@@ -1172,8 +1172,8 @@ impl SpaiApp {
             if has_mode {
                 ui.horizontal(|ui| {
                     ui.label("Fit:");
-                    ui.selectable_value(&mut new_mode, FitMode::Recent, "Most recent");
-                    ui.selectable_value(&mut new_mode, FitMode::MostUsed, "Most used");
+                    ui.menu_value(&mut new_mode, FitMode::Recent, "Most recent");
+                    ui.menu_value(&mut new_mode, FitMode::MostUsed, "Most used");
                 });
             }
             ui.separator();

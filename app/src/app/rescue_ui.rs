@@ -629,7 +629,7 @@ impl SpaiApp {
                             .show_ui(ui, |ui| {
                                 // Op 8 command comms does not exist.
                                 for n in (1u8..=12).filter(|n| *n != 8) {
-                                    ui.selectable_value(&mut r.op_channel, n, n.to_string());
+                                    ui.menu_value(&mut r.op_channel, n, n.to_string());
                                 }
                             });
                         ui.label("Doctrine");
@@ -639,7 +639,7 @@ impl SpaiApp {
                             .selected_text(if cur.is_empty() { "—".into() } else { cur })
                             .show_ui(ui, |ui| {
                                 for d in &doctrines {
-                                    ui.selectable_value(&mut r.doctrine, d.name.clone(), &d.name);
+                                    ui.menu_value(&mut r.doctrine, d.name.clone(), &d.name);
                                 }
                             });
                     });

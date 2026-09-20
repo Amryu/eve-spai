@@ -191,7 +191,7 @@ impl SpaiApp {
             egui::ComboBox::from_id_salt("wh_dest_filter")
                 .selected_text(self.wh_filter_dest.map_or("Any", |d| d.label()))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.wh_filter_dest, None, "Any");
+                    ui.menu_value(&mut self.wh_filter_dest, None, "Any");
                     for d in [
                         DestClass::Highsec,
                         DestClass::Lowsec,
@@ -201,16 +201,16 @@ impl SpaiApp {
                         DestClass::Turnur,
                         DestClass::Unknown,
                     ] {
-                        ui.selectable_value(&mut self.wh_filter_dest, Some(d), d.label());
+                        ui.menu_value(&mut self.wh_filter_dest, Some(d), d.label());
                     }
                 });
             ui.label("Source:");
             egui::ComboBox::from_id_salt("wh_src_filter")
                 .selected_text(self.wh_filter_source.map_or("Any", |s| s.label()))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.wh_filter_source, None, "Any");
+                    ui.menu_value(&mut self.wh_filter_source, None, "Any");
                     for s in [Source::EveScout, Source::Intel, Source::Manual] {
-                        ui.selectable_value(&mut self.wh_filter_source, Some(s), s.label());
+                        ui.menu_value(&mut self.wh_filter_source, Some(s), s.label());
                     }
                 });
             ui.checkbox(&mut self.wh_filter_expiring, "Expiring <4h");

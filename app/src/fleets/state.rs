@@ -180,6 +180,8 @@ pub struct FleetState {
     pub edit: FleetEdit,
     /// The last fleet-boss answer, and who it was about.
     pub boss: Option<(i64, BossCheck)>,
+    /// Characters the last name search turned up.
+    pub found_characters: Slot<Vec<Labelled>>,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -226,6 +228,11 @@ impl FleetState {
             }
             Outcome::Boosts(rows) => self.boosts = rows,
             Outcome::Boss { character_id, check } => self.boss = Some((character_id, check)),
+            Outcome::Found { kind, hits } => {
+                if kind == SearchKind::Character {
+                    self.found_characters.put(hits);
+                }
+            }
             Outcome::Preview { record, preview } => {
                 // A preview is not a write, so it does not reach the journal.
                 let _ = record;
@@ -481,6 +488,8 @@ pub enum Cmd {
     LoadHistory { skip: u32 },
     Open(FleetId),
     CheckBoss { character_id: i64, use_backup: bool },
+    /// Look a name up, so a snowflake is a character that exists rather than a typed string.
+    Search { kind: SearchKind, value: String },
     /// Re-read the tracked fleet's boost channel off disk. Not a request, so it never reaches the
     /// journal, but it rides the same worker because it touches the filesystem.
     ReadBoosts { dir: std::path::PathBuf, channel: String, from: i64, to: Option<i64> },
@@ -498,6 +507,7 @@ pub enum Outcome {
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
     Boss { character_id: i64, check: BossCheck },
+    Found { kind: SearchKind, hits: Vec<Labelled> },
     Boosts(Vec<super::boosts::Coverage>),
     Preview { record: CallRecord, preview: PingPreview },
     Started { record: CallRecord, id: FleetId },
@@ -531,6 +541,10 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
                 Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
             }
         }
+        Cmd::Search { kind, value } => match backend.search(kind, &value, false) {
+            Ok(hits) => Outcome::Found { kind, hits },
+            Err(e) => Outcome::Failed { what: "search", why: e.to_string() },
+        },
         Cmd::ReadBoosts { dir, channel, from, to } => {
             Outcome::Boosts(super::boosts::read_window(&dir, &channel, from, to))
         }

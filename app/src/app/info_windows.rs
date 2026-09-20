@@ -320,8 +320,8 @@ impl SpaiApp {
 
         ui.separator();
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.system_kills_tab, false, "Intel");
-            ui.selectable_value(&mut self.system_kills_tab, true, "Recent kills");
+            ui.menu_value(&mut self.system_kills_tab, false, "Intel");
+            ui.menu_value(&mut self.system_kills_tab, true, "Recent kills");
         });
         ui.separator();
         // The window's list takes the rest of the window so it is never left half empty; the dock

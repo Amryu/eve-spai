@@ -347,13 +347,13 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         use crate::settings::OnTop;
                         changed |= ui
-                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Always, "Always")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Always, "Always")
                             .changed();
                         changed |= ui
-                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Smart, "When EVE focused")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Smart, "When EVE focused")
                             .changed();
                         changed |= ui
-                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Never, "Never")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Never, "Never")
                             .changed();
                     });
                     ui.end_row();
@@ -1828,7 +1828,7 @@ impl SpaiApp {
                     .show_ui(ui, |ui| {
                         for p in [Presence::Online, Presence::Away, Presence::Xa, Presence::Dnd] {
                             if ui
-                                .selectable_value(&mut self.jabber_my_presence, p, p.label())
+                                .menu_value(&mut self.jabber_my_presence, p, p.label())
                                 .clicked()
                             {
                                 presence_changed = true;
@@ -2033,7 +2033,7 @@ impl SpaiApp {
                             let is_contact = contacts.contains(&c.jid);
                             let resp = ui.horizontal(|ui| {
                                 status_dot(ui, egui::Color32::from_rgb(r, g, b), 9.0);
-                                let clicked = ui.selectable_label(sel, name)
+                                let clicked = ui.menu_label(sel, name)
                                     .on_hover_text(&c.name)
                                     .clicked();
                                 if c.unread {
@@ -2445,7 +2445,7 @@ impl SpaiApp {
                                 ui.label(ic);
                             }
                         }
-                        if ui.selectable_label(false, t.label.as_str()).clicked() {
+                        if ui.menu_label(false, t.label.as_str()).clicked() {
                             focus = Some(Some(t.jid.clone()));
                             if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
                                 promote = Some(t.jid.clone());

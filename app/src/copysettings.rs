@@ -6,6 +6,7 @@ use crate::charsettings::{self, CopyPlan, CopyReport};
 use crate::eveproc::Clients;
 use crate::store::{AssocSource, Store};
 use crate::theme::standing;
+use crate::app::SteadySelect as _;
 
 #[derive(Clone, Debug)]
 struct Row {
@@ -263,7 +264,7 @@ pub fn ui(
                 .show_ui(ui, |ui| {
                     for p in state.profiles.clone() {
                         changed |= ui
-                            .selectable_value(&mut state.src_profile, p.clone(), p)
+                            .menu_value(&mut state.src_profile, p.clone(), p)
                             .changed();
                     }
                 });
@@ -272,7 +273,7 @@ pub fn ui(
                 .selected_text(state.dst_profile.clone())
                 .show_ui(ui, |ui| {
                     for p in state.profiles.clone() {
-                        ui.selectable_value(&mut state.dst_profile, p.clone(), p);
+                        ui.menu_value(&mut state.dst_profile, p.clone(), p);
                     }
                 });
             if let Some(hint) = hint {

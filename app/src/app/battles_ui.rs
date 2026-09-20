@@ -33,8 +33,8 @@ impl SpaiApp {
                                 .selected_text(if act == RuleAction::Include { "Include" } else { "Exclude" })
                                 .width(84.0)
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.selectable_value(&mut act, RuleAction::Include, "Include").changed();
-                                    changed |= ui.selectable_value(&mut act, RuleAction::Exclude, "Exclude").changed();
+                                    changed |= ui.menu_value(&mut act, RuleAction::Include, "Include").changed();
+                                    changed |= ui.menu_value(&mut act, RuleAction::Exclude, "Exclude").changed();
                                 });
                             rule.action = act;
                             let mut all = rule.match_all;
@@ -42,8 +42,8 @@ impl SpaiApp {
                                 .selected_text(if all { "All of" } else { "Any of" })
                                 .width(72.0)
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.selectable_value(&mut all, true, "All of").changed();
-                                    changed |= ui.selectable_value(&mut all, false, "Any of").changed();
+                                    changed |= ui.menu_value(&mut all, true, "All of").changed();
+                                    changed |= ui.menu_value(&mut all, false, "Any of").changed();
                                 });
                             rule.match_all = all;
                             if rule.is_broad() {
@@ -70,7 +70,7 @@ impl SpaiApp {
                                     .width(140.0)
                                     .show_ui(ui, |ui| {
                                         for k in BattleCond::kinds() {
-                                            if ui.selectable_label(cond.kind_label() == k.kind_label(), k.kind_label()).clicked()
+                                            if ui.menu_label(cond.kind_label() == k.kind_label(), k.kind_label()).clicked()
                                                 && cond.kind_label() != k.kind_label()
                                             {
                                                 *cond = k;
@@ -102,7 +102,7 @@ impl SpaiApp {
                                             .selected_text(sz.label())
                                             .show_ui(ui, |ui| {
                                                 for opt in ShipSize::CHOICES {
-                                                    changed |= ui.selectable_value(sz, opt, opt.label()).changed();
+                                                    changed |= ui.menu_value(sz, opt, opt.label()).changed();
                                                 }
                                             });
                                     }
@@ -1430,12 +1430,12 @@ impl SpaiApp {
                                 "battle_roster_sort",
                                 sort_label.to_owned(),
                                 |ui| {
-                                    ui.selectable_value(
+                                    ui.menu_value(
                                         &mut self.battle_roster_sort,
                                         RosterSort::Value,
                                         "ISK loss",
                                     );
-                                    ui.selectable_value(
+                                    ui.menu_value(
                                         &mut self.battle_roster_sort,
                                         RosterSort::Hull,
                                         "Hull size",
@@ -1473,7 +1473,7 @@ impl SpaiApp {
                                 toolbar_combo(ui, "br_manage_as", sel_name, |ui| {
                                     for (id, name) in &authed {
                                         if ui
-                                            .selectable_label(self.br_character == Some(*id), name)
+                                            .menu_label(self.br_character == Some(*id), name)
                                             .clicked()
                                         {
                                             self.br_character = Some(*id);
@@ -1731,7 +1731,7 @@ impl SpaiApp {
                 format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()),
                 |ui| {
                     for opt in crate::settings::WorkThrottle::CHOICES {
-                        ui.selectable_value(&mut th, opt, opt.label());
+                        ui.menu_value(&mut th, opt, opt.label());
                     }
                 },
             )

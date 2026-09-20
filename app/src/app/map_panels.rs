@@ -24,7 +24,7 @@ impl SpaiApp {
         let mut replan = false;
         ui.horizontal(|ui| {
             for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("titan", "Titan")] {
-                if ui.selectable_label(self.map_route_kind == kind, label).clicked()
+                if ui.menu_label(self.map_route_kind == kind, label).clicked()
                     && self.map_route_kind != kind
                 {
                     self.map_route_kind = match kind {
@@ -122,7 +122,7 @@ impl SpaiApp {
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
                         for (i, c) in SHIP_CLASSES.iter().enumerate() {
-                            if ui.selectable_value(&mut self.jump_ship, i, c.name).changed() {
+                            if ui.menu_value(&mut self.jump_ship, i, c.name).changed() {
                                 replan = true;
                             }
                         }
@@ -288,7 +288,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(format!("{from} → {to}")).weak().size(11.0));
                 for (k, label) in opts.iter().enumerate() {
                     let on = self.map_leg_pick.get(i).copied().unwrap_or(0) == k;
-                    if ui.selectable_label(on, label).clicked() {
+                    if ui.menu_label(on, label).clicked() {
                         pick = Some((i, k));
                     }
                 }
@@ -505,7 +505,7 @@ impl SpaiApp {
                                     for alt in &h.fork {
                                         let on = taken == Some(alt.id);
                                         if ui
-                                            .selectable_label(
+                                            .menu_label(
                                                 on,
                                                 egui::RichText::new(&alt.name).size(11.0),
                                             )
@@ -803,7 +803,7 @@ impl SpaiApp {
                             egui::Frame::popup(ui.style()).show(ui, |ui| {
                                 for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
                                     let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                                    let rr = ui.selectable_label(i == *sel, row);
+                                    let rr = ui.menu_label(i == *sel, row);
                                     if rr.hovered() && moving {
                                         *sel = i;
                                     }
@@ -1001,7 +1001,7 @@ impl SpaiApp {
                             ActivityMode::NpcKills,
                             ActivityMode::Jumps,
                         ] {
-                            ui.selectable_value(&mut self.travel_metric, m, m.label());
+                            ui.menu_value(&mut self.travel_metric, m, m.label());
                         }
                     });
                 ui.label("/h");
@@ -1477,7 +1477,7 @@ impl SpaiApp {
                                     MapMode::Standard => "",
                                 };
                                 if ui
-                                    .selectable_label(self.right_dock_tab == RightDockTab::Mode, label)
+                                    .menu_label(self.right_dock_tab == RightDockTab::Mode, label)
                                     .clicked()
                                 {
                                     self.right_dock_tab = RightDockTab::Mode;
@@ -1485,7 +1485,7 @@ impl SpaiApp {
                             }
                             if has_route
                                 && ui
-                                    .selectable_label(
+                                    .menu_label(
                                         self.right_dock_tab == RightDockTab::Route,
                                         "Route",
                                     )
@@ -1501,7 +1501,7 @@ impl SpaiApp {
                                     })
                                     .unwrap_or_else(|| "System".to_string());
                                 if ui
-                                    .selectable_label(self.right_dock_tab == RightDockTab::System, name)
+                                    .menu_label(self.right_dock_tab == RightDockTab::System, name)
                                     .clicked()
                                 {
                                     self.right_dock_tab = RightDockTab::System;
@@ -1561,7 +1561,7 @@ impl SpaiApp {
                         MapMode::Hunting,
                         MapMode::Safety,
                     ] {
-                        ui.selectable_value(&mut mode, m, m.label());
+                        ui.menu_value(&mut mode, m, m.label());
                     }
                 });
             if mode != self.map_mode {
@@ -1582,10 +1582,10 @@ impl SpaiApp {
                 MapLayout::Tree => "Tree (jumps)",
             })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
-                ui.selectable_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
-                ui.selectable_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
-                ui.selectable_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
+                ui.menu_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
+                ui.menu_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
+                ui.menu_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
+                ui.menu_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
             });
         if self.map_layout.is_threat() {
             ui.horizontal(|ui| {
@@ -1626,7 +1626,7 @@ impl SpaiApp {
                 ui.menu_button(format!("{}  Pop out character map", icon::USERS_THREE), |ui| {
                     for n in &others {
                         let open = self.map_char_popouts.contains(n);
-                        if ui.selectable_label(open, n).clicked() {
+                        if ui.menu_label(open, n).clicked() {
                             if open {
                                 self.map_char_popouts.retain(|x| x != n);
                                 self.map_char_view.remove(n);
@@ -1797,7 +1797,7 @@ impl SpaiApp {
                         }
                         for up in self.map_search_upgrades.clone() {
                             if ui
-                                .selectable_label(
+                                .menu_label(
                                     self.map_highlight_upgrade.as_deref() == Some(up.as_str()),
                                     format!("{}  {up}", icon::MAP_PIN_LINE),
                                 )
@@ -1825,7 +1825,7 @@ impl SpaiApp {
                                             .weak()
                                     }
                                 };
-                                if ui.selectable_label(i == sel, label).clicked() {
+                                if ui.menu_label(i == sel, label).clicked() {
                                     action = Some(hit_action(h));
                                 }
                             }
@@ -1887,7 +1887,7 @@ impl SpaiApp {
                             .show_ui(ui, |ui| {
                                 for (rid, rname) in &region_list {
                                     let sel = matches!(cur_view, MapView::Region(r) if r == *rid);
-                                    if ui.selectable_label(sel, rname).clicked() {
+                                    if ui.menu_label(sel, rname).clicked() {
                                         region_pick = Some(*rid);
                                     }
                                 }
