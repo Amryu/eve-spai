@@ -890,18 +890,18 @@ pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
 /// work from. Invented names in the doctrine, real hulls for the support jobs.
 #[cfg(feature = "fleet")]
 pub(crate) fn fleet_hulls() -> Vec<crate::settings::FleetHull> {
-    let hull = |setup: i32, name: &str, tank: &str| crate::settings::FleetHull {
+    let hull = |setup: i32, name: &str| crate::settings::FleetHull {
         setup_id: setup,
         type_id: 0,
         name: name.to_owned(),
-        };
+    };
     vec![
-        hull(46, "Flycatcher", ""),
-        hull(46, "Kirin", ""),
-        hull(46, "Harpy", ""),
-        hull(0, "Falcon", ""),
-        hull(0, "Crow", ""),
-        hull(0, "Guardian", "armor"),
+        hull(46, "Flycatcher"),
+        hull(46, "Kirin"),
+        hull(46, "Harpy"),
+        hull(0, "Falcon"),
+        hull(0, "Crow"),
+        hull(0, "Guardian"),
     ]
 }
 

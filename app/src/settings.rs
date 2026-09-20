@@ -239,6 +239,10 @@ pub struct Settings {
     /// Where each doctrine is written up: `(setup id, url)`, for pasting into a ping.
     #[serde(default)]
     pub fleet_doctrine_urls: Vec<(i32, String)>,
+    /// Setups that take their own hulls and nothing else. Some fleets are restricted enough that
+    /// even a cyno or a bridging titan is out of place.
+    #[serde(default)]
+    pub fleet_doctrine_strict: Vec<i32>,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
@@ -1139,6 +1143,7 @@ impl Default for Settings {
             fleet_hulls: Vec::new(),
             fleet_doctrine_tanks: Vec::new(),
             fleet_doctrine_urls: Vec::new(),
+            fleet_doctrine_strict: Vec::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1584,6 +1589,7 @@ mod window_geometry_tests {
         s.fleet_custom_doctrines = vec![(-1, "Shield Cruisers".to_owned())];
         s.fleet_doctrine_tanks = vec![(46, "shield".to_owned())];
         s.fleet_doctrine_urls = vec![(46, "https://example.invalid/doctrine".to_owned())];
+        s.fleet_doctrine_strict = vec![19];
         s.fleet_hulls = vec![
             FleetHull { setup_id: 46, type_id: 11_381, name: "Harpy".to_owned() },
             FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned() },
@@ -1619,6 +1625,7 @@ mod window_geometry_tests {
         assert_eq!(back.fleet_hulls, s.fleet_hulls);
         assert_eq!(back.fleet_doctrine_tanks, s.fleet_doctrine_tanks);
         assert_eq!(back.fleet_doctrine_urls, s.fleet_doctrine_urls);
+        assert_eq!(back.fleet_doctrine_strict, s.fleet_doctrine_strict);
     }
 
     /// A config written before the tab existed must not fail the parse, which would reset every
@@ -1635,6 +1642,7 @@ mod window_geometry_tests {
         assert!(s.fleet_hulls.is_empty());
         assert!(s.fleet_doctrine_tanks.is_empty());
         assert!(s.fleet_doctrine_urls.is_empty());
+        assert!(s.fleet_doctrine_strict.is_empty());
     }
 
     #[test]

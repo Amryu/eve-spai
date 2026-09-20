@@ -153,6 +153,9 @@ pub struct Doctrine {
     pub support: Vec<DoctrineShip>,
     /// How this doctrine tanks, when it can be told.
     pub tank: Option<Tank>,
+    /// Takes its own hulls and nothing else. An entosis op or a covert one is restricted enough
+    /// that a bridging titan parked in it is still the wrong ship.
+    pub strict: bool,
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -210,6 +213,7 @@ pub fn configured(
     seeded: Option<Doctrine>,
     hulls: &[crate::settings::FleetHull],
     tank: Option<Tank>,
+    strict: bool,
 ) -> Option<Doctrine> {
     if !is_doctrine(setup_id) {
         return None;
@@ -227,8 +231,8 @@ pub fn configured(
     let support: Vec<DoctrineShip> =
         hulls.iter().filter(|h| h.setup_id == 0 && !h.name.trim().is_empty()).map(ship).collect();
     // Nothing configured and nothing seeded is no doctrine at all, which is what stops every hull
-    // in the fleet reading as out of doctrine.
-    if ships.is_empty() && support.is_empty() {
+    // in the fleet reading as out of doctrine. A strict one still needs its own hulls.
+    if ships.is_empty() && (strict || support.is_empty()) {
         return None;
     }
     Some(Doctrine {
@@ -238,8 +242,9 @@ pub fn configured(
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| setup_name.to_owned()),
         ships,
-        support,
+        support: if strict { Vec::new() } else { support },
         tank,
+        strict,
     })
 }
 
@@ -254,6 +259,11 @@ pub fn classify(type_id: i64, ship: &str, group: &str, doctrine: Option<&Doctrin
     };
     if Doctrine::found(&d.ships, type_id, ship).is_some() {
         return Standing::Doctrine;
+    }
+    if d.strict {
+        // Nothing is waved through: the whole point of the flag is that this fleet takes its own
+        // hulls and no others.
+        return Standing::Unexpected;
     }
     if Doctrine::found(&d.support, type_id, ship).is_some() {
         return Standing::Support;
@@ -436,6 +446,7 @@ mod tests {
             ],
             support: Vec::new(),
             tank: None,
+            strict: false,
         }
     }
 
@@ -617,7 +628,7 @@ mod tests {
         };
         let hulls =
             vec![hull(46, "Muninn"), hull(46, "Scimitar"), hull(0, "Falcon"), hull(0, "Guardian")];
-        let d = configured(SetupId(46), "Shield Cruisers", None, &hulls, Some(Tank::Shield))
+        let d = configured(SetupId(46), "Shield Cruisers", None, &hulls, Some(Tank::Shield), false)
             .expect("a doctrine");
         assert_eq!(d.ships.len(), 2);
         assert_eq!(d.support.len(), 2);
@@ -631,7 +642,30 @@ mod tests {
         assert_eq!(classify(0, "Erebus", "Titan", Some(&d)), Standing::Support);
 
         // Nothing configured and nothing seeded is no doctrine, so nothing reads as out of one.
-        assert!(configured(SetupId(46), "Shield Cruisers", None, &[], None).is_none());
+        assert!(configured(SetupId(46), "Shield Cruisers", None, &[], None, false).is_none());
+    }
+
+    /// A restricted fleet takes its own hulls and nothing else, not even a cyno.
+    #[test]
+    fn a_strict_doctrine_waves_nothing_through() {
+        let hull = |setup: i32, name: &str| crate::settings::FleetHull {
+            setup_id: setup,
+            type_id: 0,
+            name: name.to_owned(),
+        };
+        let hulls = vec![hull(19, "Hecate"), hull(0, "Falcon")];
+        let d = configured(SetupId(19), "Entosis", None, &hulls, None, true).expect("a doctrine");
+        assert!(d.strict);
+        assert!(d.support.is_empty(), "a strict doctrine keeps no support list");
+
+        assert_eq!(classify(0, "Hecate", "Tactical Destroyer", Some(&d)), Standing::Doctrine);
+        // Configured as always allowed, and a built-in group, both refused.
+        assert_eq!(classify(0, "Falcon", "Force Recon Ship", Some(&d)), Standing::Unexpected);
+        assert_eq!(classify(0, "Erebus", "Titan", Some(&d)), Standing::Unexpected);
+
+        // Strict with no hulls of its own is not a doctrine, or it would flag the whole fleet.
+        assert!(configured(SetupId(19), "Entosis", None, &[hull(0, "Falcon")], None, true)
+            .is_none());
     }
 
     /// The seed's hulls and the configured ones are one list, without repeats.
@@ -643,6 +677,7 @@ mod tests {
             ships: vec![DoctrineShip { type_id: 22_464, name: "Flycatcher".into() }],
             support: Vec::new(),
             tank: None,
+            strict: false,
         };
         let hulls = vec![
             crate::settings::FleetHull {
@@ -656,7 +691,7 @@ mod tests {
                 name: "Harpy".to_owned(),
         },
         ];
-        let d = configured(SetupId(46), "", Some(seeded), &hulls, None).expect("a doctrine");
+        let d = configured(SetupId(46), "", Some(seeded), &hulls, None, false).expect("a doctrine");
         assert_eq!(d.ships.len(), 2, "the same hull twice is one hull");
         assert_eq!(d.setup_name, "Fast Tackle");
         assert!(d.has(22_464));
@@ -675,7 +710,7 @@ mod tests {
             type_id: 0,
             name: "Muninn".to_owned(),
         }];
-        assert!(configured(FC_CHOICE, "FC Choice", None, &hulls, None).is_none());
+        assert!(configured(FC_CHOICE, "FC Choice", None, &hulls, None, false).is_none());
     }
 
     /// An unknown group is not a free pass.

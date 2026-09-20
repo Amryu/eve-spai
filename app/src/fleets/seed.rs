@@ -260,6 +260,7 @@ impl Seed {
                 .collect(),
             support: Vec::new(),
             tank: None,
+            strict: false,
         })
     }
 }

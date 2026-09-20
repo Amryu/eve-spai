@@ -205,6 +205,7 @@ impl SpaiApp {
         let boost_rules = self.settings.fleet_boost_requirements.clone();
         let fleet_hulls = self.settings.fleet_hulls.clone();
         let fleet_tanks = self.settings.fleet_doctrine_tanks.clone();
+        let fleet_strict = self.settings.fleet_doctrine_strict.clone();
         let mut open_boost_editor = false;
         let mut sidebar_open = self.fleet_sidebar_open;
         let here = self.fleet_mumble_at.clone();
@@ -328,10 +329,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &places, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
             }
         });
@@ -744,6 +745,23 @@ impl SpaiApp {
                                 picked,
                                 &mut self.settings.fleet_doctrine_urls,
                             );
+                            let strict = &mut self.settings.fleet_doctrine_strict;
+                            let mut on = strict.contains(&picked);
+                            if ui
+                                .checkbox(&mut on, "Only these hulls")
+                                .on_hover_text(
+                                    "Nothing is waved through, not even the always-allowed ones. \
+                                     For a fleet restricted enough that a bridging titan parked \
+                                     in it is still the wrong ship.",
+                                )
+                                .changed()
+                            {
+                                strict.retain(|id| *id != picked);
+                                if on {
+                                    strict.push(picked);
+                                }
+                                changed = true;
+                            }
                             ui.add_space(6.0);
                             changed |= hull_editor(
                                 ui,
@@ -2442,6 +2460,7 @@ fn tracking_page(
     boost_rules: &[crate::settings::FleetBoostRequirement],
     hulls: &[crate::settings::FleetHull],
     tanks: &[(i32, String)],
+    strict: &[i32],
     open_editor: &mut bool,
     sidebar: &mut bool,
     mine: bool,
@@ -2482,6 +2501,7 @@ fn tracking_page(
                         boost_rules,
                     ))
                 }),
+            strict.contains(&open.fleet.setup_id.0),
         ),
         ..open
     };

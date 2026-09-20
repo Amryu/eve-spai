@@ -347,6 +347,7 @@ mod tests {
             ],
             support: Vec::new(),
             tank: Some(Tank::Shield),
+            strict: false,
         };
         let c = comp(vec![
             member(1, "Muninn", "Heavy Assault Cruiser"),
