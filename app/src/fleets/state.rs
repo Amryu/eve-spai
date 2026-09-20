@@ -348,11 +348,12 @@ impl FleetState {
         }
     }
 
-    /// The form as a preset worth keeping.
-    pub fn preset_from_form(&self, label: &str) -> crate::settings::FleetPreset {
+    /// The form as a preset worth keeping, in `folder` or at the top level when it is empty.
+    pub fn preset_from_form(&self, label: &str, folder: &str) -> crate::settings::FleetPreset {
         let d = &self.draft;
         crate::settings::FleetPreset {
             label: label.to_owned(),
+            folder: folder.trim().to_owned(),
             name: d.form.name.clone(),
             description: d.form.description.clone(),
             setup_id: d.form.setup_id,
@@ -734,7 +735,8 @@ mod tests {
         st.draft.form.set_motd = true;
         st.draft.tags = [TagId(2), TagId(33)].into_iter().collect();
         st.draft.formup = Some(Labelled { id: 30_000_142, label: "Jita".into() });
-        let saved = st.preset_from_form("Evening");
+        let saved = st.preset_from_form("Evening", " Roams ");
+        assert_eq!(saved.folder, "Roams", "a folder is stored trimmed");
         let mut other = state();
         other.apply_preset(&saved);
         assert_eq!(other.draft.form.name, "Roam");

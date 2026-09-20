@@ -300,9 +300,12 @@ impl SpaiApp {
                 self.needs_save = true;
             }
         }
-        if let Some(label) = act.save_preset {
-            let preset =
-                self.fleet.lock().unwrap_or_else(|e| e.into_inner()).preset_from_form(&label);
+        if let Some((label, folder)) = act.save_preset {
+            let preset = self
+                .fleet
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .preset_from_form(&label, &folder);
             match self.settings.fleet_presets.iter_mut().find(|p| p.label == label) {
                 Some(slot) => *slot = preset,
                 None => self.settings.fleet_presets.push(preset),
@@ -836,7 +839,8 @@ const BOOST_REREAD: std::time::Duration = std::time::Duration::from_secs(20);
 pub(crate) struct FormAct {
     pub load_preset: Option<usize>,
     pub delete_preset: Option<usize>,
-    pub save_preset: Option<String>,
+    /// (label, folder) for the preset to keep. An empty folder is the top level.
+    pub save_preset: Option<(String, String)>,
     pub auto_channels: bool,
     pub free_channels: bool,
     pub force_channels: bool,
@@ -866,54 +870,73 @@ fn start_page(
         // Below this the two groups would sit on top of each other, so they stack instead.
         let roomy = ui.available_width() >= 560.0;
         ui.horizontal_wrapped(|ui| {
-            save_preset_button(ui, act);
+            save_preset_button(ui, &preset_folders(presets), act);
+            // Right-aligned when there is room. Stacked below when there is not, where a
+            // right-to-left run would come out back to front.
+            if !roomy {
+                ui.end_row();
+            }
             let layout = if roomy {
                 egui::Layout::right_to_left(egui::Align::Center)
             } else {
                 egui::Layout::left_to_right(egui::Align::Center)
             };
-            if !roomy {
-                ui.end_row();
-            }
             ui.with_layout(layout, |ui| {
-                ui.label(
-                    egui::RichText::new("recorded, not sent")
-                        .color(crate::theme::standing::WARNING),
-                );
-                if ui
-                    .add_enabled(
-                        can_start,
-                        egui::Button::new(format!(
-                            "{}  Request ping",
-                            egui_phosphor::regular::PAPER_PLANE_TILT
-                        )),
-                    )
-                    .on_disabled_hover_text(
-                        "Your account does not have the startFleet permission.",
-                    )
-                    .clicked()
-                {
-                    act.ping = true;
-                }
-                let ready = st.start_request().is_some();
-                let track = ui
-                    .add_enabled(
-                        can_start && ready,
-                        egui::Button::new(format!(
-                            "{}  Track fleet",
-                            egui_phosphor::regular::ROCKET_LAUNCH
-                        )),
-                    )
-                    .on_hover_text("Records the request this would send. Nothing leaves the app.");
-                let track = if !can_start {
-                    track.on_disabled_hover_text(
-                        "Your account does not have the startFleet permission.",
-                    )
-                } else {
-                    track.on_disabled_hover_text("Give the fleet a name first.")
+                let note = |ui: &mut egui::Ui| {
+                    ui.label(
+                        egui::RichText::new("recorded, not sent")
+                            .color(crate::theme::standing::WARNING),
+                    );
                 };
-                if track.clicked() {
-                    act.start = true;
+                let ping = |ui: &mut egui::Ui, act: &mut FormAct| {
+                    if ui
+                        .add_enabled(
+                            can_start,
+                            egui::Button::new(format!(
+                                "{}  Request ping",
+                                egui_phosphor::regular::PAPER_PLANE_TILT
+                            )),
+                        )
+                        .on_disabled_hover_text(
+                            "Your account does not have the startFleet permission.",
+                        )
+                        .clicked()
+                    {
+                        act.ping = true;
+                    }
+                };
+                let ready = st.start_request().is_some();
+                let track = |ui: &mut egui::Ui, act: &mut FormAct| {
+                    let resp = ui
+                        .add_enabled(
+                            can_start && ready,
+                            egui::Button::new(format!(
+                                "{}  Track fleet",
+                                egui_phosphor::regular::ROCKET_LAUNCH
+                            )),
+                        )
+                        .on_hover_text(
+                            "Records the request this would send. Nothing leaves the app.",
+                        );
+                    let resp = if !can_start {
+                        resp.on_disabled_hover_text(
+                            "Your account does not have the startFleet permission.",
+                        )
+                    } else {
+                        resp.on_disabled_hover_text("Give the fleet a name first.")
+                    };
+                    if resp.clicked() {
+                        act.start = true;
+                    }
+                };
+                if roomy {
+                    note(ui);
+                    ping(ui, act);
+                    track(ui, act);
+                } else {
+                    track(ui, act);
+                    ping(ui, act);
+                    note(ui);
                 }
             });
         });
@@ -941,28 +964,51 @@ fn preset_bar(
     act: &mut FormAct,
 ) {
     ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Presets").strong());
-        if presets.is_empty() {
+    // Top level first, then one row per folder. One level only, so a row is the whole depth.
+    let mut groups: Vec<(String, Vec<usize>)> = vec![(String::new(), Vec::new())];
+    for f in preset_folders(presets) {
+        groups.push((f, Vec::new()));
+    }
+    for (i, p) in presets.iter().enumerate() {
+        let f = p.folder.trim();
+        if let Some(g) = groups.iter_mut().find(|(name, _)| name == f) {
+            g.1.push(i);
+        }
+    }
+    if presets.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Presets").strong());
             ui.label(egui::RichText::new("none saved").weak());
-        }
-        for (i, p) in presets.iter().enumerate() {
-            if ui
-                .button(&p.label)
-                .on_hover_text("Fill the form from this preset")
-                .clicked()
-            {
-                act.load_preset = Some(i);
+        });
+    }
+    for (folder, idx) in groups.iter().filter(|(_, idx)| !idx.is_empty()) {
+        ui.horizontal_wrapped(|ui| {
+            let text = if folder.is_empty() { "Presets" } else { folder.as_str() };
+            let text = egui::RichText::new(text).strong();
+            // The fixed gutter lines the folder rows up, but only where there is room for it:
+            // squeezed narrow it would push the last chip past the edge instead of wrapping.
+            if ui.available_width() >= 420.0 {
+                cell(ui, 96.0, |ui| {
+                    ui.label(text);
+                });
+            } else {
+                ui.label(text);
             }
-            if ui
-                .small_button(egui_phosphor::regular::TRASH)
-                .on_hover_text(format!("Forget the {} preset", p.label))
-                .clicked()
-            {
-                act.delete_preset = Some(i);
+            for &i in idx {
+                let p = &presets[i];
+                if ui.button(&p.label).on_hover_text("Fill the form from this preset").clicked() {
+                    act.load_preset = Some(i);
+                }
+                if ui
+                    .small_button(egui_phosphor::regular::TRASH)
+                    .on_hover_text(format!("Forget the {} preset", p.label))
+                    .clicked()
+                {
+                    act.delete_preset = Some(i);
+                }
             }
-        }
-    });
+        });
+    }
 }
 
 /// An action strip sits against the edge of the view, so it keeps the panel's side margins and
@@ -976,9 +1022,11 @@ fn bar_frame(ui: &egui::Ui) -> egui::Frame {
 /// Naming the current form and keeping it. Lives in the action strip so the form can scroll past
 /// it without taking the controls along.
 #[cfg(feature = "fleet")]
-fn save_preset_button(ui: &mut egui::Ui, act: &mut FormAct) {
+fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) {
     let id = ui.id().with("preset_name");
     let mut label: String = ui.data(|d| d.get_temp(id).unwrap_or_default());
+    let folder_id = id.with("folder");
+    let mut folder: String = ui.data(|d| d.get_temp(folder_id).unwrap_or_default());
     let open_id = id.with("open");
     let mut open: bool = ui.data(|d| d.get_temp(open_id).unwrap_or(false));
     if ui
@@ -993,23 +1041,56 @@ fn save_preset_button(ui: &mut egui::Ui, act: &mut FormAct) {
     }
     if open {
         ui.add(
-            egui::TextEdit::singleline(&mut label).hint_text("Preset name").desired_width(160.0),
+            egui::TextEdit::singleline(&mut label).hint_text("Preset name").desired_width(150.0),
         );
+        // Typed, not picked: a new folder is made by naming it, and the existing ones are one
+        // click away in the dropdown beside it.
+        ui.add(
+            egui::TextEdit::singleline(&mut folder)
+                .hint_text("Folder (optional)")
+                .desired_width(130.0),
+        );
+        let combo = egui::ComboBox::from_id_salt("preset_folder_pick").width(0.0);
+        combo.show_ui(ui, |ui| {
+            if ui.selectable_label(folder.is_empty(), "Top level").clicked() {
+                folder.clear();
+            }
+            for f in folders {
+                if ui.selectable_label(&folder == f, f).clicked() {
+                    folder = f.clone();
+                }
+            }
+        });
         let ready = !label.trim().is_empty();
         if ui
             .add_enabled(ready, egui::Button::new("Save"))
             .on_disabled_hover_text("Name the preset first.")
             .clicked()
         {
-            act.save_preset = Some(label.trim().to_owned());
+            act.save_preset = Some((label.trim().to_owned(), folder.trim().to_owned()));
             label.clear();
             open = false;
         }
     }
     ui.data_mut(|d| {
         d.insert_temp(id, label);
+        d.insert_temp(folder_id, folder);
         d.insert_temp(open_id, open);
     });
+}
+
+/// The folders presets are kept in, in order, without repeats.
+#[cfg(feature = "fleet")]
+fn preset_folders(presets: &[crate::settings::FleetPreset]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in presets {
+        let f = p.folder.trim();
+        if !f.is_empty() && !out.iter().any(|x| x == f) {
+            out.push(f.to_owned());
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Width every control in the form shares, so the column reads as one edge rather than a ragged
@@ -1194,6 +1275,7 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
 
             ui.label("Options");
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 act.edited |= ui.checkbox(&mut d.form.set_motd, "Set the fleet MOTD").changed();
                 act.edited |=
                     ui.checkbox(&mut d.form.is_corporation_fleet, "Corporation fleet").changed();
@@ -1302,11 +1384,61 @@ fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut 
                 [("Primary tag", "fleet_tag_primary", true), ("Secondary tags", "fleet_tag_secondary", false)]
             {
                 ui.label(title);
-                let pool: Vec<_> = tags.iter().filter(|t| t.is_primary == primary).cloned().collect();
-                act.edited |= tag_field(ui, salt, &pool, &mut st.draft.tags, primary);
+                let mut pool: Vec<_> =
+                    tags.iter().filter(|t| t.is_primary == primary).cloned().collect();
+                ui.vertical(|ui| {
+                    if primary {
+                        // The two that decide what kind of fleet this is come first, in that
+                        // order, with their own pair of buttons above the field. Above rather
+                        // than beside, or a narrow window pushes the field off the edge.
+                        pool.sort_by_key(|t| (headline_rank(&t.name), t.id.0));
+                        act.edited |= headline_tags(ui, &pool, &mut st.draft.tags);
+                    }
+                    ui.horizontal(|ui| {
+                        act.edited |= tag_field(ui, salt, &pool, &mut st.draft.tags, primary);
+                    });
+                });
                 ui.end_row();
             }
         });
+}
+
+/// The two primary tags every fleet is one of, in the order they belong in.
+#[cfg(feature = "fleet")]
+const HEADLINE_TAGS: [&str; 2] = ["PEACETIME", "STRATEGIC"];
+
+/// Sort key that floats the headline tags to the top of the primary list.
+#[cfg(feature = "fleet")]
+fn headline_rank(name: &str) -> usize {
+    HEADLINE_TAGS.iter().position(|h| h.eq_ignore_ascii_case(name.trim())).unwrap_or(HEADLINE_TAGS.len())
+}
+
+/// Peacetime or strategic, one click apart, since it is the first thing an FC sets and the thing
+/// most often set wrong.
+#[cfg(feature = "fleet")]
+fn headline_tags(
+    ui: &mut egui::Ui,
+    pool: &[TagItem],
+    selected: &mut std::collections::BTreeSet<crate::fleets::model::TagId>,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for name in HEADLINE_TAGS {
+            let Some(t) = pool.iter().find(|t| t.name.trim().eq_ignore_ascii_case(name)) else {
+                continue;
+            };
+            let on = selected.contains(&t.id);
+            if selectable_chip(ui, on, t.name.trim()).clicked() && !on {
+                // One primary tag, so picking one drops whatever else was there.
+                for other in pool {
+                    selected.remove(&other.id);
+                }
+                selected.insert(t.id);
+                changed = true;
+            }
+        }
+    });
+    changed
 }
 
 /// Whether a tag survives what has been typed into the search box.
@@ -1603,6 +1735,36 @@ fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
 #[cfg(all(test, feature = "fleet"))]
 mod confirm_tests {
     use super::*;
+
+    /// Folders come out of the presets themselves, once each, sorted, with the top level implied.
+    #[test]
+    fn preset_folders_are_listed_once_each() {
+        let p = |label: &str, folder: &str| crate::settings::FleetPreset {
+            label: label.to_owned(),
+            folder: folder.to_owned(),
+            ..Default::default()
+        };
+        let presets = vec![
+            p("Home Defence", "Home"),
+            p("Roam", ""),
+            p("Tower bash", "Structures"),
+            p("Entosis", " Home "),
+            p("Move op", "  "),
+        ];
+        assert_eq!(preset_folders(&presets), vec!["Home".to_owned(), "Structures".to_owned()]);
+        assert!(preset_folders(&[]).is_empty());
+    }
+
+    /// Peacetime and strategic sort ahead of everything else, in that order.
+    #[test]
+    fn the_headline_tags_come_first() {
+        let mut names = vec!["Corp", "STRATEGIC", "SIG/SQUAD", "PEACETIME", "Incursion-VG"];
+        names.sort_by_key(|n| headline_rank(n));
+        assert_eq!(&names[..2], &["PEACETIME", "STRATEGIC"]);
+        // Case and stray spaces come from the API, not from the user.
+        assert_eq!(headline_rank(" peacetime "), 0);
+        assert_eq!(headline_rank("Corp"), 2);
+    }
 
     /// What the tag search keeps and what it drops.
     #[test]

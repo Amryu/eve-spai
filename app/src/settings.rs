@@ -877,6 +877,9 @@ where
 pub struct FleetPreset {
     /// What the chip says. The only part the user names.
     pub label: String,
+    /// Which folder it sits in, empty for the top level. One level only: a tree of fleet presets
+    /// is a thing to navigate, and the point of a preset is not navigating.
+    pub folder: String,
     pub name: String,
     pub description: String,
     pub setup_id: i32,
@@ -1545,6 +1548,7 @@ mod window_geometry_tests {
         }];
         s.fleet_presets = vec![FleetPreset {
             label: "Home Defence".to_owned(),
+            folder: "Home".to_owned(),
             name: "Home Defense".to_owned(),
             setup_id: 46,
             auto_channels: true,
