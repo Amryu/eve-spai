@@ -342,8 +342,8 @@ mod tests {
             setup_id: crate::fleets::model::SetupId(46),
             setup_name: "Shield Cruisers".into(),
             ships: vec![
-                DoctrineShip { type_id: 1, name: "Muninn".into(), tank: None },
-                DoctrineShip { type_id: 4, name: "Scimitar".into(), tank: None },
+                DoctrineShip { type_id: 1, name: "Muninn".into() },
+                DoctrineShip { type_id: 4, name: "Scimitar".into() },
             ],
             support: Vec::new(),
             tank: Some(Tank::Shield),

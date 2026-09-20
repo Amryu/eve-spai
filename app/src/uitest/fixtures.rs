@@ -894,8 +894,7 @@ pub(crate) fn fleet_hulls() -> Vec<crate::settings::FleetHull> {
         setup_id: setup,
         type_id: 0,
         name: name.to_owned(),
-        tank: tank.to_owned(),
-    };
+        };
     vec![
         hull(46, "Flycatcher", ""),
         hull(46, "Kirin", ""),

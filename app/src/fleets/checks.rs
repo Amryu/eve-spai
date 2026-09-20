@@ -338,7 +338,6 @@ mod tests {
             ships: vec![crate::fleets::doctrine::DoctrineShip {
                 type_id: 0,
                 name: "Command Ship".into(),
-                tank: None,
             }],
             ..Default::default()
         };

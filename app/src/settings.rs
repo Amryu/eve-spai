@@ -232,6 +232,13 @@ pub struct Settings {
     /// Which hulls belong to which doctrine, and which are welcome in any fleet.
     #[serde(default)]
     pub fleet_hulls: Vec<FleetHull>,
+    /// How each doctrine tanks: `(setup id, "shield" | "armor")`. A fleet reps one way, so this
+    /// belongs to the doctrine rather than to each of its hulls.
+    #[serde(default)]
+    pub fleet_doctrine_tanks: Vec<(i32, String)>,
+    /// Where each doctrine is written up: `(setup id, url)`, for pasting into a ping.
+    #[serde(default)]
+    pub fleet_doctrine_urls: Vec<(i32, String)>,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
@@ -929,8 +936,6 @@ pub struct FleetHull {
     #[serde(default)]
     pub type_id: i64,
     pub name: String,
-    /// "shield", "armor", or empty when it does not matter or is not known.
-    pub tank: String,
 }
 
 /// One boost a doctrine wants, and how badly, so the tracking view can say what to put on next.
@@ -1132,6 +1137,8 @@ impl Default for Settings {
             fleet_recent_formup: Vec::new(),
             fleet_custom_doctrines: Vec::new(),
             fleet_hulls: Vec::new(),
+            fleet_doctrine_tanks: Vec::new(),
+            fleet_doctrine_urls: Vec::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1575,19 +1582,11 @@ mod window_geometry_tests {
         s.fleet_character = "Amryu".to_owned();
         s.fleet_recent_formup = vec!["1DQ1-A".to_owned(), "319-3D".to_owned()];
         s.fleet_custom_doctrines = vec![(-1, "Shield Cruisers".to_owned())];
+        s.fleet_doctrine_tanks = vec![(46, "shield".to_owned())];
+        s.fleet_doctrine_urls = vec![(46, "https://example.invalid/doctrine".to_owned())];
         s.fleet_hulls = vec![
-            FleetHull {
-                setup_id: 46,
-                type_id: 11_381,
-                name: "Harpy".to_owned(),
-                tank: "shield".to_owned(),
-            },
-            FleetHull {
-                setup_id: 0,
-                type_id: 11_957,
-                name: "Falcon".to_owned(),
-                tank: String::new(),
-            },
+            FleetHull { setup_id: 46, type_id: 11_381, name: "Harpy".to_owned() },
+            FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned() },
         ];
         s.fleet_boost_requirements = vec![FleetBoostRequirement {
             setup_id: 46,
@@ -1618,6 +1617,8 @@ mod window_geometry_tests {
         assert_eq!(back.fleet_recent_formup, s.fleet_recent_formup);
         assert_eq!(back.fleet_custom_doctrines, s.fleet_custom_doctrines);
         assert_eq!(back.fleet_hulls, s.fleet_hulls);
+        assert_eq!(back.fleet_doctrine_tanks, s.fleet_doctrine_tanks);
+        assert_eq!(back.fleet_doctrine_urls, s.fleet_doctrine_urls);
     }
 
     /// A config written before the tab existed must not fail the parse, which would reset every
@@ -1632,6 +1633,8 @@ mod window_geometry_tests {
         assert!(s.fleet_recent_formup.is_empty());
         assert!(s.fleet_custom_doctrines.is_empty());
         assert!(s.fleet_hulls.is_empty());
+        assert!(s.fleet_doctrine_tanks.is_empty());
+        assert!(s.fleet_doctrine_urls.is_empty());
     }
 
     #[test]
