@@ -582,7 +582,7 @@ impl SpaiApp {
     ///
     /// Read-only by construction: the desktop's rescue window sends pings and pulls people into
     /// comms, and a socket on the LAN should not be able to broadcast to an alliance.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn web_rescue_side(&self) -> Option<crate::web::rescue::RescueSide> {
         if !self.settings.fc_rescue_enabled {
             return None;
@@ -623,7 +623,7 @@ impl SpaiApp {
     }
 
     /// Without the feature there is no rescue mode to report on.
-    #[cfg(not(feature = "fc-rescue"))]
+    #[cfg(not(feature = "fleet"))]
     pub(crate) fn web_rescue_side(&self) -> Option<crate::web::rescue::RescueSide> {
         None
     }

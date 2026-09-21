@@ -95,12 +95,24 @@ sends, and are applied by the same handler.
 from its kill history, exports them to files and can share them through `crates/server`, which
 stores gzipped reports and serves a read-only page per report.
 
-## Optional: capital rescue mode
+## Optional: fleet command
 
-The `fc-rescue` Cargo feature, off in published releases, compiles an FC-only mode that watches a
-rescue channel, tracks fleet composition through ESI and checks titan range from staging
-(`rescue.rs`, `app/rescue_ui.rs`). Its settings fields are never feature-gated, so a build without
-the feature still round-trips a config written by one with it.
+The `fleet` Cargo feature, off in published releases, compiles two halves of one thing. The GSF
+dashboard mirror (`fleets/`, `app/fleet_ui.rs`) starts and tracks fleets, requests pings and reads
+composition, boosts and doctrine. The FC-only capital rescue (`rescue.rs`, `app/rescue_ui.rs`)
+watches a rescue channel, checks titan range from staging, and runs on a fleet preset tagged
+Capital Save: its ping and doctrine come from that preset and its Start tracking hands over to the
+fleet tab. They were separate features until the rescue stopped keeping its own copy of all that;
+`fc-rescue` is now only an alias for `fleet`.
+
+`fleets/backend.rs` builds every dashboard request as a `CallRecord` and performs none, so the
+spoof (`spoof.rs`) and the real client (`http.rs`) are checked against one conformance suite. A
+backend reports a `Mode`: `DryRun` invents its data, `ReadOnly` reads live and holds writes, `Live`
+sends. `fleet-auth` adds the sign-in webview that mints the session cookie, in a subprocess because
+wry needs a GTK main loop and eframe already owns the main thread with winit.
+
+Settings fields for both are never feature-gated, so a build without the feature still round-trips
+a config written by one with it.
 
 ## Testing
 
@@ -108,4 +120,4 @@ the feature still round-trips a config written by one with it.
   `store.rs`.
 - `app/src/uitest/` renders UI surfaces headlessly with `egui_kittest` from fixtures only and checks
   layout. `webshot.sh` screenshots the web view from a fixture demo server.
-- CI runs the tests on Linux with and without `fc-rescue`, and compile-checks Windows and macOS.
+- CI runs the tests on Linux with and without `fleet`, and compile-checks Windows and macOS.

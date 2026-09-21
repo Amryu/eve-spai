@@ -91,6 +91,13 @@ impl SpaiApp {
     }
 
     #[allow(deprecated)]
+    /// How long a report keeps its system lit, by severity.
+    pub(crate) fn map_highlight_window(&self) -> impl Fn(crate::settings::Severity) -> i64 {
+        let (normal, critical) =
+            (self.settings.map_highlight_secs, self.settings.map_highlight_critical_secs);
+        move |sev| highlight_window(sev, normal, critical)
+    }
+
     pub(crate) fn draw_map(&mut self, ui: &mut egui::Ui) {
         use crate::map::MapView;
         if self.map_regions.is_empty() {
@@ -458,7 +465,7 @@ impl SpaiApp {
         }
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
-        #[cfg(feature = "fc-rescue")]
+        #[cfg(feature = "fleet")]
         let rescue_active = self.settings.fc_rescue_enabled;
         let ov = self.map_overlays;
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
@@ -1323,6 +1330,8 @@ impl SpaiApp {
 
         let now_ts = chrono::Utc::now().timestamp();
         let sev_rules = self.settings.severity.clone();
+        let highlight_for = self.map_highlight_window();
+        let lit_since = chrono::Utc::now().timestamp();
         let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
             let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
@@ -1331,8 +1340,13 @@ impl SpaiApp {
                 if r.clear || st.is_stale(r) {
                     continue;
                 }
+                let sev = severity_of(r, &sev_rules);
+                // A lit system says something is happening there now. The report stays readable
+                // in the feed for its own ttl; the map stops claiming it is live.
+                if lit_since - r.received > highlight_for(sev) {
+                    continue;
+                }
                 if let Some(s) = r.primary_system() {
-                    let sev = severity_of(r, &sev_rules);
                     let e = m.entry(s.id).or_insert((sev, r.received));
                     e.0 = e.0.max(sev);
                     e.1 = e.1.max(r.received);
@@ -1507,7 +1521,7 @@ impl SpaiApp {
                     }
                 }
             }
-            #[cfg(feature = "fc-rescue")]
+            #[cfg(feature = "fleet")]
             if rescue_active {
                 if let Some(sid) = self.systems.as_ref().and_then(|g| {
                     g.lookup(&self.settings.rescue_staging_system).map(|i| i.id)
@@ -1622,6 +1636,8 @@ impl SpaiApp {
         }
 
         let sev_rules = self.settings.severity.clone();
+        let highlight_for = self.map_highlight_window();
+        let lit_since = chrono::Utc::now().timestamp();
         let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
             let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
@@ -1630,8 +1646,13 @@ impl SpaiApp {
                 if r.clear || st.is_stale(r) {
                     continue;
                 }
+                let sev = severity_of(r, &sev_rules);
+                // A lit system says something is happening there now. The report stays readable
+                // in the feed for its own ttl; the map stops claiming it is live.
+                if lit_since - r.received > highlight_for(sev) {
+                    continue;
+                }
                 if let Some(sy) = r.primary_system() {
-                    let sev = severity_of(r, &sev_rules);
                     let e = m.entry(sy.id).or_insert((sev, r.received));
                     e.0 = e.0.max(sev);
                     e.1 = e.1.max(r.received);
@@ -1814,6 +1835,37 @@ impl SpaiApp {
         ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
         ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
         ui.separator();
+        ui.label(egui::RichText::new(format!("{}  Intel highlight", icon::CLOCK_COUNTDOWN)).strong());
+        ui.label(
+            egui::RichText::new("How long a report keeps its system lit.").weak(),
+        );
+        let mut changed = false;
+        egui::Grid::new("map_highlight_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Normal");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut self.settings.map_highlight_secs)
+                        .range(0..=3600)
+                        .suffix("s"),
+                )
+                .on_hover_text("0 turns the highlight off entirely.")
+                .changed();
+            ui.end_row();
+            ui.label("Critical");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut self.settings.map_highlight_critical_secs)
+                        .range(0..=3600)
+                        .suffix("s"),
+                )
+                .on_hover_text("Critical reports are worth watching for longer.")
+                .changed();
+            ui.end_row();
+        });
+        if changed {
+            self.needs_save = true;
+        }
+        ui.separator();
         ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
         ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
         ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
@@ -1878,7 +1930,7 @@ impl SpaiApp {
             });
         }
 
-        #[cfg(feature = "fc-rescue")]
+        #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled {
             ui.separator();
             ui.label(egui::RichText::new("delve911 rescue").strong());
@@ -2103,5 +2155,41 @@ impl SpaiApp {
                     });
                 });
             });
+    }
+}
+
+/// How long a report of this severity keeps its system lit.
+///
+/// Critical gets its own, longer window: a titan on a gate is worth watching after a gang of
+/// frigates has stopped being news. Negative settings read as zero rather than as "for ever".
+pub(crate) fn highlight_window(
+    sev: crate::settings::Severity,
+    normal: i64,
+    critical: i64,
+) -> i64 {
+    let pick = if sev == crate::settings::Severity::Critical { critical } else { normal };
+    pick.max(0)
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::highlight_window;
+    use crate::settings::Severity;
+
+    #[test]
+    fn critical_stays_lit_longer_and_the_rest_share_one_window() {
+        let (n, c) = (300, 900);
+        assert_eq!(highlight_window(Severity::Critical, n, c), 900);
+        for sev in [Severity::Info, Severity::Warning, Severity::Danger] {
+            assert_eq!(highlight_window(sev, n, c), 300, "{sev:?}");
+        }
+    }
+
+    /// Zero is how the highlight is switched off, so it must not be read as unlimited.
+    #[test]
+    fn zero_and_negative_mean_no_highlight() {
+        assert_eq!(highlight_window(Severity::Danger, 0, 900), 0);
+        assert_eq!(highlight_window(Severity::Critical, 300, 0), 0);
+        assert_eq!(highlight_window(Severity::Danger, -5, 900), 0);
     }
 }

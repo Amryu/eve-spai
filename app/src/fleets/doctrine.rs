@@ -164,6 +164,9 @@ pub struct DoctrineShip {
     /// 0 when the hull is known by name only, which is how the user configures it.
     pub type_id: i64,
     pub name: String,
+    /// Marked as what the fleet is built around, so its role is damage whatever its hull group
+    /// would otherwise say.
+    pub main: bool,
 }
 
 impl Doctrine {
@@ -222,6 +225,7 @@ pub fn configured(
     let ship = |h: &crate::settings::FleetHull| DoctrineShip {
         type_id: h.type_id,
         name: h.name.trim().to_owned(),
+        main: h.main,
     };
     let mut ships: Vec<DoctrineShip> = seeded.as_ref().map(|d| d.ships.clone()).unwrap_or_default();
     for h in hulls.iter().filter(|h| h.setup_id == setup_id.0 && !h.name.trim().is_empty()) {
@@ -329,6 +333,65 @@ pub struct ShipLine {
     pub standing: Standing,
 }
 
+/// What a doctrine hull is in the fleet to do.
+///
+/// A doctrine list is flat, but an FC reads it as four questions: is the damage there, can it be
+/// repped, is it boosted, and is the support that lets it engage present.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Role {
+    Dps,
+    Logi,
+    Boosts,
+    Support,
+}
+
+impl Role {
+    pub const ALL: [Role; 4] = [Role::Dps, Role::Logi, Role::Boosts, Role::Support];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Dps => "DPS",
+            Role::Logi => "Logi",
+            Role::Boosts => "Boosts",
+            Role::Support => "Support",
+        }
+    }
+
+    /// Command destroyers are the awkward one: boosh in a fleet that boosts off command ships,
+    /// boosters in one that does not, which is the same rule `checks::boosters` applies.
+    ///
+    /// A hull the doctrine marks as its main wins over all of it. Nothing about an Interdictor
+    /// says "this is the damage", but in a Flycatcher fleet it is.
+    pub fn of(line: &ShipLine, doctrine: Option<&Doctrine>, command_ships: bool) -> Role {
+        if doctrine.is_some_and(|d| {
+            d.ships.iter().any(|s| {
+                s.main
+                    && ((s.type_id != 0 && s.type_id == line.type_id)
+                        || s.name.trim().eq_ignore_ascii_case(line.name.trim()))
+            })
+        }) {
+            return Role::Dps;
+        }
+        if super::logi::logi_hull(&line.name, &line.group).is_some() {
+            return Role::Logi;
+        }
+        match line.category {
+            Category::Logistics => Role::Logi,
+            Category::Command => Role::Boosts,
+            Category::Interdiction | Category::Recon => Role::Support,
+            Category::Tackle => {
+                if line.group.trim().eq_ignore_ascii_case("Command Destroyer") && !command_ships {
+                    Role::Boosts
+                } else {
+                    Role::Support
+                }
+            }
+            Category::Pod => Role::Support,
+            Category::Capital | Category::Line => Role::Dps,
+        }
+    }
+}
+
 /// The fleet grouped by hull, most flown first, so a composition reads as ships rather than names.
 pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine> {
     let mut by: std::collections::HashMap<i64, ShipLine> = Default::default();
@@ -352,35 +415,6 @@ pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine>
 /// How many pilots are flying something nobody asked for.
 pub fn unexpected_pilots(lines: &[ShipLine]) -> usize {
     lines.iter().filter(|l| l.standing.odd()).map(|l| l.count).sum()
-}
-
-/// One role, how many are in it, and which hulls make it up.
-#[derive(Clone, PartialEq, Debug)]
-pub struct CategoryLine {
-    pub category: Category,
-    pub count: usize,
-    /// Hull and how many, most flown first.
-    pub ships: Vec<(String, usize)>,
-}
-
-/// The same hulls rolled up by what they are for, biggest role first.
-pub fn by_category(lines: &[ShipLine]) -> Vec<CategoryLine> {
-    let mut by: std::collections::BTreeMap<Category, CategoryLine> = Default::default();
-    for l in lines {
-        let e = by.entry(l.category).or_insert_with(|| CategoryLine {
-            category: l.category,
-            count: 0,
-            ships: Vec::new(),
-        });
-        e.count += l.count;
-        e.ships.push((l.name.clone(), l.count));
-    }
-    let mut out: Vec<CategoryLine> = by.into_values().collect();
-    for c in &mut out {
-        c.ships.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    }
-    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.category.cmp(&b.category)));
-    out
 }
 
 /// A pilot who has been in a hull the doctrine never asked for, and since when.
@@ -433,6 +467,73 @@ pub fn lingering(rows: &[OffDoctrine], now: i64, grace: i64) -> Vec<&OffDoctrine
     rows.iter().filter(|r| now - r.since >= grace).collect()
 }
 
+/// A doctrine reads as four questions, and the awkward hull is the command destroyer.
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    fn line(name: &str, group: &str) -> ShipLine {
+        ShipLine {
+            type_id: 1,
+            name: name.to_owned(),
+            group: group.to_owned(),
+            category: Category::of(group),
+            count: 1,
+            standing: Standing::Doctrine,
+        }
+    }
+
+    #[test]
+    fn every_doctrine_hull_lands_in_one_of_the_four() {
+        let cases = [
+            ("Flycatcher", "Interdictor", Role::Support),
+            ("Kirin", "Logistics Frigate", Role::Logi),
+            ("Guardian", "Logistics", Role::Logi),
+            ("Damnation", "Command Ship", Role::Boosts),
+            ("Keres", "Electronic Attack Ship", Role::Support),
+            ("Ferox Navy Issue", "Combat Battlecruiser", Role::Dps),
+            ("Muninn", "Heavy Assault Cruiser", Role::Dps),
+            ("Crusader", "Interceptor", Role::Support),
+        ];
+        for (ship, group, want) in cases {
+            assert_eq!(Role::of(&line(ship, group), None, false), want, "{ship} [{group}]");
+        }
+    }
+
+    /// The same hull, two answers: boosting a fleet that has no command ships, booshing one that
+    /// does. Same rule the boost check applies, so the two cannot disagree.
+    #[test]
+    fn a_command_destroyer_follows_the_fleet_it_is_in() {
+        let bifrost = line("Bifrost", "Command Destroyer");
+        assert_eq!(Role::of(&bifrost, None, false), Role::Boosts, "no command ships to boost off");
+        assert_eq!(Role::of(&bifrost, None, true), Role::Support, "command ships are boosting");
+    }
+
+    /// The reason this exists: a Flycatcher is an Interdictor, which reads as support in every
+    /// fleet except the one built around it.
+    #[test]
+    fn a_hull_marked_main_is_the_damage_whatever_its_group_says() {
+        let d = Doctrine {
+            setup_id: crate::fleets::model::SetupId(46),
+            setup_name: "Flycatchers".to_owned(),
+            ships: vec![
+                DoctrineShip { type_id: 22_464, name: "Flycatcher".to_owned(), main: true },
+                DoctrineShip { type_id: 37_458, name: "Kirin".to_owned(), main: false },
+            ],
+            support: Vec::new(),
+            tank: None,
+            strict: false,
+        };
+        let fly = line("Flycatcher", "Interdictor");
+        assert_eq!(Role::of(&fly, None, false), Role::Support, "without the mark it is support");
+        assert_eq!(Role::of(&fly, Some(&d), false), Role::Dps, "marked, it is the damage");
+        // Marking one hull does not promote the rest of the doctrine.
+        assert_eq!(Role::of(&line("Kirin", "Logistics Frigate"), Some(&d), false), Role::Logi);
+        // A Sabre is an interdictor the doctrine never named, so it stays support.
+        assert_eq!(Role::of(&line("Sabre", "Interdictor"), Some(&d), false), Role::Support);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,11 +546,13 @@ mod tests {
             ship_type_name: name.to_owned(),
             ship_group: group.to_owned(),
             role: String::new(),
+            pap_count: 0,
         }
     }
 
     fn comp(members: Vec<Member>) -> Composition {
         Composition {
+            flat: false,
             commander: None,
             wings: vec![Wing {
                 id: WingId(1),
@@ -470,8 +573,8 @@ mod tests {
             setup_id: SetupId(46),
             setup_name: "Fast Tackle".into(),
             ships: vec![
-                DoctrineShip { type_id: 1, name: "Flycatcher".into() },
-                DoctrineShip { type_id: 2, name: "Kirin".into() },
+                DoctrineShip { type_id: 1, name: "Flycatcher".into(), main: false },
+                DoctrineShip { type_id: 2, name: "Kirin".into(), main: false },
             ],
             support: Vec::new(),
             tank: None,
@@ -532,7 +635,7 @@ mod tests {
     #[test]
     fn the_doctrine_wins_over_the_support_list() {
         let d = Doctrine {
-            ships: vec![DoctrineShip { type_id: 5, name: "Crow".into() }],
+            ships: vec![DoctrineShip { type_id: 5, name: "Crow".into(), main: false }],
             ..doctrine()
         };
         assert_eq!(classify(5, "Hull", "Interceptor", Some(&d)), Standing::Doctrine);
@@ -594,23 +697,6 @@ mod tests {
         }
     }
 
-    /// Rolled up by role, biggest first, with the hulls behind each one.
-    #[test]
-    fn the_composition_rolls_up_by_role() {
-        let c = comp(vec![
-            member(1, "Kirin", "Logistics Frigate"),
-            member(1, "Kirin", "Logistics Frigate"),
-            member(2, "Scythe", "Logistics"),
-            member(3, "Crow", "Interceptor"),
-        ]);
-        let cats = by_category(&by_ship(&c, None));
-        assert_eq!(cats[0].category, Category::Logistics);
-        assert_eq!(cats[0].count, 3);
-        assert_eq!(cats[0].ships, vec![("Kirin".to_owned(), 2), ("Scythe".to_owned(), 1)]);
-        assert_eq!(cats[1].category, Category::Tackle);
-        assert_eq!(cats[1].count, 1);
-    }
-
     /// The clock starts when a pilot first turns up in the wrong hull and survives the next poll.
     #[test]
     fn an_off_doctrine_pilot_keeps_their_clock() {
@@ -651,11 +737,7 @@ mod tests {
     /// to each hull in it.
     #[test]
     fn the_configured_hulls_decide_what_belongs() {
-        let hull = |setup: i32, name: &str| crate::settings::FleetHull {
-            setup_id: setup,
-            type_id: 0,
-            name: name.to_owned(),
-        };
+        let hull = |setup: i32, name: &str| crate::settings::FleetHull { setup_id: setup, type_id: 0, name: name.to_owned(), main: false };
         let hulls =
             vec![hull(46, "Muninn"), hull(46, "Scimitar"), hull(0, "Falcon"), hull(0, "Guardian")];
         let d = configured(SetupId(46), "Shield Cruisers", None, &hulls, Some(Tank::Shield), false)
@@ -678,11 +760,7 @@ mod tests {
     /// A restricted fleet takes its own hulls and nothing else, not even a cyno.
     #[test]
     fn a_strict_doctrine_waves_nothing_through() {
-        let hull = |setup: i32, name: &str| crate::settings::FleetHull {
-            setup_id: setup,
-            type_id: 0,
-            name: name.to_owned(),
-        };
+        let hull = |setup: i32, name: &str| crate::settings::FleetHull { setup_id: setup, type_id: 0, name: name.to_owned(), main: false };
         let hulls = vec![hull(19, "Hecate"), hull(0, "Falcon")];
         let d = configured(SetupId(19), "Entosis", None, &hulls, None, true).expect("a doctrine");
         assert!(d.strict);
@@ -704,22 +782,14 @@ mod tests {
         let seeded = Doctrine {
             setup_id: SetupId(46),
             setup_name: "Fast Tackle".into(),
-            ships: vec![DoctrineShip { type_id: 22_464, name: "Flycatcher".into() }],
+            ships: vec![DoctrineShip { type_id: 22_464, name: "Flycatcher".into(), main: false }],
             support: Vec::new(),
             tank: None,
             strict: false,
         };
         let hulls = vec![
-            crate::settings::FleetHull {
-                setup_id: 46,
-                type_id: 0,
-                name: " flycatcher ".to_owned(),
-        },
-            crate::settings::FleetHull {
-                setup_id: 46,
-                type_id: 0,
-                name: "Harpy".to_owned(),
-        },
+            crate::settings::FleetHull { setup_id: 46, type_id: 0, name: " flycatcher ".to_owned(), main: false },
+            crate::settings::FleetHull { setup_id: 46, type_id: 0, name: "Harpy".to_owned(), main: false },
         ];
         let d = configured(SetupId(46), "", Some(seeded), &hulls, None, false).expect("a doctrine");
         assert_eq!(d.ships.len(), 2, "the same hull twice is one hull");
@@ -735,11 +805,7 @@ mod tests {
         assert!(!is_doctrine(SetupId(0)));
         assert!(is_doctrine(SetupId(46)));
 
-        let hulls = vec![crate::settings::FleetHull {
-            setup_id: FC_CHOICE.0,
-            type_id: 0,
-            name: "Muninn".to_owned(),
-        }];
+        let hulls = vec![crate::settings::FleetHull { setup_id: FC_CHOICE.0, type_id: 0, name: "Muninn".to_owned(), main: false }];
         assert!(configured(FC_CHOICE, "FC Choice", None, &hulls, None, false).is_none());
     }
 

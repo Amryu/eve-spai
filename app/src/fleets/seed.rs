@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::model::*;
 
 /// Everything the tab needs before it can render a form.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Seed {
     pub identity: Identity,
@@ -24,14 +24,16 @@ pub struct Seed {
     pub systems: Vec<Labelled>,
     /// The hulls each setup flies, keyed by setup id.
     pub doctrines: Vec<SeedDoctrine>,
-    /// True when these are placeholders rather than the real tables.
+    /// True when these are placeholders rather than the real tables. Only the dry-run spoof sets
+    /// it: the app itself never carries invented data.
     #[serde(skip)]
     pub placeholder: bool,
 }
 
-impl Default for Seed {
-    fn default() -> Self {
-        invented()
+impl Seed {
+    /// Whether the reference tables have been filled at all.
+    pub fn empty(&self) -> bool {
+        self.setups.is_empty() && self.mumble_channels.is_empty() && self.tags.is_empty()
     }
 }
 
@@ -70,6 +72,9 @@ fn tag(id: i32, name: &str, colour: &str, primary: bool, strategic: bool) -> Tag
 
 /// Placeholders. The ids are the real ones, because the payload tests and a later switch to the
 /// real backend both care about them; every name here is invented.
+///
+/// Test and screenshot scaffolding only. Nothing the app runs reaches this: `Seed::default()` is
+/// empty and `load()` returns empty, so an unfilled table reads as unfilled.
 pub fn invented() -> Seed {
     Seed {
         identity: Identity {
@@ -205,27 +210,31 @@ pub fn path() -> Option<std::path::PathBuf> {
     }
 }
 
-/// A seed file's contents. Anything it leaves out keeps the placeholder table, so a hand-written
-/// file can carry only the parts someone cared about.
-///
-/// `placeholder` is not in the file: it records where the data came from, which only the reader
-/// knows. It has to be cleared here because the struct's `Default` is the invented table.
+/// A seed file's contents. Anything it leaves out stays empty, so a hand-written file can carry
+/// only the parts someone cared about and the rest is plainly missing rather than plausibly wrong.
 pub fn parse(text: &str) -> std::result::Result<Seed, String> {
     let mut seed: Seed = serde_json::from_str(text).map_err(|e| e.to_string())?;
     seed.placeholder = false;
     Ok(seed)
 }
 
-/// The real table if it is there, placeholders if not. A broken file is reported and then ignored:
-/// a dry run with invented names is better than no tab at all.
+/// The real table if there is one, nothing if not.
+///
+/// Never the invented table. A made-up channel name is indistinguishable from a real one on
+/// screen, and an FC who pings the wrong comms because the app filled a gap with a plausible
+/// guess is worse off than one who sees the gap.
 pub fn load() -> Seed {
-    let Some(p) = path() else { return invented() };
-    let Ok(text) = std::fs::read_to_string(&p) else { return invented() };
+    let Some(p) = path() else { return Seed::default() };
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        // Absent is the normal case before a sign-in fills the tables from the API.
+        Err(_) => return Seed::default(),
+    };
     match parse(&text) {
         Ok(seed) => seed,
         Err(e) => {
             crate::esilog::record("fleet seed unreadable", &format!("{}: {e}", p.display()));
-            invented()
+            Seed::default()
         }
     }
 }
@@ -238,6 +247,20 @@ impl Seed {
     pub fn channel_name<'a>(&self, list: &'a [ChannelItem], id: Option<ChannelId>) -> Option<&'a str> {
         let id = id?;
         list.iter().find(|c| c.id == id).map(|c| c.name.trim())
+    }
+
+    /// The comms channel called "Op N", for an op number the FC typed.
+    ///
+    /// The id is NOT the op number. They agree up to Op 6 and then diverge: id 7 is "o7", id 8 is
+    /// "Op 9", id 11 is "Capital Comms" and "Op 11" is id 12. Sending the number as an id put a
+    /// rescue ping on Capital Comms while every screen still said Op 11, so this matches on the
+    /// name and answers None rather than guessing.
+    pub fn mumble_channel_for_op(&self, op: u8) -> Option<ChannelId> {
+        let want = format!("op {op}");
+        self.mumble_channels
+            .iter()
+            .find(|c| c.name.trim().eq_ignore_ascii_case(&want))
+            .map(|c| c.id)
     }
 
     pub fn tag(&self, id: TagId) -> Option<&TagItem> {
@@ -256,6 +279,7 @@ impl Seed {
                 .map(|(tid, name)| super::doctrine::DoctrineShip {
                     type_id: *tid,
                     name: name.clone(),
+                    main: false,
                 })
                 .collect(),
             support: Vec::new(),
@@ -320,16 +344,73 @@ mod tests {
     /// A partial file is filled in rather than rejected, so a hand-written seed can carry only the
     /// tables someone cared about.
     #[test]
-    fn a_partial_seed_file_keeps_its_defaults() {
+    fn a_partial_seed_file_leaves_the_rest_empty() {
         let back = parse(r#"{"sigs":[{"id":5,"label":"Mine"}]}"#).expect("parse");
         assert_eq!(back.sigs.len(), 1);
-        assert!(!back.setups.is_empty(), "the rest falls back to the placeholders");
+        // Not the invented table. A channel name the app made up is indistinguishable from a real
+        // one on screen, and pinging the wrong comms is worse than seeing an empty dropdown.
+        assert!(back.setups.is_empty(), "the rest stays empty");
+        assert!(back.mumble_channels.is_empty());
         assert!(!back.placeholder);
+        // Sigs alone are not reference data: nothing the form needs came with it.
+        assert!(back.empty(), "no setups, channels or tags is unusable");
+        assert!(Seed::default().empty());
+        assert!(!invented().empty(), "the test table is usable, that is its job");
     }
 
     /// A broken file must not be mistaken for real data.
     #[test]
     fn a_broken_seed_file_is_refused() {
         assert!(parse("{not json").is_err());
+    }
+}
+
+#[cfg(test)]
+mod op_channel_tests {
+    use super::*;
+
+    fn seed() -> Seed {
+        let names = [
+            (1, "Op 1"), (2, "Op 2"), (3, "Op 3"), (4, "Op 4"), (5, "Op 5"), (6, "Op 6"),
+            (7, "o7"), (8, "Op 9"), (9, "Op 10"), (10, "HD"), (11, "Capital Comms"),
+            (12, "Op 11"), (13, "Op 12"),
+        ];
+        Seed {
+            mumble_channels: names
+                .into_iter()
+                .map(|(id, name)| ChannelItem {
+                    id: ChannelId(id),
+                    name: name.to_owned(),
+                    is_in_use: false,
+                })
+                .collect(),
+            ..Seed::default()
+        }
+    }
+
+    /// The op number is not the channel id. They agree up to Op 6 and diverge after, and a rescue
+    /// that sent the number as an id put its ping on Capital Comms while every screen said Op 11.
+    #[test]
+    fn an_op_number_resolves_by_name_not_by_id() {
+        let s = seed();
+        assert_eq!(s.mumble_channel_for_op(1), Some(ChannelId(1)));
+        assert_eq!(s.mumble_channel_for_op(6), Some(ChannelId(6)));
+        // The ones that used to be silently wrong.
+        assert_eq!(s.mumble_channel_for_op(9), Some(ChannelId(8)));
+        assert_eq!(s.mumble_channel_for_op(10), Some(ChannelId(9)));
+        assert_eq!(s.mumble_channel_for_op(11), Some(ChannelId(12)));
+        assert_eq!(s.mumble_channel_for_op(12), Some(ChannelId(13)));
+        // Nothing resolves to the channel the old arithmetic picked.
+        assert!((1..=12).all(|n| s.mumble_channel_for_op(n) != Some(ChannelId(11))));
+    }
+
+    /// An op with no channel answers None. Sending nothing is recoverable; naming the wrong
+    /// channel sends a fleet to the wrong comms and nobody finds out until it matters.
+    #[test]
+    fn an_op_with_no_channel_is_not_guessed() {
+        let s = seed();
+        assert_eq!(s.mumble_channel_for_op(7), None);
+        assert_eq!(s.mumble_channel_for_op(8), None);
+        assert_eq!(s.mumble_channel_for_op(99), None);
     }
 }

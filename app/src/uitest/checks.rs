@@ -267,6 +267,20 @@ mod tests {
         assert!(!report.text_overlaps.is_empty(), "{}", report.render("selftest_text_overlap"));
     }
 
+    /// And it still catches two buttons genuinely drawn on top of each other.
+    #[test]
+    fn inspect_catches_overlapping_buttons() {
+        let size = egui::vec2(300.0, 200.0);
+        let mut scene = Scene::ui("selftest_button_overlap", size, |ui| {
+            let a = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(140.0, 24.0));
+            ui.put(a, egui::Button::new("first"));
+            ui.put(a.translate(egui::vec2(40.0, 6.0)), egui::Button::new("second"));
+        });
+        let mut harness = harness::build(&mut scene, false);
+        let report = super::inspect(&mut harness, size);
+        assert!(!report.overlaps.is_empty(), "{}", report.render("selftest_button_overlap"));
+    }
+
     /// Scrolled-away rows keep their true rect, so without the paint check every stick-to-bottom
     /// history would report its scrolled-off text as overlapping whatever sits above the viewport.
     #[test]

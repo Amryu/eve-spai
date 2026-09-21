@@ -2,10 +2,14 @@
 
 use super::*;
 
+/// How long a failed dashboard ping render is left alone before asking again.
+#[cfg(feature = "fleet")]
+const PREVIEW_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl SpaiApp {
     /// Parse new delve911 XMPP messages into rescue events. The in-game chat-log watcher covers the
     /// EVE channel of the same name; the real pings come through the MUC, so both feed `rescue`.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn ingest_delve911_jabber(&mut self) {
         if !self.settings.fc_rescue_enabled {
             return;
@@ -68,7 +72,7 @@ impl SpaiApp {
 
     /// Move newly-parsed delve911 ping events into the fleet-ping feed exactly once each.
     /// Runs on the UI thread so it can take the jabber lock (the watcher only writes `rescue`).
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn drain_rescue_feed(&mut self, ctx: &egui::Context) {
         let mut fresh: Vec<crate::rescue::RescueEvent> = Vec::new();
         {
@@ -127,13 +131,15 @@ impl SpaiApp {
     }
 
     /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.heading("FC / Rescue (delve911)");
         ui.label(
             egui::RichText::new(
-                "Capital-rescue coordination for fleet commanders. Off by default.",
+                "Capital-rescue coordination, on top of the fleet dashboard: a rescue runs on a \
+                 fleet preset tagged Capital Save and hands over to fleet tracking. Needs the \
+                 fleet dashboard switched on above, plus the delve911 rooms.",
             )
             .weak(),
         );
@@ -151,14 +157,6 @@ impl SpaiApp {
             ui.label("delve911 channel");
             changed |= ui
                 .add(egui::TextEdit::singleline(&mut self.settings.rescue_channel).desired_width(220.0))
-                .changed();
-            ui.end_row();
-            ui.label("Home staging system");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.settings.rescue_staging_system)
-                        .desired_width(220.0),
-                )
                 .changed();
             ui.end_row();
             ui.label("skirmish_commanders JID");
@@ -201,7 +199,7 @@ impl SpaiApp {
 
     /// Recompute the titan-range check only when staging or the target changes: it scans every
     /// system for the nearest in-range jump-off point, which is far too much for every frame.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn update_rescue_range(&mut self) {
         let target = self.rescue.lock().unwrap().capital_system;
         let (Some(systems), Some(coords), Some(target)) =
@@ -245,15 +243,35 @@ impl SpaiApp {
         });
     }
 
-    /// Build the ready-to-send ping text from the template and current rescue state. `{doctrine}`
-    /// expands to the selected doctrine's full description line.
-    #[cfg(feature = "fc-rescue")]
+    /// The ping to send: the dashboard's own rendering when it could be had, the local template
+    /// when it could not.
+    ///
+    /// The dashboard is the authority on what a ping looks like, and its format changes without
+    /// telling us. The template is what keeps a rescue possible with no session or no dashboard.
+    #[cfg(feature = "fleet")]
     pub(crate) fn build_rescue_ping(&self) -> String {
+        if let Some(p) = self
+            .fleet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rescue_preview
+            .as_ref()
+            .filter(|p| !p.ping.trim().is_empty())
+        {
+            return p.ping.clone();
+        }
+        self.rescue_ping_from_template()
+    }
+
+    /// Build the ping text from the template and current rescue state. `{doctrine}` expands to the
+    /// selected doctrine's full description line.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn rescue_ping_from_template(&self) -> String {
         let r = self.rescue.lock().unwrap();
-        let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
-        let pilot = r.capital_pilot.clone().unwrap_or_else(|| "?".into());
-        let cyno = r.cyno_pilot.clone().unwrap_or_else(|| "?".into());
-        let anom = r.anomaly.clone().unwrap_or_else(|| "?".into());
+        let sys = r.capital_system_name.clone().unwrap_or_default();
+        let pilot = r.capital_pilot.clone().unwrap_or_default();
+        let cyno = r.cyno_pilot.clone().unwrap_or_default();
+        let anom = r.anomaly.clone().unwrap_or_default();
         let op = r.op_channel.to_string();
         let mumble = op_comms_url(r.op_channel);
         let want = r.doctrine.clone();
@@ -264,30 +282,82 @@ impl SpaiApp {
         // there is one place they are configured rather than two that drift apart.
         let all = self.rescue_presets();
         let preset = all.iter().find(|p| p.label == want).or_else(|| all.first());
+        // The dashboard's own line when one has ever been seen for this setup, the bare setup name
+        // when it has not. A preset's doctrine notes come after it on their own line, which is
+        // where the dashboard puts them.
         let doctrine = preset
-            .map(|p| self.fleet_setup_name(p.setup_id))
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| "?".into());
+            .map(|p| {
+                let head = self
+                    .settings
+                    .fleet_doctrine_lines
+                    .iter()
+                    .find(|(id, _)| *id == p.setup_id)
+                    .map(|(_, line)| line.clone())
+                    .unwrap_or_else(|| self.fleet_setup_name(p.setup_id));
+                match p.doctrine_notes.trim() {
+                    "" => head,
+                    notes => format!("{head}\n{notes}"),
+                }
+            })
+            .unwrap_or_default();
         let staging = preset
             .and_then(|p| p.formup_location.as_ref().map(|(_, n)| n.clone()))
             .unwrap_or_else(|| self.settings.rescue_staging_system.clone());
-        let fc = if self.active_character.is_empty() { "?".into() } else { self.active_character.clone() };
-        self.settings
-            .rescue_ping_template
-            .replace("{system}", &sys)
-            .replace("{pilot}", &pilot)
-            .replace("{cyno}", &cyno)
-            .replace("{anom}", &anom)
-            .replace("{op}", &op)
-            .replace("{doctrine}", &doctrine)
-            .replace("{staging}", &staging)
-            .replace("{fc}", &fc)
-            .replace("{mumble}", &mumble)
+        crate::fleets::ping::render(
+            &self.settings.rescue_ping_template,
+            &crate::fleets::ping::Vars {
+                system: sys,
+                pilot,
+                cyno,
+                anomaly: anom,
+                op,
+                doctrine,
+                staging,
+                fc: self.active_character.clone(),
+                mumble,
+            },
+        )
+    }
+
+    /// Asks the dashboard to render the rescue's ping, no more often than the preset and op
+    /// channel actually change.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn rescue_preview_poll(&mut self) {
+        let (want, op) = {
+            let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+            (r.doctrine.clone(), r.op_channel)
+        };
+        let key = format!("{want}/{op}");
+        if self.rescue_preview_key.as_deref() == Some(key.as_str()) {
+            // One that came back empty means the dashboard could not be reached, and the window
+            // has been showing the local template since. Ask again on a slow clock so the FC does
+            // not have to touch the preset to recover from a blip.
+            let held = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).rescue_preview.is_none();
+            let stale = self
+                .rescue_preview_at
+                .is_none_or(|t| std::time::Instant::now().duration_since(t) >= PREVIEW_RETRY);
+            if !held || !stale {
+                return;
+            }
+        }
+        let all = self.rescue_presets();
+        let Some(preset) = all.iter().find(|p| p.label == want).or_else(|| all.first()) else {
+            return;
+        };
+        self.rescue_preview_key = Some(key);
+        self.rescue_preview_at = Some(std::time::Instant::now());
+        self.fleet_gen.rescue += 1;
+        let mut req = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.ping_request_from(preset)
+        };
+        req.mumble_channel_id = self.fleet_mumble_for_op(op);
+        self.fleet_dispatch(crate::fleets::state::Cmd::RescuePreview(req));
     }
 
     /// Hands the rescue over to the fleet tab: the preset fills the start form, the comms channel
     /// follows whatever the rescue settled on, and the user lands on the form ready to track.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_start_tracking(&mut self) {
         let (want, op) = {
             let r = self.rescue.lock().unwrap();
@@ -300,7 +370,7 @@ impl SpaiApp {
             return;
         };
         // The rescue's own op channel wins: it is the one the FC has been telling people.
-        preset.mumble_channel_id = Some(i32::from(op));
+        preset.mumble_channel_id = self.fleet_mumble_for_op(op).map(|c| c.0);
         {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.apply_preset(&preset);
@@ -311,7 +381,7 @@ impl SpaiApp {
     }
 
     /// The presets a rescue can run on: the ones tagged Capital Save, and nothing else.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_presets(&self) -> Vec<crate::settings::FleetPreset> {
         self.settings
             .fleet_presets
@@ -321,8 +391,26 @@ impl SpaiApp {
             .collect()
     }
 
+    /// The comms channel an op number names, out of the dashboard's own list.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_mumble_for_op(
+        &self,
+        op: u8,
+    ) -> Option<crate::fleets::model::ChannelId> {
+        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.mumble_channel_for_op(op)
+    }
+
+    /// What the dashboard calls the channel this op number lands on, for showing the FC before
+    /// anything is sent.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_op_channel_name(&self, op: u8) -> Option<String> {
+        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+        let id = st.seed.mumble_channel_for_op(op)?;
+        st.seed.channel_name(&st.seed.mumble_channels, Some(id)).map(|s| s.to_owned())
+    }
+
     /// A setup's name out of the fleet seed, for the doctrine line of a ping.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_setup_name(&self, setup_id: i32) -> String {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
         st.seed
@@ -378,7 +466,7 @@ impl SpaiApp {
 
     /// Last `n` messages of a jabber room/conversation as (sender, body, outgoing, time), oldest
     /// first. Only the rescue window reads this today.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn jabber_room_tail(&self, jid: &str, n: usize) -> Vec<(String, String, bool, i64)> {
         if jid.is_empty() {
             return Vec::new();
@@ -399,24 +487,41 @@ impl SpaiApp {
             .unwrap_or_default()
     }
 
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     /// The rescue tab. Without the feature it is not in the rail at all, so this only says so for
     /// the case where someone reaches the view some other way.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
         self.rescue_window_body(ui);
     }
 
-    #[cfg(not(feature = "fc-rescue"))]
+    #[cfg(not(feature = "fleet"))]
     pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("This build has no rescue mode.").weak());
     }
 
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_window_body(&mut self, ui: &mut egui::Ui) {
+        // This viewport is the only one on screen while a rescue runs, and the fleet tab is where
+        // worker results are normally taken off the channel. Without this the dashboard's ping
+        // lands nowhere and the window keeps rendering the local template.
+        self.fleet_collect();
+        self.fleet_cache_doctrine_line();
+        // The dashboard's rendering of the ping, refreshed when the preset or op channel change.
+        self.rescue_preview_poll();
+        // The same check the start form runs, on the same clock: a rescue ends in tracking a
+        // fleet, and finding out there is nothing to track at that point is finding out too late.
+        self.fleet_boss_poll(ui.ctx());
+        // The rescue picks an op channel too, so it wants the same fresh `isInUse`.
+        self.fleet_channel_poll(ui.ctx());
         // Clone what the columns need so the render closure never borrows `self` (it holds the
         // rescue lock). Deferred self-mutations go through flags applied after the lock drops.
         let ping = self.build_rescue_ping();
+        // Resolved before the render closure, which holds the rescue lock the lookup would need.
+        let op_channel_name = {
+            let op = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).op_channel;
+            self.fleet_op_channel_name(op)
+        };
         let skirmish_jid = goon_jid(
             &self.settings.rescue_skirmish_jid,
             "skirmish_commanders@conference.goonfleet.com",
@@ -429,6 +534,13 @@ impl SpaiApp {
         let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
         let mut new_ops_w = ops_w;
         let presets = self.rescue_presets();
+        // Cloned out before the render closures, which cannot borrow `self` while state is held.
+        let boss: Option<(bool, String)> = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.fc()
+                .and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id))
+                .map(|(_, c)| c.verdict())
+        };
         let (jab_connected, jab_status, jab_retry_in, _) = self.jabber_conn();
         let mut retry_click = false;
         let mut set_dest: Option<i64> = None;
@@ -553,7 +665,10 @@ impl SpaiApp {
                         if i == 0 {
                             text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
                         }
-                        let btn = egui::Button::selectable(selected == Some(*seq), text);
+                        let btn = egui::Button::new(text)
+                            .selected(selected == Some(*seq))
+                            .frame_when_inactive(selected == Some(*seq))
+                            .stroke(egui::Stroke::NONE);
                         // Same pulse as the buttons: this ping still needs coord/comms/invite.
                         let btn = match pulse_fill(ui, !actions_done.contains(seq)) {
                             Some(c) => btn.fill(c),
@@ -653,9 +768,13 @@ impl SpaiApp {
                     let invite_pending = sel_seq.is_some() && acts.invited_op != Some(op_now);
                     let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
 
-                    ping_timer_ui(ui, &r);
-                    ui.add_space(4.0);
-                    ui.separator();
+                    // The rule belongs to the timer: with no ping selected the timer draws
+                    // nothing and the line was left sitting at the top of the pane dividing
+                    // nothing from the ping below it.
+                    if ping_timer_ui(ui, &r) {
+                        ui.add_space(4.0);
+                        ui.separator();
+                    }
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
                         if ui
@@ -680,6 +799,24 @@ impl SpaiApp {
                                     ui.menu_value(&mut r.op_channel, n, n.to_string());
                                 }
                             });
+                        // What the dashboard will actually be told. The op number is not the
+                        // channel id, so the FC sees the name before anything goes out.
+                        match &op_channel_name {
+                            Some(name) => {
+                                ui.label(egui::RichText::new(name).weak())
+                                    .on_hover_text("The comms channel the ping will name.");
+                            }
+                            None => {
+                                ui.label(
+                                    egui::RichText::new("no such channel")
+                                        .color(crate::theme::standing::HOSTILE),
+                                )
+                                .on_hover_text(
+                                    "The dashboard has no channel by that name, so the ping \
+                                     would not name one. Pick another op.",
+                                );
+                            }
+                        }
                         ui.label("Preset");
                         let cur = r.doctrine.clone();
                         egui::ComboBox::from_id_salt("rescue_preset")
@@ -782,19 +919,50 @@ impl SpaiApp {
                         }
                     });
 
+                    // Whether the FC is actually boss of a fleet in game, on the same clock the
+                    // start form uses. Nothing else tells you before you try to track.
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        let (glyph, colour, text) = match &boss {
+                            Some((true, why)) => (
+                                egui_phosphor::regular::CHECK_CIRCLE,
+                                crate::theme::standing::FRIENDLY,
+                                why.clone(),
+                            ),
+                            Some((false, why)) => (
+                                egui_phosphor::regular::WARNING,
+                                crate::theme::standing::WARNING,
+                                why.clone(),
+                            ),
+                            None => (
+                                egui_phosphor::regular::CLOCK_COUNTDOWN,
+                                ui.visuals().weak_text_color(),
+                                "Fleet boss not checked".to_owned(),
+                            ),
+                        };
+                        ui.label(egui::RichText::new(glyph).color(colour));
+                        ui.label(egui::RichText::new(text).color(colour));
+                    });
+
                     // Handing over to the fleet tab: the preset fills the start form and the
                     // fleet it starts is the one being tracked from here on.
                     ui.add_space(6.0);
+                    let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
                     if ui
-                        .add_sized(
-                            [ui.available_width(), 24.0],
+                        .add_enabled(
+                            can_track,
                             egui::Button::new(format!(
                                 "{}  Start tracking",
                                 egui_phosphor::regular::ROCKET_LAUNCH
-                            )),
+                            ))
+                            .min_size(egui::vec2(ui.available_width(), 24.0)),
                         )
                         .on_hover_text(
                             "Fill the start form from this preset and open the fleet tab",
+                        )
+                        .on_disabled_hover_text(
+                            "That character is not the boss of a fleet in game, so there would be \
+                             nothing to track.",
                         )
                         .clicked()
                     {
@@ -877,14 +1045,20 @@ impl SpaiApp {
                     }
                     ui.horizontal(|ui| {
                         let clicked = ui.button("Send").clicked();
+                        // Multiline with Enter rebound to Shift+Enter, the same deal the jabber
+                        // page makes: Enter sends, Shift+Enter breaks the line.
+                        let shift_enter =
+                            egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
                         let resp = ui.add(
-                            egui::TextEdit::singleline(&mut r.delve911_reply)
-                                .hint_text("respond…")
+                            egui::TextEdit::multiline(&mut r.delve911_reply)
+                                .return_key(shift_enter)
+                                .desired_rows(1)
+                                .hint_text("respond… (Shift+Enter for a new line)")
                                 .margin(egui::Margin::same(2))
                                 .desired_width(ui.available_width()),
                         );
-                        let enter =
-                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let enter = resp.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
                         let can_send =
                             !test_mode && room_set && jab_connected && !r.delve911_reply.trim().is_empty();
                         if (enter || clicked) && can_send {
@@ -902,14 +1076,14 @@ impl SpaiApp {
                     ui.columns(2, |c| {
                         let w0 = c[0].available_width();
                         if c[0]
-                            .add_sized([w0, 22.0], egui::Button::selectable(r.chat_tab == 0, "delve911"))
+                            .menu_label_sized([w0, 22.0], r.chat_tab == 0, "delve911")
                             .clicked()
                         {
                             r.chat_tab = 0;
                         }
                         let w1 = c[1].available_width();
                         if c[1]
-                            .add_sized([w1, 22.0], egui::Button::selectable(r.chat_tab == 1, "skirmish"))
+                            .menu_label_sized([w1, 22.0], r.chat_tab == 1, "skirmish")
                             .clicked()
                         {
                             r.chat_tab = 1;
@@ -990,7 +1164,7 @@ impl SpaiApp {
 }
 
 /// Seconds as a stopwatch, because a rescue is counted in minutes and the seconds matter.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub(crate) fn since_ping(secs: i64) -> String {
     let s = secs.max(0);
     if s < 3600 {
@@ -1005,17 +1179,19 @@ pub(crate) fn since_ping(secs: i64) -> String {
 /// The pilot calls PANIC and pings at the same moment, near enough, so this is also roughly how much
 /// of the PANIC has gone. It counts up rather than down: the module's length depends on the hull and
 /// the pilot's skills, and a countdown that is wrong is worse than a clock that is not.
-#[cfg(feature = "fc-rescue")]
-fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) {
-    let Some(at) = r.selected_ping.and_then(|seq| r.ping_time(seq)) else { return };
+#[cfg(feature = "fleet")]
+/// Whether it drew anything, so a caller does not rule off an empty space.
+fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) -> bool {
+    let Some(at) = r.selected_ping.and_then(|seq| r.ping_time(seq)) else { return false };
     ping_timer_row(ui, chrono::Utc::now().timestamp() - at);
     // A clock that only moves when something else redraws the window is not a clock.
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     ui.add_space(4.0);
+    true
 }
 
 /// The row itself, given the seconds, so it can be rendered at a fixed time.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
     let secs = secs.max(0);
     // Amber at five minutes, red at ten: past that the PANIC is over on any hull and the question is
@@ -1036,7 +1212,7 @@ pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
     );
 }
 
-#[cfg(all(test, feature = "fc-rescue"))]
+#[cfg(all(test, feature = "fleet"))]
 mod tests {
     use super::since_ping;
 

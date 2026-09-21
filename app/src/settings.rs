@@ -37,6 +37,15 @@ pub struct Settings {
     pub kill_intel_jumps: u32,
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
+    /// How long a report keeps its system highlighted on the map. Separate from `intel_ttl_secs`,
+    /// which is how long the report stays in the feed: a system lit up for an hour says a fight is
+    /// happening there now, which stops being true long before the report stops being worth
+    /// reading.
+    #[serde(default = "default_map_highlight_secs")]
+    pub map_highlight_secs: i64,
+    /// The same for Critical reports, which are worth watching longer.
+    #[serde(default = "default_map_highlight_critical_secs")]
+    pub map_highlight_critical_secs: i64,
     /// Whether the intel feed's jump distances count your own jump bridges. Off, as for alert
     /// rules, is what a hostile who cannot use them actually has to travel.
     #[serde(default)]
@@ -67,6 +76,16 @@ pub struct Settings {
     pub travel_auto_dest: bool,
     #[serde(default)]
     pub op_channel_links: std::collections::HashMap<String, String>,
+    /// gnf.lt short links for comms channels that are not op channels, like HD or capital comms,
+    /// keyed by the channel's name in lower case. The op channels are learned from pings; these
+    /// never appear in one, so the user pastes them in.
+    #[serde(default)]
+    pub comms_links: std::collections::HashMap<String, String>,
+    /// What each gnf.lt link last resolved to. Remembered so "Join comms" has a `mumble://` link
+    /// to hand Mumble before this run has fetched anything, which is what makes it try Mumble
+    /// first rather than the browser.
+    #[serde(default)]
+    pub comms_mumble_cache: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub saved_routes: Vec<SavedRoute>,
     #[serde(default)]
@@ -218,10 +237,29 @@ pub struct Settings {
     pub fleet_presets: Vec<FleetPreset>,
     /// Character the dashboard acts as.
     #[serde(default)]
+    /// No longer read: the top bar's character is the default FC and the start form picks the
+    /// real one. Kept because settings are rewritten whole, and dropping a field an older config
+    /// carries is the kind of change that has cost a full settings reset before.
     pub fleet_character: String,
+    /// Whether a stored dashboard session is used at all. Off until the user signs in, so a build
+    /// with the feature on still starts on the dry run.
+    #[serde(default)]
+    pub fleet_live: bool,
+    /// Whether the live session sends writes. Off separately from `fleet_live`, so a session can be
+    /// watched for a while before it is allowed to start, ping or kick anything.
+    #[serde(default)]
+    pub fleet_send_writes: bool,
     /// Which boosts each doctrine wants, and how badly.
     #[serde(default)]
     pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
+    /// The rescue doctrines an FC configured before a rescue ran on a fleet preset, and which one
+    /// was picked. Migration inputs only: `seed_rescue_preset` consumes and clears them. Not
+    /// feature-gated, like every other field here: a build without `fleet` rewrites the whole
+    /// file on save and would otherwise drop the migration before it ever ran.
+    #[serde(default)]
+    pub rescue_doctrines: Vec<LegacyRescueDoctrine>,
+    #[serde(default)]
+    pub rescue_doctrine: String,
     /// Formup systems chosen other than the staging one, newest first, capped at three.
     #[serde(default)]
     pub fleet_recent_formup: Vec<String>,
@@ -239,6 +277,14 @@ pub struct Settings {
     /// Where each doctrine is written up: `(setup id, url)`, for pasting into a ping.
     #[serde(default)]
     pub fleet_doctrine_urls: Vec<(i32, String)>,
+    /// The `Doctrine:` line the dashboard renders for each setup, e.g.
+    /// `Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)`.
+    ///
+    /// Cached from a real ping preview rather than composed here: the priority order lives on the
+    /// dashboard and is in no table this app reads. Without it a ping sent while signed out names
+    /// the doctrine but not what to bring first, which is the part the line exists for.
+    #[serde(default)]
+    pub fleet_doctrine_lines: Vec<(i32, String)>,
     /// Setups that take their own hulls and nothing else. Some fleets are restricted enough that
     /// even a cyno or a bridging titan is out of place.
     #[serde(default)]
@@ -272,14 +318,8 @@ pub struct Settings {
     /// XMPP room JID for the delve911 conference, so the FC can respond from the rescue window.
     #[serde(default)]
     pub rescue_delve911_jid: String,
-    #[serde(default)]
-    pub rescue_window_pos: Option<(f32, f32)>,
-    #[serde(default)]
-    pub rescue_window_size: Option<(f32, f32)>,
     #[serde(default = "default_rescue_col_ops")]
     pub rescue_col_ops_w: f32,
-    #[serde(default = "default_rescue_col_mid")]
-    pub rescue_col_mid_w: f32,
 }
 
 fn default_jabber_server() -> String {
@@ -821,6 +861,14 @@ pub struct RouteConstraints {
     pub avoid_sov: Vec<String>,
 }
 
+fn default_map_highlight_secs() -> i64 {
+    5 * 60
+}
+
+fn default_map_highlight_critical_secs() -> i64 {
+    15 * 60
+}
+
 fn default_intel_ttl() -> i64 {
     300
 }
@@ -930,38 +978,97 @@ pub struct FleetPreset {
 
 /// The secondary tag that marks a preset as one a capital rescue runs on. A rescue picks from
 /// these and nothing else, so an FC under pressure is not scrolling past every roam they saved.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub const CAPITAL_SAVE_TAG: i32 = 28;
 
-/// Turns the old free-text cap-save template into a fleet preset, once.
+/// A rescue doctrine as the rescue tab used to keep them, before a rescue ran on a fleet preset.
+///
+/// Read but never written: it exists so the one-time migration below can recover which doctrine an
+/// FC had configured. Delete it once no config in the wild still carries one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LegacyRescueDoctrine {
+    pub name: String,
+    pub description: String,
+}
+
+/// Turns the old free-text cap-save setup into fleet presets, once.
 ///
 /// The template already carried everything a preset does: a name, a formup location, a comms
-/// channel and a doctrine line. It only lacked somewhere to live.
-#[cfg(feature = "fc-rescue")]
-pub fn seed_rescue_preset(s: &mut Settings) -> bool {
+/// channel and a doctrine line. It only lacked somewhere to live. `setups` is the dashboard's
+/// setup list, so an old doctrine can be matched back to the real one rather than pinging `?`.
+#[cfg(feature = "fleet")]
+pub fn seed_rescue_preset(s: &mut Settings, setups: &[(i32, String)]) -> bool {
     if s.rescue_preset_seeded
         || s.fleet_presets.iter().any(|p| p.tag_ids.contains(&CAPITAL_SAVE_TAG))
     {
         s.rescue_preset_seeded = true;
+        s.rescue_doctrines = Vec::new();
         return false;
     }
-    let label = "Capital Save".to_owned();
-    s.fleet_presets.push(FleetPreset {
-        label: label.clone(),
+    let old = std::mem::take(&mut s.rescue_doctrines);
+    let mut made: Vec<String> = Vec::new();
+    for d in &old {
+        let (setup_id, notes) = match_setup(&d.description, setups);
+        s.fleet_presets.push(rescue_preset(s.rescue_op_channel, &d.name, setup_id, notes));
+        made.push(d.name.clone());
+    }
+    if made.is_empty() {
+        let label = "Capital Save".to_owned();
+        s.fleet_presets.push(rescue_preset(s.rescue_op_channel, &label, 0, String::new()));
+        made.push(label);
+    }
+    // The one the FC last ran, if it survived the migration.
+    s.rescue_preset = made
+        .iter()
+        .find(|m| **m == s.rescue_doctrine)
+        .or_else(|| made.first())
+        .cloned()
+        .unwrap_or_default();
+    s.rescue_doctrine = String::new();
+    s.rescue_preset_seeded = true;
+    true
+}
+
+#[cfg(feature = "fleet")]
+fn rescue_preset(op: u8, label: &str, setup_id: i32, notes: String) -> FleetPreset {
+    FleetPreset {
+        label: label.to_owned(),
         folder: "Rescue".to_owned(),
         name: "CAP Save".to_owned(),
         description: "Give me a titan on standby".to_owned(),
-        mumble_channel_id: Some(i32::from(s.rescue_op_channel)),
+        setup_id,
+        mumble_channel_id: Some(i32::from(op)),
         auto_close_type: 1,
         auto_close_time: 30,
         set_motd: true,
+        doctrine_notes: notes,
         // Strategic, because a capital is on the field, and the tag that makes it a rescue preset.
         tag_ids: vec![1, CAPITAL_SAVE_TAG],
         ..FleetPreset::default()
-    });
-    s.rescue_preset = label;
-    s.rescue_preset_seeded = true;
-    true
+    }
+}
+
+/// The old doctrine descriptions were the setup's own name followed by a preference order, e.g.
+/// `Alpha Fleet (XYZ) (Boosters > Hull > Support)`. Longest name wins, so a setup whose name is a
+/// prefix of another does not steal the match.
+#[cfg(feature = "fleet")]
+fn match_setup(description: &str, setups: &[(i32, String)]) -> (i32, String) {
+    let d = description.trim();
+    let mut best: Option<(i32, usize)> = None;
+    for (id, name) in setups {
+        let n = name.trim();
+        if n.is_empty() || !d.to_lowercase().starts_with(&n.to_lowercase()) {
+            continue;
+        }
+        if best.is_none_or(|(_, len)| n.len() > len) {
+            best = Some((*id, n.len()));
+        }
+    }
+    match best {
+        Some((id, len)) => (id, d[len..].trim().to_owned()),
+        None => (0, d.to_owned()),
+    }
 }
 
 /// A hull that belongs somewhere: in one doctrine, or in any fleet at all.
@@ -979,6 +1086,10 @@ pub struct FleetHull {
     #[serde(default)]
     pub type_id: i64,
     pub name: String,
+    /// The doctrine's damage. Not derivable from the hull: a Flycatcher is an Interdictor, which
+    /// reads as support in every fleet except the one built around it.
+    #[serde(default)]
+    pub main: bool,
 }
 
 /// One boost a doctrine wants, and how badly, so the tracking view can say what to put on next.
@@ -1027,10 +1138,6 @@ fn default_rescue_template() -> String {
 fn default_rescue_col_ops() -> f32 {
     300.0
 }
-fn default_rescue_col_mid() -> f32 {
-    320.0
-}
-
 fn default_client_id() -> String {
     crate::auth::DEFAULT_CLIENT_ID.to_owned()
 }
@@ -1060,6 +1167,8 @@ impl Default for Settings {
             kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
+            map_highlight_secs: default_map_highlight_secs(),
+            map_highlight_critical_secs: default_map_highlight_critical_secs(),
             intel_count_bridges: false,
             route_avoid_gate: Vec::new(),
             route_avoid_jump: Vec::new(),
@@ -1071,6 +1180,8 @@ impl Default for Settings {
             fleet_window_forced: false,
             travel_auto_dest: true,
             op_channel_links: std::collections::HashMap::new(),
+            comms_links: std::collections::HashMap::new(),
+            comms_mumble_cache: std::collections::HashMap::new(),
             saved_routes: Vec::new(),
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
@@ -1137,12 +1248,17 @@ impl Default for Settings {
             fleet_enabled: false,
             fleet_presets: Vec::new(),
             fleet_character: String::new(),
+            fleet_live: false,
+            fleet_send_writes: false,
             fleet_boost_requirements: Vec::new(),
+            rescue_doctrines: Vec::new(),
+            rescue_doctrine: String::new(),
             fleet_recent_formup: Vec::new(),
             fleet_custom_doctrines: Vec::new(),
             fleet_hulls: Vec::new(),
             fleet_doctrine_tanks: Vec::new(),
             fleet_doctrine_urls: Vec::new(),
+            fleet_doctrine_lines: Vec::new(),
             fleet_doctrine_strict: Vec::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
@@ -1154,10 +1270,7 @@ impl Default for Settings {
             rescue_preset_seeded: false,
             rescue_skirmish_jid: String::new(),
             rescue_delve911_jid: String::new(),
-            rescue_window_pos: None,
-            rescue_window_size: None,
             rescue_col_ops_w: default_rescue_col_ops(),
-            rescue_col_mid_w: default_rescue_col_mid(),
         }
     }
 }
@@ -1591,8 +1704,8 @@ mod window_geometry_tests {
         s.fleet_doctrine_urls = vec![(46, "https://example.invalid/doctrine".to_owned())];
         s.fleet_doctrine_strict = vec![19];
         s.fleet_hulls = vec![
-            FleetHull { setup_id: 46, type_id: 11_381, name: "Harpy".to_owned() },
-            FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned() },
+            FleetHull { setup_id: 46, type_id: 11_381, name: "Harpy".to_owned(), main: false },
+            FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned(), main: false },
         ];
         s.fleet_boost_requirements = vec![FleetBoostRequirement {
             setup_id: 46,
@@ -1629,12 +1742,12 @@ mod window_geometry_tests {
     }
 
     /// The cap-save template becomes a preset once, and never overwrites one that exists.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     #[test]
     fn the_rescue_template_becomes_a_preset_once() {
         let mut s = Settings::default();
         s.rescue_op_channel = 4;
-        assert!(seed_rescue_preset(&mut s));
+        assert!(seed_rescue_preset(&mut s, &[]));
         assert_eq!(s.fleet_presets.len(), 1);
         let p = &s.fleet_presets[0];
         assert!(p.tag_ids.contains(&CAPITAL_SAVE_TAG));
@@ -1643,7 +1756,7 @@ mod window_geometry_tests {
         assert!(s.rescue_preset_seeded);
 
         // Twice does nothing.
-        assert!(!seed_rescue_preset(&mut s));
+        assert!(!seed_rescue_preset(&mut s, &[]));
         assert_eq!(s.fleet_presets.len(), 1);
 
         // And an existing capital-save preset is left alone even on a fresh flag.
@@ -1653,10 +1766,61 @@ mod window_geometry_tests {
             tag_ids: vec![CAPITAL_SAVE_TAG],
             ..FleetPreset::default()
         }];
-        assert!(!seed_rescue_preset(&mut other));
+        assert!(!seed_rescue_preset(&mut other, &[]));
         assert_eq!(other.fleet_presets.len(), 1);
         assert_eq!(other.fleet_presets[0].label, "Mine");
         assert!(other.rescue_preset_seeded);
+    }
+
+    /// An FC who had rescue doctrines configured keeps them: one preset each, each pointing at the
+    /// real setup, so the first ping after the upgrade still names a doctrine.
+    #[cfg(feature = "fleet")]
+    #[test]
+    fn old_rescue_doctrines_become_presets_pointing_at_their_setup() {
+        let setups = vec![
+            (11, "Alpha".to_owned()),
+            (12, "Alpha Fleet (XYZ)".to_owned()),
+            (13, "Bravo".to_owned()),
+        ];
+        let mut s = Settings::default();
+        s.rescue_op_channel = 7;
+        s.rescue_doctrine = "Bravos".to_owned();
+        s.rescue_doctrines = vec![
+            LegacyRescueDoctrine {
+                name: "Alphas".to_owned(),
+                description: "Alpha Fleet (XYZ) (Boosters > Hull > Support)".to_owned(),
+            },
+            LegacyRescueDoctrine {
+                name: "Bravos".to_owned(),
+                description: "Bravo (Boosters > Else)".to_owned(),
+            },
+            LegacyRescueDoctrine {
+                name: "Unknown".to_owned(),
+                description: "Something the dashboard never listed".to_owned(),
+            },
+        ];
+        assert!(seed_rescue_preset(&mut s, &setups));
+
+        assert_eq!(s.fleet_presets.len(), 3);
+        let by = |l: &str| s.fleet_presets.iter().find(|p| p.label == l).expect("a preset");
+        // "Alpha" is a prefix of "Alpha Fleet (XYZ)" and must not steal the match.
+        assert_eq!(by("Alphas").setup_id, 12);
+        assert_eq!(by("Alphas").doctrine_notes, "(Boosters > Hull > Support)");
+        assert_eq!(by("Bravos").setup_id, 13);
+        // No match leaves the doctrine unset rather than guessing, and keeps the text.
+        assert_eq!(by("Unknown").setup_id, 0);
+        assert_eq!(by("Unknown").doctrine_notes, "Something the dashboard never listed");
+        for p in &s.fleet_presets {
+            assert!(p.tag_ids.contains(&CAPITAL_SAVE_TAG));
+            assert_eq!(p.mumble_channel_id, Some(7));
+            assert_eq!(p.folder, "Rescue");
+        }
+        // The one that was selected stays selected, and the migration inputs are spent.
+        assert_eq!(s.rescue_preset, "Bravos");
+        assert!(s.rescue_doctrines.is_empty());
+        assert!(s.rescue_doctrine.is_empty());
+        assert!(!seed_rescue_preset(&mut s, &setups));
+        assert_eq!(s.fleet_presets.len(), 3);
     }
 
     /// A config written before the tab existed must not fail the parse, which would reset every
@@ -2002,3 +2166,4 @@ mod web_settings_tests {
         assert_eq!(back.web, WebSettings::default());
     }
 }
+

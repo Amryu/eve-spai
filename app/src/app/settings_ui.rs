@@ -794,7 +794,13 @@ impl SpaiApp {
                                             egui::RichText::new(label).weak().strikethrough()
                                         };
                                         if ui
-                                            .add(egui::Button::selectable(selected, txt).truncate())
+                                            .add(
+                                                egui::Button::new(txt)
+                                                    .selected(selected)
+                                                    .frame_when_inactive(selected)
+                                                    .stroke(egui::Stroke::NONE)
+                                                    .truncate(),
+                                            )
                                             .on_hover_text(label)
                                             .clicked()
                                         {
@@ -1841,7 +1847,7 @@ impl SpaiApp {
                         ui.separator();
                         changed |= self.fleet_settings_section(ui);
                     }
-                    #[cfg(feature = "fc-rescue")]
+                    #[cfg(feature = "fleet")]
                     {
                         ui.add_space(12.0);
                         ui.separator();

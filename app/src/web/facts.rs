@@ -40,7 +40,7 @@ pub struct UiFacts {
     pub jabber: crate::web::jabber::JabberSide,
     pub avoid_gate: Vec<i64>,
     pub avoid_jump: Vec<i64>,
-    /// Filled only by an `fc-rescue` build with the mode switched on.
+    /// Filled only by a `fleet` build with the mode switched on.
     pub rescue: Option<crate::web::rescue::RescueSide>,
 }
 

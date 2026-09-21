@@ -33,6 +33,21 @@ id_newtype!(SquadId, i64, "A squad inside a wing.");
 id_newtype!(DistributionId, i32, "A squad distribution template.");
 
 /// A fleet, identified by the uuid that appears in `/fleet/overview/<uuid>` links.
+
+/// Reads `null` as the type's default instead of failing.
+///
+/// `#[serde(default)]` only covers a *missing* key, and this API sends explicit nulls for fields
+/// that have no value yet. `statisticId` is null on every fleet that is still running, which made
+/// the whole `Fleet` parse fail and took the fleet, its report, its composition and its doctrine
+/// down with it. One null field must not cost a page.
+pub fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct FleetId(pub String);
@@ -54,7 +69,9 @@ impl std::fmt::Display for FleetId {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Labelled {
+    #[serde(default, deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub label: String,
 }
 
@@ -67,6 +84,9 @@ pub enum Perm {
     AccessFleet,
     AccessFleetModule,
     StartFleet,
+    /// Whether a fleet may be handed to a character that is not on this account. Without it the
+    /// migrate picker is limited to the user's own characters, which is how the site does it.
+    StartFleetOther,
     InviteMember,
     KickMember,
     MoveMember,
@@ -84,6 +104,7 @@ impl Perm {
             Perm::AccessFleet => "accessFleet",
             Perm::AccessFleetModule => "accessFleetModule",
             Perm::StartFleet => "startFleet",
+            Perm::StartFleetOther => "startFleetOther",
             Perm::InviteMember => "inviteMember",
             Perm::KickMember => "kickMember",
             Perm::MoveMember => "moveMember",
@@ -100,7 +121,9 @@ impl Perm {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub command_group: String,
     #[serde(default)]
     pub sigs: Vec<Labelled>,
@@ -118,10 +141,13 @@ impl Identity {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountCharacter {
+    #[serde(default, deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub corporation_id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_hidden: bool,
 }
 
@@ -129,11 +155,12 @@ pub struct AccountCharacter {
 #[serde(rename_all = "camelCase")]
 pub struct SetupItem {
     pub id: SetupId,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
     pub minimal_opsec_level_description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub priority: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_default: bool,
 }
 
@@ -142,8 +169,9 @@ pub struct SetupItem {
 #[serde(rename_all = "camelCase")]
 pub struct ChannelItem {
     pub id: ChannelId,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_in_use: bool,
 }
 
@@ -151,12 +179,13 @@ pub struct ChannelItem {
 #[serde(rename_all = "camelCase")]
 pub struct TagItem {
     pub id: TagId,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub colour_class: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_primary: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_strategic: bool,
 }
 
@@ -222,9 +251,11 @@ impl TryFrom<u8> for SnowflakeType {
 #[serde(rename_all = "camelCase")]
 pub struct Snowflake {
     /// 0 until the server has stored it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub character_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub character_name: String,
     #[serde(rename = "type")]
     pub kind: SnowflakeType,
@@ -239,30 +270,33 @@ pub struct Fleet {
     pub commander: Option<Labelled>,
     pub operation_name: Option<String>,
     /// The in-game fleet id, which is how the dashboard reads composition through ESI.
+    #[serde(default, deserialize_with = "null_default")]
     pub esi_id: i64,
     pub setup_id: SetupId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub use_backup: bool,
     pub group_name: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub description: String,
     /// An account id, not a character id.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub started_by_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub started_at: String,
     pub closed_at: Option<String>,
     pub auto_close_type: Option<i32>,
     pub auto_close_time: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub ignore_participation_requirements: bool,
     #[serde(default)]
     pub tag_ids: Vec<TagId>,
     #[serde(default)]
     pub snowflakes: Vec<Snowflake>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub statistic_id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub has_doctrine_info: bool,
     pub boost_channel_id: Option<ChannelId>,
     pub logi_channel_id: Option<ChannelId>,
@@ -275,6 +309,7 @@ pub struct Fleet {
 #[serde(rename_all = "camelCase")]
 pub struct FleetRow {
     pub id: FleetId,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
     pub setup_name: Option<String>,
     pub operation_name: Option<String>,
@@ -284,6 +319,7 @@ pub struct FleetRow {
     pub started_by: Option<String>,
     #[serde(alias = "commanderName")]
     pub commander: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
     pub started_at: String,
     pub closed_at: Option<String>,
     #[serde(default)]
@@ -293,9 +329,11 @@ pub struct FleetRow {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportCharacter {
+    #[serde(default, deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub pap_count: i64,
     pub r#type: Option<i32>,
     pub primary_role: Option<i32>,
@@ -306,31 +344,42 @@ pub struct ReportCharacter {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleCount {
+    #[serde(default, deserialize_with = "null_default")]
     pub count: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub percentage: f64,
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipCount {
+    #[serde(default, deserialize_with = "null_default")]
     pub ship_type_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub ship_type_name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub count: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub percentage: f64,
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupCount {
+    #[serde(default, deserialize_with = "null_default")]
     pub group_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub group_name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub count: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub percentage: f64,
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FleetReport {
+    #[serde(default, deserialize_with = "null_default")]
     pub total_characters: i64,
     #[serde(default)]
     pub characters: Vec<ReportCharacter>,
@@ -346,9 +395,12 @@ pub struct FleetReport {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartForm {
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub description: String,
     /// 0 means no setup chosen. The site's placeholder renders as null and posts 0.
+    #[serde(default, deserialize_with = "null_default")]
     pub setup_id: i32,
     pub group_id: Option<GroupId>,
     pub boost_channel_id: Option<ChannelId>,
@@ -357,9 +409,12 @@ pub struct StartForm {
     /// 0 start, 1 FC left.
     pub auto_close_type: Option<i32>,
     pub auto_close_time: Option<i32>,
+    #[serde(default, deserialize_with = "null_default")]
     pub is_corporation_fleet: bool,
     /// In the payload but not on the site's form.
+    #[serde(default, deserialize_with = "null_default")]
     pub ignore_participation_requirements: bool,
+    #[serde(default, deserialize_with = "null_default")]
     pub set_motd: bool,
     pub doctrine_notes: Option<String>,
 }
@@ -391,8 +446,11 @@ pub struct StartRequest {
     #[serde(flatten)]
     pub form: StartForm,
     pub tag_ids: Vec<TagId>,
+    #[serde(default, deserialize_with = "null_default")]
     pub character_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub character_name: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub use_backup: bool,
     pub snowflakes: Vec<Snowflake>,
     pub operation_id: Option<i64>,
@@ -404,14 +462,18 @@ pub struct StartRequest {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PingRequest {
+    #[serde(default, deserialize_with = "null_default")]
     pub character_id: i64,
+    #[serde(default, deserialize_with = "null_default")]
     pub description: String,
     pub doctrine_notes: Option<String>,
     pub boost_channel_id: Option<ChannelId>,
     pub logi_channel_id: Option<ChannelId>,
     pub mumble_channel_id: Option<ChannelId>,
     /// 0 means no setup, which renders as "PAP Type: None".
+    #[serde(default, deserialize_with = "null_default")]
     pub setup_id: i32,
+    #[serde(default, deserialize_with = "null_default")]
     pub solar_system_id: i64,
     pub tag_ids: Vec<TagId>,
 }
@@ -419,15 +481,18 @@ pub struct PingRequest {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PingPreview {
+    #[serde(default, deserialize_with = "null_default")]
     pub ping: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub motd: String,
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BossCheck {
+    #[serde(default, deserialize_with = "null_default")]
     pub is_fleet_boss: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub backup_available: bool,
     pub error_message: Option<String>,
 }
@@ -435,8 +500,18 @@ pub struct BossCheck {
 impl BossCheck {
     /// Whether the fleet can be tracked as this character, and what to say about it.
     pub fn verdict(&self) -> (bool, String) {
-        if let Some(e) = self.error_message.as_deref().filter(|e| !e.trim().is_empty()) {
-            return (false, e.to_owned());
+        if let Some(e) = self.error() {
+            // A server error can be a paragraph or a stack trace, and the form is not the place
+            // for either. Short ones say more than a generic headline, so keep those.
+            let line = e.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+            return (
+                false,
+                if line.len() <= 70 && line.len() == e.trim().len() {
+                    line.to_owned()
+                } else {
+                    "The fleet boss check failed.".to_owned()
+                },
+            );
         }
         match (self.is_fleet_boss, self.backup_available) {
             (true, _) => (true, "Fleet boss in game.".to_owned()),
@@ -446,14 +521,22 @@ impl BossCheck {
             }
         }
     }
+
+    /// Whatever the server said, in full, for the dialog behind the short line.
+    pub fn error(&self) -> Option<&str> {
+        self.error_message.as_deref().map(str::trim).filter(|e| !e.is_empty())
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BonusRequest {
     pub fleet_id: FleetId,
+    #[serde(default, deserialize_with = "null_default")]
     pub count: i32,
+    #[serde(default, deserialize_with = "null_default")]
     pub reason: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub minutes_before_close: i32,
 }
 
@@ -461,8 +544,11 @@ pub struct BonusRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ExceptionRequest {
     pub fleet_id: FleetId,
+    #[serde(default, deserialize_with = "null_default")]
     pub character_names: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub is_exclusion: bool,
+    #[serde(default, deserialize_with = "null_default")]
     pub reason: String,
 }
 
@@ -470,6 +556,7 @@ pub struct ExceptionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
     pub fleet_id: FleetId,
+    #[serde(default, deserialize_with = "null_default")]
     pub description: String,
 }
 
@@ -478,6 +565,25 @@ pub struct ReportRequest {
 pub struct Paged<T> {
     pub items: Vec<T>,
     pub total: i64,
+}
+
+/// One page as OData sends it. `Paged` is the shape the pager wants; this is the shape on the
+/// wire, and they are deliberately not the same type.
+#[derive(Deserialize)]
+#[serde(bound = "T: serde::de::DeserializeOwned")]
+pub struct ODataPage<T> {
+    #[serde(rename = "@odata.count", default)]
+    pub count: Option<i64>,
+    #[serde(default)]
+    pub value: Vec<T>,
+}
+
+impl<T> From<ODataPage<T>> for Paged<T> {
+    fn from(p: ODataPage<T>) -> Self {
+        let items = p.value;
+        let total = p.count.unwrap_or(items.len() as i64);
+        Paged { items, total }
+    }
 }
 
 /// The member tree of a tracked fleet.
@@ -490,6 +596,9 @@ pub struct Composition {
     /// The fleet boss. One seat, filled or empty.
     pub commander: Option<Member>,
     pub wings: Vec<Wing>,
+    /// True when the tree came from the roster rather than ESI, so the wing and squad ids are
+    /// sentinels. Nothing may be moved into a seat that cannot be addressed.
+    pub flat: bool,
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -551,6 +660,9 @@ pub struct Member {
     /// the fleet needs or a pilot in the wrong hull.
     pub ship_group: String,
     pub role: String,
+    /// Participation credits the dashboard recorded for this pilot in this fleet. Only a closed
+    /// fleet's report carries it; a live roster comes from ESI, which knows nothing about PAPs.
+    pub pap_count: i64,
 }
 
 impl Composition {
@@ -793,6 +905,7 @@ mod tests {
 
     fn crewed() -> Composition {
         Composition {
+            flat: false,
             commander: Some(pilot(1, "Boss")),
             wings: vec![Wing {
                 id: WingId(1),
@@ -847,12 +960,24 @@ mod tests {
         assert!(check(false, true, None).verdict().0);
         assert!(!check(false, false, None).verdict().0);
 
-        // An error from the server is the answer, whatever the flags say.
+        // An error from the server is the answer, whatever the flags say. A short one reads
+        // better inline than a generic headline would.
         let (ok, why) = check(true, true, Some("ESI token expired")).verdict();
         assert!(!ok);
         assert_eq!(why, "ESI token expired");
+        // A long or multi-line one does not belong in the form: the headline stands in and the
+        // whole thing is still there for the dialog behind it.
+        let long = "Something went wrong.\n   at Fleet.Check(Int64 id)\n   at Handler.Invoke()";
+        let c = check(true, true, Some(long));
+        let (ok, why) = c.verdict();
+        assert!(!ok);
+        assert_eq!(why, "The fleet boss check failed.");
+        assert_eq!(c.error(), Some(long));
+        let wordy = check(false, false, Some(&"x".repeat(200)));
+        assert_eq!(wordy.verdict().1, "The fleet boss check failed.");
         // An empty message is not an error.
         assert!(check(true, false, Some("  ")).verdict().0);
+        assert_eq!(check(true, false, Some("  ")).error(), None);
     }
 
     /// A seat holds one pilot, and the tree has to say who, so a second one is not dropped in.
@@ -868,8 +993,64 @@ mod tests {
         // A squad's member list is not a seat, so nobody holds it.
         assert!(comp.holder(Seat::Squad(WingId(1), SquadId(10))).is_none());
 
-        let empty = Composition { commander: None, wings: vec![] };
+        let empty = Composition { commander: None, wings: vec![], flat: false };
         assert!(empty.holder(Seat::Boss).is_none());
         assert_eq!(empty.total(), 0);
+    }
+}
+
+#[cfg(test)]
+mod null_tolerance_tests {
+    use super::*;
+
+    /// The shape a running fleet actually sends. `statisticId` is null until the statistics are
+    /// generated at close, and `#[serde(default)]` does not cover an explicit null: the whole
+    /// `Fleet` parse failed with "invalid type: null, expected i64", which took the fleet, its
+    /// report, its composition and its doctrine down together. Every live fleet hit this; every
+    /// closed one, which is all I had tested against, has the field filled in.
+    #[test]
+    fn a_running_fleet_decodes_with_its_nulls() {
+        let raw = serde_json::json!({
+            "id": "00000000-0000-4000-8000-000000000042",
+            "name": "Home Defence",
+            "esiId": 3_000_000_001_i64,
+            "setupId": 84,
+            "startedAt": "2026-09-21T10:00:00Z",
+            "closedAt": null,
+            "groupName": null,
+            "operationName": null,
+            "statisticId": null,
+            "autoCloseType": 1,
+            "autoCloseTime": 30,
+            "boostChannelId": 5,
+            "logiChannelId": 1,
+            "mumbleChannelId": 12,
+            "formupLocation": null
+        });
+        let f: Fleet = serde_json::from_value(raw).expect("a running fleet has to decode");
+        assert_eq!(f.statistic_id, 0);
+        assert_eq!(f.name, "Home Defence");
+        assert!(f.closed_at.is_none());
+        assert_eq!(f.mumble_channel_id, Some(ChannelId(12)));
+    }
+
+    /// Any scalar the server has no value for yet reads as its default rather than as a failure.
+    #[test]
+    fn a_null_scalar_never_fails_a_parse() {
+        let c: ReportCharacter = serde_json::from_value(serde_json::json!({
+            "id": 1, "name": "Someone", "papCount": null, "type": null,
+            "primaryRole": null, "primaryShipTypeId": null, "primaryShipTypeName": null
+        }))
+        .expect("decodes");
+        assert_eq!(c.pap_count, 0);
+
+        let t: TagItem = serde_json::from_value(serde_json::json!({
+            "id": 3, "name": "Strategic", "colourClass": null, "isPrimary": null,
+            "isStrategic": true
+        }))
+        .expect("decodes");
+        assert!(t.colour_class.is_empty());
+        assert!(!t.is_primary);
+        assert!(t.is_strategic);
     }
 }

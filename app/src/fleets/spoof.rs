@@ -24,6 +24,10 @@ struct SpoofData {
     comps: std::collections::HashMap<String, Composition>,
     records: Vec<CallRecord>,
     seq: u64,
+    /// How many more report reads come back empty, per fleet. The dashboard generates a fleet's
+    /// statistics after the close, so a report read on the way into the closed view finds nothing
+    /// and the participant list is empty until it catches up.
+    stats_pending: std::collections::HashMap<String, u8>,
 }
 
 impl SpoofBackend {
@@ -55,6 +59,7 @@ impl SpoofBackend {
             comps: std::collections::HashMap::new(),
             records: Vec::new(),
             seq: 0,
+            stats_pending: Default::default(),
         };
         data.populate();
         Self { data: Mutex::new(data), latency }
@@ -208,6 +213,7 @@ fn sample_composition(id: &FleetId) -> Composition {
             ship_type_name: ship.to_owned(),
             ship_group: group.to_owned(),
             role: role.to_owned(),
+            pap_count: 0,
         }
     };
     let mut wings = Vec::new();
@@ -230,6 +236,7 @@ fn sample_composition(id: &FleetId) -> Composition {
                         ship_type_name: ship.to_owned(),
                         ship_group: group.to_owned(),
                         role: role.to_owned(),
+                        pap_count: 0,
                     }
                 })
                 .collect();
@@ -252,6 +259,7 @@ fn sample_composition(id: &FleetId) -> Composition {
     Composition {
         commander: Some(pilot(90_400_000, "Fleet Boss".to_owned(), 3)),
         wings,
+        flat: false,
     }
 }
 
@@ -369,13 +377,21 @@ impl FleetBackend for SpoofBackend {
             .collect())
     }
 
-    fn history(&self, skip: u32) -> Result<Paged<FleetRow>> {
+    fn history(&self, search: &str, skip: u32) -> Result<Paged<FleetRow>> {
         self.work();
         let d = self.lock();
-        let total = d.history.len() as i64;
+        let q = search.trim().to_lowercase();
+        let hit = |r: &FleetRow| {
+            q.is_empty()
+                || r.name.to_lowercase().contains(&q)
+                || r.started_by.as_deref().is_some_and(|s| s.to_lowercase().contains(&q))
+                || r.setup_name.as_deref().is_some_and(|s| s.to_lowercase().contains(&q))
+        };
+        let total = d.history.iter().filter(|r| hit(r)).count() as i64;
         let items = d
             .history
             .iter()
+            .filter(|r| hit(r))
             .skip(skip as usize)
             .take(calls::HISTORY_PAGE as usize)
             .cloned()
@@ -390,13 +406,32 @@ impl FleetBackend for SpoofBackend {
 
     fn report(&self, id: &FleetId) -> Result<FleetReport> {
         self.work();
-        let d = self.lock();
+        let mut d = self.lock();
+        if let Some(left) = d.stats_pending.get_mut(&id.0) {
+            if *left > 0 {
+                *left -= 1;
+                return Ok(FleetReport::default());
+            }
+        }
         Ok(d.comps.get(&id.0).map(report_for).unwrap_or_default())
     }
 
     fn composition(&self, id: &FleetId) -> Result<Composition> {
         self.work();
-        Ok(self.lock().comps.get(&id.0).cloned().unwrap_or_default())
+        let d = self.lock();
+        let mut comp = d.comps.get(&id.0).cloned().unwrap_or_default();
+        // A closed fleet has no in-game tree left to read, so the dashboard's report is all there
+        // is: one flat list of who took part. The HTTP backend flattens the same way, and a spoof
+        // that keeps the wings would let a tree-only bug through every test.
+        if d.fleets.iter().any(|f| f.id == *id && f.closed_at.is_some()) {
+            // Built from the report, the way the HTTP backend builds it, so a report the server
+            // has not written yet gives an empty participant list rather than a full one.
+            comp = match d.stats_pending.get(&id.0) {
+                Some(left) if *left > 0 => Composition { flat: true, ..Composition::default() },
+                _ => flatten(comp),
+            };
+        }
+        Ok(comp)
     }
 
     fn doctrine(&self, id: &FleetId) -> Result<Option<crate::fleets::doctrine::Doctrine>> {
@@ -486,11 +521,6 @@ impl FleetBackend for SpoofBackend {
         Ok(Written { record: rec, value: id })
     }
 
-    fn ping(&self, req: &PingRequest) -> Result<Written<()>> {
-        self.work();
-        let rec = self.write(calls::ping(req), Perm::StartFleet)?;
-        Ok(Written { record: rec, value: () })
-    }
 
     fn act(&self, id: &FleetId, action: &Action) -> Result<Written<()>> {
         self.work();
@@ -498,6 +528,8 @@ impl FleetBackend for SpoofBackend {
         let mut d = self.lock();
         match action {
             Action::Close => {
+                // Two reads' worth, which is what makes the app's re-read path testable.
+                d.stats_pending.insert(id.0.clone(), 2);
                 let closed = iso_z(chrono::Utc::now().timestamp());
                 if let Some(f) = d.fleets.iter_mut().find(|f| f.id == *id) {
                     f.closed_at = Some(closed);
@@ -595,8 +627,8 @@ impl FleetBackend for SpoofBackend {
         Ok(Written { record: rec, value: () })
     }
 
-    fn is_dry_run(&self) -> bool {
-        true
+    fn mode(&self) -> Mode {
+        Mode::DryRun
     }
 }
 
@@ -688,15 +720,44 @@ mod tests {
         assert!(!b.active(false).expect("pct").iter().any(|r| r.id == id));
     }
 
+    /// Nothing offline has a push stream, and the caller has to be told rather than left waiting.
+    /// The tab keeps polling when this says no.
+    #[test]
+    fn a_spoof_has_no_hub() {
+        let b = SpoofBackend::instant();
+        let id = b.active(true).expect("active")[0].id.clone();
+        assert!(b.open_hub(&id).is_err());
+    }
+
+    /// Closing moves it out of the active list and into history.
+    #[test]
+    fn a_closed_fleet_has_no_tree_left() {
+        let b = SpoofBackend::instant();
+        let id = b.start(&start_req()).expect("started").value;
+        let before = b.composition(&id).expect("composition");
+        assert!(!before.flat);
+        let pilots = before.total();
+        b.act(&id, &Action::Close).expect("closed");
+        // Straight after the close the dashboard has not written the report, so the roster it
+        // serves is empty. The app re-reads until it is there.
+        let at_once = b.composition(&id).expect("composition");
+        assert!(at_once.flat, "a closed fleet still claims a tree");
+        assert_eq!(at_once.total(), 0, "a report that is not written yet has nobody in it");
+        while b.report(&id).expect("report").characters.is_empty() {}
+        let after = b.composition(&id).expect("composition");
+        assert!(after.flat, "a closed fleet still claims a tree");
+        assert_eq!(after.total(), pilots, "flattening lost pilots");
+    }
+
     /// Closing moves it out of the active list and into history.
     #[test]
     fn closing_a_fleet_moves_it_to_history() {
         let b = SpoofBackend::instant();
         let id = b.start(&start_req()).expect("started").value;
-        let history_before = b.history(0).expect("history").total;
+        let history_before = b.history("", 0).expect("history").total;
         b.act(&id, &Action::Close).expect("closed");
         assert!(!b.active(true).expect("active").iter().any(|r| r.id == id));
-        assert_eq!(b.history(0).expect("history").total, history_before + 1);
+        assert_eq!(b.history("", 0).expect("history").total, history_before + 1);
     }
 
     /// A permission the account lacks stops the call, and the refused call is not recorded: it
@@ -751,5 +812,29 @@ mod tests {
         assert!(strat.value.ping.contains("PAP Type: Strategic"));
         let pct = b.ping_preview(&req(vec![TagId(2)])).expect("preview");
         assert!(pct.value.ping.contains("PAP Type: Peacetime"));
+    }
+}
+
+/// One flat list of everyone who was in the fleet, the shape a closed fleet's report gives.
+///
+/// The seat ids are the `-1` sentinel the dashboard uses, because there is nothing left to address
+/// and a move posted against a real-looking seat would be refused by the server.
+#[cfg(feature = "fleet")]
+fn flatten(comp: Composition) -> Composition {
+    let members: Vec<crate::fleets::model::Member> = comp.members().cloned().collect();
+    Composition {
+        commander: None,
+        wings: vec![Wing {
+            id: WingId(-1),
+            name: "Fleet".to_owned(),
+            commander: None,
+            squads: vec![Squad {
+                id: SquadId(-1),
+                name: "Roster".to_owned(),
+                commander: None,
+                members,
+            }],
+        }],
+        flat: true,
     }
 }

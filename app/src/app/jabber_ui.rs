@@ -44,7 +44,7 @@ impl SpaiApp {
     /// room's messages are dropped before they are stored, so losing either one breaks capital
     /// rescue with no error anywhere. Both are pinned: always joined, never removable.
     pub(crate) fn jabber_rescue_rooms(&self) -> Vec<String> {
-        #[cfg(feature = "fc-rescue")]
+        #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled {
             return [
                 goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"),
@@ -1871,7 +1871,7 @@ impl SpaiApp {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
-                #[cfg(feature = "fc-rescue")]
+                #[cfg(feature = "fleet")]
                 if self.settings.fc_rescue_enabled
                     && ui
                         .button(egui_phosphor::regular::WARNING_OCTAGON)
@@ -2715,7 +2715,7 @@ impl SpaiApp {
             .max_height((body_h - composer_h - 8.0).max(HISTORY_MIN_H))
             .stick_to_bottom(!selecting)
             .show_viewport(ui, |ui, viewport| {
-                let accent = ui.visuals().hyperlink_color;
+
                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
                 let now = chrono::Utc::now().timestamp();
                 let names = self.mention_names();
@@ -2796,10 +2796,13 @@ impl SpaiApp {
                                             .split('@')
                                             .next()
                                             .unwrap_or(&m.from);
+                                        // Per name, the same colouring the rescue chat uses: in a
+                                        // busy room one accent colour for everyone makes who said
+                                        // what a thing you have to read rather than see.
                                         let lbl = egui::Label::new(
                                             egui::RichText::new(format!("{n}:"))
                                                 .strong()
-                                                .color(accent),
+                                                .color(crate::app::name_color(n)),
                                         );
                                         let resp = if is_room {
                                             ui.add(lbl.sense(egui::Sense::click()))

@@ -21,9 +21,9 @@ fn revival_refresh(current_until: Option<i64>, triggered: bool, now: i64) -> Opt
 
 /// The rescue state handle, degraded to `()` when the FC rescue feature is off. Keeping one
 /// signature avoids `#[cfg]`-ing the arguments at the call site, which Rust does not allow.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub type RescueHandle = Arc<Mutex<crate::rescue::RescueState>>;
-#[cfg(not(feature = "fc-rescue"))]
+#[cfg(not(feature = "fleet"))]
 pub type RescueHandle = ();
 
 #[allow(clippy::too_many_arguments)]
@@ -82,7 +82,7 @@ pub fn spawn(
 
 #[allow(clippy::too_many_arguments)]
 // rescue/rescue_channel/ship_groups feed only the FC-rescue branch below.
-#[cfg_attr(not(feature = "fc-rescue"), allow(unused_variables))]
+#[cfg_attr(not(feature = "fleet"), allow(unused_variables))]
 fn scan(
     chat_dir: &PathBuf,
     channels: &[String],
@@ -139,15 +139,15 @@ fn scan(
         let Some((meta, messages)) = crate::chatlog::read(&path) else {
             continue;
         };
-        #[cfg(feature = "fc-rescue")]
+        #[cfg(feature = "fleet")]
         let is_rescue =
             !rescue_channel.is_empty() && meta.channel.eq_ignore_ascii_case(rescue_channel);
-        #[cfg(not(feature = "fc-rescue"))]
+        #[cfg(not(feature = "fleet"))]
         let is_rescue = false;
         if !is_rescue && !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
             continue;
         }
-        #[cfg(feature = "fc-rescue")]
+        #[cfg(feature = "fleet")]
         if is_rescue {
             let start = processed
                 .get(&path)

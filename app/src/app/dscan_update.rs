@@ -265,7 +265,7 @@ impl SpaiApp {
         if let Some(n) = crate::dscan::looks_like_dscan(&text) {
             // During a rescue, also capture the dscan breakdown onto the rescue state so the FC
             // sees what is on grid without leaving the window.
-            #[cfg(feature = "fc-rescue")]
+            #[cfg(feature = "fleet")]
             if self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active {
                 let parsed = crate::rescue::parse_raw_dscan(&text);
                 if !parsed.is_empty() {

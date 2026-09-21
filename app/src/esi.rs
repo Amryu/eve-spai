@@ -457,6 +457,92 @@ pub(crate) fn access_token(
     Some(fresh.access_token)
 }
 
+/// One row of `GET /fleets/{id}/members/`.
+///
+/// `wing_id` and `squad_id` are `-1` for anyone not in a squad, which is the same sentinel the
+/// dashboard uses, so they pass straight through.
+#[cfg(feature = "fleet")]
+#[derive(Deserialize)]
+pub(crate) struct FleetMemberRow {
+    pub character_id: i64,
+    #[serde(default)]
+    pub ship_type_id: i64,
+    #[serde(default = "minus_one")]
+    pub wing_id: i64,
+    #[serde(default = "minus_one")]
+    pub squad_id: i64,
+    #[serde(default)]
+    pub role: String,
+}
+
+#[cfg(feature = "fleet")]
+fn minus_one() -> i64 {
+    -1
+}
+
+#[cfg(feature = "fleet")]
+#[derive(Deserialize)]
+pub(crate) struct FleetWingRow {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub squads: Vec<FleetSquadRow>,
+}
+
+#[cfg(feature = "fleet")]
+#[derive(Deserialize)]
+pub(crate) struct FleetSquadRow {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// The scope the fleet endpoints need. A character authorised before it was added to
+/// `DEFAULT_SCOPES` carries a refresh token that does not have it, and refreshing will not add it.
+#[cfg(feature = "fleet")]
+pub(crate) const FLEET_SCOPE: &str = "esi-fleets.read_fleet.v1";
+
+/// The member list and the wing names of an in-game fleet.
+///
+/// ESI answers both only for the fleet boss's own token, so a stale or backup commander on the
+/// dashboard is a 403 and the caller falls back to the roster.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_tree(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_name: &str,
+    fleet_id: i64,
+) -> Option<(Vec<FleetMemberRow>, Vec<FleetWingRow>)> {
+    let boss = store.character_by_name(boss_name)?;
+    if !boss.scopes.split_whitespace().any(|s| s == FLEET_SCOPE) {
+        return None;
+    }
+    let token = current_access_token(store, client_id, boss.id, boss.expires_at)?;
+    fn fetch<T: serde::de::DeserializeOwned>(
+        client: &reqwest::blocking::Client,
+        token: &str,
+        fleet_id: i64,
+        path: &str,
+    ) -> Option<T> {
+        client
+            .get(format!("https://esi.evetech.net/latest/fleets/{fleet_id}/{path}/"))
+            .bearer_auth(token)
+            .send()
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .ok()
+    }
+    let members: Vec<FleetMemberRow> = fetch(client, &token, fleet_id, "members")?;
+    // Wings are only the names: a fleet with no wings is still a readable member list.
+    let wings: Vec<FleetWingRow> =
+        fetch(client, &token, fleet_id, "wings").unwrap_or_default();
+    Some((members, wings))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{access_token, AccessCache};

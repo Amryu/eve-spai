@@ -94,8 +94,8 @@ Each of these exists because something failed once. `references/lessons.md` has 
 - `cargo test` takes ONE filter. Passing two silently matches nothing and reports success.
 - Screenshots land in the worktree's own `target/uishots`, because the harness derives that path from
   `CARGO_MANIFEST_DIR`. Reading the main tree's PNGs after an agent runs gives a stale answer.
-- `cargo test --workspace` does not compile the `fc-rescue` feature. Rescue tickets need
-  `--features fc-rescue`.
+- `cargo test --workspace` does not compile the `fleet` feature. Rescue and fleet tickets need
+  `--features fleet`.
 
 **Scope**
 - A fix that spawns a new ticket is a good fix, not a failed one. Three of the first fifteen found

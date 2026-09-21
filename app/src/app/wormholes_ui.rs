@@ -150,7 +150,7 @@ impl SpaiApp {
 
     /// Push the rescue capital's system to the active character as an ESI autopilot destination.
     /// No-op without an active character.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_push_destination(&mut self, sid: i64) {
         if self.active_character == "No character" {
             return;

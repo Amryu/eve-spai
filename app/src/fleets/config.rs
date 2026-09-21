@@ -53,6 +53,8 @@ pub struct Hull {
     #[serde(default)]
     pub type_id: i64,
     pub name: String,
+    #[serde(default)]
+    pub main: bool,
 }
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
@@ -122,7 +124,7 @@ pub fn export(s: &Settings, names: &dyn Fn(i32) -> Option<String>) -> Bundle {
                 .fleet_hulls
                 .iter()
                 .filter(|h| h.setup_id == id)
-                .map(|h| Hull { type_id: h.type_id, name: h.name.clone() })
+                .map(|h| Hull { type_id: h.type_id, name: h.name.clone(), main: h.main })
                 .collect(),
             boosts: s
                 .fleet_boost_requirements
@@ -140,7 +142,7 @@ pub fn export(s: &Settings, names: &dyn Fn(i32) -> Option<String>) -> Bundle {
             .fleet_hulls
             .iter()
             .filter(|h| h.setup_id == 0)
-            .map(|h| Hull { type_id: h.type_id, name: h.name.clone() })
+            .map(|h| Hull { type_id: h.type_id, name: h.name.clone(), main: h.main })
             .collect(),
     }
 }
@@ -176,6 +178,7 @@ pub fn import(s: &mut Settings, bundle: &Bundle, replace: bool) -> Imported {
                 setup_id: 0,
                 type_id: h.type_id,
                 name: h.name.trim().to_owned(),
+                main: h.main,
             });
             out.hulls += 1;
         }
@@ -194,6 +197,7 @@ pub fn import(s: &mut Settings, bundle: &Bundle, replace: bool) -> Imported {
                 setup_id: id,
                 type_id: h.type_id,
                 name: h.name.trim().to_owned(),
+                main: h.main,
             });
             out.hulls += 1;
         }
@@ -256,10 +260,10 @@ mod tests {
         s.fleet_doctrine_urls = vec![(46, "https://example.invalid/fast".to_owned())];
         s.fleet_doctrine_strict = vec![19];
         s.fleet_hulls = vec![
-            FleetHull { setup_id: 46, type_id: 22_464, name: "Flycatcher".to_owned() },
-            FleetHull { setup_id: 46, type_id: 37_458, name: "Kirin".to_owned() },
-            FleetHull { setup_id: 19, type_id: 0, name: "Hecate".to_owned() },
-            FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned() },
+            FleetHull { setup_id: 46, type_id: 22_464, name: "Flycatcher".to_owned(), main: false },
+            FleetHull { setup_id: 46, type_id: 37_458, name: "Kirin".to_owned(), main: false },
+            FleetHull { setup_id: 19, type_id: 0, name: "Hecate".to_owned(), main: false },
+            FleetHull { setup_id: 0, type_id: 11_957, name: "Falcon".to_owned(), main: false },
         ];
         s.fleet_boost_requirements = vec![
             FleetBoostRequirement {
@@ -329,7 +333,7 @@ mod tests {
         // A hand-added one carries its own name, and says it is one.
         assert_eq!(named(-1), Some("Shield Cruisers"));
         assert!(bundle.doctrines.iter().find(|d| d.setup_id == -1).expect("custom").custom);
-        assert_eq!(bundle.always_allowed, vec![Hull { type_id: 11_957, name: "Falcon".to_owned() }]);
+        assert_eq!(bundle.always_allowed, vec![Hull { type_id: 11_957, name: "Falcon".to_owned(), main: false }]);
         // The always-allowed hulls belong to no doctrine.
         assert!(!bundle.doctrines.iter().any(|d| d.setup_id == 0));
     }
@@ -339,15 +343,15 @@ mod tests {
     fn a_merge_leaves_other_doctrines_alone() {
         let mut mine = Settings::default();
         mine.fleet_hulls = vec![
-            FleetHull { setup_id: 60, type_id: 0, name: "Hound".to_owned() },
-            FleetHull { setup_id: 46, type_id: 0, name: "Wrong".to_owned() },
+            FleetHull { setup_id: 60, type_id: 0, name: "Hound".to_owned(), main: false },
+            FleetHull { setup_id: 46, type_id: 0, name: "Wrong".to_owned(), main: false },
         ];
         let bundle = Bundle {
             version: VERSION,
             doctrines: vec![DoctrineConfig {
                 setup_id: 46,
                 name: "Fast Tackle".to_owned(),
-                hulls: vec![Hull { type_id: 22_464, name: "Flycatcher".to_owned() }],
+                hulls: vec![Hull { type_id: 22_464, name: "Flycatcher".to_owned(), main: false }],
                 ..DoctrineConfig::default()
             }],
             always_allowed: Vec::new(),
@@ -362,7 +366,7 @@ mod tests {
         assert_eq!(theirs[0].name, "Flycatcher");
 
         // An empty always-allowed list does not wipe one that is already there.
-        mine.fleet_hulls.push(FleetHull { setup_id: 0, type_id: 0, name: "Falcon".to_owned() });
+        mine.fleet_hulls.push(FleetHull { setup_id: 0, type_id: 0, name: "Falcon".to_owned(), main: false });
         import(&mut mine, &bundle, false);
         assert!(mine.fleet_hulls.iter().any(|h| h.setup_id == 0 && h.name == "Falcon"));
     }

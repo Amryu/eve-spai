@@ -158,12 +158,15 @@ pub struct Line {
     pub pilot: String,
     pub at: i64,
     pub say: Say,
+    /// What they actually typed. Kept so an FC can see why a line was read the way it was, which
+    /// is the only way to tell a wrong detection from a pilot who posted the wrong thing.
+    pub text: String,
 }
 
 /// Reads one line. `None` when it claims nothing, which most chatter does.
 pub fn parse(pilot: &str, text: &str, at: i64) -> Option<Line> {
     let say = read(text)?;
-    Some(Line { pilot: pilot.to_owned(), at, say })
+    Some(Line { pilot: pilot.to_owned(), at, say, text: text.trim().to_owned() })
 }
 
 fn read(text: &str) -> Option<Say> {
@@ -291,6 +294,8 @@ pub struct Coverage {
     pub generic: bool,
     pub pilots: usize,
     pub mindlinked: usize,
+    /// Who is holding it, as they are spelled in the channel.
+    pub who: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -316,8 +321,10 @@ pub fn coverage(lines: &[Line], since: i64) -> Vec<Coverage> {
     ordered.sort_by_key(|l| l.at);
 
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
+    let mut shown: BTreeMap<String, String> = BTreeMap::new();
     for l in ordered {
         let who = l.pilot.to_lowercase();
+        shown.entry(who.clone()).or_insert_with(|| l.pilot.clone());
         match &l.say {
             Say::Reset => held.clear(),
             Say::Running { charges, bursts, mindlink } => {
@@ -356,7 +363,8 @@ pub fn coverage(lines: &[Line], since: i64) -> Vec<Coverage> {
     }
 
     let mut by: BTreeMap<(String, bool), Coverage> = BTreeMap::new();
-    for h in held.values() {
+    for (key, h) in &held {
+        let pilot = shown.get(key).cloned().unwrap_or_else(|| key.clone());
         for c in &h.charges {
             let burst = burst_of(c).unwrap_or(Burst::Shield);
             let e = by.entry(((*c).to_owned(), false)).or_insert(Coverage {
@@ -365,9 +373,11 @@ pub fn coverage(lines: &[Line], since: i64) -> Vec<Coverage> {
                 generic: false,
                 pilots: 0,
                 mindlinked: 0,
+                who: Vec::new(),
             });
             e.pilots += 1;
             e.mindlinked += usize::from(h.mindlink);
+            e.who.push(pilot.clone());
         }
         for b in &h.bursts {
             let e = by.entry((b.label().to_owned(), true)).or_insert(Coverage {
@@ -376,9 +386,11 @@ pub fn coverage(lines: &[Line], since: i64) -> Vec<Coverage> {
                 generic: true,
                 pilots: 0,
                 mindlinked: 0,
+                who: Vec::new(),
             });
             e.pilots += 1;
             e.mindlinked += usize::from(h.mindlink);
+            e.who.push(pilot.clone());
         }
     }
     let mut out: Vec<Coverage> = by.into_values().collect();
@@ -408,13 +420,16 @@ pub fn read_window(
     channel: &str,
     from: i64,
     to: Option<i64>,
-) -> Vec<Coverage> {
+) -> (Vec<Coverage>, Vec<Line>) {
     let prefix = format!("{}_", channel.trim().to_lowercase().replace(' ', ""));
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return (Vec::new(), Vec::new()) };
     let mut lines = Vec::new();
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().to_lowercase();
         if !name.starts_with(&prefix) || !name.ends_with(".txt") {
+            continue;
+        }
+        if !covers(&name, from, to) {
             continue;
         }
         lines.extend(read_channel(&e.path()));
@@ -422,7 +437,53 @@ pub fn read_window(
     if let Some(end) = to {
         lines.retain(|l| l.at <= end);
     }
-    coverage(&lines, from)
+    lines.retain(|l: &Line| l.at >= from);
+    lines.sort_by_key(|l| l.at);
+    (coverage(&lines, from), lines)
+}
+
+/// The longest a single log file is assumed to run, for deciding whether one that starts before
+/// the window can still hold lines inside it. EVE opens a file per session and rolls over at
+/// downtime, so a day is past generous.
+const MAX_SESSION: i64 = 24 * 3600;
+
+/// Whether a log file could hold a line in `[from, to]`, judged by the timestamp in its name.
+///
+/// A channel accumulates a file per session, hundreds over months, and reading them all to keep
+/// the forty minutes a fleet lasted meant decoding the entire history from UTF-16 on every scan.
+/// The name carries the session's start (`channel_YYYYMMDD_HHMMSS_charid.txt`), which is enough to
+/// throw out everything that starts after the window or a day before it. A name that does not
+/// parse is kept, because guessing wrong here loses real messages.
+fn covers(name: &str, from: i64, to: Option<i64>) -> bool {
+    let Some(start) = file_start(name) else { return true };
+    if start > to.unwrap_or(i64::MAX) {
+        return false;
+    }
+    start >= from - MAX_SESSION
+}
+
+/// The `_YYYYMMDD_HHMMSS_` stamp EVE puts in a chat log's name, as a unix time. The client writes
+/// it in EVE time, which is UTC.
+fn file_start(name: &str) -> Option<i64> {
+    let mut parts = name.trim_end_matches(".txt").rsplitn(3, '_');
+    let _char_id = parts.next()?;
+    let hms = parts.next()?;
+    let ymd = parts.next()?.rsplit('_').next()?;
+    if ymd.len() != 8 || hms.len() != 6 || !ymd.bytes().chain(hms.bytes()).all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    // Reassembled into the shape the log's own timestamps use, so one parser covers both. EVE
+    // writes the name in EVE time, which is UTC.
+    crate::intel::parse_eve_time(&format!(
+        "{}.{}.{} {}:{}:{}",
+        &ymd[0..4],
+        &ymd[4..6],
+        &ymd[6..8],
+        &hms[0..2],
+        &hms[2..4],
+        &hms[4..6]
+    ))
 }
 
 /// How badly a doctrine wants a boost.
@@ -973,6 +1034,58 @@ mod tests {
         assert_eq!(Priority::parse(" low "), Priority::Low);
         assert_eq!(Priority::parse("urgent"), Priority::Medium);
         assert_eq!(Priority::parse(""), Priority::Medium);
+    }
+}
+
+
+
+#[cfg(test)]
+mod file_window_tests {
+    use super::{covers, file_start, MAX_SESSION};
+
+    fn at(s: &str) -> i64 {
+        crate::intel::parse_eve_time(s).unwrap()
+    }
+
+    #[test]
+    fn reads_the_session_stamp_out_of_the_name() {
+        assert_eq!(
+            file_start("awesomeboosts_20260919_110504_2119400938.txt"),
+            Some(at("2026.09.19 11:05:04"))
+        );
+        // A channel whose own name holds an underscore still parses: the stamp is taken from the
+        // end, not the start.
+        assert_eq!(
+            file_start("private chat (2)_20260919_110504_2119400938.txt"),
+            Some(at("2026.09.19 11:05:04"))
+        );
+    }
+
+    /// Anything unrecognised is read rather than skipped. Losing a real message to a naming
+    /// convention nobody documented is worse than reading one file too many.
+    #[test]
+    fn an_unparseable_name_is_kept() {
+        assert_eq!(file_start("awesomeboosts.txt"), None);
+        assert!(covers("awesomeboosts.txt", 0, None));
+        assert!(covers("awesomeboosts_notadate_nope_1.txt", 0, None));
+    }
+
+    #[test]
+    fn keeps_only_what_could_overlap_the_fleet() {
+        let start = at("2026.09.19 19:05:54");
+        let end = at("2026.09.19 19:43:46");
+        let f = |s: &str| format!("awesomeboosts_{s}_2119400938.txt");
+        // Started inside the fleet.
+        assert!(covers(&f("20260919_191000"), start, Some(end)));
+        // Started before it and could still be running.
+        assert!(covers(&f("20260919_090000"), start, Some(end)));
+        // Started after the fleet closed.
+        assert!(!covers(&f("20260919_200000"), start, Some(end)));
+        // Older than any session could bridge.
+        assert!(!covers(&f("20260901_090000"), start, Some(end)));
+        // A live fleet has no end, so nothing later is ruled out.
+        assert!(covers(&f("20260920_200000"), start, None));
+        assert!(!covers(&f("20260919_190000"), start + MAX_SESSION + 3600, Some(i64::MAX)));
     }
 }
 

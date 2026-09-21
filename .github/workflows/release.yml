@@ -55,6 +55,9 @@ jobs:
             libxkbcommon-dev libwayland-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
             libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
+          # No gtk or webkit here on purpose: this job builds default features, which never enable
+          # `fleet-auth`, so nothing links the sign-in webview. cross-check.yml needs them because
+          # it runs --all-features.
 
       # Cargo.toml is the source of truth, so a mismatched tag fails the build instead of rewriting it.
       - name: Verify Cargo.toml version matches tag

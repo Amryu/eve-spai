@@ -911,7 +911,6 @@ mod tests {
         assert_eq!(e.cyno.as_deref(), Some("Evance Glann"));
     }
 
-    #[test]
     /// A stand-down is the one line that neither sounds the siren nor pulls the FC out of the game.
     #[test]
     fn a_stand_down_is_recognised() {

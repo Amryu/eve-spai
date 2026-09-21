@@ -18,6 +18,9 @@ pub enum FleetError {
     Http { status: u16, body: String },
     Transport(String),
     Decode(String),
+    /// A write the user has not turned on yet. `start` cannot fake a fleet id, so it says this
+    /// instead of handing the UI an id that navigates nowhere.
+    WritesHeld,
 }
 
 impl std::fmt::Display for FleetError {
@@ -28,8 +31,24 @@ impl std::fmt::Display for FleetError {
             FleetError::Http { status, body } => write!(f, "HTTP {status}: {body}"),
             FleetError::Transport(e) => write!(f, "could not reach the dashboard: {e}"),
             FleetError::Decode(e) => write!(f, "unexpected reply: {e}"),
+            FleetError::WritesHeld => write!(f, "writes are off: the request was recorded, not sent"),
         }
     }
+}
+
+/// How much of what the tab does actually leaves the machine.
+///
+/// Two independent questions the dry run used to answer with one bool: whether the data on screen
+/// is invented, and whether a write is sent. A live read-only session is truthful about its reads
+/// and still holds its writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Nothing leaves the machine. The spoof.
+    DryRun,
+    /// Reads go out, writes are recorded and held.
+    ReadOnly,
+    /// Everything goes out.
+    Live,
 }
 
 /// Who the app is acting as.
@@ -72,7 +91,7 @@ pub struct CallRecord {
 }
 
 impl CallRecord {
-    fn new(method: Method, path: impl Into<String>, body: Option<serde_json::Value>) -> Self {
+    pub(crate) fn new(method: Method, path: impl Into<String>, body: Option<serde_json::Value>) -> Self {
         Self { at: chrono::Utc::now().timestamp(), method, path: path.into(), body }
     }
 
@@ -104,13 +123,15 @@ pub enum SearchKind {
 }
 
 impl SearchKind {
+    /// Under `search`, not under each entity's own controller: `POST /api/v1/character/` is the
+    /// account-characters route and answers 405, which is why every type-ahead came up empty.
     fn path(self) -> &'static str {
         match self {
-            SearchKind::Character => "/api/v1/character/",
-            SearchKind::Corporation => "/api/v1/corporation/",
-            SearchKind::Alliance => "/api/v1/alliance/",
-            SearchKind::FleetSetup => "/api/v1/fleet-setup/",
-            SearchKind::SolarSystem => "/api/v1/solar-system/",
+            SearchKind::Character => "/api/v1/search/character",
+            SearchKind::Corporation => "/api/v1/search/corporation",
+            SearchKind::Alliance => "/api/v1/search/alliance",
+            SearchKind::FleetSetup => "/api/v1/search/fleet-setup",
+            SearchKind::SolarSystem => "/api/v1/search/solar-system",
         }
     }
 }
@@ -126,6 +147,9 @@ pub enum Action {
     Exception(ExceptionRequest),
     AssignDistribution { wing: WingId, distribution: DistributionId },
     Invite { character_id: i64 },
+    /// Hands the fleet to another character, who must already be the boss of an in-game fleet.
+    /// The dashboard checks that with `boss_check` before it will let the button go.
+    Migrate { character_id: i64 },
     Move { character_id: i64, wing: WingId, squad: SquadId },
     Kick { character_id: i64, exclude: bool },
     KickMany { character_ids: Vec<i64>, exclude: bool },
@@ -165,6 +189,8 @@ pub mod calls {
     pub const ODATA: &str = "/api/odata/v1";
     /// The page size the site's own history table asks for.
     pub const HISTORY_PAGE: u32 = 20;
+    /// The page size the site's own reference lookups ask for.
+    pub const REFERENCE_PAGE: u32 = 50;
 
     pub fn is_authenticated() -> CallRecord {
         CallRecord::new(Method::Get, "/api/v1/authentication/is-authenticated", None)
@@ -180,9 +206,17 @@ pub mod calls {
 
     /// One of the reference collections, ordered by name the way the page asks for it.
     pub fn reference(set: &str) -> CallRecord {
+        reference_at(set, 0)
+    }
+
+    /// The same, from an offset. The page's own request is always the first page, but a collection
+    /// longer than `REFERENCE_PAGE` has to be walked or the tag list silently loses its tail.
+    pub fn reference_at(set: &str, skip: u32) -> CallRecord {
         CallRecord::new(
             Method::Get,
-            format!("{ODATA}/{set}?$count=true&$top=50&$skip=0&$orderby=name asc"),
+            format!(
+                "{ODATA}/{set}?$count=true&$top={REFERENCE_PAGE}&$skip={skip}&$orderby=name asc"
+            ),
             None,
         )
     }
@@ -195,15 +229,30 @@ pub mod calls {
         CallRecord::new(Method::Get, format!("/api/v1/tag/list/{strategic}"), None)
     }
 
-    pub fn history(from: &str, to: &str, skip: u32) -> CallRecord {
-        CallRecord::new(
-            Method::Get,
-            format!(
-                "{ODATA}/fleetHistoryItem?$count=true&$expand=tags&$top={HISTORY_PAGE}&$skip={skip}\
-                 &$orderby=closedAt desc&$filter=startedAt ge {from} and startedAt le {to}"
-            ),
-            None,
-        )
+    /// The fleet history, newest first, optionally narrowed by a search.
+    ///
+    /// No date window. The site's own table asks for one month, which hides most of the history
+    /// behind a boundary nothing on screen explains. `$count=true` reports the real total whatever
+    /// `$top` is, so the pager knows how many there are without reading them.
+    ///
+    /// The search runs server side across the three fields worth matching, so finding a fleet from
+    /// last year costs one request rather than walking every page.
+    pub fn history(search: &str, skip: u32) -> CallRecord {
+        let mut path = format!(
+            "{ODATA}/fleetHistoryItem?$count=true&$expand=tags&$top={HISTORY_PAGE}&$skip={skip}\
+             &$orderby=closedAt desc"
+        );
+        let q = search.trim();
+        if !q.is_empty() {
+            // OData escapes a quote by doubling it; without this a name with an apostrophe is a
+            // syntax error rather than a search.
+            let q = q.to_lowercase().replace('\'', "''");
+            path.push_str(&format!(
+                "&$filter=contains(tolower(name),'{q}') or contains(tolower(startedBy),'{q}') \
+                 or contains(tolower(setupName),'{q}')"
+            ));
+        }
+        CallRecord::new(Method::Get, path, None)
     }
 
     pub fn read(id: &FleetId) -> CallRecord {
@@ -234,11 +283,9 @@ pub mod calls {
         CallRecord::new(Method::Post, format!("{FLEET}/start"), json(req))
     }
 
-    pub fn ping(req: &PingRequest) -> CallRecord {
-        CallRecord::new(Method::Post, format!("{FLEET}/ping"), json(req))
-    }
-
-    /// The same body as `ping`, and upstream it sends nothing: it renders the ping and the MOTD.
+    /// Renders the ping and the MOTD and sends nothing. The only one of the ping routes this uses:
+    /// `POST /fleet/ping` does not ping either, it posts the request into skirmish_commanders, and
+    /// the app can post there itself.
     pub fn ping_preview(req: &PingRequest) -> CallRecord {
         CallRecord::new(Method::Post, format!("{FLEET}/ping-preview"), json(req))
     }
@@ -265,6 +312,12 @@ pub mod calls {
                 Method::Post,
                 format!("{FLEET}/{id}/member"),
                 Some(serde_json::json!({ "characterId": character_id })),
+            ),
+            // No body: the target is the path's last segment, the way the site sends it.
+            Action::Migrate { character_id } => CallRecord::new(
+                Method::Put,
+                format!("{FLEET}/{id}/migrate/{character_id}"),
+                None,
             ),
             Action::Move { character_id, wing, squad } => CallRecord::new(
                 Method::Put,
@@ -302,6 +355,12 @@ pub mod calls {
     }
 }
 
+/// A live push stream, read one event at a time from a thread of its own. `next` blocks until the
+/// server says something or the connection ends.
+pub trait HubFeed: Send {
+    fn next(&mut self) -> Option<crate::fleets::hub::Event>;
+}
+
 /// Answers the tab's questions. The dry-run spoof and a future HTTP client both wear this.
 ///
 /// `&self` throughout so an `Arc<dyn FleetBackend>` can be handed to a worker thread; an
@@ -316,7 +375,7 @@ pub trait FleetBackend: Send + Sync + 'static {
     fn mumble_channels(&self) -> Result<Vec<ChannelItem>>;
     fn tags(&self) -> Result<Vec<TagItem>>;
     fn active(&self, strategic: bool) -> Result<Vec<FleetRow>>;
-    fn history(&self, skip: u32) -> Result<Paged<FleetRow>>;
+    fn history(&self, search: &str, skip: u32) -> Result<Paged<FleetRow>>;
     fn fleet(&self, id: &FleetId) -> Result<Fleet>;
     fn report(&self, id: &FleetId) -> Result<FleetReport>;
     fn composition(&self, id: &FleetId) -> Result<Composition>;
@@ -327,11 +386,20 @@ pub trait FleetBackend: Send + Sync + 'static {
 
     fn ping_preview(&self, req: &PingRequest) -> Result<Written<PingPreview>>;
     fn start(&self, req: &StartRequest) -> Result<Written<FleetId>>;
-    fn ping(&self, req: &PingRequest) -> Result<Written<()>>;
     fn act(&self, id: &FleetId, action: &Action) -> Result<Written<()>>;
 
+    /// Opens the dashboard's push stream for one fleet, so a tracked fleet arrives instead of
+    /// being polled for. A backend with nothing to push says so and the caller keeps polling.
+    fn open_hub(&self, _id: &FleetId) -> Result<Box<dyn HubFeed>> {
+        Err(FleetError::Transport("this backend has no hub".to_owned()))
+    }
+
+    fn mode(&self) -> Mode;
+
     /// Whether nothing leaves the machine, which is what the tab's banner reports.
-    fn is_dry_run(&self) -> bool;
+    fn is_dry_run(&self) -> bool {
+        self.mode() == Mode::DryRun
+    }
 }
 
 #[cfg(test)]
@@ -378,12 +446,11 @@ mod tests {
     /// Requesting a ping and previewing it are the same request to a different path, so a preview
     /// the FC approved is exactly what gets sent.
     #[test]
-    fn a_ping_and_its_preview_differ_only_in_the_path() {
-        let req = ping_req();
-        let (p, v) = (calls::ping(&req), calls::ping_preview(&req));
-        assert_eq!(p.body, v.body);
-        assert_eq!(p.path, "/api/v1/fleet/ping");
+    fn the_preview_carries_the_whole_ping_request() {
+        let v = calls::ping_preview(&ping_req());
         assert_eq!(v.path, "/api/v1/fleet/ping-preview");
+        assert_eq!(v.method, Method::Post);
+        assert!(v.pretty_body().expect("a body").contains("\"characterId\": 2119400938"));
     }
 
     /// The start body is the form plus what the page attaches, flattened into one object.
@@ -472,16 +539,26 @@ mod tests {
         );
     }
 
-    /// The history query is the site's own, down to the page size and the ordering.
+    /// The history query is the site's own page size and ordering, with no date window: the
+    /// site's month hides most of the history, and `$count=true` reports the real total either
+    /// way. Verified against the live service, which answered 119 unfiltered against 53 for the
+    /// month.
     #[test]
-    fn the_history_query_is_the_captured_one() {
-        let rec = calls::history("2026-08-19T00:00:00.000Z", "2026-09-19T23:59:59.000Z", 0);
+    fn the_history_query_is_unbounded_and_searchable() {
         assert_eq!(
-            rec.path,
+            calls::history("", 0).path,
             "/api/odata/v1/fleetHistoryItem?$count=true&$expand=tags&$top=20&$skip=0\
-             &$orderby=closedAt desc&$filter=startedAt ge 2026-08-19T00:00:00.000Z and \
-             startedAt le 2026-09-19T23:59:59.000Z"
+             &$orderby=closedAt desc"
         );
+        assert_eq!(
+            calls::history("  Home Defence ", 40).path,
+            "/api/odata/v1/fleetHistoryItem?$count=true&$expand=tags&$top=20&$skip=40\
+             &$orderby=closedAt desc&$filter=contains(tolower(name),'home defence') or \
+             contains(tolower(startedBy),'home defence') or \
+             contains(tolower(setupName),'home defence')"
+        );
+        // A quote is doubled, or a name carrying one is a syntax error instead of a search.
+        assert!(calls::history("o'neil", 0).path.contains("'o''neil'"));
         assert_eq!(calls::reference("tagItem").path,
                    "/api/odata/v1/tagItem?$count=true&$top=50&$skip=0&$orderby=name asc");
     }
@@ -501,9 +578,23 @@ mod tests {
     fn bodyless_writes_send_no_body() {
         let id = FleetId("abc".into());
         for a in [Action::Close, Action::SetMotd, Action::KickAll, Action::KickCapsules,
-                  Action::AddWing, Action::AddSquad(WingId(1))] {
+                  Action::AddWing, Action::AddSquad(WingId(1)),
+                  Action::Migrate { character_id: 90_000_001 }] {
             assert!(calls::act(&id, &a).body.is_none(), "{a:?} invented a body");
         }
+    }
+
+    /// Handing a fleet over puts the new boss in the path, not in a body. Taken from the bundle:
+    /// `migrateFleet(e,i){return this.http.put(`${this.apiPath}/${e}/migrate/${i}`,void 0)}`, and
+    /// `i` is the character id the picker's boss check passed.
+    #[test]
+    fn migrating_names_the_new_boss_in_the_path() {
+        let rec =
+            calls::act(&FleetId("abc".into()), &Action::Migrate { character_id: 2_119_400_938 });
+        assert_eq!(rec.method, Method::Put);
+        assert_eq!(rec.path, "/api/v1/fleet/abc/migrate/2119400938");
+        assert!(rec.body.is_none());
+        assert_eq!(Action::Migrate { character_id: 1 }.perm(), Perm::AccessFleet);
     }
 
     /// Kicking several posts the plain array of ids the site sends.
@@ -517,13 +608,21 @@ mod tests {
         assert_eq!(rec.body.expect("a body"), serde_json::json!([1, 2, 3]));
     }
 
-    /// Every type-ahead is the same shape on its own path.
+    /// Every type-ahead is the same shape under the one search controller. Pinned against live
+    /// replies: the per-entity paths this first used answer 405, which is silent in a type-ahead.
     #[test]
-    fn searches_share_one_body() {
+    fn searches_share_one_body_and_live_under_search() {
         let rec = calls::search(SearchKind::SolarSystem, "C-J6", true);
-        assert_eq!(rec.path, "/api/v1/solar-system/");
+        assert_eq!(rec.path, "/api/v1/search/solar-system");
         assert_eq!(rec.body.expect("a body"), serde_json::json!({"value": "C-J6", "isStrict": true}));
-        assert_eq!(calls::search(SearchKind::Character, "A", false).path, "/api/v1/character/");
+        for (kind, path) in [
+            (SearchKind::Character, "/api/v1/search/character"),
+            (SearchKind::Corporation, "/api/v1/search/corporation"),
+            (SearchKind::Alliance, "/api/v1/search/alliance"),
+            (SearchKind::FleetSetup, "/api/v1/search/fleet-setup"),
+        ] {
+            assert_eq!(calls::search(kind, "A", false).path, path);
+        }
     }
 
     /// An action knows which permission it needs, so the UI and the backend cannot disagree.
@@ -535,6 +634,51 @@ mod tests {
                    Perm::MoveMember);
         assert_eq!(Action::FileReport(ReportRequest::default()).perm(), Perm::FlagFleet);
         assert_eq!(Action::Bonus(BonusRequest::default()).perm(), Perm::AccessPayouts);
+    }
+
+    /// Every path has to survive becoming a URL. The OData queries carry literal spaces, and a
+    /// form encoder would turn them into `+`, which ASP.NET's OData parser rejects. `Url::join`
+    /// percent-encodes them, so this pins the thing the HTTP backend relies on.
+    #[test]
+    fn every_path_joins_onto_the_base_without_mangling_the_query() {
+        let base = reqwest::Url::parse("https://fleets.gnf.lt").expect("a base");
+        let records = [
+            calls::is_authenticated(),
+            calls::characters(),
+            calls::sigs(),
+            calls::reference("tagItem"),
+            calls::reference_at("setupItem", 50),
+            calls::active(true),
+            calls::tag_list(false),
+            calls::history("Home Defence", 0),
+            calls::ping_preview(&ping_req()),
+        ];
+        for rec in records {
+            let url = base.join(&rec.path).unwrap_or_else(|e| panic!("{}: {e}", rec.path));
+            assert!(!url.as_str().contains(' '), "{url} kept a literal space");
+            assert!(!url.query().unwrap_or_default().contains('+'), "{url} encoded a space as +");
+        }
+        let h = base
+            .join(&calls::history("Home Defence", 0).path)
+            .expect("the history url");
+        assert!(h.as_str().contains("$orderby=closedAt%20desc"));
+        // The `or`s between filter clauses carry spaces too.
+        assert!(h.as_str().contains("%20or%20"));
+    }
+
+    #[test]
+    fn an_odata_page_becomes_a_pager_page() {
+        let body = r#"{"@odata.count":137,"value":[{"id":1,"name":"a"},{"id":2,"name":"b"}]}"#;
+        let page: ODataPage<TagItem> = serde_json::from_str(body).expect("an envelope");
+        let paged: Paged<TagItem> = page.into();
+        assert_eq!(paged.total, 137);
+        assert_eq!(paged.items.len(), 2);
+
+        // No `@odata.count` when the request did not ask for one: the total is what arrived.
+        let page: ODataPage<TagItem> =
+            serde_json::from_str(r#"{"value":[{"id":1,"name":"a"}]}"#).expect("an envelope");
+        let paged: Paged<TagItem> = page.into();
+        assert_eq!((paged.total, paged.items.len()), (1, 1));
     }
 
     #[test]

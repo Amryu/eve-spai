@@ -225,10 +225,12 @@ mod tests {
                     ship_type_name: "Hull".into(),
                     ship_group: (*group).to_owned(),
                     role: String::new(),
-                });
+                pap_count: 0,
+            });
             }
         }
         Composition {
+            flat: false,
             commander: None,
             wings: vec![Wing {
                 id: WingId(1),
@@ -335,10 +337,7 @@ mod tests {
 
         // A doctrine that flies command ships discounts the destroyers even before one undocks.
         let d = crate::fleets::doctrine::Doctrine {
-            ships: vec![crate::fleets::doctrine::DoctrineShip {
-                type_id: 0,
-                name: "Command Ship".into(),
-            }],
+            ships: vec![crate::fleets::doctrine::DoctrineShip { type_id: 0, name: "Command Ship".into(), main: false }],
             ..Default::default()
         };
         assert_eq!(boosters(&destroyers_only, Some(&d)), (0, 0));

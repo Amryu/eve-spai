@@ -84,6 +84,28 @@ pub enum Reason {
     TooBig,
 }
 
+impl Report {
+    /// The rejects, one row per hull and reason, most pilots first.
+    pub fn rejected_groups(&self) -> Vec<RejectedGroup> {
+        let mut out: Vec<RejectedGroup> = Vec::new();
+        for r in &self.rejected {
+            match out.iter_mut().find(|g| g.ship == r.ship && g.why == r.why) {
+                Some(g) => g.pilots.push(r.pilot.clone()),
+                None => out.push(RejectedGroup {
+                    ship: r.ship.clone(),
+                    why: r.why,
+                    pilots: vec![r.pilot.clone()],
+                }),
+            }
+        }
+        for g in &mut out {
+            g.pilots.sort();
+        }
+        out.sort_by(|a, b| b.pilots.len().cmp(&a.pilots.len()).then_with(|| a.ship.cmp(&b.ship)));
+        out
+    }
+}
+
 impl Reason {
     pub fn label(self) -> &'static str {
         match self {
@@ -101,6 +123,16 @@ pub struct Rejected {
     pub pilot: String,
     pub ship: String,
     pub why: Reason,
+}
+
+/// Rejected logi grouped by hull and reason: "4 Basilisk, too big for the fleet" rather than four
+/// lines naming each pilot, which in a large fleet ran the length of the sidebar.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RejectedGroup {
+    pub ship: String,
+    pub why: Reason,
+    /// Kept for the hover, so the FC can still find who to talk to.
+    pub pilots: Vec<String>,
 }
 
 /// What the fleet's logi actually amounts to.
@@ -136,7 +168,8 @@ impl Report {
 /// The size of hull the fleet is built around, taken from what most of it is flying.
 ///
 /// Logi is left out of the vote: a fleet of frigates with two Guardians in it is a frigate fleet
-/// with the wrong logi, not a cruiser fleet.
+/// with the wrong logi, not a cruiser fleet. So is any hull whose group is unknown, which is
+/// every hull when the tree came from the roster and nothing filled the groups in.
 pub fn fleet_size(comp: &Composition) -> Size {
     let mut small = 0usize;
     let mut line = 0usize;
@@ -150,6 +183,9 @@ pub fn fleet_size(comp: &Composition) -> Size {
             Category::Capital => capital += 1,
             Category::Tackle | Category::Interdiction => small += 1,
             _ => match m.ship_group.trim().to_lowercase().as_str() {
+                // A hull whose group we never resolved abstains. Counting it as a cruiser once
+                // made every roster-only fleet ask for cruiser logi, whatever it was flying.
+                "" => {}
                 "frigate" | "destroyer" | "tactical destroyer" | "assault frigate"
                 | "covert ops" | "stealth bomber" | "electronic attack ship" | "interceptor"
                 | "expedition frigate" | "corvette" => small += 1,
@@ -166,13 +202,51 @@ pub fn fleet_size(comp: &Composition) -> Size {
     }
 }
 
+/// What logi the doctrine asks for, read off the logi hulls it lists.
+///
+/// Far better evidence than counting who turned up: a Flycatcher doctrine that lists Kirin and
+/// Scalpel is stating outright that its logi is frigate-sized, where a headcount is swayed by
+/// boosters, support, and whoever happens to be in fleet first.
+///
+/// The size is the one the most listed hulls share, smallest on a tie. The tank comes with it when
+/// every listed hull reps the same way, and is `None` when they disagree.
+pub fn doctrine_logi(doctrine: Option<&Doctrine>) -> Option<(Option<Tank>, Size)> {
+    let d = doctrine?;
+    let hulls: Vec<(Option<Tank>, Size)> =
+        d.ships.iter().filter_map(|s| logi_hull(&s.name, "")).collect();
+    if hulls.is_empty() {
+        return None;
+    }
+    let size = [Size::Small, Size::Line, Size::Capital]
+        .into_iter()
+        .map(|s| (hulls.iter().filter(|(_, hs)| *hs == s).count(), s))
+        .filter(|(n, _)| *n > 0)
+        .max_by_key(|(n, s)| (*n, std::cmp::Reverse(*s)))
+        .map(|(_, s)| s)?;
+    let tanks: Vec<Tank> = hulls.iter().filter_map(|(t, _)| *t).collect();
+    let tank = tanks.first().copied().filter(|f| tanks.iter().all(|t| t == f));
+    Some((tank, size))
+}
+
+/// Whether the doctrine names this exact logi hull, which settles the size question for it.
+fn doctrine_names(doctrine: Option<&Doctrine>, ship: &str) -> bool {
+    doctrine.is_some_and(|d| {
+        d.ships.iter().any(|s| {
+            s.name.trim().eq_ignore_ascii_case(ship.trim()) && logi_hull(&s.name, "").is_some()
+        })
+    })
+}
+
 /// Sorts the fleet's logi into what counts and what does not.
 ///
 /// `tank` is what the fleet reps with, which the caller knows from the doctrine's boost
 /// requirements. Without it nothing is rejected for the wrong tank, since guessing would call
 /// perfectly good logi useless.
 pub fn report(comp: &Composition, doctrine: Option<&Doctrine>, tank: Option<Tank>) -> Report {
-    let size = fleet_size(comp);
+    let from_doctrine = doctrine_logi(doctrine);
+    let size = from_doctrine.map(|(_, s)| s).unwrap_or_else(|| fleet_size(comp));
+    // The doctrine's own logi hulls settle the tank too, when the boosts did not say.
+    let tank = tank.or_else(|| from_doctrine.and_then(|(t, _)| t));
     let mut out = Report { fleet: comp.total(), tank, size, ..Report::default() };
     for m in comp.members() {
         let Some((hull_tank, hull_size)) = logi_hull(&m.ship_type_name, &m.ship_group) else {
@@ -207,10 +281,14 @@ fn reject(
     if doctrine.is_some() && super::doctrine::classify_in(comp, m, doctrine).odd() {
         return Some(Reason::OffDoctrine);
     }
-    match hull_size.cmp(&want_size) {
-        std::cmp::Ordering::Less => return Some(Reason::TooSmall),
-        std::cmp::Ordering::Greater => return Some(Reason::TooBig),
-        std::cmp::Ordering::Equal => {}
+    // A doctrine that lists this hull has already answered the size question, and a doctrine
+    // listing two tiers is happy with either. Only judge size for a hull it never named.
+    if !doctrine_names(doctrine, &m.ship_type_name) {
+        match hull_size.cmp(&want_size) {
+            std::cmp::Ordering::Less => return Some(Reason::TooSmall),
+            std::cmp::Ordering::Greater => return Some(Reason::TooBig),
+            std::cmp::Ordering::Equal => {}
+        }
     }
     match (hull_tank, want_tank) {
         (Some(a), Some(b)) if a != b => Some(Reason::WrongTank),
@@ -218,8 +296,156 @@ fn reject(
     }
 }
 
+/// A fleet nobody could classify must not be called a cruiser fleet: that is what asked a
+/// Flycatcher fleet for Guardians.
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use crate::fleets::model::{Squad, SquadId, Wing, WingId};
+    use crate::fleets::doctrine::Doctrine;
+
+    fn comp_of(groups: &[(&str, &str)]) -> Composition {
+        let members = groups
+            .iter()
+            .enumerate()
+            .map(|(i, (ship, group))| Member {
+                character_id: i as i64,
+                name: format!("Pilot {i}"),
+                ship_type_id: i as i64,
+                ship_type_name: (*ship).to_owned(),
+                ship_group: (*group).to_owned(),
+                role: String::new(),
+            pap_count: 0,
+        })
+            .collect();
+        Composition {
+            commander: None,
+            wings: vec![Wing {
+                id: WingId(1),
+                name: "Wing 1".into(),
+                commander: None,
+                squads: vec![Squad {
+                    id: SquadId(1),
+                    name: "Squad 1".into(),
+                    commander: None,
+                    members,
+                }],
+            }],
+            flat: false,
+        }
+    }
+
+    fn doctrine_of(ships: &[&str]) -> Doctrine {
+        Doctrine {
+            setup_id: crate::fleets::model::SetupId(1),
+            setup_name: "Test".to_owned(),
+            ships: ships
+                .iter()
+                .map(|n| crate::fleets::doctrine::DoctrineShip { type_id: 0, name: (*n).to_owned(), main: false })
+                .collect(),
+            support: Vec::new(),
+            tank: None,
+            strict: false,
+        }
+    }
+
+    /// The doctrine's own logi hulls are the answer, not a headcount of who turned up.
+    #[test]
+    fn the_doctrine_says_what_logi_it_wants() {
+        let dictors = doctrine_of(&["Flycatcher", "Kirin", "Scalpel"]);
+        assert_eq!(doctrine_logi(Some(&dictors)), Some((Some(Tank::Shield), Size::Small)));
+
+        let cruisers = doctrine_of(&["Ferox Navy Issue", "Basilisk"]);
+        assert_eq!(doctrine_logi(Some(&cruisers)), Some((Some(Tank::Shield), Size::Line)));
+
+        // Two tiers listed: the one more hulls agree on, and no tank claim when they disagree.
+        let both = doctrine_of(&["Kirin", "Scalpel", "Guardian"]);
+        assert_eq!(doctrine_logi(Some(&both)), Some((None, Size::Small)));
+
+        // A doctrine that names no logi has nothing to say, and the headcount stands.
+        assert_eq!(doctrine_logi(Some(&doctrine_of(&["Flycatcher"]))), None);
+        assert_eq!(doctrine_logi(None), None);
+    }
+
+    /// The bug this came from: a Flycatcher fleet read through the roster asked for Guardians and
+    /// rejected the Kirins its own doctrine lists.
+    #[test]
+    fn dictor_doctrine_logi_is_not_rejected_for_being_small() {
+        let d = doctrine_of(&["Flycatcher", "Kirin", "Scalpel"]);
+        // Groups blank, the way the roster path used to leave them.
+        let comp = comp_of(&[
+            ("Flycatcher", ""),
+            ("Flycatcher", ""),
+            ("Kirin", ""),
+            ("Scalpel", ""),
+        ]);
+        let r = report(&comp, Some(&d), None);
+        assert_eq!(r.size, Size::Small, "the doctrine names frigate logi");
+        assert_eq!(r.tank, Some(Tank::Shield), "and shield logi at that");
+        assert_eq!(r.rejected, vec![], "its own logi must count");
+        assert_eq!(r.counted, 2);
+
+        // A hull the doctrine never named is still judged on size.
+        let comp = comp_of(&[("Flycatcher", "Interdictor"), ("Guardian", "Logistics")]);
+        let r = report(&comp, Some(&d), None);
+        assert_eq!(r.counted, 0);
+        assert_eq!(r.rejected.len(), 1);
+    }
+
+    #[test]
+    fn dictors_make_a_small_fleet_and_unknown_hulls_abstain() {
+        let dictors = [("Flycatcher", "Interdictor"); 10];
+        assert_eq!(fleet_size(&comp_of(&dictors)), Size::Small);
+
+        // The roster path used to hand every member an empty group, and every one of them voted
+        // for cruiser.
+        let unknown: Vec<(&str, &str)> =
+            dictors.iter().map(|(s, _)| (*s, "")).collect();
+        assert_ne!(fleet_size(&comp_of(&unknown)), Size::Small, "nothing to go on");
+
+        // One classified dictor is enough to settle it, however many unknowns surround it.
+        let mut mixed: Vec<(&str, &str)> = unknown.clone();
+        mixed.push(("Flycatcher", "Interdictor"));
+        assert_eq!(fleet_size(&comp_of(&mixed)), Size::Small);
+
+        // Boosters do not drag a dictor fleet up to cruiser size.
+        let mut boosted: Vec<(&str, &str)> = dictors.to_vec();
+        boosted.push(("Damnation", "Command Ship"));
+        assert_eq!(fleet_size(&comp_of(&boosted)), Size::Small);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A fleet with a dozen wrong-sized logi reads as one row per hull and reason, most first,
+    /// with every pilot still reachable for the FC who has to talk to them.
+    #[test]
+    fn rejected_logi_is_summed_by_hull_and_reason() {
+        let r = |pilot: &str, ship: &str, why| super::Rejected {
+            pilot: pilot.to_owned(),
+            ship: ship.to_owned(),
+            why,
+        };
+        let report = super::Report {
+            rejected: vec![
+                r("B", "Basilisk", super::Reason::TooBig),
+                r("A", "Basilisk", super::Reason::TooBig),
+                r("C", "Guardian", super::Reason::WrongTank),
+                r("D", "Basilisk", super::Reason::OffDoctrine),
+                r("E", "Basilisk", super::Reason::TooBig),
+            ],
+            ..Default::default()
+        };
+        let g = report.rejected_groups();
+        assert_eq!(g.len(), 3, "one row per hull and reason: {g:?}");
+        assert_eq!(g[0].ship, "Basilisk");
+        assert_eq!(g[0].why, super::Reason::TooBig);
+        assert_eq!(g[0].pilots, vec!["A", "B", "E"]);
+        // The same hull for a different reason is a different conversation, so its own row.
+        assert!(g.iter().any(|x| x.ship == "Basilisk" && x.why == super::Reason::OffDoctrine));
+        assert_eq!(g.iter().map(|x| x.pilots.len()).sum::<usize>(), 5, "a pilot went missing");
+    }
+
     use super::*;
     use crate::fleets::doctrine::DoctrineShip;
     use crate::fleets::model::{Squad, SquadId, Wing, WingId};
@@ -232,11 +458,13 @@ mod tests {
             ship_type_name: ship.to_owned(),
             ship_group: group.to_owned(),
             role: String::new(),
+            pap_count: 0,
         }
     }
 
     fn comp(members: Vec<Member>) -> Composition {
         Composition {
+            flat: false,
             commander: None,
             wings: vec![Wing {
                 id: WingId(1),
@@ -342,8 +570,8 @@ mod tests {
             setup_id: crate::fleets::model::SetupId(46),
             setup_name: "Shield Cruisers".into(),
             ships: vec![
-                DoctrineShip { type_id: 1, name: "Muninn".into() },
-                DoctrineShip { type_id: 4, name: "Scimitar".into() },
+                DoctrineShip { type_id: 1, name: "Muninn".into(), main: false },
+                DoctrineShip { type_id: 4, name: "Scimitar".into(), main: false },
             ],
             support: Vec::new(),
             tank: Some(Tank::Shield),

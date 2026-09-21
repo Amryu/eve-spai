@@ -833,7 +833,7 @@ fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
 
 /// The rescue feed on its own. The rescue window itself has no scene, so this renders the chat the
 /// way `uitest_rescue_chat_lines_are_one_line_tall` drives it.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
     let base = fixtures::now();
     let msgs = vec![
@@ -849,7 +849,7 @@ fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// The clock over the checklist, at a fixed time so the render is the same every run, with the
 /// checklist under it the way the ops column stacks them.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
     harness::scratch_profile();
     let mut state: Option<crate::rescue::RescueState> = None;
@@ -884,6 +884,13 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// dry run renders beside it.
 #[cfg(feature = "fleet")]
 fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    fleet_start_scene_with(name, size, false)
+}
+
+/// `tracked` leaves the fixture's FC boss of an active fleet, which is what the double-track
+/// guard is for. Off, the form is in its normal ready-to-track state.
+#[cfg(feature = "fleet")]
+fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -892,8 +899,18 @@ fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
             a.settings.fleet_enabled = true;
             a.settings.fleet_presets = fixtures::fleet_presets();
             a.view = View::Fleet;
+            // Traffic in both docked rooms, or the chat renders an empty box and its spacing is
+            // never actually looked at.
+            *a.jabber.lock().unwrap() = fixtures::jabber_state_fleet_rooms();
             fixtures::seed_fleet_state(&a);
             fixtures::open_fleet_start(&a);
+            if !tracked {
+                // The spoof's active fleets are led by the fixture's own FC, so without this the
+                // guard fires and the form never shows the state it exists for.
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                st.active_strat.put(Vec::new());
+                st.active_pct.put(Vec::new());
+            }
             a
         });
         app.root_chrome(ui);
@@ -908,6 +925,30 @@ fn fleet_detail_scene(
     size: [f32; 2],
     tab: crate::app::fleet_ui::DetailTab,
 ) -> Scene {
+    fleet_detail_scene_with(name, size, tab, false)
+}
+
+/// `closed` swaps the tree for the flat participant list a finished fleet leaves behind.
+#[cfg(feature = "fleet")]
+fn fleet_detail_scene_with(
+    name: &'static str,
+    size: [f32; 2],
+    tab: crate::app::fleet_ui::DetailTab,
+    closed: bool,
+) -> Scene {
+    fleet_detail_scene_closed(name, size, tab, closed, true)
+}
+
+/// `via_history` decides whether the page was reached through the history or closed underneath the
+/// tracking page. Both have to render the same.
+#[cfg(feature = "fleet")]
+fn fleet_detail_scene_closed(
+    name: &'static str,
+    size: [f32; 2],
+    tab: crate::app::fleet_ui::DetailTab,
+    closed: bool,
+    via_history: bool,
+) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -921,7 +962,12 @@ fn fleet_detail_scene(
             a.fleet_sidebar_open = true;
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
-            fixtures::open_first_fleet(&a);
+            if closed {
+                fixtures::open_closed_fleet_as(&a, via_history);
+            } else {
+                fixtures::open_first_fleet(&a);
+            }
+            a.fleet_booted = true;
             a
         });
         app.root_chrome(ui);
@@ -984,7 +1030,7 @@ fn fleet_confirm_scene(
 }
 
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1062,12 +1108,103 @@ fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
             a.settings.fleet_hulls = fixtures::fleet_hulls();
+            // More hulls than fit, which is what used to push the window past the screen.
+            a.settings.fleet_hulls.extend((0..40).map(|i| crate::settings::FleetHull {
+                setup_id: 46,
+                type_id: 900_000 + i,
+                name: format!("Hull {i}"),
+                main: false,
+            }));
             a.fleet_boost_editor = true;
             // Land on the doctrine that has rules, or the right half renders its empty state.
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("fleet_boost_editor_pick"), 46_i32));
             a
         });
         app.fleet_boost_editor(ctx);
+    })
+}
+
+/// The two dialogs the start form and readiness pane now open instead of growing inline.
+#[cfg(feature = "fleet")]
+fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            // The ping window is its own viewport in the app; rendered inline beside a dialog it
+            // lands on top of it and this scene is about the dialog.
+            a.settings.fleet_ping_window = false;
+            a.settings.fleet_presets = fixtures::fleet_presets();
+            fixtures::seed_fleet_state(&a);
+            // A fleet open behind the dialog, so the breakdown can name what each booster flies.
+            fixtures::open_first_fleet(&a);
+            a.fleet_booted = true;
+            match which {
+                0 => a.fleet_snowflakes_open = Some(crate::app::fleet_ui::SnowflakeTarget::Draft),
+                2 => {
+                    a.fleet_migrate_open = true;
+                    // A character picked and checked, which is the state the button unlocks in.
+                    // One of the account's own characters, which is the only pool offered without
+                    // the startFleetOther permission.
+                    let who = {
+                        let st = a.fleet_state_for_test().lock().unwrap();
+                        let c = st.seed.characters.first().expect("a character").clone();
+                        crate::fleets::model::Labelled { id: c.id, label: c.name }
+                    };
+                    ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("fleet_migrate_pick"), who.clone())
+                    });
+                    let mut st = a.fleet_state_for_test().lock().unwrap();
+                    st.migrate_boss = Some((
+                        who.id,
+                        crate::fleets::model::BossCheck {
+                            is_fleet_boss: true,
+                            backup_available: false,
+                            error_message: None,
+                        },
+                    ));
+                }
+                _ => {
+                    {
+                        let mut st = a.fleet_state_for_test().lock().unwrap();
+                        st.boosts = fixtures::fleet_coverage();
+                        st.boost_lines = fixtures::fleet_boost_lines();
+                    }
+                    a.fleet_boost_detail = Some("Shield Harmonizing".to_owned());
+                }
+            }
+            a
+        });
+        // The specific window, not `root_dialogs`: that also renders the fleet ping viewport,
+        // which lands on top of the dialog this scene is about.
+        match which {
+            0 => app.fleet_snowflakes_window(ctx),
+            2 => app.fleet_migrate_window(ctx),
+            _ => app.fleet_boost_detail_window(ctx),
+        }
+    })
+}
+
+/// The start form's sidebar on its Search tab, which the Presets scene never reaches.
+#[cfg(feature = "fleet")]
+fn fleet_side_search_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::fleet_presets();
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_fleet_start(&a);
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("fleet_side_tab"), 1_u8));
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
     })
 }
 
@@ -1083,7 +1220,6 @@ fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
             std::env::set_var("EVE_SPAI_FLEET_SEED", "/fixture/EVE/fleet-seed.json");
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_character = "Placeholder FC".to_owned();
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
@@ -1434,9 +1570,26 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
     #[cfg(feature = "fleet")]
+    v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_dialog_scene("fleet_migrate", [700.0, 460.0], 2));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_dialog_scene("fleet_boost_detail", [760.0, 560.0], 1));
+    #[cfg(feature = "fleet")]
     v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene("fleet_members", [1280.0, 1420.0], crate::app::fleet_ui::DetailTab::Members));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_detail_scene_with(
+        "fleet_members_closed",
+        [1280.0, 1000.0],
+        crate::app::fleet_ui::DetailTab::Members,
+        true,
+    ));
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene(
         "fleet_composition",
@@ -1453,7 +1606,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
@@ -1471,15 +1624,15 @@ pub(crate) fn all() -> Vec<Scene> {
     ));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     v.push(rescue_timer_scene("rescue_ping_timer", 372));
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     v.push(rescue_timer_scene("rescue_ping_timer_late", 931));
     // With Rescue Mode on, delve911's remove button is disabled while every other room
     // keeps its own. Only meaningful in a build that has the feature.
-    #[cfg(feature = "fc-rescue")]
+    #[cfg(feature = "fleet")]
     v.push(jabber_sidebar_scene_cfg("jabber_sidebar_rescue_pinned", [900.0, 560.0], true, true));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
@@ -3842,7 +3995,7 @@ fn uitest_jabber_blank_body_keeps_its_row() {
 
 /// The rescue window's chat lines stand one line tall too. That window has no scene, so this drives
 /// the feed directly rather than through the window around it.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 #[test]
 fn uitest_rescue_chat_lines_are_one_line_tall() {
     let (line, spacing) = (theme_body_line(), theme_spacing());
@@ -4743,6 +4896,90 @@ fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
 
 
 
+/// With no session there is no rendered preview, and an FC still has to be able to ping. The
+/// fallback renders the same template the rescue uses, from the form.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_ping_falls_back_to_the_local_template() {
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut app = crate::app::SpaiApp::build(&ctx, true);
+    app.settings.fleet_enabled = true;
+    // Set to a name that is not the form's FC, so the assertion below proves which one is used.
+    app.settings.fleet_character = "Stale Setting".to_owned();
+    app.settings.rescue_staging_system = "Placeholder Staging".to_owned();
+    app.settings.rescue_ping_template =
+        "FC Name: {fc}\nFormup Location: {staging}\nComms: Op {op} {mumble}\nDoctrine: {doctrine}"
+            .to_owned();
+    fixtures::seed_fleet_state(&app);
+
+    let out = app.fleet_local_ping();
+    // The FC picked for this fleet. It used to be the old Acting character setting, which named
+    // whoever that was set to even with someone else picked in the form.
+    let fc = app.fleet_state_for_test().lock().unwrap().fc().expect("an fc").1;
+    assert!(out.contains(&format!("FC Name: {fc}")), "{out}");
+    assert!(!out.contains("Stale Setting"), "the retired setting still names the FC: {out}");
+    assert!(out.contains("Formup Location: Placeholder Staging"), "{out}");
+    // Nothing is picked in the draft yet, so the unknowns say so rather than leaking a
+    // placeholder into a ping an FC is about to send.
+    assert!(out.contains("Doctrine: ?"), "{out}");
+    assert!(!out.contains('{'), "a placeholder survived: {out}");
+
+    // And it is what goes to Jabber, wrapped for the bot.
+    let body = crate::fleets::ping::bping("coord", &out);
+    assert!(body.starts_with("!bping coord\n\n"));
+}
+
+/// The boss-check window must not grow because of what is in it, the same feedback loop the
+/// Doctrines window had: a scroll area claiming `available_height` with a button underneath.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_boss_detail_window_height_settles() {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ctx("boss_detail_growth_probe", [900.0, 700.0], move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.fleet_boss_detail = Some(
+                (0..40).map(|i| format!("   at Fleet.Check frame {i}")).collect::<Vec<_>>().join("\n"),
+            );
+            a
+        });
+        app.fleet_boss_detail_window(ctx);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    let mut heights = Vec::new();
+    for _ in 0..12 {
+        harness.run();
+        heights.push(
+            harness
+                .ctx
+                .memory(|m| m.area_rect(egui::Id::new("Fleet boss check")).map(|r| r.height()))
+                .expect("the window did not render"),
+        );
+    }
+    let settled = &heights[1..];
+    assert!(
+        settled.iter().all(|h| (h - settled[0]).abs() < 0.5),
+        "the window is still growing: {heights:?}"
+    );
+    assert!(settled[0] <= 660.0, "the window swallowed the canvas: {heights:?}");
+}
+
+/// A permanent tripwire. The uitest guard redirects `EVE_SPAI_DATA_DIR`, but the keychain sits
+/// outside it, so a developer with a live dashboard session in their keyring must still never get
+/// an `HttpBackend` under test. The headless arm of `SpaiApp::build` is what prevents it.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_headless_never_gets_a_live_fleet_backend() {
+    use crate::fleets::backend::Mode;
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let app = crate::app::SpaiApp::build(&ctx, true);
+    assert_eq!(app.fleet_mode_for_test(), Mode::DryRun);
+}
+
 /// Fails if a dialog scene degrades to the empty root panel, which is what a wrong gate field or a
 /// changed viewport route would look like: `uitest_layout` stays green on a blank scene.
 #[test]
@@ -4859,4 +5096,475 @@ fn uitest_map_layers_offers_the_jove_observatory_filter() {
         labels.iter().any(|l| l.contains(&want)),
         "no Jove observatory layer among the map layers: {labels:?}"
     );
+}
+
+/// The Doctrines window must not grow because of what is in it. It did: the doctrine list sized
+/// itself to `available_height`, the window sized itself to that content, and every frame added a
+/// little more.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_doctrines_window_height_settles() {
+    let mut scene = fleet_boost_editor_scene("doctrines_growth_probe", [1100.0, 760.0]);
+    let mut harness = harness::build(&mut scene, false);
+    harness.ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("fleet_doctrine_io_status"),
+            "Exported 26 doctrines to /fixture/doctrines.json".to_owned(),
+        )
+    });
+    let mut heights = Vec::new();
+    for i in 0..18 {
+        // Halfway through, switch to the hull list, which had no scroll area of its own.
+        if i == 6 {
+            harness.ctx.data_mut(|d| d.insert_temp(egui::Id::new("fleet_doctrine_tab"), 1_u8));
+        }
+        harness.run();
+        let h = harness
+            .ctx
+            .memory(|m| m.area_rect(egui::Id::new("Doctrines")).map(|r| r.height()))
+            .expect("the Doctrines window did not render");
+        heights.push(h);
+    }
+    // The first frame may settle once; after that nothing in the window may move it.
+    let settled = &heights[1..];
+    assert!(
+        settled.iter().all(|h| (h - settled[0]).abs() < 0.5),
+        "the window is still growing: {heights:?}"
+    );
+    assert!(settled[0] <= 720.0, "the window swallowed the canvas: {heights:?}");
+}
+
+/// Toggles must not change size when the pointer crosses them.
+///
+/// egui gives an unframed button a stroke on hover and that stroke counts toward its size, so a
+/// row of tabs shuffles as the mouse moves across it. `SteadySelect` exists to avoid exactly that;
+/// this is the gate, because a screenshot renders one state and cannot see it.
+#[test]
+fn uitest_selectable_toggles_do_not_resize_on_hover() {
+    use crate::app::SteadySelect as _;
+    harness::scratch_profile();
+
+    // Both kinds side by side: the steady helper, and the raw button it replaced. The raw one is
+    // the control. If it ever stops growing, egui changed and this test has lost its teeth.
+    let mut scene = Scene::ui("selftest_hover_size", [420.0, 120.0], |ui| {
+        ui.horizontal(|ui| {
+            ui.menu_label_sized([120.0, 22.0], false, "steady");
+            let _ = ui.add_sized([120.0, 22.0], egui::Button::selectable(false, "raw"));
+        });
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.run();
+    let rect_of = |h: &egui_kittest::Harness<'_>, label: &str| {
+        use egui_kittest::kittest::Queryable as _;
+        h.get_by_label(label).rect().size()
+    };
+    let steady_before = rect_of(&harness, "steady");
+    let raw_before = rect_of(&harness, "raw");
+
+    {
+        use egui_kittest::kittest::Queryable as _;
+        harness.get_by_label("steady").hover();
+    }
+    harness.run();
+    let steady_after = rect_of(&harness, "steady");
+
+    {
+        use egui_kittest::kittest::Queryable as _;
+        harness.get_by_label("raw").hover();
+    }
+    harness.run();
+    let raw_after = rect_of(&harness, "raw");
+
+    assert_eq!(
+        steady_before, steady_after,
+        "a steady toggle moved on hover: {steady_before:?} -> {steady_after:?}"
+    );
+    assert_ne!(
+        raw_before, raw_after,
+        "the raw control stopped growing on hover, so this test no longer proves anything"
+    );
+}
+
+/// Every saved-fleet row is the same width, and stays that width frame after frame.
+///
+/// Both halves have gone wrong here: a row sized from `available_width()` grew a few pixels per
+/// row because the row before it had widened the container, and the whole column grew every frame
+/// because that widening fed back in. Measured, not eyeballed: a screenshot of one frame shows
+/// neither.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_preset_rows_are_one_width_and_stay_put() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("preset_row_widths", [1440.0, 820.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            // Mixed lengths and a folder: a long name must truncate rather than widen its row,
+            // and an indented row must still agree with its neighbours.
+            a.settings.fleet_presets = (0..6)
+                .map(|i| crate::settings::FleetPreset {
+                    label: if i == 2 {
+                        "Preset 2 with a very long name indeed".to_owned()
+                    } else {
+                        format!("Preset {i}")
+                    },
+                    folder: if i >= 4 { "Folder".to_owned() } else { String::new() },
+                    ..Default::default()
+                })
+                .collect();
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_fleet_start(&a);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    let label = |i: usize| {
+        if i == 2 {
+            "Preset 2 with a very long name indeed".to_owned()
+        } else {
+            format!("Preset {i}")
+        }
+    };
+    let mut first: Option<Vec<f32>> = None;
+    for pass in 0..4 {
+        harness.run();
+        let widths: Vec<f32> =
+            (0..4).map(|i| harness.get_by_label(&label(i)).rect().width()).collect();
+        assert!(
+            widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5),
+            "rows disagree on pass {pass}: {widths:?}"
+        );
+        match &first {
+            None => first = Some(widths),
+            Some(f) => assert!(
+                f.iter().zip(&widths).all(|(a, b)| (a - b).abs() < 0.5),
+                "rows grew by pass {pass}: {f:?} -> {widths:?}"
+            ),
+        }
+    }
+}
+
+
+/// A closed fleet is read to settle participation, so the list leads with who got paid most.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_closed_fleet_sorts_by_participation() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut scene = fleet_detail_scene_with(
+        "closed_fleet_paps",
+        [1280.0, 1000.0],
+        crate::app::fleet_ui::DetailTab::Members,
+        true,
+    );
+    let mut harness = harness::build(&mut scene, false);
+    harness.run();
+    harness.run();
+    use egui_kittest::kittest::Queryable as _;
+    let mut seen: Vec<(i64, i64)> = Vec::new();
+    for (text, paps) in
+        [("no PAP", 0), ("1 PAP", 1), ("2 PAP", 2), ("3 PAP", 3)]
+    {
+        for n in harness.get_all_by_label(text) {
+            seen.push((n.rect().top() as i64, paps));
+        }
+    }
+    assert!(seen.len() >= 8, "the participation column did not render: {seen:?}");
+    seen.sort_by_key(|(y, _)| *y);
+    assert!(
+        seen.windows(2).all(|w| w[0].1 >= w[1].1),
+        "the list is not in descending PAP order: {seen:?}"
+    );
+    // A pilot who got nothing has to say so rather than leave the cell blank.
+    assert!(seen.iter().any(|(_, n)| *n == 0), "no zero-PAP row rendered: {seen:?}");
+}
+
+/// A closed fleet renders as a flat participant list, and its rows must hold their columns.
+///
+/// They did not: a 150px group name in a 120px cell pushed every column after it 29px right, so
+/// on a fleet of hictors the ship, role and kick columns stepped out of line row by row. A
+/// screenshot reads that as an indent rather than as an overflow, which is why this measures.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_closed_fleet_rows_keep_their_columns() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut scene = fleet_detail_scene_with(
+        "closed_fleet_columns",
+        [1280.0, 1000.0],
+        crate::app::fleet_ui::DetailTab::Members,
+        true,
+    );
+    let mut harness = harness::build(&mut scene, false);
+    harness.run();
+    harness.run();
+    // The roster occupies the left of the page; the composition pane beside it has columns of its
+    // own that would otherwise be read as roster rows.
+    let mut rows: std::collections::BTreeMap<i64, Vec<f32>> = Default::default();
+    for n in harness.root().children_recursive() {
+        let a = n.accesskit_node();
+        if a.is_hidden() || a.role() != egui::accesskit::Role::Label {
+            continue;
+        }
+        let Some(b) = a.bounding_box() else { continue };
+        if b.x0 < 300.0 || b.x0 > 900.0 || b.y0 < 150.0 {
+            continue;
+        }
+        rows.entry(b.y0 as i64).or_default().push(b.x0 as f32);
+    }
+    let rows: Vec<Vec<f32>> = rows
+        .into_values()
+        .map(|mut r| {
+            r.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            r
+        })
+        .filter(|r| r.len() >= 3)
+        .collect();
+    assert!(rows.len() >= 4, "the flat roster did not render: {rows:?}");
+    let first = rows[0].clone();
+    for r in &rows {
+        for (i, (a, b)) in first.iter().zip(r).enumerate() {
+            assert!(
+                (a - b).abs() < 0.5,
+                "column {i} is out of line: {a} vs {b}\nrows: {rows:?}"
+            );
+        }
+    }
+}
+
+/// A fleet can close on the dashboard's own auto-close timer while this tab is still sitting on
+/// the tracking page. Every button there would act on a fleet that no longer exists, so the page
+/// has to follow the fleet's own record rather than the route the user took to it.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_fleet_that_closes_under_the_page_goes_read_only() {
+    use egui_kittest::kittest::Queryable as _;
+    // The control: still running, still on the tracking page, so the live controls are there.
+    let mut live = fleet_detail_scene("live_under_page", [1280.0, 1000.0],
+                                      crate::app::fleet_ui::DetailTab::Members);
+    let mut h = harness::build(&mut live, false);
+    h.run();
+    assert!(h.query_by_label_contains("Close fleet").is_some(), "no live action bar to lose");
+
+    // Same page, same route, only the fleet's own record says it is over.
+    let mut scene = fleet_detail_scene_closed(
+        "closed_under_page",
+        [1280.0, 1000.0],
+        crate::app::fleet_ui::DetailTab::Members,
+        true,
+        false,
+    );
+    let mut h = harness::build(&mut scene, false);
+    h.run();
+    h.run();
+    assert!(
+        h.query_by_label_contains("Close fleet").is_none(),
+        "the live action bar survived the fleet closing"
+    );
+    assert!(
+        h.query_by_label_contains("closed").is_some(),
+        "the page does not say the fleet is closed"
+    );
+}
+
+/// Closing a fleet has to land on the closed view.
+///
+/// It did not: the write was recorded and the page stayed on the live one, still offering to kick
+/// pilots out of an in-game fleet that no longer existed. This drives the app's own backend and
+/// its own dispatcher, so it covers the whole path rather than any one piece of it.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_closing_a_fleet_lands_on_the_closed_view() {
+    use crate::fleets::backend::FleetBackend as _;
+    use crate::fleets::state::Page;
+
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut app = crate::app::SpaiApp::build(&ctx, true);
+    app.settings.fleet_enabled = true;
+
+    let backend = app.fleet_backend_for_test().clone();
+    let id = backend.active(true).expect("active").first().expect("a fleet").id.clone();
+    {
+        let mut st = app.fleet_state_for_test().lock().unwrap();
+        st.page = Page::Tracking(id.clone());
+        let seed = st.seed.clone();
+        st.apply(crate::fleets::state::run(
+            backend.as_ref(),
+            &seed,
+            crate::fleets::state::Cmd::Open(id.clone()),
+        ));
+        let open = st.open.value.as_ref().expect("opened");
+        assert!(open.fleet.closed_at.is_none(), "the fixture fleet is already closed");
+        assert!(!open.composition.flat, "a live fleet has a tree");
+    }
+
+    app.fleet_act_for_test(crate::fleets::backend::Action::Close);
+    // The dispatcher is a real thread and the spoof answers instantly; the bound is only here so a
+    // hang fails the test instead of parking the suite.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        app.fleet_collect_for_test();
+        let page = app.fleet_state_for_test().lock().unwrap().page.clone();
+        if matches!(page, Page::Historic(ref h) if *h == id) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the page never left the live view: {page:?}");
+        std::thread::yield_now();
+    }
+
+    // Navigating re-opens it, which is what turns the tree into the participant list. The first
+    // read finds no report, because the dashboard writes a fleet's statistics after the close, so
+    // the app has to ask again before the list is there.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut saw_empty = false;
+    loop {
+        app.fleet_collect_for_test();
+        app.fleet_reopen_poll_for_test();
+        let st = app.fleet_state_for_test().lock().unwrap();
+        if let Some(open) = st.open.value.as_ref() {
+            assert_eq!(open.fleet.id, id, "a different fleet was loaded");
+            if open.fleet.closed_at.is_some() {
+                assert!(open.composition.flat, "the closed fleet still claims a tree");
+                if open.composition.total() > 0 {
+                    assert!(saw_empty, "the spoof never withheld its report, so nothing was proven");
+                    return;
+                }
+                saw_empty = true;
+            }
+        }
+        drop(st);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the participant list never arrived after the close"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The fleet's named roles belong to the fleet, not to the ping that started it, so the settings
+/// panel lists them and can edit them. A closed fleet still shows who was on it: that record is
+/// what a participation correction is made against.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_settings_panel_lists_the_snowflakes() {
+    use egui_kittest::kittest::Queryable as _;
+    for (what, closed) in [("live", false), ("closed", true)] {
+        let mut scene = fleet_detail_scene_with(
+            "snowflakes_in_settings",
+            [1280.0, 1400.0],
+            crate::app::fleet_ui::DetailTab::Members,
+            closed,
+        );
+        let mut h = harness::build(&mut scene, false);
+        h.run();
+        h.run();
+        for name in ["Second Seat", "Quiet Observer", "Anchor Pilot"] {
+            assert!(
+                h.query_by_label_contains(name).is_some(),
+                "{what} fleet: the settings panel does not name {name}"
+            );
+        }
+        // Two of the fixture's pilots are backseats, so the role is named twice.
+        assert_eq!(
+            h.query_all_by_label_contains("Backseat").count(),
+            2,
+            "{what} fleet: the roles are not named beside the pilots"
+        );
+        // Editable in both: who was FC or backseat is corrected after the fleet, which is the
+        // whole reason the record exists.
+        assert!(
+            h.query_by_label("Edit").is_some(),
+            "{what} fleet: the snowflakes cannot be edited"
+        );
+    }
+}
+
+/// Starting a fleet for an FC who already leads a tracked one is refused, and said in a row of its
+/// own rather than only on the disabled button's hover.
+///
+/// The first version put that row after the right-to-left button group. That group claims the
+/// panel's whole height, so the row grew the action bar over the form and left one line of it on
+/// screen. The form's last control has to stay visible with the warning up.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_an_already_tracked_fc_cannot_start_again() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = fleet_start_scene_with("already_tracked", [1440.0, 820.0], true);
+    let mut h = harness::build(&mut scene, false);
+    h.run();
+    h.run();
+    assert!(
+        h.query_by_label_contains("already tracked as").is_some(),
+        "the guard does not say why tracking is refused"
+    );
+    // "Track fleet: not sent" is a label beside it, so the button is picked out by its role.
+    let track = h
+        .query_all_by_label_contains("Track fleet")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
+        .expect("the Track fleet button");
+    assert!(track.accesskit_node().is_disabled(), "a second fleet can still be started");
+
+    // The form must survive the extra row. It was clipped rather than moved, so its controls
+    // kept their natural positions; what gives it away is the action bar's top landing above the
+    // form's last control.
+    let manage = h.get_by_label_contains("Manage").rect();
+    let save = h.get_by_label_contains("Save as preset").rect();
+    assert!(
+        save.top() > manage.bottom(),
+        "the action bar has grown over the form: bar top {} above the form's last control {}",
+        save.top(),
+        manage.bottom()
+    );
+}
+
+/// What the settings panel offers once a fleet has closed: its record is correctable, the rest
+/// is not.
+///
+/// Tags and snowflakes stay live, because they describe what the fleet was and who led it. Setup
+/// and comms are disabled rather than left editable behind an Apply that refuses them, and the
+/// MOTD checkbox is gone, since there is no in-game fleet left to carry one.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_closed_fleet_offers_only_its_record() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    for closed in [false, true] {
+        let mut scene = fleet_detail_scene_with(
+            "closed_settings",
+            [1280.0, 1400.0],
+            crate::app::fleet_ui::DetailTab::Members,
+            closed,
+        );
+        let mut h = harness::build(&mut scene, false);
+        h.run();
+        h.run();
+        let what = if closed { "closed" } else { "live" };
+
+        let motd = h.query_by_label_contains("Re-set the MOTD").is_some();
+        assert_eq!(motd, !closed, "{what}: the MOTD checkbox");
+
+        // A combo box carries its current value in `value`, not in its label.
+        let combo = |v: &str| {
+            h.root()
+                .children_recursive()
+                .find(|n| {
+                    let a = n.accesskit_node();
+                    a.role() == egui::accesskit::Role::ComboBox
+                        && a.value().as_deref() == Some(v)
+                })
+                .unwrap_or_else(|| panic!("{what}: no combo showing {v}"))
+        };
+        let setup = combo("Fast Tackle");
+        assert_eq!(setup.accesskit_node().is_disabled(), closed, "{what}: the setup combo");
+        let comms = combo("Comms 3");
+        assert_eq!(comms.accesskit_node().is_disabled(), closed, "{what}: the comms combo");
+
+
+        // The snowflake editor stays offered either way.
+        let edit = h.get_by_label("Edit");
+        assert!(!edit.accesskit_node().is_disabled(), "{what}: snowflakes cannot be edited");
+    }
 }

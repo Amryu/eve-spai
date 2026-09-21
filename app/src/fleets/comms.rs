@@ -79,16 +79,125 @@ pub fn command_url(sector: Sector, op_name: &str) -> Option<String> {
     Some(link(&[sector.channel(), &chan]))
 }
 
-/// The fleet's own op channel, by the name the dashboard gave it.
+/// The gnf.lt short link for a comms channel, by the name the dashboard gives it.
 ///
-/// Built from the channel name rather than the number, because the op channels are not named
-/// uniformly ("o7" is channel 7) and the name is what the server has.
-pub fn op_url(channel_name: &str) -> Option<String> {
+/// Joining goes through these rather than a path built from the name: the real channels carry
+/// vanity names ("OP 11 - bubbles on a blue fleet") that change whenever someone renames them, so
+/// a built path lands in the parent channel. The short link is kept pointing at the right one.
+///
+/// Op channels come from what the app has learned out of fleet pings, then the built-in table.
+/// Anything else, like HD or capital comms, only from what the user has pasted in.
+pub fn short_link(
+    channel_name: &str,
+    learned_ops: &std::collections::HashMap<String, String>,
+    named: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     let name = channel_name.trim();
-    if name.is_empty() {
-        return None;
+    if let Some(n) = op_number(name) {
+        return learned_ops
+            .get(&format!("op{n}"))
+            .cloned()
+            .or_else(|| builtin_op_link(n).map(str::to_owned));
     }
-    Some(link(&["Op Channels", name]))
+    named
+        .get(&name.to_lowercase())
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("mumble://"))
+        .cloned()
+        .or_else(|| builtin_named_link(name).map(str::to_owned))
+}
+
+/// gnf.lt links for the channels no ping names, as the dashboard's own ping preview renders them.
+/// Kept as the fallback behind the direct `mumble://` links below.
+pub fn builtin_named_link(channel_name: &str) -> Option<&'static str> {
+    Some(match channel_name.trim().to_lowercase().as_str() {
+        "hd" => "https://gnf.lt/NFmGwzN.html",
+        "capital comms" => "https://gnf.lt/rE6SwtF.html",
+        "hellcamp comms" => "https://gnf.lt/RT4ePYG.html",
+        "standing comms" => "https://gnf.lt/5X9X4XG.html",
+        _ => return None,
+    })
+}
+
+/// Direct `mumble://` links the user supplied for those channels. Tried first: Mumble opens them
+/// with no page fetch in between. A rename breaks one until it is updated in the settings, which
+/// is what the gnf.lt link behind it is for.
+pub fn builtin_named_mumble(channel_name: &str) -> Option<&'static str> {
+    Some(match channel_name.trim().to_lowercase().as_str() {
+        "hd" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Home%20Defense%20-%20How%20did%20you%20NOT%20know%20there%20was%20a%20strat%20op?title=Goonfleet&version=1.2.0",
+        "capital comms" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Capital%20Ops%20-%20just%20gate?title=Goonfleet&version=1.2.0",
+        "standing comms" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Standing%20Fleet?title=Goonfleet&version=1.2.0",
+        _ => return None,
+    })
+}
+
+/// Both ways into a channel, `mumble://` first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Links {
+    pub mumble: Option<String>,
+    pub short: Option<String>,
+}
+
+/// Every way this app knows into a channel.
+///
+/// `named` is what the user pasted in the settings, keyed by the channel's name in lower case,
+/// and may hold either kind of link. `resolved` is what earlier short links turned out to point
+/// at, so a `mumble://` link is on hand before the first fetch of this run.
+pub fn links(
+    channel_name: &str,
+    learned_ops: &std::collections::HashMap<String, String>,
+    named: &std::collections::HashMap<String, String>,
+    resolved: &std::collections::HashMap<String, String>,
+) -> Links {
+    let key = channel_name.trim().to_lowercase();
+    let pasted = named.get(&key).map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
+    let pasted_mumble = pasted.clone().filter(|l| l.starts_with("mumble://"));
+    let pasted_short = pasted.filter(|l| !l.starts_with("mumble://"));
+    let short = pasted_short.or_else(|| short_link(channel_name, learned_ops, &Default::default()));
+    let mumble = pasted_mumble
+        .or_else(|| builtin_named_mumble(channel_name).map(str::to_owned))
+        .or_else(|| short.as_ref().and_then(|s| resolved.get(s).cloned()));
+    Links { mumble, short }
+}
+
+/// The op number a channel name stands for. "o7" is the seventh op channel, spelled that way.
+pub fn op_number(name: &str) -> Option<u8> {
+    let n = name.trim();
+    if n.eq_ignore_ascii_case("o7") {
+        return Some(7);
+    }
+    let rest = n.get(..2).filter(|p| p.eq_ignore_ascii_case("op"))?;
+    let _ = rest;
+    n[2..].trim().parse().ok().filter(|k| (1..=12).contains(k))
+}
+
+/// The short links known before any ping has been seen.
+pub fn builtin_op_link(n: u8) -> Option<&'static str> {
+    Some(match n {
+        1 => "https://gnf.lt/dYehZh9.html",
+        2 => "https://gnf.lt/vLwgoyY.html",
+        3 => "https://gnf.lt/NOH1FNH.html",
+        4 => "https://gnf.lt/2eMgwE2.html",
+        5 => "https://gnf.lt/SwVWcXS.html",
+        6 => "https://gnf.lt/bO9WiWH.html",
+        7 => "https://gnf.lt/EGcAES9.html",
+        8 => "https://gnf.lt/0Yi1Dua.html",
+        9 => "https://gnf.lt/vEALwCF.html",
+        10 => "https://gnf.lt/1oh4Y6V.html",
+        11 => "https://gnf.lt/sBIoA65.html",
+        12 => "https://gnf.lt/jzTuUij.html",
+        _ => return None,
+    })
+}
+
+/// The `mumble://` link a short-link page redirects to.
+///
+/// Mumble's own `openUrl` only takes `mumble://`, and a short link opened any other way goes
+/// through the browser. The page carries the target in its markup, HTML-escaped.
+pub fn mumble_url_in(page: &str) -> Option<String> {
+    let start = page.find("mumble://")?;
+    let rest = &page[start..];
+    let end = rest.find(|c: char| matches!(c, '"' | '\'' | '<' | '>') || c.is_whitespace())?;
+    Some(rest[..end].replace("&amp;", "&"))
 }
 
 fn link(path: &[&str]) -> String {
@@ -179,17 +288,77 @@ mod tests {
         assert_eq!(path(Sector::Alpha, "Capital Comms"), None);
     }
 
-    /// The op link uses the channel's own name, which is not always its number.
+    /// The pages the live short links serve, trimmed. The op 8 one escapes its ampersand, which a
+    /// naive cut would hand to Mumble as part of the channel name.
     #[test]
-    fn an_op_link_uses_the_channel_name() {
+    fn a_short_link_page_yields_its_mumble_url() {
+        let page = r#"<html><head><meta http-equiv="refresh" content="0; url=mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%2011%20-%20bubbles%20on%20a%20blue%20fleet?title=Goonfleet&version=1.2.0"></head></html>"#;
         assert_eq!(
-            op_url("Op 4").and_then(|u| crate::mumble::channel_path(&u)).as_deref(),
-            Some("Ops/Op Channels/Op 4")
+            mumble_url_in(page).and_then(|u| crate::mumble::channel_path(&u)).as_deref(),
+            Some("Ops/Op Channels/OP 11 - bubbles on a blue fleet")
         );
+        let escaped = r#"<a href='mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%208?title=Goonfleet&amp;version=1.2.0'>"#;
         assert_eq!(
-            op_url(" o7 ").and_then(|u| crate::mumble::channel_path(&u)).as_deref(),
-            Some("Ops/Op Channels/o7")
+            mumble_url_in(escaped).as_deref(),
+            Some("mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%208?title=Goonfleet&version=1.2.0")
         );
-        assert_eq!(op_url("  "), None);
+        assert_eq!(mumble_url_in("<html>nothing here</html>"), None);
+        // What the live pages actually are: a script assignment in single quotes.
+        let script = "<script>window.location = 'mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%208%20-%20%20Asher%20Electropunched%20the%20server?title=Goonfleet&amp;version=1.2.0';</script></html>";
+        assert_eq!(
+            mumble_url_in(script).and_then(|u| crate::mumble::channel_path(&u)).as_deref(),
+            Some("Ops/Op Channels/OP 8 -  Asher Electropunched the server")
+        );
+        // The one gnf.lt sometimes serves instead, an empty 400, yields nothing to cache.
+        assert_eq!(mumble_url_in(""), None);
+    }
+
+    /// A channel's link is found by its name: op channels from what pings taught the app, then
+    /// the built-in table, and everything else only from what the user supplied.
+    #[test]
+    fn a_short_link_is_found_by_channel_name() {
+        let mut learned = std::collections::HashMap::new();
+        learned.insert("op11".to_owned(), "https://gnf.lt/learned.html".to_owned());
+        let mut named = std::collections::HashMap::new();
+        named.insert("capital comms".to_owned(), "https://gnf.lt/caps.html".to_owned());
+
+        // Learned beats built in, because the ping is newer than this source file.
+        assert_eq!(short_link("Op 11", &learned, &named).as_deref(), Some("https://gnf.lt/learned.html"));
+        assert_eq!(short_link("Op 3", &learned, &named).as_deref(), builtin_op_link(3));
+        assert_eq!(short_link("o7", &learned, &named).as_deref(), builtin_op_link(7));
+        assert_eq!(short_link(" Capital Comms ", &learned, &named).as_deref(), Some("https://gnf.lt/caps.html"));
+        // The dashboard's own links for the channels no ping names.
+        assert_eq!(short_link("HD", &learned, &named).as_deref(), builtin_named_link("HD"));
+        assert_eq!(short_link("Hellcamp Comms", &learned, &named).as_deref(),
+                   builtin_named_link("hellcamp comms"));
+        // Unknown stays unknown rather than falling back to a guessed path.
+        assert_eq!(short_link("Somewhere New", &learned, &named), None);
+        assert_eq!(short_link("Op 99", &learned, &named), None);
+    }
+
+    /// `mumble://` first, from wherever one is known; the short link behind it either way.
+    #[test]
+    fn links_put_the_mumble_link_first() {
+        let none = std::collections::HashMap::new();
+        // Supplied directly: no fetch needed at all.
+        let hd = links("HD", &none, &none, &none);
+        assert!(hd.mumble.as_deref().is_some_and(|m| m.starts_with("mumble://")));
+        assert_eq!(hd.short.as_deref(), builtin_named_link("HD"));
+
+        // An op channel before anything has been resolved: short link only.
+        let op = links("Op 3", &none, &none, &none);
+        assert_eq!(op.mumble, None);
+        assert_eq!(op.short.as_deref(), builtin_op_link(3));
+
+        // Once resolved and remembered, the mumble link is on hand before the next fetch.
+        let mut resolved = std::collections::HashMap::new();
+        resolved.insert(builtin_op_link(3).unwrap().to_owned(), "mumble://x/Ops/OP 3".to_owned());
+        assert_eq!(links("Op 3", &none, &none, &resolved).mumble.as_deref(), Some("mumble://x/Ops/OP 3"));
+
+        // A pasted mumble:// link wins over the built-in one, and a pasted short link keeps its place.
+        let mut named = std::collections::HashMap::new();
+        named.insert("hd".to_owned(), "mumble://new/Ops/HD renamed".to_owned());
+        assert_eq!(links("HD", &none, &named, &none).mumble.as_deref(), Some("mumble://new/Ops/HD renamed"));
+        assert_eq!(links("HD", &none, &named, &none).short.as_deref(), builtin_named_link("HD"));
     }
 }

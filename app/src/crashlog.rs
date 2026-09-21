@@ -26,6 +26,8 @@ std::thread_local! {
 pub(crate) enum Role {
     Main,
     Overlay,
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    FleetLogin,
 }
 
 impl Role {
@@ -35,6 +37,7 @@ impl Role {
             // each other's rotation.
             Role::Main => "crash.log",
             Role::Overlay => "crash-overlay.log",
+            Role::FleetLogin => "crash-fleet-login.log",
         }
     }
 }

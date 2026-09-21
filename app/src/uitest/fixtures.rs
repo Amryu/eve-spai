@@ -745,7 +745,7 @@ pub(crate) fn seed_fleet_state(app: &crate::app::SpaiApp) {
         Cmd::Bootstrap,
         Cmd::LoadActive { strategic: true },
         Cmd::LoadActive { strategic: false },
-        Cmd::LoadHistory { skip: 0 },
+        Cmd::LoadHistory { skip: 0, search: String::new() },
     ] {
         st.apply(crate::fleets::state::run(&backend, &seed, cmd));
     }
@@ -771,7 +771,7 @@ pub(crate) fn fleet_presets() -> Vec<crate::settings::FleetPreset> {
             ..Default::default()
         },
         crate::settings::FleetPreset {
-            label: "Evening roam".to_owned(),
+            label: "Evening roam through the south east".to_owned(),
             name: "Evening roam".to_owned(),
             setup_id: 116,
             auto_channels: true,
@@ -780,6 +780,7 @@ pub(crate) fn fleet_presets() -> Vec<crate::settings::FleetPreset> {
         },
         crate::settings::FleetPreset {
             label: "Tower bash".to_owned(),
+            folder: "Structures".to_owned(),
             name: "Tower bash".to_owned(),
             setup_id: 125,
             tag_ids: vec![1, 31],
@@ -846,6 +847,84 @@ pub(crate) fn record_fleet_requests(app: &crate::app::SpaiApp) {
     }
 }
 
+/// A closed fleet: the dashboard keeps the participants but the wings are gone, so the roster is
+/// one flat list. The hull and group names are the longest real ones, because that is what decides
+/// whether the columns after them stay in line.
+#[cfg(feature = "fleet")]
+pub(crate) fn open_closed_fleet(app: &crate::app::SpaiApp) {
+    open_closed_fleet_as(app, true);
+}
+
+/// `via_history` is how the user got here: out of the history list, or by sitting on the tracking
+/// page while the dashboard's auto-close timer ran out under them. The page must read the same
+/// either way, because the fleet is equally gone.
+#[cfg(feature = "fleet")]
+pub(crate) fn open_closed_fleet_as(app: &crate::app::SpaiApp, via_history: bool) {
+    open_first_fleet(app);
+    let mut st = app.fleet_state_for_test().lock().unwrap();
+    if via_history {
+        if let crate::fleets::state::Page::Tracking(id) = st.page.clone() {
+            st.page = crate::fleets::state::Page::Historic(id);
+        }
+    }
+    let Some(open) = st.open.value.as_mut() else { return };
+    open.fleet.closed_at = Some("2026-09-19T19:43:46Z".to_owned());
+    open.fleet.snowflakes = snowflakes();
+    let flat_fleet = open.fleet.clone();
+    let mut flat: Vec<crate::fleets::model::Member> = open.composition.members().cloned().collect();
+    let long = [
+        ("Heavy Interdiction Cruiser", "Devoter"),
+        ("Command Destroyer", "Bifrost"),
+        ("Interdictor", "Flycatcher"),
+        ("Strategic Cruiser", "Proteus"),
+        ("Logistics", "Basilisk"),
+    ];
+    for (i, m) in flat.iter_mut().enumerate() {
+        let (group, hull) = long[i % long.len()];
+        m.ship_group = group.to_owned();
+        m.ship_type_name = hull.to_owned();
+        // Mixed, including zeroes: the list is sorted by this, and a pilot who got nothing has to
+        // read as nothing rather than as an empty cell.
+        m.pap_count = (i as i64 * 7) % 4;
+    }
+    open.composition.flat = true;
+    open.composition.commander = None;
+    open.composition.wings = vec![crate::fleets::model::Wing {
+        id: crate::fleets::model::WingId(-1),
+        name: String::new(),
+        commander: None,
+        squads: vec![crate::fleets::model::Squad {
+            id: crate::fleets::model::SquadId(-1),
+            name: String::new(),
+            commander: None,
+            members: flat,
+        }],
+    }];
+    st.edit = Default::default();
+    st.edit.seed(&flat_fleet);
+}
+
+/// A fleet's named roles, for the settings panel that lists them.
+#[cfg(feature = "fleet")]
+pub(crate) fn snowflakes() -> Vec<crate::fleets::model::Snowflake> {
+    use crate::fleets::model::{Snowflake, SnowflakeType};
+    [
+        (90_100_001_i64, "Placeholder Main", SnowflakeType::Fc),
+        (90_100_002, "Second Seat", SnowflakeType::Backseat),
+        (90_100_003, "Quiet Observer", SnowflakeType::Backseat),
+        (90_100_004, "Anchor Pilot", SnowflakeType::LogiAnchor),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (character_id, character_name, kind))| Snowflake {
+        id: i as i64 + 1,
+        character_id,
+        character_name: character_name.to_owned(),
+        kind,
+    })
+    .collect()
+}
+
 /// Opens the first active fleet, with its members, report and doctrine.
 #[cfg(feature = "fleet")]
 pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
@@ -878,6 +957,19 @@ pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
     if let Some(id) = confirmed {
         st.locked.insert(id);
     }
+    if let Some(open) = st.open.value.as_mut() {
+        open.fleet.snowflakes = snowflakes();
+    }
+    // The edit buffer is seeded when the fleet lands, which was before this touched it.
+    reseed_edit(&mut st);
+}
+
+/// Reloads the settings panel's buffer from the fleet a fixture has just changed.
+#[cfg(feature = "fleet")]
+fn reseed_edit(st: &mut crate::fleets::state::FleetState) {
+    let Some(fleet) = st.open.value.as_ref().map(|o| o.fleet.clone()) else { return };
+    st.edit = Default::default();
+    st.edit.seed(&fleet);
 }
 
 /// The same fleet with its logi, dictors and fast tackle gone and nobody on boosts, so the
@@ -898,7 +990,7 @@ pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
 
 /// Presets a rescue can run on: one tagged Capital Save and one that is not, so the picker's
 /// filtering is visible in the render.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub(crate) fn rescue_presets() -> Vec<crate::settings::FleetPreset> {
     let mut out = fleet_presets();
     out.push(crate::settings::FleetPreset {
@@ -915,7 +1007,7 @@ pub(crate) fn rescue_presets() -> Vec<crate::settings::FleetPreset> {
 }
 
 /// A delve911 ping in the state, which is what the rescue panel renders around.
-#[cfg(feature = "fc-rescue")]
+#[cfg(feature = "fleet")]
 pub(crate) fn seed_rescue_ping(app: &crate::app::SpaiApp) {
     let mut r = app.rescue_state_for_test().lock().unwrap();
     r.active = true;
@@ -945,11 +1037,7 @@ pub(crate) fn seed_rescue_ping(app: &crate::app::SpaiApp) {
 /// work from. Invented names in the doctrine, real hulls for the support jobs.
 #[cfg(feature = "fleet")]
 pub(crate) fn fleet_hulls() -> Vec<crate::settings::FleetHull> {
-    let hull = |setup: i32, name: &str| crate::settings::FleetHull {
-        setup_id: setup,
-        type_id: 0,
-        name: name.to_owned(),
-    };
+    let hull = |setup: i32, name: &str| crate::settings::FleetHull { setup_id: setup, type_id: 0, name: name.to_owned(), main: false };
     vec![
         hull(46, "Flycatcher"),
         hull(46, "Kirin"),
@@ -994,4 +1082,67 @@ pub(crate) fn fleet_boost_coverage() -> Vec<crate::fleets::boosts::Coverage> {
     .filter_map(|(p, t, at)| parse(p, t, *at))
     .collect();
     coverage(&lines, 0)
+}
+
+/// Boost coverage as the channel reader would produce it, with pilots behind each charge.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_coverage() -> Vec<crate::fleets::boosts::Coverage> {
+    use crate::fleets::boosts::{Burst, Coverage};
+    vec![
+        Coverage {
+            what: "Shield Harmonizing".to_owned(),
+            burst: Burst::Shield,
+            generic: false,
+            pilots: 2,
+            mindlinked: 1,
+            who: vec!["Pilot 111".to_owned(), "Wing Lead 1".to_owned()],
+        },
+        Coverage {
+            what: "Electronic Superiority".to_owned(),
+            burst: Burst::Information,
+            generic: false,
+            pilots: 1,
+            mindlinked: 0,
+            who: vec!["Fleet Boss".to_owned()],
+        },
+    ]
+}
+
+/// The lines behind that coverage, so the breakdown has posts to show.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_boost_lines() -> Vec<crate::fleets::boosts::Line> {
+    let at = 1_700_000_000;
+    [
+        ("Pilot 111", "shield harmonizing charge +ML"),
+        ("Wing Lead 1", "harmonizing charge"),
+        ("Fleet Boss", "electronic superiority charge"),
+    ]
+    .iter()
+    .enumerate()
+    .filter_map(|(i, (who, text))| crate::fleets::boosts::parse(who, text, at + i as i64 * 60))
+    .collect()
+}
+
+/// Jabber with traffic in the two rooms the fleet chat dock shows, so the dock renders a feed
+/// rather than "(no messages)" and its spacing can actually be looked at.
+#[cfg(feature = "fleet")]
+pub(crate) fn jabber_state_fleet_rooms() -> crate::jabber::JabberState {
+    let mut st = jabber_state();
+    st.chats.insert(
+        "skirmish_commanders@conference.goonfleet.com".to_owned(),
+        vec![
+            chat_msg("Placeholder FC", "forming on staging, 10 minutes", 600, false),
+            chat_msg("Placeholder FC", "need two more logi before we undock", 540, false),
+            chat_msg("Other Commander", "we can lend you a pair", 480, false),
+            chat_msg("me", "much appreciated, bring them to op 3", 420, true),
+        ],
+    );
+    st.chats.insert(
+        "delve911@conference.goonfleet.com".to_owned(),
+        vec![
+            chat_msg("Placeholder Scout", "hostiles on the staging gate", 300, false),
+            chat_msg("Placeholder Scout", "about fifteen, mixed hulls", 240, false),
+        ],
+    );
+    st
 }

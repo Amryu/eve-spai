@@ -49,6 +49,15 @@ impl<T> Slot<T> {
         self.loading = true;
     }
 
+    /// Begins a load of something else. What is on screen belongs to the thing being navigated
+    /// away from, so it goes: a previous fleet's roster shown under a new fleet's name is not
+    /// stale data, it is wrong data.
+    pub fn restart(&mut self) {
+        self.value = None;
+        self.loading = true;
+        self.stale = false;
+    }
+
     pub fn put(&mut self, v: T) {
         self.value = Some(v);
         self.loading = false;
@@ -113,6 +122,9 @@ pub struct FleetEdit {
     pub logi: Option<ChannelId>,
     pub boost: Option<ChannelId>,
     pub tags: std::collections::BTreeSet<TagId>,
+    /// The FCs, backseats, logi anchors and hunters named on the fleet. They are part of the
+    /// fleet record, so they are editable after it has started and readable after it has closed.
+    pub snowflakes: Vec<crate::fleets::model::Snowflake>,
     /// Re-set the fleet MOTD after applying, since the MOTD names the channels.
     pub set_motd: bool,
 }
@@ -130,6 +142,7 @@ impl FleetEdit {
             logi: f.logi_channel_id,
             boost: f.boost_channel_id,
             tags: f.tag_ids.iter().copied().collect(),
+            snowflakes: f.snowflakes.clone(),
             set_motd: true,
         };
     }
@@ -141,6 +154,25 @@ impl FleetEdit {
             || self.logi != f.logi_channel_id
             || self.boost != f.boost_channel_id
             || self.tags != f.tag_ids.iter().copied().collect()
+            || self.snowflakes != f.snowflakes
+    }
+
+    /// Whether every pending change is one a closed fleet still takes.
+    ///
+    /// A closed fleet is read-only for what describes a fleet that is still running: its setup
+    /// and its comms. Its tags and its snowflakes are a record of what the fleet was and who led
+    /// it, and those are corrected after the fact.
+    pub fn only_record_differs(&self, f: &Fleet) -> bool {
+        self.differs(f)
+            && self.setup_id == f.setup_id
+            && self.mumble == f.mumble_channel_id
+            && self.logi == f.logi_channel_id
+            && self.boost == f.boost_channel_id
+    }
+
+    /// Which halves of the record an edit touches, for the permission each needs.
+    pub fn record_changes(&self, f: &Fleet) -> (bool, bool) {
+        (self.tags != f.tag_ids.iter().copied().collect(), self.snowflakes != f.snowflakes)
     }
 
     /// The fleet as the edit would leave it.
@@ -151,6 +183,7 @@ impl FleetEdit {
             logi_channel_id: self.logi,
             boost_channel_id: self.boost,
             tag_ids: self.tags.iter().copied().collect(),
+            snowflakes: self.snowflakes.clone(),
             ..f.clone()
         }
     }
@@ -173,11 +206,22 @@ pub struct FleetState {
     pub active_pct: Slot<Vec<FleetRow>>,
     pub history: Slot<Paged<FleetRow>>,
     pub history_skip: u32,
+    /// What the history is filtered by, server side. Empty is every fleet ever.
+    pub history_search: String,
     pub open: Slot<OpenFleet>,
     pub draft: Draft,
     pub preview: Slot<PingPreview>,
     /// The tracked fleet's boost channel as it stands, read off disk rather than from the API.
     pub boosts: Vec<super::boosts::Coverage>,
+    /// Whether a scan of the boost channel is in flight. Without it an unfinished read is
+    /// indistinguishable from a fleet where nobody set a charge, and the pane says "not covered"
+    /// about a channel it has not looked at yet.
+    pub boosts_loading: bool,
+    /// Every line the boost channel offered in the window, so a coverage row can show the posts
+    /// behind it and an FC can tell a wrong reading from a wrong post.
+    pub boost_lines: Vec<super::boosts::Line>,
+    /// The dashboard's own rendering of the rescue ping, when it could be had.
+    pub rescue_preview: Option<PingPreview>,
     /// Boosts the FC marked covered or uncovered by hand, overriding the channel.
     pub boosts_forced: super::boosts::Forced,
     /// Pilots the FC confirmed are meant to be in the hull they are in.
@@ -188,6 +232,16 @@ pub struct FleetState {
     pub edit: FleetEdit,
     /// The last fleet-boss answer, and who it was about.
     pub boss: Option<(i64, BossCheck)>,
+    /// The boss check for the character a migrate would hand the fleet to. Kept apart from `boss`,
+    /// which the start form re-polls on its own clock and would overwrite this with the user's own
+    /// character between the pick and the click.
+    pub migrate_boss: Option<(i64, BossCheck)>,
+    /// A start is on its way to the dashboard. A second click before it answers would create a
+    /// second fleet for the same in-game fleet, and the dashboard does not refuse it.
+    pub starting: bool,
+    /// Fleets this app started, by the character that is boss. The active list only knows a fleet
+    /// once it has been reloaded, so this covers the gap straight after a start.
+    pub started_for: std::collections::HashMap<i64, FleetId>,
     /// Characters the last name search turned up.
     pub found_characters: Slot<Vec<Labelled>>,
     /// Requests that would have gone out, newest last.
@@ -230,23 +284,57 @@ impl FleetState {
                     self.locked.clear();
                 }
                 self.edit.seed(&open.fleet);
-                // Before the snapshot lands, so the clock is carried forward from the last one.
-                self.off_doctrine = super::doctrine::track_off_doctrine(
-                    &self.off_doctrine,
-                    &open.composition,
-                    open.doctrine.as_ref(),
-                    open.at,
-                );
-                // A confirmed pilot has stopped being a question, so the report stops asking.
+                // The clock itself is carried forward in the view, which is the only place that
+                // knows the configured doctrine. Here we only drop anyone who has since been
+                // confirmed, so a locked pilot stops being a question.
                 self.off_doctrine.retain(|o| !self.locked.contains(&o.character_id));
                 self.open.put(*open);
             }
-            Outcome::Boosts(rows) => self.boosts = rows,
+            Outcome::Nothing => {}
+            Outcome::HubComposition { id, composition } => {
+                // Not onto a closed fleet. The hub goes on pushing the in-game tree for a while
+                // after the close, and a closed fleet's roster is the dashboard's flat record of
+                // who took part. Letting the tree land put the wings back over the participant
+                // list on the page the FC had just been sent to.
+                if let Some(open) = self
+                    .open
+                    .value
+                    .as_mut()
+                    .filter(|o| o.fleet.id == id && o.fleet.closed_at.is_none())
+                {
+                    open.composition = composition;
+                    open.at = chrono::Utc::now().timestamp();
+                }
+            }
+            Outcome::HubFleet(fleet) => {
+                if let Some(open) = self.open.value.as_mut().filter(|o| o.fleet.id == fleet.id) {
+                    open.fleet = *fleet;
+                }
+            }
+            // The UI acts on this by re-opening; there is nothing to store.
+            Outcome::StatsReady { .. } => {}
+            Outcome::Channels { mumble, logi, boost } => {
+                self.seed.mumble_channels = mumble;
+                self.seed.logi_channels = logi;
+                self.seed.boost_channels = boost;
+            }
+            Outcome::Boosts { rows, lines } => {
+                self.boosts = rows;
+                self.boost_lines = lines;
+                self.boosts_loading = false;
+            }
             Outcome::Boss { character_id, check } => self.boss = Some((character_id, check)),
+            Outcome::MigrateBoss { character_id, check } => {
+                self.migrate_boss = Some((character_id, check));
+            }
             Outcome::Found { kind, hits } => {
                 if kind == SearchKind::Character {
                     self.found_characters.put(hits);
                 }
+            }
+            Outcome::RescuePreview { preview } => {
+                self.rescue_preview =
+                    Some(preview).filter(|p: &PingPreview| !p.ping.trim().is_empty());
             }
             Outcome::Preview { record, preview } => {
                 // A preview is not a write, so it does not reach the journal.
@@ -255,17 +343,28 @@ impl FleetState {
             }
             Outcome::Started { record, id } => {
                 self.record(record);
+                self.starting = false;
+                if let Some((fc, _)) = self.fc() {
+                    self.started_for.insert(fc, id.clone());
+                }
                 self.page = Page::Tracking(id);
             }
-            Outcome::Wrote { record } => {
+            Outcome::Closed { record, id: _ } | Outcome::Wrote { record } => {
                 self.record(record);
             }
             Outcome::Failed { what, why } => {
+                eprintln!("[fleet] {what} failed: {why}");
                 self.error = Some(format!("{what}: {why}"));
+                self.starting = false;
+                // Every slot, or the one that was loading when this failed spins for ever. A
+                // type-ahead that says "looking" and never stops is worse than one that says
+                // nothing, because the user keeps waiting for it.
                 self.active_strat.failed();
                 self.active_pct.failed();
                 self.history.failed();
                 self.open.failed();
+                self.found_characters.failed();
+                self.preview.failed();
             }
         }
     }
@@ -307,6 +406,22 @@ pub fn pick_free(items: &[ChannelItem], keep: Option<ChannelId>) -> FreePick {
 
 impl FleetState {
     /// Fills the form from a preset, picking free comms where it asked us to.
+    /// A preset as a ping request, without touching the draft: the rescue renders its ping from a
+    /// preset while the start form holds something else entirely.
+    pub fn ping_request_from(&self, p: &crate::settings::FleetPreset) -> PingRequest {
+        PingRequest {
+            character_id: self.session.as_ref().map(|s| s.character_id).unwrap_or(0),
+            description: p.description.clone(),
+            doctrine_notes: Some(p.doctrine_notes.clone()).filter(|s| !s.trim().is_empty()),
+            boost_channel_id: p.boost_channel_id.map(ChannelId),
+            logi_channel_id: p.logi_channel_id.map(ChannelId),
+            mumble_channel_id: p.mumble_channel_id.map(ChannelId),
+            setup_id: p.setup_id,
+            solar_system_id: p.formup_location.as_ref().map(|(id, _)| *id).unwrap_or(0),
+            tag_ids: p.tag_ids.iter().map(|t| TagId(*t)).collect(),
+        }
+    }
+
     pub fn apply_preset(&mut self, p: &crate::settings::FleetPreset) {
         let d = &mut self.draft;
         d.form.name = p.name.clone();
@@ -397,6 +512,38 @@ impl FleetState {
     }
 
     /// Who the fleet is started as: the picked character, or whoever is signed in.
+    /// A fleet the chosen FC is already boss of on the dashboard, if there is one.
+    ///
+    /// Tracking the same in-game fleet twice leaves two dashboard fleets splitting one set of
+    /// pilots, and the participation that goes with them. Checked against what this app started
+    /// and against the active lists, by the commander's name, since a row carries nothing else.
+    pub fn already_tracking(&self) -> Option<(FleetId, String)> {
+        let (fc_id, fc_name) = self.fc()?;
+        if let Some(id) = self.started_for.get(&fc_id) {
+            let still_open = self
+                .active_strat
+                .value
+                .iter()
+                .chain(self.active_pct.value.iter())
+                .flatten()
+                .any(|r| r.id == *id)
+                || self.open.value.as_ref().is_some_and(|o| {
+                    o.fleet.id == *id && o.fleet.closed_at.is_none()
+                });
+            if still_open {
+                return Some((id.clone(), fc_name));
+            }
+        }
+        let name = fc_name.trim();
+        self.active_strat
+            .value
+            .iter()
+            .chain(self.active_pct.value.iter())
+            .flatten()
+            .find(|r| r.commander.as_deref().is_some_and(|c| c.trim().eq_ignore_ascii_case(name)))
+            .map(|r| (r.id.clone(), r.name.clone()))
+    }
+
     pub fn fc(&self) -> Option<(i64, String)> {
         let s = self.session.as_ref()?;
         match self.draft.fc_character {
@@ -482,15 +629,24 @@ pub struct Gen {
     pub page: u64,
     /// Bumped per preview request, since the form fires one on every edit.
     pub preview: u64,
+    /// The rescue's own preview counter. It is dispatched from the rescue window, which is a
+    /// different viewport from the fleet tab, so it must not be invalidated by the tab paging
+    /// around underneath it.
+    pub rescue: u64,
 }
 
 /// Whether a result that came back under `got` is still wanted now that the tab is at `cur`.
 pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
     match out {
         // The request was made. Dropping its record would be lying about what this app did.
-        Outcome::Wrote { .. } | Outcome::Started { .. } => true,
+        Outcome::Wrote { .. } | Outcome::Started { .. } | Outcome::Closed { .. } => true,
         // Only the newest preview is worth showing; an older one would flicker the pane backwards.
-        Outcome::Preview { .. } => got == cur,
+        // A push is keyed to its fleet, not to the page generation: closing a fleet moves the
+        // page from Tracking to Historic without changing the fleet, and the stream stays open
+        // across that. `apply` checks the id instead.
+        Outcome::HubComposition { .. } | Outcome::HubFleet(_) | Outcome::StatsReady { .. } => true,
+        Outcome::Preview { .. } => got.page == cur.page && got.preview == cur.preview,
+        Outcome::RescuePreview { .. } => got.rescue == cur.rescue,
         _ => got.page == cur.page,
     }
 }
@@ -500,9 +656,14 @@ pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
 pub enum Cmd {
     Bootstrap,
     LoadActive { strategic: bool },
-    LoadHistory { skip: u32 },
+    LoadHistory { skip: u32, search: String },
+    /// Just the comms tables. `isInUse` is the only reference data that goes stale while the app
+    /// is open, and it is the one an FC picks a free channel from.
+    RefreshChannels,
     Open(FleetId),
     CheckBoss { character_id: i64, use_backup: bool },
+    /// The same question about the character a fleet would be handed to.
+    CheckMigrateBoss { character_id: i64 },
     /// Look a name up, so a snowflake is a character that exists rather than a typed string.
     Search { kind: SearchKind, value: String },
     /// Re-read the tracked fleet's boost channel off disk. Not a request, so it never reaches the
@@ -510,8 +671,9 @@ pub enum Cmd {
     ReadBoosts { dir: std::path::PathBuf, channel: String, from: i64, to: Option<i64> },
     Act(FleetId, Action),
     Preview(PingRequest),
+    /// The same call, kept apart so a rescue and the start form do not overwrite each other's.
+    RescuePreview(PingRequest),
     Start(StartRequest),
-    Ping(PingRequest),
 }
 
 /// What came back.
@@ -522,10 +684,28 @@ pub enum Outcome {
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
     Boss { character_id: i64, check: BossCheck },
+    MigrateBoss { character_id: i64, check: BossCheck },
     Found { kind: SearchKind, hits: Vec<Labelled> },
-    Boosts(Vec<super::boosts::Coverage>),
+    Boosts { rows: Vec<super::boosts::Coverage>, lines: Vec<super::boosts::Line> },
+    Channels { mumble: Vec<ChannelItem>, logi: Vec<ChannelItem>, boost: Vec<ChannelItem> },
+    /// The hub pushed a new member tree. Carries the fleet it belongs to: the stream outlives the
+    /// page generation, because closing a fleet moves the page without changing the fleet.
+    HubComposition { id: FleetId, composition: Composition },
+    /// The hub pushed the fleet record. It is the same shape `Cmd::Open` reads.
+    HubFleet(Box<Fleet>),
+    /// The dashboard finished generating this fleet's statistics, so its report is worth reading
+    /// again. Nothing else says when: a report asked for the moment a fleet closes comes back
+    /// null, and a null report is an empty participant list.
+    StatsReady { id: FleetId },
+    /// A poll that came back with nothing worth applying.
+    Nothing,
     Preview { record: CallRecord, preview: PingPreview },
+    RescuePreview { preview: PingPreview },
     Started { record: CallRecord, id: FleetId },
+    /// A close that went through. Kept apart from any other write because the page it was sent
+    /// from no longer describes anything: the in-game fleet is gone and what is left is the
+    /// dashboard's record of it.
+    Closed { record: CallRecord, id: FleetId },
     Wrote { record: CallRecord },
     Failed { what: &'static str, why: String },
 }
@@ -542,13 +722,26 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(rows) => Outcome::Active { strategic, rows },
             Err(e) => Outcome::Failed { what: "active fleets", why: e.to_string() },
         },
-        Cmd::LoadHistory { skip } => match backend.history(skip) {
+        Cmd::RefreshChannels => match (
+            backend.mumble_channels(),
+            backend.logi_channels(),
+            backend.boost_channels(),
+        ) {
+            (Ok(mumble), Ok(logi), Ok(boost)) => Outcome::Channels { mumble, logi, boost },
+            // Silent: this runs on a timer, and a blip does not deserve a banner over a fleet.
+            _ => Outcome::Nothing,
+        },
+        Cmd::LoadHistory { skip, search } => match backend.history(&search, skip) {
             Ok(page) => Outcome::History(page),
             Err(e) => Outcome::Failed { what: "fleet history", why: e.to_string() },
         },
         Cmd::Open(id) => match open(backend, &id) {
             Ok(open) => Outcome::Opened(Box::new(open)),
             Err(e) => Outcome::Failed { what: "fleet", why: e.to_string() },
+        },
+        Cmd::CheckMigrateBoss { character_id } => match backend.boss_check(character_id, false) {
+            Ok(check) => Outcome::MigrateBoss { character_id, check },
+            Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
         },
         Cmd::CheckBoss { character_id, use_backup } => {
             match backend.boss_check(character_id, use_backup) {
@@ -561,9 +754,13 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Err(e) => Outcome::Failed { what: "search", why: e.to_string() },
         },
         Cmd::ReadBoosts { dir, channel, from, to } => {
-            Outcome::Boosts(super::boosts::read_window(&dir, &channel, from, to))
+            {
+                let (rows, lines) = super::boosts::read_window(&dir, &channel, from, to);
+                Outcome::Boosts { rows, lines }
+            }
         }
         Cmd::Act(id, action) => match backend.act(&id, &action) {
+            Ok(w) if action == Action::Close => Outcome::Closed { record: w.record, id },
             Ok(w) => Outcome::Wrote { record: w.record },
             Err(e) => Outcome::Failed { what: "action", why: e.to_string() },
         },
@@ -571,13 +768,15 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(w) => Outcome::Preview { record: w.record, preview: w.value },
             Err(e) => Outcome::Failed { what: "ping preview", why: e.to_string() },
         },
+        Cmd::RescuePreview(req) => match backend.ping_preview(&req) {
+            Ok(w) => Outcome::RescuePreview { preview: w.value },
+            // A rescue falls back to the local template, so a failed render is not worth an
+            // error banner over the top of a capital that is being shot.
+            Err(_) => Outcome::RescuePreview { preview: PingPreview::default() },
+        },
         Cmd::Start(req) => match backend.start(&req) {
             Ok(w) => Outcome::Started { record: w.record, id: w.value },
             Err(e) => Outcome::Failed { what: "start fleet", why: e.to_string() },
-        },
-        Cmd::Ping(req) => match backend.ping(&req) {
-            Ok(w) => Outcome::Wrote { record: w.record },
-            Err(e) => Outcome::Failed { what: "ping", why: e.to_string() },
         },
     }
 }
@@ -597,17 +796,41 @@ fn boot(backend: &dyn FleetBackend, seed: &Seed) -> Result<(Session, Seed)> {
         boost_channels: backend.boost_channels()?,
         tags: backend.tags()?,
         systems: seed.systems.clone(),
-        placeholder: seed.placeholder,
+        // Only a dry run invents names. A live backend just filled every table above, so leaving
+        // the pre-boot seed's flag in place would label real data as placeholder forever.
+        placeholder: backend.mode() == Mode::DryRun && seed.placeholder,
     };
     Ok((session, seed))
 }
 
+/// The four reads a fleet page needs, at once rather than one after another.
+///
+/// They do not depend on each other and each is a round trip to the same host, so in sequence the
+/// page cost the sum: measured at 130 + 257 + 267 + 129 ms against the live dashboard, most of a
+/// second before anything rendered. Concurrently it costs the slowest one.
 fn open(backend: &dyn FleetBackend, id: &FleetId) -> Result<OpenFleet> {
+    let (fleet, report, composition, doctrine) = std::thread::scope(|s| {
+        let f = s.spawn(|| backend.fleet(id));
+        let r = s.spawn(|| backend.report(id));
+        // Composition comes from ESI and the doctrine body is the one shape we have not captured,
+        // so either can fail on a fleet that is otherwise fine. Losing the whole page over it is
+        // worse than losing the tree.
+        let c = s.spawn(|| backend.composition(id).unwrap_or_default());
+        let d = s.spawn(|| backend.doctrine(id).ok().flatten());
+        // A panic in a worker is the worker's own bug; it must not take the page down, and the
+        // dispatcher above already catches one. Default stands in for what it would have read.
+        (
+            f.join().unwrap_or(Err(FleetError::Transport("the fleet read panicked".to_owned()))),
+            r.join().unwrap_or(Err(FleetError::Transport("the report read panicked".to_owned()))),
+            c.join().unwrap_or_default(),
+            d.join().unwrap_or_default(),
+        )
+    });
     Ok(OpenFleet {
-        fleet: backend.fleet(id)?,
-        report: backend.report(id)?,
-        composition: backend.composition(id)?,
-        doctrine: backend.doctrine(id)?,
+        composition,
+        doctrine,
+        fleet: fleet?,
+        report: report?,
         at: chrono::Utc::now().timestamp(),
     })
 }
@@ -619,6 +842,279 @@ mod tests {
 
     fn state() -> FleetState {
         FleetState { seed: crate::fleets::seed::invented(), ..FleetState::default() }
+    }
+
+    /// The rescue window is a viewport of its own and its preview is dispatched from there, so a
+    /// fleet tab paging around behind it must not throw the answer away. It did, and the window
+    /// then rendered the local template for the rest of the run.
+    #[test]
+    fn a_rescue_preview_survives_the_fleet_tab_moving_on() {
+        let sent = Gen { page: 3, preview: 7, rescue: 2 };
+        let out = Outcome::RescuePreview { preview: PingPreview::default() };
+        assert!(accepts(Gen { page: 9, preview: 40, rescue: 2 }, sent, &out));
+        assert!(!accepts(Gen { page: 3, preview: 7, rescue: 3 }, sent, &out));
+        // The form's own preview keeps its old rule, and is not disturbed by a rescue in flight.
+        let form = Outcome::Preview {
+            record: calls::ping_preview(&PingRequest::default()),
+            preview: PingPreview::default(),
+        };
+        assert!(accepts(Gen { page: 3, preview: 7, rescue: 99 }, sent, &form));
+        assert!(!accepts(Gen { page: 3, preview: 8, rescue: 2 }, sent, &form));
+    }
+
+    /// A slot being reloaded for something else must not keep showing the old thing. It did: the
+    /// previous fleet's roster stayed under the new fleet's name until the open returned.
+    #[test]
+    fn navigating_drops_what_was_on_screen() {
+        let mut slot: Slot<&str> = Slot::default();
+        slot.put("first fleet");
+        // The same page again keeps what is there, so a manual refresh does not blink.
+        slot.begin();
+        assert_eq!(slot.value, Some("first fleet"));
+        // A different one does not.
+        slot.restart();
+        assert_eq!(slot.value, None);
+        assert!(slot.loading);
+        assert!(!slot.stale);
+    }
+
+    /// The fleet's snowflakes are part of the fleet, not of the ping that started it, so the
+    /// sidebar edits them and the PUT carries them. They were dropped on the way through: an
+    /// edit that named a backseat sent the fleet back with its snowflake list as it was.
+    #[test]
+    fn an_edit_carries_the_snowflakes_both_ways() {
+        use crate::fleets::model::{Snowflake, SnowflakeType};
+        let was = Snowflake {
+            id: 4,
+            character_id: 90_000_001,
+            character_name: "Someone".to_owned(),
+            kind: SnowflakeType::Fc,
+        };
+        let fleet = Fleet { snowflakes: vec![was.clone()], ..Fleet::default() };
+        let mut e = FleetEdit::default();
+        e.seed(&fleet);
+        assert_eq!(e.snowflakes, vec![was.clone()]);
+        assert!(!e.differs(&fleet));
+
+        let added = Snowflake {
+            id: 0,
+            character_id: 90_000_002,
+            character_name: "Backseat Pilot".to_owned(),
+            kind: SnowflakeType::Backseat,
+        };
+        e.snowflakes.push(added.clone());
+        assert!(e.differs(&fleet));
+        assert_eq!(e.applied(&fleet).snowflakes, vec![was, added]);
+    }
+
+    /// A closed fleet takes corrections to its record, its tags and snowflakes, and nothing that
+    /// describes a running fleet. Anything else pending has to block the write, or a stale
+    /// channel goes up with the correction.
+    #[test]
+    fn a_closed_fleet_takes_record_corrections_and_nothing_else() {
+        let fleet = Fleet { setup_id: SetupId(84), ..Fleet::default() };
+        let mut e = FleetEdit::default();
+        e.seed(&fleet);
+        assert!(!e.only_record_differs(&fleet), "nothing changed is not a correction");
+
+        e.snowflakes.push(crate::fleets::model::Snowflake::default());
+        assert!(e.only_record_differs(&fleet));
+        assert_eq!(e.record_changes(&fleet), (false, true));
+
+        e.tags.insert(TagId(3));
+        assert!(e.only_record_differs(&fleet), "tags are part of the record too");
+        assert_eq!(e.record_changes(&fleet), (true, true));
+
+        e.setup_id = SetupId(46);
+        assert!(!e.only_record_differs(&fleet), "a setup change rode along with it");
+        e.setup_id = SetupId(84);
+        e.mumble = Some(ChannelId(12));
+        assert!(!e.only_record_differs(&fleet), "a comms change rode along with it");
+    }
+
+    /// The hub's stream outlives the page generation: closing a fleet moves the page from
+    /// Tracking to Historic without changing the fleet, so a push keyed to the generation would
+    /// be thrown away exactly when it matters, including the `StatsGenerated` that says the
+    /// participant list is finally readable.
+    #[test]
+    fn a_hub_push_survives_the_page_moving_to_the_closed_view() {
+        let id = FleetId("abc".into());
+        let sent = Gen { page: 3, preview: 0, rescue: 0 };
+        let now = Gen { page: 4, preview: 9, rescue: 2 };
+        for out in [
+            Outcome::StatsReady { id: id.clone() },
+            Outcome::HubComposition { id: id.clone(), composition: Composition::default() },
+            Outcome::HubFleet(Box::new(Fleet::default())),
+        ] {
+            assert!(accepts(now, sent, &out), "dropped {out:?}");
+        }
+    }
+
+    /// The hub keeps pushing the in-game tree for a while after a fleet closes. A closed fleet's
+    /// roster is the dashboard's flat record of who took part, and a late tree landing on it put
+    /// the wings back over the participant list the FC had just been sent to.
+    #[test]
+    fn a_late_tree_does_not_land_on_a_closed_fleet() {
+        let id = FleetId("abc".into());
+        let tree = Composition {
+            wings: vec![Wing {
+                id: WingId(1),
+                name: "Wing 1".to_owned(),
+                commander: None,
+                squads: Vec::new(),
+            }],
+            flat: false,
+            ..Composition::default()
+        };
+        let flat = Composition { flat: true, ..Composition::default() };
+
+        // While it is running, the push is the whole point.
+        let mut st = state();
+        st.open.put(OpenFleet {
+            fleet: Fleet { id: id.clone(), ..Fleet::default() },
+            composition: flat.clone(),
+            ..OpenFleet::default()
+        });
+        st.apply(Outcome::HubComposition { id: id.clone(), composition: tree.clone() });
+        assert!(!st.open.value.as_ref().unwrap().composition.flat);
+
+        // Once it has closed, it is not.
+        let mut st = state();
+        st.open.put(OpenFleet {
+            fleet: Fleet {
+                id: id.clone(),
+                closed_at: Some("2026-09-21T10:00:00Z".to_owned()),
+                ..Fleet::default()
+            },
+            composition: flat,
+            ..OpenFleet::default()
+        });
+        st.apply(Outcome::HubComposition { id, composition: tree });
+        let after = &st.open.value.as_ref().unwrap().composition;
+        assert!(after.flat, "a tree landed on a closed fleet");
+        assert!(after.wings.is_empty());
+    }
+
+    /// A push carries its fleet, so one that arrives after the user has moved on is ignored rather
+    /// than written over whatever is on screen now.
+    #[test]
+    fn a_push_for_another_fleet_is_ignored() {
+        let mut st = state();
+        st.open.put(OpenFleet {
+            fleet: Fleet { id: FleetId("mine".into()), name: "Mine".into(), ..Fleet::default() },
+            ..OpenFleet::default()
+        });
+        st.apply(Outcome::HubFleet(Box::new(Fleet {
+            id: FleetId("theirs".into()),
+            name: "Theirs".into(),
+            ..Fleet::default()
+        })));
+        assert_eq!(st.open.value.as_ref().map(|o| o.fleet.name.as_str()), Some("Mine"));
+    }
+
+    /// A second click before the first start answers would create a second dashboard fleet for
+    /// the same in-game fleet. The dashboard does not refuse it, so the app has to.
+    #[test]
+    fn a_start_in_flight_blocks_another_and_ends_either_way() {
+        let mut st = state();
+        st.starting = true;
+        st.apply(Outcome::Started {
+            record: calls::start(&StartRequest::default()),
+            id: FleetId("new".into()),
+        });
+        assert!(!st.starting, "a start that landed still blocks the next");
+
+        st.starting = true;
+        st.apply(Outcome::Failed { what: "start", why: "HTTP 500".into() });
+        assert!(!st.starting, "a start that failed blocks every retry for good");
+    }
+
+    /// The same boss twice is the same in-game fleet twice.
+    #[test]
+    fn an_fc_already_boss_of_a_tracked_fleet_is_caught() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Bootstrap));
+        let (fc_id, fc_name) = st.fc().expect("an fc");
+
+        // Nothing tracked yet.
+        st.active_strat.put(Vec::new());
+        st.active_pct.put(Vec::new());
+        assert_eq!(st.already_tracking(), None);
+
+        // Straight after a start, before any list has been reloaded.
+        st.apply(Outcome::Started {
+            record: calls::start(&StartRequest::default()),
+            id: FleetId("mine".into()),
+        });
+        st.active_strat.put(vec![FleetRow {
+            id: FleetId("mine".into()),
+            name: "Home Defence".into(),
+            ..FleetRow::default()
+        }]);
+        assert_eq!(st.already_tracking().map(|(id, _)| id), Some(FleetId("mine".into())));
+
+        // A fleet someone started elsewhere for this FC, known only from the active list.
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Bootstrap));
+        st.active_pct.put(vec![FleetRow {
+            id: FleetId("elsewhere".into()),
+            name: "Roam".into(),
+            commander: Some(format!("  {}  ", fc_name.to_uppercase())),
+            ..FleetRow::default()
+        }]);
+        assert_eq!(
+            st.already_tracking(),
+            Some((FleetId("elsewhere".into()), "Roam".into())),
+            "matched on the commander's name regardless of case and padding"
+        );
+        let _ = fc_id;
+    }
+
+    /// Once the tracked fleet has closed, its FC is free to start another.
+    #[test]
+    fn a_closed_fleet_frees_its_fc() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Bootstrap));
+        st.apply(Outcome::Started {
+            record: calls::start(&StartRequest::default()),
+            id: FleetId("mine".into()),
+        });
+        // Gone from both active lists, and not the open fleet.
+        st.active_strat.put(Vec::new());
+        st.active_pct.put(Vec::new());
+        assert_eq!(st.already_tracking(), None);
+    }
+
+    /// A scan that came back has to end the wait, whether or not it found anything. An empty
+    /// answer that still reads as loading is a pane stuck on "reading the boost channel".
+    #[test]
+    fn a_finished_boost_scan_ends_the_wait() {
+        let mut st = state();
+        st.boosts_loading = true;
+        st.apply(Outcome::Boosts { rows: Vec::new(), lines: Vec::new() });
+        assert!(!st.boosts_loading);
+        assert!(st.boosts.is_empty());
+    }
+
+    /// A failure has to end every wait it could have been. A slot left loading is a spinner that
+    /// never stops, which is how the snowflake type-ahead sat on "looking" for good.
+    #[test]
+    fn a_failure_stops_every_spinner() {
+        let mut st = state();
+        st.found_characters.begin();
+        st.preview.begin();
+        st.history.begin();
+        st.open.begin();
+        st.apply(Outcome::Failed { what: "search", why: "HTTP 405".to_owned() });
+        assert!(!st.found_characters.loading, "the type-ahead is still looking");
+        assert!(!st.preview.loading);
+        assert!(!st.history.loading);
+        assert!(!st.open.loading);
+        assert_eq!(st.error.as_deref(), Some("search: HTTP 405"));
     }
 
     /// A fleet's own page still belongs to the Fleets tab, or the sub-nav loses its highlight the
@@ -637,7 +1133,7 @@ mod tests {
     /// the journal has to say so.
     #[test]
     fn a_stale_read_is_dropped_but_a_write_is_kept() {
-        let (cur, old) = (Gen { page: 2, preview: 0 }, Gen { page: 1, preview: 0 });
+        let (cur, old) = (Gen { page: 2, ..Gen::default() }, Gen { page: 1, ..Gen::default() });
         let read = Outcome::Active { strategic: true, rows: vec![] };
         assert!(accepts(cur, cur, &read));
         assert!(!accepts(cur, old, &read));
@@ -889,13 +1385,13 @@ mod tests {
     /// The preview pane shows only the newest answer, or it flickers backwards while typing.
     #[test]
     fn only_the_newest_preview_is_shown() {
-        let cur = Gen { page: 1, preview: 5 };
+        let cur = Gen { page: 1, preview: 5, ..Gen::default() };
         let preview = Outcome::Preview {
             record: calls::ping_preview(&PingRequest::default()),
             preview: PingPreview::default(),
         };
         assert!(accepts(cur, cur, &preview));
-        assert!(!accepts(cur, Gen { page: 1, preview: 4 }, &preview));
+        assert!(!accepts(cur, Gen { page: 1, preview: 4, ..Gen::default() }, &preview));
     }
 
     /// Starting a fleet opens it, and the request reaches the journal.
@@ -941,3 +1437,4 @@ mod tests {
         assert!(st.error.as_deref().is_some_and(|e| e.contains("kickMember")), "{:?}", st.error);
     }
 }
+
