@@ -696,13 +696,16 @@ pub enum Cmd {
     Start(StartRequest),
 }
 
+/// How a boss check that failed begins, as opposed to one the dashboard answered with a reason.
+pub const BOSS_CHECK_FAILED: &str = "The dashboard could not check";
+
 /// A failed boss check in words, rather than the dashboard's error body, which is a scrap of HTML.
 pub fn boss_check_failure(e: &FleetError) -> String {
     match e {
         FleetError::Http { status, body } => {
-            format!("The dashboard could not check (HTTP {status}): {}", strip_tags(body))
+            format!("{BOSS_CHECK_FAILED} (HTTP {status}): {}", strip_tags(body))
         }
-        other => format!("The dashboard could not check: {other}"),
+        other => format!("{BOSS_CHECK_FAILED}: {other}"),
     }
 }
 

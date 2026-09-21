@@ -76,6 +76,12 @@ impl SpaiApp {
             Outcome::StatsReady { id } => Some(id.clone()),
             _ => None,
         });
+        // A started fleet is opened the way the fleet list opens one. Setting the page alone, as
+        // the state does, left it on "Loading the fleet." with nothing ever asked for.
+        let started = done.iter().find_map(|o| match o {
+            Outcome::Started { id, .. } => Some(id.clone()),
+            _ => None,
+        });
         // Onto disk too: the banner is gone once dismissed, and a failure during a fleet is the
         // one thing worth being able to read back afterwards. Never from a headless render, which
         // must not write to the profile.
@@ -85,8 +91,14 @@ impl SpaiApp {
                     Outcome::Failed { what, why } => {
                         crate::esilog::record(&format!("fleet {what}"), why);
                     }
+                    // Only a check that failed. "Character is not in a fleet" is the dashboard's
+                    // ordinary answer, and logging it once a minute buries the real failures.
                     Outcome::Boss { check, .. } => {
-                        if let Some(m) = check.error_message.as_deref().filter(|m| !m.is_empty()) {
+                        if let Some(m) = check
+                            .error_message
+                            .as_deref()
+                            .filter(|m| m.starts_with(crate::fleets::state::BOSS_CHECK_FAILED))
+                        {
                             crate::esilog::record("fleet boss check", m);
                         }
                     }
@@ -99,6 +111,12 @@ impl SpaiApp {
             for out in done {
                 st.apply(out);
             }
+        }
+        if let Some(id) = started {
+            let page = Page::Tracking(id);
+            self.fleet_gen.page += 1;
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).page = page.clone();
+            self.fleet_refresh_fresh(&page);
         }
         if let Some(id) = closed {
             let page = Page::Historic(id.clone());
@@ -672,15 +690,20 @@ impl SpaiApp {
         let mut chat = self.fleet_chat_state();
         let mut sidebar_open = self.fleet_sidebar_open;
         let here = self.fleet_mumble_at.clone();
+        // Bossed by any of the account's characters, not only the one signed in: an FC runs fleets
+        // on alts, and those are just as much their own.
         let mine = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            let me = st.session.as_ref().map(|s| s.character_name.trim().to_lowercase());
-            st.open
+            let boss = st
+                .open
                 .value
                 .as_ref()
                 .and_then(|o| o.fleet.commander.as_ref())
-                .zip(me)
-                .is_some_and(|(c, me)| c.label.trim().to_lowercase() == me)
+                .map(|c| c.label.trim().to_lowercase());
+            boss.is_some_and(|b| {
+                st.session.as_ref().is_some_and(|s| s.character_name.trim().to_lowercase() == b)
+                    || st.seed.characters.iter().any(|c| c.name.trim().to_lowercase() == b)
+            })
         };
         let mut join_comms: Option<crate::fleets::comms::Links> = None;
         let places = self.fleet_places();
@@ -4600,12 +4623,21 @@ fn tracking_page(
     // Against the doctrine above, not the one the snapshot carried. The dashboard has no hull
     // list to give, so the backend's doctrine is whatever the seed file holds, which is nothing:
     // classifying against that marked every mainline hull as off-doctrine.
+    // The wall clock on a running fleet. The snapshot's own time only moves when a new snapshot
+    // arrives, and a pilot first seen in it was stamped with that same time, so measured against
+    // it every offender stayed at zero, "just seen", until the dashboard pushed again.
+    let off_doctrine_clock =
+        if read_only { None } else { Some(chrono::Utc::now().timestamp()) };
     let mut off_doctrine = crate::fleets::doctrine::track_off_doctrine(
         &off_doctrine,
         &open.composition,
         open.doctrine.as_ref(),
-        open.at,
+        off_doctrine_clock.unwrap_or(open.at),
     );
+    // Ticks while there is something ticking on screen.
+    if off_doctrine_clock.is_some() && !off_doctrine.is_empty() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
     // A pilot the FC has confirmed has stopped being a question.
     off_doctrine.retain(|o| !st.locked.contains(&o.character_id));
     // Kept, so the next frame carries each pilot's clock forward instead of restarting it.
@@ -4767,7 +4799,7 @@ fn tracking_page(
                 &mut toggle_lock,
             ),
             DetailTab::Composition => {
-                composition_view(ui, &open, &off_doctrine)
+                composition_view(ui, &open, &off_doctrine, off_doctrine_clock)
             }
         });
         if let Some(id) = toggle_lock {
@@ -4815,6 +4847,10 @@ fn comms_buttons(
         (format!("Join {} command", sector.label()), &targets.command),
         ("Join comms".to_owned(), &targets.op),
     ] {
+        // The FC of this fleet is the one who set its comms and is already in them.
+        if mine && label == "Join comms" {
+            continue;
+        }
         let Some(links) = target else {
             if label == "Join comms" {
                 if let Some(name) = &targets.unlinked {
@@ -6114,6 +6150,8 @@ fn composition_view(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
     off_doctrine: &[crate::fleets::doctrine::OffDoctrine],
+    // `None` on a closed fleet, which has no timeline to count against.
+    clock: Option<i64>,
 ) {
     use crate::fleets::doctrine::{by_ship, unexpected_pilots, Standing};
     let doctrine = open.doctrine.as_ref();
@@ -6178,7 +6216,7 @@ fn composition_view(
     }
 
     let odd = unexpected_pilots(&lines);
-    off_doctrine_report(ui, off_doctrine, open.at, odd);
+    off_doctrine_report(ui, off_doctrine, clock, odd);
 }
 
 /// Which of the four sections a hull is counted under.
@@ -6257,14 +6295,16 @@ fn share_row(
 fn off_doctrine_report(
     ui: &mut egui::Ui,
     rows: &[crate::fleets::doctrine::OffDoctrine],
-    now: i64,
+    now: Option<i64>,
     odd: usize,
 ) {
     use crate::fleets::doctrine::OFF_DOCTRINE_GRACE;
     if rows.is_empty() {
         return;
     }
-    let late = rows.iter().filter(|r| now - r.since >= OFF_DOCTRINE_GRACE).count();
+    let late = now
+        .map(|now| rows.iter().filter(|r| now - r.since >= OFF_DOCTRINE_GRACE).count())
+        .unwrap_or(0);
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Who is off doctrine")
@@ -6294,16 +6334,18 @@ fn off_doctrine_report(
                 .spacing([12.0, 3.0])
                 .show(ui, |ui| {
                     for r in chunk {
-                        let age = now - r.since;
+                        let age = now.map(|now| now - r.since);
                         // Long enough that it was not a mistake on undock.
-                        let loud = age >= OFF_DOCTRINE_GRACE;
+                        let loud = age.is_some_and(|a| a >= OFF_DOCTRINE_GRACE);
                         cell(ui, COL[0], |ui| {
                             ui.label(&r.name);
                         });
                         cell(ui, 150.0, |ui| {
-                            // The clock only counts time this app was watching the fleet, so on a
-                            // page just opened it is zero for everyone. A row of "0s" says
-                            // nothing; say what is actually known instead.
+                            // The clock only counts time this app was watching the fleet, so for
+                            // the first second a pilot is on the list it reads zero. A "0s" says
+                            // nothing; say what is actually known instead. A closed fleet has no
+                            // clock at all, and says nothing rather than something wrong.
+                            let Some(age) = age else { return };
                             let text = if age <= 0 {
                                 egui::RichText::new("just seen").weak()
                             } else if loud {

@@ -6161,3 +6161,127 @@ fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
     run(&mut h, dashboard("DASHBOARD Op 5, again"));
     assert_eq!(*draft.lock().unwrap(), "typed by hand", "a hand-edited draft was overwritten");
 }
+
+/// Starting a fleet has to land on that fleet, loaded. It set the page and asked for nothing, so
+/// the view sat on "Loading the fleet." until the FC opened it again from the list.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_starting_a_fleet_opens_it() {
+    use crate::fleets::state::Page;
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    fixtures::seed_fleet_state(&a);
+    fixtures::open_fleet_start(&a);
+    {
+        // The fixture's FC already leads an active fleet, which the double-track guard refuses.
+        let mut st = a.fleet_state_for_test().lock().unwrap();
+        st.active_strat.put(Vec::new());
+        st.active_pct.put(Vec::new());
+        assert!(st.start_request().is_some(), "the fixture form cannot start a fleet");
+    }
+    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start: true, ..Default::default() });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        a.fleet_collect_for_test();
+        let st = a.fleet_state_for_test().lock().unwrap();
+        if let Page::Tracking(id) = &st.page {
+            if let Some(open) = st.open.value.as_ref() {
+                assert_eq!(open.fleet.id, *id, "a different fleet is on screen");
+                return;
+            }
+        }
+        drop(st);
+        assert!(std::time::Instant::now() < deadline, "the started fleet never loaded");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// "Join comms" is for someone else's fleet. On a fleet bossed by one of the account's own
+/// characters, alts included, the FC set those comms and is already in them.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_join_comms_is_not_offered_on_your_own_fleet() {
+    use egui_kittest::kittest::Queryable as _;
+    for (boss, ours) in [("Placeholder Main", true), ("Placeholder Alt", true), ("Someone Else", false)] {
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut scene = Scene::ui("join_comms_own", [1280.0, 1420.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.fleet_enabled = true;
+                a.view = View::Fleet;
+                fixtures::seed_fleet_state(&a);
+                fixtures::open_first_fleet(&a);
+                a.fleet_booted = true;
+                {
+                    let mut st = a.fleet_state_for_test().lock().unwrap();
+                    let open = st.open.value.as_mut().unwrap();
+                    open.fleet.commander = Some(crate::fleets::model::Labelled {
+                        id: 1,
+                        label: boss.to_owned(),
+                    });
+                    // Op 3 has a link, so the button is there to find when it is offered.
+                    open.fleet.mumble_channel_id = Some(crate::fleets::model::ChannelId(3));
+                    st.seed.mumble_channels = vec![crate::fleets::model::ChannelItem {
+                        id: crate::fleets::model::ChannelId(3),
+                        name: "Op 3".to_owned(),
+                        is_in_use: true,
+                    }];
+                }
+                a
+            });
+            a.root_chrome(ui);
+            a.root_central(ui, None);
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run();
+        h.run();
+        let offered = h.query_by_label_contains("Join comms").is_some();
+        assert_eq!(offered, !ours, "{boss}: Join comms offered = {offered}");
+        assert!(
+            h.query_all_by_label_contains("Join Alpha command").count() > 0,
+            "{boss}: the command button went too"
+        );
+    }
+}
+
+/// The off-doctrine clock counts on while no new snapshot arrives. It was measured against the
+/// snapshot's own time, so every pilot first seen in it read "just seen" until the dashboard next
+/// pushed, which on a quiet fleet is never.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("off_doctrine_clock", [1280.0, 1120.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_first_fleet(&a);
+            a.fleet_booted = true;
+            // Nobody seen yet: every offender is first seen on the first frame.
+            a.fleet_state_for_test().lock().unwrap().off_doctrine.clear();
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("Who is off doctrine").is_some(), "the fixture has nobody off doctrine");
+
+    // No new snapshot in between, only time.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    h.run_steps(2);
+    assert!(
+        h.query_all_by_label("just seen").count() == 0,
+        "the clock did not move without a new snapshot"
+    );
+}
