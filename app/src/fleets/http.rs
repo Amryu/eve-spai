@@ -412,14 +412,19 @@ fn classify(status: u16, body: &str, perm: Perm) -> Result<serde_json::Value> {
 }
 
 /// `POST /fleet/start` has never been observed replying, so take the id however it arrives.
+/// The new fleet's id out of what `POST /start` answers.
+///
+/// The site reads it as `r.value` (`router.navigate(["/fleet","overview",r.value])`), so the body is
+/// `{"value": "<id>"}`. Taking only `id` or a bare string, as this first did, started the fleet
+/// and then reported that no id came back.
 fn fleet_id_from(v: serde_json::Value) -> Result<FleetId> {
     match v {
         serde_json::Value::String(s) => Ok(FleetId(s)),
-        serde_json::Value::Object(ref o) => o
-            .get("id")
-            .and_then(|i| i.as_str())
+        serde_json::Value::Object(ref o) => ["value", "id"]
+            .iter()
+            .find_map(|k| o.get(*k).and_then(|i| i.as_str()))
             .map(|s| FleetId(s.to_owned()))
-            .ok_or_else(|| FleetError::Decode("the started fleet carried no id".to_owned())),
+            .ok_or_else(|| FleetError::Decode(format!("the started fleet carried no id: {v}"))),
         other => Err(FleetError::Decode(format!("the started fleet was {other}"))),
     }
 }
@@ -667,6 +672,21 @@ fn flat_roster(report: &FleetReport, ships: &Ships) -> Composition {
             }],
         }],
         flat: true,
+    }
+}
+
+#[cfg(test)]
+mod start_reply_tests {
+    use super::fleet_id_from;
+
+    /// What `/start` answers, going by the site's own `r.value`.
+    #[test]
+    fn the_new_fleets_id_is_read_from_value() {
+        let id = fleet_id_from(serde_json::json!({"value": "00000000-0000-4000-8000-000000000042"}))
+            .expect("an id");
+        assert_eq!(id.0, "00000000-0000-4000-8000-000000000042");
+        assert!(fleet_id_from(serde_json::json!("00000000-0000-4000-8000-000000000043")).is_ok());
+        assert!(fleet_id_from(serde_json::json!({"nothing": 1})).is_err());
     }
 }
 
@@ -1139,6 +1159,7 @@ mod boot_probe {
         }
     }
 }
+
 
 
 

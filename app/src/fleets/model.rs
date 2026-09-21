@@ -294,8 +294,11 @@ pub struct Fleet {
     pub tag_ids: Vec<TagId>,
     #[serde(default)]
     pub snowflakes: Vec<Snowflake>,
-    #[serde(default, deserialize_with = "null_default")]
-    pub statistic_id: i64,
+    /// Null until the fleet closes and its statistics exist. Kept as an `Option` rather than read
+    /// as 0: an edit puts the whole fleet back, and a 0 there names a statistics record that does
+    /// not exist where the dashboard had nothing.
+    #[serde(default)]
+    pub statistic_id: Option<i64>,
     #[serde(default, deserialize_with = "null_default")]
     pub has_doctrine_info: bool,
     pub boost_channel_id: Option<ChannelId>,
@@ -513,12 +516,11 @@ impl BossCheck {
                 },
             );
         }
-        match (self.is_fleet_boss, self.backup_available) {
-            (true, _) => (true, "Fleet boss in game.".to_owned()),
-            (false, true) => (true, "Not fleet boss, but the backup key can track it.".to_owned()),
-            (false, false) => {
-                (false, "Not the boss of a fleet in game, so there is nothing to track.".to_owned())
-            }
+        // `backup_available` is not a way in: the backup key is not this account's to use.
+        if self.is_fleet_boss {
+            (true, "Fleet boss in game.".to_owned())
+        } else {
+            (false, "Not the boss of a fleet in game, so there is nothing to track.".to_owned())
         }
     }
 
@@ -956,8 +958,8 @@ mod tests {
             error_message: err.map(str::to_owned),
         };
         assert!(check(true, false, None).verdict().0);
-        // Not the boss, but the backup key can read the fleet anyway.
-        assert!(check(false, true, None).verdict().0);
+        // A backup key being available is no way in: it is not this account's to use.
+        assert!(!check(false, true, None).verdict().0);
         assert!(!check(false, false, None).verdict().0);
 
         // An error from the server is the answer, whatever the flags say. A short one reads
@@ -1028,10 +1030,47 @@ mod null_tolerance_tests {
             "formupLocation": null
         });
         let f: Fleet = serde_json::from_value(raw).expect("a running fleet has to decode");
-        assert_eq!(f.statistic_id, 0);
+        assert_eq!(f.statistic_id, None);
         assert_eq!(f.name, "Home Defence");
         assert!(f.closed_at.is_none());
         assert_eq!(f.mumble_channel_id, Some(ChannelId(12)));
+    }
+
+    /// An edit PUTs the whole fleet back, so what was read has to go back unchanged. Every key a
+    /// running fleet sends, nulls included, has to survive the round trip, or Apply writes a value
+    /// the dashboard never had.
+    #[test]
+    fn a_running_fleet_goes_back_as_it_came() {
+        let raw = serde_json::json!({
+            "id": "00000000-0000-4000-8000-000000000042",
+            "commander": {"id": 90000001, "label": "Someone"},
+            "operationName": null,
+            "esiId": 3_000_000_001_i64,
+            "setupId": 84,
+            "useBackup": false,
+            "groupName": null,
+            "name": "Home Defence",
+            "description": "",
+            "startedById": 12345,
+            "startedAt": "2026-09-21T10:00:00Z",
+            "closedAt": null,
+            "autoCloseType": 1,
+            "autoCloseTime": 30,
+            "ignoreParticipationRequirements": false,
+            "tagIds": [1, 12],
+            "snowflakes": [],
+            "statisticId": null,
+            "hasDoctrineInfo": true,
+            "boostChannelId": 5,
+            "logiChannelId": 1,
+            "mumbleChannelId": 12,
+            "formupLocation": null
+        });
+        let f: Fleet = serde_json::from_value(raw.clone()).expect("decodes");
+        let back = serde_json::to_value(&f).expect("encodes");
+        for (k, v) in raw.as_object().unwrap() {
+            assert_eq!(back.get(k), Some(v), "{k} changed on the way back");
+        }
     }
 
     /// Any scalar the server has no value for yet reads as its default rather than as a failure.

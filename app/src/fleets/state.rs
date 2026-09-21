@@ -101,7 +101,6 @@ pub struct Draft {
     pub tags: std::collections::BTreeSet<TagId>,
     pub snowflakes: Vec<Snowflake>,
     pub formup: Option<Labelled>,
-    pub use_backup: bool,
     /// Which of the account's characters is the FC. `None` is whoever is signed in.
     pub fc_character: Option<i64>,
     pub auto: AutoPicked,
@@ -358,6 +357,12 @@ impl FleetState {
             Outcome::Closed { record, id: _ } | Outcome::Wrote { record } => {
                 self.record(record);
             }
+            Outcome::Updated { record, fleet } => {
+                self.record(record);
+                if let Some(open) = self.open.value.as_mut().filter(|o| o.fleet.id == fleet.id) {
+                    open.fleet = *fleet;
+                }
+            }
             Outcome::Failed { what, why } => {
                 eprintln!("[fleet] {what} failed: {why}");
                 self.error = Some(format!("{what}: {why}"));
@@ -450,7 +455,6 @@ impl FleetState {
         d.form.doctrine_notes =
             Some(p.doctrine_notes.clone()).filter(|s| !s.trim().is_empty());
         d.tags = p.tag_ids.iter().map(|t| TagId(*t)).collect();
-        d.use_backup = p.use_backup;
         d.formup = p.formup_location.as_ref().map(|(id, label)| Labelled {
             id: *id,
             label: label.clone(),
@@ -575,7 +579,8 @@ impl FleetState {
             tag_ids: self.draft.tags.iter().copied().collect(),
             character_id,
             character_name,
-            use_backup: self.draft.use_backup,
+            // Never the backup key: the account has no use of it.
+            use_backup: false,
             snowflakes: self.draft.snowflakes.clone(),
             operation_id: None,
             formup_location_id: self.draft.formup.as_ref().map(|l| l.id),
@@ -618,7 +623,7 @@ impl FleetState {
             set_motd: d.form.set_motd,
             doctrine_notes: d.form.doctrine_notes.clone().unwrap_or_default(),
             tag_ids: d.tags.iter().map(|t| t.0).collect(),
-            use_backup: d.use_backup,
+            use_backup: false,
             formup_location: d.formup.as_ref().map(|l| (l.id, l.label.clone())),
             snowflakes: d
                 .snowflakes
@@ -645,7 +650,10 @@ pub struct Gen {
 pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
     match out {
         // The request was made. Dropping its record would be lying about what this app did.
-        Outcome::Wrote { .. } | Outcome::Started { .. } | Outcome::Closed { .. } => true,
+        Outcome::Wrote { .. }
+        | Outcome::Started { .. }
+        | Outcome::Closed { .. }
+        | Outcome::Updated { .. } => true,
         // Only the newest preview is worth showing; an older one would flicker the pane backwards.
         // A push is keyed to its fleet, not to the page generation: closing a fleet moves the
         // page from Tracking to Historic without changing the fleet, and the stream stays open
@@ -669,7 +677,9 @@ pub enum Cmd {
     /// is open, and it is the one an FC picks a free channel from.
     RefreshChannels,
     Open(FleetId),
-    CheckBoss { character_id: i64, use_backup: bool },
+    /// Without the backup key, always: the account has no use of it, and asking with it makes the
+    /// dashboard answer a 500.
+    CheckBoss { character_id: i64 },
     /// The same question about the character a fleet would be handed to.
     CheckMigrateBoss { character_id: i64 },
     /// Whether the fleet is advertised, through its boss's ESI token.
@@ -684,6 +694,31 @@ pub enum Cmd {
     /// The same call, kept apart so a rescue and the start form do not overwrite each other's.
     RescuePreview(PingRequest),
     Start(StartRequest),
+}
+
+/// A failed boss check in words, rather than the dashboard's error body, which is a scrap of HTML.
+pub fn boss_check_failure(e: &FleetError) -> String {
+    match e {
+        FleetError::Http { status, body } => {
+            format!("The dashboard could not check (HTTP {status}): {}", strip_tags(body))
+        }
+        other => format!("The dashboard could not check: {other}"),
+    }
+}
+
+/// An error body with its markup taken out, for showing to a person.
+pub fn strip_tags(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut inside = false;
+    for c in body.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            c if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// What came back.
@@ -718,6 +753,10 @@ pub enum Outcome {
     /// from no longer describes anything: the in-game fleet is gone and what is left is the
     /// dashboard's record of it.
     Closed { record: CallRecord, id: FleetId },
+    /// An edit that went through, with the fleet as it now stands. The page compared the edit
+    /// against the fleet as it was before, so without this Apply stayed lit and the panel went on
+    /// saying "Not applied yet" about a change the dashboard already had.
+    Updated { record: CallRecord, fleet: Box<Fleet> },
     Wrote { record: CallRecord },
     Failed { what: &'static str, why: String },
 }
@@ -758,10 +797,19 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(check) => Outcome::MigrateBoss { character_id, check },
             Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
         },
-        Cmd::CheckBoss { character_id, use_backup } => {
-            match backend.boss_check(character_id, use_backup) {
+        Cmd::CheckBoss { character_id } => {
+            match backend.boss_check(character_id, false) {
                 Ok(check) => Outcome::Boss { character_id, check },
-                Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
+                // On the boss line, where the answer is read, rather than as a banner: this runs
+                // once a minute, and the dashboard's error body is a scrap of HTML.
+                Err(e) => Outcome::Boss {
+                    character_id,
+                    check: BossCheck {
+                        is_fleet_boss: false,
+                        backup_available: false,
+                        error_message: Some(boss_check_failure(&e)),
+                    },
+                },
             }
         }
         Cmd::Search { kind, value } => match backend.search(kind, &value, false) {
@@ -776,6 +824,13 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
         }
         Cmd::Act(id, action) => match backend.act(&id, &action) {
             Ok(w) if action == Action::Close => Outcome::Closed { record: w.record, id },
+            // Read back rather than trusted: the dashboard may have filled in or normalised what it
+            // stored. What was sent is the fallback, since it was accepted.
+            Ok(w) if matches!(action, Action::Update(_)) => {
+                let Action::Update(sent) = action else { unreachable!() };
+                let fleet = backend.fleet(&id).map(Box::new).unwrap_or(sent);
+                Outcome::Updated { record: w.record, fleet }
+            }
             Ok(w) => Outcome::Wrote { record: w.record },
             Err(e) => Outcome::Failed { what: "action", why: e.to_string() },
         },
@@ -1102,6 +1157,37 @@ mod tests {
         st.active_strat.put(Vec::new());
         st.active_pct.put(Vec::new());
         assert_eq!(st.already_tracking(), None);
+    }
+
+    /// A failed check lands on the boss line in words, not as a banner of raw HTML.
+    #[test]
+    fn a_failed_boss_check_is_said_in_words() {
+        let e = FleetError::Http { status: 500, body: "<p>An error has occured</p>".to_owned() };
+        assert_eq!(
+            boss_check_failure(&e),
+            "The dashboard could not check (HTTP 500): An error has occured"
+        );
+    }
+
+    /// A save that went through puts the saved fleet on screen, so the panel stops offering it.
+    #[test]
+    fn an_applied_edit_updates_the_fleet_on_screen() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let id = b.active(true).expect("active")[0].id.clone();
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Open(id.clone())));
+        let open = st.open.value.clone().expect("opened");
+        st.edit.seed(&open.fleet);
+        let changed = SetupId(open.fleet.setup_id.0 + 1000);
+        st.edit.setup_id = changed;
+        assert!(st.edit.differs(&open.fleet));
+
+        let edited = st.edit.applied(&open.fleet);
+        st.apply(run(&b, &seed, Cmd::Act(id, Action::Update(Box::new(edited)))));
+        let now = &st.open.value.as_ref().unwrap().fleet;
+        assert_eq!(now.setup_id, changed, "the saved fleet is not the one on screen");
+        assert!(!st.edit.differs(now), "Apply is still offered for a change already saved");
     }
 
     /// A scan that came back has to end the wait, whether or not it found anything. An empty

@@ -154,7 +154,7 @@ impl SpoofData {
             ignore_participation_requirements: false,
             tag_ids: tags,
             snowflakes: vec![],
-            statistic_id: 0,
+            statistic_id: None,
             has_doctrine_info: true,
             boost_channel_id: Some(ChannelId(2)),
             logi_channel_id: Some(ChannelId(3)),

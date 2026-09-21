@@ -6083,3 +6083,81 @@ fn uitest_presets_and_folders_reorder_by_dragging() {
         ["/Delta", "/Bravo", "/Alpha", "Subs/Echo", "Caps/Charlie"],
     );
 }
+
+/// Changing the rescue's op has to change the comms in the ping straight away, and pick up the
+/// dashboard's rendering when it lands, unless the FC has typed into the draft.
+///
+/// It did neither: the draft was rebuilt from the rendering still held for the old op, and when
+/// the new one arrived nothing rebuilt it, so the old comms stayed until something else changed.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
+    let draft = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let seen = draft.clone();
+    // What the test does to the app between frames: set an op, hand in a dashboard rendering.
+    let next = std::sync::Arc::new(std::sync::Mutex::new(None::<Box<dyn FnOnce(&mut crate::app::SpaiApp) + Send>>));
+    let inbox = next.clone();
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("rescue_op_switch", [1100.0, 700.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fc_rescue_enabled = true;
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::rescue_presets();
+            a.settings.rescue_preset = "Capital Save".to_owned();
+            // The template names the op, so the stop-gap draft says which op it is for.
+            a.settings.rescue_ping_template = "Comms: Op {op}".to_owned();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            fixtures::seed_rescue_ping(&a);
+            a.fleet_state_for_test().lock().unwrap().seed.mumble_channels = (1..=12)
+                .map(|n| crate::fleets::model::ChannelItem {
+                    id: crate::fleets::model::ChannelId(n),
+                    name: format!("Op {n}"),
+                    is_in_use: false,
+                })
+                .collect();
+            a.rescue_state_for_test().lock().unwrap().op_channel = 3;
+            a
+        });
+        if let Some(f) = inbox.lock().unwrap().take() {
+            f(a);
+        }
+        a.rescue_window_body(ui);
+        *seen.lock().unwrap() = a.rescue_state_for_test().lock().unwrap().pending_ping.clone();
+    });
+    let mut h = harness::build(&mut scene, false);
+    let run = |h: &mut egui_kittest::Harness<'_>, f: Box<dyn FnOnce(&mut crate::app::SpaiApp) + Send>| {
+        *next.lock().unwrap() = Some(f);
+        h.run_steps(4);
+    };
+    let dashboard = |text: &'static str| -> Box<dyn FnOnce(&mut crate::app::SpaiApp) + Send> {
+        Box::new(move |a: &mut crate::app::SpaiApp| {
+            a.fleet_state_for_test().lock().unwrap().rescue_preview =
+                Some(crate::fleets::model::PingPreview { ping: text.to_owned(), motd: String::new() });
+        })
+    };
+
+    // The dashboard's rendering for Op 3 is what the draft shows.
+    run(&mut h, dashboard("DASHBOARD Op 3"));
+    assert_eq!(*draft.lock().unwrap(), "DASHBOARD Op 3");
+
+    // Op 5: the old rendering must not survive the switch, not even for a frame's worth of draft.
+    run(&mut h, Box::new(|a| a.rescue_state_for_test().lock().unwrap().op_channel = 5));
+    let now = draft.lock().unwrap().clone();
+    assert!(!now.contains("Op 3"), "the draft still names the old comms: {now:?}");
+
+    // The dashboard answers for Op 5: an untouched draft takes it.
+    run(&mut h, dashboard("DASHBOARD Op 5"));
+    assert_eq!(*draft.lock().unwrap(), "DASHBOARD Op 5", "the new rendering was not picked up");
+
+    // Once the FC has typed, a late rendering leaves their draft alone.
+    run(&mut h, Box::new(|a| {
+        let mut r = a.rescue_state_for_test().lock().unwrap();
+        r.pending_ping = "typed by hand".to_owned();
+        r.ping_edited = true;
+    }));
+    run(&mut h, dashboard("DASHBOARD Op 5, again"));
+    assert_eq!(*draft.lock().unwrap(), "typed by hand", "a hand-edited draft was overwritten");
+}

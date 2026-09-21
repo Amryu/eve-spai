@@ -147,6 +147,9 @@ pub struct RescueState {
     pub pending_ping: String,
     /// (op_channel, doctrine, selected ping) the `pending_ping` was last generated for.
     pub ping_built_for: Option<(u8, String, Option<u64>)>,
+    /// The rendering `pending_ping` was last filled from. The dashboard's answer lands a moment
+    /// after the op or preset changes, and an untouched draft has to pick it up when it does.
+    pub ping_built_from: String,
     /// The FC has typed into `pending_ping`, so an op/doctrine change must not clobber it.
     pub ping_edited: bool,
     /// Draft reply typed into the chat view, sent to the selected tab's room.

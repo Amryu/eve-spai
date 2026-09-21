@@ -76,6 +76,24 @@ impl SpaiApp {
             Outcome::StatsReady { id } => Some(id.clone()),
             _ => None,
         });
+        // Onto disk too: the banner is gone once dismissed, and a failure during a fleet is the
+        // one thing worth being able to read back afterwards. Never from a headless render, which
+        // must not write to the profile.
+        if !self.headless {
+            for out in &done {
+                match out {
+                    Outcome::Failed { what, why } => {
+                        crate::esilog::record(&format!("fleet {what}"), why);
+                    }
+                    Outcome::Boss { check, .. } => {
+                        if let Some(m) = check.error_message.as_deref().filter(|m| !m.is_empty()) {
+                            crate::esilog::record("fleet boss check", m);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             for out in done {
@@ -966,12 +984,9 @@ impl SpaiApp {
             }
         }
         if act.check_boss && self.fleet_boss_may_ask() {
-            let (who, use_backup) = {
-                let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-                (st.fc(), st.draft.use_backup)
-            };
+            let who = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc();
             if let Some((character_id, _)) = who {
-                self.fleet_dispatch(Cmd::CheckBoss { character_id, use_backup });
+                self.fleet_dispatch(Cmd::CheckBoss { character_id });
             }
         }
         if act.edited {
@@ -1063,10 +1078,8 @@ impl SpaiApp {
             ctx.request_repaint_after(BOSS_POLL);
             return;
         }
-        let use_backup =
-            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).draft.use_backup;
         self.fleet_boss_asked = Some(std::time::Instant::now());
-        self.fleet_dispatch(Cmd::CheckBoss { character_id, use_backup });
+        self.fleet_dispatch(Cmd::CheckBoss { character_id });
         ctx.request_repaint_after(BOSS_POLL);
     }
 
@@ -3178,10 +3191,6 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
                 act.edited |= ui.checkbox(&mut d.form.set_motd, "Set the fleet MOTD").changed();
                 act.edited |=
                     ui.checkbox(&mut d.form.is_corporation_fleet, "Corporation fleet").changed();
-                act.edited |= ui
-                    .checkbox(&mut d.use_backup, "Use the backup key")
-                    .on_hover_text("Tracks through the backup ESI key rather than this character.")
-                    .changed();
                 act.edited |= ui
                     .checkbox(
                         &mut d.form.ignore_participation_requirements,

@@ -357,6 +357,12 @@ impl SpaiApp {
         let Some(preset) = crate::settings::find_preset(&all, &want).or_else(|| all.first()) else {
             return;
         };
+        // A new op or preset makes the rendering already held wrong: it names the old comms. Drop
+        // it now, so the ping falls back to the local template for the new op until the
+        // dashboard answers, instead of showing the old channel until then.
+        if self.rescue_preview_key.as_deref() != Some(key.as_str()) {
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).rescue_preview = None;
+        }
         self.rescue_preview_key = Some(key);
         self.rescue_preview_at = Some(std::time::Instant::now());
         self.fleet_gen.rescue += 1;
@@ -976,10 +982,17 @@ impl SpaiApp {
                         .as_ref()
                         .is_some_and(|(_, _, seq)| *seq != r.selected_ping);
                     let stale = r.ping_built_for.as_ref() != Some(&ping_key);
+                    // The dashboard's rendering arrives a moment after the op or preset changed;
+                    // an untouched draft takes it when it does, or it keeps the stop-gap for good.
+                    let rerendered = ping != r.ping_built_from;
                     // A different ping means different pilot/system/cyno, so rebuild even over a
                     // hand-edited draft: sending the previous casualty's details would be worse.
-                    if r.pending_ping.is_empty() || switched_ping || (stale && !r.ping_edited) {
+                    if r.pending_ping.is_empty()
+                        || switched_ping
+                        || ((stale || rerendered) && !r.ping_edited)
+                    {
                         r.pending_ping = ping.clone();
+                        r.ping_built_from = ping.clone();
                         r.ping_built_for = Some(ping_key);
                         if switched_ping {
                             r.ping_edited = false;
