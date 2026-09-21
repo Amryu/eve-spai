@@ -850,11 +850,7 @@ pub(crate) fn record_fleet_requests(app: &crate::app::SpaiApp) {
 /// A closed fleet: the dashboard keeps the participants but the wings are gone, so the roster is
 /// one flat list. The hull and group names are the longest real ones, because that is what decides
 /// whether the columns after them stay in line.
-#[cfg(feature = "fleet")]
-pub(crate) fn open_closed_fleet(app: &crate::app::SpaiApp) {
-    open_closed_fleet_as(app, true);
-}
-
+///
 /// `via_history` is how the user got here: out of the history list, or by sitting on the tracking
 /// page while the dashboard's auto-close timer ran out under them. The page must read the same
 /// either way, because the fleet is equally gone.

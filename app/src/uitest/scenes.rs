@@ -815,6 +815,49 @@ fn jabber_sidebar_scene_cfg(
     })
 }
 
+/// A tracked fleet whose boss is one of this machine's characters, with its advert off.
+#[cfg(feature = "fleet")]
+fn fleet_advert_scene(name: &'static str, size: [f32; 2], up: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_first_fleet(&a);
+            a.fleet_booted = true;
+            {
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                let id = st.open.value.as_ref().unwrap().fleet.id.clone();
+                st.advert = Some((id, up));
+            }
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
+/// The Convos list before anything has been opened, which is what a first sign-in shows.
+fn jabber_empty_convos_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = crate::jabber::JabberState::default();
+            a
+        });
+        let mut f = a.jabber_frame(false);
+        f.configured = true;
+        f.ever_online = true;
+        f.connected = true;
+        a.jabber_sidebar_for_test(ui, &f, true);
+    })
+}
+
 /// The DM and room start dialogs, each with its own recent list. Sized to show the list scrolling
 /// rather than a handful of names.
 fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
@@ -1032,6 +1075,13 @@ fn fleet_confirm_scene(
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
 #[cfg(feature = "fleet")]
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    rescue_panel_scene_with(name, size, None)
+}
+
+/// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
+/// and picks it. The invented table's "Comms N" names resolve to no op at all.
+#[cfg(feature = "fleet")]
+fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -1044,6 +1094,16 @@ fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
             fixtures::seed_rescue_ping(&a);
+            if let Some(op) = in_use {
+                a.fleet_state_for_test().lock().unwrap().seed.mumble_channels = (1..=12)
+                    .map(|n| crate::fleets::model::ChannelItem {
+                        id: crate::fleets::model::ChannelId(n),
+                        name: format!("Op {n}"),
+                        is_in_use: n == i32::from(op),
+                    })
+                    .collect();
+                a.rescue_state_for_test().lock().unwrap().op_channel = op;
+            }
             a
         });
         app.rescue_window_body(ui);
@@ -1257,7 +1317,7 @@ fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
 #[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_rows_open_the_fleet() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::Queryable as _;
 
     let mut scene = fleet_scene("fleet_click", [1280.0, 800.0]);
     let mut h = harness::build(&mut scene, false);
@@ -1279,7 +1339,7 @@ fn uitest_fleet_rows_open_the_fleet() {
 #[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_tag_field_opens_and_filters() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::Queryable as _;
 
     let mut scene = fleet_start_scene("fleet_tag_popup", [1440.0, 900.0]);
     let mut h = harness::build(&mut scene, false);
@@ -1324,6 +1384,7 @@ pub(crate) fn all() -> Vec<Scene> {
         jabber_popout_scene("jabber_popout_stamps", [520.0, 480.0], fixtures::JABBER_ROOM, ""),
         // Both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
+        jabber_empty_convos_scene("jabber_sidebar_convos_empty", [420.0, 400.0]),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
         // One dialog per kind, and neither offering the other kind's conversations.
         jabber_start_scene("jabber_start_dm", false),
@@ -1572,6 +1633,8 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
     #[cfg(feature = "fleet")]
+    v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
+    #[cfg(feature = "fleet")]
     v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
@@ -1608,6 +1671,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
     #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
+    #[cfg(feature = "fleet")]
+    v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3)));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
@@ -5254,7 +5319,6 @@ fn uitest_preset_rows_are_one_width_and_stay_put() {
 #[cfg(feature = "fleet")]
 #[test]
 fn uitest_closed_fleet_sorts_by_participation() {
-    use egui_kittest::kittest::NodeT as _;
     let mut scene = fleet_detail_scene_with(
         "closed_fleet_paps",
         [1280.0, 1000.0],
@@ -5378,7 +5442,6 @@ fn uitest_a_fleet_that_closes_under_the_page_goes_read_only() {
 #[cfg(feature = "fleet")]
 #[test]
 fn uitest_closing_a_fleet_lands_on_the_closed_view() {
-    use crate::fleets::backend::FleetBackend as _;
     use crate::fleets::state::Page;
 
     harness::scratch_profile();
@@ -5567,4 +5630,456 @@ fn uitest_a_closed_fleet_offers_only_its_record() {
         let edit = h.get_by_label("Edit");
         assert!(!edit.accesskit_node().is_disabled(), "{what}: snowflakes cannot be edited");
     }
+}
+
+/// Getting DM'd has to put the conversation in front of the user, whatever they did with that
+/// person before.
+///
+/// Driven the way the worker drives it: the message goes through `jabber::receive_direct`, the frame is
+/// built by `jabber_frame`, tabs by `jabber_reconcile`, and the list is the one the sidebar renders.
+/// The older tests built the frame by hand, which skipped the filtering a forgotten DM goes through.
+#[test]
+fn uitest_getting_dmd_opens_the_conversation() {
+    use egui_kittest::kittest::Queryable as _;
+    const DM: &str = "stranger@goonfleet.com";
+
+    #[derive(Clone, Copy, Debug)]
+    enum Before {
+        Nothing,
+        Closed,
+        Forgotten,
+    }
+
+    for (before, delayed) in [
+        (Before::Nothing, false),
+        (Before::Closed, false),
+        (Before::Forgotten, false),
+        // Delivered while offline: the server holds it and hands it over with a <delay/> at login.
+        (Before::Nothing, true),
+        (Before::Closed, true),
+    ] {
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut tabs: Vec<String> = Vec::new();
+        let tabs_out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let tabs_in = tabs_out.clone();
+        let mut scene = Scene::ui("dm_arrives", [420.0, 560.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                *a.jabber.lock().unwrap() = crate::jabber::JabberState::default();
+                match before {
+                    Before::Nothing => {}
+                    Before::Closed => a.settings.jabber_closed_dms = vec![DM.to_owned()],
+                    Before::Forgotten => a.settings.jabber_forgotten = vec![DM.to_owned()],
+                }
+                // The worker's own handling of a one-to-one message, live or held offline.
+                crate::jabber::receive_direct(
+                    &a.jabber,
+                    DM,
+                    "you around?".to_owned(),
+                    1_700_000_000,
+                    delayed,
+                    None,
+                );
+                a
+            });
+            let mut f = a.jabber_frame(false);
+            // Headless reports itself unconfigured, and reconcile does nothing for that.
+            f.configured = true;
+            f.ever_online = true;
+            a.jabber_reconcile(&f);
+            *tabs_in.lock().unwrap() = a.jabber_tabs_for_test();
+            let mut f = a.jabber_frame(false);
+            f.configured = true;
+            f.ever_online = true;
+            f.connected = true;
+            a.jabber_sidebar_for_test(ui, &f, true);
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run();
+        h.run();
+        tabs.extend(tabs_out.lock().unwrap().iter().cloned());
+
+        let listed = h.query_all_by_label_contains("stranger").count() > 0;
+        assert!(listed, "{before:?}, delayed {delayed}: the DM is not in the Convos list");
+        assert!(
+            tabs.iter().any(|t| t == DM),
+            "{before:?}, delayed {delayed}: no tab opened for the DM (tabs: {tabs:?})"
+        );
+    }
+}
+
+/// Right after the first sign-in nothing is open, and the start rows are the only way in. They
+/// were hidden behind "Nothing yet. Start one from the Directory." in exactly that state.
+#[test]
+fn uitest_an_empty_convos_list_still_offers_both_starts() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("convos_empty", [420.0, 400.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = crate::jabber::JabberState::default();
+            a
+        });
+        let mut f = a.jabber_frame(false);
+        f.configured = true;
+        f.ever_online = true;
+        f.connected = true;
+        assert!(f.convos.is_empty() && f.channels.is_empty(), "the fixture is not empty");
+        a.jabber_sidebar_for_test(ui, &f, true);
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run();
+    for label in ["Direct messages", "Start a DM", "Rooms", "Join a room"] {
+        assert!(h.query_by_label_contains(label).is_some(), "the empty list has no {label:?}");
+    }
+    assert!(h.query_by_label_contains("Nothing yet").is_none(), "the old dead end is back");
+}
+
+/// The Fleet Finder advert sits in the title row, green when it is up and yellow when it is off,
+/// and never pushes the title onto a second line. Nothing at all when it cannot be read.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_advert_shows_in_the_title_row() {
+    use egui_kittest::kittest::Queryable as _;
+    for state in [Some(true), Some(false), None] {
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut scene = Scene::ui("advert", [1280.0, 700.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.fleet_enabled = true;
+                a.view = View::Fleet;
+                fixtures::seed_fleet_state(&a);
+                fixtures::open_first_fleet(&a);
+                a.fleet_booted = true;
+                {
+                    let mut st = a.fleet_state_for_test().lock().unwrap();
+                    let id = st.open.value.as_ref().unwrap().fleet.id.clone();
+                    st.advert = state.map(|up| (id, up));
+                }
+                a
+            });
+            a.root_chrome(ui);
+            a.root_central(ui, None);
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run();
+        h.run();
+        let up = h.query_by_label_contains("advert up");
+        let off = h.query_by_label_contains("advert off");
+        match state {
+            Some(true) => assert!(up.is_some() && off.is_none(), "advert up is not shown"),
+            Some(false) => assert!(off.is_some() && up.is_none(), "advert off is not shown"),
+            None => {
+                assert!(up.is_none() && off.is_none(), "an advert state nobody could read");
+                continue;
+            }
+        }
+        let chip = up.or(off).unwrap().rect();
+        // The setup's name, which sits right after the heading on the title row. The fleet's own
+        // name is no anchor: it is also the breadcrumb above and one of its tags.
+        let title = h.get_by_label("Fast Tackle").rect();
+        assert!(
+            (chip.center().y - title.center().y).abs() < title.height(),
+            "{state:?}: the advert went onto another line: chip {chip:?}, title {title:?}"
+        );
+    }
+}
+
+/// The rescue's op picker says when the chosen op's channel is taken, before anything is pinged
+/// onto it. A channel held by the fleet this app is running is expected, and says so quietly.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
+    use egui_kittest::kittest::Queryable as _;
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        Free,
+        InUse,
+        Ours,
+    }
+    for case in [Case::Free, Case::InUse, Case::Ours] {
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut scene = Scene::ui("rescue_op_in_use", [1100.0, 700.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.fc_rescue_enabled = true;
+                a.settings.fleet_enabled = true;
+                a.settings.fleet_presets = fixtures::rescue_presets();
+                a.settings.rescue_preset = "Capital Save".to_owned();
+                fixtures::seed_fleet_state(&a);
+                a.fleet_booted = true;
+                fixtures::seed_rescue_ping(&a);
+                {
+                    let mut st = a.fleet_state_for_test().lock().unwrap();
+                    // Named the way the dashboard names them, which the invented table is not.
+                    st.seed.mumble_channels = (1..=12)
+                        .map(|n| crate::fleets::model::ChannelItem {
+                            id: crate::fleets::model::ChannelId(n),
+                            name: format!("Op {n}"),
+                            is_in_use: n == 3 && !matches!(case, Case::Free),
+                        })
+                        .collect();
+                    if matches!(case, Case::Ours) {
+                        st.open.put(crate::fleets::state::OpenFleet {
+                            fleet: crate::fleets::model::Fleet {
+                                mumble_channel_id: Some(crate::fleets::model::ChannelId(3)),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        });
+                    }
+                }
+                a.rescue_state_for_test().lock().unwrap().op_channel = 3;
+                a
+            });
+            a.rescue_window_body(ui);
+        });
+        let mut h = harness::build(&mut scene, false);
+        // Stepped rather than run: the boss check asks to be repainted in a minute, and `run`
+        // reads that as a page that never settles.
+        h.run_steps(3);
+        // Every case has to have a channel to judge, or a free op passes for having none.
+        assert!(
+            h.query_by_label_contains("no such channel").is_none(),
+            "{case:?}: op 3 did not resolve to a channel"
+        );
+        assert!(h.query_all_by_label("Op 3").count() > 0, "{case:?}: the channel is not named");
+        let alert = h.query_by_label_contains("in use").is_some();
+        let ours = h.query_by_label_contains("your fleet").is_some();
+        match case {
+            Case::Free => assert!(!alert && !ours, "a free op raised something"),
+            Case::InUse => assert!(alert && !ours, "a taken op did not alert"),
+            Case::Ours => assert!(ours && !alert, "the FC's own fleet read as someone else's"),
+        }
+    }
+}
+
+/// Presets are identified by folder and name together, through the same actions the buttons use.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_preset_name_can_repeat_across_folders() {
+    use crate::app::fleet_ui::FormAct;
+    use crate::settings::preset_key;
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    fixtures::seed_fleet_state(&a);
+    let save = |a: &mut crate::app::SpaiApp, label: &str, folder: &str| {
+        a.fleet_apply_form_for_test(FormAct {
+            save_preset: Some((label.to_owned(), folder.to_owned())),
+            ..Default::default()
+        });
+    };
+    let keys = |a: &crate::app::SpaiApp| -> Vec<String> {
+        a.settings.fleet_presets.iter().map(|p| p.key()).collect()
+    };
+
+    // The bug that asked for this: saving under a name used in another folder lifted that preset
+    // out of its folder. Now it is a second preset and the first stays put.
+    save(&mut a, "FNIs", "Rescue");
+    save(&mut a, "FNIs", "");
+    assert_eq!(keys(&a), vec![preset_key("Rescue", "FNIs"), preset_key("", "FNIs")]);
+
+    // The same folder and name is the same preset, so a save there replaces it.
+    save(&mut a, "FNIs", "Rescue");
+    assert_eq!(a.settings.fleet_presets.len(), 2, "a re-save made a duplicate");
+
+    // Moving one onto a folder that already has that name is refused rather than making two
+    // presets nobody can tell apart.
+    a.fleet_apply_form_for_test(FormAct { move_preset: Some((1, "Rescue".to_owned())), ..Default::default() });
+    assert_eq!(keys(&a), vec![preset_key("Rescue", "FNIs"), preset_key("", "FNIs")]);
+
+    // The rescue remembers its preset by key and follows it when it moves.
+    a.settings.rescue_preset = preset_key("Rescue", "FNIs");
+    a.rescue_state_for_test().lock().unwrap().doctrine = preset_key("Rescue", "FNIs");
+    a.fleet_apply_form_for_test(FormAct { move_preset: Some((0, "Caps".to_owned())), ..Default::default() });
+    assert_eq!(a.settings.rescue_preset, preset_key("Caps", "FNIs"));
+    assert_eq!(a.rescue_state_for_test().lock().unwrap().doctrine, preset_key("Caps", "FNIs"));
+}
+
+/// The rescue lists every preset tagged Capital Save, whatever folder it is in, and tells two with
+/// the same name apart by folder. Picking one sets the op from its channel's name: the channel id
+/// the preset stores is not the op number.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_rescue_lists_every_capital_save_preset() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let op = std::sync::Arc::new(std::sync::Mutex::new(0u8));
+    let op_out = op.clone();
+    let mut scene = Scene::ui("rescue_presets", [1100.0, 700.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fc_rescue_enabled = true;
+            a.settings.fleet_enabled = true;
+            let cap = |folder: &str, label: &str, channel: i32| crate::settings::FleetPreset {
+                label: label.to_owned(),
+                folder: folder.to_owned(),
+                mumble_channel_id: Some(channel),
+                tag_ids: vec![crate::settings::CAPITAL_SAVE_TAG],
+                ..Default::default()
+            };
+            a.settings.fleet_presets = vec![
+                cap("Rescue", "FNIs", 12),
+                cap("Roams", "FNIs", 13),
+                cap("Rescue", "Harpy", 1),
+                // Not tagged, so not a rescue preset.
+                crate::settings::FleetPreset { label: "Roam".to_owned(), ..Default::default() },
+            ];
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            fixtures::seed_rescue_ping(&a);
+            // Named the way the dashboard does it: id 12 is Op 11 and id 13 is Op 12.
+            a.fleet_state_for_test().lock().unwrap().seed.mumble_channels = [
+                (1, "Op 1"),
+                (12, "Op 11"),
+                (13, "Op 12"),
+            ]
+            .into_iter()
+            .map(|(id, name)| crate::fleets::model::ChannelItem {
+                id: crate::fleets::model::ChannelId(id),
+                name: name.to_owned(),
+                is_in_use: false,
+            })
+            .collect();
+            a.rescue_state_for_test().lock().unwrap().doctrine =
+                crate::settings::preset_key("Rescue", "Harpy");
+            a
+        });
+        a.rescue_window_body(ui);
+        *op_out.lock().unwrap() = a.rescue_state_for_test().lock().unwrap().op_channel;
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+
+    let combo = h
+        .root()
+        .children_recursive()
+        .find(|n| {
+            n.accesskit_node().role() == egui::accesskit::Role::ComboBox
+                && n.accesskit_node().value().as_deref() == Some("Harpy")
+        })
+        .expect("the rescue preset picker, showing Harpy")
+        .rect();
+    harness::click_at(&h, combo.center());
+    h.run_steps(3);
+    // Both FNIs presets, each with its folder since they share a name; Harpy alone keeps its name.
+    for want in ["Rescue / FNIs", "Roams / FNIs", "Harpy"] {
+        assert!(h.query_all_by_label(want).count() > 0, "the list has no {want:?}");
+    }
+    assert!(h.query_all_by_label("Roam").count() == 0, "an untagged preset is offered");
+
+    // Channel id 12 is Op 11. Taking the id as the op, which the picker used to, gives 12.
+    let item = h.get_by_label("Rescue / FNIs").rect();
+    harness::click_at(&h, item.center());
+    h.run_steps(3);
+    assert_eq!(*op.lock().unwrap(), 11, "the op was taken from the channel id, not its name");
+}
+
+/// Presets and folders are ordered by dragging: a preset dropped on another goes just before it,
+/// and a folder dropped on another folder's heading goes just before that folder.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_presets_and_folders_reorder_by_dragging() {
+    use egui_kittest::kittest::Queryable as _;
+    let grip = egui_phosphor::regular::DOTS_SIX_VERTICAL;
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = order.clone();
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("preset_order", [1440.0, 820.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            let p = |folder: &str, label: &str| crate::settings::FleetPreset {
+                label: label.to_owned(),
+                folder: folder.to_owned(),
+                ..Default::default()
+            };
+            a.settings.fleet_presets = vec![
+                p("", "Alpha"),
+                p("", "Bravo"),
+                p("Caps", "Charlie"),
+                p("Subs", "Delta"),
+                p("Subs", "Echo"),
+            ];
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_fleet_start(&a);
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+        *seen.lock().unwrap() = a
+            .settings
+            .fleet_presets
+            .iter()
+            .map(|p| format!("{}/{}", p.folder, p.label))
+            .collect();
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run();
+
+    // The grip on the same row as a label, which is what a hand would pick up.
+    // The grip on the same row as a label, which is what a hand would pick up. Found by query:
+    // walking `root()` does not reach into the side panel here.
+    let grip_of = |h: &egui_kittest::Harness<'_>, label: &str| -> egui::Pos2 {
+        let row = h.get_by_label(label).rect();
+        let grips: Vec<egui::Rect> = h.query_all_by_label(grip).map(|n| n.rect()).collect();
+        grips
+            .iter()
+            .find(|r| (r.center().y - row.center().y).abs() < row.height() / 2.0)
+            .unwrap_or_else(|| panic!("no grip on the {label} row among {grips:?}"))
+            .center()
+    };
+    let drag = |h: &mut egui_kittest::Harness<'_>, from: egui::Pos2, to: egui::Pos2| {
+        h.event(egui::Event::PointerMoved(from));
+        h.event(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.step();
+        for k in 1..=8 {
+            let t = k as f32 / 8.0;
+            h.event(egui::Event::PointerMoved(from + (to - from) * t));
+            h.step();
+        }
+        h.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.step();
+        h.step();
+    };
+
+    // Bravo onto Alpha: Bravo first.
+    let (from, to) = (grip_of(&h, "Bravo"), h.get_by_label("Alpha").rect().center());
+    drag(&mut h, from, to);
+    assert_eq!(order.lock().unwrap()[..2], ["/Bravo".to_owned(), "/Alpha".to_owned()]);
+
+    // Delta, in Subs, onto Bravo at the top level: it comes out of its folder, before Bravo.
+    let (from, to) = (grip_of(&h, "Delta"), h.get_by_label("Bravo").rect().center());
+    drag(&mut h, from, to);
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["/Delta", "/Bravo", "/Alpha", "Caps/Charlie", "Subs/Echo"],
+    );
+
+    // A folder by its heading's grip: Subs dropped on Caps goes before it, Echo with it.
+    let (from, to) = (grip_of(&h, "Subs"), h.get_by_label("Caps").rect().center());
+    drag(&mut h, from, to);
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["/Delta", "/Bravo", "/Alpha", "Subs/Echo", "Caps/Charlie"],
+    );
 }

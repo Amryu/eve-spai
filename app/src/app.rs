@@ -818,6 +818,9 @@ pub struct SpaiApp {
     /// A fleet to re-read, when to try next and how many tries are left.
     #[cfg(feature = "fleet")]
     fleet_reopen: Option<(crate::fleets::model::FleetId, std::time::Instant, u8)>,
+    /// When the open fleet's Fleet Finder advert was last asked about.
+    #[cfg(feature = "fleet")]
+    fleet_advert_at: Option<(crate::fleets::model::FleetId, std::time::Instant)>,
     /// Short link to the `mumble://` link its page points at, filled in the background, with when
     /// it was last asked. `None` is one in flight or one that failed; a failure is retried after
     /// `COMMS_RETRY`, because gnf.lt answers some requests with an empty 400 and the next one fine.
@@ -1646,6 +1649,8 @@ impl SpaiApp {
             fleet_hub_unavailable_flag: Default::default(),
             #[cfg(feature = "fleet")]
             fleet_reopen: None,
+            #[cfg(feature = "fleet")]
+            fleet_advert_at: None,
             #[cfg(feature = "fleet")]
             comms_resolved: Default::default(),
             #[cfg(feature = "fleet")]
@@ -3013,6 +3018,18 @@ impl SpaiApp {
     pub(crate) fn fleet_reopen_poll_for_test(&mut self) {
         let ctx = self.ui_ctx.clone();
         self.fleet_reopen_poll(&ctx);
+    }
+
+    /// Applies a start-form action the way a click would, for a test of what it does.
+    #[cfg(all(test, feature = "fleet"))]
+    pub(crate) fn fleet_apply_form_for_test(&mut self, act: crate::app::fleet_ui::FormAct) {
+        self.fleet_apply_form(act);
+    }
+
+    /// The main window's Jabber tabs, for a test that checks what a message opened.
+    #[cfg(test)]
+    pub(crate) fn jabber_tabs_for_test(&self) -> Vec<String> {
+        self.jabber_tabs.clone()
     }
 
     /// The fleet tab's shared state, so a scene can fill it the way the workers would.
@@ -4395,6 +4412,8 @@ pub(crate) trait SteadySelect {
     ) -> egui::Response;
 
     /// The same, at a fixed size, for a row of tabs that must not move as the pointer crosses it.
+    /// Only the fleet tabs use it, and the hover test that pins it runs without the feature.
+    #[cfg(any(feature = "fleet", test))]
     fn menu_label_sized<'a>(
         &mut self,
         size: impl Into<egui::Vec2>,
@@ -4417,6 +4436,7 @@ impl SteadySelect for egui::Ui {
         )
     }
 
+    #[cfg(any(feature = "fleet", test))]
     fn menu_label_sized<'a>(
         &mut self,
         size: impl Into<egui::Vec2>,

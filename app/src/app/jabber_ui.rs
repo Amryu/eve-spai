@@ -1150,22 +1150,13 @@ impl SpaiApp {
             w.hovered.bg_stroke = egui::Stroke::NONE;
             w.active.bg_stroke = egui::Stroke::NONE;
 
-            if dms.is_empty() && rooms.is_empty() {
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new("Nothing yet. Start one from the Directory.").weak(),
-                );
-                return;
-            }
-
-            let section = |ui: &mut egui::Ui, title: &str, n: usize| {
-                if n == 0 {
-                    return;
-                }
+            // Both sections and their start rows whether or not anything is open: right after the
+            // first sign-in both lists are empty, and the start rows are the way in.
+            let section = |ui: &mut egui::Ui, title: &str| {
                 ui.add_space(7.0);
                 ui.label(egui::RichText::new(title).strong().size(15.0).color(accent));
             };
-            section(ui, "Direct messages", dms.len());
+            section(ui, "Direct messages");
             ui.push_id("dmlist", |ui| {
             for c in &dms {
                 let (r, g, b) = c.presence.color();
@@ -1189,7 +1180,7 @@ impl SpaiApp {
             if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, "Start a DM") {
                 start = Some(false);
             }
-            section(ui, "Rooms", rooms.len());
+            section(ui, "Rooms");
             ui.push_id("roomlist", |ui| {
             for c in &rooms {
                 let row = self.jabber_convo_row(
@@ -1816,38 +1807,9 @@ impl SpaiApp {
 
         let mut presence_changed = false;
         let mut pop_all = false;
+        // The buttons first, from the right, and the rest into whatever they leave. The other way
+        // round the status field kept its full width on a narrow window and the buttons drew over it.
         ui.horizontal(|ui| {
-            if f.connected {
-                use crate::jabber::Presence;
-                let (r, g, b) = self.jabber_my_presence.color();
-                status_dot(ui, egui::Color32::from_rgb(r, g, b), 10.0);
-                ui.label(egui::RichText::new(&self.settings.jabber_jid).weak());
-                egui::ComboBox::from_id_salt("my_presence")
-                    .selected_text(self.jabber_my_presence.label())
-                    .width(110.0)
-                    .show_ui(ui, |ui| {
-                        for p in [Presence::Online, Presence::Away, Presence::Xa, Presence::Dnd] {
-                            if ui
-                                .menu_value(&mut self.jabber_my_presence, p, p.label())
-                                .clicked()
-                            {
-                                presence_changed = true;
-                            }
-                        }
-                    });
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.jabber_my_status)
-                        .hint_text("status message")
-                        .desired_width(150.0),
-                );
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    presence_changed = true;
-                }
-            } else {
-                status_dot(ui, crate::theme::standing::WARNING, 10.0);
-                ui.label(egui::RichText::new(f.status.as_str()).weak());
-                self.jabber_retry_button(ui);
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Disconnect").clicked() {
                     self.settings.jabber_enabled = false;
@@ -1880,6 +1842,55 @@ impl SpaiApp {
                 {
                     self.view = nav::View::Rescue;
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if f.connected {
+                        use crate::jabber::Presence;
+                        const PRESENCE_W: f32 = 110.0;
+                        const STATUS_MIN: f32 = 40.0;
+                        let (r, g, b) = self.jabber_my_presence.color();
+                        status_dot(ui, egui::Color32::from_rgb(r, g, b), 10.0);
+                        // The JID is the one thing here that can give way, so it gets what the
+                        // presence picker and a usable status field leave, and truncates to that.
+                        let gap = ui.spacing().item_spacing.x;
+                        let jid_w = (ui.available_width() - PRESENCE_W - STATUS_MIN - 3.0 * gap)
+                            .max(0.0);
+                        ui.allocate_ui(egui::vec2(jid_w, ui.spacing().interact_size.y), |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&self.settings.jabber_jid).weak(),
+                                )
+                                .truncate(),
+                            );
+                        });
+                        egui::ComboBox::from_id_salt("my_presence")
+                            .selected_text(self.jabber_my_presence.label())
+                            .width(PRESENCE_W)
+                            .show_ui(ui, |ui| {
+                                for p in
+                                    [Presence::Online, Presence::Away, Presence::Xa, Presence::Dnd]
+                                {
+                                    if ui
+                                        .menu_value(&mut self.jabber_my_presence, p, p.label())
+                                        .clicked()
+                                    {
+                                        presence_changed = true;
+                                    }
+                                }
+                            });
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.jabber_my_status)
+                                .hint_text("status message")
+                                .desired_width(ui.available_width().clamp(STATUS_MIN, 150.0)),
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            presence_changed = true;
+                        }
+                    } else {
+                        status_dot(ui, crate::theme::standing::WARNING, 10.0);
+                        ui.add(egui::Label::new(egui::RichText::new(f.status.as_str()).weak()).truncate());
+                        self.jabber_retry_button(ui);
+                    }
+                });
             });
         });
         if presence_changed {

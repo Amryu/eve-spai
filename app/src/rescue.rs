@@ -946,6 +946,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn ignores_panic_and_inhib_labels() {
         let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Eben Auditore \n \
                     System:  Q7-FZ8*  \n \

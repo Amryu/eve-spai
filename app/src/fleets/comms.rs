@@ -86,11 +86,10 @@ pub fn command_url(sector: Sector, op_name: &str) -> Option<String> {
 /// a built path lands in the parent channel. The short link is kept pointing at the right one.
 ///
 /// Op channels come from what the app has learned out of fleet pings, then the built-in table.
-/// Anything else, like HD or capital comms, only from what the user has pasted in.
+/// The rest, like HD or capital comms, from the built-in table only.
 pub fn short_link(
     channel_name: &str,
     learned_ops: &std::collections::HashMap<String, String>,
-    named: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     let name = channel_name.trim();
     if let Some(n) = op_number(name) {
@@ -99,11 +98,7 @@ pub fn short_link(
             .cloned()
             .or_else(|| builtin_op_link(n).map(str::to_owned));
     }
-    named
-        .get(&name.to_lowercase())
-        .filter(|l| !l.trim().is_empty() && !l.starts_with("mumble://"))
-        .cloned()
-        .or_else(|| builtin_named_link(name).map(str::to_owned))
+    builtin_named_link(name).map(str::to_owned)
 }
 
 /// gnf.lt links for the channels no ping names, as the dashboard's own ping preview renders them.
@@ -118,9 +113,9 @@ pub fn builtin_named_link(channel_name: &str) -> Option<&'static str> {
     })
 }
 
-/// Direct `mumble://` links the user supplied for those channels. Tried first: Mumble opens them
-/// with no page fetch in between. A rename breaks one until it is updated in the settings, which
-/// is what the gnf.lt link behind it is for.
+/// Direct `mumble://` links for those channels. Tried first: Mumble opens them with no page fetch
+/// in between. A rename breaks one until it is updated here, which is what the gnf.lt link behind
+/// it is for.
 pub fn builtin_named_mumble(channel_name: &str) -> Option<&'static str> {
     Some(match channel_name.trim().to_lowercase().as_str() {
         "hd" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Home%20Defense%20-%20How%20did%20you%20NOT%20know%20there%20was%20a%20strat%20op?title=Goonfleet&version=1.2.0",
@@ -139,22 +134,16 @@ pub struct Links {
 
 /// Every way this app knows into a channel.
 ///
-/// `named` is what the user pasted in the settings, keyed by the channel's name in lower case,
-/// and may hold either kind of link. `resolved` is what earlier short links turned out to point
-/// at, so a `mumble://` link is on hand before the first fetch of this run.
+/// `resolved` is what earlier short links turned out to point at, so a `mumble://` link is on
+/// hand before the first fetch of this run.
 pub fn links(
     channel_name: &str,
     learned_ops: &std::collections::HashMap<String, String>,
-    named: &std::collections::HashMap<String, String>,
     resolved: &std::collections::HashMap<String, String>,
 ) -> Links {
-    let key = channel_name.trim().to_lowercase();
-    let pasted = named.get(&key).map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
-    let pasted_mumble = pasted.clone().filter(|l| l.starts_with("mumble://"));
-    let pasted_short = pasted.filter(|l| !l.starts_with("mumble://"));
-    let short = pasted_short.or_else(|| short_link(channel_name, learned_ops, &Default::default()));
-    let mumble = pasted_mumble
-        .or_else(|| builtin_named_mumble(channel_name).map(str::to_owned))
+    let short = short_link(channel_name, learned_ops);
+    let mumble = builtin_named_mumble(channel_name)
+        .map(str::to_owned)
         .or_else(|| short.as_ref().and_then(|s| resolved.get(s).cloned()));
     Links { mumble, short }
 }
@@ -314,51 +303,41 @@ mod tests {
     }
 
     /// A channel's link is found by its name: op channels from what pings taught the app, then
-    /// the built-in table, and everything else only from what the user supplied.
+    /// the built-in table, and everything else from the built-in table only.
     #[test]
     fn a_short_link_is_found_by_channel_name() {
         let mut learned = std::collections::HashMap::new();
         learned.insert("op11".to_owned(), "https://gnf.lt/learned.html".to_owned());
-        let mut named = std::collections::HashMap::new();
-        named.insert("capital comms".to_owned(), "https://gnf.lt/caps.html".to_owned());
 
         // Learned beats built in, because the ping is newer than this source file.
-        assert_eq!(short_link("Op 11", &learned, &named).as_deref(), Some("https://gnf.lt/learned.html"));
-        assert_eq!(short_link("Op 3", &learned, &named).as_deref(), builtin_op_link(3));
-        assert_eq!(short_link("o7", &learned, &named).as_deref(), builtin_op_link(7));
-        assert_eq!(short_link(" Capital Comms ", &learned, &named).as_deref(), Some("https://gnf.lt/caps.html"));
+        assert_eq!(short_link("Op 11", &learned).as_deref(), Some("https://gnf.lt/learned.html"));
+        assert_eq!(short_link("Op 3", &learned).as_deref(), builtin_op_link(3));
+        assert_eq!(short_link("o7", &learned).as_deref(), builtin_op_link(7));
         // The dashboard's own links for the channels no ping names.
-        assert_eq!(short_link("HD", &learned, &named).as_deref(), builtin_named_link("HD"));
-        assert_eq!(short_link("Hellcamp Comms", &learned, &named).as_deref(),
-                   builtin_named_link("hellcamp comms"));
+        assert_eq!(short_link(" Capital Comms ", &learned).as_deref(), builtin_named_link("capital comms"));
+        assert_eq!(short_link("HD", &learned).as_deref(), builtin_named_link("HD"));
         // Unknown stays unknown rather than falling back to a guessed path.
-        assert_eq!(short_link("Somewhere New", &learned, &named), None);
-        assert_eq!(short_link("Op 99", &learned, &named), None);
+        assert_eq!(short_link("Somewhere New", &learned), None);
+        assert_eq!(short_link("Op 99", &learned), None);
     }
 
     /// `mumble://` first, from wherever one is known; the short link behind it either way.
     #[test]
     fn links_put_the_mumble_link_first() {
         let none = std::collections::HashMap::new();
-        // Supplied directly: no fetch needed at all.
-        let hd = links("HD", &none, &none, &none);
+        // Built in directly: no fetch needed at all.
+        let hd = links("HD", &none, &none);
         assert!(hd.mumble.as_deref().is_some_and(|m| m.starts_with("mumble://")));
         assert_eq!(hd.short.as_deref(), builtin_named_link("HD"));
 
         // An op channel before anything has been resolved: short link only.
-        let op = links("Op 3", &none, &none, &none);
+        let op = links("Op 3", &none, &none);
         assert_eq!(op.mumble, None);
         assert_eq!(op.short.as_deref(), builtin_op_link(3));
 
         // Once resolved and remembered, the mumble link is on hand before the next fetch.
         let mut resolved = std::collections::HashMap::new();
         resolved.insert(builtin_op_link(3).unwrap().to_owned(), "mumble://x/Ops/OP 3".to_owned());
-        assert_eq!(links("Op 3", &none, &none, &resolved).mumble.as_deref(), Some("mumble://x/Ops/OP 3"));
-
-        // A pasted mumble:// link wins over the built-in one, and a pasted short link keeps its place.
-        let mut named = std::collections::HashMap::new();
-        named.insert("hd".to_owned(), "mumble://new/Ops/HD renamed".to_owned());
-        assert_eq!(links("HD", &none, &named, &none).mumble.as_deref(), Some("mumble://new/Ops/HD renamed"));
-        assert_eq!(links("HD", &none, &named, &none).short.as_deref(), builtin_named_link("HD"));
+        assert_eq!(links("Op 3", &none, &resolved).mumble.as_deref(), Some("mumble://x/Ops/OP 3"));
     }
 }

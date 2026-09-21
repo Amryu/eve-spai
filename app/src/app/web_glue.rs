@@ -607,7 +607,8 @@ impl SpaiApp {
         Some(crate::web::rescue::RescueSide {
             active: r.active,
             test_mode: r.test_mode,
-            doctrine: r.doctrine.clone(),
+            // The preset's name, not its key: the key carries the folder behind a separator.
+            doctrine: crate::settings::preset_key_label(&r.doctrine),
             op_channel: r.op_channel,
             capital_system: r.capital_system_name.clone(),
             capital_pilot: r.capital_pilot.clone(),

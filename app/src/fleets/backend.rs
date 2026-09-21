@@ -388,6 +388,12 @@ pub trait FleetBackend: Send + Sync + 'static {
     fn start(&self, req: &StartRequest) -> Result<Written<FleetId>>;
     fn act(&self, id: &FleetId, action: &Action) -> Result<Written<()>>;
 
+    /// Whether the fleet is advertised in the Fleet Finder, when the boss is one of this machine's
+    /// characters. `None` when it cannot be known, which the page shows as nothing at all.
+    fn advert(&self, _fleet: &Fleet) -> Option<bool> {
+        None
+    }
+
     /// Opens the dashboard's push stream for one fleet, so a tracked fleet arrives instead of
     /// being polled for. A backend with nothing to push says so and the caller keeps polling.
     fn open_hub(&self, _id: &FleetId) -> Result<Box<dyn HubFeed>> {

@@ -399,6 +399,36 @@ pub(crate) fn note_room_left(state: &SharedJabber, room: &str) {
     s.rooms_left.insert(room.to_owned());
 }
 
+/// A one-to-one message, stored and badged. `key` is the sender's bare JID.
+///
+/// One that waited on the server while this was offline is still one nobody has read, so it is
+/// unread too, quietly: the delay is what keeps the ping bot's backlog from screeching at startup,
+/// and a person's offline messages are the ones that must not be missed. Without that, one from a
+/// conversation closed earlier had no row, no tab and no badge at all.
+pub(crate) fn receive_direct(
+    state: &SharedJabber,
+    key: &str,
+    body: String,
+    stamp: i64,
+    delayed: bool,
+    store: Option<&crate::store::Store>,
+) {
+    push_msg(
+        state,
+        key,
+        ChatMsg { from: key.to_owned(), body, time: stamp, outgoing: false },
+        !delayed,
+        false,
+        store,
+    );
+    let bot = key.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(PING_SENDER));
+    if delayed && !bot {
+        let mut s = state.lock().unwrap();
+        s.unread.insert(key.to_owned());
+        *s.unread_counts.entry(key.to_owned()).or_default() += 1;
+    }
+}
+
 fn push_msg(
     state: &SharedJabber,
     key: &str,
@@ -940,14 +970,7 @@ fn handle_event(
                     }
                 }
             }
-            push_msg(
-                state,
-                &key,
-                ChatMsg { from: key.clone(), body, time: stamp, outgoing: false },
-                !delayed,
-                false,
-                store,
-            );
+            receive_direct(state, &key, body, stamp, delayed, store);
         }
         // The library handles bookmarks but not invites, so an invite is joined by hand. Both flavours
         // are idempotent on the agent side (a redundant join is warned about and dropped).

@@ -76,9 +76,8 @@ pub struct Settings {
     pub travel_auto_dest: bool,
     #[serde(default)]
     pub op_channel_links: std::collections::HashMap<String, String>,
-    /// gnf.lt short links for comms channels that are not op channels, like HD or capital comms,
-    /// keyed by the channel's name in lower case. The op channels are learned from pings; these
-    /// never appear in one, so the user pastes them in.
+    /// No longer read: the links for channels no ping names are built in. Kept so a config that
+    /// already carries it round-trips, since settings are rewritten whole.
     #[serde(default)]
     pub comms_links: std::collections::HashMap<String, String>,
     /// What each gnf.lt link last resolved to. Remembered so "Join comms" has a `mumble://` link
@@ -992,6 +991,50 @@ pub struct LegacyRescueDoctrine {
     pub description: String,
 }
 
+/// Separates a preset's folder from its name in a key. A control character, so nothing typed into
+/// a name or folder field can contain it and a key never splits in the wrong place.
+#[cfg(feature = "fleet")]
+const PRESET_KEY_SEP: char = '\u{1f}';
+
+/// A preset is its folder and its name together: the same name may be used in two folders. The
+/// top level keys as the bare name, which is also what every key saved before folders took part
+/// in a preset's identity looks like.
+#[cfg(feature = "fleet")]
+pub fn preset_key(folder: &str, label: &str) -> String {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{folder}{PRESET_KEY_SEP}{label}")
+    }
+}
+
+#[cfg(feature = "fleet")]
+impl FleetPreset {
+    pub fn key(&self) -> String {
+        preset_key(&self.folder, &self.label)
+    }
+}
+
+/// A key the way a person reads it: "Rescue / FNIs", or the name alone at the top level.
+#[cfg(feature = "fleet")]
+pub fn preset_key_label(key: &str) -> String {
+    match key.split_once(PRESET_KEY_SEP) {
+        Some((folder, label)) => format!("{folder} / {label}"),
+        None => key.to_owned(),
+    }
+}
+
+/// The preset a key names.
+///
+/// A key saved before folders were part of a preset's identity is a bare name. It still finds its
+/// preset: the exact key first, which is a top-level one, then the first preset with that name in
+/// any folder, which is the one it meant for as long as names were unique.
+#[cfg(feature = "fleet")]
+pub fn find_preset<'a>(presets: &'a [FleetPreset], key: &str) -> Option<&'a FleetPreset> {
+    presets.iter().find(|p| p.key() == key).or_else(|| presets.iter().find(|p| p.label == key))
+}
+
 /// Turns the old free-text cap-save setup into fleet presets, once.
 ///
 /// The template already carried everything a preset does: a name, a formup location, a comms
@@ -1007,23 +1050,25 @@ pub fn seed_rescue_preset(s: &mut Settings, setups: &[(i32, String)]) -> bool {
         return false;
     }
     let old = std::mem::take(&mut s.rescue_doctrines);
-    let mut made: Vec<String> = Vec::new();
+    // (key, name): the rescue remembers its preset by key, and the old setting named it by name.
+    let mut made: Vec<(String, String)> = Vec::new();
     for d in &old {
         let (setup_id, notes) = match_setup(&d.description, setups);
-        s.fleet_presets.push(rescue_preset(s.rescue_op_channel, &d.name, setup_id, notes));
-        made.push(d.name.clone());
+        let p = rescue_preset(s.rescue_op_channel, &d.name, setup_id, notes);
+        made.push((p.key(), d.name.clone()));
+        s.fleet_presets.push(p);
     }
     if made.is_empty() {
-        let label = "Capital Save".to_owned();
-        s.fleet_presets.push(rescue_preset(s.rescue_op_channel, &label, 0, String::new()));
-        made.push(label);
+        let p = rescue_preset(s.rescue_op_channel, "Capital Save", 0, String::new());
+        made.push((p.key(), p.label.clone()));
+        s.fleet_presets.push(p);
     }
     // The one the FC last ran, if it survived the migration.
     s.rescue_preset = made
         .iter()
-        .find(|m| **m == s.rescue_doctrine)
+        .find(|(_, name)| *name == s.rescue_doctrine)
         .or_else(|| made.first())
-        .cloned()
+        .map(|(key, _)| key.clone())
         .unwrap_or_default();
     s.rescue_doctrine = String::new();
     s.rescue_preset_seeded = true;
@@ -1752,7 +1797,8 @@ mod window_geometry_tests {
         let p = &s.fleet_presets[0];
         assert!(p.tag_ids.contains(&CAPITAL_SAVE_TAG));
         assert_eq!(p.mumble_channel_id, Some(4), "the op channel it was set to came across");
-        assert_eq!(s.rescue_preset, p.label);
+        // By key, folder and name together, since a name alone may exist in two folders.
+        assert_eq!(s.rescue_preset, p.key());
         assert!(s.rescue_preset_seeded);
 
         // Twice does nothing.
@@ -1816,7 +1862,7 @@ mod window_geometry_tests {
             assert_eq!(p.folder, "Rescue");
         }
         // The one that was selected stays selected, and the migration inputs are spent.
-        assert_eq!(s.rescue_preset, "Bravos");
+        assert_eq!(s.rescue_preset, preset_key("Rescue", "Bravos"));
         assert!(s.rescue_doctrines.is_empty());
         assert!(s.rescue_doctrine.is_empty());
         assert!(!seed_rescue_preset(&mut s, &setups));
@@ -1902,6 +1948,40 @@ mod window_geometry_tests {
         assert_eq!(geometry_update(Some((100.0, 100.0)), (101.0, 100.5), 2.0), None);
         assert_eq!(geometry_update(Some((100.0, 100.0)), (100.0, 100.0), 0.0), None);
         assert_eq!(geometry_update(Some((100.0, 100.0)), (-32001.0, -32001.0), 0.0), None);
+    }
+
+
+    #[cfg(feature = "fleet")]
+    fn preset(folder: &str, label: &str) -> FleetPreset {
+        FleetPreset { label: label.to_owned(), folder: folder.to_owned(), ..Default::default() }
+    }
+
+    /// The same name in two folders is two presets, each found by its own key.
+    #[cfg(feature = "fleet")]
+    #[test]
+    fn a_name_can_be_used_in_two_folders() {
+        let all = vec![preset("Rescue", "FNIs"), preset("", "FNIs"), preset("Roams", "FNIs")];
+        let keys: std::collections::HashSet<String> = all.iter().map(|p| p.key()).collect();
+        assert_eq!(keys.len(), 3, "two presets share a key");
+        for p in &all {
+            assert_eq!(find_preset(&all, &p.key()).map(|q| q.folder.as_str()), Some(p.folder.as_str()));
+        }
+        assert_eq!(preset_key_label(&all[0].key()), "Rescue / FNIs");
+        assert_eq!(preset_key_label(&all[1].key()), "FNIs");
+    }
+
+    /// A key saved before folders were part of a preset's identity is the bare name. It has to go
+    /// on finding the preset it meant, wherever that preset lives, or an upgrade quietly switches
+    /// the rescue to another one.
+    #[cfg(feature = "fleet")]
+    #[test]
+    fn a_bare_name_saved_earlier_still_finds_its_preset() {
+        let all = vec![preset("Rescue", "FNIs"), preset("Rescue", "Harpy")];
+        assert_eq!(find_preset(&all, "FNIs").map(|p| p.key()), Some(preset_key("Rescue", "FNIs")));
+        // With the name now in two places, the older preset keeps it: it was the one meant.
+        let both = vec![preset("Rescue", "FNIs"), preset("Roams", "FNIs")];
+        assert_eq!(find_preset(&both, "FNIs").map(|p| p.folder.as_str()), Some("Rescue"));
+        assert!(find_preset(&all, "Nothing").is_none());
     }
 }
 

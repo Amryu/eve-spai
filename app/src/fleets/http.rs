@@ -533,6 +533,20 @@ impl FleetBackend for HttpBackend {
         self.write(calls::act(id, action), action.perm())
     }
 
+    /// Read through the boss's own ESI token, the same one the member tree comes from.
+    fn advert(&self, fleet: &Fleet) -> Option<bool> {
+        let boss = fleet.commander.as_ref()?.label.clone();
+        let esi_id = Some(fleet.esi_id).filter(|id| *id > 0)?;
+        let mut guard = self.esi.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let store = crate::store::Store::open().ok()?;
+            let client = crate::http::client(20).ok()?;
+            *guard = Some(EsiSide { store, client, client_id: self.sso_client_id.clone() });
+        }
+        let side = guard.as_ref()?;
+        crate::esi::fleet_advert(&side.client, &side.store, &side.client_id, &boss, esi_id)
+    }
+
     /// Negotiate, open the stream, shake hands, ask for the fleet.
     ///
     /// The stream has to be open before the handshake goes out, because the reply comes back down
@@ -809,7 +823,6 @@ mod tests {
 #[cfg(test)]
 mod live_probe {
     use super::*;
-    use crate::fleets::backend::FleetBackend as _;
 
     /// GET-only smoke test against the real dashboard with the stored session. Opt in with
     /// SPAI_LIVE_PROBE=1; does nothing otherwise. Never run in CI.
@@ -913,7 +926,7 @@ mod shape_dump {
         .expect("backend");
         std::fs::create_dir_all(&dir).expect("dir");
 
-        let mut save = |name: &str, rec: CallRecord| match b.send(&rec, Perm::AccessFleet) {
+        let save = |name: &str, rec: CallRecord| match b.send(&rec, Perm::AccessFleet) {
             Ok(v) => {
                 let path = format!("{dir}/{name}.json");
                 std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).expect("write");
@@ -1028,7 +1041,6 @@ mod shape_check {
 #[cfg(test)]
 mod doctrine_probe {
     use super::*;
-    use crate::fleets::backend::FleetBackend as _;
 
     /// Classifies a real fleet against the user's own configured doctrine, to see what the
     /// composition tab would call off-doctrine. Opt in with SPAI_DOCTRINE_PROBE=1.

@@ -236,6 +236,9 @@ pub struct FleetState {
     /// which the start form re-polls on its own clock and would overwrite this with the user's own
     /// character between the pick and the click.
     pub migrate_boss: Option<(i64, BossCheck)>,
+    /// The Fleet Finder advert for a fleet, when its boss is one of this machine's characters.
+    /// Keyed by fleet, so an answer for the last one is never shown on the next.
+    pub advert: Option<(FleetId, bool)>,
     /// A start is on its way to the dashboard. A second click before it answers would create a
     /// second fleet for the same in-game fleet, and the dashboard does not refuse it.
     pub starting: bool,
@@ -324,6 +327,9 @@ impl FleetState {
                 self.boosts_loading = false;
             }
             Outcome::Boss { character_id, check } => self.boss = Some((character_id, check)),
+            Outcome::Advert { id, registered } => {
+                self.advert = registered.map(|r| (id, r));
+            }
             Outcome::MigrateBoss { character_id, check } => {
                 self.migrate_boss = Some((character_id, check));
             }
@@ -645,6 +651,8 @@ pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
         // page from Tracking to Historic without changing the fleet, and the stream stays open
         // across that. `apply` checks the id instead.
         Outcome::HubComposition { .. } | Outcome::HubFleet(_) | Outcome::StatsReady { .. } => true,
+        // Keyed by fleet, and only ever shown against the one it names.
+        Outcome::Advert { .. } => true,
         Outcome::Preview { .. } => got.page == cur.page && got.preview == cur.preview,
         Outcome::RescuePreview { .. } => got.rescue == cur.rescue,
         _ => got.page == cur.page,
@@ -664,6 +672,8 @@ pub enum Cmd {
     CheckBoss { character_id: i64, use_backup: bool },
     /// The same question about the character a fleet would be handed to.
     CheckMigrateBoss { character_id: i64 },
+    /// Whether the fleet is advertised, through its boss's ESI token.
+    CheckAdvert(Box<Fleet>),
     /// Look a name up, so a snowflake is a character that exists rather than a typed string.
     Search { kind: SearchKind, value: String },
     /// Re-read the tracked fleet's boost channel off disk. Not a request, so it never reaches the
@@ -685,6 +695,8 @@ pub enum Outcome {
     Opened(Box<OpenFleet>),
     Boss { character_id: i64, check: BossCheck },
     MigrateBoss { character_id: i64, check: BossCheck },
+    /// `None` is "cannot tell", which clears any earlier answer rather than leaving it standing.
+    Advert { id: FleetId, registered: Option<bool> },
     Found { kind: SearchKind, hits: Vec<Labelled> },
     Boosts { rows: Vec<super::boosts::Coverage>, lines: Vec<super::boosts::Line> },
     Channels { mumble: Vec<ChannelItem>, logi: Vec<ChannelItem>, boost: Vec<ChannelItem> },
@@ -739,6 +751,9 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(open) => Outcome::Opened(Box::new(open)),
             Err(e) => Outcome::Failed { what: "fleet", why: e.to_string() },
         },
+        Cmd::CheckAdvert(fleet) => {
+            Outcome::Advert { id: fleet.id.clone(), registered: backend.advert(&fleet) }
+        }
         Cmd::CheckMigrateBoss { character_id } => match backend.boss_check(character_id, false) {
             Ok(check) => Outcome::MigrateBoss { character_id, check },
             Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },

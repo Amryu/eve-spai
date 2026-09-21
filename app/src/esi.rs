@@ -543,9 +543,68 @@ pub(crate) fn fleet_tree(
     Some((members, wings))
 }
 
+/// What `GET /fleets/{id}/` says about a fleet. `is_registered` is the Fleet Finder advert.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub(crate) struct FleetInfo {
+    #[serde(default)]
+    pub is_registered: bool,
+    #[serde(default)]
+    pub is_free_move: bool,
+    #[serde(default)]
+    pub is_voice_enabled: bool,
+}
+
+/// Whether the fleet is advertised in the Fleet Finder, read through the boss's own token.
+///
+/// `None` for every reason it cannot be known: the boss is not one of this machine's characters,
+/// their token lacks the fleet scope, or ESI refuses because they are no longer boss. Only the
+/// boss may read a fleet's details, so there is no other token to try.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_advert(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_name: &str,
+    fleet_id: i64,
+) -> Option<bool> {
+    let boss = store.character_by_name(boss_name)?;
+    if !boss.scopes.split_whitespace().any(|s| s == FLEET_SCOPE) {
+        return None;
+    }
+    let token = current_access_token(store, client_id, boss.id, boss.expires_at)?;
+    let info: FleetInfo = client
+        .get(format!("https://esi.evetech.net/latest/fleets/{fleet_id}/"))
+        .bearer_auth(token)
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    Some(info.is_registered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{access_token, AccessCache};
+
+    /// The shape ESI documents for `GET /fleets/{fleet_id}/`, with the advert on and off.
+    #[cfg(feature = "fleet")]
+    #[test]
+    fn fleet_info_reads_the_advert() {
+        let on: super::FleetInfo = serde_json::from_str(
+            r#"{"is_free_move":false,"is_registered":true,"is_voice_enabled":false,"motd":"x"}"#,
+        )
+        .unwrap();
+        assert!(on.is_registered);
+        let off: super::FleetInfo = serde_json::from_str(
+            r#"{"is_free_move":true,"is_registered":false,"is_voice_enabled":false,"motd":""}"#,
+        )
+        .unwrap();
+        assert!(!off.is_registered);
+        assert!(off.is_free_move);
+    }
 
     fn scratch() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();

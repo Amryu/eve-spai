@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// What an op's comms channel is doing, for the rescue's op picker.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OpUsage {
+    Free,
+    /// Another fleet is on it. Pinging a rescue onto it puts two fleets in one channel.
+    InUse,
+    /// The fleet this app is tracking is on it, which is expected.
+    Ours,
+    /// The dashboard has no channel by that name.
+    NoChannel,
+}
+
 /// How long a failed dashboard ping render is left alone before asking again.
 #[cfg(feature = "fleet")]
 const PREVIEW_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
@@ -281,7 +294,7 @@ impl SpaiApp {
         // The doctrine and the formup come from the fleet preset the rescue is running on, so
         // there is one place they are configured rather than two that drift apart.
         let all = self.rescue_presets();
-        let preset = all.iter().find(|p| p.label == want).or_else(|| all.first());
+        let preset = crate::settings::find_preset(&all, &want).or_else(|| all.first());
         // The dashboard's own line when one has ever been seen for this setup, the bare setup name
         // when it has not. A preset's doctrine notes come after it on their own line, which is
         // where the dashboard puts them.
@@ -341,7 +354,7 @@ impl SpaiApp {
             }
         }
         let all = self.rescue_presets();
-        let Some(preset) = all.iter().find(|p| p.label == want).or_else(|| all.first()) else {
+        let Some(preset) = crate::settings::find_preset(&all, &want).or_else(|| all.first()) else {
             return;
         };
         self.rescue_preview_key = Some(key);
@@ -365,7 +378,7 @@ impl SpaiApp {
         };
         let all = self.rescue_presets();
         let Some(mut preset) =
-            all.iter().find(|p| p.label == want).or_else(|| all.first()).cloned()
+            crate::settings::find_preset(&all, &want).or_else(|| all.first()).cloned()
         else {
             return;
         };
@@ -407,6 +420,25 @@ impl SpaiApp {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
         let id = st.seed.mumble_channel_for_op(op)?;
         st.seed.channel_name(&st.seed.mumble_channels, Some(id)).map(|s| s.to_owned())
+    }
+
+    /// Whether an op's comms channel is free, per the dashboard's channel list.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_op_usage(&self, op: u8) -> OpUsage {
+        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(id) = st.seed.mumble_channel_for_op(op) else { return OpUsage::NoChannel };
+        let in_use = st.seed.mumble_channels.iter().any(|c| c.id == id && c.is_in_use);
+        // The fleet this app is running holds its own channel, which is the point of it.
+        let ours = st
+            .open
+            .value
+            .as_ref()
+            .is_some_and(|o| o.fleet.closed_at.is_none() && o.fleet.mumble_channel_id == Some(id));
+        match (in_use, ours) {
+            (_, true) => OpUsage::Ours,
+            (true, false) => OpUsage::InUse,
+            (false, false) => OpUsage::Free,
+        }
     }
 
     /// A setup's name out of the fleet seed, for the doctrine line of a ping.
@@ -522,6 +554,10 @@ impl SpaiApp {
             let op = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).op_channel;
             self.fleet_op_channel_name(op)
         };
+        // Every op's state up front, so the picker can say which ones are taken before one is
+        // chosen rather than after. Refreshed once a minute by the channel poll.
+        let op_usage: Vec<(u8, OpUsage)> =
+            (1u8..=12).filter(|n| *n != 8).map(|n| (n, self.fleet_op_usage(n))).collect();
         let skirmish_jid = goon_jid(
             &self.settings.rescue_skirmish_jid,
             "skirmish_commanders@conference.goonfleet.com",
@@ -534,6 +570,33 @@ impl SpaiApp {
         let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
         let mut new_ops_w = ops_w;
         let presets = self.rescue_presets();
+        // Each preset's op number, by its channel's name. The preset stores the dashboard's channel
+        // id, and the id is not the op: channel 12 is Op 11.
+        let preset_ops: Vec<Option<u8>> = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            presets
+                .iter()
+                .map(|p| {
+                    let id = crate::fleets::model::ChannelId(p.mumble_channel_id?);
+                    st.seed
+                        .channel_name(&st.seed.mumble_channels, Some(id))
+                        .and_then(crate::fleets::comms::op_number)
+                })
+                .collect()
+        };
+        // Every preset tagged Capital Save, from any folder. A name used in two folders shows its
+        // folder, and only then: the usual list is one folder of distinct names.
+        let preset_names: Vec<String> = presets
+            .iter()
+            .map(|p| {
+                let shared = presets.iter().filter(|q| q.label == p.label).count() > 1;
+                if shared {
+                    crate::settings::preset_key_label(&p.key())
+                } else {
+                    p.label.clone()
+                }
+            })
+            .collect();
         // Cloned out before the render closures, which cannot borrow `self` while state is held.
         let boss: Option<(bool, String)> = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -795,16 +858,53 @@ impl SpaiApp {
                             .selected_text(r.op_channel.to_string())
                             .show_ui(ui, |ui| {
                                 // Op 8 command comms does not exist.
-                                for n in (1u8..=12).filter(|n| *n != 8) {
-                                    ui.menu_value(&mut r.op_channel, n, n.to_string());
+                                for (n, usage) in &op_usage {
+                                    let text = match usage {
+                                        OpUsage::InUse => egui::RichText::new(format!("{n}  in use"))
+                                            .color(crate::theme::standing::HOSTILE),
+                                        OpUsage::Ours => {
+                                            egui::RichText::new(format!("{n}  your fleet")).weak()
+                                        }
+                                        _ => egui::RichText::new(n.to_string()),
+                                    };
+                                    ui.menu_value(&mut r.op_channel, *n, text);
                                 }
                             });
                         // What the dashboard will actually be told. The op number is not the
                         // channel id, so the FC sees the name before anything goes out.
+                        let usage = op_usage
+                            .iter()
+                            .find(|(n, _)| *n == r.op_channel)
+                            .map(|(_, u)| *u)
+                            .unwrap_or(OpUsage::NoChannel);
                         match &op_channel_name {
                             Some(name) => {
                                 ui.label(egui::RichText::new(name).weak())
                                     .on_hover_text("The comms channel the ping will name.");
+                                match usage {
+                                    OpUsage::InUse => {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}  in use",
+                                                egui_phosphor::regular::WARNING
+                                            ))
+                                            .strong()
+                                            .color(crate::theme::standing::HOSTILE),
+                                        )
+                                        .on_hover_text(
+                                            "Another fleet is on this channel. A rescue pinged \
+                                             onto it puts two fleets in one channel: pick a free op \
+                                             first.",
+                                        );
+                                    }
+                                    OpUsage::Ours => {
+                                        ui.label(egui::RichText::new("your fleet").weak())
+                                            .on_hover_text(
+                                                "The fleet you are tracking is on this channel.",
+                                            );
+                                    }
+                                    OpUsage::Free | OpUsage::NoChannel => {}
+                                }
                             }
                             None => {
                                 ui.label(
@@ -819,23 +919,28 @@ impl SpaiApp {
                         }
                         ui.label("Preset");
                         let cur = r.doctrine.clone();
+                        let shown = crate::settings::find_preset(&presets, &cur)
+                            .and_then(|p| presets.iter().position(|q| q.key() == p.key()))
+                            .map(|i| preset_names[i].clone())
+                            .unwrap_or_else(|| crate::settings::preset_key_label(&cur));
                         egui::ComboBox::from_id_salt("rescue_preset")
                             .width(170.0)
-                            .selected_text(if cur.is_empty() { "—".into() } else { cur })
+                            .selected_text(if cur.is_empty() { "—".into() } else { shown })
                             .show_ui(ui, |ui| {
                                 if presets.is_empty() {
                                     ui.label(
                                         egui::RichText::new("No preset tagged Capital Save").weak(),
                                     );
                                 }
-                                for p in &presets {
-                                    if ui.menu_value(&mut r.doctrine, p.label.clone(), &p.label)
+                                for (i, p) in presets.iter().enumerate() {
+                                    if ui
+                                        .menu_value(&mut r.doctrine, p.key(), &preset_names[i])
                                         .changed()
                                     {
                                         // A preset carries its own comms; the op stays editable
                                         // after, since a rescue often moves channel.
-                                        if let Some(c) = p.mumble_channel_id {
-                                            r.op_channel = c.clamp(1, 12) as u8;
+                                        if let Some(op) = preset_ops[i] {
+                                            r.op_channel = op;
                                         }
                                     }
                                 }

@@ -100,6 +100,40 @@ impl SpaiApp {
         }
     }
 
+    /// Asks whether the open fleet is advertised, on opening it and then once a minute.
+    ///
+    /// The advert is toggled in game, so nothing on the dashboard says when it changes. Only a
+    /// running fleet is asked about: a closed one has no advert, and ESI would only refuse.
+    #[cfg(feature = "fleet")]
+    fn fleet_advert_poll(&mut self, ctx: &egui::Context) {
+        // Like the boost read: a headless render must not go asking ESI about a real fleet.
+        if self.headless {
+            return;
+        }
+        let fleet = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            match (&st.page, st.open.value.as_ref()) {
+                (Page::Tracking(_), Some(o)) if o.fleet.closed_at.is_none() && o.fleet.esi_id > 0 => {
+                    Some(o.fleet.clone())
+                }
+                _ => None,
+            }
+        };
+        let Some(fleet) = fleet else {
+            self.fleet_advert_at = None;
+            return;
+        };
+        let due = match &self.fleet_advert_at {
+            Some((id, at)) if *id == fleet.id => at.elapsed() >= ADVERT_POLL,
+            _ => true,
+        };
+        if due {
+            self.fleet_advert_at = Some((fleet.id.clone(), std::time::Instant::now()));
+            self.fleet_dispatch(Cmd::CheckAdvert(Box::new(fleet)));
+        }
+        ctx.request_repaint_after(ADVERT_POLL);
+    }
+
     /// Re-reads a fleet that opened with nothing in it.
     ///
     /// A fleet closed from this app is opened again immediately, and the dashboard generates its
@@ -182,71 +216,6 @@ impl SpaiApp {
         }
     }
 
-    /// gnf.lt links for the comms channels no ping ever names.
-    ///
-    /// Op channels are learned from the pings in chat. The rest never appear in one, so without
-    /// these "Join comms" on an HD or capital fleet has nowhere to go. Listed from the dashboard's
-    /// own channel list, so a channel that is added later shows up here by itself.
-    #[cfg(feature = "fleet")]
-    fn comms_links_ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let names: Vec<(String, Option<&'static str>)> = {
-            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            st.seed
-                .mumble_channels
-                .iter()
-                .map(|c| c.name.trim().to_owned())
-                .filter(|n| crate::fleets::comms::op_number(n).is_none())
-                .map(|n| {
-                    // What the field falls back to when empty: the direct link, else the short one.
-                    let builtin = crate::fleets::comms::builtin_named_mumble(&n)
-                        .or_else(|| crate::fleets::comms::builtin_named_link(&n));
-                    (n, builtin)
-                })
-                .collect()
-        };
-        if names.is_empty() {
-            return false;
-        }
-        let mut changed = false;
-        ui.label(egui::RichText::new("Comms links").strong());
-        ui.label(
-            egui::RichText::new(
-                "Op channels are learned from pings. These are built in, and a link pasted here \
-                 replaces one. Join tries a mumble:// link first; a gnf.lt link survives a rename \
-                 and is the fallback.",
-            )
-            .weak(),
-        );
-        egui::Grid::new("comms_links_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            for (name, builtin) in names {
-                let key = name.to_lowercase();
-                let mut v = self.settings.comms_links.get(&key).cloned().unwrap_or_default();
-                ui.label(&name);
-                // The built-in link shows as the hint, so an empty field reads as "using that",
-                // not as "missing".
-                let hint = builtin
-                    .map(|b| {
-                        format!("built in: {}", crate::mumble::channel_path(b).unwrap_or(b.to_owned()))
-                    })
-                    .unwrap_or_else(|| "mumble://… or https://gnf.lt/….html".to_owned());
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(260.0),
-                );
-                if resp.changed() {
-                    let v = v.trim().to_owned();
-                    if v.is_empty() {
-                        self.settings.comms_links.remove(&key);
-                    } else {
-                        self.settings.comms_links.insert(key, v);
-                    }
-                    changed = true;
-                }
-                ui.end_row();
-            }
-        });
-        changed
-    }
-
     /// What the comms buttons on the open fleet point at.
     #[cfg(feature = "fleet")]
     fn fleet_comms_targets(&mut self) -> CommsTargets {
@@ -268,7 +237,6 @@ impl SpaiApp {
         let mut op = comms::links(
             &op_name,
             &self.settings.op_channel_links,
-            &self.settings.comms_links,
             &self.settings.comms_mumble_cache,
         );
         // Resolving ahead of the click, so a mumble:// link is usually there when it comes.
@@ -278,24 +246,8 @@ impl SpaiApp {
             }
         }
         let op = (op.mumble.is_some() || op.short.is_some()).then_some(op);
-        // A link the user supplied first, keyed like "alpha command 11". The command channels
-        // were checked by name against real links when this path was written, so the built one
-        // stays as the fallback rather than taking the button away.
-        let command = comms::command_channel(&op_name).and_then(|chan| {
-            let key = format!("{} {}", sector.label(), chan).to_lowercase();
-            let pasted = self.settings.comms_links.get(&key).filter(|l| !l.trim().is_empty());
-            match pasted {
-                Some(l) if l.starts_with("mumble://") => {
-                    Some(comms::Links { mumble: Some(l.clone()), short: None })
-                }
-                Some(l) => Some(comms::Links {
-                    mumble: self.settings.comms_mumble_cache.get(l).cloned(),
-                    short: Some(l.clone()),
-                }),
-                None => comms::command_url(sector, &op_name)
-                    .map(|u| comms::Links { mumble: Some(u), short: None }),
-            }
-        });
+        let command = comms::command_url(sector, &op_name)
+            .map(|u| comms::Links { mumble: Some(u), short: None });
         let unlinked = op.is_none().then(|| op_name.clone());
         CommsTargets { op, command, unlinked }
     }
@@ -355,11 +307,7 @@ impl SpaiApp {
     /// The short link for a comms channel, from pings, the built-in table or the user's settings.
     #[cfg(feature = "fleet")]
     pub(crate) fn comms_short_link(&self, channel_name: &str) -> Option<String> {
-        crate::fleets::comms::short_link(
-            channel_name,
-            &self.settings.op_channel_links,
-            &self.settings.comms_links,
-        )
+        crate::fleets::comms::short_link(channel_name, &self.settings.op_channel_links)
     }
 
     /// The `mumble://` link a short link resolves to, once it has been fetched. Starts the fetch
@@ -689,6 +637,7 @@ impl SpaiApp {
         }
         self.fleet_hub_once();
         self.fleet_reopen_poll(ui.ctx());
+        self.fleet_advert_poll(ui.ctx());
         let mode = self.fleet_backend.mode();
         let seed_hint = crate::fleets::seed_path_hint();
         let presets = self.settings.fleet_presets.clone();
@@ -922,7 +871,7 @@ impl SpaiApp {
 
     /// Applies what the start form asked for once the state lock is gone.
     #[cfg(feature = "fleet")]
-    fn fleet_apply_form(&mut self, mut act: FormAct) {
+    pub(crate) fn fleet_apply_form(&mut self, mut act: FormAct) {
         if let Some(id) = act.open_fleet.take() {
             let page = Page::Tracking(id);
             self.fleet_gen.page += 1;
@@ -949,7 +898,10 @@ impl SpaiApp {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .preset_from_form(&label, &folder);
-            match self.settings.fleet_presets.iter_mut().find(|p| p.label == label) {
+            // By folder and name together: the same name in another folder is another preset, so a
+            // save never lifts one out of the folder it lives in.
+            let key = preset.key();
+            match self.settings.fleet_presets.iter_mut().find(|p| p.key() == key) {
                 Some(slot) => *slot = preset,
                 None => self.settings.fleet_presets.push(preset),
             }
@@ -1061,12 +1013,20 @@ impl SpaiApp {
         if act.open_snowflakes {
             self.fleet_snowflakes_open = Some(SnowflakeTarget::Draft);
         }
+        // A drop on a row is also a drop on the folder under it; the row is the more precise
+        // answer, so it wins and the folder drop is dropped.
+        if let Some((src, dst)) = act.reorder_preset.take() {
+            act.move_preset = None;
+            self.fleet_preset_reorder(src, dst);
+        }
+        if let Some((dragged, before)) = act.reorder_folder.take() {
+            reorder_folder(&mut self.settings.fleet_presets, &dragged, &before);
+            self.needs_save = true;
+        }
         if let Some((i, folder)) = act.move_preset.take() {
-            if let Some(p) = self.settings.fleet_presets.get_mut(i) {
-                if p.folder.trim() != folder.trim() {
-                    p.folder = folder.trim().to_owned();
-                    self.needs_save = true;
-                }
+            let label = self.settings.fleet_presets.get(i).map(|p| p.label.clone());
+            if let Some(label) = label {
+                self.fleet_preset_relabel(i, &label, &folder);
             }
         }
         if let Some(i) = act.rename_preset {
@@ -1119,7 +1079,9 @@ impl SpaiApp {
     /// closed, because nothing is reading the answer.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_channel_poll(&mut self, ctx: &egui::Context) {
-        if !self.fleet_booted {
+        // Headless renders seed the channel list themselves; a refresh would replace it with the
+        // backend's, the way the boost and advert polls are kept out for the same reason.
+        if !self.fleet_booted || self.headless {
             return;
         }
         let due = self
@@ -1226,7 +1188,7 @@ impl SpaiApp {
         // taken in two orders is a hang.
         let want = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).doctrine.clone();
         let Some(setup_id) =
-            self.settings.fleet_presets.iter().find(|p| p.label == want).map(|p| p.setup_id)
+            crate::settings::find_preset(&self.settings.fleet_presets, &want).map(|p| p.setup_id)
         else {
             return;
         };
@@ -1296,8 +1258,6 @@ impl SpaiApp {
             ui.end_row();
         });
         ui.add_space(8.0);
-        changed |= self.comms_links_ui(ui);
-        ui.add_space(8.0);
         changed |= self.fleet_sign_in_ui(ui);
         ui.add_space(8.0);
         changed |= self.fleet_boost_rules(ui);
@@ -1314,11 +1274,67 @@ impl SpaiApp {
         changed
     }
 
+    /// Puts preset `src` just before preset `dst`, joining `dst`'s folder. Refused when that
+    /// folder already has another preset by the same name. A folder change goes through the same
+    /// path as a move, so the rescue still follows its preset.
+    #[cfg(feature = "fleet")]
+    fn fleet_preset_reorder(&mut self, src: usize, dst: usize) {
+        let (Some(from), Some(to)) =
+            (self.settings.fleet_presets.get(src), self.settings.fleet_presets.get(dst))
+        else {
+            return;
+        };
+        let (label, folder) = (from.label.clone(), to.folder.clone());
+        if self.fleet_preset_taken(src, &label, &folder) {
+            return;
+        }
+        if from.folder != folder {
+            self.fleet_preset_relabel(src, &label, &folder);
+        }
+        reorder_preset(&mut self.settings.fleet_presets, src, dst);
+        self.needs_save = true;
+    }
+
+    /// Whether another preset already has this folder and name, which is what identifies one.
+    #[cfg(feature = "fleet")]
+    fn fleet_preset_taken(&self, i: usize, label: &str, folder: &str) -> bool {
+        let key = crate::settings::preset_key(folder, label);
+        self.settings.fleet_presets.iter().enumerate().any(|(j, p)| j != i && p.key() == key)
+    }
+
+    /// Renames or moves a preset, unless another one already has that folder and name.
+    ///
+    /// The rescue remembers its preset by key, so it follows a preset that moves: otherwise moving
+    /// the one it runs on would quietly switch it to whichever came first.
+    #[cfg(feature = "fleet")]
+    fn fleet_preset_relabel(&mut self, i: usize, label: &str, folder: &str) {
+        if label.is_empty() || self.fleet_preset_taken(i, label, folder) {
+            return;
+        }
+        let Some(p) = self.settings.fleet_presets.get_mut(i) else { return };
+        let old = p.key();
+        p.label = label.to_owned();
+        p.folder = folder.to_owned();
+        let new = p.key();
+        if old == new {
+            return;
+        }
+        self.needs_save = true;
+        if self.settings.rescue_preset == old {
+            self.settings.rescue_preset = new.clone();
+        }
+        let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+        if r.doctrine == old {
+            r.doctrine = new;
+        }
+    }
+
     /// Renames a saved fleet, or moves it to another folder without dragging.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_preset_rename_window(&mut self, ctx: &egui::Context) {
         let Some((i, mut label, mut folder)) = self.fleet_preset_rename.clone() else { return };
         let folders = preset_folders(&self.settings.fleet_presets);
+        let taken_now = self.fleet_preset_taken(i, label.trim(), folder.trim());
         let mut open = true;
         let mut apply = false;
         let mut cancel = false;
@@ -1356,10 +1372,23 @@ impl SpaiApp {
                     ui.end_row();
                 });
                 ui.add_space(6.0);
+                if taken_now {
+                    ui.label(
+                        egui::RichText::new("That folder already has a preset by that name.")
+                            .color(crate::theme::standing::WARNING),
+                    );
+                }
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!label.trim().is_empty(), egui::Button::new("Save"))
-                        .on_disabled_hover_text("A preset needs a name.")
+                        .add_enabled(
+                            !label.trim().is_empty() && !taken_now,
+                            egui::Button::new("Save"),
+                        )
+                        .on_disabled_hover_text(if taken_now {
+                            "That folder already has a preset by that name."
+                        } else {
+                            "A preset needs a name."
+                        })
                         .clicked()
                     {
                         apply = true;
@@ -1367,12 +1396,9 @@ impl SpaiApp {
                     cancel |= ui.button("Cancel").clicked();
                 });
             });
-        if apply {
-            if let Some(p) = self.settings.fleet_presets.get_mut(i) {
-                p.label = label.trim().to_owned();
-                p.folder = folder.trim().to_owned();
-                self.needs_save = true;
-            }
+        let taken = self.fleet_preset_taken(i, label.trim(), folder.trim());
+        if apply && !taken {
+            self.fleet_preset_relabel(i, label.trim(), folder.trim());
             self.fleet_preset_rename = None;
         } else if !open || cancel {
             self.fleet_preset_rename = None;
@@ -2245,10 +2271,6 @@ impl SpaiApp {
         false
     }
 
-    #[cfg(not(feature = "fleet"))]
-    pub(crate) fn fleet_settings_section(&mut self, _ui: &mut egui::Ui) -> bool {
-        false
-    }
 }
 
 /// Active fleets by kind, then the FC's own history.
@@ -2457,6 +2479,50 @@ fn tag_colour(ui: &egui::Ui, tag: &TagItem) -> egui::Color32 {
     }
 }
 
+/// What kind of fleet a preset starts, from its primary tag: S for the STRATEGIC tag, P for any
+/// other primary tag, coloured the way those tags are. Nothing for a preset with no primary tag.
+#[cfg(feature = "fleet")]
+fn preset_kind(
+    p: &crate::settings::FleetPreset,
+    tags: &[TagItem],
+) -> Option<(&'static str, egui::Color32, &'static str)> {
+    use crate::theme::standing;
+    let primary: Vec<&TagItem> =
+        p.tag_ids.iter().filter_map(|id| tags.iter().find(|t| t.id.0 == *id)).filter(|t| t.is_primary).collect();
+    if primary.is_empty() {
+        return None;
+    }
+    // By name only. Other primary tags carry the dashboard's strategic flag too, and those count
+    // as P until there is a reason to split them further.
+    let strat = primary.iter().any(|t| t.name.trim().eq_ignore_ascii_case("STRATEGIC"));
+    Some(if strat {
+        ("S", standing::HOSTILE, "Strategic")
+    } else {
+        ("P", standing::WARNING, "Peacetime")
+    })
+}
+
+/// The P or S in a fixed cell, so names line up whether or not a preset has one.
+#[cfg(feature = "fleet")]
+const KIND_W: f32 = 14.0;
+
+#[cfg(feature = "fleet")]
+fn preset_kind_cell(ui: &mut egui::Ui, kind: Option<(&'static str, egui::Color32, &'static str)>) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(KIND_W, ui.spacing().interact_size.y),
+        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        |ui| {
+            if let Some((letter, colour, what)) = kind {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(letter).strong().color(colour))
+                        .selectable(false),
+                )
+                .on_hover_text(what);
+            }
+        },
+    );
+}
+
 /// How long the form waits after the last edit before rendering the ping again.
 #[cfg(feature = "fleet")]
 const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
@@ -2530,13 +2596,21 @@ fn doctrine_line(ping: &str) -> Option<String> {
         .filter(|l| !l.is_empty())
 }
 
+#[cfg(feature = "fleet")]
 const BOSS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(feature = "fleet")]
+const ADVERT_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(feature = "fleet")]
 const CHANNEL_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What the start form asked for, applied once the state lock is gone.
 #[cfg(feature = "fleet")]
 #[derive(Default)]
 pub(crate) struct FormAct {
+    /// (dragged preset, the preset it was dropped on): it goes just before that one.
+    pub reorder_preset: Option<(usize, usize)>,
+    /// (dragged folder, the folder it was dropped on): the whole folder goes just before that one.
+    pub reorder_folder: Option<(String, String)>,
     /// Go to a fleet that is already being tracked, instead of starting a second one.
     pub open_fleet: Option<crate::fleets::model::FleetId>,
     pub load_preset: Option<usize>,
@@ -2809,7 +2883,10 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
     });
 }
 
-/// The folders presets are kept in, in order, without repeats.
+/// The folders presets are kept in, without repeats, in the order they first appear.
+///
+/// Not sorted: the preset list's own order is the order the FC arranged, folders included, so one
+/// list holds it and nothing else has to be kept in step with it.
 #[cfg(feature = "fleet")]
 fn preset_folders(presets: &[crate::settings::FleetPreset]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -2819,8 +2896,36 @@ fn preset_folders(presets: &[crate::settings::FleetPreset]) -> Vec<String> {
             out.push(f.to_owned());
         }
     }
-    out.sort();
     out
+}
+
+/// Moves preset `src` to just before preset `dst`, in `dst`'s folder. The caller has already
+/// checked the folder has no other preset by that name.
+#[cfg(feature = "fleet")]
+fn reorder_preset(presets: &mut Vec<crate::settings::FleetPreset>, src: usize, dst: usize) {
+    if src == dst || src >= presets.len() || dst >= presets.len() {
+        return;
+    }
+    let folder = presets[dst].folder.clone();
+    let mut p = presets.remove(src);
+    p.folder = folder;
+    // Removing an earlier one shifts the target back by one.
+    let at = if src < dst { dst - 1 } else { dst };
+    presets.insert(at, p);
+}
+
+/// Moves every preset in folder `dragged` to just before the first preset in folder `before`,
+/// keeping their order among themselves. That is the whole of a folder's position.
+#[cfg(feature = "fleet")]
+fn reorder_folder(presets: &mut Vec<crate::settings::FleetPreset>, dragged: &str, before: &str) {
+    if dragged == before || dragged.is_empty() {
+        return;
+    }
+    let (moving, mut rest): (Vec<_>, Vec<_>) =
+        presets.drain(..).partition(|p| p.folder.trim() == dragged);
+    let at = rest.iter().position(|p| p.folder.trim() == before).unwrap_or(rest.len());
+    rest.splice(at..at, moving);
+    *presets = rest;
 }
 
 /// Width every control in the form shares, so the column reads as one edge rather than a ragged
@@ -3914,7 +4019,7 @@ fn side_pane(
     egui::ScrollArea::vertical()
         .id_salt("fleet_side_list")
         .auto_shrink([false, false])
-        .show(ui, |ui| preset_tree(ui, presets, &query, act));
+        .show(ui, |ui| preset_tree(ui, presets, &st.seed.tags, &query, act));
 }
 
 /// One of the two half-width panes at the top of the sidebar.
@@ -3950,6 +4055,7 @@ fn pane_tab(ui: &mut egui::Ui, w: f32, on: bool, label: &str) -> egui::Response 
 fn preset_tree(
     ui: &mut egui::Ui,
     presets: &[crate::settings::FleetPreset],
+    tags: &[TagItem],
     query: &str,
     act: &mut FormAct,
 ) {
@@ -3986,22 +4092,42 @@ fn preset_tree(
             let row_w = (ui.available_width() - SCROLLBAR_W).max(60.0);
             let (_, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::NONE, |ui| {
                 for &i in idx {
-                    preset_row(ui, presets, i, row_w, act);
+                    preset_row(ui, presets, tags, i, row_w, act);
                 }
             });
             if let Some(i) = dropped {
                 act.move_preset = Some((*i, String::new()));
             }
         } else {
-            egui::CollapsingHeader::new(egui::RichText::new(folder).strong())
-                .id_salt(("preset_folder", folder))
-                .default_open(true)
-                .show(ui, |ui| {
+            let id = ui.make_persistent_id(("preset_folder", folder));
+            let state =
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+            let (_, head, _) = state
+                .show_header(ui, |ui| {
+                    ui.dnd_drag_source(
+                        egui::Id::new(("preset_folder_drag", folder)),
+                        FolderDrag(folder.clone()),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(egui_phosphor::regular::DOTS_SIX_VERTICAL)
+                                        .size(13.0)
+                                        .weak(),
+                                )
+                                .selectable(false),
+                            );
+                        },
+                    )
+                    .response
+                    .on_hover_text(format!("Drag {folder} onto another folder to go before it"));
+                    ui.label(egui::RichText::new(folder).strong());
+                })
+                .body(|ui| {
                     let row_w = (ui.available_width() - SCROLLBAR_W).max(60.0);
                     let (_, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::NONE, |ui| {
                         ui.add_space(3.0);
                         for &i in idx {
-                            preset_row(ui, presets, i, row_w, act);
+                            preset_row(ui, presets, tags, i, row_w, act);
                         }
                         ui.add_space(3.0);
                         // A folder with everything filtered out of view still has to be a target,
@@ -4012,15 +4138,43 @@ fn preset_tree(
                         act.move_preset = Some((*i, folder.clone()));
                     }
                 });
+            let head = head.response;
+            // Type first, because taking a payload of the wrong type still consumes it.
+            if egui::DragAndDrop::has_payload_of_type::<FolderDrag>(ui.ctx()) {
+                if head.dnd_hover_payload::<FolderDrag>().is_some_and(|f| f.0 != *folder) {
+                    ui.painter().hline(
+                        head.rect.x_range(),
+                        head.rect.top() - 1.0,
+                        egui::Stroke::new(2.0, ui.visuals().hyperlink_color),
+                    );
+                }
+                if let Some(f) = head.dnd_release_payload::<FolderDrag>() {
+                    if f.0 != *folder {
+                        act.reorder_folder = Some((f.0.clone(), folder.clone()));
+                    }
+                }
+            } else if egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx()) {
+                // A preset dropped on the heading joins the folder, same as on its body.
+                if let Some(i) = head.dnd_release_payload::<usize>() {
+                    act.move_preset = Some((*i, folder.clone()));
+                }
+            }
         }
     }
 }
+
+/// What a folder heading carries while it is dragged, kept apart from a preset's `usize` so a drop
+/// target can tell the two apart.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Debug)]
+struct FolderDrag(String);
 
 /// One saved fleet: the whole row loads it, draggable into a folder, with rename and delete.
 #[cfg(feature = "fleet")]
 fn preset_row(
     ui: &mut egui::Ui,
     presets: &[crate::settings::FleetPreset],
+    tags: &[TagItem],
     i: usize,
     row_w: f32,
     act: &mut FormAct,
@@ -4033,7 +4187,7 @@ fn preset_row(
     // `available_width()` per row made each row a few pixels wider than the last and the whole
     // column wider every frame: the name button overflowed its allocation, that widened the
     // container, and the next row read the wider number back.
-    ui.allocate_ui_with_layout(
+    let row = ui.allocate_ui_with_layout(
         egui::vec2(row_w, H),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
@@ -4059,7 +4213,7 @@ fn preset_row(
                 act.rename_preset = Some(i);
             }
             let gap = ui.spacing().item_spacing.x;
-            let name_w = (ui.available_width() - GRIP_W - gap).max(40.0);
+            let name_w = (ui.available_width() - GRIP_W - KIND_W - 2.0 * gap).max(40.0);
             // Justified, so the button fills exactly what it was given: `min_size` alone is a
             // floor a long name grows past, and `add_sized` alone leaves a short one adrift in
             // the middle of its cell.
@@ -4079,6 +4233,8 @@ fn preset_row(
                     }
                 },
             );
+            // Right to left, so this lands between the grip and the name.
+            preset_kind_cell(ui, preset_kind(p, tags));
             ui.dnd_drag_source(egui::Id::new(("preset_drag", i)), i, |ui| {
                 ui.add_sized(
                     [GRIP_W, H],
@@ -4092,12 +4248,30 @@ fn preset_row(
             })
             .response
             .on_hover_text(if p.folder.trim().is_empty() {
-                format!("Drag {} into a folder", p.label)
+                format!("Drag {} into a folder, or onto another to go before it", p.label)
             } else {
-                format!("Drag {} out of {}", p.label, p.folder.trim())
+                format!("Drag {} out of {}, or onto another to go before it", p.label, p.folder.trim())
             });
         },
-    );
+    )
+    .response;
+    // Dropped on this row: the dragged preset goes just before it, in its folder. Checked for the
+    // type first, because taking a payload of the wrong type still consumes it.
+    if egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx()) {
+        if row.dnd_hover_payload::<usize>().is_some_and(|src| *src != i) {
+            let y = row.rect.top() - 1.0;
+            ui.painter().hline(
+                row.rect.x_range(),
+                y,
+                egui::Stroke::new(2.0, ui.visuals().hyperlink_color),
+            );
+        }
+        if let Some(src) = row.dnd_release_payload::<usize>() {
+            if *src != i {
+                act.reorder_preset = Some((*src, i));
+            }
+        }
+    }
 }
 
 /// The ping and MOTD the dashboard would render, refreshed as the form changes.
@@ -4459,6 +4633,36 @@ fn tracking_page(
                 if let Some(c) = &open.fleet.commander {
                     ui.label(egui::RichText::new(&c.label).weak());
                 }
+                // Beside the boss whose advert it is, and in this right-to-left run so it can
+                // never wrap the title onto a second line. Nothing at all when it cannot be read,
+                // which is any fleet whose boss is not one of this machine's characters.
+                let advert = st
+                    .advert
+                    .as_ref()
+                    .filter(|(id, _)| *id == open.fleet.id && open.fleet.closed_at.is_none())
+                    .map(|(_, up)| *up);
+                match advert {
+                    Some(true) => {
+                        ui.label(
+                            egui::RichText::new("advert up").color(crate::theme::standing::FRIENDLY),
+                        )
+                        .on_hover_text("The fleet is listed in the Fleet Finder.");
+                    }
+                    Some(false) => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  advert off",
+                                egui_phosphor::regular::WARNING
+                            ))
+                            .color(crate::theme::standing::WARNING),
+                        )
+                        .on_hover_text(
+                            "The fleet is not listed in the Fleet Finder, so nobody can find it \
+                             there. Advertise it in game.",
+                        );
+                    }
+                    None => {}
+                }
             });
         });
         if let Some(f) = &open.fleet.formup_location {
@@ -4612,10 +4816,7 @@ fn comms_buttons(
                             egui_phosphor::regular::HEADPHONES
                         )),
                     )
-                    .on_disabled_hover_text(format!(
-                        "No link is known for {name}. Paste a mumble:// or gnf.lt link for it \
-                         under Fleet in the settings."
-                    ));
+                    .on_disabled_hover_text(format!("No comms link is known for {name}."));
                 }
             }
             continue;
@@ -6179,6 +6380,7 @@ impl SpaiApp {
                 }
                 ui.separator();
 
+                let tags = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.tags.clone();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut any = false;
                     let mut groups: Vec<String> = vec![String::new()];
@@ -6211,10 +6413,15 @@ impl SpaiApp {
                                 .map(str::trim)
                                 .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case(p.label.trim()))
                                 .unwrap_or_default();
-                            let resp = ui.add(
-                                egui::Button::new(format!("{}   {sub}", p.label))
-                                    .min_size(egui::vec2(ui.available_width(), 0.0)),
-                            );
+                            let resp = ui
+                                .horizontal(|ui| {
+                                    preset_kind_cell(ui, preset_kind(p, &tags));
+                                    ui.add(
+                                        egui::Button::new(format!("{}   {sub}", p.label))
+                                            .min_size(egui::vec2(ui.available_width(), 0.0)),
+                                    )
+                                })
+                                .inner;
                             if resp.clicked() {
                                 act.quick_preset = Some(i);
                             }
@@ -6570,5 +6777,70 @@ mod composition_role_tests {
         // A doctrine that flies capitals keeps them where they are.
         assert_eq!(composition_role(&line("Avatar", "Titan", Standing::Doctrine), None, false),
                    Role::Dps);
+    }
+}
+
+#[cfg(all(test, feature = "fleet"))]
+mod preset_kind_tests {
+    use super::preset_kind;
+
+    fn preset(tags: &[i32]) -> crate::settings::FleetPreset {
+        crate::settings::FleetPreset { tag_ids: tags.to_vec(), ..Default::default() }
+    }
+
+    /// S for STRATEGIC, P for every other primary tag, nothing without one.
+    #[test]
+    fn a_preset_is_strat_or_pct_by_its_primary_tag() {
+        let tags = crate::fleets::seed::invented().tags;
+        let letter = |ids: &[i32]| preset_kind(&preset(ids), &tags).map(|(l, _, _)| l);
+        assert_eq!(letter(&[1, 12]), Some("S"), "STRATEGIC");
+        assert_eq!(letter(&[2, 33]), Some("P"), "PEACETIME");
+        // Primary and flagged strategic by the dashboard, but not the STRATEGIC tag: P for now.
+        assert_eq!(letter(&[20]), Some("P"), "another primary tag");
+        // Only secondary tags, or none: no claim either way.
+        assert_eq!(letter(&[12, 33]), None);
+        assert_eq!(letter(&[]), None);
+    }
+}
+
+#[cfg(all(test, feature = "fleet"))]
+mod preset_order_tests {
+    use super::{preset_folders, reorder_folder, reorder_preset};
+    use crate::settings::FleetPreset;
+
+    fn p(folder: &str, label: &str) -> FleetPreset {
+        FleetPreset { label: label.to_owned(), folder: folder.to_owned(), ..Default::default() }
+    }
+
+    fn keys(all: &[FleetPreset]) -> Vec<String> {
+        all.iter().map(|p| format!("{}/{}", p.folder, p.label)).collect()
+    }
+
+    #[test]
+    fn a_preset_goes_before_the_one_it_was_dropped_on() {
+        let mut all = vec![p("", "A"), p("", "B"), p("", "C")];
+        reorder_preset(&mut all, 2, 0);
+        assert_eq!(keys(&all), ["/C", "/A", "/B"]);
+        // Down the list: the target shifts back once the dragged one is out of the way.
+        reorder_preset(&mut all, 0, 2);
+        assert_eq!(keys(&all), ["/A", "/C", "/B"]);
+        // Onto a row in another folder: it joins that folder.
+        let mut all = vec![p("", "A"), p("F", "B")];
+        reorder_preset(&mut all, 0, 1);
+        assert_eq!(keys(&all), ["F/A", "F/B"]);
+    }
+
+    /// A folder moves as a block and keeps its presets' order, and the list order is the folder
+    /// order: nothing sorts them any more.
+    #[test]
+    fn a_folder_goes_before_the_one_it_was_dropped_on() {
+        let mut all = vec![p("", "top"), p("F1", "a"), p("F2", "x"), p("F1", "b"), p("F2", "y")];
+        assert_eq!(preset_folders(&all), ["F1", "F2"]);
+        reorder_folder(&mut all, "F2", "F1");
+        assert_eq!(preset_folders(&all), ["F2", "F1"]);
+        assert_eq!(keys(&all), ["/top", "F2/x", "F2/y", "F1/a", "F1/b"]);
+        // Not alphabetical: a folder named later can come first.
+        let all = vec![p("Zulu", "z"), p("Alpha", "a")];
+        assert_eq!(preset_folders(&all), ["Zulu", "Alpha"]);
     }
 }
