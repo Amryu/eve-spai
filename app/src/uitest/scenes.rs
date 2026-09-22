@@ -92,7 +92,7 @@ fn docked_system_scene(name: &'static str) -> Scene {
 fn lookup_tab_scene(name: &'static str) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, [1700.0, 600.0], move |ui| {
+    Scene::ui(name, [1820.0, 600.0], move |ui| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.seed_notes(fixtures::notebook());
@@ -6378,7 +6378,7 @@ fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
     assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");
 }
 
-/// A text-only cell explains its column on hover, the FC one included.
+/// Hovering anywhere in a row's FC cell gives the breakdown, not just over its number.
 #[test]
 fn uitest_lookup_fc_cell_explains_itself() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -6391,7 +6391,7 @@ fn uitest_lookup_fc_cell_explains_itself() {
     harness.event(egui::Event::PointerMoved(at));
     harness.run_steps(4);
     assert!(
-        harness.query_by_label_contains("command ships").is_some(),
-        "hovering the FC cell at {at:?} showed no explanation"
+        harness.query_by_label_contains("Monitor appearances").is_some(),
+        "hovering the FC cell at {at:?} showed no breakdown"
     );
 }

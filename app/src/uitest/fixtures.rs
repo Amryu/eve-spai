@@ -1176,7 +1176,8 @@ pub(crate) fn lookup_rows() -> Vec<(String, crate::localscan::Row)> {
                 s.alliance_id = 99_000_002;
             }
             if i == 2 {
-                s.tags = vec![Tag::Logi, Tag::Capital, Tag::Cyno, Tag::Fc];
+                s.tags = vec![(Tag::Fc, 0), (Tag::Cyno, 1), (Tag::Bait, 13), (Tag::Ganker, 12), (Tag::Capital, 4), (Tag::Blops, 2), (Tag::Logi, 12)];
+                s.bait = Some(crate::localscan::Bait { level: "high".into(), count: 13 });
             }
             (name.to_owned(), Row::Done(Box::new(s)))
         })

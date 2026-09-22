@@ -29,12 +29,13 @@ pub(crate) enum Col {
     Associates,
     Cyno,
     Fc,
+    Bait,
     Gank,
     Awox,
 }
 
 impl Col {
-    pub(crate) const ALL: [Col; 19] = [
+    pub(crate) const ALL: [Col; 20] = [
         Col::Standing,
         Col::Fw,
         Col::Age,
@@ -52,6 +53,7 @@ impl Col {
         Col::Associates,
         Col::Cyno,
         Col::Fc,
+        Col::Bait,
         Col::Gank,
         Col::Awox,
     ];
@@ -76,6 +78,7 @@ impl Col {
             Col::Associates => "associates",
             Col::Cyno => "cyno",
             Col::Fc => "fc",
+            Col::Bait => "bait",
             Col::Gank => "gank",
             Col::Awox => "awox",
         }
@@ -100,6 +103,7 @@ impl Col {
             Col::Associates => "Assoc.",
             Col::Cyno => "Cyno",
             Col::Fc => "FC",
+            Col::Bait => "Bait",
             Col::Gank => "Gank",
             Col::Awox => "Awox",
         }
@@ -121,11 +125,12 @@ impl Col {
             Col::Tags => "Worked out from the ships flown",
             Col::Ships => "Ships flown recently",
             Col::Affiliates => "Alliances they share the most kills with",
-            Col::Associates => "Characters they share kills with",
-            Col::Cyno => "Estimated: covert cyno hulls flown, and cheap hulls lost that cyno alts light in",
-            Col::Fc => "Estimated: appearances in Monitors, command ships, Vagabonds, Muninns and Deimoses, counted only for pilots often in fleets of 25 or more",
-            Col::Gank => "Kills zKillboard labels as ganks",
-            Col::Awox => "Kills on their own corporation or alliance",
+            Col::Associates => "Alliances they have shared kills with",
+            Col::Cyno => "zKillboard: ships lost with a cynosural field fitted in the past year, covert and standard",
+            Col::Fc => "zKillboard's FC label: Low, Medium or High from Monitor, command ship and large-fleet appearances in the past year. Hover a row for the points",
+            Col::Bait => "zKillboard's bait label: cheap losses followed within five minutes by a nearby fight of three or more, past year",
+            Col::Gank => "zKillboard: high-sec gank killmails as an attacker, past year. The GANKER label starts at 10",
+            Col::Awox => "zKillboard: final blows on their own corporation, past year. The AWOX label starts at 10",
         }
     }
 
@@ -134,7 +139,7 @@ impl Col {
     fn plain(self) -> bool {
         matches!(
             self,
-            Col::Age | Col::Danger | Col::Security | Col::Gang | Col::Solo | Col::Kd | Col::Associates | Col::Fc | Col::Gank
+            Col::Age | Col::Danger | Col::Security | Col::Gang | Col::Solo | Col::Kd | Col::Associates | Col::Gank
         )
     }
 
@@ -156,7 +161,8 @@ impl Col {
             Col::Affiliates => 170.0,
             Col::Associates => 50.0,
             Col::Cyno => 72.0,
-            Col::Fc => 40.0,
+            Col::Fc => 64.0,
+            Col::Bait => 86.0,
             Col::Gank => 46.0,
             Col::Awox => 48.0,
         }
@@ -172,11 +178,12 @@ impl Col {
             Col::Gang => s.gang as f64,
             Col::Solo => s.solo as f64,
             Col::Kd => s.kd(),
-            Col::Associates => s.associates as f64,
-            Col::Cyno => (s.covert_cyno + s.cyno) as f64,
-            Col::Fc => s.fc as f64,
-            Col::Gank => s.gank.kills as f64,
-            Col::Awox => s.awox.kills as f64,
+            Col::Associates => s.affiliates.len() as f64,
+            Col::Cyno => s.cyno.as_ref().map_or(0.0, |c| (c.standard + c.covert + c.industrial) as f64),
+            Col::Fc => s.fc.as_ref().map_or(0.0, |f| f.score as f64),
+            Col::Bait => s.bait.as_ref().map_or(0.0, |b| b.count as f64),
+            Col::Gank => s.ganker as f64,
+            Col::Awox => s.awox[0] as f64,
             Col::Isk => s.isk_destroyed,
             _ => return None,
         })
@@ -508,7 +515,10 @@ impl SpaiApp {
                 if desc { o.reverse() } else { o }
             }),
         }
-        let ship_ids: Vec<i64> = done.iter().flat_map(|s| s.ships.iter().take(5).map(|sh| sh.type_id)).collect();
+        let ship_ids: Vec<i64> = done
+            .iter()
+            .flat_map(|s| s.ships.iter().take(5).map(|sh| sh.type_id))
+            .collect();
         self.ensure_type_names(&ship_ids, ui.ctx());
         let pending: Vec<&(String, Row)> = rows.iter().filter(|(_, r)| !matches!(r, Row::Done(_))).collect();
 
@@ -715,15 +725,21 @@ impl SpaiApp {
                 }
             });
             for c in cols {
-                if *c == Col::Tags {
-                    cell_in(ui, c.width(), egui::Layout::top_down(egui::Align::Min), |ui| tags_cell(ui, &s.tags));
-                } else {
+                {
                     let left = ui.cursor().min;
-                    cell(ui, c.width(), |ui| self.lookup_cell(ui, *c, s, orgs, now));
+                    if *c == Col::Tags {
+                        cell_in(ui, c.width(), egui::Layout::top_down(egui::Align::Min), |ui| tags_cell(ui, &s.tags));
+                    } else {
+                        cell(ui, c.width(), |ui| self.lookup_cell(ui, *c, s, orgs, now));
+                    }
+                    let rect = egui::Rect::from_min_size(left, egui::vec2(c.width(), ROW_H));
+                    let hover = || ui.interact(rect, ui.id().with(("lookup_cell", s.id, c.key())), egui::Sense::hover());
                     if c.plain() {
-                        let rect = egui::Rect::from_min_size(left, egui::vec2(c.width(), ROW_H));
-                        ui.interact(rect, ui.id().with(("lookup_cell", s.id, c.key())), egui::Sense::hover())
-                            .on_hover_text(c.tip());
+                        hover().on_hover_text(c.tip());
+                    } else if *c == Col::Fc && s.fc.is_some() {
+                        hover().on_hover_ui(|ui| fc_breakdown(ui, s));
+                    } else if *c == Col::Tags && !s.tags.is_empty() {
+                        hover().on_hover_ui(|ui| tags_breakdown(ui, s));
                     }
                 }
             }
@@ -823,33 +839,44 @@ impl SpaiApp {
                 }
             }
             Col::Associates => {
-                // zKillboard lists at most 50.
-                ui.label(match s.associates {
+                let n = s.affiliates.len();
+                ui.label(match n {
                     0 => "\u{2013}".to_owned(),
-                    n if n >= 50 => "50+".to_owned(),
+                    n if s.affiliates_capped => format!("{n}+"),
                     n => n.to_string(),
                 });
             }
-            Col::Cyno => {
-                if s.covert_cyno == 0 && s.cyno == 0 {
-                    dash(ui);
-                } else {
-                    ui.label(egui::RichText::new(format!("{} {}", egui_phosphor::regular::EYE_SLASH, s.covert_cyno)).color(KILLS))
-                        .on_hover_text("Covert cyno hulls flown (covert ops, force recons)");
+            Col::Cyno => match &s.cyno {
+                Some(c) => {
+                    ui.label(egui::RichText::new(format!("{} {}", egui_phosphor::regular::EYE_SLASH, c.covert)).color(KILLS))
+                        .on_hover_text("Covert cyno losses");
                     ui.add_space(4.0);
-                    ui.label(format!("{} {}", egui_phosphor::regular::SPARKLE, s.cyno))
-                        .on_hover_text("Cheap hulls lost (T1 frigates, haulers), typical of a cyno alt");
+                    ui.label(format!("{} {}", egui_phosphor::regular::SPARKLE, c.standard + c.industrial))
+                        .on_hover_text(format!("Standard cyno losses: {}, industrial: {}", c.standard, c.industrial));
                 }
-            }
-            Col::Fc => {
-                ui.label(if s.fc > 0 { s.fc.to_string() } else { "\u{2013}".into() });
-            }
+                None => dash(ui),
+            },
+            Col::Fc => match &s.fc {
+                Some(f) => {
+                    ui.label(egui::RichText::new(title_case(&f.level)).color(level_color(&f.level)));
+                }
+                None => dash(ui),
+            },
+            Col::Bait => match &s.bait {
+                Some(b) => {
+                    ui.label(egui::RichText::new(format!("{} ({})", title_case(&b.level), b.count)).color(level_color(&b.level)))
+                        .on_hover_text(format!("{} bait matches in the past year", b.count));
+                }
+                None => dash(ui),
+            },
             Col::Gank => {
-                ui.label(if s.gank.kills > 0 { s.gank.kills.to_string() } else { "\u{2013}".into() });
+                ui.label(if s.ganker > 0 { s.ganker.to_string() } else { "\u{2013}".into() });
             }
             Col::Awox => {
-                ui.label(if s.awox.kills > 0 { s.awox.kills.to_string() } else { "\u{2013}".into() })
-                    .on_hover_text(format!("{} awox kills, awoxed {} times", s.awox.kills, s.awox.losses));
+                let [corp, alliance, faction] = s.awox;
+                ui.label(if corp > 0 { corp.to_string() } else { "\u{2013}".into() }).on_hover_text(format!(
+                    "Final blows on their own corporation: {corp}, alliance: {alliance}, faction: {faction}"
+                ));
             }
         }
     }
@@ -866,9 +893,39 @@ impl SpaiApp {
     }
 }
 
+fn title_case(level: &str) -> String {
+    let mut c = level.chars();
+    c.next().map(|f| f.to_uppercase().chain(c.flat_map(|x| x.to_lowercase())).collect()).unwrap_or_default()
+}
+
+fn level_color(level: &str) -> egui::Color32 {
+    match level.to_ascii_lowercase().as_str() {
+        "high" => egui::Color32::from_rgb(0xD8, 0x4C, 0x4C),
+        "medium" => egui::Color32::from_rgb(0xE0, 0x8A, 0x3A),
+        _ => egui::Color32::from_rgb(0xD8, 0xC8, 0x3A),
+    }
+}
+
+fn fc_breakdown(ui: &mut egui::Ui, s: &Summary) {
+    let Some(f) = &s.fc else { return };
+    ui.label(egui::RichText::new(format!("FC {} ({} points)", title_case(&f.level), f.score)).strong());
+    ui.label(format!("Monitor appearances: {} ({} of 100 points)", f.monitor, (f.monitor * 20).min(100)));
+    ui.label(format!("Command ship appearances: {} ({} of 40 points)", f.command, (f.command * 2).min(40)));
+    ui.label(format!("Fleets of 25+: {} ({} of 20 points)", f.large_fleet, (f.large_fleet / 5).min(20)));
+    ui.label(egui::RichText::new("zKillboard's label, past year. Low 35+, Medium 60+, High 100+.").weak());
+}
+
+fn tags_breakdown(ui: &mut egui::Ui, s: &Summary) {
+    for (t, n) in &s.tags {
+        let count = if *n > 0 { format!(" ({n})") } else { String::new() };
+        ui.label(egui::RichText::new(format!("{}{count}", t.label())).strong());
+        ui.label(egui::RichText::new(t.explain()).weak());
+    }
+}
+
 /// Tag chips broken into lines by hand and centred vertically in the row, since a wrapping row
 /// cannot know its own height before it is laid out.
-fn tags_cell(ui: &mut egui::Ui, tags: &[crate::localscan::Tag]) {
+fn tags_cell(ui: &mut egui::Ui, tags: &[(crate::localscan::Tag, u32)]) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let rect = ui.max_rect();
     let color = ui.visuals().text_color();
@@ -877,27 +934,29 @@ fn tags_cell(ui: &mut egui::Ui, tags: &[crate::localscan::Tag]) {
         return;
     }
     let galleys: Vec<std::sync::Arc<egui::Galley>> =
-        tags.iter().map(|t| ui.painter().layout_no_wrap(t.label().to_owned(), font.clone(), color)).collect();
+        tags.iter()
+            .map(|(t, n)| {
+                let text = if *n > 0 { format!("{} {n}", t.label()) } else { t.label().to_owned() };
+                ui.painter().layout_no_wrap(text, font.clone(), color)
+            })
+            .collect();
     let (pad, gap) = (4.0, 3.0);
-    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut used = 0.0;
-    for (i, g) in galleys.iter().enumerate() {
-        let w = g.size().x + pad * 2.0;
-        if used + w > rect.width() && !lines.last().is_some_and(|l| l.is_empty()) {
-            lines.push(Vec::new());
-            used = 0.0;
-        }
-        used += w + gap;
-        lines.last_mut().expect("one line").push(i);
-    }
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + pad * 2.0).collect();
+    let plus = |n: usize| ui.painter().layout_no_wrap(format!("+{n}"), font.clone(), color);
+    let (lines, hidden) =
+        fit_chips(&widths, |n| plus(n).size().x + pad * 2.0, rect.width(), gap, TAG_LINES, TAGS_PER_LINE);
     let h = galleys[0].size().y;
     let total = lines.len() as f32 * h + (lines.len() as f32 - 1.0) * 1.0;
     let mut y = rect.center().y - total / 2.0;
     let fill = ui.visuals().widgets.inactive.bg_fill;
-    for line in lines {
+    let last = lines.len() - 1;
+    for (li, line) in lines.into_iter().enumerate() {
         let mut x = rect.left();
-        for i in line {
-            let g = galleys[i].clone();
+        let mut chips: Vec<std::sync::Arc<egui::Galley>> = line.iter().map(|i| galleys[*i].clone()).collect();
+        if li == last && hidden > 0 {
+            chips.push(plus(hidden));
+        }
+        for g in chips {
             let chip = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(g.size().x + pad * 2.0, h));
             ui.painter().rect_filled(chip, 3.0, fill);
             x = chip.right() + gap;
@@ -905,6 +964,52 @@ fn tags_cell(ui: &mut egui::Ui, tags: &[crate::localscan::Tag]) {
         }
         y += h + 1.0;
     }
+}
+
+const TAG_LINES: usize = 2;
+const TAGS_PER_LINE: usize = 3;
+
+/// Chips laid out in order into at most `max_lines` lines of `max_per_line`, within `width`.
+/// What does not fit is folded into a "+N" chip at the end of the last line, making room for it
+/// by moving chips off that line. Returns the lines as indices and N.
+fn fit_chips(
+    widths: &[f32],
+    plus_width: impl Fn(usize) -> f32,
+    width: f32,
+    gap: f32,
+    max_lines: usize,
+    max_per_line: usize,
+) -> (Vec<Vec<usize>>, usize) {
+    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0.0;
+    let mut placed = 0;
+    for (i, w) in widths.iter().enumerate() {
+        let line = lines.last().expect("one line");
+        let full = line.len() >= max_per_line || (used + w > width && !line.is_empty());
+        if full {
+            if lines.len() >= max_lines {
+                break;
+            }
+            lines.push(Vec::new());
+            used = 0.0;
+        }
+        used += w + gap;
+        lines.last_mut().expect("one line").push(i);
+        placed += 1;
+    }
+    let mut hidden = widths.len() - placed;
+    if hidden > 0 {
+        let last = lines.last_mut().expect("one line");
+        loop {
+            let row: f32 = last.iter().map(|i| widths[*i] + gap).sum();
+            if last.is_empty() || (last.len() < max_per_line && row + plus_width(hidden) <= width) {
+                break;
+            }
+            last.pop();
+            hidden += 1;
+        }
+    }
+    (lines, hidden)
 }
 
 /// EVE's standing square: red for terrible, orange for bad, light and dark blue for good and
@@ -955,6 +1060,23 @@ fn standing_marker(ui: &mut egui::Ui, standing: f32) {
 #[cfg(test)]
 mod tests {
     use super::char_age;
+
+
+    #[test]
+    fn surplus_tags_fold_into_a_count() {
+        use super::fit_chips;
+        let plus = |_| 20.0;
+        let (lines, hidden) = fit_chips(&[30.0; 2], plus, 150.0, 3.0, 2, 3);
+        assert_eq!((lines, hidden), (vec![vec![0, 1]], 0));
+        let (lines, hidden) = fit_chips(&[30.0; 6], plus, 150.0, 3.0, 2, 3);
+        assert_eq!((lines, hidden), (vec![vec![0, 1, 2], vec![3, 4, 5]], 0), "six fill two lines exactly");
+        let (lines, hidden) = fit_chips(&[30.0; 7], plus, 150.0, 3.0, 2, 3);
+        assert_eq!((lines, hidden), (vec![vec![0, 1, 2], vec![3, 4]], 2), "+2 takes the sixth slot");
+        let (lines, hidden) = fit_chips(&[30.0; 9], plus, 150.0, 3.0, 2, 3);
+        assert_eq!((lines, hidden), (vec![vec![0, 1, 2], vec![3, 4]], 4));
+        let (lines, hidden) = fit_chips(&[70.0, 70.0, 70.0], plus, 150.0, 3.0, 2, 3);
+        assert_eq!((lines, hidden), (vec![vec![0, 1], vec![2]], 0), "wide chips wrap by width");
+    }
 
     #[test]
     fn a_young_character_never_reads_as_zero() {

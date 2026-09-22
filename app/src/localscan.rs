@@ -5,7 +5,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 const ESI: &str = "https://esi.evetech.net/latest";
-const WORKERS: usize = 3;
+/// Parallel zKillboard stats calls. One call can stall for a minute on zKillboard's side, so more
+/// workers keep one slow pilot from holding up the rest.
+const WORKERS: usize = 5;
+/// Parallel ESI corp and alliance lookups, kept apart so tickers never wait behind stats.
+const ORG_WORKERS: usize = 3;
+/// A stats call that has not answered by now is retried later instead of waited for.
+const ZKILL_TIMEOUT_SECS: u64 = 10;
+const ZKILL_TRIES: u32 = 3;
 
 /// zKillboard's attacker-count labels. Each kill carries exactly one.
 pub const GROUPS: [(&str, &str); 8] = [
@@ -29,23 +36,6 @@ pub const SPACE: [(&str, &str); 6] = [
 pub const ISK: [(&str, &str); 4] =
     [("isk:under1b", "under 1b"), ("isk:1b+", "1b-5b"), ("isk:5b+", "5b-10b"), ("isk:10b+", "10b+")];
 
-const BLOPS: &[i64] = &[898];
-const LOGI: &[i64] = &[832, 1527, 1538];
-const CAPITAL: &[i64] = &[30, 485, 547, 659, 883, 1538, 4594];
-const COVERT_CYNO: &[i64] = &[830, 833];
-/// Cheap hulls a cyno alt lights in and loses.
-const CYNO: &[i64] = &[25, 28];
-/// FC hulls by type, since zKillboard's all-time ship list carries no group: the command ships,
-/// the Monitor, and the HACs an FC takes when the fleet flies smaller ships (Vagabond, Muninn,
-/// Deimos).
-const FC_TYPES: &[i64] = &[22442, 22444, 22446, 22448, 22466, 22468, 22470, 22474, 45534, 11999, 12015, 12023];
-/// Kills and losses in fleets of 25 or more before an FC-hull pattern counts. A line member in a
-/// Muninn fleet flies the same hull as the FC; the pattern only means something from someone who
-/// is in large fleets a lot.
-const LARGE_FLEET_MIN: u32 = 10;
-/// Appearances in a group before it counts as something the pilot does.
-const TAG_MIN: u32 = 2;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bar {
     pub kills: u32,
@@ -60,13 +50,23 @@ pub struct Ship {
     pub losses: u32,
 }
 
+/// zKillboard's character labels, as its profile page shows them. zKillboard works these out from
+/// full killmails over their own windows (90 days or a year); the app only reads them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tag {
     Blops,
     Logi,
     Capital,
+    Super,
+    Titan,
     Cyno,
     Fc,
+    Bait,
+    Awox,
+    AllianceAwox,
+    FactionAwox,
+    Ganker,
+    Rookie,
 }
 
 impl Tag {
@@ -75,10 +75,79 @@ impl Tag {
             Tag::Blops => "BLOPS",
             Tag::Logi => "LOGI",
             Tag::Capital => "CAPITAL",
+            Tag::Super => "SUPER",
+            Tag::Titan => "TITAN",
             Tag::Cyno => "CYNO",
             Tag::Fc => "FC",
+            Tag::Bait => "BAIT",
+            Tag::Awox => "AWOX",
+            Tag::AllianceAwox => "ALLIANCE AWOX",
+            Tag::FactionAwox => "FACTION AWOX",
+            Tag::Ganker => "GANKER",
+            Tag::Rookie => "ROOKIE",
         }
     }
+
+    /// Display order, most telling first: when a row has more labels than fit, the tail is
+    /// what gets folded into "+N".
+    pub fn rank(self) -> u8 {
+        match self {
+            Tag::Fc => 0,
+            Tag::Cyno => 1,
+            Tag::Bait => 2,
+            Tag::FactionAwox => 3,
+            Tag::AllianceAwox => 4,
+            Tag::Awox => 5,
+            Tag::Ganker => 6,
+            Tag::Titan => 7,
+            Tag::Super => 8,
+            Tag::Capital => 9,
+            Tag::Blops => 10,
+            Tag::Logi => 11,
+            Tag::Rookie => 12,
+        }
+    }
+
+    /// What zKillboard counted for the label.
+    pub fn explain(self) -> &'static str {
+        match self {
+            Tag::Blops => "Combat appearances in a Black Ops battleship, past 90 days",
+            Tag::Logi => "Combat appearances in a logistics cruiser or frigate, past 90 days",
+            Tag::Capital => "Combat appearances in a carrier, dreadnought, force auxiliary, supercarrier or titan, past 90 days",
+            Tag::Super => "Combat appearances in a supercarrier, past 90 days",
+            Tag::Titan => "Combat appearances in a titan, past 90 days",
+            Tag::Cyno => "Ships lost with a cynosural field fitted, past year",
+            Tag::Fc => "Fleet-command signal from Monitor, command ship and large-fleet appearances, past year",
+            Tag::Bait => "Cheap losses followed within five minutes by a fight of three or more nearby, past year",
+            Tag::Awox => "Final blows on their own corporation, past year",
+            Tag::AllianceAwox => "Final blows on their own alliance, past year",
+            Tag::FactionAwox => "Final blows on their own faction, past year",
+            Tag::Ganker => "High-sec gank killmails as an attacker, past year",
+            Tag::Rookie => "Under 180 days old, more losses than kills in the past 90 days",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cyno {
+    pub standard: u32,
+    pub covert: u32,
+    pub industrial: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fc {
+    pub level: String,
+    pub score: u32,
+    pub monitor: u32,
+    pub command: u32,
+    pub large_fleet: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Bait {
+    pub level: String,
+    pub count: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -103,15 +172,16 @@ pub struct Summary {
     pub isk: [Bar; 4],
     pub ships: Vec<Ship>,
     pub affiliates: Vec<(i64, u32)>,
-    pub associates: u32,
-    pub awox: Bar,
-    pub gank: Bar,
-    pub covert_cyno: u32,
-    pub cyno: u32,
-    pub fc: u32,
-    /// Kills and losses in fleets of 25 or more.
-    pub large_fleet: u32,
-    pub tags: Vec<Tag>,
+    /// zKillboard's affiliate list stops at 25 alliances; `true` when it was full.
+    pub affiliates_capped: bool,
+    pub cyno: Option<Cyno>,
+    pub fc: Option<Fc>,
+    pub bait: Option<Bait>,
+    /// Final blows on their own corporation, alliance and faction.
+    pub awox: [u32; 3],
+    pub ganker: u32,
+    /// Labels with the count zKillboard shows beside them, 0 for none.
+    pub tags: Vec<(Tag, u32)>,
 }
 
 fn int(v: &serde_json::Value, key: &str) -> i64 {
@@ -152,73 +222,67 @@ pub fn parse_stats(id: i64, name: &str, v: &serde_json::Value) -> Summary {
     let info = v.get("info").unwrap_or(&empty);
     let ts = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp());
     let mut recent = ships(v.get("recentShips"));
-    let top = ships(v.get("topShips"));
-    // Recent first; the all-time list fills in for a pilot who has been quiet this week.
-    let mut flown = recent.clone();
-    for s in &top {
-        if !flown.iter().any(|f| f.type_id == s.type_id) {
-            flown.push(s.clone());
+    if recent.is_empty() {
+        recent = ships(v.get("topShips"));
+    }
+    let empty_obj = serde_json::Value::Null;
+    let obj = |k: &str| v.get(k).filter(|x| x.is_object());
+    let cyno = obj("cyno").map(|c| Cyno {
+        standard: int(c, "standard") as u32,
+        covert: int(c, "covert") as u32,
+        industrial: int(c, "industrial") as u32,
+    });
+    let fc = obj("fc").map(|f| Fc {
+        level: f.get("level").and_then(|l| l.as_str()).unwrap_or_default().to_owned(),
+        score: int(f, "score") as u32,
+        monitor: int(f, "monitorAppearances") as u32,
+        command: int(f, "commandShipAppearances") as u32,
+        large_fleet: int(f, "largeFleetAppearances") as u32,
+    });
+    let bait = obj("bait").map(|b| Bait {
+        level: b.get("level").and_then(|l| l.as_str()).unwrap_or_default().to_owned(),
+        count: int(b, "count") as u32,
+    });
+    let awox = [int(v, "awoxCount") as u32, int(v, "allianceAwoxCount") as u32, int(v, "factionAwoxCount") as u32];
+    let ganker = int(v, "gankerCount") as u32;
+    // zKillboard's own rules, so the badges read as they do on its profile page.
+    let activity = v.get("activityTags").unwrap_or(&empty_obj);
+    let mut tags: Vec<(Tag, u32)> = [
+        ("blops", Tag::Blops),
+        ("logi", Tag::Logi),
+        ("capital", Tag::Capital),
+        ("super", Tag::Super),
+        ("titan", Tag::Titan),
+    ]
+    .into_iter()
+    .map(|(k, t)| (t, int(activity, k) as u32))
+    .filter(|(_, n)| *n > 0)
+    .collect();
+    if let Some(c) = &cyno {
+        tags.push((Tag::Cyno, c.standard + c.covert + c.industrial));
+    }
+    if fc.is_some() {
+        tags.push((Tag::Fc, 0));
+    }
+    if let Some(b) = &bait {
+        tags.push((Tag::Bait, b.count));
+    }
+    for (i, (tag, min)) in [(Tag::Awox, 10), (Tag::AllianceAwox, 15), (Tag::FactionAwox, 20)].into_iter().enumerate() {
+        if awox[i] >= min {
+            tags.push((tag, awox[i]));
         }
     }
-    if recent.is_empty() {
-        recent = top;
+    if ganker >= 10 {
+        tags.push((Tag::Ganker, ganker));
     }
-    // Losses per ship group, complete where the ship lists stop at nine hulls. zKillboard's
-    // destroyed count per group is the victims' hulls, so only losses say what the pilot flew.
-    let group_losses = |groups: &[i64]| -> u32 {
-        groups
-            .iter()
-            .map(|g| v.get("groups").and_then(|m| m.get(g.to_string())).map_or(0, |e| int(e, "shipsLost") as u32))
-            .sum()
-    };
-    let appear = |groups: &[i64]| -> u32 {
-        let listed: u32 = flown.iter().filter(|s| groups.contains(&s.group_id)).map(|s| s.kills + s.losses).sum();
-        listed.max(group_losses(groups))
-    };
-    let lost_in = |groups: &[i64]| -> u32 {
-        let listed: u32 = flown.iter().filter(|s| groups.contains(&s.group_id)).map(|s| s.losses).sum();
-        listed.max(group_losses(groups))
-    };
-    let covert_cyno = appear(COVERT_CYNO);
-    let cyno = lost_in(CYNO);
-    let groups = GROUPS.map(|(k, _)| bar(labels, k));
-    let large_fleet: u32 = groups[4..].iter().map(|b| b.kills + b.losses).sum();
-    // The recent and top lists stop at nine hulls, so a Monitor flown now and then only shows in
-    // the all-time list, which counts kills alone.
-    let all_time: HashMap<i64, u32> = v
-        .get("topAllTime")
-        .and_then(|t| t.as_array())
-        .and_then(|lists| lists.iter().find(|l| l.get("type").and_then(|t| t.as_str()) == Some("ship")))
-        .and_then(|l| l.get("data")?.as_array())
-        .map(|a| a.iter().filter_map(|x| Some((x.get("shipTypeID")?.as_i64()?, int(x, "kills") as u32))).collect())
-        .unwrap_or_default();
-    let fc = if large_fleet >= LARGE_FLEET_MIN {
-        FC_TYPES
-            .iter()
-            .map(|t| {
-                let listed = flown.iter().filter(|s| s.type_id == *t).map(|s| s.kills + s.losses).sum::<u32>();
-                listed.max(all_time.get(t).copied().unwrap_or(0))
-            })
-            .sum()
-    } else {
-        0
-    };
-    let mut tags = Vec::new();
-    if appear(LOGI) >= TAG_MIN {
-        tags.push(Tag::Logi);
+    let birthday = info.get("birthday").and_then(|b| b.as_str()).and_then(ts);
+    let recent_metrics = v.pointer("/rankings/recent/all/metrics").unwrap_or(&empty_obj);
+    let young = birthday.is_some_and(|b| chrono::Utc::now().timestamp() - b < 180 * 86_400);
+    let big_label = tags.iter().any(|(t, _)| matches!(t, Tag::Capital | Tag::Super | Tag::Titan | Tag::Cyno | Tag::Bait));
+    if young && int(recent_metrics, "shipsLost") > int(recent_metrics, "shipsDestroyed") && !big_label {
+        tags.push((Tag::Rookie, 0));
     }
-    if appear(BLOPS) >= TAG_MIN {
-        tags.push(Tag::Blops);
-    }
-    if appear(CAPITAL) >= TAG_MIN {
-        tags.push(Tag::Capital);
-    }
-    if covert_cyno >= TAG_MIN || cyno >= TAG_MIN {
-        tags.push(Tag::Cyno);
-    }
-    if fc >= TAG_MIN {
-        tags.push(Tag::Fc);
-    }
+    tags.sort_by_key(|(t, _)| t.rank());
     let affiliates = v
         .get("affiliates")
         .and_then(|a| a.as_array())
@@ -233,7 +297,7 @@ pub fn parse_stats(id: i64, name: &str, v: &serde_json::Value) -> Summary {
     Summary {
         id,
         name: info.get("name").and_then(|n| n.as_str()).unwrap_or(name).to_owned(),
-        birthday: info.get("birthday").and_then(|b| b.as_str()).and_then(ts),
+        birthday,
         security: secs,
         corp_id: int(info, "corporationID").max(int(info, "corporation_id")),
         alliance_id: int(info, "allianceID").max(int(info, "alliance_id")),
@@ -246,18 +310,17 @@ pub fn parse_stats(id: i64, name: &str, v: &serde_json::Value) -> Summary {
         losses: int(v, "shipsLost") as u32,
         isk_destroyed: float(v, "iskDestroyed"),
         isk_lost: float(v, "iskLost"),
-        groups,
+        groups: GROUPS.map(|(k, _)| bar(labels, k)),
         space: SPACE.map(|(k, _)| bar(labels, k)),
         isk: ISK.map(|(k, _)| bar(labels, k)),
         ships: recent,
         affiliates,
-        associates: v.get("associates").and_then(|a| a.as_array()).map_or(0, |a| a.len() as u32),
-        awox: bar(labels, "awox"),
-        gank: bar(labels, "ganked"),
-        covert_cyno,
+        affiliates_capped: v.get("affiliates").and_then(|a| a.as_array()).is_some_and(|a| a.len() >= 25),
         cyno,
         fc,
-        large_fleet,
+        bait,
+        awox,
+        ganker,
         tags,
     }
 }
@@ -288,11 +351,20 @@ pub struct Org {
 pub struct Table {
     pub rows: HashMap<String, Row>,
     pub orgs: HashMap<i64, Org>,
-    queue: VecDeque<(String, i64)>,
+    queue: VecDeque<Job>,
+    stat_workers: usize,
+    org_queue: VecDeque<(i64, bool)>,
+    org_workers: usize,
     orgs_wanted: HashSet<i64>,
 }
 
 pub type SharedTable = Arc<Mutex<Table>>;
+
+struct Job {
+    name: String,
+    id: i64,
+    tries: u32,
+}
 
 /// Names of a pasted local member list: the first column of each line that could be a character.
 pub fn names_of(text: &str) -> Vec<String> {
@@ -341,7 +413,7 @@ pub fn request(table: &SharedTable, names: &[String], ctx: &egui::Context) {
 }
 
 fn resolve_and_fetch(table: SharedTable, names: Vec<String>, ctx: egui::Context) {
-    let Ok(client) = crate::http::client(20) else {
+    let Ok(client) = crate::http::client(ZKILL_TIMEOUT_SECS) else {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         for n in &names {
             t.rows.insert(n.to_lowercase(), Row::Failed("no HTTP client".into()));
@@ -356,14 +428,13 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, ctx: egui::Context)
             None => failed = true,
         }
     }
-    let start_workers = {
+    let spawn = {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
-        let idle = t.queue.is_empty();
         // Newest paste first: its pilots go ahead of anything still queued from an older one.
         for n in names.iter().rev() {
             let lc = n.to_lowercase();
             match ids.get(&lc) {
-                Some((id, canonical)) => t.queue.push_front((canonical.clone(), *id)),
+                Some((id, canonical)) => t.queue.push_front(Job { name: canonical.clone(), id: *id, tries: 0 }),
                 None if failed => {
                     t.rows.insert(lc, Row::Failed("name lookup failed".into()));
                 }
@@ -372,69 +443,90 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, ctx: egui::Context)
                 }
             }
         }
-        idle
+        let spawn = WORKERS.saturating_sub(t.stat_workers).min(t.queue.len());
+        t.stat_workers += spawn;
+        spawn
     };
     ctx.request_repaint();
-    if start_workers {
-        for _ in 0..WORKERS {
-            let (table, ctx, client) = (table.clone(), ctx.clone(), client.clone());
-            std::thread::spawn(move || worker(table, client, ctx));
-        }
+    for _ in 0..spawn {
+        let (table, ctx, client) = (table.clone(), ctx.clone(), client.clone());
+        std::thread::spawn(move || worker(table, client, ctx));
     }
 }
 
 fn worker(table: SharedTable, client: reqwest::blocking::Client, ctx: egui::Context) {
     loop {
-        let job = table.lock().unwrap_or_else(|e| e.into_inner()).queue.pop_front();
-        let Some((name, id)) = job else { break };
-        let row = match fetch_summary(&client, id, &name) {
-            Ok(s) => Row::Done(Box::new(s)),
-            Err(e) => Row::Failed(e),
-        };
-        let orgs: Vec<(i64, bool)> = match &row {
-            Row::Done(s) => {
-                let mut v = vec![(s.corp_id, false), (s.alliance_id, true)];
-                v.extend(s.affiliates.iter().take(6).map(|(a, _)| (*a, true)));
-                v
-            }
-            _ => Vec::new(),
-        };
-        let wanted: Vec<(i64, bool)> = {
+        let job = {
             let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
-            t.rows.insert(name.to_lowercase(), row);
-            orgs.into_iter().filter(|(id, _)| *id > 0 && t.orgs_wanted.insert(*id)).collect()
-        };
-        ctx.request_repaint();
-        for (org, alliance) in wanted {
-            if let Some(o) = fetch_org(&client, org, alliance) {
-                table.lock().unwrap_or_else(|e| e.into_inner()).orgs.insert(org, o);
-                ctx.request_repaint();
+            let job = t.queue.pop_front();
+            if job.is_none() {
+                t.stat_workers -= 1;
             }
+            job
+        };
+        let Some(mut job) = job else { break };
+        let result = fetch_summary(&client, job.id, &job.name);
+        let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(s) => {
+                let orgs = [(s.corp_id, false), (s.alliance_id, true)]
+                    .into_iter()
+                    .chain(s.affiliates.iter().take(6).map(|(a, _)| (*a, true)));
+                let wanted: Vec<(i64, bool)> =
+                    orgs.filter(|(id, _)| *id > 0 && t.orgs_wanted.insert(*id)).collect();
+                t.org_queue.extend(wanted);
+                t.rows.insert(job.name.to_lowercase(), Row::Done(Box::new(s)));
+            }
+            // To the back: whatever made zKillboard slow for this one should not stall the rest.
+            Err(_) if job.tries + 1 < ZKILL_TRIES => {
+                job.tries += 1;
+                t.queue.push_back(job);
+            }
+            Err(e) => {
+                t.rows.insert(job.name.to_lowercase(), Row::Failed(e));
+            }
+        }
+        let spawn_orgs = ORG_WORKERS.saturating_sub(t.org_workers).min(t.org_queue.len());
+        t.org_workers += spawn_orgs;
+        drop(t);
+        for _ in 0..spawn_orgs {
+            let (table, ctx, client) = (table.clone(), ctx.clone(), client.clone());
+            std::thread::spawn(move || org_worker(table, client, ctx));
+        }
+        ctx.request_repaint();
+    }
+}
+
+fn org_worker(table: SharedTable, client: reqwest::blocking::Client, ctx: egui::Context) {
+    loop {
+        let next = {
+            let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
+            let next = t.org_queue.pop_front();
+            if next.is_none() {
+                t.org_workers -= 1;
+            }
+            next
+        };
+        let Some((org, alliance)) = next else { break };
+        if let Some(o) = fetch_org(&client, org, alliance) {
+            table.lock().unwrap_or_else(|e| e.into_inner()).orgs.insert(org, o);
+            ctx.request_repaint();
         }
     }
 }
 
 fn fetch_summary(client: &reqwest::blocking::Client, id: i64, name: &str) -> Result<Summary, String> {
     let url = format!("https://zkillboard.com/api/stats/characterID/{id}/");
-    let mut last = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1500 * attempt));
-        }
-        match client.get(&url).send() {
-            Ok(r) if r.status().is_success() => {
-                let v: serde_json::Value = r.json().map_err(|e| format!("zKillboard: {e}"))?;
-                let mut s = parse_stats(id, name, &v);
-                if s.birthday.is_none() || s.corp_id == 0 {
-                    fill_from_esi(client, &mut s);
-                }
-                return Ok(s);
-            }
-            Ok(r) => last = format!("zKillboard {}", r.status()),
-            Err(e) => last = format!("zKillboard: {e}"),
-        }
+    let r = client.get(&url).send().map_err(|e| format!("zKillboard: {e}"))?;
+    if !r.status().is_success() {
+        return Err(format!("zKillboard {}", r.status()));
     }
-    Err(last)
+    let v: serde_json::Value = r.json().map_err(|e| format!("zKillboard: {e}"))?;
+    let mut s = parse_stats(id, name, &v);
+    if s.birthday.is_none() || s.corp_id == 0 {
+        fill_from_esi(client, &mut s);
+    }
+    Ok(s)
 }
 
 /// zKillboard knows nothing of a pilot it has never seen on a killmail, so ESI fills the sheet in.
@@ -575,10 +667,12 @@ pub(crate) fn sample_stats() -> serde_json::Value {
             "#:10+": {"shipsDestroyed": 200, "shipsLost": 20},
             "loc:nullsec": {"shipsDestroyed": 350, "shipsLost": 40},
             "loc:w-space": {"shipsDestroyed": 10},
-            "isk:under1b": {"shipsDestroyed": 300, "shipsLost": 45},
-            "awox": {"shipsDestroyed": 2, "shipsLost": 1},
-            "ganked": {"shipsDestroyed": 5}
+            "isk:under1b": {"shipsDestroyed": 300, "shipsLost": 45}
         },
+        "activityTags": {"blops": 3, "logi": 12, "capital": 0},
+        "cyno": {"count": 2, "standard": 1, "covert": 1, "industrial": 0},
+        "fc": {"level": "medium", "score": 72, "monitorAppearances": 3, "commandShipAppearances": 2, "largeFleetAppearances": 40},
+        "awoxCount": 11, "allianceAwoxCount": 4, "factionAwoxCount": 0, "gankerCount": 5,
         "recentShips": [
             {"shipTypeID": 22430, "groupID": 898, "kills": 12, "losses": 1},
             {"shipTypeID": 11978, "groupID": 832, "kills": 3, "losses": 0}
@@ -609,55 +703,35 @@ mod tests {
         assert_eq!(s.space[2].kills, 350);
         assert_eq!(s.space[3], Bar { kills: 10, losses: 0 });
         assert_eq!(s.isk[0].kills, 300);
-        assert_eq!(s.awox, Bar { kills: 2, losses: 1 });
-        assert_eq!(s.gank.kills, 5);
         assert_eq!(s.affiliates, vec![(99000002, 40)], "an unaffiliated share is not an alliance");
-        assert_eq!(s.associates, 3);
+        assert!(!s.affiliates_capped);
         assert_eq!(s.ships.len(), 2, "recent ships, not the all-time list");
-        assert_eq!(s.covert_cyno, 42, "force recon appearances from the all-time list");
-        assert_eq!(s.cyno, 4, "T1 frigate losses");
-        assert!(s.tags.contains(&Tag::Blops) && s.tags.contains(&Tag::Logi) && s.tags.contains(&Tag::Cyno));
-        assert!(!s.tags.contains(&Tag::Capital));
-        assert_eq!((s.large_fleet, s.fc), (0, 0), "no large fleets, so no FC signal");
     }
 
     #[test]
-    fn a_role_outside_the_top_nine_hulls_still_tags() {
-        let mut v = sample_stats();
-        v["groups"] = serde_json::json!({"30": {"groupID": 30, "shipsLost": 2, "shipsDestroyed": 90}});
-        let s = parse_stats(7, "x", &v);
-        assert!(s.tags.contains(&Tag::Capital), "two titans lost count as flying capitals");
-        v["groups"] = serde_json::json!({"30": {"groupID": 30, "shipsDestroyed": 90}});
-        assert!(!parse_stats(7, "x", &v).tags.contains(&Tag::Capital), "killing titans is not flying them");
+    fn zkillboards_labels_are_read_as_given() {
+        let s = parse_stats(7, "x", &sample_stats());
+        assert_eq!(s.cyno, Some(Cyno { standard: 1, covert: 1, industrial: 0 }));
+        let fc = s.fc.clone().expect("fc label");
+        assert_eq!((fc.level.as_str(), fc.score, fc.monitor, fc.command, fc.large_fleet), ("medium", 72, 3, 2, 40));
+        assert_eq!((s.awox, s.ganker), ([11, 4, 0], 5));
+        assert_eq!(
+            s.tags,
+            vec![(Tag::Fc, 0), (Tag::Cyno, 2), (Tag::Awox, 11), (Tag::Blops, 3), (Tag::Logi, 12)],
+            "zero counts drop out; awox and ganker only past zKillboard's thresholds"
+        );
     }
 
     #[test]
-    fn fc_hulls_count_only_for_someone_in_large_fleets() {
-        let mut v = sample_stats();
-        v["topShips"].as_array_mut().unwrap().extend([
-            serde_json::json!({"shipTypeID": 45534, "groupID": 1972, "kills": 6, "losses": 0}),
-            serde_json::json!({"shipTypeID": 12015, "groupID": 358, "kills": 4, "losses": 1}),
-            serde_json::json!({"shipTypeID": 12023, "groupID": 358, "kills": 2, "losses": 0}),
-            serde_json::json!({"shipTypeID": 12011, "groupID": 358, "kills": 50, "losses": 0}),
-        ]);
-        assert_eq!(parse_stats(7, "x", &v).fc, 0, "small-gang pilot");
-        v["labels"]["#:50+"] = serde_json::json!({"shipsDestroyed": 30, "shipsLost": 2});
-        let s = parse_stats(7, "x", &v);
-        assert_eq!(s.large_fleet, 32);
-        assert_eq!(s.fc, 13, "Monitor 6 + Muninn 5 + Deimos 2; other HACs do not count");
-        assert!(s.tags.contains(&Tag::Fc));
-    }
-
-    #[test]
-    fn an_fc_hull_only_in_the_all_time_list_still_counts() {
-        let mut v = sample_stats();
-        v["labels"]["#:100+"] = serde_json::json!({"shipsDestroyed": 300});
-        v["topAllTime"] = serde_json::json!([
-            {"type": "character", "data": [{"kills": 400, "characterID": 7}]},
-            {"type": "ship", "data": [{"shipTypeID": 45534, "kills": 16}, {"shipTypeID": 11999, "kills": 15}, {"shipTypeID": 638, "kills": 300}]}
-        ]);
-        let s = parse_stats(7, "x", &v);
-        assert_eq!(s.fc, 31, "Monitor 16 + Vagabond 15 from the all-time list");
+    fn a_young_losing_pilot_is_a_rookie_unless_a_big_label_applies() {
+        let born = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let mut v = serde_json::json!({
+            "info": {"birthday": born},
+            "rankings": {"recent": {"all": {"metrics": {"shipsDestroyed": 1, "shipsLost": 4}}}}
+        });
+        assert_eq!(parse_stats(7, "x", &v).tags, vec![(Tag::Rookie, 0)]);
+        v["cyno"] = serde_json::json!({"count": 1, "standard": 1});
+        assert!(!parse_stats(7, "x", &v).tags.iter().any(|(t, _)| *t == Tag::Rookie));
     }
 
     #[test]

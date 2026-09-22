@@ -222,7 +222,7 @@ pub struct JabberState {
     /// channel list; a clean connection drop fires no RoomLeft, so a full outage never lands here.
     pub rooms_inaccessible: std::collections::BTreeSet<String>,
     /// Rooms the user deliberately left. Nothing here is ever auto-joined or resurrected by a
-    /// straggling room message; only a real `RoomJoined` (a server force-join) clears an entry.
+    /// straggling room message or a bookmark rejoin; only the app asking to join clears an entry.
     pub rooms_left: std::collections::BTreeSet<String>,
     /// Room MOTD (MUC subject) keyed by room bare JID, last-known value.
     pub room_subjects: std::collections::BTreeMap<String, String>,
@@ -369,8 +369,8 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
     ctx.request_repaint();
 }
 
-/// Self-presence from the MUC proves we are in the room, so a server force-join, bookmark join or
-/// invite overrides an earlier deliberate leave.
+/// Self-presence from the MUC proves we are in the room. A room the user left only gets here when
+/// the app asked to join it again (a hand join or an invite).
 pub(crate) fn note_room_joined(state: &SharedJabber, room: &str) {
     let mut s = state.lock().unwrap();
     s.rooms_inaccessible.remove(room);
@@ -747,6 +747,8 @@ async fn session(
                     online_once = true;
                     for r in joined {
                         if let Ok(room) = r.parse::<BareJid>() {
+                            // Asked for by the app, so its RoomJoined is not a bookmark rejoin.
+                            state.lock().unwrap().rooms_left.remove(r.as_str());
                             agent.join_room(JoinRoomSettings::new(room)).await;
                         }
                     }
@@ -981,8 +983,17 @@ fn handle_event(
             }
         }
         Event::RoomJoined(room) => {
-            eprintln!("[jabber] room joined: {room}");
-            note_room_joined(state, &room.to_string());
+            let room = room.to_string();
+            // xmpp-rs rejoins every room bookmarked on the account at connect (the XEP-0048 store
+            // even ignores `autojoin`), and another client or the server may have bookmarked it.
+            // A room the user left that we did not ask to join again is one of those: leave it.
+            if state.lock().unwrap().rooms_left.contains(&room) {
+                eprintln!("[jabber] bookmark rejoined {room} after a leave, leaving again");
+                let _ = cmds.send(Cmd::LeaveRoom { room });
+            } else {
+                eprintln!("[jabber] room joined: {room}");
+                note_room_joined(state, &room);
+            }
         }
         Event::RoomLeft(room) => {
             eprintln!("[jabber] room left: {room}");
@@ -1045,6 +1056,43 @@ fn handle_event(
 #[cfg(test)]
 mod tests {
     use super::{invited_room, jid_format_error, mention_hit};
+
+    fn joined(state: &super::SharedJabber, room: &str) -> Vec<super::Cmd> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let ping: crate::app::SharedPingWindow = Default::default();
+        let mut online = false;
+        let jid: xmpp::jid::BareJid = room.parse().unwrap();
+        let resolve = |_: &str| None;
+        super::handle_event(
+            xmpp::Event::RoomJoined(jid),
+            state,
+            &resolve,
+            &ping,
+            &tx,
+            &egui::Context::default(),
+            None,
+            "me",
+            &mut online,
+        );
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn a_bookmark_rejoin_does_not_undo_a_leave() {
+        const LEFT: &str = "delve911@conference.example.org";
+        const OTHER: &str = "ops@conference.example.org";
+        let state: super::SharedJabber = Default::default();
+        state.lock().unwrap().rooms_left.insert(LEFT.to_owned());
+
+        let cmds = joined(&state, LEFT);
+        assert!(matches!(&cmds[..], [super::Cmd::LeaveRoom { room }] if room == LEFT), "not left again");
+        let st = state.lock().unwrap();
+        assert!(!st.rooms.contains(LEFT) && st.rooms_left.contains(LEFT));
+        drop(st);
+
+        assert!(joined(&state, OTHER).is_empty());
+        assert!(state.lock().unwrap().rooms.contains(OTHER), "an ordinary join must still land");
+    }
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
