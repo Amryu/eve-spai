@@ -766,6 +766,8 @@ fn route_panel_scene_full(name: &'static str, detail: bool, fork: bool) -> Scene
     Scene::ui(name, [380.0, 620.0], move |ui| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.jump_bridges =
+                vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }];
             a.seed_map_route(30_004_759, 30_003_704);
             if detail {
                 a.seed_route_detail();
@@ -1584,6 +1586,41 @@ pub(crate) fn all() -> Vec<Scene> {
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
     v.push(map_layers_scene("map_layers", [320.0, 800.0]));
+    // One bridge per zone pair, drawn with the map's own helpers: both ways, one-way with its
+    // arrow clear of the dot, excluded, and a crawling route hop.
+    v.push(Scene::ui("map_bridge_zone_colors", [420.0, 300.0], |ui| {
+        use crate::ansiblex::zone_color;
+        let painter = ui.painter();
+        let o = ui.min_rect().min;
+        let dot = 4.0;
+        let rows: [(u8, u8, u8); 4] = [(1, 2, 0), (1, 5, 1), (2, 4, 3), (1, 3, 2)];
+        for (i, &(za, zb, style)) in rows.iter().enumerate() {
+            let y = o.y + 50.0 + i as f32 * 65.0;
+            let (a, b) = (egui::pos2(o.x + 40.0, y), egui::pos2(o.x + 380.0, y));
+            let arc = crate::app::arc_polyline(a, b, crate::app::BRIDGE_BOW);
+            let (ca, cb) = (zone_color(za), zone_color(zb));
+            match style {
+                0 => crate::app::gradient_polyline(painter, &arc, ca, cb, 1.8),
+                1 => {
+                    crate::app::gradient_polyline(painter, &arc, ca, cb, 1.8);
+                    crate::app::bridge_arrowhead(painter, &arc, cb, dot + 5.0);
+                }
+                2 => crate::app::polyline_flow_gradient(painter, &arc, ca, cb, 5.0),
+                _ => crate::app::polyline_flow_gradient(
+                    painter,
+                    &arc,
+                    ca.gamma_multiply(0.5),
+                    cb.gamma_multiply(0.5),
+                    0.0,
+                ),
+            }
+            for p in [a, b] {
+                painter.circle_filled(p, dot + 4.0, egui::Color32::from_rgb(0x5A, 0xC8, 0x6A).gamma_multiply(0.55));
+                painter.circle_filled(p, dot, egui::Color32::LIGHT_GRAY);
+            }
+        }
+        ui.allocate_space(ui.available_size());
+    }));
     // 520x480 is what `jabber_popout_windows` opens a new window at.
     v.push(jabber_popout_scene("jabber_popout", [520.0, 480.0], fixtures::JABBER_ROOM, ""));
     v.push(jabber_popout_scene(
@@ -6316,4 +6353,27 @@ fn uitest_a_name_search_waits_for_the_typing_to_pause() {
     std::thread::sleep(std::time::Duration::from_millis(400));
     a.fleet_search_poll();
     assert!(a.fleet_search_pending_for_test().is_none(), "never sent once the typing paused");
+}
+
+/// Jump range and Ansiblex zones both tint the system dots, so turning one on turns the other off.
+#[test]
+fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
+    use egui::accesskit::Toggled;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = all().into_iter().find(|s| s.name == "map_layers").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    let on = |h: &egui_kittest::Harness<'_>, label: &str| {
+        h.get_by_label_contains(label).accesskit_node().toggled() == Some(Toggled::True)
+    };
+    assert!(on(&harness, "Jump range (hover)"), "jump range starts on");
+    harness.get_by_label_contains("Ansiblex zones").click();
+    harness.run();
+    harness.run();
+    assert!(on(&harness, "Ansiblex zones"));
+    assert!(!on(&harness, "Jump range (hover)"), "zones must switch jump range off");
+    harness.get_by_label_contains("Jump range (hover)").click();
+    harness.run();
+    harness.run();
+    assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");
 }

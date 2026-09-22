@@ -18,6 +18,56 @@ impl SpaiApp {
         ctx.request_repaint();
     }
 
+    /// The colours at each end of a bridge from `a` to `b`: the zone a jump landing there is priced
+    /// at, or `fallback` where the zone is unknown.
+    fn bridge_colors(&self, a: i64, b: i64, fallback: egui::Color32) -> (egui::Color32, egui::Color32) {
+        let Some(g) = &self.systems else { return (fallback, fallback) };
+        let col = |sys| {
+            crate::ansiblex::zone_at(g, &self.settings.ansiblex_capital, sys).map_or(fallback, crate::ansiblex::zone_color)
+        };
+        (col(a), col(b))
+    }
+
+    /// Zone bands around the Ansiblex capital: rings at each 5 LY edge and every system dot tinted
+    /// by the zone a bridge landing there would be priced at.
+    fn draw_ansiblex_zones(
+        &self,
+        painter: &egui::Painter,
+        pos: &std::collections::HashMap<i64, egui::Pos2>,
+        bounds: &crate::map::Bounds,
+        rect: egui::Rect,
+        dot: f32,
+        schematic: bool,
+    ) {
+        let Some(cap) = self.systems.as_ref().and_then(|g| g.lookup(self.settings.ansiblex_capital.trim())) else {
+            return;
+        };
+        let Some(real_cap) = self.map_systems.iter().find(|s| s.id == cap.id) else { return };
+        let zone_color: [egui::Color32; 5] = std::array::from_fn(|i| crate::ansiblex::zone_color(i as u8 + 1));
+        for (i, s) in self.map_draw.iter().enumerate() {
+            let Some(p) = pos.get(&s.id) else { continue };
+            let zone = crate::ansiblex::zone_for_ly(crate::map::ly_distance(real_cap, &self.map_systems[i]));
+            let col = zone_color[(zone as usize).clamp(1, zone_color.len()) - 1];
+            painter.circle_filled(*p, dot + 4.0, col.gamma_multiply(0.55));
+        }
+        if schematic {
+            return;
+        }
+        let Some(cp) = pos.get(&cap.id) else { return };
+        for (i, col) in zone_color.iter().enumerate().take(4) {
+            let ly = 5.0 * (i + 1) as f64;
+            let r = crate::map::ly_to_pixels(ly, bounds, rect, self.map_zoom);
+            painter.circle_stroke(*cp, r, egui::Stroke::new(1.5, col.gamma_multiply(0.85)));
+            painter.text(
+                *cp + egui::vec2(0.0, -r),
+                egui::Align2::CENTER_BOTTOM,
+                format!("Zone {} {ly:.0} ly", i + 1),
+                egui::FontId::proportional(12.0),
+                *col,
+            );
+        }
+    }
+
     pub(crate) fn map_view(&mut self, ui: &mut egui::Ui) {
         let status = self.sde_status.lock().unwrap().clone();
         match status {
@@ -691,11 +741,12 @@ impl SpaiApp {
                                     ));
                                 } else if other_constel {
                                     // Dotted: a short dash with a wide gap reads as dots without
-                                    // needing a separate shape.
+                                    // needing a separate shape. 1 px dots shimmered out of sight as
+                                    // their sub-pixel position moved with pan and zoom.
                                     painter.extend(egui::Shape::dashed_line(
                                         &[p1, *p2],
-                                        stroke,
-                                        1.0,
+                                        egui::Stroke::new(1.3, line_col),
+                                        2.0,
                                         3.0,
                                     ));
                                 } else {
@@ -751,21 +802,17 @@ impl SpaiApp {
                     continue;
                 }
                 let arc = arc_polyline(*p1, *p2, BRIDGE_BOW);
+                let (ca, cc) = self.bridge_colors(a, c, bridge_col);
                 if !up && !down {
-                    painter.extend(egui::Shape::dashed_line(
-                        &arc,
-                        egui::Stroke::new(1.0, bridge_col.gamma_multiply(0.35)),
-                        4.0,
-                        4.0,
-                    ));
+                    polyline_flow_gradient(&painter, &arc, ca.gamma_multiply(0.5), cc.gamma_multiply(0.5), 0.0);
                     continue;
                 }
-                let stroke = egui::Stroke::new(1.5, bridge_col);
+                gradient_polyline(&painter, &arc, ca, cc, 1.8);
                 if up != down {
-                    let tip: Vec<egui::Pos2> = if up { arc.clone() } else { arc.iter().rev().copied().collect() };
-                    bridge_arrowhead(&painter, &tip, stroke);
+                    let (tip, col): (Vec<egui::Pos2>, _) =
+                        if up { (arc, cc) } else { (arc.into_iter().rev().collect(), ca) };
+                    bridge_arrowhead(&painter, &tip, col, dot + 5.0);
                 }
-                painter.add(egui::Shape::line(arc, stroke));
             }
         }
 
@@ -980,10 +1027,12 @@ impl SpaiApp {
                             // A bridge arcs here too: every other layer arcs them, so a straight
                             // line would read as a gate.
                             if leg == Leg::Bridge {
-                                polyline_flow(
+                                let (ca, cb) = self.bridge_colors(prev_id, id, leg.color());
+                                polyline_flow_gradient(
                                     &painter,
                                     &arc_polyline(prev_p, p, BRIDGE_BOW),
-                                    leg.color(),
+                                    ca,
+                                    cb,
                                     phase,
                                 );
                             } else {
@@ -1052,10 +1101,8 @@ impl SpaiApp {
                             // the route colour, so the route overrides it rather than crossing it
                             // with a second line of a different shape.
                             Leg::Bridge => {
-                                painter.add(egui::Shape::line(
-                                    arc_polyline(prev_p, p, BRIDGE_BOW),
-                                    egui::Stroke::new(2.5, Leg::Bridge.color()),
-                                ));
+                                let (ca, cb) = self.bridge_colors(prev_id, id, Leg::Bridge.color());
+                                gradient_polyline(&painter, &arc_polyline(prev_p, p, BRIDGE_BOW), ca, cb, 2.5);
                             }
                             kind => {
                                 painter.extend(egui::Shape::dashed_line(
@@ -1180,10 +1227,14 @@ impl SpaiApp {
                 };
                 match h.kind {
                     2 | 1 => {
-                        let col = if h.kind == 2 { PICK_JUMP } else { PICK_BRIDGE };
+                        let (ca, cb) = if h.kind == 2 {
+                            (PICK_JUMP, PICK_JUMP)
+                        } else {
+                            self.bridge_colors(o.hops[i - 1].id, h.id, PICK_BRIDGE)
+                        };
                         // Dashed and crawling like the gates and like the browser's: an arc drawn
                         // solid while the rest of the route moves reads as a different kind of thing.
-                        polyline_flow(&painter, &arc_polyline(a, b, BRIDGE_BOW), col, phase);
+                        polyline_flow_gradient(&painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
                     }
                     // Crawling dashes, the same as the browser's and the same as this map's own
                     // travel route: a static line is hard to pick out of a map already full of them.
@@ -1273,6 +1324,9 @@ impl SpaiApp {
             .and_then(|p| nearest_system(p, &pos, 8.0));
         // A selected system keeps its hover effects; hovering something else takes over.
         let focus_id = hovered_id.or(self.map_selected);
+        if ov.ansiblex_zones {
+            self.draw_ansiblex_zones(&painter, &pos, &bounds, rect, dot, schematic);
+        }
         if let (true, Some(h_id)) = (ov.jump_range, focus_id) {
             if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
                 let hp = pos[&h_id];
@@ -1894,7 +1948,20 @@ impl SpaiApp {
                 ui.checkbox(&mut self.upgrade_kinds[3], "Other");
             });
         }
-        ui.checkbox(&mut self.map_overlays.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE));
+        let ov = &mut self.map_overlays;
+        if ui.checkbox(&mut ov.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE)).changed()
+            && ov.jump_range
+        {
+            ov.ansiblex_zones = false;
+        }
+        if ui
+            .checkbox(&mut ov.ansiblex_zones, format!("{}  Ansiblex zones", icon::CIRCLES_THREE))
+            .on_hover_text("Distance bands from the alliance capital set in the jump bridge settings")
+            .changed()
+            && ov.ansiblex_zones
+        {
+            ov.jump_range = false;
+        }
         ui.separator();
         ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
         if self.map_overlays.wormholes {

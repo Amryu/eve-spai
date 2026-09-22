@@ -180,7 +180,7 @@ impl SpaiApp {
             self.right_dock_tab = RightDockTab::Route;
         }
         self.ensure_jump_systems();
-        let Some(graph) = self.systems.clone() else { return };
+        let Some(graph) = self.route_graph() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
         // A titan at JDC V. The same figure the rescue planner uses, stated here because that one is
         // behind a feature flag and this is not.
@@ -216,6 +216,24 @@ impl SpaiApp {
         // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
         // legs end.
         crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid, &holes);
+    }
+
+    /// The graph the route planner walks: the shared one, or one re-laid for the route's own
+    /// Ansiblex zone limit.
+    fn route_graph(&mut self) -> Option<std::sync::Arc<crate::geo::Systems>> {
+        let base = self.systems.clone()?;
+        let Some(zone) = self.map_route_zone.filter(|z| *z != self.settings.ansiblex_max_zone) else {
+            return Some(base);
+        };
+        let key = std::sync::Arc::as_ptr(&base) as usize;
+        if let Some((k, z, g)) = &self.map_route_graph {
+            if *k == key && *z == zone {
+                return Some(g.clone());
+            }
+        }
+        let g = std::sync::Arc::new(crate::ansiblex::with_max_zone(&base, &self.settings, zone));
+        self.map_route_graph = Some((key, zone, g.clone()));
+        Some(g)
     }
 
     /// The intel behind a route warning, as its own window.

@@ -99,6 +99,31 @@ impl SpaiApp {
                 replan = true;
             }
         }
+        if self.map_route_kind != "jump" && !self.settings.jump_bridges.is_empty() {
+            let setting = self.settings.ansiblex_max_zone;
+            let current = self.map_route_zone.unwrap_or(setting);
+            ui.horizontal(|ui| {
+                ui.label("Ansiblexes up to");
+                egui::ComboBox::from_id_salt(ui.id().with("route_zone"))
+                    .selected_text(crate::ansiblex::zone_label(current))
+                    .show_ui(ui, |ui| {
+                        for z in 1..=crate::ansiblex::MAX_ZONE {
+                            let mut label = crate::ansiblex::zone_label(z);
+                            if z == setting {
+                                label.push_str(" (setting)");
+                            }
+                            if ui.menu_value(&mut self.map_route_zone, Some(z), label).clicked() {
+                                if z == setting {
+                                    self.map_route_zone = None;
+                                }
+                                replan = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("For this route only. The jump bridge settings keep their own limit.");
+            });
+        }
         if self.map_route_kind != "jump"
             && ui
                 .checkbox(&mut self.settings.route_via_wormholes, "Route via scanned wormholes")

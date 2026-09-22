@@ -103,6 +103,9 @@ struct MapOverlays {
     jove: bool,
     #[serde(default = "overlay_on")]
     notes: bool,
+    /// Ansiblex zones around the capital. Exclusive with `jump_range`: both colour the dots.
+    #[serde(default)]
+    ansiblex_zones: bool,
 }
 
 const MAP_TAG_MARKS: usize = 5;
@@ -182,6 +185,7 @@ impl Default for MapOverlays {
             cyno_gen: false,
             jove: false,
             notes: true,
+            ansiblex_zones: false,
         }
     }
 }
@@ -247,6 +251,7 @@ impl MapMode {
             jove: false,
             // The user's own marks, which no mode has a reason to hide.
             notes: true,
+            ansiblex_zones: false,
         }
     }
 }
@@ -714,6 +719,10 @@ pub struct SpaiApp {
     map_titan_at_start: bool,
     /// Whether the titan may move itself first and have the fleet gate out to meet it.
     map_titan_self_jump: bool,
+    /// This route's Ansiblex zone limit in place of the setting, until the app closes.
+    map_route_zone: Option<u8>,
+    /// The graph for `map_route_zone`, keyed by the base graph it was built from and the zone.
+    map_route_graph: Option<(usize, u8, std::sync::Arc<crate::geo::Systems>)>,
     /// The ways of flying each leg, and which one is picked.
     map_route_legs: Vec<crate::web::route::LegChoice>,
     map_leg_pick: Vec<usize>,
@@ -1564,6 +1573,8 @@ impl SpaiApp {
             map_route_anchors: Vec::new(),
             map_titan_at_start: true,
             map_titan_self_jump: false,
+            map_route_zone: None,
+            map_route_graph: None,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
             map_forks: Default::default(),
@@ -3827,10 +3838,24 @@ fn polyline_flow(
     color: egui::Color32,
     phase: f32,
 ) {
+    polyline_flow_gradient(painter, pts, color, color, phase);
+}
+
+/// [`polyline_flow`] shading from `from` to `to`, for a bridge coloured by the zones at its ends.
+pub(crate) fn polyline_flow_gradient(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    from: egui::Color32,
+    to: egui::Color32,
+    phase: f32,
+) {
+    let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
     let mut walked = 0.0;
     for w in pts.windows(2) {
-        dashed_flow(painter, w[0], w[1], color, phase - walked);
-        walked += (w[1] - w[0]).length();
+        let len = (w[1] - w[0]).length();
+        let t = if total > 0.0 { (walked + len * 0.5) / total } else { 0.0 };
+        dashed_flow(painter, w[0], w[1], lerp_color(from, to, t), phase - walked);
+        walked += len;
     }
 }
 
@@ -6453,16 +6478,46 @@ pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::
         .collect()
 }
 
-/// Marks the only direction a route may take a bridge, at the end of `arc`.
-pub(crate) fn bridge_arrowhead(painter: &egui::Painter, arc: &[egui::Pos2], stroke: egui::Stroke) {
-    let [.., from, tip] = arc else { return };
-    let dir = (*tip - *from).normalized();
-    if !dir.is_finite() {
-        return;
+/// Marks the only direction a route may take a bridge, `inset` back from the end of `arc` so the
+/// destination's dot does not cover it.
+pub(crate) fn bridge_arrowhead(painter: &egui::Painter, arc: &[egui::Pos2], color: egui::Color32, inset: f32) {
+    let mut left = inset;
+    let mut at = None;
+    for w in arc.windows(2).rev() {
+        let (a, b) = (w[0], w[1]);
+        let len = (b - a).length();
+        if len >= left && len > 0.0 {
+            let dir = (b - a) / len;
+            at = Some((b - dir * left, dir));
+            break;
+        }
+        left -= len;
     }
-    let back = *tip - dir * 7.0;
-    let side = egui::vec2(-dir.y, dir.x) * 4.0;
-    painter.add(egui::Shape::convex_polygon(vec![*tip, back + side, back - side], stroke.color, egui::Stroke::NONE));
+    let Some((tip, dir)) = at else { return };
+    let back = tip - dir * 10.0;
+    let side = egui::vec2(-dir.y, dir.x) * 5.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, back + side, back - side],
+        color,
+        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(160)),
+    ));
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()), m(a.a(), b.a()))
+}
+
+/// `pts` as a solid line shading from `from` to `to` along its length.
+pub(crate) fn gradient_polyline(painter: &egui::Painter, pts: &[egui::Pos2], from: egui::Color32, to: egui::Color32, width: f32) {
+    let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    let mut walked = 0.0;
+    for w in pts.windows(2) {
+        let len = (w[1] - w[0]).length();
+        let t = if total > 0.0 { (walked + len * 0.5) / total } else { 0.0 };
+        painter.line_segment([w[0], w[1]], egui::Stroke::new(width, lerp_color(from, to, t)));
+        walked += len;
+    }
 }
 
 /// How high a bridge arch rises, as a fraction of its own length.

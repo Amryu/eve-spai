@@ -22,6 +22,24 @@ pub fn zone_for_ly(ly: f64) -> u8 {
     }
 }
 
+/// Green for the free zone, through yellow and orange, to purple for Zone 5.
+pub fn zone_color(zone: u8) -> egui::Color32 {
+    const COLORS: [egui::Color32; 5] = [
+        egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+        egui::Color32::from_rgb(0xE0, 0xD0, 0x40),
+        egui::Color32::from_rgb(0xE8, 0x90, 0x3A),
+        egui::Color32::from_rgb(0xD8, 0x50, 0x6A),
+        egui::Color32::from_rgb(0xA0, 0x5C, 0xD8),
+    ];
+    COLORS[(zone as usize).clamp(1, COLORS.len()) - 1]
+}
+
+/// The zone of `sys`, or `None` when the capital or a position is unknown.
+pub fn zone_at(systems: &Systems, capital: &str, sys: i64) -> Option<u8> {
+    let cap = systems.lookup(capital.trim())?.id;
+    systems.ly_between(cap, sys).map(zone_for_ly)
+}
+
 pub fn zone_label(zone: u8) -> String {
     match zone {
         1 => "Zone 1 (free)".to_owned(),
@@ -104,6 +122,14 @@ pub fn feed(settings: &crate::settings::Settings, systems: &mut Systems) -> Brid
     let edges = permitted_edges(&key.bridges, systems, &key.capital, key.max_zone);
     systems.add_directed_bridges(&edges);
     key
+}
+
+/// `base` with its bridges re-laid for `max_zone` instead of the configured limit.
+pub fn with_max_zone(base: &Systems, settings: &crate::settings::Settings, max_zone: u8) -> Systems {
+    let mut g = base.gates_only();
+    let edges = permitted_edges(&settings.jump_bridges, &g, &settings.ansiblex_capital, max_zone);
+    g.add_directed_bridges(&edges);
+    g
 }
 
 /// The name pairs of a dotlan bridge link, `https://evemaps.dotlan.net/universe/A::B,C::D`, or
@@ -232,6 +258,24 @@ mod tests {
         assert_eq!(g.nearest_matching(4, 10, |id| id == 1).unwrap().0, 3);
         assert_eq!(g.nearest_matching(1, 10, |id| id == 4).unwrap().0, 1);
         assert_eq!(g.route(1, 4, true, true, |_| true).map(|r| r.len()), Some(4));
+    }
+
+    #[test]
+    fn a_route_can_lift_the_zone_limit_without_touching_the_shared_graph() {
+        let settings = crate::settings::Settings {
+            jump_bridges: vec![jb("CAP", "FAR")],
+            ansiblex_capital: "CAP".into(),
+            ansiblex_max_zone: 1,
+            ..Default::default()
+        };
+        let mut base = graph();
+        feed(&settings, &mut base);
+        let wide = with_max_zone(&base, &settings, 3);
+        assert_eq!(wide.jumps(1, 4, 10), Some(1), "zone 3 lets the route bridge out");
+        assert_eq!(base.jumps(1, 4, 10), Some(3), "the shared graph keeps the setting");
+        let narrow = with_max_zone(&base, &settings, 1);
+        assert_eq!(narrow.jumps(4, 1, 10), Some(1));
+        assert_eq!(narrow.jumps(1, 4, 10), Some(3));
     }
 
     #[test]

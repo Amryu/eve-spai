@@ -108,6 +108,19 @@ impl Systems {
 
     /// One-way bridge edges: since Cradle of War an Ansiblex jump is priced by the destination's
     /// zone, so a bridge can be worth taking in one direction only.
+    /// This graph with its bridges stripped, for laying a different set over it.
+    pub fn gates_only(&self) -> Self {
+        Self {
+            by_name: self.by_name.clone(),
+            by_id: self.by_id.clone(),
+            adjacency: self.gate_adjacency.clone(),
+            gate_adjacency: self.gate_adjacency.clone(),
+            reverse_adjacency: self.gate_adjacency.clone(),
+            stargates: self.stargates.clone(),
+            positions: self.positions.clone(),
+        }
+    }
+
     pub fn add_directed_bridges(&mut self, edges: &[(i64, i64)]) {
         for &(a, b) in edges {
             let av = self.adjacency.entry(a).or_default();
