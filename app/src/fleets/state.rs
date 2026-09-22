@@ -235,6 +235,12 @@ pub struct FleetState {
     /// which the start form re-polls on its own clock and would overwrite this with the user's own
     /// character between the pick and the click.
     pub migrate_boss: Option<(i64, BossCheck)>,
+    /// Why the last character search failed, until the next one succeeds.
+    pub search_error: Option<String>,
+    /// The character search last sent. Answers arrive in whatever order the server finishes them,
+    /// and only the one for this query is shown: an earlier, shorter query landing last replaced
+    /// the right suggestions with stale ones, and the name typed was then not there to add.
+    pub search_for: String,
     /// The Fleet Finder advert for a fleet, when its boss is one of this machine's characters.
     /// Keyed by fleet, so an answer for the last one is never shown on the next.
     pub advert: Option<(FleetId, bool)>,
@@ -332,8 +338,15 @@ impl FleetState {
             Outcome::MigrateBoss { character_id, check } => {
                 self.migrate_boss = Some((character_id, check));
             }
-            Outcome::Found { kind, hits } => {
-                if kind == SearchKind::Character {
+            Outcome::SearchFailed { query, why } => {
+                if query == self.search_for {
+                    self.found_characters.failed();
+                    self.search_error = Some(why);
+                }
+            }
+            Outcome::Found { kind, query, hits } => {
+                if kind == SearchKind::Character && query == self.search_for {
+                    self.search_error = None;
                     self.found_characters.put(hits);
                 }
             }
@@ -735,7 +748,12 @@ pub enum Outcome {
     MigrateBoss { character_id: i64, check: BossCheck },
     /// `None` is "cannot tell", which clears any earlier answer rather than leaving it standing.
     Advert { id: FleetId, registered: Option<bool> },
-    Found { kind: SearchKind, hits: Vec<Labelled> },
+    /// `query` is what was searched for, so an answer that lands after a newer search went out is
+    /// recognised as stale rather than shown.
+    Found { kind: SearchKind, query: String, hits: Vec<Labelled> },
+    /// A type-ahead that failed. Its own outcome rather than `Failed`: it belongs in the dialog
+    /// being typed into, not in the page's error banner, and the next keystroke retries it.
+    SearchFailed { query: String, why: String },
     Boosts { rows: Vec<super::boosts::Coverage>, lines: Vec<super::boosts::Line> },
     Channels { mumble: Vec<ChannelItem>, logi: Vec<ChannelItem>, boost: Vec<ChannelItem> },
     /// The hub pushed a new member tree. Carries the fleet it belongs to: the stream outlives the
@@ -816,8 +834,8 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             }
         }
         Cmd::Search { kind, value } => match backend.search(kind, &value, false) {
-            Ok(hits) => Outcome::Found { kind, hits },
-            Err(e) => Outcome::Failed { what: "search", why: e.to_string() },
+            Ok(hits) => Outcome::Found { kind, query: value, hits },
+            Err(e) => Outcome::SearchFailed { query: value, why: e.to_string() },
         },
         Cmd::ReadBoosts { dir, channel, from, to } => {
             {
@@ -1191,6 +1209,60 @@ mod tests {
         let now = &st.open.value.as_ref().unwrap().fleet;
         assert_eq!(now.setup_id, changed, "the saved fleet is not the one on screen");
         assert!(!st.edit.differs(now), "Apply is still offered for a change already saved");
+    }
+
+    /// Search answers land in whatever order the server finishes them. Only the answer to the
+    /// search last sent is shown: an earlier one landing late replaced the right suggestions with
+    /// stale ones, and the name being typed was then not there to add.
+    #[test]
+    fn a_late_answer_to_an_old_search_is_dropped() {
+        let hit = |id: i64, name: &str| Labelled { id, label: name.to_owned() };
+        let mut st = state();
+        // "amr" went out, then "amryu"; "amryu" answers first.
+        st.search_for = "amryu".into();
+        st.found_characters.begin();
+        st.apply(Outcome::Found {
+            kind: SearchKind::Character,
+            query: "amryu".into(),
+            hits: vec![hit(1, "Amryu")],
+        });
+        // Then the older, slower one.
+        st.apply(Outcome::Found {
+            kind: SearchKind::Character,
+            query: "amr".into(),
+            hits: vec![hit(2, "Amrath"), hit(3, "Amre")],
+        });
+        let names: Vec<String> = st
+            .found_characters
+            .value
+            .iter()
+            .flatten()
+            .map(|l| l.label.clone())
+            .collect();
+        assert_eq!(names, ["Amryu"], "a stale answer replaced the current one");
+
+        // A stale failure does not paint an error over a search that worked.
+        st.apply(Outcome::SearchFailed { query: "am".into(), why: "HTTP 500".into() });
+        assert!(st.search_error.is_none());
+    }
+
+    /// A failed type-ahead is said in the dialog and retried by the next keystroke. It used to be
+    /// `Failed`, which raised the page's error banner over a name search that had simply blipped.
+    #[test]
+    fn a_failed_search_stays_in_its_dialog() {
+        let mut st = state();
+        st.found_characters.begin();
+        st.search_for = "amryu".into();
+        st.apply(Outcome::SearchFailed {
+            query: "amryu".into(),
+            why: "HTTP 500: <p>An error has occured</p>".into(),
+        });
+        assert!(!st.found_characters.loading, "the dialog still says looking");
+        assert!(st.search_error.is_some());
+        assert!(st.error.is_none(), "a search blip raised the page's error banner");
+
+        st.apply(Outcome::Found { kind: SearchKind::Character, query: "amryu".into(), hits: Vec::new() });
+        assert!(st.search_error.is_none(), "a search that worked still reads as failed");
     }
 
     /// A scan that came back has to end the wait, whether or not it found anything. An empty

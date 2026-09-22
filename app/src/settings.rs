@@ -25,6 +25,15 @@ pub struct Settings {
     pub configuration_pack: String,
     #[serde(default)]
     pub jump_bridges: Vec<JumpBridge>,
+    /// The alliance capital Ansiblex zones are measured from. Distinct from staging.
+    #[serde(default = "default_ansiblex_capital")]
+    pub ansiblex_capital: String,
+    /// The costliest destination zone routes may bridge into, 1 (free) to 5.
+    #[serde(default = "default_ansiblex_max_zone")]
+    pub ansiblex_max_zone: u8,
+    /// The version of the bundled bridge and upgrade defaults already applied.
+    #[serde(default)]
+    pub baked_defaults: u32,
     #[serde(default = "default_true")]
     pub alert_enabled: bool,
     #[serde(default = "default_alert_jumps")]
@@ -895,6 +904,14 @@ fn default_alert_jumps() -> u32 {
     5
 }
 
+fn default_ansiblex_capital() -> String {
+    crate::ansiblex::DEFAULT_CAPITAL.to_owned()
+}
+
+fn default_ansiblex_max_zone() -> u8 {
+    crate::ansiblex::DEFAULT_MAX_ZONE
+}
+
 fn default_kill_jumps() -> u32 {
     0
 }
@@ -1206,6 +1223,9 @@ impl Default for Settings {
             sso_callback: default_callback(),
             configuration_pack: String::new(),
             jump_bridges: Vec::new(),
+            ansiblex_capital: default_ansiblex_capital(),
+            ansiblex_max_zone: default_ansiblex_max_zone(),
+            baked_defaults: 0,
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_only_undocked: false,
@@ -1707,6 +1727,15 @@ mod window_geometry_tests {
         let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
         assert_eq!(legacy.jabber_jid, "a@b");
         assert!(!legacy.intel_count_bridges);
+    }
+
+    #[test]
+    fn ansiblex_zone_settings_roundtrip_and_default_to_a24l_v_zone_2() {
+        let s = Settings { ansiblex_capital: "1DQ1-A".to_owned(), ansiblex_max_zone: 4, ..Default::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.ansiblex_capital.as_str(), back.ansiblex_max_zone), ("1DQ1-A", 4));
+        let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
+        assert_eq!((legacy.ansiblex_capital.as_str(), legacy.ansiblex_max_zone), ("A24L-V", 2));
     }
 
     #[test]

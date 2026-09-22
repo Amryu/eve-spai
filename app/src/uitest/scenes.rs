@@ -1712,9 +1712,14 @@ pub(crate) fn all() -> Vec<Scene> {
         a.settings.intel_channels =
             ["Delve Intel", "Querious Intel", "corp"].map(str::to_owned).into();
     }));
-    v.push(dialog_scene("dialog_jump_bridges", [440.0, 520.0], |a| {
+    // Capital 1DQ1-A at Zone 1: 7-K5EL sits 5.3 LY out (Zone 2) and Jita far beyond, so the
+    // rows show a one-way bridge, an excluded one and an unresolved one.
+    v.push(dialog_scene("dialog_jump_bridges", [460.0, 560.0], |a| {
         a.jump_bridges_open = true;
-        a.settings.jump_bridges = [("1DQ1-A", "O-EIMK"), ("319-3D", "7-K5EL")]
+        a.systems = Some(fixtures::systems());
+        a.settings.ansiblex_capital = "1DQ1-A".to_owned();
+        a.settings.ansiblex_max_zone = 1;
+        a.settings.jump_bridges = [("1DQ1-A", "O-EIMK"), ("319-3D", "7-K5EL"), ("7-K5EL", "Jita")]
             .map(|(from, to)| crate::settings::JumpBridge {
                 from: from.to_owned(),
                 to: to.to_owned(),
@@ -6284,4 +6289,31 @@ fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
         h.query_all_by_label("just seen").count() == 0,
         "the clock did not move without a new snapshot"
     );
+}
+
+/// Typing a name sends one search, for what was typed last, once the typing pauses. It sent one
+/// per keystroke, each on its own thread.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_name_search_waits_for_the_typing_to_pause() {
+    use crate::app::fleet_ui::FormAct;
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    fixtures::seed_fleet_state(&a);
+    for typed in ["amr", "amry", "amryu", "amryu a", "amryu al"] {
+        a.fleet_apply_form_for_test(FormAct {
+            search_character: Some(typed.to_owned()),
+            ..Default::default()
+        });
+    }
+    assert_eq!(a.fleet_search_pending_for_test().as_deref(), Some("amryu al"));
+    assert!(a.fleet_state_for_test().lock().unwrap().found_characters.loading, "no looking shown");
+    // Nothing goes out before the pause is up.
+    a.fleet_search_poll();
+    assert!(a.fleet_search_pending_for_test().is_some(), "sent before the typing paused");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    a.fleet_search_poll();
+    assert!(a.fleet_search_pending_for_test().is_none(), "never sent once the typing paused");
 }

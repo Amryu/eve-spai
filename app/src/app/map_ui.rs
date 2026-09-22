@@ -4,20 +4,13 @@ use super::*;
 
 impl SpaiApp {
     pub(crate) fn maybe_rebuild_graph(&mut self, ctx: &egui::Context) {
-        if self.systems.is_none() || self.settings.jump_bridges == self.bridges_applied {
+        if self.systems.is_none() || crate::ansiblex::BridgeKey::of(&self.settings) == self.bridges_applied {
             return;
         }
         let Some(store) = &self.store else { return };
         let mut systems = store.load_systems();
-        let bridges: Vec<(i64, i64)> = self
-            .settings
-            .jump_bridges
-            .iter()
-            .filter_map(|b| Some((systems.lookup(&b.from)?.id, systems.lookup(&b.to)?.id)))
-            .collect();
-        systems.add_bridges(&bridges);
+        self.bridges_applied = crate::ansiblex::feed(&self.settings, &mut systems);
         self.systems = Some(std::sync::Arc::new(systems));
-        self.bridges_applied = self.settings.jump_bridges.clone();
         self.map_loaded = None;
         self.map_draw_key = None;
         self.map_systems_cache.clear();
@@ -640,14 +633,18 @@ impl SpaiApp {
             }
         }
 
-        let bridges: std::collections::HashSet<(i64, i64)> = if let Some(g) = &self.systems {
-            self.settings
-                .jump_bridges
-                .iter()
-                .filter_map(|b| {
-                    let a = g.lookup(&b.from)?.id;
-                    let c = g.lookup(&b.to)?.id;
-                    Some((a.min(c), a.max(c)))
+        // Keyed low id first, with whether the zone limit lets a route take each direction.
+        let bridges: std::collections::HashMap<(i64, i64), (bool, bool)> = if let Some(g) = &self.systems {
+            let max = self.settings.ansiblex_max_zone;
+            crate::ansiblex::bridges(&self.settings.jump_bridges, g, &self.settings.ansiblex_capital)
+                .into_iter()
+                .map(|br| {
+                    let (fwd, back) = (br.forward(max), br.back(max));
+                    if br.a < br.b {
+                        ((br.a, br.b), (fwd, back))
+                    } else {
+                        ((br.b, br.a), (back, fwd))
+                    }
                 })
                 .collect()
         } else {
@@ -677,7 +674,7 @@ impl SpaiApp {
             for s in &self.map_draw {
                 let p1 = pos[&s.id];
                 for &n in graph.neighbors(s.id) {
-                    if s.id < n && !bridges.contains(&(s.id, n)) {
+                    if s.id < n && !bridges.contains_key(&(s.id, n)) {
                         if let Some(p2) = pos.get(&n) {
                             if seg_visible(p1, *p2) {
                                 let stroke = egui::Stroke::new(1.0, line_col);
@@ -745,18 +742,30 @@ impl SpaiApp {
                     }
                 }
             }
-            for &(a, c) in &bridges {
-                if routed.contains(&(a.min(c), a.max(c))) {
+            for (&(a, c), &(up, down)) in &bridges {
+                if routed.contains(&(a, c)) {
                     continue;
                 }
-                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
-                    if seg_visible(*p1, *p2) {
-                        painter.add(egui::Shape::line(
-                            arc_polyline(*p1, *p2, BRIDGE_BOW),
-                            egui::Stroke::new(1.5, bridge_col),
-                        ));
-                    }
+                let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) else { continue };
+                if !seg_visible(*p1, *p2) {
+                    continue;
                 }
+                let arc = arc_polyline(*p1, *p2, BRIDGE_BOW);
+                if !up && !down {
+                    painter.extend(egui::Shape::dashed_line(
+                        &arc,
+                        egui::Stroke::new(1.0, bridge_col.gamma_multiply(0.35)),
+                        4.0,
+                        4.0,
+                    ));
+                    continue;
+                }
+                let stroke = egui::Stroke::new(1.5, bridge_col);
+                if up != down {
+                    let tip: Vec<egui::Pos2> = if up { arc.clone() } else { arc.iter().rev().copied().collect() };
+                    bridge_arrowhead(&painter, &tip, stroke);
+                }
+                painter.add(egui::Shape::line(arc, stroke));
             }
         }
 

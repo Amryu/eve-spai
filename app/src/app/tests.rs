@@ -2779,3 +2779,66 @@ mod bind_debounce_tests {
         assert_eq!(crate::web::server::usable_bind_addr(&a.settings.web.bind_addr), None);
     }
 }
+
+#[cfg(test)]
+mod parse_bridges_tests {
+    use super::parse_bridges;
+    use crate::uitest::fixtures;
+
+    fn pairs(text: &str) -> Vec<(String, String)> {
+        parse_bridges(text, &fixtures::systems()).into_iter().map(|b| (b.from, b.to)).collect()
+    }
+
+    #[test]
+    fn a_dotlan_link_imports_every_pair_it_resolves() {
+        let got = pairs("https://evemaps.dotlan.net/universe/1DQ1-A::7-K5EL,319-3D::NOPE-1,jita::319-3D");
+        let want = [("1DQ1-A", "7-K5EL"), ("Jita", "319-3D")].map(|(a, b)| (a.to_owned(), b.to_owned()));
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn text_without_a_dotlan_link_imports_nothing() {
+        assert!(pairs("1DQ1-A » 7-K5EL\n319-3D <-> Jita").is_empty());
+    }
+
+    fn baked(s: &mut crate::settings::Settings) -> bool {
+        let bridges = "1DQ1-A::7-K5EL\n319-3D::NOPE-1\n";
+        let upgrades = "319-3D <- Cynosural Suppression\n";
+        super::apply_baked_defaults(s, &fixtures::systems(), "Delve", bridges, upgrades)
+    }
+
+    fn mine() -> crate::settings::Settings {
+        crate::settings::Settings {
+            jump_bridges: vec![crate::settings::JumpBridge { from: "Jita".into(), to: "319-3D".into() }],
+            sov_upgrades: vec![crate::settings::SovUpgrade { system: "Jita".into(), upgrade: "x".into() }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn staging_in_the_home_region_overwrites_once() {
+        let mut s = crate::settings::Settings { rescue_staging_system: "1DQ1-A".into(), ..mine() };
+        assert!(baked(&mut s));
+        assert_eq!(s.jump_bridges.len(), 1, "the unresolved pair is dropped");
+        assert_eq!((s.jump_bridges[0].from.as_str(), s.jump_bridges[0].to.as_str()), ("1DQ1-A", "7-K5EL"));
+        assert_eq!(s.sov_upgrades[0].system, "319-3D");
+        s.jump_bridges.clear();
+        assert!(!baked(&mut s), "applied once only");
+        assert!(s.jump_bridges.is_empty());
+    }
+
+    #[test]
+    fn staging_elsewhere_keeps_the_users_lists_and_fills_empty_ones() {
+        let mut s = crate::settings::Settings { rescue_staging_system: "Jita".into(), ..mine() };
+        s.sov_upgrades.clear();
+        assert!(baked(&mut s));
+        assert_eq!(s.jump_bridges[0].from, "Jita");
+        assert_eq!(s.sov_upgrades.len(), 1);
+    }
+
+    #[test]
+    fn the_bundled_data_parses() {
+        assert_eq!(super::BAKED_BRIDGES.lines().filter(|l| l.contains("::")).count(), 54);
+        assert!(super::BAKED_UPGRADES.lines().all(|l| l.contains(" <- ")));
+    }
+}

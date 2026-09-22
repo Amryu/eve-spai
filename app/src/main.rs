@@ -8,6 +8,7 @@ mod brshare;
 mod brview;
 mod affiliation;
 mod alliances;
+mod ansiblex;
 mod camp;
 mod charsettings;
 mod chatlog;

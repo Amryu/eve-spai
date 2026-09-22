@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The Imperium forum topic carrying both the sov-upgrade list and the Ansiblex link.
+const EQUINOX_TOPIC: &str = "https://goonfleet.com/index.php/topic/386078-equinox-upgrade-information-station-v3/";
+
 impl SpaiApp {
     pub(crate) fn setup_wizard(&mut self, ctx: &egui::Context) {
         if !self.wizard_open {
@@ -1209,40 +1212,50 @@ impl SpaiApp {
             ctx,
             "jump_bridges_window",
             "EVE Spai - Jump bridges",
-            [440.0, 520.0],
+            [460.0, 560.0],
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Paste a jump-bridge list (one bridge per line).").weak(),
-                    );
+                    ui.label(egui::RichText::new("Paste the dotlan bridge link.").weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
-                        "Imperium members: open the alliance jump-bridge map, copy the bridge \
-                         list, and paste it here. Each line's first two systems form a bridge \
-                         (any separator works).",
+                        "Imperium members: open the forum topic and copy its dotlan Ansiblex \
+                         link (https://evemaps.dotlan.net/universe/A::B,C::D), which lists the \
+                         whole network.",
                     );
-                    ui.hyperlink_to("Imperium stargates", "https://wiki.goonswarm.org/w/Alliance:Stargate");
+                    ui.hyperlink_to("Equinox upgrades", EQUINOX_TOPIC);
                 });
                 egui::ScrollArea::vertical()
-                    .max_height(110.0)
-                    .auto_shrink([false, false])
+                    .max_height(90.0)
+                    .auto_shrink([false, true])
                     .id_salt("jb_scroll")
                     .show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.jb_paste)
-                                .desired_rows(4)
+                                .desired_rows(3)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("e.g.  1DQ1-A » O-EIMK   (one bridge per line, or paste the whole wiki page)"),
+                                .hint_text("https://evemaps.dotlan.net/universe/PQRE-W::A-7XFN,…"),
                         );
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("Add from paste").clicked() {
+                    let add = ui.button("Add from paste").clicked();
+                    let replace = ui
+                        .button("Replace all")
+                        .on_hover_text("A dotlan link is the whole network: drop bridges it no longer lists.")
+                        .clicked();
+                    if add || replace {
                         if let Some(g) = self.systems.clone() {
-                            for b in parse_bridges(&self.jb_paste, &g) {
-                                if !self.settings.jump_bridges.contains(&b) {
+                            let parsed = parse_bridges(&self.jb_paste, &g);
+                            if replace && !parsed.is_empty() {
+                                self.settings.jump_bridges.clear();
+                            }
+                            for b in parsed {
+                                let known = self.settings.jump_bridges.iter().any(|k| {
+                                    (k.from == b.from && k.to == b.to) || (k.from == b.to && k.to == b.from)
+                                });
+                                if !known {
                                     self.settings.jump_bridges.push(b);
-                                    changed = true;
                                 }
                             }
+                            changed = true;
                         }
                         self.jb_paste.clear();
                     }
@@ -1252,12 +1265,78 @@ impl SpaiApp {
                     }
                 });
                 ui.separator();
-                ui.label(egui::RichText::new(format!("{} bridges", self.settings.jump_bridges.len())).strong());
+                let graph = self.systems.clone();
+                ui.horizontal(|ui| {
+                    ui.label("Capital system");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.settings.ansiblex_capital).desired_width(90.0),
+                    );
+                    changed |= resp.changed();
+                    let found = graph.as_ref().and_then(|g| g.lookup(self.settings.ansiblex_capital.trim()));
+                    match (found, &graph) {
+                        (Some(info), _) => ui.label(egui::RichText::new(&info.region).weak()),
+                        (None, Some(_)) => ui.colored_label(ui.visuals().warn_fg_color, "unknown system"),
+                        (None, None) => ui.label(""),
+                    };
+                    ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
+                        "Zones are measured from the alliance capital, which is not the staging \
+                         system. A jump is priced by where it lands: Zone 1 (within 5 LY) is free, \
+                         then x2, x6, x9 and x15 per 5 LY.",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Use Ansiblexes up to");
+                    let max = &mut self.settings.ansiblex_max_zone;
+                    egui::ComboBox::from_id_salt("ansiblex_max_zone")
+                        .selected_text(crate::ansiblex::zone_label(*max))
+                        .show_ui(ui, |ui| {
+                            for z in 1..=crate::ansiblex::MAX_ZONE {
+                                changed |= ui.selectable_value(max, z, crate::ansiblex::zone_label(z)).changed();
+                            }
+                        });
+                });
+                ui.label(egui::RichText::new("Capitals and supers can't use Ansiblexes.").weak());
+                ui.separator();
+                let max = self.settings.ansiblex_max_zone;
+                let zones = graph
+                    .as_ref()
+                    .map(|g| crate::ansiblex::bridges(&self.settings.jump_bridges, g, &self.settings.ansiblex_capital))
+                    .unwrap_or_default();
+                let zone_of = |b: &crate::settings::JumpBridge| {
+                    let g = graph.as_ref()?;
+                    let (a, c) = (g.lookup(&b.from)?.id, g.lookup(&b.to)?.id);
+                    zones.iter().find(|z| z.a == a && z.b == c)
+                };
+                let (mut both, mut one, mut none) = (0, 0, 0);
+                for z in &zones {
+                    match (z.forward(max), z.back(max)) {
+                        (true, true) => both += 1,
+                        (false, false) => none += 1,
+                        _ => one += 1,
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} bridges: {both} both ways, {one} one-way, {none} excluded",
+                        self.settings.jump_bridges.len()
+                    ))
+                    .strong(),
+                );
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove = None;
                     for (i, b) in self.settings.jump_bridges.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(format!("{} » {}", b.from, b.to));
+                            if let Some(z) = zone_of(b) {
+                                let dir = |arrow: &str, zone: Option<u8>, ok: bool| {
+                                    let t = format!("{arrow} {}", zone.map_or("Z?".to_owned(), |z| format!("Z{z}")));
+                                    if ok { egui::RichText::new(t) } else { egui::RichText::new(t).weak().strikethrough() }
+                                };
+                                ui.label(dir(egui_phosphor::regular::ARROW_RIGHT, z.zone_at_b, z.forward(max)))
+                                    .on_hover_text(format!("{} to {}", b.from, b.to));
+                                ui.label(dir(egui_phosphor::regular::ARROW_LEFT, z.zone_at_a, z.back(max)))
+                                    .on_hover_text(format!("{} to {}", b.to, b.from));
+                            }
                             if ui.button(egui_phosphor::regular::X).clicked() {
                                 remove = Some(i);
                             }
@@ -1297,10 +1376,7 @@ impl SpaiApp {
                          paste. The first system matched on each line is used; the rest of the line \
                          becomes the upgrade label.",
                     );
-                    ui.hyperlink_to(
-                        "Equinox upgrades",
-                        "https://goonfleet.com/index.php/topic/371770-equinox-upgrade-information-station",
-                    );
+                    ui.hyperlink_to("Equinox upgrades", EQUINOX_TOPIC);
                 });
                 egui::ScrollArea::vertical()
                     .max_height(110.0)

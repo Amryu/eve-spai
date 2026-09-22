@@ -91,6 +91,9 @@ impl SpaiApp {
                     Outcome::Failed { what, why } => {
                         crate::esilog::record(&format!("fleet {what}"), why);
                     }
+                    Outcome::SearchFailed { query, why } => {
+                        crate::esilog::record("fleet search", &format!("{query:?}: {why}"));
+                    }
                     // Only a check that failed. "Character is not in a fleet" is the dashboard's
                     // ordinary answer, and logging it once a minute buries the real failures.
                     Outcome::Boss { check, .. } => {
@@ -377,6 +380,30 @@ impl SpaiApp {
             ctx.request_repaint();
         });
         None
+    }
+
+    /// Queues a character search for when the typing pauses.
+    ///
+    /// One per keystroke was a request per letter, each on its own thread, and the only one that
+    /// matters is the last. "Looking" shows straight away so the wait reads as a wait.
+    #[cfg(feature = "fleet")]
+    fn fleet_search_soon(&mut self, value: String) {
+        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).found_characters.begin();
+        self.fleet_search_pending = Some((value, std::time::Instant::now() + SEARCH_DEBOUNCE));
+        self.ui_ctx.request_repaint_after(SEARCH_DEBOUNCE);
+    }
+
+    /// Sends the queued search once its pause is up.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_search_poll(&mut self) {
+        let Some((value, due)) = self.fleet_search_pending.clone() else { return };
+        if std::time::Instant::now() < due {
+            self.ui_ctx.request_repaint_after(due - std::time::Instant::now());
+            return;
+        }
+        self.fleet_search_pending = None;
+        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).search_for = value.clone();
+        self.fleet_dispatch(Cmd::Search { kind: crate::fleets::backend::SearchKind::Character, value });
     }
 
     /// Keeps the dashboard's push stream open for whatever fleet is on screen.
@@ -975,11 +1002,7 @@ impl SpaiApp {
         }
         if let Some(name) = act.search_character.clone() {
             if name.len() >= 3 {
-                self.fleet.lock().unwrap_or_else(|e| e.into_inner()).found_characters.begin();
-                self.fleet_dispatch(Cmd::Search {
-                    kind: crate::fleets::backend::SearchKind::Character,
-                    value: name,
-                });
+                self.fleet_search_soon(name);
             }
         }
         // Remembered only when it is not the staging system: the button back to staging is
@@ -1587,6 +1610,7 @@ impl SpaiApp {
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_snowflakes_window(&mut self, ctx: &egui::Context) {
         let Some(target) = self.fleet_snowflakes_open else { return };
+        self.fleet_search_poll();
         let mut open = true;
         let mut act = FormAct::default();
         egui::Window::new("Snowflakes")
@@ -2636,6 +2660,9 @@ fn doctrine_line(ping: &str) -> Option<String> {
 const BOSS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 #[cfg(feature = "fleet")]
 const ADVERT_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long the typing has to pause before a character search goes out.
+#[cfg(feature = "fleet")]
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 #[cfg(feature = "fleet")]
 const CHANNEL_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -3717,6 +3744,7 @@ fn snowflake_rows(
     use crate::fleets::model::{Snowflake, SnowflakeType};
     let can = st.can(Perm::ManageFleetSnowflakes);
     let hits = st.found_characters.clone();
+    let search_error = st.search_error.clone();
     let salt = target.salt();
 
     let mut drop: Option<usize> = None;
@@ -3784,6 +3812,8 @@ fn snowflake_rows(
         }
         if hits.loading {
             ui.label(egui::RichText::new("looking").weak());
+        } else if let Some(why) = &search_error {
+            search_failed_note(ui, why);
         }
         ui.data_mut(|d| {
             d.insert_temp(name_id, name.clone());
@@ -4193,6 +4223,17 @@ fn preset_tree(
             }
         }
     }
+}
+
+/// A character search that failed, said where the name is being typed. The dashboard's error
+/// body is on the hover, since it is usually a scrap of HTML with nothing in it.
+#[cfg(feature = "fleet")]
+fn search_failed_note(ui: &mut egui::Ui, why: &str) {
+    ui.label(
+        egui::RichText::new("search failed, keep typing to retry")
+            .color(crate::theme::standing::WARNING),
+    )
+    .on_hover_text(crate::fleets::state::strip_tags(why));
 }
 
 /// What a folder heading carries while it is dragged, kept apart from a preset's `usize` so a drop
@@ -6634,6 +6675,7 @@ impl SpaiApp {
         if !self.fleet_migrate_open {
             return;
         }
+        self.fleet_search_poll();
         const NAME: &str = "fleet_migrate_name";
         let mut open = true;
         let mut search: Option<String> = None;
@@ -6647,6 +6689,7 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
                 let hits = st.found_characters.clone();
+                let search_error = st.search_error.clone();
                 let boss = st.migrate_boss.clone();
                 // Without startFleetOther the site limits the picker to the account's own
                 // characters, so the same list is offered here.
@@ -6678,6 +6721,8 @@ impl SpaiApp {
                     ui.data_mut(|d| d.insert_temp(name_id, name.clone()));
                     if hits.loading {
                         ui.label(egui::RichText::new("looking").weak());
+                    } else if let Some(why) = &search_error {
+                        search_failed_note(ui, why);
                     }
                 } else {
                     ui.label(
@@ -6762,8 +6807,7 @@ impl SpaiApp {
             });
 
         if let Some(v) = search {
-            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).found_characters.begin();
-            self.fleet_dispatch(Cmd::Search { kind: crate::fleets::backend::SearchKind::Character, value: v });
+            self.fleet_search_soon(v);
         }
         if let Some(id) = check {
             self.fleet.lock().unwrap_or_else(|e| e.into_inner()).migrate_boss = None;

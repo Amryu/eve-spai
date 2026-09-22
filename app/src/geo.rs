@@ -27,6 +27,7 @@ pub struct Systems {
     by_id: HashMap<i64, SystemInfo>,
     adjacency: HashMap<i64, Vec<i64>>,
     gate_adjacency: HashMap<i64, Vec<i64>>,
+    reverse_adjacency: HashMap<i64, Vec<i64>>,
     stargates: HashMap<i64, Vec<[f64; 3]>>,
     positions: HashMap<i64, [f64; 3]>,
 }
@@ -35,11 +36,13 @@ impl Systems {
     pub fn new(by_name: HashMap<String, SystemInfo>, adjacency: HashMap<i64, Vec<i64>>) -> Self {
         let by_id = by_name.values().map(|s| (s.id, s.clone())).collect();
         let gate_adjacency = adjacency.clone();
+        let reverse_adjacency = adjacency.clone();
         Self {
             by_name,
             by_id,
             adjacency,
             gate_adjacency,
+            reverse_adjacency,
             stargates: HashMap::new(),
             positions: HashMap::new(),
         }
@@ -97,13 +100,21 @@ impl Systems {
             .and_then(|n| self.by_id.get(n))
     }
 
+    #[cfg(test)]
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {
-        for &(a, b) in pairs {
+        let both: Vec<(i64, i64)> = pairs.iter().flat_map(|&(a, b)| [(a, b), (b, a)]).collect();
+        self.add_directed_bridges(&both);
+    }
+
+    /// One-way bridge edges: since Cradle of War an Ansiblex jump is priced by the destination's
+    /// zone, so a bridge can be worth taking in one direction only.
+    pub fn add_directed_bridges(&mut self, edges: &[(i64, i64)]) {
+        for &(a, b) in edges {
             let av = self.adjacency.entry(a).or_default();
             if !av.contains(&b) {
                 av.push(b);
             }
-            let bv = self.adjacency.entry(b).or_default();
+            let bv = self.reverse_adjacency.entry(b).or_default();
             if !bv.contains(&a) {
                 bv.push(a);
             }
@@ -203,7 +214,8 @@ impl Systems {
     /// tie to the caller. Used to pick a jump-off point: ranking candidates by lightyears finds the
     /// geometrically nearest system, which in null sec is regularly a dozen gates away.
     ///
-    /// Bridge-aware, matching [`Self::jumps`]. Untransitable systems are skipped, so a match is
+    /// Bridge-aware, matching [`Self::jumps`], with bridges walked backwards because the fleet
+    /// travels from the match to `from`. Untransitable systems are skipped, so a match is
     /// always somewhere a fleet can actually sit.
     pub fn nearest_matching(
         &self,
@@ -219,7 +231,7 @@ impl Systems {
         for dist in 1..=max_jumps {
             let mut next = Vec::new();
             for sys in ring.drain(..) {
-                for &n in self.adjacency.get(&sys).into_iter().flatten() {
+                for &n in self.reverse_adjacency.get(&sys).into_iter().flatten() {
                     if !is_no_transit(n) && visited.insert(n) {
                         next.push(n);
                     }
@@ -360,9 +372,36 @@ impl Systems {
         out
     }
 
+    /// The systems that may step to `sys` under [`Self::steps_from`]'s rules.
+    fn steps_into(
+        &self,
+        sys: i64,
+        to: i64,
+        allow_regional_gates: bool,
+        allow_jump_bridges: bool,
+        holes: &HashMap<i64, Vec<i64>>,
+        allowed: impl Fn(i64) -> bool,
+    ) -> Vec<i64> {
+        let gates = self.reverse_adjacency.get(&sys).into_iter().flatten().map(|n| (*n, false));
+        let extra = holes.get(&sys).into_iter().flatten().map(|n| (*n, true));
+        let mut out: Vec<i64> = Vec::new();
+        for (n, via_hole) in gates.chain(extra) {
+            if !self.edge_ok(n, sys, via_hole, allow_regional_gates, allow_jump_bridges) {
+                continue;
+            }
+            if n != to && (!allowed(n) || is_no_transit(n)) {
+                continue;
+            }
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+
     /// Jumps to `to` from every system that can reach it, the mirror of [`Self::route_with`]'s
-    /// search. Travel is symmetric, so one walk out of `to` answers "how far is this system from the
-    /// end" for every system on the way.
+    /// search. One walk back out of `to` over reversed edges answers "how far is this system from
+    /// the end" for every system on the way; bridges can be one-way, so forward edges would lie.
     pub fn distances_to(
         &self,
         to: i64,
@@ -375,7 +414,7 @@ impl Systems {
         let mut queue: VecDeque<i64> = VecDeque::from([to]);
         while let Some(sys) = queue.pop_front() {
             let d = dist.get(&sys).copied().unwrap_or_default();
-            for n in self.steps_from(sys, to, allow_regional_gates, allow_jump_bridges, holes, &allowed)
+            for n in self.steps_into(sys, to, allow_regional_gates, allow_jump_bridges, holes, &allowed)
             {
                 if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(n) {
                     slot.insert(d + 1);

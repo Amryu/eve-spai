@@ -1,0 +1,498 @@
+WU-FHQ <- Megacyte Prospecting Array 3
+V-4DBR <- Major Threat Detection Array 2
+B-5UFY <- Major Threat Detection Array 3
+SK42-F <- Major Threat Detection Array 1
+EU9-J3 <- Exploration Detector 3, Major Threat Detection Array 2
+PQRE-W <- Major Threat Detection Array 2
+OEG-K9 <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+0-W778 <- Major Threat Detection Array 1
+DG-8VJ <- Major Threat Detection Array 3
+5J4K-9 <- Major Threat Detection Array 1
+MD-0AW <- Major Threat Detection Array 3
+H-FGJO <- Major Threat Detection Array 1
+1KAW-T <- Major Threat Detection Array 1
+C5-SUU <- Major Threat Detection Array 3, Exotic Stability Generator
+XSUD-1 <- Major Threat Detection Array 3
+3-LJW3 <- Major Threat Detection Array 1, Exotic Stability Generator
+ZLO3-V <- Major Threat Detection Array 3
+P7MI-T <- Major Threat Detection Array 3
+JFV-ID <- Major Threat Detection Array 2
+3-3EZB <- Exploration Detector 3, Major Threat Detection Array 3
+52CW-6 <- Major Threat Detection Array 3
+9-OUGJ <- Major Threat Detection Array 3
+4NDT-W <- Major Threat Detection Array 1
+GR-X26 <- Major Threat Detection Array 3
+6OU9-U <- Major Threat Detection Array 2
+9N-0HF <- Major Threat Detection Array 1
+U-OVFR <- Major Threat Detection Array 1
+G3D-ZT <- Major Threat Detection Array 3, Exploration Detector 3
+D-0UI0 <- Major Threat Detection Array 2
+L8-WNE <- Major Threat Detection Array 2
+1-GBVE <- Major Threat Detection Array 1
+GC-LTF <- Major Threat Detection Array 3
+NB-ALM <- Major Threat Detection Array 3
+LT-XI4 <- Major Threat Detection Array 3
+L-QQ6P <- Major Threat Detection Array 2
+5OJ-G2 <- Major Threat Detection Array 2
+9-02G0 <- Major Threat Detection Array 3
+XA5-TY <- Major Threat Detection Array 3
+M-XUZZ <- Major Threat Detection Array 2
+OFVH-Y <- Major Threat Detection Array 1
+2-X0PF <- Major Threat Detection Array 3
+1-PGSG <- Major Threat Detection Array 3, Exploration Detector 3
+QLPX-J <- Major Threat Detection Array 2
+A-C5TC <- Major Threat Detection Array 3
+RZ-PIY <- Major Threat Detection Array 1
+FR46-E <- Major Threat Detection Array 3
+SLVP-D <- Major Threat Detection Array 1
+0-G8NO <- Major Threat Detection Array 3, Minor Threat Detection Array 3, Exploration Detector 3
+QRFJ-Q <- Major Threat Detection Array 1
+HZFJ-M <- Major Threat Detection Array 3
+77S8-E <- Major Threat Detection Array 3
+FMH-OV <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+TYB-69 <- Major Threat Detection Array 3
+EDQG-L <- Major Threat Detection Array 2
+7-P1JO <- Major Threat Detection Array 2
+T-0JWP <- Major Threat Detection Array 2
+J-L9MA <- Major Threat Detection Array 2
+DX-TAR <- Major Threat Detection Array 3
+A-7XFN <- Major Threat Detection Array 2
+O3-4MN <- Major Threat Detection Array 2, Exotic Stability Generator
+U-MFTL <- Major Threat Detection Array 1
+8FN-GP <- Major Threat Detection Array 1
+FIDY-8 <- Major Threat Detection Array 1
+X40H-9 <- Major Threat Detection Array 1
+F2W-C6 <- Major Threat Detection Array 2
+KZ9T-C <- Major Threat Detection Array 2
+XW2H-V <- Major Threat Detection Array 2
+F9O-U9 <- Major Threat Detection Array 3
+S-51XG <- Major Threat Detection Array 2
+E-1XVP <- Major Threat Detection Array 2
+E-ACV6 <- Major Threat Detection Array 3
+BOZ1-O <- Major Threat Detection Array 3
+QIMO-2 <- Exploration Detector 3, Major Threat Detection Array 1
+Z-2Y2Y <- Major Threat Detection Array 1
+Q0J-RH <- Major Threat Detection Array 3
+SAI-T9 <- Exotic Stability Generator, Major Threat Detection Array 2
+IAS-I5 <- Major Threat Detection Array 1, Exotic Stability Generator
+K7S-FF <- Major Threat Detection Array 1
+RT-9WL <- Major Threat Detection Array 2
+O5Q7-U <- Major Threat Detection Array 3
+62O-UE <- Major Threat Detection Array 3
+U0W-DR <- Major Threat Detection Array 1
+SY-UWN <- Major Threat Detection Array 3, Exploration Detector 3
+DX-DFJ <- Major Threat Detection Array 1
+X-31TE <- Major Threat Detection Array 3
+DVWV-3 <- Major Threat Detection Array 3
+KE-0FB <- Major Threat Detection Array 2, Exploration Detector 3
+I-9GI1 <- Exploration Detector 3, Major Threat Detection Array 1
+W6P-7U <- Major Threat Detection Array 1
+0IF-26 <- Major Threat Detection Array 2, Exploration Detector 3
+H-93YV <- Major Threat Detection Array 3, Exploration Detector 3
+E51-JE <- Major Threat Detection Array 3
+7-A6XV <- Major Threat Detection Array 3
+QXE-1N <- Major Threat Detection Array 3
+U69-YC <- Major Threat Detection Array 3
+L-L7PE <- Major Threat Detection Array 3
+MKIG-5 <- Isogen Prospecting Array 3
+YHEN-G <- Mexallon Prospecting Array 3
+E-JCUS <- Major Threat Detection Array 2
+W-QN5X <- Major Threat Detection Array 1
+30-YOU <- Megacyte Prospecting Array 3
+384-IN <- Major Threat Detection Array 3
+4F89-U <- Major Threat Detection Array 1
+G063-U <- Isogen Prospecting Array 3
+J7-BDX <- Zydrine Prospecting Array 3
+MLQ-O9 <- Megacyte Prospecting Array 3
+L-FM3P <- Zydrine Prospecting Array 3
+X-ARMF <- Zydrine Prospecting Array 3
+8-OZU1 <- Major Threat Detection Array 2
+0TYR-T <- Isogen Prospecting Array 3
+G9L-LP <- Major Threat Detection Array 2
+H-HHTH <- Major Threat Detection Array 1
+JQU-KY <- Major Threat Detection Array 3
+UY5A-D <- Major Threat Detection Array 1
+C-62I5 <- Major Threat Detection Array 1
+ZH-GKG <- Megacyte Prospecting Array 3
+GPLB-C <- Pyerite Prospecting Array 3
+GGE-5Q <- Major Threat Detection Array 2
+U104-3 <- Zydrine Prospecting Array 3
+M3-KAQ <- Megacyte Prospecting Array 3
+6-L4YC <- Mexallon Prospecting Array 3
+UM-SCG <- Major Threat Detection Array 1, Pyerite Prospecting Array 3
+F-3FOY <- Major Threat Detection Array 1
+OAIG-0 <- Zydrine Prospecting Array 3
+UZ-QXW <- Major Threat Detection Array 1
+5DE-QS <- Major Threat Detection Array 3
+R0-DMM <- Major Threat Detection Array 1
+5Q65-4 <- Megacyte Prospecting Array 3
+SR-4EK <- Major Threat Detection Array 1
+0RI-OV <- Major Threat Detection Array 3
+C-LTXS <- Major Threat Detection Array 1
+C0O6-K <- Major Threat Detection Array 3
+HD-AJ7 <- Exploration Detector 3, Major Threat Detection Array 1
+G9NE-B <- Major Threat Detection Array 1
+SJJ-4F <- Exploration Detector 3, Major Threat Detection Array 1
+F-QQ5N <- Major Threat Detection Array 3
+1-7B6D <- Major Threat Detection Array 3
+H6-EYX <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+U-HVIX <- Major Threat Detection Array 2
+4-EFLU <- Major Threat Detection Array 3
+F-EM4Q <- Major Threat Detection Array 3
+1L-OEK <- Major Threat Detection Array 3
+MN-Q26 <- Major Threat Detection Array 3
+5H-SM2 <- Minor Threat Detection Array 2, Major Threat Detection Array 3
+4-OS2A <- Major Threat Detection Array 3
+YI-GV6 <- Major Threat Detection Array 1
+SO-X5L <- Minor Threat Detection Array 3, Major Threat Detection Array 3
+XQS-GZ <- Major Threat Detection Array 3
+Q-GQHN <- Major Threat Detection Array 2
+A-4JOO <- Major Threat Detection Array 1
+TP7-KE <- Exotic Stability Generator, Megacyte Prospecting Array 3
+R4N-LD <- Minor Threat Detection Array 1
+3Q-VZA <- Major Threat Detection Array 1
+M-MBRT <- Major Threat Detection Array 1, Zydrine Prospecting Array 3
+HPBE-D <- Major Threat Detection Array 1
+GRHS-B <- Zydrine Prospecting Array 3, Pyerite Prospecting Array 3
+J-RXYN <- Major Threat Detection Array 1
+DUO-51 <- Isogen Prospecting Array 3
+07-SLO <- Nocxium Prospecting Array 3
+Z-A8FS <- Major Threat Detection Array 1
+GPD5-0 <- Major Threat Detection Array 1
+LKZ-CY <- Major Threat Detection Array 1
+F5M-CC <- Major Threat Detection Array 1
+TZE-UB <- Major Threat Detection Array 3, Exploration Detector 3
+WRL4-2 <- Major Threat Detection Array 3
+V7G-RL <- Major Threat Detection Array 1
+XEN7-0 <- Major Threat Detection Array 1, Exploration Detector 3
+L-Z9KJ <- Megacyte Prospecting Array 3, Exotic Stability Generator
+7K-NSE <- Major Threat Detection Array 1
+OR-7N5 <- Major Threat Detection Array 1
+JEQG-7 <- Major Threat Detection Array 2
+5NQI-E <- Zydrine Prospecting Array 3
+B-WQDP <- Major Threat Detection Array 3
+W2T-TR <- Major Threat Detection Array 1
+Q-UEN6 <- Major Threat Detection Array 1
+BLMX-B <- Major Threat Detection Array 1
+M-CNUD <- Megacyte Prospecting Array 3
+YE1-9S <- Major Threat Detection Array 3
+IVP-KA <- Mexallon Prospecting Array 3
+04EI-U <- Megacyte Prospecting Array 3
+EIN-QG <- Major Threat Detection Array 1, Exploration Detector 3
+ARG-3R <- Major Threat Detection Array 1, Exploration Detector 3, Exotic Stability Generator
+S-E6ES <- Major Threat Detection Array 1, Exploration Detector 3
+R-3FBU <- Major Threat Detection Array 1, Exploration Detector 3, Exotic Stability Generator
+K7-LDX <- Major Threat Detection Array 1
+U-IVGH <- Major Threat Detection Array 1
+P-N5N9 <- Major Threat Detection Array 1
+JMH-PT <- Major Threat Detection Array 1
+X9V-15 <- Major Threat Detection Array 2, Exploration Detector 3
+K212-A <- Major Threat Detection Array 1, Exploration Detector 3
+F-5FDA <- Major Threat Detection Array 1, Exploration Detector 3
+S1-XTL <- Major Threat Detection Array 1, Exploration Detector 3
+9PX2-F <- Major Threat Detection Array 1
+N3-JBX <- Major Threat Detection Array 1
+SG-75T <- Major Threat Detection Array 1
+GN-PDU <- Major Threat Detection Array 1
+AZ3F-N <- Exploration Detector 3, Major Threat Detection Array 1
+RNM-Y6 <- Major Threat Detection Array 1, Exploration Detector 3
+V-KDY2 <- Exploration Detector 3, Major Threat Detection Array 1
+FYD-TO <- Major Threat Detection Array 1
+ER2O-Y <- Major Threat Detection Array 1
+J2-PZ6 <- Major Threat Detection Array 1
+XV-MWG <- Exploration Detector 3, Major Threat Detection Array 2
+OAQY-M <- Megacyte Prospecting Array 3
+M9-MLR <- Zydrine Prospecting Array 3
+Q-K2T7 <- Megacyte Prospecting Array 3
+LBC-AW <- Major Threat Detection Array 1
+2-KPW6 <- Major Threat Detection Array 3
+AH8-Q7 <- Major Threat Detection Array 1
+SD4A-2 <- Major Threat Detection Array 1
+U6K-RG <- Major Threat Detection Array 1, Exploration Detector 3
+V-S9YY <- Major Threat Detection Array 1, Exploration Detector 3
+F2-NXA <- Major Threat Detection Array 1
+NSBE-L <- Major Threat Detection Array 1
+8Q-T7B <- Exploration Detector 3, Major Threat Detection Array 1
+WV0D-1 <- Major Threat Detection Array 1
+ZNF-OK <- Exploration Detector 3, Major Threat Detection Array 1
+C8-7AS <- Exploration Detector 3, Major Threat Detection Array 1
+4E-EZS <- Exploration Detector 3, Major Threat Detection Array 1
+A-80UA <- Major Threat Detection Array 1, Exploration Detector 3
+U2-28D <- Major Threat Detection Array 2
+5-MQQ7 <- Zydrine Prospecting Array 3
+6-EQYE <- Mexallon Prospecting Array 3
+03-OR2 <- Major Threat Detection Array 1
+JLO-Z3 <- Megacyte Prospecting Array 3
+IAK-JW <- Mexallon Prospecting Array 3
+KZFV-4 <- Major Threat Detection Array 1, Exotic Stability Generator, Megacyte Prospecting Array 3
+WO-GC0 <- Zydrine Prospecting Array 3
+RYC-19 <- Major Threat Detection Array 3
+X2-ZA5 <- Major Threat Detection Array 3
+28Y9-P <- Major Threat Detection Array 3
+Q4C-S5 <- Megacyte Prospecting Array 3
+B-1UJC <- Isogen Prospecting Array 3
+Q-NA5H <- Pyerite Prospecting Array 3
+4-CM8I <- Mexallon Prospecting Array 3
+ZDB-HT <- Major Threat Detection Array 1
+HJ-BCH <- Exploration Detector 3, Major Threat Detection Array 1
+QPTT-F <- Exploration Detector 3, Major Threat Detection Array 1
+9M-M0P <- Major Threat Detection Array 1
+9BC-EB <- Major Threat Detection Array 1
+WFFE-4 <- Exploration Detector 3, Major Threat Detection Array 1
+71-UTX <- Major Threat Detection Array 1
+PU-UMM <- Major Threat Detection Array 1
+6-KPAB <- Major Threat Detection Array 1
+Y5-E1U <- Major Threat Detection Array 1, Exploration Detector 3
+4-43BW <- Major Threat Detection Array 3
+8CN-CH <- Major Threat Detection Array 2
+V-F6DQ <- Major Threat Detection Array 3
+3S-6VU <- Major Threat Detection Array 1
+1-7HVI <- Major Threat Detection Array 2
+OX-S7P <- Major Threat Detection Array 3
+KDG-TA <- Megacyte Prospecting Array 3
+KD-KPR <- Major Threat Detection Array 1
+PT-21C <- Zydrine Prospecting Array 3
+Z182-R <- Major Threat Detection Array 1
+5M2-KP <- Major Threat Detection Array 1, Nocxium Prospecting Array 3
+TK-DLH <- Major Threat Detection Array 1
+C8H5-X <- Pyerite Prospecting Array 3
+O-7LAI <- Major Threat Detection Array 1
+7L3-JS <- Zydrine Prospecting Array 3
+WF4C-8 <- Major Threat Detection Array 1
+TZN-2V <- Megacyte Prospecting Array 3
+8EF-58 <- Major Threat Detection Array 3
+4DS-OI <- Major Threat Detection Array 1
+XQP-9C <- Major Threat Detection Array 1
+W-6GBI <- Mexallon Prospecting Array 3, Megacyte Prospecting Array 3
+XKH-6O <- Major Threat Detection Array 3
+S0U-MO <- Major Threat Detection Array 1
+F39H-1 <- Major Threat Detection Array 2
+V-QXXK <- Major Threat Detection Array 1
+2-Q4YG <- Nocxium Prospecting Array 3
+2JT-3Q <- Major Threat Detection Array 1
+I3CR-F <- Isogen Prospecting Array 3
+7-JT09 <- Zydrine Prospecting Array 3
+M4-GJ6 <- Major Threat Detection Array 2
+5-2PQU <- Megacyte Prospecting Array 3
+SN9-3Z <- Pyerite Prospecting Array 3
+6BJH-3 <- Pyerite Prospecting Array 3
+U-UTU9 <- Isogen Prospecting Array 3
+1TG7-W <- Major Threat Detection Array 1
+QYD-WK <- Mexallon Prospecting Array 3
+R959-U <- Nocxium Prospecting Array 3
+A-TJ0G <- Zydrine Prospecting Array 3
+88A-RA <- Exotic Stability Generator, Major Threat Detection Array 1
+8G-2FP <- Major Threat Detection Array 2
+C-J6MT <- Exotic Stability Generator, Minor Threat Detection Array 1
+78-0R6 <- Exotic Stability Generator, Major Threat Detection Array 1
+MSG-BZ <- Nocxium Prospecting Array 3
+4M-QXK <- Minor Threat Detection Array 1
+X5-0EM <- Major Threat Detection Array 2
+G-EURJ <- Zydrine Prospecting Array 3, Mexallon Prospecting Array 3
+SHBF-V <- Megacyte Prospecting Array 3, Zydrine Prospecting Array 3
+0UBC-R <- Zydrine Prospecting Array 3
+3U-48K <- Major Threat Detection Array 1, Pyerite Prospecting Array 3
+EFM-C4 <- Minor Threat Detection Array 1
+YPW-M4 <- Exotic Stability Generator, Major Threat Detection Array 1
+Q7-FZ8 <- Nocxium Prospecting Array 3
+L5-UWT <- Major Threat Detection Array 1
+74-VZA <- Major Threat Detection Array 1
+I-1QKL <- Major Threat Detection Array 1, Mexallon Prospecting Array 3
+GK5Z-T <- Minor Threat Detection Array 1
+RQN-OO <- Zydrine Prospecting Array 3
+67Y-NR <- Major Threat Detection Array 1, Zydrine Prospecting Array 3
+GDHN-K <- Zydrine Prospecting Array 3
+QTME-D <- Major Threat Detection Array 2
+A24L-V <- Major Threat Detection Array 2
+4CJ-AC <- Zydrine Prospecting Array 3
+EUU-4N <- Major Threat Detection Array 3
+Q-3HS5 <- Major Threat Detection Array 2, Pyerite Prospecting Array 3
+3AE-CP <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+0-VG7A <- Major Threat Detection Array 3
+9OLQ-6 <- Major Threat Detection Array 3
+MOCW-2 <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+ZO-4AR <- Isogen Prospecting Array 3
+MJ-LGH <- Zydrine Prospecting Array 3
+F2A-GX <- Pyerite Prospecting Array 3
+RD-FWY <- Major Threat Detection Array 1
+VBPT-T <- Major Threat Detection Array 1
+KS-1TS <- Mexallon Prospecting Array 3
+X0-6LH <- Major Threat Detection Array 3
+FN0-QS <- Zydrine Prospecting Array 3
+F3-8X2 <- Megacyte Prospecting Array 3
+N7-BIY <- Major Threat Detection Array 1
+TTP-2B <- Major Threat Detection Array 3, Pyerite Prospecting Array 3
+LVL-GZ <- Major Threat Detection Array 3
+EJ48-O <- Major Threat Detection Array 1
+ROJ-B0 <- Major Threat Detection Array 3
+DFH-V5 <- Major Threat Detection Array 2
+B-II34 <- Major Threat Detection Array 2
+4LB-EL <- Major Threat Detection Array 1
+UDE-FX <- Major Threat Detection Array 2
+5IH-GL <- Major Threat Detection Array 1
+C1G-XC <- Major Threat Detection Array 1
+04-EHC <- Major Threat Detection Array 3
+3-0FYP <- Major Threat Detection Array 1
+O-9G5Y <- Zydrine Prospecting Array 3
+27-HP0 <- Pyerite Prospecting Array 3
+X1-IZ0 <- Major Threat Detection Array 1
+RZ-TI6 <- Isogen Prospecting Array 3
+FX4L-2 <- Megacyte Prospecting Array 3
+1ZF-PJ <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+HFC-AQ <- Major Threat Detection Array 3
+NS2L-4 <- Major Threat Detection Array 2
+QI-S9W <- Major Threat Detection Array 1
+B-S347 <- Major Threat Detection Array 3
+PPFB-U <- Major Threat Detection Array 3
+AF0-V5 <- Major Threat Detection Array 1
+B-A587 <- Major Threat Detection Array 2
+Y19P-1 <- Major Threat Detection Array 2
+B9E-H6 <- Major Threat Detection Array 1, Exotic Stability Generator
+SPBS-6 <- Major Threat Detection Array 3, Exploration Detector 3
+JDAS-0 <- Major Threat Detection Array 1
+A4B-V5 <- Major Threat Detection Array 3
+LN-56V <- Exploration Detector 3, Major Threat Detection Array 2
+Y2-QUV <- Major Threat Detection Array 1
+O7-7UX <- Major Threat Detection Array 1
+QE-E1D <- Major Threat Detection Array 1
+LK1K-5 <- Major Threat Detection Array 1
+REB-KR <- Major Threat Detection Array 2
+Z-H2MA <- Major Threat Detection Array 1
+L-5JCJ <- Major Threat Detection Array 3
+B-KDOZ <- Exploration Detector 3, Major Threat Detection Array 1
+4-GB14 <- Major Threat Detection Array 3
+PH-NFR <- Major Threat Detection Array 1
+DW-N2S <- Major Threat Detection Array 2
+W-FHWJ <- Major Threat Detection Array 2
+X-6WC7 <- Major Threat Detection Array 1
+D-BAMJ <- Major Threat Detection Array 2
+JKWP-U <- Major Threat Detection Array 1, Exploration Detector 3
+RHE7-W <- Major Threat Detection Array 3
+F76-8Q <- Major Threat Detection Array 1
+9-XN3F <- Major Threat Detection Array 1, Exploration Detector 3, Exotic Stability Generator
+AC-7LZ <- Major Threat Detection Array 1
+LBA-SO <- Major Threat Detection Array 3
+Y-FZ5N <- Major Threat Detection Array 1, Exotic Stability Generator
+E8-YS9 <- Major Threat Detection Array 2
+U79-JF <- Major Threat Detection Array 2
+B2-UQW <- Major Threat Detection Array 3
+U9U-TQ <- Major Threat Detection Array 2
+6-I162 <- Major Threat Detection Array 3, Exotic Stability Generator
+08-N7Q <- Major Threat Detection Array 3
+Y-C4AL <- Major Threat Detection Array 3, Exploration Detector 3
+CKX-RW <- Major Threat Detection Array 3
+8X6T-8 <- Major Threat Detection Array 3, Exploration Detector 3
+W4E-IT <- Major Threat Detection Array 3
+OP9L-F <- Major Threat Detection Array 2
+J-QA7I <- Major Threat Detection Array 3
+2O-EEW <- Major Threat Detection Array 3
+Y-N4EF <- Major Threat Detection Array 3
+7YSF-E <- Major Threat Detection Array 2
+KCDX-7 <- Major Threat Detection Array 3
+O7-VJ5 <- Major Threat Detection Array 1
+FRTC-5 <- Major Threat Detection Array 1
+M-ZJWJ <- Major Threat Detection Array 1, Exotic Stability Generator
+R-ORB7 <- Major Threat Detection Array 3
+RU-PT9 <- Major Threat Detection Array 3
+DR-427 <- Major Threat Detection Array 3
+NI-J0B <- Major Threat Detection Array 2
+QN-6J2 <- Major Threat Detection Array 3
+G-QTSD <- Exploration Detector 3
+O-VWPB <- Major Threat Detection Array 1
+LX-ZOJ <- Major Threat Detection Array 3
+6L78-1 <- Major Threat Detection Array 2
+04-LQM <- Major Threat Detection Array 1
+4VY-Y1 <- Major Threat Detection Array 2
+LU-HQS <- Major Threat Detection Array 2
+U-L4KS <- Major Threat Detection Array 3, Exploration Detector 3
+K25-XD <- Major Threat Detection Array 2
+6YC-TU <- Major Threat Detection Array 2
+Y8R-XZ <- Major Threat Detection Array 2
+D-I9HJ <- Major Threat Detection Array 2, Minor Threat Detection Array 2
+P-6I0B <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+CFYY-J <- Major Threat Detection Array 2
+8-KZXQ <- Minor Threat Detection Array 2, Major Threat Detection Array 2
+HKYW-T <- Exploration Detector 3, Major Threat Detection Array 1, Minor Threat Detection Array 2
+3SFU-S <- Minor Threat Detection Array 2, Major Threat Detection Array 2
+VJ-NQP <- Major Threat Detection Array 1
+U6D-9A <- Major Threat Detection Array 1
+Atioth <- Exotic Stability Generator, Major Threat Detection Array 1
+PYY3-5 <- Minor Threat Detection Array 2, Major Threat Detection Array 2
+RFGW-V <- Major Threat Detection Array 2, Minor Threat Detection Array 2
+N-HK93 <- Major Threat Detection Array 1, Minor Threat Detection Array 2
+O2O-2X <- Minor Threat Detection Array 2, Major Threat Detection Array 3
+JE1-36 <- Minor Threat Detection Array 2, Major Threat Detection Array 3
+5F-YRA <- Major Threat Detection Array 2, Minor Threat Detection Array 2
+TDE4-H <- Major Threat Detection Array 2, Minor Threat Detection Array 2
+UER-TH <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+UG-UWZ <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+DUU1-K <- Major Threat Detection Array 1
+3L-Y9M <- Major Threat Detection Array 1
+BLC-X0 <- Major Threat Detection Array 1
+K-X5AX <- Major Threat Detection Array 1
+BJD4-E <- Major Threat Detection Array 1
+TSG-NO <- Major Threat Detection Array 1
+O9V-R7 <- Major Threat Detection Array 1
+U-BXU9 <- Major Threat Detection Array 1
+ZXOG-O <- Major Threat Detection Array 1
+NW2S-A <- Major Threat Detection Array 1
+U-JJEW <- Major Threat Detection Array 1
+NX5W-U <- Major Threat Detection Array 1
+U1-C18 <- Major Threat Detection Array 3
+6O-XIO <- Major Threat Detection Array 2
+H65-HE <- Major Threat Detection Array 1
+BJ-ZFD <- Major Threat Detection Array 1
+5ELE-A <- Major Threat Detection Array 1
+H-P4LB <- Major Threat Detection Array 1
+2UK4-N <- Major Threat Detection Array 1
+QK-CDG <- Major Threat Detection Array 1
+M-CMLV <- Major Threat Detection Array 1
+GPUS-A <- Major Threat Detection Array 3
+3-BADZ <- Major Threat Detection Array 3
+23M-PX <- Major Threat Detection Array 2
+UTDH-N <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+ZS-2LT <- Major Threat Detection Array 3, Minor Threat Detection Array 3
+DB1R-4 <- Major Threat Detection Array 3
+9MWZ-B <- Major Threat Detection Array 3
+LS-QLX <- Major Threat Detection Array 1
+S-XZHU <- Major Threat Detection Array 3
+CO-7BI <- Major Threat Detection Array 3
+ZJG-7D <- Major Threat Detection Array 2
+C-WPWH <- Major Threat Detection Array 3
+VULA-I <- Major Threat Detection Array 3
+R2TJ-1 <- Major Threat Detection Array 2
+G-B3PR <- Major Threat Detection Array 2
+73-JQO <- Major Threat Detection Array 3
+XPUM-L <- Major Threat Detection Array 2
+KR8-27 <- Major Threat Detection Array 3
+LQ-AHE <- Major Threat Detection Array 3
+LOI-L1 <- Major Threat Detection Array 3
+Y-MSJN <- Major Threat Detection Array 3
+MJ-X5V <- Major Threat Detection Array 1
+3FKU-H <- Major Threat Detection Array 3
+M9-FIB <- Major Threat Detection Array 1
+D2EZ-X <- Major Threat Detection Array 3
+DJK-67 <- Major Threat Detection Array 1
+AXDX-F <- Major Threat Detection Array 3
+J-4FNO <- Major Threat Detection Array 3
+PEM-LC <- Major Threat Detection Array 3
+X-EHHD <- Major Threat Detection Array 3
+6T3I-L <- Major Threat Detection Array 3
+QSF-EJ <- Major Threat Detection Array 2
+L-AS00 <- Major Threat Detection Array 3
+NZPK-G <- Major Threat Detection Array 3, Minor Threat Detection Array 1
+K-1OY3 <- Major Threat Detection Array 3
+MMUF-8 <- Major Threat Detection Array 2
+99-0GS <- Major Threat Detection Array 2
+X-3AUU <- Major Threat Detection Array 2
+H90-C9 <- Major Threat Detection Array 1
+0DD-MH <- Major Threat Detection Array 3
+RI-JB1 <- Major Threat Detection Array 3
+NQH-MR <- Major Threat Detection Array 3
+1I6F-9 <- Major Threat Detection Array 1
+Z-7OK1 <- Major Threat Detection Array 3
+UEP0-A <- Major Threat Detection Array 3
+66-PMM <- Major Threat Detection Array 3
+OKEO-X <- Major Threat Detection Array 1
+7-8EOE <- Major Threat Detection Array 3
+7L9-ZC <- Major Threat Detection Array 1

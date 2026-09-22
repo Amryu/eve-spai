@@ -513,7 +513,7 @@ pub struct SpaiApp {
     /// Off in the UI harness, which builds an app without any of the side effects.
     web_allowed: bool,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
-    bridges_applied: Vec<crate::settings::JumpBridge>,
+    bridges_applied: crate::ansiblex::BridgeKey,
     system_status: crate::systemstatus::SharedStatus,
     alerts_engine: std::sync::Arc<AlertEngine>,
     recent_alerts: AlertLog,
@@ -821,6 +821,9 @@ pub struct SpaiApp {
     /// When the open fleet's Fleet Finder advert was last asked about.
     #[cfg(feature = "fleet")]
     fleet_advert_at: Option<(crate::fleets::model::FleetId, std::time::Instant)>,
+    /// A character search waiting for the typing to pause, and when it is due.
+    #[cfg(feature = "fleet")]
+    fleet_search_pending: Option<(String, std::time::Instant)>,
     /// Short link to the `mumble://` link its page points at, filled in the background, with when
     /// it was last asked. `None` is one in flight or one that failed; a failure is retried after
     /// `COMMS_RETRY`, because gnf.lt answers some requests with an empty 400 and the next one fine.
@@ -1384,7 +1387,7 @@ impl SpaiApp {
             kills_loaded: false,
             player,
             systems: None,
-            bridges_applied: Vec::new(),
+            bridges_applied: Default::default(),
             system_status,
             alerts_engine,
             recent_alerts,
@@ -1651,6 +1654,8 @@ impl SpaiApp {
             fleet_reopen: None,
             #[cfg(feature = "fleet")]
             fleet_advert_at: None,
+            #[cfg(feature = "fleet")]
+            fleet_search_pending: None,
             #[cfg(feature = "fleet")]
             comms_resolved: Default::default(),
             #[cfg(feature = "fleet")]
@@ -2006,20 +2011,12 @@ impl SpaiApp {
         self.watcher_started = true;
 
         let mut systems = store.load_systems();
-        let bridges: Vec<(i64, i64)> = self
-            .settings
-            .jump_bridges
-            .iter()
-            .filter_map(|b| {
-                let from = systems.lookup(&b.from)?.id;
-                let to = systems.lookup(&b.to)?.id;
-                Some((from, to))
-            })
-            .collect();
-        systems.add_bridges(&bridges);
+        if apply_baked_defaults(&mut self.settings, &systems, BAKED_REGION, BAKED_BRIDGES, BAKED_UPGRADES) {
+            self.needs_save = true;
+        }
+        self.bridges_applied = crate::ansiblex::feed(&self.settings, &mut systems);
         let systems = std::sync::Arc::new(systems);
         self.systems = Some(systems.clone());
-        self.bridges_applied = self.settings.jump_bridges.clone();
 
         if let Some(store) = &self.store {
             if !store.traits_baked() {
@@ -3026,6 +3023,12 @@ impl SpaiApp {
         self.fleet_apply_form(act);
     }
 
+    /// The character search waiting for the typing to pause, if any.
+    #[cfg(all(test, feature = "fleet"))]
+    pub(crate) fn fleet_search_pending_for_test(&self) -> Option<String> {
+        self.fleet_search_pending.as_ref().map(|(v, _)| v.clone())
+    }
+
     /// The main window's Jabber tabs, for a test that checks what a message opened.
     #[cfg(test)]
     pub(crate) fn jabber_tabs_for_test(&self) -> Vec<String> {
@@ -3860,24 +3863,50 @@ fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
 }
 
 fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::JumpBridge> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let mut ends: Vec<String> = Vec::new();
-        for raw in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '\'')) {
-            if let Some(name) = resolve_system(graph, raw) {
-                if !ends.contains(&name) {
-                    ends.push(name);
-                }
-                if ends.len() == 2 {
-                    break;
-                }
-            }
-        }
-        if ends.len() == 2 {
-            out.push(crate::settings::JumpBridge { from: ends.remove(0), to: ends.remove(0) });
-        }
+    crate::ansiblex::dotlan_pairs(text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let (from, to) = (resolve_system(graph, &a)?, resolve_system(graph, &b)?);
+            (from != to).then_some(crate::settings::JumpBridge { from, to })
+        })
+        .collect()
+}
+
+const BAKED_DEFAULTS: u32 = 1;
+const BAKED_REGION: &str = "Insmother";
+const BAKED_BRIDGES: &str = include_str!("../assets/default_ansiblex.txt");
+const BAKED_UPGRADES: &str = include_str!("../assets/default_sov_upgrades.txt");
+
+/// Applies the bundled bridge network and sov upgrades once per [`BAKED_DEFAULTS`] bump. Staging
+/// in `region` overwrites both lists; anyone else only gets them where their list is empty.
+/// Returns whether settings changed.
+fn apply_baked_defaults(
+    settings: &mut crate::settings::Settings,
+    graph: &crate::geo::Systems,
+    region: &str,
+    bridges: &str,
+    upgrades: &str,
+) -> bool {
+    if settings.baked_defaults >= BAKED_DEFAULTS {
+        return false;
     }
-    out
+    let home = graph.lookup(settings.rescue_staging_system.trim()).is_some_and(|i| i.region == region);
+    if home || settings.jump_bridges.is_empty() {
+        settings.jump_bridges = bridges
+            .lines()
+            .filter_map(|l| {
+                let (a, b) = l.split_once("::")?;
+                let (from, to) = (resolve_system(graph, a)?, resolve_system(graph, b)?);
+                Some(crate::settings::JumpBridge { from, to })
+            })
+            .collect();
+    }
+    if home || settings.sov_upgrades.is_empty() {
+        settings.sov_upgrades = parse_sov_upgrades(upgrades, graph);
+    }
+    settings.baked_defaults = BAKED_DEFAULTS;
+    true
 }
 
 pub(crate) fn split_upgrade_label(label: &str) -> Vec<&str> {
@@ -6422,6 +6451,18 @@ pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::
             )
         })
         .collect()
+}
+
+/// Marks the only direction a route may take a bridge, at the end of `arc`.
+pub(crate) fn bridge_arrowhead(painter: &egui::Painter, arc: &[egui::Pos2], stroke: egui::Stroke) {
+    let [.., from, tip] = arc else { return };
+    let dir = (*tip - *from).normalized();
+    if !dir.is_finite() {
+        return;
+    }
+    let back = *tip - dir * 7.0;
+    let side = egui::vec2(-dir.y, dir.x) * 4.0;
+    painter.add(egui::Shape::convex_polygon(vec![*tip, back + side, back - side], stroke.color, egui::Stroke::NONE));
 }
 
 /// How high a bridge arch rises, as a fraction of its own length.
