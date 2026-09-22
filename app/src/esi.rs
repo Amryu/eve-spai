@@ -90,6 +90,88 @@ fn location_for(
     Some((loc.solar_system_id, docked))
 }
 
+/// Contact standings by character, corporation or alliance id. The character's own contacts win
+/// over its corporation's, which win over its alliance's, the order EVE itself applies.
+/// A missing scope or a failed call leaves that layer out rather than failing the whole set.
+pub fn spawn_standings(
+    client_id: String,
+    char_name: String,
+    out: Arc<Mutex<std::collections::HashMap<i64, f32>>>,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else {
+            return;
+        };
+        let Ok(client) = crate::http::client(20) else { return };
+        #[derive(Deserialize)]
+        struct Sheet {
+            corporation_id: Option<i64>,
+            alliance_id: Option<i64>,
+        }
+        let sheet: Option<Sheet> = client
+            .get(format!("{LOCATION_URL}/{}/", character.id))
+            .send()
+            .ok()
+            .and_then(|r| r.error_for_status().ok())
+            .and_then(|r| r.json().ok());
+        let base = "https://esi.evetech.net/latest";
+        let mut layers = Vec::new();
+        if let Some(a) = sheet.as_ref().and_then(|s| s.alliance_id) {
+            layers.push(format!("{base}/alliances/{a}/contacts/"));
+        }
+        if let Some(c) = sheet.as_ref().and_then(|s| s.corporation_id) {
+            layers.push(format!("{base}/corporations/{c}/contacts/"));
+        }
+        layers.push(format!("{base}/characters/{}/contacts/", character.id));
+        let mut merged = std::collections::HashMap::new();
+        // Your own alliance and corporation read as excellent, as they do in game, unless a
+        // contact entry says otherwise.
+        for own in [sheet.as_ref().and_then(|s| s.alliance_id), sheet.as_ref().and_then(|s| s.corporation_id)]
+            .into_iter()
+            .flatten()
+        {
+            merged.insert(own, 10.0);
+        }
+        for url in layers {
+            merged.extend(contacts(&client, &url, &token));
+        }
+        *out.lock().unwrap_or_else(|e| e.into_inner()) = merged;
+        ctx.request_repaint();
+    });
+}
+
+fn contacts(client: &reqwest::blocking::Client, url: &str, token: &str) -> Vec<(i64, f32)> {
+    #[derive(Deserialize)]
+    struct Contact {
+        contact_id: i64,
+        standing: f32,
+    }
+    let mut out = Vec::new();
+    let mut page = 1;
+    loop {
+        let Ok(resp) = client.get(format!("{url}?page={page}")).bearer_auth(token).send() else { break };
+        if !resp.status().is_success() {
+            break;
+        }
+        let pages = resp
+            .headers()
+            .get("x-pages")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(1);
+        let Ok(list) = resp.json::<Vec<Contact>>() else { break };
+        out.extend(list.into_iter().map(|c| (c.contact_id, c.standing)));
+        if page >= pages {
+            break;
+        }
+        page += 1;
+    }
+    out
+}
+
 pub fn set_waypoint(
     client_id: String,
     char_name: String,

@@ -3588,3 +3588,12 @@ fn paste_segment_trailing_tag_stripped_ben_walker() {
     assert_eq!(trim_paste_location_tail("Lopatich R", &ships_with(&[])), "Lopatich R");
     assert_eq!(trim_paste_location_tail("Malcolm 41", &ships_with(&[])), "Malcolm 41");
 }
+
+#[test]
+fn local_scan_links_get_their_own_kind() {
+    let links = extract_links(
+        "local https://adashboard.info/intel/local/view/AbCd1234 dscan https://adashboard.info/intel/dscan/view/XyZ98765 lt https://localthreat.xyz/Qwerty123",
+    );
+    let kinds: Vec<_> = links.iter().map(|l| l.kind.clone()).collect();
+    assert_eq!(kinds, vec![LinkKind::LocalScan, LinkKind::Dscan, LinkKind::LocalScan]);
+}

@@ -202,7 +202,6 @@ pub(crate) enum MapMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasteKind {
     Dscan,
-    Local,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -275,6 +274,7 @@ mod notes_ui;
 mod dscan_update;
 mod wormholes_ui;
 mod views;
+mod lookup_ui;
 mod web_glue;
 mod settings_ui;
 mod info_windows;
@@ -312,6 +312,7 @@ pub enum IntelClick {
     Ship(i64),
     Pilot(String),
     Dscan(String),
+    LocalScan(String),
     PilotVerdict(String),
     /// Open the note and tag editor for a system or pilot.
     Annotate(crate::notes::Subject),
@@ -589,9 +590,19 @@ pub struct SpaiApp {
     pub(crate) disk_saw_failure: bool,
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
-    lookup_input: String,
-    lookup_tabs: Vec<String>,
-    lookup_active: usize,
+    lookup_table: crate::localscan::SharedTable,
+    /// The pilots on show, in paste order.
+    lookup_current: Vec<String>,
+    /// `None` sorts by name.
+    lookup_sort: Option<lookup_ui::Col>,
+    lookup_sort_desc: bool,
+    lookup_note: Option<String>,
+    /// A local scan link's pilots, fetched off the UI thread.
+    lookup_incoming: std::sync::Arc<std::sync::Mutex<Option<Result<Vec<String>, String>>>>,
+    /// Contact standings by character, corporation or alliance id, from ESI.
+    standings: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, f32>>>,
+    /// Which character the standings were last fetched for, and when.
+    standings_for: Option<(String, std::time::Instant)>,
     intel_heights: std::collections::HashMap<u64, f32>,
     intel_heights_notes_rev: u64,
     /// Rendered height per chat row, so the history can skip over off-screen ones.
@@ -791,7 +802,6 @@ pub struct SpaiApp {
     ship_window: Option<i64>,
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
-    feed_cache: std::collections::HashMap<String, crate::lookup::SharedLookup>,
     pilot_window_open: bool,
     pilot_sort: PilotSort,
     pilot_pane: PilotPane,
@@ -1449,9 +1459,14 @@ impl SpaiApp {
             disk_saw_failure: false,
             kill_cache,
             kill_tx,
-            lookup_input: String::new(),
-            lookup_tabs: Vec::new(),
-            lookup_active: 0,
+            lookup_table: Default::default(),
+            lookup_current: Vec::new(),
+            lookup_sort: Some(lookup_ui::Col::Danger),
+            lookup_sort_desc: true,
+            lookup_note: None,
+            lookup_incoming: Default::default(),
+            standings: Default::default(),
+            standings_for: None,
             intel_heights: std::collections::HashMap::new(),
             intel_heights_notes_rev: 0,
             jabber_msg_heights: std::collections::HashMap::new(),
@@ -1628,7 +1643,6 @@ impl SpaiApp {
             pending_overlay_clicks: Vec::new(),
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
-            feed_cache: std::collections::HashMap::new(),
             pilot_window_open: false,
             pilot_sort: PilotSort::MostLost,
             pilot_pane: PilotPane::default(),
@@ -2781,6 +2795,7 @@ impl SpaiApp {
             IntelClick::Ship(id) => self.open_ship(id),
             IntelClick::Pilot(name) => self.open_pilot(name, ctx),
             IntelClick::Dscan(url) => self.open_dscan(url, ctx),
+            IntelClick::LocalScan(url) => self.open_local_scan(url, ctx),
             IntelClick::PilotVerdict(name) => self.open_pilot_verdict(name),
             c @ (IntelClick::Annotate(_) | IntelClick::Notes(_)) => self.notes_click(c),
         }
@@ -2962,10 +2977,15 @@ impl SpaiApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn seed_lookup_tab(&mut self, report: crate::lookup::PilotReport) {
-        self.lookup_tabs.push(report.name.clone());
-        let state = crate::lookup::LookupState::Done(report.clone());
-        self.feed_cache.insert(report.name, std::sync::Arc::new(std::sync::Mutex::new(state)));
+    pub(crate) fn seed_lookup(&mut self, rows: Vec<(String, crate::localscan::Row)>, orgs: Vec<(i64, crate::localscan::Org)>) {
+        let mut t = self.lookup_table.lock().unwrap();
+        self.lookup_current = rows.iter().map(|(n, _)| n.clone()).collect();
+        for (n, r) in rows {
+            t.rows.insert(n.to_lowercase(), r);
+        }
+        t.orgs.extend(orgs);
+        drop(t);
+        self.standings.lock().unwrap().extend([(99_000_002, -5.0), (90_000_003, 10.0), (90_000_004, 0.0), (98_000_003, -10.0)]);
     }
 
     #[cfg(test)]
@@ -3692,7 +3712,9 @@ impl eframe::App for SpaiApp {
             self.wizard_open = !self.settings.wizard_done;
         }
         self.setup_wizard(&ctx);
-        self.poll_dscan_clipboard();
+        self.poll_dscan_clipboard(&ctx);
+        self.poll_local_scan(&ctx);
+        self.maybe_refresh_standings(&ctx);
         self.poll_jabber_notify(&ctx);
         self.poll_kill_fetches();
         self.dscan_dialog(&ctx);
@@ -5011,6 +5033,8 @@ pub(crate) struct DscanView {
 pub(crate) enum DscanFetch {
     Loading,
     Ready(Vec<(i64, String, u32)>),
+    /// The link held a local scan, not a d-scan: these pilots go to the Lookup view.
+    Local(Vec<String>),
     Failed,
 }
 
@@ -5020,6 +5044,7 @@ impl DscanFetch {
             DscanFetch::Loading => DscanFetch::Loading,
             DscanFetch::Failed => DscanFetch::Failed,
             DscanFetch::Ready(v) => DscanFetch::Ready(v.clone()),
+            DscanFetch::Local(v) => DscanFetch::Local(v.clone()),
         }
     }
 }
@@ -5073,7 +5098,10 @@ pub(crate) fn open_dscan_view(
         let result = fetch_dscan_ships(&url, ship_index.as_deref());
         *fetch.lock().unwrap() = match result {
             Some(v) if !v.is_empty() => DscanFetch::Ready(v),
-            _ => DscanFetch::Failed,
+            _ => {
+                let pilots = crate::localscan::fetch_page_pilots(&url);
+                if pilots.is_empty() { DscanFetch::Failed } else { DscanFetch::Local(pilots) }
+            }
         };
         ctx.request_repaint();
     });
@@ -5114,6 +5142,9 @@ pub(crate) fn dscan_view_dialog_ui(
                 }
                 DscanFetch::Failed => {
                     ui.label(egui::RichText::new("Couldn't read this scan. Open it on the site.").weak());
+                }
+                DscanFetch::Local(names) => {
+                    ui.label(format!("A local scan of {} pilots, opening in Lookup.", names.len()));
                 }
                 DscanFetch::Ready(ships) => {
                     let total: u32 = ships.iter().map(|(_, _, n)| n).sum();

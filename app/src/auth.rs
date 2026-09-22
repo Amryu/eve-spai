@@ -26,6 +26,8 @@ pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-location.read_online.v1",
     "esi-location.read_ship_type.v1",
     "esi-characters.read_contacts.v1",
+    "esi-corporations.read_contacts.v1",
+    "esi-alliances.read_contacts.v1",
     "esi-ui.write_waypoint.v1",
     "esi-fittings.write_fittings.v1",
     "esi-skills.read_skills.v1",

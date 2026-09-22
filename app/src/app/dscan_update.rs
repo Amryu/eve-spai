@@ -240,7 +240,7 @@ impl SpaiApp {
             });
     }
 
-    pub(crate) fn poll_dscan_clipboard(&mut self) {
+    pub(crate) fn poll_dscan_clipboard(&mut self, ctx: &egui::Context) {
         if !self.settings.dscan_autoprompt {
             return;
         }
@@ -273,8 +273,10 @@ impl SpaiApp {
                 }
             }
             self.dscan_prompt = Some((text, n, PasteKind::Dscan));
-        } else if let Some(n) = crate::dscan::looks_like_local(&text) {
-            self.dscan_prompt = Some((text, n, PasteKind::Local));
+        } else if crate::dscan::looks_like_local(&text).is_some() {
+            let names = crate::localscan::names_of(&text);
+            self.lookup_load(names, ctx);
+            self.view = View::Lookup;
         }
     }
 
@@ -359,7 +361,6 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let mut start_upload = false;
         let mut open_adashboard = false;
-        let mut do_lookup = false;
         let mut dismiss = false;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("dscan_popup"),
@@ -381,10 +382,7 @@ impl SpaiApp {
                 ontop_pin(ctx, "dscan_popup");
                 let frame = egui::Frame::central_panel(&ctx.style());
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-                    let title = match &self.dscan_prompt {
-                        Some((_, _, PasteKind::Local)) => "Local list",
-                        _ => "D-scan",
-                    };
+                    let title = "D-scan";
                     ui.label(egui::RichText::new(format!("{}  {title}", icon::BROADCAST)).strong());
                     let (uploading, link, error) = (share.0, share.1.clone(), share.2.clone());
                     if let Some(link) = link {
@@ -446,24 +444,6 @@ impl SpaiApp {
                                         self.needs_save = true;
                                     }
                                 }
-                                PasteKind::Local => {
-                                    ui.label(format!("Local list detected ({n} pilots). Use:"));
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .button(format!("{}  Look up", icon::MAGNIFYING_GLASS))
-                                            .on_hover_text("Open these pilots in the Lookup view")
-                                            .clicked()
-                                        {
-                                            do_lookup = true;
-                                        }
-                                        if ui.button(&ada).on_hover_text(ada_hint).clicked() {
-                                            open_adashboard = true;
-                                        }
-                                        if ui.button("Dismiss").clicked() {
-                                            dismiss = true;
-                                        }
-                                    });
-                                }
                             }
                         }
                     }
@@ -496,13 +476,6 @@ impl SpaiApp {
         if open_adashboard {
             if let Some((text, _, _)) = self.dscan_prompt.take() {
                 self.open_adashboard_intel(ctx, text);
-            }
-            dismiss = true;
-        }
-        if do_lookup {
-            if let Some((text, _, _)) = self.dscan_prompt.take() {
-                self.add_lookup_names(&text);
-                self.view = View::Lookup;
             }
             dismiss = true;
         }

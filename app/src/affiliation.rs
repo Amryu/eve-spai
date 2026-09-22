@@ -55,6 +55,36 @@ struct AffilResp {
     alliance_id: Option<i64>,
 }
 
+/// Affiliations for `ids`. ESI refuses the whole batch over one id it cannot answer, so a refusal
+/// splits the batch until the bad id stands alone and is dropped. Network and server errors put the
+/// ids in `retry` for a later round instead.
+fn fetch(client: &reqwest::blocking::Client, ids: &[i64], retry: &mut Vec<i64>, refused: &mut Vec<i64>) -> Vec<AffilResp> {
+    let resp = client.post("https://esi.evetech.net/latest/characters/affiliation/").json(ids).send();
+    match resp {
+        Ok(r) if r.status().is_success() => match r.json::<Vec<AffilResp>>() {
+            Ok(list) => list,
+            Err(_) => {
+                retry.extend_from_slice(ids);
+                Vec::new()
+            }
+        },
+        Ok(r) if r.status().is_client_error() && ids.len() > 1 => {
+            let (a, b) = ids.split_at(ids.len() / 2);
+            let mut out = fetch(client, a, retry, refused);
+            out.extend(fetch(client, b, retry, refused));
+            out
+        }
+        Ok(r) if r.status().is_client_error() => {
+            refused.extend_from_slice(ids);
+            Vec::new()
+        }
+        _ => {
+            retry.extend_from_slice(ids);
+            Vec::new()
+        }
+    }
+}
+
 pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = crate::http::client(20)
@@ -72,46 +102,44 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
             }
             let mut got = false;
             for chunk in batch.chunks(1000) {
-                let resp = client
-                    .post("https://esi.evetech.net/latest/characters/affiliation/")
-                    .json(chunk)
-                    .send()
-                    .and_then(|r| r.error_for_status())
-                    .and_then(|r| r.json::<Vec<AffilResp>>());
-                match resp {
-                    Ok(list) => {
-                        let mut ids: Vec<i64> = Vec::new();
-                        for a in &list {
-                            ids.push(a.character_id);
-                            ids.push(a.corporation_id);
-                            if let Some(al) = a.alliance_id {
-                                ids.push(al);
-                            }
-                        }
-                        let names = crate::universe::lookup_names(&ids);
-                        let now = chrono::Utc::now().timestamp();
-                        let mut c = cache.lock().unwrap();
-                        for a in list {
-                            c.fetched_at.insert(a.character_id, now);
-                            c.map.insert(
-                                a.character_id,
-                                Affil {
-                                    corp: Some(a.corporation_id),
-                                    alliance: a.alliance_id,
-                                    corp_name: names.get(&a.corporation_id).cloned(),
-                                    alliance_name: a.alliance_id.and_then(|al| names.get(&al).cloned()),
-                                    char_name: names.get(&a.character_id).cloned(),
-                                },
-                            );
-                        }
-                        got = true;
+                let (mut retry, mut refused) = (Vec::new(), Vec::new());
+                let list = fetch(&client, chunk, &mut retry, &mut refused);
+                {
+                    let mut c = cache.lock().unwrap();
+                    c.pending.extend(retry);
+                    // Not asked again until the TTL is up, or every frame that wants it would
+                    // queue it once more.
+                    let now = chrono::Utc::now().timestamp();
+                    for id in refused {
+                        c.fetched_at.insert(id, now);
                     }
-                    Err(_) => {
-                        let mut c = cache.lock().unwrap();
-                        for id in chunk {
-                            c.pending.insert(*id);
+                }
+                if !list.is_empty() {
+                    let mut ids: Vec<i64> = Vec::new();
+                    for a in &list {
+                        ids.push(a.character_id);
+                        ids.push(a.corporation_id);
+                        if let Some(al) = a.alliance_id {
+                            ids.push(al);
                         }
                     }
+                    let names = crate::universe::lookup_names(&ids);
+                    let now = chrono::Utc::now().timestamp();
+                    let mut c = cache.lock().unwrap();
+                    for a in list {
+                        c.fetched_at.insert(a.character_id, now);
+                        c.map.insert(
+                            a.character_id,
+                            Affil {
+                                corp: Some(a.corporation_id),
+                                alliance: a.alliance_id,
+                                corp_name: names.get(&a.corporation_id).cloned(),
+                                alliance_name: a.alliance_id.and_then(|al| names.get(&al).cloned()),
+                                char_name: names.get(&a.character_id).cloned(),
+                            },
+                        );
+                    }
+                    got = true;
                 }
             }
             if got {

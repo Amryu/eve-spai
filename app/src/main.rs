@@ -34,6 +34,7 @@ mod jumproute;
 mod intel;
 mod ipc;
 mod logpaths;
+mod localscan;
 mod lookup;
 mod map;
 // Only the fleet tab talks to Mumble today; the rest of the app opens links through the desktop

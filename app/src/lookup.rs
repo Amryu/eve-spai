@@ -284,6 +284,7 @@ fn fetch_category(
 ) {
     let mut new: Vec<Loss> = Vec::new();
     let mut page = 1;
+    let mut reached_cache = cached.is_empty();
     'pages: while new.len() < MAX_KILLS && page <= MAX_PAGES {
         let url = format!("{ZKILL}/{category}/characterID/{character_id}/page/{page}/");
         let zk: serde_json::Value = match client
@@ -302,6 +303,7 @@ fn fetch_category(
         for km in &entries {
             let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
             if known.contains(&id) {
+                reached_cache = true;
                 break 'pages;
             }
             if new.len() >= MAX_KILLS {
@@ -326,6 +328,9 @@ fn fetch_category(
         page += 1;
         std::thread::sleep(std::time::Duration::from_millis(1100));
     }
+    // Stopping short of the cached kills leaves a gap between them and the new ones; a list with a
+    // hole in it reads as complete, so the stale part goes.
+    let cached = if reached_cache { cached } else { &[] };
     on_batch(&combine(&new, cached));
 }
 
@@ -338,6 +343,8 @@ pub struct ZkStats {
     pub isk_lost: f64,
     pub danger_ratio: i64,
     pub gang_ratio: i64,
+    #[serde(default)]
+    pub solo_kills: i64,
     pub top_ships: Vec<(i64, String, i64)>,
     pub top_systems: Vec<(String, i64)>,
 }
@@ -375,6 +382,8 @@ pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStat
         danger_ratio: i64,
         #[serde(rename = "gangRatio", default)]
         gang_ratio: i64,
+        #[serde(rename = "soloKills", default)]
+        solo_kills: i64,
         #[serde(rename = "topLists", default)]
         top_lists: Vec<TopList>,
     }
@@ -391,6 +400,7 @@ pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStat
         isk_lost: s.isk_lost,
         danger_ratio: s.danger_ratio,
         gang_ratio: s.gang_ratio,
+        solo_kills: s.solo_kills,
         ..Default::default()
     };
     for list in &s.top_lists {

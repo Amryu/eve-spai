@@ -129,6 +129,7 @@ pub(crate) fn pilot_report() -> crate::lookup::PilotReport {
             isk_lost: 38.2e9,
             danger_ratio: 88,
             gang_ratio: 71,
+            solo_kills: 140,
             top_ships: vec![(12_005, "Muninn".into(), 400), (29_990, "Loki".into(), 120)],
             top_systems: vec![("1DQ1-A".into(), 55), ("319-3D".into(), 31)],
         }),
@@ -1141,4 +1142,57 @@ pub(crate) fn jabber_state_fleet_rooms() -> crate::jabber::JabberState {
         ],
     );
     st
+}
+
+/// A pasted local for the Lookup table. Fake names and ids only.
+pub(crate) fn lookup_rows() -> Vec<(String, crate::localscan::Row)> {
+    use crate::localscan::{parse_stats, sample_stats, Row, Tag};
+    let pilots: [(&str, i64, u32, f64, u32, u32); 6] = [
+        ("Fixture Pilot", 90_000_001, 97, -3.1, 610, 40),
+        ("Sample Hunter", 90_000_002, 88, 1.2, 240, 90),
+        ("Test Logi", 90_000_003, 41, 5.0, 30, 55),
+        ("Placeholder Scout", 90_000_004, 12, 0.4, 3, 60),
+        ("Imaginary Blops", 90_000_005, 76, -0.8, 1200, 180),
+        ("Quiet Alt", 90_000_006, 0, 2.0, 0, 0),
+    ];
+    let mut rows: Vec<(String, Row)> = pilots
+        .iter()
+        .enumerate()
+        .map(|(i, &(name, id, danger, sec, kills, losses))| {
+            let mut s = parse_stats(id, name, &sample_stats());
+            s.name = name.to_owned();
+            s.danger = danger;
+            s.security = Some(sec);
+            s.kills = kills;
+            s.losses = losses;
+            s.solo = kills / 10;
+            s.birthday = Some(now() - (i as i64 + 1) * 400 * 86_400);
+            s.faction_id = if i == 3 { 500_011 } else { 0 };
+            if i == 5 {
+                s = parse_stats(id, name, &serde_json::json!({}));
+                s.corp_id = 98_000_003;
+            }
+            if i == 1 {
+                s.alliance_id = 99_000_002;
+            }
+            if i == 2 {
+                s.tags = vec![Tag::Logi, Tag::Capital, Tag::Cyno, Tag::Fc];
+            }
+            (name.to_owned(), Row::Done(Box::new(s)))
+        })
+        .collect();
+    rows.push(("Still Loading".to_owned(), Row::Pending));
+    rows.push(("Nobody Byname".to_owned(), Row::Missing));
+    rows
+}
+
+pub(crate) fn lookup_orgs() -> Vec<(i64, crate::localscan::Org)> {
+    use crate::localscan::Org;
+    let org = |name: &str, ticker: &str| Org { name: name.to_owned(), ticker: ticker.to_owned() };
+    vec![
+        (98_000_001, org("Fixture Corp", "FIXC")),
+        (98_000_003, org("Quiet Corp", "QUIET")),
+        (99_000_001, org("Fixture Alliance", "FIXA")),
+        (99_000_002, org("Other Alliance", "OTHA")),
+    ]
 }

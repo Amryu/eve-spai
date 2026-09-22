@@ -446,121 +446,6 @@ impl SpaiApp {
         }
     }
 
-    pub(crate) fn add_lookup_names(&mut self, text: &str) {
-        for line in text.lines() {
-            let name = line.split('\t').next().unwrap_or(line).trim();
-            if name.len() < 3 || name.len() > 37 {
-                continue;
-            }
-            if self.lookup_tabs.iter().any(|t| t.eq_ignore_ascii_case(name)) {
-                continue;
-            }
-            self.lookup_tabs.push(name.to_owned());
-        }
-        if !self.lookup_tabs.is_empty() {
-            self.lookup_active = self.lookup_tabs.len() - 1;
-        }
-    }
-
-    pub(crate) fn lookup_view(&mut self, ui: &mut egui::Ui) {
-        use egui_phosphor::regular as icon;
-        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
-        for f in dropped {
-            let text = f
-                .bytes
-                .as_ref()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_else(|| f.name.clone());
-            self.add_lookup_names(&text);
-        }
-
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(
-                "Paste pilot names (one per line, e.g. the local member list) or drop them here.",
-            )
-            .weak(),
-        );
-        ui.add(
-            egui::TextEdit::multiline(&mut self.lookup_input)
-                .hint_text("Pilot names, one per line…")
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
-        );
-        ui.horizontal(|ui| {
-            if ui.button(format!("{}  Look up", icon::MAGNIFYING_GLASS)).clicked()
-                && !self.lookup_input.trim().is_empty()
-            {
-                let text = std::mem::take(&mut self.lookup_input);
-                self.add_lookup_names(&text);
-            }
-            if !self.lookup_tabs.is_empty() && ui.button("Close all").clicked() {
-                self.lookup_tabs.clear();
-                self.lookup_active = 0;
-                self.feed_cache.clear();
-            }
-        });
-        ui.separator();
-        if self.lookup_tabs.is_empty() {
-            ui.label(egui::RichText::new("No lookups yet.").weak());
-            return;
-        }
-
-        let tabs = self.lookup_tabs.clone();
-        let mut close: Option<usize> = None;
-        egui::ScrollArea::horizontal().id_salt("lookup_tabs").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (i, name) in tabs.iter().enumerate() {
-                    let label = match self.feed_cache.get(name).map(|f| f.lock().unwrap().clone()) {
-                        Some(crate::lookup::LookupState::Done(r)) => r.name,
-                        _ => name.clone(),
-                    };
-                    if ui.menu_label(self.lookup_active == i, label).clicked() {
-                        self.lookup_active = i;
-                    }
-                    if ui.add(egui::Button::new(icon::X).frame(false)).on_hover_text("Close tab").clicked() {
-                        close = Some(i);
-                    }
-                    ui.separator();
-                }
-            });
-        });
-        if let Some(i) = close {
-            let gone = self.lookup_tabs.remove(i);
-            self.feed_cache.remove(&gone);
-            if self.lookup_active >= self.lookup_tabs.len() {
-                self.lookup_active = self.lookup_tabs.len().saturating_sub(1);
-            }
-        }
-        ui.separator();
-
-        let Some(name) = self.lookup_tabs.get(self.lookup_active).cloned() else { return };
-        // Fetched when a tab is first shown: a pasted local list can name dozens of pilots, and each
-        // lookup walks zKillboard's pages.
-        let state = self
-            .feed_cache
-            .entry(name.clone())
-            .or_insert_with(|| {
-                let s = std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
-                crate::lookup::spawn_lookup(name.clone(), s.clone(), ui.ctx().clone());
-                s
-            })
-            .clone();
-        let state = state.lock().unwrap().clone();
-        match state {
-            crate::lookup::LookupState::Done(report) => self.pilot_report_ui(ui, &report),
-            crate::lookup::LookupState::Failed(e) => {
-                ui.label(egui::RichText::new(e).weak());
-            }
-            _ => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Looking up {name}\u{2026}"));
-                });
-            }
-        }
-    }
-
     pub(crate) fn refresh_characters(&mut self) {
         if let Some(store) = &self.store {
             self.characters = store.list_characters();
@@ -975,9 +860,9 @@ impl SpaiApp {
             for (pane, label) in [
                 (PilotPane::Info, "Info".to_owned()),
                 (PilotPane::Ships, "Ships".to_owned()),
-                (PilotPane::Kills, format!("Kills ({})", report.kills.len())),
-                (PilotPane::Solo, format!("Solo ({})", report.solo.len())),
-                (PilotPane::Losses, format!("Losses ({})", report.losses.len())),
+                (PilotPane::Kills, pane_count("Kills", report.kills.len(), report.stats.as_ref().map(|s| s.ships_destroyed))),
+                (PilotPane::Solo, pane_count("Solo", report.solo.len(), report.stats.as_ref().map(|s| s.solo_kills))),
+                (PilotPane::Losses, pane_count("Losses", report.losses.len(), report.stats.as_ref().map(|s| s.ships_lost))),
             ] {
                 if selectable_chip(ui, self.pilot_pane == pane, label).clicked() {
                     self.pilot_pane = pane;
@@ -1273,5 +1158,14 @@ impl SpaiApp {
             self.fit_view = None;
             self.fit_loss = None;
         }
+    }
+}
+
+/// A pane tab's count. The lists hold the most recent kills only, so a larger lifetime total is
+/// shown beside the sample rather than letting the sample pass for it.
+fn pane_count(label: &str, shown: usize, total: Option<i64>) -> String {
+    match total {
+        Some(t) if t > shown as i64 => format!("{label} ({shown} of {t})"),
+        _ => format!("{label} ({shown})"),
     }
 }

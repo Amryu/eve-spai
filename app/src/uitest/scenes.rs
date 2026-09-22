@@ -88,15 +88,15 @@ fn docked_system_scene(name: &'static str) -> Scene {
     })
 }
 
-/// The Lookup view with one pilot's tab open, rendered through the same report UI as the pilot window.
+/// The Lookup view with a pasted local loaded: finished rows, one still loading, one unknown name.
 fn lookup_tab_scene(name: &'static str) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, [1100.0, 760.0], move |ui| {
+    Scene::ui(name, [1700.0, 600.0], move |ui| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.seed_notes(fixtures::notebook());
-            a.seed_lookup_tab(fixtures::pilot_report());
+            a.seed_lookup(fixtures::lookup_rows(), fixtures::lookup_orgs());
             a.view = View::Lookup;
             a
         });
@@ -6376,4 +6376,22 @@ fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
     harness.run();
     harness.run();
     assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");
+}
+
+/// A text-only cell explains its column on hover, the FC one included.
+#[test]
+fn uitest_lookup_fc_cell_explains_itself() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = all().into_iter().find(|s| s.name == "view_lookup_tab").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    let header = harness.get_by_label("FC").accesskit_node().raw_bounds().expect("header bounds");
+    let row = harness.get_by_label("Test Logi").accesskit_node().raw_bounds().expect("row bounds");
+    let at = egui::pos2((header.x0 + header.x1) as f32 / 2.0, (row.y0 + row.y1) as f32 / 2.0 + 6.0);
+    harness.event(egui::Event::PointerMoved(at));
+    harness.run_steps(4);
+    assert!(
+        harness.query_by_label_contains("command ships").is_some(),
+        "hovering the FC cell at {at:?} showed no explanation"
+    );
 }

@@ -80,6 +80,22 @@ pub fn character(client: &reqwest::blocking::Client, name: &str) -> Result<Optio
     Ok(best_match(ids.characters.unwrap_or_default(), name))
 }
 
+/// Ids for many character names at once, keyed by the lowercased name asked for. `None` when the
+/// call itself failed, so the caller can tell "no such pilot" from "ask again later". Keep `names`
+/// under ~200: ESI answers 400 or 504 to much larger batches.
+pub fn character_ids(client: &reqwest::blocking::Client, names: &[String]) -> Option<HashMap<String, (i64, String)>> {
+    #[derive(serde::Deserialize)]
+    struct Ids {
+        characters: Option<Vec<NameEntry>>,
+    }
+    let ids: Ids = client.post(IDS_URL).json(names).send().ok()?.error_for_status().ok()?.json().ok()?;
+    let mut out = HashMap::new();
+    for c in ids.characters.unwrap_or_default() {
+        out.insert(c.name.to_lowercase(), (c.id, c.name));
+    }
+    Some(out)
+}
+
 fn best_match(chars: Vec<NameEntry>, name: &str) -> Option<(i64, String)> {
     let exact = chars.iter().position(|c| c.name.eq_ignore_ascii_case(name));
     let pick = exact.or((!chars.is_empty()).then_some(0))?;

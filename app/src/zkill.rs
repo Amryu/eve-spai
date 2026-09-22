@@ -25,6 +25,10 @@ const ZKILL_API: &str = "https://zkillboard.com/api";
 const ESI: &str = "https://esi.evetech.net/latest";
 const BACKFILL_WINDOW_SECS: i64 = battle::BATTLE_WINDOW_SECS * 12;
 const BACKFILL_MAX_KILLS: usize = 200;
+/// zKillboard list pages walked back looking for an older window.
+const BACKFILL_MAX_PAGES: u32 = 10;
+/// Sequences behind the live head past which the feed gives up on catching up.
+const BEHIND_JUMP: u64 = 500;
 const BACKFILL_DEBOUNCE_SECS: i64 = 1800;
 
 pub type SharedBattles = Arc<Mutex<Vec<Battle>>>;
@@ -152,10 +156,14 @@ pub fn spawn(
                         if stuck >= 15 {
                             stuck = 0;
                             if let Some(cur) = fetch_sequence(&client) {
-                                if cur > s + 5 {
+                                // Skip only the one that never arrived; jumping to the head dropped
+                                // every kill in between. Only a feed so far behind that the
+                                // ephemeral store has let go of the gap jumps.
+                                if cur > s + BEHIND_JUMP {
                                     seq = Some(cur);
                                 } else if cur > s {
                                     seq = Some(s + 1);
+                                    stuck = 12;
                                 }
                             }
                         }
@@ -749,46 +757,68 @@ fn backfill_system(
     have: &std::collections::HashSet<i64>,
     collect: &mut dyn FnMut(Engagement),
 ) {
-    let url = format!("{ZKILL_API}/solarSystemID/{system_id}/");
-    let zk: serde_json::Value =
-        match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[zkill] backfill {system_id} failed: {e}");
-                return;
-            }
-        };
     let mut names: HashMap<i64, String> = HashMap::new();
     let mut fetched = 0usize;
-    for km in zk.as_array().cloned().unwrap_or_default().iter().take(BACKFILL_MAX_KILLS) {
-        let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
-        if have.contains(&id) {
-            continue;
-        }
-        let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str()) else {
-            continue;
-        };
-        let value =
-            km.get("zkb").and_then(|z| z.get("totalValue")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let Some(detail) = fetch_killmail_detail(client, id, hash) else { continue };
-        fetched += 1;
-        if fetched % 6 == 0 {
-            std::thread::sleep(Duration::from_millis(1100));
-        }
-        let t = chrono::DateTime::parse_from_rfc3339(&detail.killmail_time)
-            .map(|d| d.timestamp())
-            .unwrap_or(0);
-        // The list is newest-first, so once we drop below the window the rest are older still.
-        if t != 0 && t < oldest {
+    let time_of = |d: &Killmail| {
+        chrono::DateTime::parse_from_rfc3339(&d.killmail_time).map(|d| d.timestamp()).unwrap_or(0)
+    };
+    // Newest first, 200 a page. A window in the past sits pages back in a busy system, so a page
+    // wholly newer than the window is skipped on the strength of its last kill alone.
+    'pages: for page in 1..=BACKFILL_MAX_PAGES {
+        let url = format!("{ZKILL_API}/solarSystemID/{system_id}/page/{page}/");
+        let zk: serde_json::Value =
+            match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[zkill] backfill {system_id} page {page} failed: {e}");
+                    return;
+                }
+            };
+        let entries = zk.as_array().cloned().unwrap_or_default();
+        if entries.is_empty() {
             break;
         }
-        if t > newest {
-            continue;
+        let entry = |km: &serde_json::Value| {
+            let id = km.get("killmail_id").and_then(|v| v.as_i64())?;
+            let hash = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str())?.to_owned();
+            let value = km.get("zkb").and_then(|z| z.get("totalValue")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            Some((id, hash, value))
+        };
+        if let Some((id, hash, _)) = entries.last().and_then(entry) {
+            if let Some(last) = fetch_killmail_detail(client, id, &hash) {
+                fetched += 1;
+                if time_of(&last) > newest {
+                    std::thread::sleep(Duration::from_millis(1100));
+                    continue 'pages;
+                }
+            }
         }
-        if let Some(eng) =
-            build_engagement(client, &detail, id, value, true, systems, ship_ids, &mut names)
-        {
-            collect(eng);
+        for km in &entries {
+            if fetched >= BACKFILL_MAX_KILLS {
+                break 'pages;
+            }
+            let Some((id, hash, value)) = entry(km) else { continue };
+            if have.contains(&id) {
+                continue;
+            }
+            let Some(detail) = fetch_killmail_detail(client, id, &hash) else { continue };
+            fetched += 1;
+            if fetched % 6 == 0 {
+                std::thread::sleep(Duration::from_millis(1100));
+            }
+            let t = time_of(&detail);
+            // Newest first: once below the window, everything after is older still.
+            if t != 0 && t < oldest {
+                break 'pages;
+            }
+            if t > newest {
+                continue;
+            }
+            if let Some(eng) =
+                build_engagement(client, &detail, id, value, true, systems, ship_ids, &mut names)
+            {
+                collect(eng);
+            }
         }
     }
 }

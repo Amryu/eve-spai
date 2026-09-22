@@ -135,6 +135,7 @@ pub enum LinkKind {
     Killmail,
     BattleReport,
     Dscan,
+    LocalScan,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -179,6 +180,8 @@ pub fn extract_links(text: &str) -> Vec<IntelLink> {
             || lower.contains("eve-spai.com/br/")
         {
             IntelLink { kind: LinkKind::BattleReport, url: url.to_owned(), kill_id: None }
+        } else if crate::localscan::is_local_scan_url(url) {
+            IntelLink { kind: LinkKind::LocalScan, url: url.to_owned(), kill_id: None }
         } else if lower.contains("dscan.me")
             || lower.contains("dscan.org")
             || lower.contains("dscan.info")

@@ -1011,6 +1011,17 @@ pub(crate) fn intel_row(
                                 clicked = Some(IntelClick::Dscan(link.url.clone()));
                             }
                         }
+                        LinkKind::LocalScan => {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!("{} local scan", icon::USERS_THREE)).color(accent),
+                                ))
+                                .on_hover_text(format!("Look these pilots up\n{}", link.url))
+                                .clicked()
+                            {
+                                clicked = Some(IntelClick::LocalScan(link.url.clone()));
+                            }
+                        }
                     }
                 }
 

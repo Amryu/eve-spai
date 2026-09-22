@@ -31,6 +31,12 @@ pub struct Settings {
     /// The costliest destination zone routes may bridge into, 1 (free) to 5.
     #[serde(default = "default_ansiblex_max_zone")]
     pub ansiblex_max_zone: u8,
+    /// Pasted pilot lists, newest first, names only.
+    #[serde(default)]
+    pub lookup_history: Vec<Vec<String>>,
+    /// Lookup table columns the user switched off, by column key.
+    #[serde(default)]
+    pub lookup_hidden_columns: Vec<String>,
     /// The version of the bundled bridge and upgrade defaults already applied.
     #[serde(default)]
     pub baked_defaults: u32,
@@ -1226,6 +1232,8 @@ impl Default for Settings {
             ansiblex_capital: default_ansiblex_capital(),
             ansiblex_max_zone: default_ansiblex_max_zone(),
             baked_defaults: 0,
+            lookup_history: Vec::new(),
+            lookup_hidden_columns: Vec::new(),
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_only_undocked: false,
@@ -1727,6 +1735,20 @@ mod window_geometry_tests {
         let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
         assert_eq!(legacy.jabber_jid, "a@b");
         assert!(!legacy.intel_count_bridges);
+    }
+
+    #[test]
+    fn lookup_history_and_columns_roundtrip_and_default_empty() {
+        let s = Settings {
+            lookup_history: vec![vec!["Fake One".into(), "Fake Two".into()]],
+            lookup_hidden_columns: vec!["cyno".into()],
+            ..Default::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.lookup_history, s.lookup_history);
+        assert_eq!(back.lookup_hidden_columns, vec!["cyno".to_owned()]);
+        let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
+        assert!(legacy.lookup_history.is_empty() && legacy.lookup_hidden_columns.is_empty());
     }
 
     #[test]
