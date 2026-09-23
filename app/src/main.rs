@@ -54,6 +54,7 @@ mod push;
 mod rats;
 #[cfg(feature = "fleet")]
 mod rescue;
+mod routeforce;
 mod sde;
 mod sealed;
 mod settings;

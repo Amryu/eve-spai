@@ -1144,6 +1144,8 @@ impl SpaiApp {
         let mut start: Option<bool> = None;
         // Collected rather than applied inside the closure: the row renderer borrows `self`.
         let mut motd: Option<String> = None;
+        let mut leave: Option<String> = None;
+        let pinned: std::collections::HashSet<String> = self.jabber_rescue_rooms().into_iter().collect();
         egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.bg_stroke = egui::Stroke::NONE;
@@ -1170,6 +1172,7 @@ impl SpaiApp {
                         Some(egui::Color32::from_rgb(r, g, b)),
                         "",
                         false,
+                        false,
                     )
                     .clicked()
                 {
@@ -1192,6 +1195,7 @@ impl SpaiApp {
                     None,
                     &c.motd,
                     c.inaccessible,
+                    !pinned.contains(&c.jid),
                 );
                 if !c.motd.trim().is_empty() {
                     row.context_menu(|ui| {
@@ -1201,7 +1205,25 @@ impl SpaiApp {
                         }
                     });
                 }
-                if row.clicked() {
+                // Closing a tab only hides the room; this is the way out of it. On the row itself,
+                // because the sidebar is where a room the user is done with is still listed. The
+                // rescue rooms are pinned open, so they have no button to offer.
+                if pinned.contains(&c.jid) {
+                    if row.clicked() {
+                        open = Some(c.jid.clone());
+                    }
+                    continue;
+                }
+                let btn = egui::Rect::from_min_max(
+                    egui::pos2(row.rect.right() - 22.0, row.rect.top()),
+                    egui::pos2(row.rect.right() - 4.0, row.rect.bottom()),
+                );
+                let left = ui
+                    .put(btn, egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false))
+                    .on_hover_text("Leave this room. It stops receiving messages until you join it again.");
+                if left.clicked() {
+                    leave = Some(c.jid.clone());
+                } else if row.clicked() {
                     open = Some(c.jid.clone());
                 }
             }
@@ -1210,6 +1232,9 @@ impl SpaiApp {
                 start = Some(true);
             }
         });
+        if let Some(jid) = leave {
+            self.jabber_forget(&jid, true);
+        }
         if let Some(jid) = motd {
             self.jabber_motd_window = Some(jid);
         }
@@ -1324,6 +1349,7 @@ impl SpaiApp {
         presence: Option<egui::Color32>,
         motd: &str,
         inaccessible: bool,
+        action_space: bool,
     ) -> egui::Response {
         let selected = self.jabber_chat.as_deref() == Some(jid);
         // Reserved now, filled in once the row's own height is known: painting a background after
@@ -1357,6 +1383,10 @@ impl SpaiApp {
                 ui.add(egui::Label::new(text).truncate().selectable(false));
                 if unread > 0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Room rows carry a leave button on the right; the badge sits left of it.
+                        if action_space {
+                            ui.add_space(18.0);
+                        }
                         let (fg, bg) = if mention {
                             (egui::Color32::WHITE, ui.visuals().hyperlink_color)
                         } else {
@@ -1571,6 +1601,11 @@ impl SpaiApp {
         // enough to bring the tab back. Reopening on ordinary room traffic would undo the hide
         // within seconds of every reconnect.
         for k in &f.unread {
+            // Except the ping bot: its pings have their own row and badge, and the user closed its
+            // conversation knowing the pings keep coming.
+            if crate::jabber::is_ping_sender(k) {
+                continue;
+            }
             if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
                 self.settings.jabber_closed_dms.remove(p);
                 save = true;
@@ -1637,7 +1672,11 @@ impl SpaiApp {
         // and neither reopens something on a closed-list.
         for k in &f.unread {
             let is_room = room_set.contains(k);
-            let closed = if is_room { closed_rooms.contains(k) } else { closed_dms.contains(k) };
+            let closed = if is_room {
+                closed_rooms.contains(k)
+            } else {
+                closed_dms.contains(k) || crate::jabber::is_ping_sender(k)
+            };
             let loud = if is_room { f.mentions.contains(k) } else { true };
             if loud && !closed && !want.contains(k) {
                 want.push(k.clone());

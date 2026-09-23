@@ -6429,3 +6429,42 @@ fn uitest_bench_intel_scroll() {
         println!("intel {label}: {:.1} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64);
     }
 }
+
+/// Closing a room's tab only hides it, so the sidebar carries the way out: one leave button per
+/// room row, and none on the rescue rooms, which are pinned open.
+#[test]
+fn uitest_room_rows_offer_a_leave_button() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_sidebar_convos").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let leaves = harness
+        .root()
+        .children_recursive()
+        .filter(|n| {
+            let node = n.accesskit_node();
+            node.role() == Role::Button
+                && node.label().unwrap_or_default().contains(egui_phosphor::regular::SIGN_OUT)
+        })
+        .count();
+    // The scene's sidebar lists five rooms, none of them pinned by Rescue Mode.
+    assert_eq!(leaves, 5, "expected one leave button per room row");
+
+    // With Rescue Mode on, delve911 and skirmish_commanders are held open and offer no way out.
+    #[cfg(feature = "fleet")]
+    {
+    let mut pinned = all().into_iter().find(|s| s.name == "jabber_sidebar_rescue_pinned").expect("scene");
+    let harness = harness::build(&mut pinned, false);
+    let leaves = harness
+        .root()
+        .children_recursive()
+        .filter(|n| {
+            let node = n.accesskit_node();
+            node.role() == Role::Button
+                && node.label().unwrap_or_default().contains(egui_phosphor::regular::SIGN_OUT)
+        })
+        .count();
+    assert_eq!(leaves, 3, "the two pinned rescue rooms must not offer a leave button");
+    }
+}

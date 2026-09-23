@@ -6,6 +6,12 @@ use crate::pings::Ping;
 const PING_SENDER: &str = "directorbot";
 pub const PING_FEED_KEY: &str = "__pings__";
 
+/// The ping bot's own conversation. Its messages are the ping feed, which has its own row and its
+/// own badge, so the conversation itself never badges and never reopens a tab the user closed.
+pub fn is_ping_sender(jid: &str) -> bool {
+    jid.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(PING_SENDER))
+}
+
 const KEYCHAIN_SERVICE: &str = "eve-spai-jabber";
 
 pub fn save_password(jid: &str, password: &str) -> anyhow::Result<()> {
@@ -413,15 +419,15 @@ pub(crate) fn receive_direct(
     delayed: bool,
     store: Option<&crate::store::Store>,
 ) {
+    let bot = is_ping_sender(key);
     push_msg(
         state,
         key,
         ChatMsg { from: key.to_owned(), body, time: stamp, outgoing: false },
-        !delayed,
+        !delayed && !bot,
         false,
         store,
     );
-    let bot = key.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(PING_SENDER));
     if delayed && !bot {
         let mut s = state.lock().unwrap();
         s.unread.insert(key.to_owned());
@@ -1075,6 +1081,14 @@ mod tests {
             &mut online,
         );
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn only_the_ping_bot_is_the_ping_sender() {
+        assert!(super::is_ping_sender("directorbot@goonfleet.com"));
+        assert!(super::is_ping_sender("DirectorBot@goonfleet.com"));
+        assert!(!super::is_ping_sender("director@goonfleet.com"));
+        assert!(!super::is_ping_sender("delve911@conference.goonfleet.com"));
     }
 
     #[test]

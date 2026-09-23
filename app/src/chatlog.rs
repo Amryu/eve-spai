@@ -39,7 +39,7 @@ pub fn read_tail(path: &Path, offset: u64) -> Option<(Option<ChatMeta>, Vec<Chat
     let text = String::from_utf16_lossy(&units[..complete]);
     let next = offset + complete as u64 * 2;
     if offset > 0 {
-        return Some((None, text.lines().filter_map(|l| parse_message(l.trim())).collect(), next));
+        return Some((None, text.lines().filter_map(|l| parse_message(clean(l))).collect(), next));
     }
     let (meta, messages) = parse(&text)?;
     Some((Some(meta), messages, next))
@@ -50,7 +50,7 @@ fn parse(text: &str) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     let mut messages = Vec::new();
 
     for raw in text.lines() {
-        let line = raw.trim_start_matches('\u{feff}').trim();
+        let line = clean(raw);
         if let Some(rest) = line.strip_prefix("Channel Name:") {
             channel = Some(rest.trim().to_owned());
         } else if line.starts_with("Listener:") {
@@ -65,6 +65,12 @@ fn parse(text: &str) -> Option<(ChatMeta, Vec<ChatMessage>)> {
         },
         messages,
     ))
+}
+
+/// EVE writes a byte-order mark before appended lines, not only at the head of the file, and a BOM
+/// is not whitespace: without this every line after the first read fails to parse.
+fn clean(line: &str) -> &str {
+    line.trim_start_matches('\u{feff}').trim()
 }
 
 fn parse_message(line: &str) -> Option<ChatMessage> {
@@ -100,14 +106,17 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(offset, utf16(&format!("{header}{first}")).len() as u64);
 
-        // Appended, with the last line still being written.
-        let more = "[ 2026.09.22 18:00:05 ] Fake Pilot > 319-3D hostile\r\n[ 2026.09.22 18:00:0";
+        // Appended, with a fresh BOM as EVE writes one, and the last line still being written.
+        let more = "\u{feff}[ 2026.09.22 18:00:05 ] Fake Pilot > 319-3D hostile\r\n[ 2026.09.22 18:00:0";
         std::fs::write(&path, utf16(&format!("{header}{first}{more}"))).expect("append");
         let (meta, msgs, next) = read_tail(&path, offset).expect("tail read");
         assert!(meta.is_none(), "the header is only in the first read");
         assert_eq!(msgs.len(), 1, "only the finished line");
         assert_eq!(msgs[0].text, "319-3D hostile");
-        assert_eq!(next, offset + utf16("[ 2026.09.22 18:00:05 ] Fake Pilot > 319-3D hostile\r\n").len() as u64);
+        assert_eq!(
+            next,
+            offset + utf16("\u{feff}[ 2026.09.22 18:00:05 ] Fake Pilot > 319-3D hostile\r\n").len() as u64
+        );
 
         // Nothing new: no messages, same offset.
         assert_eq!(read_tail(&path, next).expect("empty read").1.len(), 0);

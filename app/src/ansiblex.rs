@@ -116,6 +116,19 @@ impl BridgeKey {
     }
 }
 
+/// `base` with every configured bridge laid over it in both directions: what the in-game autopilot
+/// routes over, since it knows nothing of zones.
+pub fn game_graph(base: &Systems, bridges: &[JumpBridge]) -> Systems {
+    let mut g = base.gates_only();
+    let edges: Vec<(i64, i64)> = bridges
+        .iter()
+        .filter_map(|b| Some((g.lookup(&b.from)?.id, g.lookup(&b.to)?.id)))
+        .flat_map(|(a, b)| [(a, b), (b, a)])
+        .collect();
+    g.add_directed_bridges(&edges);
+    g
+}
+
 /// Lays the bridge directions the zone limit permits over a freshly loaded graph.
 pub fn feed(settings: &crate::settings::Settings, systems: &mut Systems) -> BridgeKey {
     let key = BridgeKey::of(settings);
@@ -276,6 +289,20 @@ mod tests {
         let narrow = with_max_zone(&base, &settings, 1);
         assert_eq!(narrow.jumps(4, 1, 10), Some(1));
         assert_eq!(narrow.jumps(1, 4, 10), Some(3));
+    }
+
+    #[test]
+    fn the_game_graph_keeps_every_bridge_both_ways() {
+        let base = graph();
+        let list = [jb("CAP", "FAR"), jb("FAR", "OLD MAN STAR")];
+        // Zone 1 would permit neither direction of the second bridge, nor the way out on the first.
+        assert_eq!(permitted_edges(&list, &base, "CAP", 1), vec![(4, 1)]);
+        let game = game_graph(&base, &list);
+        for (a, b) in [(1, 4), (4, 1)] {
+            assert!(game.is_bridge(a, b), "the client routes over {a}->{b} whatever the zone");
+        }
+        assert_eq!(game.jumps(1, 5, 10), Some(2), "the bridge, then one gate; not four gates");
+        assert_eq!(base.jumps(1, 5, 10), Some(4), "the app's own graph has no bridge to take");
     }
 
     #[test]

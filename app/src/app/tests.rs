@@ -1627,6 +1627,20 @@ mod jabber_room_tests {
         assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
     }
 
+    /// Pings keep arriving from the ping bot forever. Its conversation is the feed, which has its
+    /// own row and badge, so closing its tab has to stick.
+    #[test]
+    fn the_ping_bots_conversation_stays_closed() {
+        const BOT: &str = "directorbot@goonfleet.com";
+        let (_ctx, mut a) = app();
+        a.settings.jabber_closed_dms = vec![BOT.to_owned()];
+        let mut f = frame(&[], &[BOT], &[]);
+        f.dm_keys = vec![BOT.to_owned()];
+        a.jabber_reconcile(&f);
+        assert!(a.jabber_tabs.is_empty(), "a ping reopened the bot's tab");
+        assert_eq!(a.settings.jabber_closed_dms, vec![BOT.to_owned()]);
+    }
+
     /// The X hides, and the room stays joined.
     #[test]
     fn closing_a_room_tab_only_hides_it() {

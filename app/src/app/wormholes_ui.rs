@@ -171,7 +171,47 @@ impl SpaiApp {
                 }
             }
         }
+        if self.force_ansiblex_route(&cid, &cname, dest) {
+            return;
+        }
         crate::esi::set_waypoint(cid, cname, dest, true);
+    }
+
+    /// The client's route planner ignores Ansiblex zones, so a route that avoids the costly ones
+    /// is pinned with waypoints. Returns whether it took over; the work happens off the UI thread,
+    /// since it walks the whole map a few times.
+    fn force_ansiblex_route(&self, cid: &str, cname: &str, dest: i64) -> bool {
+        let bridges = self.settings.jump_bridges.clone();
+        if bridges.is_empty() {
+            return false;
+        }
+        let (Some(from), Some(graph)) = (self.player_system(), self.systems.clone()) else {
+            return false;
+        };
+        if from == dest {
+            return false;
+        }
+        let (capital, max_zone) =
+            (self.settings.ansiblex_capital.clone(), self.settings.ansiblex_max_zone);
+        let (cid, cname) = (cid.to_owned(), cname.to_owned());
+        let _ = std::thread::Builder::new().name("route-force".into()).spawn(move || {
+            let holes = std::collections::HashMap::new();
+            let Some(path) = graph.route_with(from, dest, true, true, &holes, |_| true) else {
+                crate::esi::set_waypoint(cid, cname, dest, true);
+                return;
+            };
+            let game = crate::ansiblex::game_graph(&graph, &bridges);
+            let permitted: std::collections::HashSet<(i64, i64)> =
+                crate::ansiblex::permitted_edges(&bridges, &game, &capital, max_zone).into_iter().collect();
+            let ok = |a: i64, b: i64| !game.is_bridge(a, b) || permitted.contains(&(a, b));
+            let wp = crate::routeforce::waypoints(&path, &game, &ok);
+            match wp.len() {
+                0 => crate::esi::set_waypoint(cid, cname, dest, true),
+                1 => crate::esi::set_waypoint(cid, cname, dest, true),
+                _ => crate::esi::set_route(cid, cname, wp),
+            }
+        });
+        true
     }
 
     /// Remembers that the game now holds a route this app set.

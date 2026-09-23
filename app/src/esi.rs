@@ -99,7 +99,7 @@ pub fn spawn_standings(
     out: Arc<Mutex<std::collections::HashMap<i64, f32>>>,
     ctx: egui::Context,
 ) {
-    let _ = std::thread::Builder::new().name("esi-skills".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("esi-standings".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
         let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else {
@@ -178,7 +178,7 @@ pub fn set_waypoint(
     system_id: i64,
     clear: bool,
 ) {
-    let _ = std::thread::Builder::new().name("esi-fleet".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("esi-waypoint".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
         let Some(token) =
@@ -267,7 +267,7 @@ fn push_route(
 }
 
 pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
-    let _ = std::thread::Builder::new().name("esi-fleet-members".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("esi-route".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
         let Some(token) =
@@ -298,7 +298,7 @@ pub fn fetch_jump_skills(
     out: SharedJumpSkills,
     ctx: egui::Context,
 ) {
-    let _ = std::thread::Builder::new().name("esi-fleet-invite".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("esi-jump-skills".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
         let Some(token) =
@@ -340,7 +340,7 @@ pub fn save_fitting(
     ship_type_id: i64,
     items: Vec<(i64, i64, i64)>,
 ) {
-    let _ = std::thread::Builder::new().name("esi-standings".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("esi-fitting".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
         let Some(token) =
