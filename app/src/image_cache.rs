@@ -1,4 +1,4 @@
-use egui::load::{Bytes, BytesLoadResult, BytesLoader, BytesPoll, LoadError};
+use egui::load::{Bytes, BytesLoadResult, BytesLoader, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -8,7 +8,33 @@ use std::task::Poll;
 use std::time::Duration;
 
 const EVE_IMG_PREFIX: &str = "https://images.evetech.net/";
+/// Fetch and decode threads. A feed scrolled fast asks for hundreds of portraits at once; one
+/// thread each swamped the machine, and decoding on the UI thread stalled the frame instead.
+const WORKERS: usize = 4;
 const TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// The shared fetch and decode pool.
+fn pool() -> &'static std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>> {
+    use std::sync::OnceLock;
+    static POOL: OnceLock<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..WORKERS {
+            let rx = rx.clone();
+            let _ = std::thread::Builder::new().name(format!("image-{i}")).spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        tx
+    })
+}
 
 #[derive(Clone)]
 struct Img {
@@ -74,13 +100,13 @@ impl BytesLoader for EveImageCache {
         let client = self.client.clone();
         let mem = Arc::clone(&self.mem);
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let _ = pool().send(Box::new(move || {
             let result = load_blocking(&client, &uri, path.as_deref());
             if let Some(slot) = mem.lock().unwrap().get_mut(&uri) {
                 *slot = Poll::Ready(result);
             }
             ctx.request_repaint();
-        });
+        }));
 
         Ok(BytesPoll::Pending { size: None })
     }
@@ -212,10 +238,113 @@ fn prune_with(dir: &Path, ttl: Duration) {
     }
 }
 
+/// Decodes EVE images off the UI thread. egui_extras' loader decodes inside `load`, on the frame
+/// that first shows the image, so a feed scrolled into a screenful of new portraits decoded all of
+/// them between two frames.
+#[derive(Default)]
+struct EveImageDecoder {
+    mem: Arc<Mutex<HashMap<String, Poll<Result<Arc<egui::ColorImage>, String>>>>>,
+}
+
+impl ImageLoader for EveImageDecoder {
+    fn id(&self) -> &str {
+        egui::generate_loader_id!(EveImageDecoder)
+    }
+
+    fn load(&self, ctx: &egui::Context, uri: &str, _: SizeHint) -> ImageLoadResult {
+        if !uri.starts_with(EVE_IMG_PREFIX) {
+            return Err(LoadError::NotSupported);
+        }
+        if let Some(entry) = self.mem.lock().unwrap_or_else(|e| e.into_inner()).get(uri).cloned() {
+            return match entry {
+                Poll::Ready(Ok(image)) => Ok(ImagePoll::Ready { image }),
+                Poll::Ready(Err(err)) => Err(LoadError::Loading(err)),
+                Poll::Pending => Ok(ImagePoll::Pending { size: None }),
+            };
+        }
+        // The bytes come from the cache above, which fetches them on the same pool.
+        let bytes = match ctx.try_load_bytes(uri)? {
+            BytesPoll::Ready { bytes, .. } => bytes,
+            BytesPoll::Pending { size } => return Ok(ImagePoll::Pending { size }),
+        };
+        {
+            let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+            // A portrait is ~16 KB decoded. This is a memory bound, not a hit-rate one: the bytes
+            // stay cached, so a dropped image costs one decode.
+            if mem.len() > 2000 {
+                mem.clear();
+            }
+            mem.insert(uri.to_owned(), Poll::Pending);
+        }
+        let (uri, mem, ctx) = (uri.to_owned(), Arc::clone(&self.mem), ctx.clone());
+        let _ = pool().send(Box::new(move || {
+            let result = decode(&bytes).map(Arc::new);
+            if let Some(slot) = mem.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&uri) {
+                *slot = Poll::Ready(result);
+            }
+            ctx.request_repaint();
+        }));
+        Ok(ImagePoll::Pending { size: None })
+    }
+
+    fn forget(&self, uri: &str) {
+        let _ = self.mem.lock().unwrap_or_else(|e| e.into_inner()).remove(uri);
+    }
+
+    fn forget_all(&self) {
+        self.mem.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    fn byte_size(&self) -> usize {
+        self.mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|e| match e {
+                Poll::Ready(Ok(img)) => img.width() * img.height() * 4,
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn has_pending(&self) -> bool {
+        self.mem.lock().unwrap_or_else(|e| e.into_inner()).values().any(|e| e.is_pending())
+    }
+}
+
+fn decode(bytes: &[u8]) -> Result<egui::ColorImage, String> {
+    let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, image.as_flat_samples().as_slice()))
+}
+
 /// Install egui's image loaders with the disk-caching EVE-image loader in front of the
 /// default network loader. Loaders are tried last-registered-first, so registering ours
 /// *after* `install_image_loaders` gives it precedence for the `images.evetech.net` host.
 pub fn install_image_loaders_cached(ctx: &egui::Context) {
     egui_extras::install_image_loaders(ctx);
     ctx.add_bytes_loader(Arc::new(EveImageCache::new()));
+    ctx.add_image_loader(Arc::new(EveImageDecoder::default()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode;
+
+    /// A 1x1 red PNG, so the decode path is covered without a fixture file.
+    const RED_DOT: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+        0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn a_png_decodes_to_pixels() {
+        let img = decode(RED_DOT).expect("decode");
+        assert_eq!(img.size, [1, 1]);
+        assert_eq!(img.pixels[0], egui::Color32::from_rgb(255, 0, 0));
+        assert!(decode(b"not an image").is_err());
+    }
 }

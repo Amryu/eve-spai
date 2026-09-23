@@ -471,6 +471,9 @@ pub struct SpaiApp {
     battle_scrubs_open: bool,
     br_inputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrInputs>>,
     br_outputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrOutputs>>,
+    /// The slowest frame of the last 120, in milliseconds: what the status bar reports as fps.
+    frame_ms: f32,
+    frame_worst: Vec<f32>,
     /// When the battles view last drew, so the worker can idle while nobody is looking.
     br_demand: std::sync::Arc<std::sync::atomic::AtomicU64>,
     br_wake: crate::brview::Wake,
@@ -1391,6 +1394,8 @@ impl SpaiApp {
             br_inputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrInputs::default())),
             br_outputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrOutputs::default())),
             br_demand: Default::default(),
+            frame_ms: 0.0,
+            frame_worst: Vec::new(),
             br_wake: std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
             br_last_sent_sig: 0,
             battle_filter_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -3288,13 +3293,18 @@ impl SpaiApp {
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new(format!(
-                                "CPU {:.0}%   RAM {}",
+                                "{:.0} fps   CPU {:.0}%   RAM {}",
+                                self.frame_ms.max(0.1).recip() * 1000.0,
                                 self.proc_monitor.cpu_percent,
                                 self.proc_monitor.rss_human(),
                             ))
                             .weak(),
                         )
-                        .on_hover_text("CPU (share of one core) · resident memory");
+                        .on_hover_text(format!(
+                            "{:.1} ms per frame, the slowest of the last 120 · CPU (share of one \
+                             core) · resident memory",
+                            self.frame_ms
+                        ));
                         if self.disk_level != crate::disk::Level::Normal {
                             if let Some(free) = self.disk_free {
                                 ui.label(
@@ -3694,6 +3704,14 @@ impl eframe::App for SpaiApp {
         }
         if self.really_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        // Worst of the window, not the average: a feed that hitches every few frames still reads
+        // as smooth on a mean.
+        self.frame_worst.push(ctx.input(|i| i.unstable_dt) * 1000.0);
+        if self.frame_worst.len() >= 120 {
+            self.frame_ms = self.frame_worst.iter().copied().fold(0.0, f32::max);
+            self.frame_worst.clear();
         }
 
         self.settings.theme.apply(&ctx);

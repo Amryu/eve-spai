@@ -6401,17 +6401,28 @@ fn uitest_lookup_fc_cell_explains_itself() {
 #[test]
 #[ignore]
 fn uitest_bench_intel_scroll() {
+    // Distinct pilots and ships per card: a feed of one repeated report hides every per-card
+    // lookup behind a warm cache.
     let reports: Vec<crate::intel::IntelReport> = (0..300)
         .map(|i| {
             let mut r = if i % 3 == 0 { fixtures::intel_torture() } else { fixtures::intel_typical() };
             r.id = i as u64 + 1;
             r.received -= i as i64 * 7;
+            r.reporter = format!("Scout {i}");
+            r.pilots = (0..4).map(|p| format!("Fake Pilot {i}-{p}")).collect();
+            r.text = format!("{} hostiles seen by scout {i}", r.pilots.len());
             r
         })
         .collect();
     let mut scene = intel_feed_scene("bench_intel_scroll", false, fixtures::systems(), reports, [1280.0, 800.0]);
     let mut harness = harness::build(&mut scene, false);
     harness.run_steps(8);
+    {
+        use egui_kittest::kittest::NodeT as _;
+        let nodes = harness.root().children_recursive().count();
+        println!("nodes on screen: {nodes}");
+        assert!(nodes > 50, "the feed drew nothing: {nodes} nodes");
+    }
     for (label, scroll) in [("still", 0.0), ("scrolling", -120.0)] {
         const FRAMES: usize = 60;
         let t = std::time::Instant::now();
