@@ -6395,3 +6395,37 @@ fn uitest_lookup_fc_cell_explains_itself() {
         "hovering the FC cell at {at:?} showed no breakdown"
     );
 }
+
+/// Frame cost of the intel feed, still and scrolling: the feed virtualises by hand, so a card that
+/// starts measuring itself every frame shows up here.
+#[test]
+#[ignore]
+fn uitest_bench_intel_scroll() {
+    let reports: Vec<crate::intel::IntelReport> = (0..300)
+        .map(|i| {
+            let mut r = if i % 3 == 0 { fixtures::intel_torture() } else { fixtures::intel_typical() };
+            r.id = i as u64 + 1;
+            r.received -= i as i64 * 7;
+            r
+        })
+        .collect();
+    let mut scene = intel_feed_scene("bench_intel_scroll", false, fixtures::systems(), reports, [1280.0, 800.0]);
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(8);
+    for (label, scroll) in [("still", 0.0), ("scrolling", -120.0)] {
+        const FRAMES: usize = 60;
+        let t = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            if scroll != 0.0 {
+                harness.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, scroll),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                });
+            }
+            harness.run_steps(1);
+        }
+        println!("intel {label}: {:.1} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64);
+    }
+}

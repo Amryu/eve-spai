@@ -40,6 +40,8 @@ pub(crate) struct AlertEngine {
     pub(crate) ctx: egui::Context,
     pub(crate) overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
     pub(crate) alert_sent_hash: std::sync::Mutex<Option<u64>>,
+    /// Fingerprint of what the overlay message is built from, and when it was last built.
+    overlay_inputs: std::sync::Mutex<Option<(u64, std::time::Instant)>>,
     pub(crate) ping_sent_hash: std::sync::Mutex<Option<u64>>,
 }
 
@@ -59,6 +61,7 @@ impl AlertEngine {
             ctx,
             overlay_stdin,
             alert_sent_hash: std::sync::Mutex::new(None),
+            overlay_inputs: std::sync::Mutex::new(None),
             ping_sent_hash: std::sync::Mutex::new(None),
         }
     }
@@ -238,6 +241,35 @@ impl AlertEngine {
         use std::hash::{Hash, Hasher};
         if self.overlay_stdin.lock().unwrap().is_none() {
             return;
+        }
+        // Building the message walks every report and serialises it, four times a second. This
+        // runs first and only touches counters, so a quiet feed costs almost nothing.
+        let inputs = {
+            let st = intel_state.lock().unwrap();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            st.reports.len().hash(&mut h);
+            for r in &st.reports {
+                r.id.hash(&mut h);
+                r.received.hash(&mut h);
+                r.pilots.len().hash(&mut h);
+                r.ships.len().hash(&mut h);
+            }
+            player.lock().unwrap().system_id.hash(&mut h);
+            let sh = self.alert_shared.lock().unwrap();
+            sh.focus_pending.hash(&mut h);
+            sh.feed.len().hash(&mut h);
+            h.finish()
+        };
+        {
+            let mut prev = self.overlay_inputs.lock().unwrap();
+            // Rebuilt every few seconds anyway: resolved names, affiliations and kills arrive on
+            // their own threads and are not in the fingerprint.
+            let unchanged =
+                prev.as_ref().is_some_and(|(h, at)| *h == inputs && at.elapsed().as_secs_f32() < 3.0);
+            if unchanged {
+                return;
+            }
+            *prev = Some((inputs, std::time::Instant::now()));
         }
         let feature = {
             let cfg = self.config.lock().unwrap();
@@ -896,7 +928,7 @@ pub(crate) fn spawn_alert_daemon(
     ping_shared: SharedPingWindow,
     ctx: egui::Context,
 ) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("alert-daemon".into()).spawn(move || {
         let store = crate::store::Store::open().ok();
         let mut ship_by_id: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         loop {

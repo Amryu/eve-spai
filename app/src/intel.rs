@@ -209,31 +209,49 @@ pub struct IntelState {
     pub reports: Vec<IntelReport>,
     cleared: HashMap<String, i64>,
     orphans: Vec<IntelReport>,
-    seen_lines: std::collections::HashSet<u64>,
+    /// Line key (channel, reporter, text) to the times it was seen at.
+    seen_lines: HashMap<u64, Vec<i64>>,
     seen_order: std::collections::VecDeque<u64>,
 }
+
+/// How far apart two clients' copies of one chat line can be stamped. Each client logs the time
+/// it received the line, so the same message reads a second apart in two accounts' logs.
+const DUPLICATE_WINDOW_SECS: i64 = 2;
 
 static NEXT_REPORT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl IntelState {
-    /// True when this exact log line was already ingested. Multiple accounts (and relog/rejoin
-    /// files) carry identical `(channel, timestamp, reporter, text)` lines; the raw timestamp
-    /// string is used so a parse failure can't split a duplicate into two keys.
+    /// True when this log line was already ingested from another file. Multiple accounts (and
+    /// relog/rejoin files) carry the same `(channel, reporter, text)`, stamped with each client's
+    /// own receive time, so copies up to [`DUPLICATE_WINDOW_SECS`] apart are one line. A reporter
+    /// repeating themselves later is a new report.
     pub fn duplicate_line(&mut self, channel: &str, ts: &str, reporter: &str, text: &str) -> bool {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         channel.hash(&mut h);
-        ts.hash(&mut h);
         reporter.hash(&mut h);
         text.hash(&mut h);
         let key = h.finish();
-        if !self.seen_lines.insert(key) {
+        // An unparseable stamp still dedups exact copies: they share whatever string it was.
+        let at = parse_eve_time(ts).unwrap_or_else(|| {
+            let mut t = std::collections::hash_map::DefaultHasher::new();
+            ts.hash(&mut t);
+            (t.finish() >> 1) as i64
+        });
+        let times = self.seen_lines.entry(key).or_default();
+        if times.iter().any(|t| (t - at).abs() <= DUPLICATE_WINDOW_SECS) {
             return true;
         }
+        times.push(at);
         self.seen_order.push_back(key);
         if self.seen_order.len() > 8192 {
             if let Some(old) = self.seen_order.pop_front() {
-                self.seen_lines.remove(&old);
+                if let Some(v) = self.seen_lines.get_mut(&old) {
+                    v.remove(0);
+                    if v.is_empty() {
+                        self.seen_lines.remove(&old);
+                    }
+                }
             }
         }
         false

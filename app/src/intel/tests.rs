@@ -2077,7 +2077,11 @@ fn duplicate_line_flags_only_repeats() {
     let mut st = IntelState::default();
     assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
     assert!(st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
-    assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:23", "Pilot X", "Delve Prober"));
+    // A second client stamps the same line with its own receive time.
+    assert!(st.duplicate_line("Delve", "2026.07.06 14:30:23", "Pilot X", "Delve Prober"));
+    assert!(st.duplicate_line("Delve", "2026.07.06 14:30:21", "Pilot X", "Delve Prober"));
+    // Said again a few seconds later, it is a new report.
+    assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:30", "Pilot X", "Delve Prober"));
     assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot Y", "Delve Prober"));
     assert!(!st.duplicate_line("Querious", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
 }

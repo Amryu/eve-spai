@@ -36,8 +36,9 @@ pub struct Deps {
 }
 
 pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'static) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("web-publish".into()).spawn(move || {
         let mut last_notes = 0usize;
+        let mut last_inputs: Option<(u64, std::time::Instant)> = None;
         loop {
             // A notes edit publishes on the next slice, since the page is waiting for it.
             const SLICE: std::time::Duration = std::time::Duration::from_millis(40);
@@ -55,9 +56,44 @@ pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'sta
             if !should_publish(&facts) {
                 continue;
             }
+            // Building the payload walks every card, ring and system. This runs first and only
+            // touches counters, so a quiet minute costs nothing.
+            let inputs = inputs_hash(&deps, &facts);
+            let unchanged = last_inputs
+                .as_ref()
+                .is_some_and(|(h, at)| *h == inputs && at.elapsed().as_secs_f32() < 3.0);
+            if unchanged {
+                continue;
+            }
+            last_inputs = Some((inputs, std::time::Instant::now()));
             tick(&deps, &facts, &alerts());
         }
     });
+}
+
+/// What the published payload is built from, cheaply. Resolved names and affiliations are not in
+/// it, which is why the publisher also refreshes on a timer.
+fn inputs_hash(deps: &Deps, facts: &super::facts::UiFacts) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    {
+        let st = deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+        st.reports.len().hash(&mut h);
+        for r in &st.reports {
+            r.id.hash(&mut h);
+            r.received.hash(&mut h);
+        }
+    }
+    {
+        let p = deps.player.lock().unwrap_or_else(|e| e.into_inner());
+        p.system_id.hash(&mut h);
+        p.locations.len().hash(&mut h);
+    }
+    deps.system_status.lock().unwrap_or_else(|e| e.into_inner()).len().hash(&mut h);
+    deps.jabber.lock().unwrap_or_else(|e| e.into_inner()).pings.len().hash(&mut h);
+    std::sync::Arc::as_ptr(&facts.notes_view).hash(&mut h);
+    facts.active_character.hash(&mut h);
+    h.finish()
 }
 
 /// Split out so it is testable, since the loop never returns. The SDE graph arrives well after

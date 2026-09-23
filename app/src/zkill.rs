@@ -54,7 +54,7 @@ pub fn spawn(
     battles_enabled: Arc<std::sync::atomic::AtomicBool>,
     ctx: egui::Context,
 ) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("zkill-feed".into()).spawn(move || {
         let Ok(client) = crate::http::client(30)
         else {
             return;
@@ -835,7 +835,7 @@ fn spawn_backfill(
     out: SharedBackfill,
     ctx: egui::Context,
 ) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("zkill-backfill".into()).spawn(move || {
         backfill_system(&client, system_id, oldest, newest, &systems, &ship_ids, &have, &mut |eng| {
             out.lock().unwrap().push(eng);
         });
@@ -925,7 +925,7 @@ pub fn spawn_build_from_kill(
 ) {
     *result.lock().unwrap() = BuildFromKill::Loading;
     ctx.request_repaint();
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("zkill-detail".into()).spawn(move || {
         let out = match build_report_from_kill(kill_id, &systems, &ship_ids) {
             Ok((engs, seed)) => BuildFromKill::Done(engs, seed),
             Err(e) => BuildFromKill::Failed(e),

@@ -125,7 +125,7 @@ impl Overlay {
 
     fn spawn_ipc(args: IpcArgs) {
         let IpcArgs { ping_shared, alert_shared, alert_on_top, kills, affil, ctx } = args;
-        std::thread::spawn(move || {
+        let _ = std::thread::Builder::new().name("overlay-ipc".into()).spawn(move || {
             {
                 let mut out = std::io::stdout().lock();
                 if let Err(e) = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Hello) {

@@ -311,7 +311,7 @@ pub fn resolvable_windows(candidate: &str) -> Vec<String> {
 pub type SharedPilots = Arc<Mutex<PilotCache>>;
 
 pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("pilot-resolver".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
         else {
             return;

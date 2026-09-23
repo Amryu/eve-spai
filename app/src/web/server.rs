@@ -134,7 +134,7 @@ pub fn start(
         let server = server.clone();
         let running = running.clone();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let _ = std::thread::Builder::new().name("web-server".into()).spawn(move || {
             while running.load(Ordering::Acquire) {
                 match server.recv_timeout(Duration::from_millis(500)) {
                     Ok(Some(req)) => handle(&ctx, req),

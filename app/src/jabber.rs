@@ -321,7 +321,7 @@ pub fn spawn(
 ) -> CmdSender {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let cmds = tx.clone();
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("jabber".into()).spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
             state.lock().unwrap().status = "Failed to start runtime".to_owned();
             return;

@@ -30,7 +30,7 @@ pub struct SysFlags {
 pub type SharedStatus = Arc<Mutex<HashMap<i64, SysFlags>>>;
 
 pub fn spawn(status: SharedStatus, ctx: egui::Context) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("system-status".into()).spawn(move || {
         let Ok(client) = crate::http::client(30)
         else {
             return;

@@ -93,7 +93,7 @@ fn months_active_recent(months: &serde_json::Value, now: chrono::DateTime<chrono
 }
 
 pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("activity".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
         else {
             return;

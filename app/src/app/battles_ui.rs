@@ -1328,6 +1328,7 @@ impl SpaiApp {
     }
 
     pub(crate) fn battles_view(&mut self, ui: &mut egui::Ui) {
+        crate::brview::want(&self.br_demand);
         self.my_shared_window(&ui.ctx().clone());
         self.poll_build_from_kill(&ui.ctx().clone());
         if self.loaded_report.is_some() {

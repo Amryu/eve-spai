@@ -313,6 +313,21 @@ pub fn ui_signature(
     h.finish()
 }
 
+/// How long after the battles view last drew the worker keeps recomputing.
+const DEMAND_GRACE_MS: u64 = 2_000;
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Called by the battles view every frame it draws: the worker runs while someone is looking.
+pub fn want(demand: &AtomicU64) {
+    demand.store(now_ms(), Ordering::Relaxed);
+}
+
 fn signature(deps: &Deps, inp: &BrInputs) -> u64 {
     ui_signature(&deps.battles, &deps.history, &deps.filter_gen, &deps.overrides_gen, &deps.intel, inp)
 }
@@ -410,6 +425,7 @@ pub fn spawn(
     outputs: SharedOutputs,
     wake: Wake,
     battles_enabled: Arc<std::sync::atomic::AtomicBool>,
+    demand: Arc<AtomicU64>,
     ctx: egui::Context,
 ) {
     let worker = Deps {
@@ -423,7 +439,7 @@ pub fn spawn(
         overrides_gen,
         filter_gen,
     };
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("br-view".into()).spawn(move || {
         let mut last = 1u64;
         loop {
             {
@@ -433,6 +449,12 @@ pub fn spawn(
                 *g = false;
             }
             if !battles_enabled.load(Ordering::Relaxed) {
+                continue;
+            }
+            // Only while the battles view is on screen. Otherwise every kill anywhere in New Eden
+            // rebuilt the whole card list in the background, for nobody.
+            let idle = now_ms().saturating_sub(demand.load(Ordering::Relaxed)) > DEMAND_GRACE_MS;
+            if idle {
                 continue;
             }
             let inp = inputs.lock().unwrap().clone();

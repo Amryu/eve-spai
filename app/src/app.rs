@@ -471,6 +471,8 @@ pub struct SpaiApp {
     battle_scrubs_open: bool,
     br_inputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrInputs>>,
     br_outputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrOutputs>>,
+    /// When the battles view last drew, so the worker can idle while nobody is looking.
+    br_demand: std::sync::Arc<std::sync::atomic::AtomicU64>,
     br_wake: crate::brview::Wake,
     br_last_sent_sig: u64,
     battle_filter_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1275,7 +1277,7 @@ impl SpaiApp {
             let ctx = ctx.clone();
             let ping_shared = ping_shared.clone();
             let alert_shared = alert_shared.clone();
-            std::thread::spawn(move || loop {
+            let _ = std::thread::Builder::new().name("overlay-ticker".into()).spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 let ping_active = !ping_shared.lock().unwrap().windows.is_empty();
                 if ping_active {
@@ -1388,6 +1390,7 @@ impl SpaiApp {
             battle_detail_cache: None,
             br_inputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrInputs::default())),
             br_outputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrOutputs::default())),
+            br_demand: Default::default(),
             br_wake: std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
             br_last_sent_sig: 0,
             battle_filter_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -2107,6 +2110,7 @@ impl SpaiApp {
             self.br_outputs.clone(),
             self.br_wake.clone(),
             self.battles_enabled_shared.clone(),
+            self.br_demand.clone(),
             ctx.clone(),
         );
 

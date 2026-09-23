@@ -86,7 +86,7 @@ fn fetch(client: &reqwest::blocking::Client, ids: &[i64], retry: &mut Vec<i64>, 
 }
 
 pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("affiliation".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
         else {
             return;

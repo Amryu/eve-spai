@@ -30,7 +30,7 @@ pub type KillSender = Sender<i64>;
 
 pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
     let (tx, rx) = std::sync::mpsc::channel::<i64>();
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("kill-fetch".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
         else {
             return;

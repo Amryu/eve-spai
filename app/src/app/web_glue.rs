@@ -95,7 +95,7 @@ impl SpaiApp {
         let ctx = self.ui_ctx.clone();
         // Off the UI thread: binding a socket waits on the resolver and on the last listener letting
         // go of the port, and a frame that waits for either is a frozen app.
-        std::thread::spawn(move || {
+        let _ = std::thread::Builder::new().name("web-facts".into()).spawn(move || {
             // The ship dialog reads hull stats out of the SDE. A second connection rather than the
             // app's: `Store` owns a rusqlite `Connection` and cannot be shared across threads, and
             // SQLite allows a second reader on the same file.

@@ -115,7 +115,7 @@ impl Hub {
 /// Polls the published state and fans out what changed, so the publisher knows nothing about
 /// connected clients.
 pub fn spawn_broadcaster(hub: SharedHub, web: SharedWeb) {
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("web-sse".into()).spawn(move || {
         let mut sent = 0u64;
         loop {
             std::thread::sleep(POLL);
