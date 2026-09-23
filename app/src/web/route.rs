@@ -821,13 +821,18 @@ pub fn chain(
         }
         acc.expect("at least one leg")
     };
-    let chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
+    let mut chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
+    recost_fatigue(&mut chosen, class);
     let mut out = vec![chosen];
     // Titan alternatives cover the whole route, so they become the route's options.
     if kind == "titan" && legs[titan_leg].options.len() > 1 {
         out = (0..legs[titan_leg].options.len())
             .map(|k| {
-                assemble(&move |i: usize| if i == titan_leg { k } else { pick.get(i).copied().unwrap_or(0) })
+                let mut o = assemble(&move |i: usize| {
+                    if i == titan_leg { k } else { pick.get(i).copied().unwrap_or(0) }
+                });
+                recost_fatigue(&mut o, class);
+                o
             })
             .collect();
         // The option tabs choose this leg and `pick` does not reach it, so a switcher would do nothing.
@@ -1042,6 +1047,26 @@ fn titan_via(
             .collect();
     }
     out
+}
+
+/// Fatigue carries across the whole route, not across one leg. Each leg is planned on its own and
+/// starts from nothing, so an assembled route has to be re-costed or every waypoint reads as a
+/// fresh capital with no fatigue.
+fn recost_fatigue(o: &mut RouteOption, class: &crate::jumproute::ShipClass) {
+    let mut fatigue = 0.0;
+    for h in &mut o.hops {
+        // Jump hops only: gates and bridges carry no fatigue.
+        let (Some(ly), 2) = (h.ly, h.kind) else { continue };
+        let reactivation;
+        (fatigue, reactivation) = crate::jumproute::next_fatigue(fatigue, ly, class);
+        h.fatigue_min = Some(fatigue);
+        h.reactivation_min = Some(reactivation);
+    }
+    // The note came from the last leg, so it quotes that leg's fuel and fatigue, not the route's.
+    if fatigue > 0.0 && o.note.as_ref().is_some_and(|n| n.contains("min fatigue at the end")) {
+        let fuel: f64 = o.hops.iter().filter_map(|h| h.fuel).sum();
+        o.note = Some(format!("{} isotopes · {fatigue:.0} min fatigue at the end", fuel.round() as i64));
+    }
 }
 
 /// A hop's `kind`, distance and fuel describe the edge *into* it, so they shift one place when the
@@ -1450,6 +1475,77 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         }
         let g = crate::geo::Systems::new(by_name, adjacency);
         (g, coords, ids)
+    }
+
+    /// Fatigue is the pilot's, not the leg's: a waypoint in the middle of a jump route must not
+    /// hand the capital a clean slate.
+    #[test]
+    fn fatigue_carries_across_a_waypoint() {
+        // Five systems in a line, 4 ly apart: every hop is one jump for a capital at JDC 5.
+        use crate::store::MapSystem;
+        let ly = crate::map::LY_METERS;
+        let ids: Vec<i64> = (0..5).map(|i| 30_200_000 + i).collect();
+        let mut by_name = std::collections::HashMap::new();
+        let mut adjacency = std::collections::HashMap::new();
+        let mut coords: Vec<MapSystem> = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let name = format!("J{i}");
+            by_name.insert(name.clone(), crate::geo::SystemInfo {
+                id,
+                name: name.clone(),
+                security: -0.4,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            adjacency.insert(id, Vec::new());
+            coords.push(MapSystem {
+                id,
+                name,
+                security: -0.4,
+                region_id: 10_000_060,
+                x: i as f64 * 4.0 * ly,
+                y: 0.0,
+                z: 0.0,
+                x2d: 0.0,
+                z2d: 0.0,
+            });
+        }
+        let g = crate::geo::Systems::new(by_name, adjacency);
+        let class = &crate::jumproute::SHIP_CLASSES[0];
+        let run = |anchors: &[i64]| {
+            let (_, out) = chain(
+                &g,
+                &coords,
+                anchors,
+                "jump",
+                class,
+                5,
+                5,
+                6.5,
+                false,
+                &[],
+                false,
+                false,
+                &Avoid::default(),
+                &Default::default(),
+                &[],
+                &Picks::new(),
+            );
+            let o = out.into_iter().next().expect("a route");
+            let fatigue: Vec<f64> = o.hops.iter().filter_map(|h| h.fatigue_min).collect();
+            (fatigue, o.note.unwrap_or_default())
+        };
+        let (straight, _) = run(&[ids[0], ids[4]]);
+        let (split, note) = run(&[ids[0], ids[2], ids[4]]);
+        assert_eq!(straight.len(), split.len(), "the same jumps either way");
+        assert_eq!(straight, split, "the waypoint reset the fatigue");
+        assert!(split.windows(2).all(|w| w[1] >= w[0]), "fatigue only climbs: {split:?}");
+        let last = split.last().copied().expect("a jump");
+        assert!(
+            note.contains(&format!("{last:.0} min fatigue at the end")),
+            "the note quotes a leg's fatigue, not the route's: {note}"
+        );
     }
 
     /// A titan leg's options belong to the whole route, and `pick` does not reach that leg, so a

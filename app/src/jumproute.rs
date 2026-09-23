@@ -223,6 +223,15 @@ pub struct HopCost {
     pub reactivation_min: f64,
 }
 
+/// One jump's fatigue and reactivation, given the fatigue already carried. The rules live here
+/// alone: a second copy is a second chance to get them wrong.
+pub fn next_fatigue(carried_min: f64, ly: f64, class: &ShipClass) -> (f64, f64) {
+    let d_eff = ly * (1.0 - class.fatigue_role_reduction);
+    let reactivation = (carried_min / 10.0).max(1.0 + d_eff).min(30.0);
+    let fatigue = (carried_min.max(10.0) * (1.0 + d_eff)).min(300.0);
+    (fatigue, reactivation)
+}
+
 /// Per jump, so the planner can show where the fatigue actually comes from.
 ///
 /// The totals are folded out of this rather than computed a second time: two implementations of the
@@ -240,9 +249,8 @@ pub fn hop_costs(
     for w in path.windows(2) {
         let (Some(a), Some(b)) = (idx.get(&w[0]), idx.get(&w[1])) else { continue };
         let ly = ly_distance(a, b);
-        let d_eff = ly * (1.0 - class.fatigue_role_reduction);
-        let reactivation = (fatigue / 10.0).max(1.0 + d_eff).min(30.0);
-        fatigue = (fatigue.max(10.0) * (1.0 + d_eff)).min(300.0);
+        let reactivation;
+        (fatigue, reactivation) = next_fatigue(fatigue, ly, class);
         out.push(HopCost {
             ly,
             fuel: ly * class.fuel_per_ly * fuel_mult * (1.0 - class.fuel_role_reduction),
