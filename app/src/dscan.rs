@@ -34,20 +34,12 @@ pub fn is_valid_char_name(s: &str) -> bool {
     if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '\'' || c == '-') {
         return false;
     }
-    if !s.chars().any(|c| c.is_ascii_alphabetic()) {
-        return false;
-    }
     let words: Vec<&str> = s.split(' ').collect();
-    if words.is_empty() || words.len() > 3 || words.iter().any(|w| w.is_empty()) {
+    if words.len() > 3 || words.iter().any(|w| w.is_empty() || w.chars().count() > 24) {
         return false;
     }
-    if words[words.len() - 1].chars().count() > 12 {
-        return false;
-    }
-    if words.len() > 1 && words[..words.len() - 1].join(" ").chars().count() > 24 {
-        return false;
-    }
-    true
+    // A lone number is a d-scan type id; a name of digits alone ("66666 6") has a space.
+    words.len() > 1 || s.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 pub fn looks_like_local(text: &str) -> Option<usize> {
@@ -162,7 +154,11 @@ mod tests {
         assert!(!is_valid_char_name("too  many   spaces"));
         assert!(!is_valid_char_name("one two three four"));
         assert!(!is_valid_char_name("Has=Bad/Chars"));
-        assert!(!is_valid_char_name("ThisFamilyNameWayTooLong"));
+        assert!(!is_valid_char_name("ThisSingleNameIsWayTooLong"));
+        assert!(!is_valid_char_name("12345"));
+        for real in ["66666 6", "GreybeardGrandpa", "dafenqipaopao2", "KuanLe---Sheng", "Matt Gillian-Smith"] {
+            assert!(is_valid_char_name(real), "{real}");
+        }
     }
 
     #[test]
