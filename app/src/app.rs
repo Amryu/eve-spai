@@ -284,9 +284,12 @@ mod map_ui;
 mod map_route;
 mod battles_ui;
 pub(crate) mod fleet_ui;
+#[cfg(feature = "fleet")]
+pub(crate) mod fleet_map;
 mod rescue_ui;
 #[cfg(all(test, feature = "fleet"))]
 pub(crate) use rescue_ui::ping_timer_row;
+pub(crate) use settings_ui::TestIntel;
 mod jabber_ui;
 mod note_widgets;
 pub(crate) use note_widgets::*;
@@ -530,6 +533,9 @@ pub struct SpaiApp {
     recent_alerts: AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) alert_rules_open: bool,
+    /// Lines the watcher reads as if EVE had logged them, for testing alert rules.
+    pub(crate) intel_inject: crate::watcher::SharedInject,
+    pub(crate) test_intel: Option<TestIntel>,
     alert_selected_rule: Option<u64>,
     rule_feeds:
         std::collections::HashMap<u64, Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>>,
@@ -926,6 +932,16 @@ pub struct SpaiApp {
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_map: fleet_map::FleetMapView,
+    /// Fleets whose movement is being recorded, each on its own thread.
+    #[cfg(feature = "fleet")]
+    fleet_trackers: std::collections::HashMap<
+        crate::fleets::model::FleetId,
+        (std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>),
+    >,
+    #[cfg(feature = "fleet")]
+    fleet_tracks_resumed: bool,
     /// A destructive action waiting to be confirmed: which fleet, what, and how much of the fleet
     /// it takes with it.
     #[cfg(feature = "fleet")]
@@ -1420,6 +1436,8 @@ impl SpaiApp {
             recent_alerts,
             alert_feed: Vec::new(),
             alert_rules_open: false,
+            intel_inject: Default::default(),
+            test_intel: None,
             alert_selected_rule: None,
             rule_feeds: std::collections::HashMap::new(),
             alert_shared,
@@ -1745,6 +1763,12 @@ impl SpaiApp {
             fleet_mumble_rx: fleet_mumble.1,
             #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_map: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_trackers: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_tracks_resumed: false,
             #[cfg(feature = "fleet")]
             fleet_confirm: None,
             #[cfg(feature = "fleet")]
@@ -2188,6 +2212,7 @@ impl SpaiApp {
                 rescue_handle,
                 rescue_channel,
                 ship_groups,
+                self.intel_inject.clone(),
                 ctx.clone(),
             );
         }
@@ -3083,6 +3108,13 @@ impl SpaiApp {
         &self.fleet
     }
 
+    /// A map graph and its coordinates, as the SDE load would leave them.
+    #[cfg(all(test, feature = "fleet"))]
+    pub(crate) fn seed_map_world(&mut self, systems: crate::geo::Systems, coords: Vec<crate::store::MapSystem>) {
+        self.systems = Some(std::sync::Arc::new(systems));
+        self.map_coords = Some(std::sync::Arc::new(coords));
+    }
+
     /// The rescue panel's shared state, so a scene can put a ping in it the way the watcher would.
     #[cfg(all(test, feature = "fleet"))]
     pub(crate) fn rescue_state_for_test(
@@ -3520,6 +3552,7 @@ impl SpaiApp {
         self.coalitions_window(ctx);
         self.travel_sov_dialog(ctx);
         self.severity_window(ctx);
+        self.test_intel_dialog(ctx);
         self.note_editor_window(ctx);
         self.notes_manager_window(ctx);
         self.alert_window(ctx);
@@ -3602,6 +3635,8 @@ impl eframe::App for SpaiApp {
         let ctx = ui.ctx().clone();
         #[cfg(feature = "fleet")]
         self.fleet_boot_once();
+        #[cfg(feature = "fleet")]
+        self.fleet_track_poll();
 
         // Cached here rather than in the `cumulative_pass_nr() > 30` block below, which would
         // starve cross-window drop hit-testing for the first 30 frames.

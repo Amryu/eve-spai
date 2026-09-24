@@ -205,6 +205,28 @@ CREATE TABLE IF NOT EXISTS char_names (
     name         TEXT NOT NULL,
     fetched_at   INTEGER NOT NULL
 );
+-- Fleets whose movement is being recorded, so recording resumes after a restart.
+CREATE TABLE IF NOT EXISTS fleet_tracks (
+    fleet_id   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    seen_at    INTEGER NOT NULL,
+    closed_at  INTEGER
+);
+CREATE TABLE IF NOT EXISTS fleet_moves (
+    fleet_id     TEXT NOT NULL,
+    at           INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    character_id INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    system_id    INTEGER NOT NULL,
+    from_system  INTEGER NOT NULL,
+    ship_type_id INTEGER NOT NULL,
+    ship_name    TEXT NOT NULL,
+    via          TEXT,
+    count        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_moves ON fleet_moves(fleet_id, at);
 ";
 
 /// How a character-to-account association was established, most trustworthy last.
@@ -330,6 +352,9 @@ mod battles;
 mod wormholes;
 
 mod characters;
+
+#[cfg(feature = "fleet")]
+mod fleet_moves;
 impl Store {
     /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than
     /// queued. Buffering it would trade a disk problem for a memory problem, and this is the

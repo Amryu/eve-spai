@@ -353,6 +353,7 @@ fn build_tree(
             role: m.role.clone(),
             // ESI has no notion of participation; only a closed fleet's report does.
             pap_count: 0,
+            solar_system_id: m.solar_system_id,
         }
     };
     let commander = members.iter().find(|m| m.role == "fleet_commander").map(&member);
@@ -655,6 +656,7 @@ fn flat_roster(report: &FleetReport, ships: &Ships) -> Composition {
                 ship_group: group,
                 role: String::new(),
                 pap_count: c.pap_count,
+                solar_system_id: 0,
             }
         })
         .collect();
@@ -804,6 +806,7 @@ mod tests {
             wing_id: wing,
             squad_id: squad,
             role: role.to_owned(),
+            solar_system_id: 30_004_000 + cid,
         };
         let members = vec![
             row(1, 16_229, -1, -1, "fleet_commander"),
@@ -830,6 +833,7 @@ mod tests {
         assert!(!c.flat);
         assert_eq!(c.commander.as_ref().expect("a boss").name, "Pilot 1");
         assert_eq!(c.commander.as_ref().expect("a boss").ship_group, "Command Ship");
+        assert_eq!(c.commander.as_ref().expect("a boss").solar_system_id, 30_004_001);
         assert_eq!(c.wings[0].commander.as_ref().expect("a wing lead").character_id, 2);
         assert_eq!(c.wings[0].squads[0].commander.as_ref().expect("a squad lead").name, "Pilot 3");
         assert_eq!(c.wings[0].squads[0].members.len(), 1);

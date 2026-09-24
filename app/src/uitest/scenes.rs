@@ -1020,6 +1020,67 @@ fn fleet_detail_scene_closed(
     })
 }
 
+/// The Map tab: pilots per system and the FC. `cap_save` tags the fleet and adds two capital pings,
+/// so the titan route and the ping switch render.
+#[cfg(feature = "fleet")]
+fn fleet_map_scene(name: &'static str, size: [f32; 2], cap_save: bool) -> Scene {
+    fleet_map_scene_at(name, size, cap_save, None, false, false)
+}
+
+/// `at` is seconds after the record starts, `focus` follows the first pilot.
+#[cfg(feature = "fleet")]
+fn fleet_map_scene_at(
+    name: &'static str,
+    size: [f32; 2],
+    cap_save: bool,
+    at: Option<i64>,
+    focus: bool,
+    closed: bool,
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Map;
+            let (g, coords) = fixtures::fleet_map_world();
+            a.seed_map_world(g, coords);
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_first_fleet(&a);
+            let (fleet_id, members) = {
+                let st = a.fleet_state_for_test().lock().unwrap();
+                let open = st.open.value.as_ref().expect("an open fleet");
+                (open.fleet.id.0.clone(), open.composition.members().cloned().collect::<Vec<_>>())
+            };
+            let (mut moves, t0) = fixtures::fleet_moves(&members);
+            if closed {
+                // Closed a minute after the last move: everyone leaves at the close.
+                moves.extend(crate::fleets::movement::Recorder::resume(&moves).close(t0 + 1300));
+                if let Some(open) = a.fleet_state_for_test().lock().unwrap().open.value.as_mut() {
+                    open.fleet.closed_at = Some("2026-01-01T00:00:00Z".into());
+                }
+            }
+            let first = members.first().map(|m| m.character_id).filter(|_| focus);
+            a.fleet_map.seed(&fleet_id, moves, at.map(|s| t0 + s), first);
+            if cap_save {
+                a.settings.fleet_presets = fixtures::rescue_presets();
+                a.settings.rescue_staging_system = "Placeholder Staging".into();
+                if let Some(open) = a.fleet_state_for_test().lock().unwrap().open.value.as_mut() {
+                    open.fleet.tag_ids.push(crate::fleets::model::TagId(crate::settings::CAPITAL_SAVE_TAG));
+                }
+                fixtures::seed_rescue_ping(&a);
+                fixtures::seed_second_ping(&a);
+            }
+            a.fleet_booted = true;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// The composition of a fleet that is short of everything, so every check renders in its own
 /// colour instead of the quiet line.
 #[cfg(feature = "fleet")]
@@ -1682,6 +1743,16 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
     #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene("fleet_map", [1280.0, 800.0], false));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene("fleet_map_capsave", [1280.0, 800.0], true));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene_at("fleet_map_history", [1280.0, 800.0], false, Some(500), false, false));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene_at("fleet_map_pilot", [1280.0, 800.0], false, None, true, false));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene_at("fleet_map_closed", [1280.0, 800.0], false, None, false, true));
+    #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene("fleet_members", [1280.0, 1420.0], crate::app::fleet_ui::DetailTab::Members));
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene_with(
@@ -1740,6 +1811,15 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
     // The rule panel's 180px drag minimum, the least room a rule name ever gets.
     v.push(alert_rules_scene("view_alert_rules_narrow", [1280.0, 800.0], Some(180.0)));
+    v.push(dialog_scene("alert_rules_test_intel", [460.0, 260.0], |a| {
+        a.settings.intel_channels = vec!["Fixture.Intel".into(), "Sample.Intel".into()];
+        a.test_intel = Some(crate::app::TestIntel {
+            channel: "Fixture.Intel".into(),
+            reporter: "Fixture Pilot".into(),
+            text: "Rancer 3 reds Loki Sabre".into(),
+            sent: Some("Sent to Fixture.Intel.".into()),
+        });
+    }));
     // Dialog sizes are the ones each dialog asks for in `dialog_viewport`, so a scene lays out at
     // the width the real window opens at. The three that are plain `egui::Window`s or `Modal`s get
     // room around them instead, since those float rather than fill.
@@ -6478,4 +6558,102 @@ fn uitest_room_rows_offer_a_leave_button() {
         .count();
     assert_eq!(leaves, 3, "the two pinned rescue rooms must not offer a leave button");
     }
+}
+
+/// With no unread badge anywhere, nothing in a room row reaches the right edge. The sidebar must
+/// keep its width and the leave buttons their column when the last count is read.
+#[test]
+fn uitest_leave_buttons_hold_their_column_without_unread_counts() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    harness::scratch_profile();
+    let frame = std::rc::Rc::new(std::cell::RefCell::new(fixtures::jabber_sidebar_frame()));
+    let shared = frame.clone();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("leave_column", [900.0, 560.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a
+        });
+        app.jabber_sidebar_for_test(ui, &shared.borrow(), true);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    let leaves = |harness: &egui_kittest::Harness<'_>| -> Vec<f64> {
+        harness
+            .root()
+            .children_recursive()
+            .filter(|n| {
+                let node = n.accesskit_node();
+                node.role() == Role::Button
+                    && node.label().unwrap_or_default().contains(egui_phosphor::regular::SIGN_OUT)
+            })
+            .filter_map(|n| n.accesskit_node().raw_bounds().map(|b| b.x1))
+            .collect()
+    };
+    // Widen the sidebar past its content, the way a user drags it.
+    let edge = leaves(&harness)[0] as f32 + 8.0;
+    let y = 300.0;
+    harness.event(egui::Event::PointerMoved(egui::pos2(edge, y)));
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton { pos: egui::pos2(edge, y), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.run_steps(1);
+    for k in 1..=10 {
+        harness.event(egui::Event::PointerMoved(egui::pos2(edge + k as f32 * 14.0, y)));
+        harness.run_steps(1);
+    }
+    harness.event(egui::Event::PointerButton { pos: egui::pos2(edge + 140.0, y), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    harness.event(egui::Event::PointerMoved(egui::pos2(800.0, 20.0)));
+    harness.run_steps(6);
+    let with = leaves(&harness);
+    assert_eq!(with.len(), 5, "one leave button per room");
+    assert!(with[0] > edge as f64 + 60.0, "the drag did not widen the sidebar: {with:?} from {edge}");
+    {
+        let mut f = frame.borrow_mut();
+        for c in &mut f.convos {
+            c.unread_count = 0;
+            c.mention = false;
+        }
+        for c in &mut f.channels {
+            c.unread_count = 0;
+            c.mention = false;
+        }
+    }
+    harness.run_steps(6);
+    let without = leaves(&harness);
+    assert!(with.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "ragged column: {with:?}");
+    assert_eq!(with, without, "the leave buttons moved when the unread counts went away");
+}
+
+/// The ping chips on the fleet map pick the capital the route goes to, the same selection the rescue
+/// panel works from.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_map_ping_chips_switch_the_route() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map_capsave").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label_contains("then 3 gates").is_some(), "the dread in 1DQ1-A is out of range");
+    harness.get_by_label("Carrier \u{b7} Fixture Pocket").click();
+    harness.run_steps(4);
+    assert!(
+        harness.query_by_label_contains("direct jump").is_some(),
+        "the carrier in range is one titan jump"
+    );
+}
+
+/// A closed fleet is its record: it opens on the last moment anyone was in it, not on the close
+/// when everyone had left, and has no Live button.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_closed_fleet_replays_its_record() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map_closed").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label("Live").is_none(), "a closed fleet has nothing live to follow");
+    assert!(harness.query_by_label_contains("pilots left").is_some(), "the close is one line");
+    assert!(harness.query_by_label("0 pilots").is_none(), "it opened on the close, when the fleet was empty");
 }

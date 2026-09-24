@@ -665,6 +665,8 @@ pub struct Member {
     /// Participation credits the dashboard recorded for this pilot in this fleet. Only a closed
     /// fleet's report carries it; a live roster comes from ESI, which knows nothing about PAPs.
     pub pap_count: i64,
+    /// Where the pilot is, 0 when the source did not say.
+    pub solar_system_id: i64,
 }
 
 impl Composition {

@@ -1030,6 +1030,118 @@ pub(crate) fn seed_rescue_ping(app: &crate::app::SpaiApp) {
     r.select_newest();
 }
 
+/// A strip of nullsec for the fleet map: staging at one end, 1DQ1-A 12 ly out, and a pocket in
+/// titan range of staging. Coordinates in light years, the same in both layouts.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_map_world() -> (Systems, Vec<crate::store::MapSystem>) {
+    let ly = crate::map::LY_METERS;
+    let list: [(i64, &str, f64, f64); 7] = [
+        (30_000_772, "Placeholder Staging", 0.0, 0.0),
+        (30_900_001, "Fixture Gate A", 4.0, 0.0),
+        (30_900_002, "Fixture Gate B", 8.0, 0.0),
+        (30_004_608, "319-3D", 10.0, 1.0),
+        (30_004_759, "1DQ1-A", 12.0, 0.0),
+        (30_003_704, "7-K5EL", 13.0, 3.0),
+        (30_900_003, "Fixture Pocket", 3.0, 4.0),
+    ];
+    let mut by_name = HashMap::new();
+    let mut coords = Vec::new();
+    for (id, name, x, z) in list {
+        by_name.insert(
+            name.to_lowercase(),
+            SystemInfo {
+                id,
+                name: name.to_owned(),
+                security: -0.4,
+                constellation: "O-EImg".into(),
+                region: "Delve".into(),
+                faction: String::new(),
+            },
+        );
+        coords.push(crate::store::MapSystem {
+            id,
+            name: name.to_owned(),
+            security: -0.4,
+            region_id: 10_000_060,
+            x: x * ly,
+            y: 0.0,
+            z: z * ly,
+            x2d: x * ly,
+            z2d: z * ly,
+        });
+    }
+    let edges = [
+        (30_000_772, 30_900_001),
+        (30_900_001, 30_900_002),
+        (30_900_002, 30_004_608),
+        (30_004_608, 30_004_759),
+        (30_004_759, 30_003_704),
+        (30_900_001, 30_900_003),
+    ];
+    let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (a, b) in edges {
+        adjacency.entry(a).or_default().push(b);
+        adjacency.entry(b).or_default().push(a);
+    }
+    (Systems::new(by_name, adjacency), coords)
+}
+
+/// Twenty minutes of recorded movement ending in `members`' current systems: everyone forms up at
+/// staging, gates out through Gate A and Gate B, and ends where the tree has them. One pilot joins
+/// late, one leaves on the way and one swaps hulls.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_moves(members: &[crate::fleets::model::Member]) -> (Vec<crate::fleets::movement::MoveEvent>, i64) {
+    use crate::fleets::model::Member;
+    use crate::fleets::movement::{classify, Recorder};
+    let (mut graph, coords) = fleet_map_world();
+    graph.set_positions(coords.iter().map(|s| (s.id, [s.x, s.y, s.z])).collect());
+    let t0 = now() - 1200;
+    let path = [30_000_772, 30_900_001, 30_900_002, 30_004_608];
+    let mut rec = Recorder::default();
+    let mut out = Vec::new();
+    let snap = |step: usize, at: i64, rec: &mut Recorder, out: &mut Vec<_>| {
+        let list: Vec<Member> = members
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !(*i == 1 && step >= 2) && !(*i == 2 && step == 0))
+            .map(|(i, m)| {
+                let system = if step < path.len() { path[step] } else { m.solar_system_id };
+                let mut m = Member { solar_system_id: system, ..m.clone() };
+                if i == 0 && step >= 3 {
+                    m.ship_type_id = 22_852;
+                    m.ship_type_name = "Hel".into();
+                }
+                m
+            })
+            .collect();
+        let refs: Vec<&Member> = list.iter().collect();
+        out.extend(rec.step(&refs, at, &mut |a, b| classify(&graph, a, b, 8.0, &|_, _| false)));
+    };
+    for step in 0..=path.len() {
+        snap(step, t0 + step as i64 * 240, &mut rec, &mut out);
+    }
+    (out, t0)
+}
+
+/// A second open ping, a carrier in range of staging, so the map has two capitals to switch between.
+#[cfg(feature = "fleet")]
+pub(crate) fn seed_second_ping(app: &crate::app::SpaiApp) {
+    let mut r = app.rescue_state_for_test().lock().unwrap();
+    r.push_event(crate::rescue::RescueEvent {
+        seq: 1,
+        received: now() - 60,
+        author: "Sample Hunter".to_owned(),
+        raw: "!bping all Carrier tackled in Fixture Pocket".to_owned(),
+        is_ping: true,
+        pilot: Some("Sample Hunter".to_owned()),
+        system_id: Some(30_900_003),
+        system_name: Some("Fixture Pocket".to_owned()),
+        cyno: None,
+        cap_class: Some(crate::rescue::CapClass::Carrier),
+        anomaly: None,
+    });
+}
+
 /// The hulls a doctrine flies, plus the ones any fleet takes, so classification has something to
 /// work from. Invented names in the doctrine, real hulls for the support jobs.
 #[cfg(feature = "fleet")]

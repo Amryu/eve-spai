@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::store::MapSystem;
 
 /// One system on a route, and how it was reached from the one before it.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Hop {
     pub id: i64,
     pub name: String,
@@ -324,7 +324,7 @@ pub fn danger_from_reports(
     danger_from_marks(&marks, kills)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct RouteOption {
     pub label: String,
     pub path: Vec<i64>,
@@ -588,13 +588,6 @@ pub fn titan(
     titans: &[i64],
     self_jump: bool,
 ) -> Vec<RouteOption> {
-    // A titan sitting with the fleet can reposition first and bridge from somewhere better.
-    if self_jump && at_start && titans.is_empty() {
-        let opts = titan_self_jump(graph, coords, from, to, max_ly, bridges, avoid, holes);
-        if !opts.is_empty() {
-            return opts;
-        }
-    }
     // Named titans are known positions, so they win over the `at_start` guess.
     if !titans.is_empty() {
         return titan_via(graph, coords, from, to, max_ly, bridges, avoid, holes, titans);
@@ -606,11 +599,55 @@ pub fn titan(
             .map(reverse)
             .collect();
     }
-    // The target's position is unused, the ring is found by gate distance.
-    let (Some(start), Some(_)) = (pos(coords, from), pos(coords, to)) else {
+    let (Some(start), Some(end)) = (pos(coords, from), pos(coords, to)) else {
         return Vec::new();
     };
-    // The target is excluded: if it were in range this would be a single jump.
+    // In range, one jump is the whole route: nothing to gate, and no reason to move the titan.
+    let ly = crate::map::ly_distance(start, end);
+    if ly <= max_ly && crate::jumproute::jumpable(end) && !avoid.blocked(to) {
+        let name = graph.info_of(to).map(|i| i.name.clone()).unwrap_or_default();
+        return vec![RouteOption {
+            label: format!("direct to {name}"),
+            gates: 0,
+            jumps: 1,
+            total_ly: ly,
+            note: Some(format!("{ly:.1} ly direct jump")),
+            detour: None,
+            uses_wormhole: false,
+            titan_jump: None,
+            saved: None,
+            path: vec![from, to],
+            hops: vec![named(graph, from, 0, None), named(graph, to, 2, Some(ly))],
+        }];
+    }
+    let stay = titan_stationary(graph, coords, from, to, start, max_ly, bridges, avoid, holes);
+    // A titan with the fleet may reposition first, but only for a real gain: its drive, fuel and
+    // fatigue are not free, so a gate or so saved is not worth it.
+    if self_jump {
+        let plain = gate(graph, from, to, bridges, avoid, holes).map_or(usize::MAX, |o| o.gates);
+        let beat = stay.iter().map(|o| o.gates).chain([plain]).min().unwrap_or(usize::MAX);
+        let mut opts = titan_self_jump(graph, coords, from, to, max_ly, bridges, avoid, holes, beat);
+        if !opts.is_empty() {
+            opts.extend(stay);
+            return opts;
+        }
+    }
+    stay
+}
+
+/// The titan bridges from where it sits: the reachable system fewest gates from the target.
+#[allow(clippy::too_many_arguments)]
+fn titan_stationary(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    from: i64,
+    to: i64,
+    start: &MapSystem,
+    max_ly: f64,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+) -> Vec<RouteOption> {
     let in_range: std::collections::HashSet<i64> = coords
         .iter()
         .filter(|s| s.id != to && crate::jumproute::jumpable(s))
@@ -855,16 +892,16 @@ fn titan_self_jump(
     bridges: bool,
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
+    baseline: usize,
 ) -> Vec<RouteOption> {
     /// Past this many gates to meet the titan it is no longer a shortcut.
     const MAX_GATE_TO_TITAN: u32 = 8;
+    /// Gates a move has to save over not moving at all.
+    const MIN_GAIN: usize = 2;
 
-    let (Some(start), Some(plain)) =
-        (pos(coords, from), gate(graph, from, to, bridges, avoid, holes))
-    else {
+    let Some(start) = pos(coords, from) else {
         return Vec::new();
     };
-    let baseline = plain.gates;
     let out_from_start = graph.gate_distances_from(from, MAX_GATE_TO_TITAN);
     let in_to_target = graph.gate_distances_from(to, TITAN_MAX_JUMPS);
     let max_m = max_ly;
@@ -896,8 +933,7 @@ fn titan_self_jump(
         }
         let Some((gates_in, hop)) = best else { continue };
         let total = fleet_out + gates_in;
-        // Strictly better only, a tie cycles the titan's drive for nothing.
-        if total >= baseline {
+        if total + MIN_GAIN > baseline {
             continue;
         }
         scored.push((total, crate::map::ly_distance(start, land), land.id, hop));
@@ -1596,6 +1632,32 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
     }
 
+    /// A target in range is one jump, not a bridge to its neighbour and a gate.
+    #[test]
+    fn a_target_in_titan_range_is_one_direct_jump() {
+        let (g, coords, ids) = line_of_seven();
+        let none = std::collections::HashMap::new();
+        let out = titan(&g, &coords, ids[0], ids[4], 6.0, true, true, &Avoid::default(), &none, &[], true);
+        assert_eq!(out.len(), 1, "one option: {:?}", out.iter().map(|o| &o.label).collect::<Vec<_>>());
+        let o = &out[0];
+        assert_eq!((o.gates, o.jumps, o.titan_jump.is_some()), (0, 1, false));
+        assert_eq!(o.hops.iter().map(|h| (h.id, h.kind)).collect::<Vec<_>>(), vec![(ids[0], 0), (ids[4], 2)]);
+    }
+
+    /// "Titan can move" allows a move, it does not demand one. From S0 the titan bridges to S5 and
+    /// the fleet gates once; moving it first cannot beat that, so it stays.
+    #[test]
+    fn a_titan_that_may_move_stays_when_moving_gains_nothing() {
+        let (g, coords, ids) = line_of_seven();
+        let none = std::collections::HashMap::new();
+        let out = titan(&g, &coords, ids[0], ids[6], 6.0, true, true, &Avoid::default(), &none, &[], true);
+        let best = out.first().expect("a route");
+        assert!(best.titan_jump.is_none(), "the titan moved for nothing: {:?}", best.note);
+        assert_eq!(best.path.first(), Some(&ids[0]));
+        assert_eq!(best.gates, 1, "bridge to S5, one gate to S6: {:?}", best.note);
+        assert!(out.iter().all(|o| o.titan_jump.is_none()), "no move offered at all");
+    }
+
     /// With waypoints the titan leg used to be the last one regardless, so a titan in the start
     /// system was drawn bridging out of the last waypoint instead.
     #[test]
@@ -1625,9 +1687,10 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
                 .and_then(|o| o.hops.iter().position(|h| h.kind == 2).map(|i| (o.hops[i - 1].id, o.hops[i].id)));
             (legs.iter().position(|l| l.whole_route), bridge)
         };
+        // S2 is in range of S0, so the titan leg is one direct jump and has no alternatives.
         let (leg, bridge) = plan(true);
-        assert_eq!(leg, Some(0), "the titan leg is the first one");
-        assert_eq!(bridge.map(|(from, _)| from), Some(ids[0]), "it bridges out of the start");
+        assert_eq!(leg, None, "a single direct jump offers no titan options");
+        assert_eq!(bridge, Some((ids[0], ids[2])), "it jumps straight out of the start");
 
         let (_, bridge) = plan(false);
         assert!(

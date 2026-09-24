@@ -3,6 +3,66 @@
 use super::*;
 
 impl SpaiApp {
+    /// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes.
+    pub(crate) fn draw_route_legs(
+        &self,
+        painter: &egui::Painter,
+        pos: &std::collections::HashMap<i64, egui::Pos2>,
+        o: &crate::web::route::RouteOption,
+        phase: f32,
+    ) {
+        const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
+        const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
+        const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+        for (i, h) in o.hops.iter().enumerate().skip(1) {
+            let (Some(&a), Some(&b)) = (pos.get(&o.hops[i - 1].id), pos.get(&h.id)) else {
+                continue;
+            };
+            match h.kind {
+                2 | 1 => {
+                    let (ca, cb) = if h.kind == 2 {
+                        (PICK_JUMP, PICK_JUMP)
+                    } else {
+                        self.bridge_colors(o.hops[i - 1].id, h.id, PICK_BRIDGE)
+                    };
+                    // Dashed and crawling like the gates and like the browser's: an arc drawn
+                    // solid while the rest of the route moves reads as a different kind of thing.
+                    polyline_flow_gradient(painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
+                }
+                // Crawling dashes, the same as the browser's and the same as this map's own
+                // travel route: a static line is hard to pick out of a map already full of them.
+                _ => dashed_flow(painter, a, b, PICK_GATE, phase),
+            }
+        }
+    }
+
+    /// Systems lit by recent intel: the worst severity reported there and when it last came in.
+    pub(crate) fn intel_highlights(&self) -> std::collections::HashMap<i64, (crate::settings::Severity, i64)> {
+        let sev_rules = self.settings.severity.clone();
+        let highlight_for = self.map_highlight_window();
+        let lit_since = chrono::Utc::now().timestamp();
+        let st = self.intel_state.lock().unwrap();
+        let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
+            std::collections::HashMap::new();
+        for r in &st.reports {
+            if r.clear || st.is_stale(r) {
+                continue;
+            }
+            let sev = severity_of(r, &sev_rules);
+            // A lit system says something is happening there now. The report stays readable
+            // in the feed for its own ttl; the map stops claiming it is live.
+            if lit_since - r.received > highlight_for(sev) {
+                continue;
+            }
+            if let Some(s) = r.primary_system() {
+                let e = m.entry(s.id).or_insert((sev, r.received));
+                e.0 = e.0.max(sev);
+                e.1 = e.1.max(r.received);
+            }
+        }
+        m
+    }
+
     pub(crate) fn maybe_rebuild_graph(&mut self, ctx: &egui::Context) {
         if self.systems.is_none() || crate::ansiblex::BridgeKey::of(&self.settings) == self.bridges_applied {
             return;
@@ -20,7 +80,7 @@ impl SpaiApp {
 
     /// The colours at each end of a bridge from `a` to `b`: the zone a jump landing there is priced
     /// at, or `fallback` where the zone is unknown.
-    fn bridge_colors(&self, a: i64, b: i64, fallback: egui::Color32) -> (egui::Color32, egui::Color32) {
+    pub(crate) fn bridge_colors(&self, a: i64, b: i64, fallback: egui::Color32) -> (egui::Color32, egui::Color32) {
         let Some(g) = &self.systems else { return (fallback, fallback) };
         let col = |sys| {
             crate::ansiblex::zone_at(g, &self.settings.ansiblex_capital, sys).map_or(fallback, crate::ansiblex::zone_color)
@@ -1219,28 +1279,7 @@ impl SpaiApp {
             let phase = (ui.input(|i| i.time) * 28.0) as f32;
             ui.ctx().request_repaint();
             const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
-            const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
-            const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-            for (i, h) in o.hops.iter().enumerate().skip(1) {
-                let (Some(&a), Some(&b)) = (pos.get(&o.hops[i - 1].id), pos.get(&h.id)) else {
-                    continue;
-                };
-                match h.kind {
-                    2 | 1 => {
-                        let (ca, cb) = if h.kind == 2 {
-                            (PICK_JUMP, PICK_JUMP)
-                        } else {
-                            self.bridge_colors(o.hops[i - 1].id, h.id, PICK_BRIDGE)
-                        };
-                        // Dashed and crawling like the gates and like the browser's: an arc drawn
-                        // solid while the rest of the route moves reads as a different kind of thing.
-                        polyline_flow_gradient(&painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
-                    }
-                    // Crawling dashes, the same as the browser's and the same as this map's own
-                    // travel route: a static line is hard to pick out of a map already full of them.
-                    _ => dashed_flow(&painter, a, b, PICK_GATE, phase),
-                }
-            }
+            self.draw_route_legs(&painter, &pos, o, phase);
             // The systems the user named, as opposed to the ones the route passes through.
             for h in &o.hops {
                 if !h.anchor {
@@ -1392,31 +1431,7 @@ impl SpaiApp {
         }
 
         let now_ts = chrono::Utc::now().timestamp();
-        let sev_rules = self.settings.severity.clone();
-        let highlight_for = self.map_highlight_window();
-        let lit_since = chrono::Utc::now().timestamp();
-        let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
-            let st = self.intel_state.lock().unwrap();
-            let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
-                std::collections::HashMap::new();
-            for r in &st.reports {
-                if r.clear || st.is_stale(r) {
-                    continue;
-                }
-                let sev = severity_of(r, &sev_rules);
-                // A lit system says something is happening there now. The report stays readable
-                // in the feed for its own ttl; the map stops claiming it is live.
-                if lit_since - r.received > highlight_for(sev) {
-                    continue;
-                }
-                if let Some(s) = r.primary_system() {
-                    let e = m.entry(s.id).or_insert((sev, r.received));
-                    e.0 = e.0.max(sev);
-                    e.1 = e.1.max(r.received);
-                }
-            }
-            m
-        };
+        let intel_map = self.intel_highlights();
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
         // The holder's colour rides the dot at every zoom; the logo only appears once the dots are

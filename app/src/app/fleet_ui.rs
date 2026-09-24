@@ -491,7 +491,7 @@ impl SpaiApp {
 
     /// The SDE's hull names and groups, which the hub does not send.
     #[cfg(feature = "fleet")]
-    fn fleet_ship_types(&self) -> std::collections::HashMap<i64, (String, String)> {
+    pub(crate) fn fleet_ship_types(&self) -> std::collections::HashMap<i64, (String, String)> {
         match crate::store::Store::open() {
             Ok(s) => s.all_ships().into_iter().map(|(id, n, g)| (id, (n, g))).collect(),
             Err(_) => Default::default(),
@@ -844,6 +844,7 @@ impl SpaiApp {
                 });
         }
 
+        let mut map_at: Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)> = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(e) = st.error.clone() {
@@ -868,11 +869,19 @@ impl SpaiApp {
                     &mut chat,
                 ),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at)
                 }
+            }
+            drop(st);
+            if let Some((rect, input)) = map_at.take() {
+                let mut map_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                // Its own clip: the parent's runs under the action bar, and the side list scrolled
+                // past its panel would paint over the buttons there.
+                map_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+                self.fleet_map_ui(&mut map_ui, &input);
             }
         });
 
@@ -4588,6 +4597,8 @@ pub(crate) enum DetailTab {
     Members,
     /// What they are flying, grouped by hull and judged against the doctrine.
     Composition,
+    /// Where they are, and for a capital save the titan route to the capital.
+    Map,
 }
 
 /// A tracked fleet, or a closed one read back.
@@ -4616,6 +4627,7 @@ fn tracking_page(
     open_migrate: &mut bool,
     comms: &CommsTargets,
     chat: &mut ChatDock,
+    map_at: &mut Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)>,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -4753,7 +4765,7 @@ fn tracking_page(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             for (t, label) in
-                [(DetailTab::Members, "Members"), (DetailTab::Composition, "Composition")]
+                [(DetailTab::Members, "Members"), (DetailTab::Composition, "Composition"), (DetailTab::Map, "Map")]
             {
                 if selectable_chip(ui, tab == t, label).clicked() {
                     *set_tab = Some(t);
@@ -4822,6 +4834,14 @@ fn tracking_page(
             !read_only && st.can(Perm::KickMember),
         );
         let mut toggle_lock: Option<i64> = None;
+        // The map needs the app, which the fleet lock held here keeps out of reach: the caller
+        // draws it into this rect once the lock is dropped.
+        if tab == DetailTab::Map {
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, egui::Sense::hover());
+            *map_at = Some((rect, crate::app::fleet_map::FleetMapInput::of(&open.fleet, &open.composition)));
+            return;
+        }
         // Both ways for the roster: its columns are a fixed width and do not wrap, so in a pane
         // narrower than the table the kick buttons used to end up past the edge unreachable.
         let area = match tab {
@@ -4842,6 +4862,7 @@ fn tracking_page(
             DetailTab::Composition => {
                 composition_view(ui, &open, &off_doctrine, off_doctrine_clock)
             }
+            DetailTab::Map => {}
         });
         if let Some(id) = toggle_lock {
             if !st.locked.insert(id) {

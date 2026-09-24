@@ -237,6 +237,7 @@ impl HubComposition {
                 role: role.to_owned(),
                 // Participation is settled after the fleet, so a live push never carries it.
                 pap_count: 0,
+                solar_system_id: m.solar_system_id,
             })
         };
 
@@ -383,6 +384,7 @@ mod tests {
         assert_eq!(squad.members[0].name, "Pilot");
         assert_eq!(squad.members[0].ship_type_name, "Onyx");
         assert_eq!(squad.members[0].ship_group, "Heavy Interdiction Cruiser");
+        assert!(comp.members().all(|m| m.solar_system_id == 30_004_759), "every pilot keeps their system");
         assert_eq!(comp.total(), 4);
     }
 

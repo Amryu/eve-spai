@@ -316,6 +316,7 @@ mod size_tests {
                 ship_group: (*group).to_owned(),
                 role: String::new(),
             pap_count: 0,
+            solar_system_id: 0,
         })
             .collect();
         Composition {
@@ -459,6 +460,7 @@ mod tests {
             ship_group: group.to_owned(),
             role: String::new(),
             pap_count: 0,
+            solar_system_id: 0,
         }
     }
 

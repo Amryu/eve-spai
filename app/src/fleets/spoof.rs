@@ -195,6 +195,9 @@ impl SpoofData {
 ///
 /// Deliberately mixed: hulls the doctrine asks for, a couple doing jobs every fleet needs, and one
 /// nobody asked for, so the composition view has all three standings to show.
+/// 1DQ1-A, 319-3D and 7-K5EL: systems the UI fixtures also know.
+const SPOOF_SYSTEMS: [i64; 3] = [30_004_759, 30_004_608, 30_003_704];
+
 fn sample_composition(id: &FleetId) -> Composition {
     let ships = [
         (22_464, "Flycatcher", "Interdictor", "Tackle"),
@@ -214,6 +217,7 @@ fn sample_composition(id: &FleetId) -> Composition {
             ship_group: group.to_owned(),
             role: role.to_owned(),
             pap_count: 0,
+            solar_system_id: SPOOF_SYSTEMS[0],
         }
     };
     let mut wings = Vec::new();
@@ -237,6 +241,8 @@ fn sample_composition(id: &FleetId) -> Composition {
                         ship_group: group.to_owned(),
                         role: role.to_owned(),
                         pap_count: 0,
+                        // Most with the FC, a few elsewhere, so a map shows more than one count.
+                        solar_system_id: SPOOF_SYSTEMS[if m < 4 { 0 } else { 1 + (w as usize) }],
                     }
                 })
                 .collect();

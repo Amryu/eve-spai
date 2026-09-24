@@ -555,6 +555,8 @@ pub(crate) struct FleetMemberRow {
     pub squad_id: i64,
     #[serde(default)]
     pub role: String,
+    #[serde(default)]
+    pub solar_system_id: i64,
 }
 
 #[cfg(feature = "fleet")]

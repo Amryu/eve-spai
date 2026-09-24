@@ -24,6 +24,8 @@ pub mod doctrine;
 pub mod hub;
 pub mod http;
 pub mod model;
+pub mod movement;
+pub mod tracker;
 pub mod ping;
 pub mod seed;
 pub mod spoof;
