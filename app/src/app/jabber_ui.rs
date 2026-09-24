@@ -1320,8 +1320,8 @@ impl SpaiApp {
             })
             .response;
         let row = egui::Rect::from_min_max(
-            egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
-            egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
+            egui::pos2(ui.max_rect().left(), inner.rect.top() - 1.0),
+            egui::pos2(ui.max_rect().right(), inner.rect.bottom() + 1.0),
         );
         let resp = ui.interact(row, ui.id().with(label), egui::Sense::click());
         if resp.hovered() {
@@ -1404,10 +1404,11 @@ impl SpaiApp {
             })
             .response;
 
-        // The whole width, not just what the content happened to fill.
+        // The list's width, not what the rows drew so far: without an unread badge no row reaches
+        // the right edge, and the leave button would sit on the name.
         let row = egui::Rect::from_min_max(
-            egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
-            egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
+            egui::pos2(ui.max_rect().left(), inner.rect.top() - 1.0),
+            egui::pos2(ui.max_rect().right(), inner.rect.bottom() + 1.0),
         );
         // Salted with the list this row is in, not just the jid: the same conversation can legitimately
         // appear in two lists (a search result, a contact that is also a recent chat), and two rows
@@ -2345,48 +2346,23 @@ impl SpaiApp {
 
             // Plan the visible tabs (with the label actually rendered, possibly ellipsized)
             // and collect the rest into the dropdown.
-            let mut plan: Vec<(&TabInfo, String)> = Vec::new();
-            let mut overflow: Vec<&TabInfo> = Vec::new();
-            let mut full_bar = false;
-            for t in &infos {
-                if full_bar {
-                    overflow.push(t);
-                    continue;
-                }
-                let w = jabber_tab_width(ui, true, t.is_unread, &t.label);
-                let remaining = tab_area - used;
-                if w <= remaining {
-                    used += w;
-                    plan.push((t, t.label.clone()));
-                } else if remaining >= MIN_TAB_W {
-                    let lbl = ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
-                    used += jabber_tab_width(ui, true, t.is_unread, &lbl);
-                    plan.push((t, lbl));
-                    full_bar = true;
-                } else {
-                    overflow.push(t);
-                    full_bar = true;
-                }
-            }
-            // Guarantee the open conversation stays on the bar: evict trailing tabs until it
-            // fits, then place it (ellipsized if needed).
-            if let Some(sel_jid) = active.clone() {
-                if !plan.iter().any(|(t, _)| t.jid == sel_jid) {
-                    if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
-                        while tab_area - used < MIN_TAB_W && !plan.is_empty() {
-                            let (t, lbl) = plan.pop().unwrap();
-                            used -= jabber_tab_width(ui, true, t.is_unread, &lbl);
-                            overflow.insert(0, t);
-                        }
-                        let t = overflow.remove(pos.min(overflow.len().saturating_sub(1)));
-                        let remaining = tab_area - used;
-                        let lbl =
-                            ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
-                        used += jabber_tab_width(ui, true, t.is_unread, &lbl);
-                        plan.push((t, lbl));
-                    }
-                }
-            }
+            let widths: Vec<f32> =
+                infos.iter().map(|t| jabber_tab_width(ui, true, t.is_unread, &t.label)).collect();
+            let active_at = active.as_ref().and_then(|a| infos.iter().position(|t| &t.jid == a));
+            let (on_bar, off_bar) = plan_tab_bar(&widths, tab_area - used, MIN_TAB_W, active_at);
+            let plan: Vec<(&TabInfo, String)> = on_bar
+                .into_iter()
+                .map(|(i, room)| {
+                    let t = &infos[i];
+                    let lbl = match room {
+                        Some(room) => ellipsize_tab_label(ui, true, t.is_unread, &t.label, room),
+                        None => t.label.clone(),
+                    };
+                    (t, lbl)
+                })
+                .collect();
+            let overflow: Vec<&TabInfo> = off_bar.into_iter().map(|i| &infos[i]).collect();
+            used += plan.iter().map(|(t, l)| jabber_tab_width(ui, true, t.is_unread, l)).sum::<f32>();
 
             for (t, lbl) in &plan {
                 let hit = jabber_tab_box(
@@ -3017,5 +2993,86 @@ impl SpaiApp {
                 TabAction::CloseWindow(id) => self.return_popout_tabs(id),
             }
         }
+    }
+}
+
+/// Which tabs go on the bar. `widths` are the tabs' full widths in bar order and `room` the space
+/// they share. A tab that only partly fits is shrunk into what is left, if that is at least
+/// `min_w`, and ends the bar; the rest go to the dropdown. The active tab is never among them:
+/// trailing tabs give way until it fits.
+///
+/// Returns the tabs on the bar, each with the width to shrink it into (None when it fits whole),
+/// and the ones in the dropdown, both in bar order.
+pub(crate) fn plan_tab_bar(
+    widths: &[f32],
+    room: f32,
+    min_w: f32,
+    active: Option<usize>,
+) -> (Vec<(usize, Option<f32>)>, Vec<usize>) {
+    let mut bar: Vec<(usize, Option<f32>)> = Vec::new();
+    let mut used = 0.0;
+    let mut full = false;
+    for (i, &w) in widths.iter().enumerate() {
+        if full {
+            break;
+        }
+        let left = room - used;
+        if w <= left {
+            used += w;
+            bar.push((i, None));
+        } else if left >= min_w {
+            used += left;
+            bar.push((i, Some(left)));
+            full = true;
+        } else {
+            full = true;
+        }
+    }
+    if let Some(a) = active.filter(|a| *a < widths.len() && !bar.iter().any(|(i, _)| i == a)) {
+        let width_of = |(i, shrunk): &(usize, Option<f32>)| shrunk.unwrap_or(widths[*i]);
+        while room - used < widths[a].min(min_w) && !bar.is_empty() {
+            used -= width_of(&bar.pop().expect("not empty"));
+        }
+        let left = room - used;
+        bar.push((a, (widths[a] > left).then_some(left.max(0.0))));
+    }
+    let overflow = (0..widths.len()).filter(|i| !bar.iter().any(|(b, _)| b == i)).collect();
+    (bar, overflow)
+}
+
+#[cfg(test)]
+mod tab_bar_tests {
+    use super::plan_tab_bar;
+
+    fn on_bar(p: &(Vec<(usize, Option<f32>)>, Vec<usize>)) -> Vec<usize> {
+        p.0.iter().map(|(i, _)| *i).collect()
+    }
+
+    #[test]
+    fn tabs_fill_the_bar_and_the_rest_overflow() {
+        let p = plan_tab_bar(&[100.0, 100.0, 100.0, 100.0], 250.0, 40.0, None);
+        assert_eq!(p.0, vec![(0, None), (1, None), (2, Some(50.0))]);
+        assert_eq!(p.1, vec![3]);
+    }
+
+    /// The active tab was pulled out of the dropdown by a position read before trailing tabs were
+    /// evicted into it, so the wrong tab came back and the active one stayed hidden.
+    #[test]
+    fn the_active_tab_is_never_in_the_dropdown() {
+        let widths = [100.0; 8];
+        for active in 0..widths.len() {
+            for room in [150.0, 250.0, 330.0, 90.0] {
+                let p = plan_tab_bar(&widths, room, 60.0, Some(active));
+                assert!(on_bar(&p).contains(&active), "tab {active} hidden at {room}: {p:?}");
+                assert!(!p.1.contains(&active));
+                assert_eq!(p.0.len() + p.1.len(), widths.len(), "every tab is somewhere once");
+            }
+        }
+    }
+
+    #[test]
+    fn a_visible_active_tab_changes_nothing() {
+        let widths = [100.0, 100.0, 100.0];
+        assert_eq!(plan_tab_bar(&widths, 250.0, 40.0, Some(1)), plan_tab_bar(&widths, 250.0, 40.0, None));
     }
 }
