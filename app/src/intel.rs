@@ -1706,6 +1706,27 @@ fn drop_subphrase_pilots(
     pilots.retain(|_| it.next().unwrap_or(true));
 }
 
+/// A wormhole's mass stability ("<50%", ">50") is not a count and not part of a name. A lone comma
+/// in its place ends a name run and gives the count parser nothing to read.
+fn mask_wh_mass(text: &str) -> String {
+    let is_mass = |w: &str| {
+        let t = w.trim_matches(|c: char| ",.;:!?\"()".contains(c));
+        let body = t.trim_start_matches(['<', '>', '~']);
+        let digits = body.trim_end_matches('%');
+        !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit())
+            && (body.len() > digits.len() || body.len() < t.len())
+    };
+    let wh = text.split(|c: char| !c.is_alphanumeric()).any(|w| {
+        matches!(w.to_lowercase().as_str(), "wh" | "whs" | "wormhole" | "wormholes" | "hole" | "holes")
+            || crate::wormholes::is_wh_code(w)
+    });
+    if !wh || !text.split_whitespace().any(is_mass) {
+        return text.to_owned();
+    }
+    text.split_whitespace().map(|w| if is_mass(w) { "," } else { w }).collect::<Vec<_>>().join(" ")
+}
+
 fn preprocess_intel(text: &str) -> String {
     let mut t = text.trim();
     if t.starts_with('[') {
@@ -2089,7 +2110,7 @@ pub fn analyze_ctx(
     let text = cleaned.as_str();
     let display_text = text.trim().to_owned();
     let links = extract_links(text);
-    let stripped = strip_urls(text);
+    let stripped = mask_wh_mass(&strip_urls(text));
     let text = stripped.as_str();
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);

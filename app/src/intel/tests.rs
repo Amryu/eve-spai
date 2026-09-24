@@ -3601,3 +3601,27 @@ fn local_scan_links_get_their_own_kind() {
     let kinds: Vec<_> = links.iter().map(|l| l.kind.clone()).collect();
     assert_eq!(kinds, vec![LinkKind::LocalScan, LinkKind::Dscan, LinkKind::LocalScan]);
 }
+
+/// Mass stability on a wormhole ("<50%", ">50%", "10%") is a percentage, never a hostile count.
+#[test]
+fn wormhole_mass_is_not_a_hostile_count() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990)]);
+    for text in [
+        "WH >50% Rancer",
+        "wormhole in Rancer >50%",
+        "Rancer wh >50% mass",
+        "Rancer wh <50% reds",
+        "Rancer wh >50",
+        "WH 10% Rancer neuts",
+    ] {
+        let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+        assert!(r.wormhole, "{text} is a wormhole report");
+        assert!(r.pilots.is_empty(), "{text} gave pilots {:?}", r.pilots);
+        assert_eq!(r.count, None, "{text} gave {:?}", r.count);
+    }
+    let r = analyze("Rancer wh >50% 3 reds", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(3), "a real count beside the mass must survive");
+    let r = analyze(">10 reds Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(10), "outside a wormhole report '>' still reads as a count");
+}
