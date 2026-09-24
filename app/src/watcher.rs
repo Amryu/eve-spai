@@ -14,6 +14,10 @@ const REVIVAL_TTL_SECS: i64 = 30 * 86400;
 
 pub type SharedRevivals = Arc<Mutex<HashMap<String, i64>>>;
 
+/// Lines handed to the watcher as if EVE had written them to the named channel's log: the alert
+/// rules' test intel.
+pub type SharedInject = Arc<Mutex<Vec<(String, crate::chatlog::ChatMessage)>>>;
+
 fn revival_refresh(current_until: Option<i64>, triggered: bool, now: i64) -> Option<i64> {
     let already = current_until.is_some_and(|u| u > now);
     (already || triggered).then_some(now + REVIVAL_TTL_SECS)
@@ -40,6 +44,7 @@ pub fn spawn(
     rescue: RescueHandle,
     rescue_channel: String,
     ship_groups: Arc<HashMap<String, String>>,
+    inject: SharedInject,
     ctx: egui::Context,
 ) {
     let _ = std::thread::Builder::new().name("intel-watcher".into()).spawn(move || {
@@ -68,6 +73,7 @@ pub fn spawn(
                 &rescue,
                 &rescue_channel,
                 &ship_groups,
+                &inject,
                 &ctx,
                 &mut tails,
                 &mut file_sigs,
@@ -97,6 +103,7 @@ fn scan(
     rescue: &RescueHandle,
     rescue_channel: &str,
     ship_groups: &HashMap<String, String>,
+    inject: &SharedInject,
     ctx: &egui::Context,
     tails: &mut HashMap<PathBuf, (u64, String)>,
     file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
@@ -105,12 +112,16 @@ fn scan(
     known_regions: &std::collections::HashSet<String>,
     channel_regions: &mut HashMap<String, Vec<String>>,
 ) {
-    let Ok(entries) = std::fs::read_dir(chat_dir) else {
-        return;
-    };
     let mut any_new = false;
+    let mut batches: Vec<(crate::chatlog::ChatMeta, Vec<crate::chatlog::ChatMessage>)> = Vec::new();
+    for (channel, m) in std::mem::take(&mut *inject.lock().unwrap()) {
+        match batches.iter_mut().find(|(meta, _)| meta.channel == channel) {
+            Some((_, v)) => v.push(m),
+            None => batches.push((crate::chatlog::ChatMeta { channel }, vec![m])),
+        }
+    }
 
-    for entry in entries.flatten() {
+    for entry in std::fs::read_dir(chat_dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
@@ -157,6 +168,10 @@ fn scan(
         if first_sight && messages.len() > FIRST_SIGHT_BACKLOG {
             messages.drain(..messages.len() - FIRST_SIGHT_BACKLOG);
         }
+        batches.push((meta, messages));
+    }
+
+    for (meta, messages) in batches {
         #[cfg(feature = "fleet")]
         let is_rescue =
             !rescue_channel.is_empty() && meta.channel.eq_ignore_ascii_case(rescue_channel);
@@ -460,6 +475,62 @@ mod tests {
 
     fn report_with(pilots: &[&str]) -> IntelReport {
         IntelReport { pilots: pilots.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+    }
+
+    /// Test intel from the alert rules takes the path of a logged line, with no chat log folder.
+    #[test]
+    fn injected_line_is_read_as_intel() {
+        let mut info = HashMap::new();
+        info.insert(
+            "rancer".to_owned(),
+            crate::geo::SystemInfo {
+                id: 30_002_510,
+                name: "Rancer".into(),
+                security: 0.4,
+                constellation: String::new(),
+                region: String::new(),
+                faction: String::new(),
+            },
+        );
+        let systems = Systems::new(info, HashMap::new());
+        let state: Mutex<IntelState> = Default::default();
+        let inject: SharedInject = Default::default();
+        let msg = |text: &str| crate::chatlog::ChatMessage {
+            timestamp: chrono::Utc::now().format("%Y.%m.%d %H:%M:%S").to_string(),
+            author: "Test Scout".into(),
+            text: text.into(),
+        };
+        inject.lock().unwrap().push(("Test.Intel".into(), msg("Rancer 3 reds")));
+        inject.lock().unwrap().push(("Other.Channel".into(), msg("Rancer 5 reds")));
+        let rescue: RescueHandle = Default::default();
+        scan(
+            &std::path::PathBuf::from("/nonexistent/eve-spai-test-chatlogs"),
+            &["test.intel".to_owned()],
+            &systems,
+            &HashMap::new(),
+            &Default::default(),
+            &state,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &rescue,
+            "",
+            &HashMap::new(),
+            &inject,
+            &egui::Context::default(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            None,
+            &Default::default(),
+            &mut HashMap::new(),
+        );
+        assert!(inject.lock().unwrap().is_empty(), "the queue is drained");
+        let st = state.lock().unwrap();
+        assert_eq!(st.reports.len(), 1, "only the followed channel's line is read");
+        let r = &st.reports[0];
+        assert_eq!((r.channel.as_str(), r.reporter.as_str(), r.count), ("Test.Intel", "Test Scout", Some(3)));
+        assert_eq!(r.systems.first().map(|s| s.id), Some(30_002_510));
     }
 
     #[test]

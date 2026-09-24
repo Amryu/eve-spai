@@ -5,6 +5,14 @@ use super::*;
 /// The Imperium forum topic carrying both the sov-upgrade list and the Ansiblex link.
 const EQUINOX_TOPIC: &str = "https://goonfleet.com/index.php/topic/386078-equinox-upgrade-information-station-v3/";
 
+/// The alert rules' test intel dialog.
+pub(crate) struct TestIntel {
+    pub(crate) channel: String,
+    pub(crate) reporter: String,
+    pub(crate) text: String,
+    pub(crate) sent: Option<String>,
+}
+
 impl SpaiApp {
     pub(crate) fn setup_wizard(&mut self, ctx: &egui::Context) {
         if !self.wizard_open {
@@ -704,6 +712,21 @@ impl SpaiApp {
                 self.alert_selected_rule = self.settings.alerts.rules.last().map(|r| r.id);
                 changed = true;
             }
+            let watching = self.chat_dir.is_some();
+            if ui
+                .add_enabled(watching, egui::Button::new(format!("{}  Test intel", ic::FLASK)))
+                .on_hover_text("Send a line through the intel parser as if it came from game, to check the rules")
+                .on_disabled_hover_text("Needs the EVE chat log folder, which the intel reader watches")
+                .clicked()
+            {
+                let channel = self.settings.intel_channels.first().cloned().unwrap_or_default();
+                let reporter = if self.settings.active_character.is_empty() {
+                    self.characters.first().map(|c| c.name.clone()).unwrap_or_default()
+                } else {
+                    self.settings.active_character.clone()
+                };
+                self.test_intel = Some(TestIntel { channel, reporter, text: String::new(), sent: None });
+            }
         });
         ui.add_space(4.0);
         ui.label(
@@ -909,6 +932,88 @@ impl SpaiApp {
         }
         if let Some((kind, idx)) = open_picker {
             self.open_filter_picker(kind, idx);
+        }
+    }
+
+    pub(crate) fn test_intel_dialog(&mut self, ctx: &egui::Context) {
+        let Some(t) = self.test_intel.as_mut() else { return };
+        let channels = &self.settings.intel_channels;
+        let mut open = true;
+        let mut send = false;
+        egui::Window::new(format!("{}  Test intel", egui_phosphor::regular::FLASK))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Read as a new line in the channel's chat log: it lands in the intel feed and \
+                         the alert rules act on it.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                egui::Grid::new("test_intel_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    ui.label("Channel");
+                    if channels.is_empty() {
+                        ui.add(egui::TextEdit::singleline(&mut t.channel).desired_width(260.0));
+                    } else {
+                        egui::ComboBox::from_id_salt("test_intel_channel")
+                            .width(260.0)
+                            .selected_text(t.channel.clone())
+                            .show_ui(ui, |ui| {
+                                for c in channels {
+                                    ui.selectable_value(&mut t.channel, c.clone(), c);
+                                }
+                            });
+                    }
+                    ui.end_row();
+                    ui.label("Reporter");
+                    ui.add(egui::TextEdit::singleline(&mut t.reporter).desired_width(260.0));
+                    ui.end_row();
+                    ui.label("Message");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut t.text)
+                            .hint_text("Rancer 3 reds Loki Sabre")
+                            .desired_width(260.0),
+                    );
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        send = true;
+                        resp.request_focus();
+                    }
+                    ui.end_row();
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let ready = !t.channel.trim().is_empty()
+                        && !t.reporter.trim().is_empty()
+                        && !t.text.trim().is_empty();
+                    if ui
+                        .add_enabled(
+                            ready,
+                            egui::Button::new(format!("{}  Send", egui_phosphor::regular::PAPER_PLANE_TILT)),
+                        )
+                        .clicked()
+                    {
+                        send = true;
+                    }
+                    if let Some(note) = &t.sent {
+                        ui.label(egui::RichText::new(note).weak());
+                    }
+                });
+            });
+        if send && !t.channel.trim().is_empty() && !t.reporter.trim().is_empty() && !t.text.trim().is_empty() {
+            let msg = crate::chatlog::ChatMessage {
+                timestamp: chrono::Utc::now().format("%Y.%m.%d %H:%M:%S").to_string(),
+                author: t.reporter.trim().to_owned(),
+                text: t.text.trim().to_owned(),
+            };
+            t.sent = Some(format!("Sent to {}.", t.channel.trim()));
+            self.intel_inject.lock().unwrap().push((t.channel.trim().to_owned(), msg));
+        }
+        if !open {
+            self.test_intel = None;
         }
     }
 
