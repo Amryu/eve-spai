@@ -2460,47 +2460,51 @@ impl SpaiApp {
             let dd_btn = egui::Button::new(caret)
                 .min_size(egui::vec2(dd_w, TAB_H))
                 .corner_radius(0.0);
-            let menu_list: Vec<&TabInfo> =
-                if overflow.is_empty() { infos.iter().collect() } else { overflow };
-            egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
-                for t in &menu_list {
-                    ui.horizontal(|ui| {
-                        match t.lead {
-                            TabLead::Dot(c) => status_dot(ui, c, 9.0),
-                            TabLead::Icon(ic) => {
-                                ui.label(ic);
+            // Only what the bar cannot show: a tab already on it is one click away there.
+            let menu_list: Vec<&TabInfo> = overflow;
+            if menu_list.is_empty() {
+                ui.add_enabled(false, dd_btn).on_disabled_hover_text("Every tab fits on the bar");
+            } else {
+                egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
+                    for t in &menu_list {
+                        ui.horizontal(|ui| {
+                            match t.lead {
+                                TabLead::Dot(c) => status_dot(ui, c, 9.0),
+                                TabLead::Icon(ic) => {
+                                    ui.label(ic);
+                                }
                             }
-                        }
-                        if ui.menu_label(false, t.label.as_str()).clicked() {
-                            focus = Some(Some(t.jid.clone()));
-                            if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
-                                promote = Some(t.jid.clone());
+                            if ui.menu_label(false, t.label.as_str()).clicked() {
+                                focus = Some(Some(t.jid.clone()));
+                                if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
+                                    promote = Some(t.jid.clone());
+                                }
+                                ui.close();
                             }
-                            ui.close();
-                        }
-                        if t.is_unread {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                    .color(UNREAD_RED)
-                                    .size(8.0),
-                            );
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(egui_phosphor::regular::X).small(),
+                            if t.is_unread {
+                                ui.label(
+                                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                        .color(UNREAD_RED)
+                                        .size(8.0),
+                                );
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(egui_phosphor::regular::X).small(),
+                                    )
+                                    .frame(false),
                                 )
-                                .frame(false),
-                            )
-                            .on_hover_text("Close")
-                            .clicked()
-                        {
-                            close_tab = Some((t.jid.clone(), t.is_room));
-                            ui.close();
-                        }
-                    });
-                }
-            });
+                                .on_hover_text("Close")
+                                .clicked()
+                            {
+                                close_tab = Some((t.jid.clone(), t.is_room));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            }
             if let Some(vp) = &pin {
                 ui.add_space(PIN_GAP);
                 ontop_pin_ui(ui, vp);
