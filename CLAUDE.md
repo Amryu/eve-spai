@@ -108,6 +108,9 @@ server. Built on `egui_kittest`, version-locked to egui.
 
 - `cargo test --bin eve-spai uitest` runs layout and interaction assertions. No GPU, ~1.5s.
 - `cargo test --bin eve-spai uitest_screenshots -- --ignored` writes PNGs to `target/uishots/`.
+  It renders on Mesa's CPU Vulkan driver (lavapipe) only: `harness::software_gpu_only` hides every
+  other driver from the loader, because renders on the desktop's GPU crashed its amdgpu display
+  pipe. Without lavapipe installed it refuses to render. Do not bypass it.
   Each scene renders twice: plain, and `.debug.png` with egui's interactive-widget overlay.
 - `cargo test --bin eve-spai uitest_census -- --ignored --nocapture` prints per-scene hit-target
   counts, the smallest target, and a role histogram.

@@ -182,14 +182,45 @@ pub(crate) fn render_dialogs_on_the_root(ctx: &egui::Context) {
     });
 }
 
-/// `gpu` attaches the wgpu test renderer, which is only needed for [`shot`]. It picks the CPU
-/// (lavapipe) adapter on its own and never creates a surface, so no display is involved.
+/// Where distributions put Mesa's CPU Vulkan driver (lavapipe).
+const LAVAPIPE_ICDS: [&str; 2] =
+    ["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "/etc/vulkan/icd.d/lvp_icd.x86_64.json"];
+
+/// Confines every render to lavapipe before the first wgpu instance exists.
+///
+/// kittest prefers a CPU adapter, but only after enumerating all of them, and enumerating loads
+/// every installed driver and probes GL through EGL. Hundreds of renders doing that on the
+/// desktop's own GPU took down amdgpu's display pipe (flip_done timeouts) while the user was on it.
+/// With the loader pointed at lavapipe alone and wgpu held to Vulkan, the hardware driver is never
+/// loaded at all. Without lavapipe this refuses to render rather than fall back to the GPU.
+fn software_gpu_only() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let icd = LAVAPIPE_ICDS
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("no lavapipe ICD: refusing to render screenshots on the hardware GPU");
+        std::env::set_var("VK_DRIVER_FILES", icd);
+        std::env::set_var("VK_ICD_FILENAMES", icd);
+        std::env::set_var("WGPU_BACKEND", "vulkan");
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    });
+    let forced = std::env::var("VK_DRIVER_FILES").unwrap_or_default();
+    assert!(
+        LAVAPIPE_ICDS.contains(&forced.as_str()) && std::env::var("WGPU_BACKEND").as_deref() == Ok("vulkan"),
+        "renders must go to lavapipe only, got VK_DRIVER_FILES={forced:?}"
+    );
+}
+
+/// `gpu` attaches the wgpu test renderer, which is only needed for [`shot`]. It renders on lavapipe
+/// alone (see [`software_gpu_only`]) and never creates a surface, so no display is involved.
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
     assert_no_live_profile();
     let pointer = scene.pointer;
     let mut builder = Harness::builder().with_size(scene.size).with_max_steps(8);
     if gpu {
+        software_gpu_only();
         builder = builder.wgpu();
     }
     let mut first = true;
