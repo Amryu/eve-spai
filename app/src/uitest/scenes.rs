@@ -1062,8 +1062,15 @@ fn fleet_map_scene_at(
                     open.fleet.closed_at = Some("2026-01-01T00:00:00Z".into());
                 }
             }
-            let first = members.first().map(|m| m.character_id).filter(|_| focus);
-            a.fleet_map.seed(&fleet_id, moves, at.map(|s| t0 + s), first);
+            // `focus` follows the first pilot; a scene named "stranger" follows someone the fleet
+            // never had, the way a pilot followed in another fleet used to stick.
+            let first = if name.contains("stranger") {
+                Some(1)
+            } else {
+                members.first().map(|m| m.character_id).filter(|_| focus)
+            };
+            let losses = fixtures::fleet_kills(&fleet_id, &members, t0);
+            a.fleet_map.seed(&fleet_id, moves, losses, at.map(|s| t0 + s), first);
             if cap_save {
                 a.settings.fleet_presets = fixtures::rescue_presets();
                 a.settings.rescue_staging_system = "Placeholder Staging".into();
@@ -1752,6 +1759,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_map_scene_at("fleet_map_pilot", [1280.0, 800.0], false, None, true, false));
     #[cfg(feature = "fleet")]
     v.push(fleet_map_scene_at("fleet_map_closed", [1280.0, 800.0], false, None, false, true));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_map_scene_at("fleet_map_stranger", [1280.0, 800.0], false, None, false, false));
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene("fleet_members", [1280.0, 1420.0], crate::app::fleet_ui::DetailTab::Members));
     #[cfg(feature = "fleet")]
@@ -6656,4 +6665,169 @@ fn uitest_a_closed_fleet_replays_its_record() {
     assert!(harness.query_by_label("Live").is_none(), "a closed fleet has nothing live to follow");
     assert!(harness.query_by_label_contains("pilots left").is_some(), "the close is one line");
     assert!(harness.query_by_label("0 pilots").is_none(), "it opened on the close, when the fleet was empty");
+}
+
+/// A followed pilot the fleet never had is not a filter: the map falls back to the whole fleet
+/// and its timeline, rather than drawing nothing under a picker that reads "Whole fleet".
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_a_pilot_from_another_fleet_is_not_followed() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map_stranger").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label_contains("pilots joined").is_some(), "the whole fleet's timeline shows");
+    assert!(harness.query_by_label("Not in the fleet at this moment").is_none());
+}
+
+/// The sidebar's two tabs share its width evenly, and a system under Locations opens a dialog of
+/// who was there rather than expanding in place.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_map_tabs_and_system_dialog() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    let bounds = |h: &egui_kittest::Harness<'_>, label: &str| {
+        h.get_by_label_contains(label).accesskit_node().raw_bounds().expect("bounds")
+    };
+    let (t, l) = (bounds(&harness, "Timeline"), bounds(&harness, "Locations ("));
+    assert!(((t.x1 - t.x0) - (l.x1 - l.x0)).abs() < 1.0, "unequal tabs: {t:?} vs {l:?}");
+    assert!((t.x1 - l.x0).abs() < 1.0, "the tabs are not side by side: {t:?} {l:?}");
+
+    harness.get_by_label_contains("Locations (").click();
+    harness.run_steps(4);
+    harness.get_by_label("1DQ1-A (20)").click();
+    harness.run_steps(4);
+    assert!(harness.query_by_label_contains("1DQ1-A now").is_some(), "no dialog for the system");
+    assert!(harness.query_by_label("20 pilots").is_some());
+}
+
+/// Stepping back leaves Live for the last recorded change, and stepping on returns.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_map_steps_through_the_record() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    harness.get_by_label(egui_phosphor::regular::SKIP_BACK).click();
+    harness.run_steps(4);
+    let live = harness.get_by_label("Live");
+    assert!(!live.accesskit_node().is_disabled(), "stepping back should leave Live");
+    harness.get_by_label(egui_phosphor::regular::SKIP_FORWARD).click();
+    harness.run_steps(4);
+    assert!(harness.get_by_label("Live").accesskit_node().is_disabled(), "the last step forward is Live again");
+}
+
+/// A loss shows in the timeline with its pod on the same line, and a kill beside it.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_map_lists_kills_and_losses() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let lost = harness.query_by_label_contains("Lost ").expect("a loss line");
+    let text = format!("{lost:?}");
+    assert!(text.contains("+ pod"), "the pod is not on the ship's line: {text}");
+    let kill = harness.query_by_label_contains("Killed Sample Hostile").expect("a kill line");
+    assert!(format!("{kill:?}").contains(" by "), "the fleet's pilots are not named on the kill");
+    assert!(harness.query_by_label_contains("Battle report").is_some(), "no one-click report");
+}
+
+/// The lowest message body actually painted in the history: the one at its bottom edge.
+fn jabber_bottom_body(harness: &egui_kittest::Harness<'_>) -> Option<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    harness
+        .root()
+        .children_recursive()
+        .filter(|node| {
+            let n = node.accesskit_node();
+            n.role() == egui::accesskit::Role::Label
+                && n.label().or_else(|| n.value()).unwrap_or_default().contains('#')
+                && node.children().any(|c| c.accesskit_node().role() == egui::accesskit::Role::TextRun)
+        })
+        .filter_map(|node| {
+            let n = node.accesskit_node();
+            Some((n.bounding_box()?.y1, n.label().or_else(|| n.value()).unwrap_or_default().to_string()))
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, l)| l)
+}
+
+/// Resizing a chat window keeps the message at the bottom of its history where it was, both when
+/// scrolled back and at the newest. The offset is held from the top, so a narrower window, with
+/// taller wrapped rows, slid the view up the conversation.
+#[test]
+fn uitest_jabber_resize_keeps_the_bottom_message() {
+    let mut scene = jabber_popout_seeded(
+        "jabber_resize_bottom",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "",
+        None,
+        fixtures::jabber_state_long,
+    );
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(8);
+    let newest = jabber_bottom_body(&harness).expect("no message bodies");
+    harness.set_size(egui::vec2(380.0, 360.0));
+    harness.run_steps(8);
+    assert_eq!(jabber_bottom_body(&harness).as_deref(), Some(newest.as_str()), "the newest message left the bottom");
+
+    harness.set_size(egui::vec2(520.0, 480.0));
+    harness.run_steps(8);
+    harness.event(egui::Event::PointerMoved(egui::pos2(260.0, 240.0)));
+    for _ in 0..4 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 300.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run_steps(2);
+    }
+    harness.run_steps(16);
+    let back = jabber_bottom_body(&harness).expect("no message bodies");
+    assert_ne!(back, newest, "the wheel did not scroll back, so this asserts nothing");
+    harness.set_size(egui::vec2(380.0, 360.0));
+    harness.run_steps(8);
+    assert_eq!(jabber_bottom_body(&harness).as_deref(), Some(back.as_str()), "the scrolled-back message left the bottom");
+}
+
+/// The pilot picker fills the sidebar without pushing it wider: sized from the panel exactly, the
+/// panel grew to fit it every frame until it reached its maximum.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_map_picker_fills_the_sidebar_and_holds() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = all().into_iter().find(|s| s.name == "fleet_map").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    let picker = |h: &egui_kittest::Harness<'_>| {
+        h.root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .filter(|n| n.role() == egui::accesskit::Role::ComboBox)
+            .filter_map(|n| n.raw_bounds())
+            // The speed box sits in the time bar; the picker is the wide one in the sidebar.
+            .max_by(|a, b| (a.x1 - a.x0).total_cmp(&(b.x1 - b.x0)))
+            .expect("no picker")
+    };
+    let tabs = |h: &egui_kittest::Harness<'_>| {
+        let (t, l) = (
+            h.get_by_label_contains("Timeline").accesskit_node().raw_bounds().expect("bounds"),
+            h.get_by_label_contains("Locations (").accesskit_node().raw_bounds().expect("bounds"),
+        );
+        (t.x0, l.x1)
+    };
+    let first = picker(&harness);
+    harness.run_steps(20);
+    let later = picker(&harness);
+    assert!((later.x1 - later.x0 - (first.x1 - first.x0)).abs() < 0.5, "the picker grew: {first:?} -> {later:?}");
+    let (left, right) = tabs(&harness);
+    assert!((later.x0 - left).abs() < 2.0 && (right - later.x1).abs() < 8.0, "the picker does not span the sidebar: {later:?} vs {left}..{right}");
 }

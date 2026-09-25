@@ -461,6 +461,8 @@ pub struct SpaiApp {
     battle_break_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
     battle_overrides_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     battle_add_queue: std::sync::Arc<std::sync::Mutex<Vec<i64>>>,
+    /// Kill ids whose battle the Battles tab opens once one of them lands in it, and since when.
+    pub(crate) battle_select_pending: Option<(Vec<i64>, std::time::Instant)>,
     battle_excluded_count: usize,
     battle_scrub_count: usize,
     battle_edit_mode: bool,
@@ -533,6 +535,8 @@ pub struct SpaiApp {
     recent_alerts: AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) alert_rules_open: bool,
+    /// Tracked fleets' pilots, whose kills and losses the zKill feed records.
+    pub(crate) fleet_members: crate::zkill::SharedFleetMembers,
     /// Lines the watcher reads as if EVE had logged them, for testing alert rules.
     pub(crate) intel_inject: crate::watcher::SharedInject,
     pub(crate) test_intel: Option<TestIntel>,
@@ -618,6 +622,9 @@ pub struct SpaiApp {
     intel_heights_notes_rev: u64,
     /// Rendered height per chat row, so the history can skip over off-screen ones.
     jabber_msg_heights: std::collections::HashMap<u64, f32>,
+    /// Per message history: the message at its bottom edge and how far into it the edge falls,
+    /// the size it had then, and the frames left for a resize to settle.
+    jabber_history_bottom: std::collections::HashMap<egui::Id, (usize, f32, egui::Vec2, u8)>,
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
@@ -934,6 +941,8 @@ pub struct SpaiApp {
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
     #[cfg(feature = "fleet")]
     pub(crate) fleet_map: fleet_map::FleetMapView,
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_br: fleet_map::FleetBr,
     /// Fleets whose movement is being recorded, each on its own thread.
     #[cfg(feature = "fleet")]
     fleet_trackers: std::collections::HashMap<
@@ -1396,6 +1405,7 @@ impl SpaiApp {
             battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(br_core::battle::BATTLE_BREAK_SECS)),
             battle_overrides_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_add_queue: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            battle_select_pending: None,
             battle_excluded_count: 0,
             battle_scrub_count: 0,
             battle_edit_mode: false,
@@ -1437,6 +1447,7 @@ impl SpaiApp {
             alert_feed: Vec::new(),
             alert_rules_open: false,
             intel_inject: Default::default(),
+            fleet_members: Default::default(),
             test_intel: None,
             alert_selected_rule: None,
             rule_feeds: std::collections::HashMap::new(),
@@ -1496,6 +1507,7 @@ impl SpaiApp {
             intel_heights: std::collections::HashMap::new(),
             intel_heights_notes_rev: 0,
             jabber_msg_heights: std::collections::HashMap::new(),
+            jabber_history_bottom: std::collections::HashMap::new(),
             wizard_open: false,
             wizard_step: 0,
             wizard_shortcut: None,
@@ -1765,6 +1777,8 @@ impl SpaiApp {
             fleet_detail_tab: Default::default(),
             #[cfg(feature = "fleet")]
             fleet_map: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_br: Default::default(),
             #[cfg(feature = "fleet")]
             fleet_trackers: Default::default(),
             #[cfg(feature = "fleet")]
@@ -2123,6 +2137,7 @@ impl SpaiApp {
             self.battle_overrides_gen_shared.clone(),
             self.battle_add_queue.clone(),
             self.battles_enabled_shared.clone(),
+            self.fleet_members.clone(),
             ctx.clone(),
         );
         crate::brview::spawn(
@@ -3637,6 +3652,8 @@ impl eframe::App for SpaiApp {
         self.fleet_boot_once();
         #[cfg(feature = "fleet")]
         self.fleet_track_poll();
+        #[cfg(feature = "fleet")]
+        self.fleet_backfill_poll();
 
         // Cached here rather than in the `cumulative_pass_nr() > 30` block below, which would
         // starve cross-window drop hit-testing for the first 30 frames.

@@ -227,6 +227,28 @@ CREATE TABLE IF NOT EXISTS fleet_moves (
     count        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fleet_moves ON fleet_moves(fleet_id, at);
+-- Kills and losses of tracked fleets' pilots, off the zKill feed. A pod names its ship loss.
+CREATE TABLE IF NOT EXISTS fleet_kills (
+    fleet_id     TEXT NOT NULL,
+    kill_id      INTEGER NOT NULL,
+    at           INTEGER NOT NULL,
+    system_id    INTEGER NOT NULL,
+    loss         INTEGER NOT NULL,
+    victim_char  INTEGER NOT NULL,
+    victim_name  TEXT NOT NULL,
+    ship_type_id INTEGER NOT NULL,
+    value        REAL NOT NULL,
+    members      TEXT NOT NULL,
+    pod_of       INTEGER NOT NULL,
+    PRIMARY KEY (fleet_id, kill_id)
+);
+-- The battle report made for a fleet, and the key that edits it.
+CREATE TABLE IF NOT EXISTS fleet_brs (
+    fleet_id   TEXT PRIMARY KEY,
+    url        TEXT NOT NULL,
+    edit_key   TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 ";
 
 /// How a character-to-account association was established, most trustworthy last.
@@ -355,6 +377,9 @@ mod characters;
 
 #[cfg(feature = "fleet")]
 mod fleet_moves;
+
+mod fleet_kills;
+pub use fleet_kills::FleetKill;
 impl Store {
     /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than
     /// queued. Buffering it would trade a disk problem for a memory problem, and this is the

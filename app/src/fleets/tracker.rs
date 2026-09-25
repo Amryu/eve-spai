@@ -20,6 +20,7 @@ pub struct Tracking {
     pub systems: Arc<crate::geo::Systems>,
     pub ships: std::collections::HashMap<i64, (String, String)>,
     pub alive: Arc<AtomicBool>,
+    pub members: crate::zkill::SharedFleetMembers,
     pub ctx: egui::Context,
 }
 
@@ -31,6 +32,12 @@ pub fn spawn(id: FleetId, name: String, t: Tracking) -> std::thread::JoinHandle<
 }
 
 fn run(id: &FleetId, name: &str, t: &Tracking) {
+    record(id, name, t);
+    // Its kills are no longer the map's business once recording stops.
+    t.members.lock().unwrap().remove(&id.0);
+}
+
+fn record(id: &FleetId, name: &str, t: &Tracking) {
     let Ok(store) = crate::store::Store::open() else { return };
     let now = || chrono::Utc::now().timestamp();
     store.prune_fleet_moves(now());
@@ -57,6 +64,9 @@ fn run(id: &FleetId, name: &str, t: &Tracking) {
             );
         }
         let members: Vec<&Member> = comp.members().collect();
+        if !members.is_empty() {
+            t.members.lock().unwrap().insert(id.0.clone(), members.iter().map(|m| m.character_id).collect());
+        }
         let known = &holes.1;
         let events = rec.step(&members, at, &mut |a, b| {
             classify(&t.systems, a, b, JUMP_LY, &|x, y| known.contains(&(x, y)))

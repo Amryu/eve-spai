@@ -845,6 +845,8 @@ impl SpaiApp {
         }
 
         let mut map_at: Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)> = None;
+        let br_view = page.fleet().map(|id| self.fleet_br_view(&id.0));
+        let mut br_click: Option<crate::app::fleet_map::BrClick> = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(e) = st.error.clone() {
@@ -869,13 +871,16 @@ impl SpaiApp {
                     &mut chat,
                 ),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click)
                 }
             }
             drop(st);
+            if let Some(click) = br_click.take() {
+                self.fleet_br_click(click, ui.ctx());
+            }
             if let Some((rect, input)) = map_at.take() {
                 let mut map_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 // Its own clip: the parent's runs under the action bar, and the side list scrolled
@@ -4588,6 +4593,64 @@ mod confirm_tests {
     }
 }
 
+/// The fleet's battle report beside its dashboard link, laid out right to left: made with one click
+/// from the fleet's kills, then opened or copied. The same fight in the Battles tab sits with it.
+#[cfg(feature = "fleet")]
+fn br_buttons(
+    ui: &mut egui::Ui,
+    br: &crate::app::fleet_map::BrView,
+    click: &mut Option<crate::app::fleet_map::BrClick>,
+) {
+    use crate::app::fleet_map::BrClick;
+    use egui_phosphor::regular as ic;
+    if br.has_kills && ui.button("In-app report").on_hover_text("The fleet's fights as one battle in the Battles tab").clicked() {
+        *click = Some(BrClick::InApp);
+    }
+    match &br.url {
+        Some(url) => {
+            if br.stale {
+                let update = ui
+                    .add_enabled(!br.busy, egui::Button::new(format!("{}  Update BR", ic::ARROWS_CLOCKWISE)))
+                    .on_hover_text("The fleet's kills changed since the report was made. br.evetools cannot edit a report, so this makes a new one and replaces the saved link.");
+                if update.clicked() {
+                    *click = Some(BrClick::Create);
+                }
+                if br.busy {
+                    ui.spinner();
+                }
+            }
+            if ui.button(format!("{}  Copy BR", ic::COPY)).on_hover_text(url.as_str()).clicked() {
+                *click = Some(BrClick::Copy);
+            }
+            if ui.button(format!("{}  Open BR", ic::ARROW_SQUARE_OUT)).on_hover_text(url.as_str()).clicked() {
+                *click = Some(BrClick::Open);
+            }
+        }
+        None => {
+            if br.busy {
+                ui.spinner();
+            }
+            if br.backfilling {
+                ui.spinner().on_hover_text("Fetching this fleet's kills and losses from zKillboard");
+            }
+            let tip = match (&br.error, br.has_kills) {
+                (Some(e), _) => e.clone(),
+                (None, true) => "Make a battle report on br.evetools from the systems and times the fleet fought in".into(),
+                (None, false) => "No kills or losses recorded for this fleet yet".into(),
+            };
+            let button = egui::Button::new(format!("{}  Battle report", ic::SWORD));
+            let resp = ui.add_enabled(br.has_kills && !br.busy, button);
+            let resp = if br.has_kills && !br.busy { resp.on_hover_text(tip) } else { resp.on_disabled_hover_text(tip) };
+            if resp.clicked() {
+                *click = Some(BrClick::Create);
+            }
+            if let Some(e) = &br.error {
+                ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
+            }
+        }
+    }
+}
+
 /// Which half of a fleet's page is showing.
 #[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -4628,6 +4691,8 @@ fn tracking_page(
     comms: &CommsTargets,
     chat: &mut ChatDock,
     map_at: &mut Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)>,
+    br: Option<&crate::app::fleet_map::BrView>,
+    br_click: &mut Option<crate::app::fleet_map::BrClick>,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -4785,6 +4850,16 @@ fn tracking_page(
                 {
                     *sidebar = !*sidebar;
                 }
+                if ui
+                    .button(format!("{}  Dashboard", egui_phosphor::regular::ARROW_SQUARE_OUT))
+                    .on_hover_text("Open this fleet on the fleet dashboard in the browser")
+                    .clicked()
+                {
+                    let _ = open::that(format!("{}/fleet/overview/{}", crate::fleets::http::BASE, open.fleet.id));
+                }
+                if let Some(br) = br {
+                    br_buttons(ui, br, br_click);
+                }
                 // Right-to-left, so writing these after Settings puts them before it.
                 comms_buttons(ui, &seed, &open, mine, here.as_deref(), comms, join);
             });
@@ -4839,7 +4914,9 @@ fn tracking_page(
         if tab == DetailTab::Map {
             let rect = ui.available_rect_before_wrap();
             ui.allocate_rect(rect, egui::Sense::hover());
-            *map_at = Some((rect, crate::app::fleet_map::FleetMapInput::of(&open.fleet, &open.composition)));
+            let mut input = crate::app::fleet_map::FleetMapInput::of(&open.fleet, &open.composition);
+            input.roster = open.report.characters.iter().map(|c| (c.id, c.name.clone())).collect();
+            *map_at = Some((rect, input));
             return;
         }
         // Both ways for the roster: its columns are a fixed width and do not wrap, so in a pane

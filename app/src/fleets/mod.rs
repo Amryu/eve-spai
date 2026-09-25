@@ -25,6 +25,7 @@ pub mod hub;
 pub mod http;
 pub mod model;
 pub mod movement;
+pub mod br;
 pub mod tracker;
 pub mod ping;
 pub mod seed;

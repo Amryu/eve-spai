@@ -261,6 +261,44 @@ fn bulk_of(pilots: &BTreeMap<i64, Seen>) -> Option<(i64, u32)> {
     (n >= 2 && n as f64 >= located as f64 * BULK_SHARE).then_some((sys, n))
 }
 
+/// Kills and losses the fleet had a part in. The dashboard's roster is everyone who was ever in
+/// it, so a pilot who joined for a minute otherwise brought their kills from the other side of the
+/// map for the rest of the run. A kill counts when one of its pilots was in the fleet then, when
+/// the fleet had pilots in that system then, or when its pilot dropped out of the fleet in that
+/// system shortly before (a disconnect or a kick mid-fight). With no recorded movement nothing is
+/// known about who was where, and everything is kept.
+pub fn in_fleet_kills(kills: &[crate::store::FleetKill], events: &[MoveEvent]) -> Vec<crate::store::FleetKill> {
+    /// A join or a leave is only seen at the next read; a kill that close to one is given the doubt.
+    const GRACE: i64 = 60;
+    /// How long after dropping out a pilot dying or killing where they left still counts.
+    const DROPPED: i64 = 600;
+    if events.is_empty() {
+        return kills.to_vec();
+    }
+    kills
+        .iter()
+        .filter(|k| {
+            let now = state_at(events, k.at);
+            let around = [state_at(events, k.at - GRACE), state_at(events, k.at + GRACE)];
+            let member = k.members.iter().any(|m| now.contains_key(m) || around.iter().any(|s| s.contains_key(m)));
+            let fleet_here = now.values().any(|s| s.system_id == k.system_id);
+            let dropped_here = k.members.iter().any(|m| {
+                events
+                    .iter()
+                    .filter(|e| e.character_id == *m && e.at <= k.at)
+                    .last()
+                    .is_some_and(|e| e.kind == Kind::Leave && k.at - e.at <= DROPPED && e.system_id == k.system_id)
+            });
+            member || fleet_here || dropped_here
+        })
+        .cloned()
+        .collect()
+}
+
+pub fn is_pod(ship_type_id: i64) -> bool {
+    br_core::battle::POD_TYPES.contains(&ship_type_id)
+}
+
 /// Everyone in the fleet at `t`, with the system and ship they had then.
 pub fn state_at(events: &[MoveEvent], t: i64) -> BTreeMap<i64, Seen> {
     let mut out: BTreeMap<i64, Seen> = BTreeMap::new();
@@ -409,6 +447,26 @@ mod tests {
         let mut r = Recorder::default();
         let ev = step(&mut r, &[m(1, 10, 1), m(2, 11, 1), m(3, 12, 1), m(4, 13, 1), m(5, 14, 1)], 1000);
         assert!(ev.iter().all(|e| e.kind != Kind::Bulk));
+    }
+
+    /// A pilot who joined for a minute does not bring their kills from elsewhere later in the run.
+    #[test]
+    fn only_kills_while_in_the_fleet_count() {
+        let mut r = Recorder::default();
+        let mut log = step(&mut r, &[m(1, 10, 100), m(2, 10, 100)], 1000);
+        log.extend(step(&mut r, &[m(1, 10, 100)], 1100));
+        let kill = |at: i64, who: i64, sys: i64| crate::store::FleetKill { kill_id: at, at, system_id: sys, members: vec![who], ..Default::default() };
+        // Pilot 2 left at 1100 in system 10; pilot 1 stays in 10.
+        let kept = in_fleet_kills(
+            &[kill(1050, 2, 20), kill(9000, 2, 20), kill(9000, 1, 20), kill(1400, 2, 10), kill(9000, 3, 10), kill(9000, 2, 30)],
+            &log,
+        );
+        assert_eq!(
+            kept.iter().map(|k| (k.at, k.members[0], k.system_id)).collect::<Vec<_>>(),
+            vec![(1050, 2, 20), (9000, 1, 20), (1400, 2, 10), (9000, 3, 10)],
+            "in the fleet, a member, dropped out here moments ago, or where the fleet is; not elsewhere later"
+        );
+        assert_eq!(in_fleet_kills(&[kill(9000, 2, 30)], &[]).len(), 1, "nothing recorded, nothing to go on");
     }
 
     #[test]

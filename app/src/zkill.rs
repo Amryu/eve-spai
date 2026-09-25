@@ -11,6 +11,10 @@ use crate::intel::IntelState;
 use crate::settings::{BattleFilter, MatchData, ShipSize};
 
 pub type SharedBattleFilter = Arc<Mutex<BattleFilter>>;
+/// Tracked fleets' pilots by fleet id, whose kills and losses the feed records for the fleet map.
+pub type SharedFleetMembers = Arc<Mutex<HashMap<String, std::collections::HashSet<i64>>>>;
+/// A pod worth less than this is an empty clone, not a loss worth listing.
+const POD_MIN_ISK: f64 = 10_000.0;
 pub type SharedOverrides = Arc<Mutex<br_core::battle::Overrides>>;
 pub type ShipSizes = Arc<HashMap<i64, ShipSize>>;
 
@@ -52,6 +56,7 @@ pub fn spawn(
     overrides_gen: Arc<std::sync::atomic::AtomicU64>,
     add_queue: Arc<Mutex<Vec<i64>>>,
     battles_enabled: Arc<std::sync::atomic::AtomicBool>,
+    fleet_members: SharedFleetMembers,
     ctx: egui::Context,
 ) {
     let _ = std::thread::Builder::new().name("zkill-feed".into()).spawn(move || {
@@ -112,7 +117,7 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &recent_wh, &mut names, store.as_ref()) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &recent_wh, &mut names, store.as_ref(), &fleet_members) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         retries = 0;
@@ -406,6 +411,7 @@ fn poll(
     recent_wh: &RecentWh,
     names: &mut HashMap<i64, String>,
     store: Option<&crate::store::Store>,
+    fleet_members: &SharedFleetMembers,
 ) -> Poll {
     let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
         Ok(r) => r,
@@ -454,6 +460,30 @@ fn poll(
             let n = kf.len();
             if n > 256 {
                 kf.drain(0..n - 256);
+            }
+        }
+    }
+
+    // Before any of the filters below: a tracked fleet's fight counts wherever it happened.
+    if let Some(store) = store {
+        let at = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
+            .map(|dt| dt.timestamp())
+            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+        let mut found = {
+            let members = fleet_members.lock().unwrap();
+            fleet_kills_of(&pkg.killmail, pkg.kill_id, pkg.zkb.total_value, at, &members)
+        };
+        if !found.is_empty() {
+            resolve_names(client, &pkg.killmail, names);
+            let victim = pilot_of(&pkg.killmail.victim, names);
+            for k in &mut found {
+                k.victim_name = victim.clone();
+                if battle::POD_TYPES.contains(&k.ship_type_id) {
+                    k.pod_of = store
+                        .fleet_kill_ship_before(&k.fleet_id, k.victim_char, k.loss, k.at, &battle::POD_TYPES)
+                        .unwrap_or(0);
+                }
+                store.add_fleet_kill(k);
             }
         }
     }
@@ -623,6 +653,48 @@ fn party_of(c: &Combatant, names: &HashMap<i64, String>) -> Party {
     }
 }
 
+/// The tracked fleets `km` concerns: a loss when the victim is one of their pilots, a kill when some
+/// of them are on it. A pod is only worth listing above [`POD_MIN_ISK`]. Names and the pod's ship
+/// are filled in by the caller.
+fn fleet_kills_of(
+    km: &Killmail,
+    kill_id: i64,
+    value: f64,
+    at: i64,
+    members: &HashMap<String, std::collections::HashSet<i64>>,
+) -> Vec<crate::store::FleetKill> {
+    let ship = km.victim.ship_type_id.unwrap_or(0);
+    if battle::POD_TYPES.contains(&ship) && value <= POD_MIN_ISK {
+        return Vec::new();
+    }
+    let victim = km.victim.character_id.unwrap_or(0);
+    let mut out = Vec::new();
+    for (fleet, pilots) in members {
+        let (loss, involved) = if pilots.contains(&victim) {
+            (true, vec![victim])
+        } else {
+            let on: Vec<i64> = km.attackers.iter().filter_map(|a| a.character_id).filter(|c| pilots.contains(c)).collect();
+            (false, on)
+        };
+        if involved.is_empty() {
+            continue;
+        }
+        out.push(crate::store::FleetKill {
+            fleet_id: fleet.clone(),
+            kill_id,
+            at,
+            system_id: km.solar_system_id,
+            loss,
+            victim_char: victim,
+            ship_type_id: ship,
+            value,
+            members: involved,
+            ..Default::default()
+        });
+    }
+    out
+}
+
 fn pilot_of(c: &Combatant, names: &HashMap<i64, String>) -> String {
     let id = c.character_id.or(c.corporation_id).or(c.alliance_id).unwrap_or(0);
     names.get(&id).cloned().unwrap_or_else(|| "Unknown".to_owned())
@@ -665,6 +737,9 @@ fn attacker_ship(a: &Combatant, ship_ids: &std::collections::HashSet<i64>) -> i6
 
 #[derive(Deserialize)]
 struct ZkApiEntry {
+    #[serde(default)]
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    killmail_id: i64,
     zkb: ZkApiZkb,
 }
 #[derive(Deserialize)]
@@ -672,6 +747,115 @@ struct ZkApiZkb {
     hash: String,
     #[serde(rename = "totalValue", default)]
     total_value: f64,
+}
+
+/// zKillboard looks back at most this far from now.
+#[cfg(feature = "fleet")]
+const ZKILL_LOOKBACK: i64 = 7 * 86_400;
+
+/// The kills and losses of a closed fleet's `pilots` during its run, `start` to `end`, for a fleet
+/// whose fights were not recorded live. zKillboard lists each pilot's recent mails; each one is
+/// read from ESI once and kept when it falls in the run. Nothing when the run is older than
+/// zKillboard looks back.
+#[cfg(feature = "fleet")]
+pub fn fleet_history_kills(
+    fleet_id: &str,
+    pilots: &std::collections::HashSet<i64>,
+    start: i64,
+    end: i64,
+) -> Vec<crate::store::FleetKill> {
+    /// Room either side of the run, for fights that began at formup or ran past the close.
+    const PAD: i64 = 600;
+    let now = chrono::Utc::now().timestamp();
+    let back = now - (start - PAD);
+    if back > ZKILL_LOOKBACK || pilots.is_empty() {
+        return Vec::new();
+    }
+    // zKillboard takes whole hours only.
+    let past = ((back + 3599) / 3600 * 3600).min(ZKILL_LOOKBACK);
+    let Ok(client) = crate::http::client(20) else { return Vec::new() };
+    let mut mails: HashMap<i64, (String, f64)> = HashMap::new();
+    for id in pilots {
+        let url = format!("{ZKILL_API}/characterID/{id}/pastSeconds/{past}/");
+        if let Some(list) = client.get(url).send().ok().and_then(|r| r.error_for_status().ok()).and_then(|r| r.json::<Vec<ZkApiEntry>>().ok()) {
+            for e in list.into_iter().filter(|e| e.killmail_id > 0) {
+                mails.entry(e.killmail_id).or_insert((e.zkb.hash, e.zkb.total_value));
+            }
+        }
+        // zKillboard asks for a gentle pace.
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let members = HashMap::from([(fleet_id.to_owned(), pilots.clone())]);
+    let mut names: HashMap<i64, String> = HashMap::new();
+    let mut out: Vec<crate::store::FleetKill> = Vec::new();
+    let mut ids: Vec<(i64, (String, f64))> = mails.into_iter().collect();
+    ids.sort_by_key(|(id, _)| *id);
+    // Kill ids rise with time, so the run is one stretch of the sorted list. Finding its edges
+    // takes a few reads; reading every recent mail of every participant took thousands.
+    let mut read: HashMap<i64, Option<(Killmail, i64)>> = HashMap::new();
+    let time_at = |i: usize, read: &mut HashMap<i64, Option<(Killmail, i64)>>| -> Option<i64> {
+        let (id, (hash, _)) = &ids[i];
+        read.entry(*id)
+            .or_insert_with(|| {
+                let km = fetch_killmail_detail(&client, *id, hash)?;
+                let at = chrono::DateTime::parse_from_rfc3339(&km.killmail_time).ok()?.timestamp();
+                Some((km, at))
+            })
+            .as_ref()
+            .map(|(_, at)| *at)
+    };
+    let (lo, hi) = (start - PAD, end + PAD);
+    let n = ids.len();
+    let first = first_at_or_after(n, lo, &mut |i| time_at(i, &mut read));
+    let past = first_at_or_after(n, hi + 1, &mut |i| time_at(i, &mut read));
+    // Ids are only nearly in time order, so a few either side are checked too.
+    const SLACK: usize = 5;
+    for i in first.saturating_sub(SLACK)..(past + SLACK).min(ids.len()) {
+        if time_at(i, &mut read).is_none() {
+            continue;
+        }
+        let (id, (_, value)) = ids[i].clone();
+        let Some((km, at)) = read.remove(&id).flatten() else { continue };
+        if at < lo || at > hi {
+            continue;
+        }
+        let found = fleet_kills_of(&km, id, value, at, &members);
+        if found.is_empty() {
+            continue;
+        }
+        resolve_names(&client, &km, &mut names);
+        let victim = pilot_of(&km.victim, &names);
+        out.extend(found.into_iter().map(|k| crate::store::FleetKill { victim_name: victim.clone(), ..k }));
+    }
+    // A pod names the ship loss it followed, the same way the live feed does it.
+    out.sort_by_key(|k| k.at);
+    for i in 0..out.len() {
+        if battle::POD_TYPES.contains(&out[i].ship_type_id) {
+            let (victim, loss, at) = (out[i].victim_char, out[i].loss, out[i].at);
+            out[i].pod_of = out[..i]
+                .iter()
+                .rev()
+                .find(|s| s.victim_char == victim && s.loss == loss && at - s.at <= 600 && !battle::POD_TYPES.contains(&s.ship_type_id))
+                .map_or(0, |s| s.kill_id);
+        }
+    }
+    out
+}
+
+/// The first of `n` time-ordered entries at or after `t`, reading `time_at` about log2(n) times. An
+/// entry that cannot be read counts as early, which at worst widens the stretch a little.
+#[cfg(feature = "fleet")]
+fn first_at_or_after(n: usize, t: i64, time_at: &mut dyn FnMut(usize) -> Option<i64>) -> usize {
+    let (mut a, mut b) = (0usize, n);
+    while a < b {
+        let m = (a + b) / 2;
+        if time_at(m).is_none_or(|at| at < t) {
+            a = m + 1;
+        } else {
+            b = m;
+        }
+    }
+    a
 }
 
 fn fetch_posted_kill(
@@ -938,6 +1122,52 @@ pub fn spawn_build_from_kill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The run's edges come from a handful of reads, not a read of every mail.
+    #[cfg(feature = "fleet")]
+    #[test]
+    fn the_run_is_found_by_bisection() {
+        let times: Vec<i64> = (0..1000).map(|i| i * 60).collect();
+        let mut reads = 0;
+        let mut at = |i: usize| {
+            reads += 1;
+            Some(times[i])
+        };
+        assert_eq!(first_at_or_after(times.len(), 30_000, &mut at), 500);
+        assert_eq!(first_at_or_after(times.len(), 30_001, &mut at), 501);
+        assert_eq!(first_at_or_after(times.len(), 0, &mut at), 0);
+        assert_eq!(first_at_or_after(times.len(), 1_000_000, &mut at), 1000);
+        assert!(reads < 50, "{reads} reads for four searches");
+        // One mail that cannot be read does not lose the stretch.
+        let mut gap = |i: usize| (i != 499).then_some(times[i]);
+        assert_eq!(first_at_or_after(times.len(), 30_000, &mut gap), 500);
+    }
+
+    /// A tracked pilot as the victim is the fleet's loss, tracked pilots on the mail are its kill,
+    /// and an empty clone's pod is nobody's business.
+    #[test]
+    fn a_kill_is_matched_to_the_fleets_it_concerns() {
+        let km = |victim: i64, ship: i64, attackers: &[i64]| -> Killmail {
+            serde_json::from_value(serde_json::json!({
+                "killmail_time": "2026-09-25T12:00:00Z",
+                "solar_system_id": 30004759,
+                "victim": {"character_id": victim, "ship_type_id": ship},
+                "attackers": attackers.iter().map(|a| serde_json::json!({"character_id": a})).collect::<Vec<_>>(),
+            }))
+            .unwrap()
+        };
+        let members = HashMap::from([("f1".to_owned(), [1, 2].into_iter().collect())]);
+        let loss = fleet_kills_of(&km(1, 11176, &[9]), 100, 5e7, 10, &members);
+        assert_eq!(loss.len(), 1);
+        assert!(loss[0].loss);
+        assert_eq!((loss[0].fleet_id.as_str(), loss[0].members.clone()), ("f1", vec![1]));
+        let kill = fleet_kills_of(&km(9, 11176, &[2, 8, 1]), 101, 5e7, 10, &members);
+        assert!(!kill[0].loss);
+        assert_eq!(kill[0].members, vec![2, 1]);
+        assert!(fleet_kills_of(&km(9, 11176, &[8]), 102, 5e7, 10, &members).is_empty(), "not ours");
+        assert!(fleet_kills_of(&km(1, 670, &[9]), 103, 10_000.0, 10, &members).is_empty(), "an empty clone");
+        assert_eq!(fleet_kills_of(&km(1, 670, &[9]), 104, 3e7, 10, &members).len(), 1, "a pod with implants");
+    }
 
     #[test]
     fn parses_r2z2_killmail() {

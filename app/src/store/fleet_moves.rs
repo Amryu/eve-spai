@@ -96,5 +96,6 @@ impl Store {
         let before = now - FLEET_MOVES_RETENTION_SECS;
         self.exec_historic("DELETE FROM fleet_moves WHERE at < ?1", params![before]);
         self.exec_historic("DELETE FROM fleet_tracks WHERE seen_at < ?1", params![before]);
+        self.exec_historic("DELETE FROM fleet_kills WHERE at < ?1", params![before]);
     }
 }

@@ -733,6 +733,49 @@ impl SpaiApp {
         self.tab_set().dissolve(id);
     }
 
+    /// A resized history keeps the message at its bottom edge: the newest, or the one scrolled back
+    /// to. The offset is kept from the top, and a narrower window re-wraps rows taller, so neither
+    /// it nor a distance from the bottom in pixels keeps the same message in view. `bottom` is the
+    /// message at the bottom edge this frame and how far into it the edge falls; `anchor_row` is
+    /// where the message kept from before the resize sits now.
+    fn keep_history_bottom<R>(
+        &mut self,
+        ctx: &egui::Context,
+        key: egui::Id,
+        out: &egui::scroll_area::ScrollAreaOutput<R>,
+        bottom: Option<(usize, f32)>,
+        anchor_row: Option<(f32, f32)>,
+        selecting: bool,
+    ) {
+        /// Frames a resize takes to settle: the tab bar, the composer and the wrapped rows each
+        /// catch up a frame apart, and the anchor must not be re-read in between.
+        const SETTLE: u8 = 4;
+        let size = out.inner_rect.size();
+        let Some(&(mi, frac, was, settling)) = self.jabber_history_bottom.get(&key) else {
+            if let Some((mi, frac)) = bottom {
+                self.jabber_history_bottom.insert(key, (mi, frac, size, 0));
+            }
+            return;
+        };
+        let settling = if was != size { SETTLE } else { settling };
+        if settling == 0 || selecting {
+            if let Some((mi, frac)) = bottom {
+                self.jabber_history_bottom.insert(key, (mi, frac, size, 0));
+            }
+            return;
+        }
+        if let Some((top, h)) = anchor_row {
+            let want = (top + frac * h - size.y).clamp(0.0, (out.content_size.y - size.y).max(0.0));
+            if (want - out.state.offset.y).abs() > 0.5 {
+                let mut state = out.state;
+                state.offset.y = want;
+                state.store(ctx, out.id);
+            }
+        }
+        ctx.request_repaint();
+        self.jabber_history_bottom.insert(key, (mi, frac, size, settling - 1));
+    }
+
     /// Mirror the live pop-out windows into settings, only when they actually differ: geometry is
     /// already gated by `geometry_update`, and writing on every frame would hammer SQLite.
     pub(crate) fn sync_popout_settings(&mut self) {
@@ -2737,7 +2780,11 @@ impl SpaiApp {
         let guard = jabber.lock().unwrap();
         let sel_msgs: &[crate::jabber::ChatMsg] =
             guard.chats.get(&jid).map_or(&[][..], Vec::as_slice);
-        egui::ScrollArea::vertical()
+        let bottom_key = ui.id().with(("history_bottom", jid.as_str()));
+        let anchored = self.jabber_history_bottom.get(&bottom_key).map(|a| a.0);
+        let mut bottom: Option<(usize, f32)> = None;
+        let mut anchor_row: Option<(f32, f32)> = None;
+        let history = egui::ScrollArea::vertical()
             // Salted by conversation, not just by window, or each tab inherits the previous one's
             // offset and stuck-to-bottom flag.
             .id_salt(("msgs", jid.as_str()))
@@ -2780,6 +2827,9 @@ impl SpaiApp {
                         if top + h < viewport.min.y - MSG_OVERDRAW
                             || top > viewport.max.y + MSG_OVERDRAW
                         {
+                            if anchored == Some(mi) {
+                                anchor_row = Some((top, h));
+                            }
                             ui.add_space(h);
                             continue;
                         }
@@ -2862,10 +2912,17 @@ impl SpaiApp {
                     let h = ui.cursor().top() - origin - top;
                     if h > 0.0 {
                         self.jabber_msg_heights.insert(key, h);
+                        if top <= viewport.max.y && viewport.max.y < top + h {
+                            bottom = Some((mi, (viewport.max.y - top) / h));
+                        }
+                        if anchored == Some(mi) {
+                            anchor_row = Some((top, h));
+                        }
                     }
                 }
             });
         drop(guard);
+        self.keep_history_bottom(ui.ctx(), bottom_key, &history, bottom, anchor_row, selecting);
         let mut focus_composer = false;
         if let Some(nick) = msg_mention {
             let d = self.jabber_drafts.entry(jid.clone()).or_default();

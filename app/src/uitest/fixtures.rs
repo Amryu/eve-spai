@@ -1105,7 +1105,12 @@ pub(crate) fn fleet_moves(members: &[crate::fleets::model::Member]) -> (Vec<crat
             .enumerate()
             .filter(|(i, _)| !(*i == 1 && step >= 2) && !(*i == 2 && step == 0))
             .map(|(i, m)| {
-                let system = if step < path.len() { path[step] } else { m.solar_system_id };
+                let mut system = if step < path.len() { path[step] } else { m.solar_system_id };
+                // Two scouts take a wormhole: one in and out again by the next read, one still
+                // inside at the history scene's moment.
+                if (i == 3 && step == 1) || (i == 4 && step == 2) {
+                    system = 31_000_005;
+                }
                 let mut m = Member { solar_system_id: system, ..m.clone() };
                 if i == 0 && step >= 3 {
                     m.ship_type_id = 22_852;
@@ -1121,6 +1126,56 @@ pub(crate) fn fleet_moves(members: &[crate::fleets::model::Member]) -> (Vec<crat
         snap(step, t0 + step as i64 * 240, &mut rec, &mut out);
     }
     (out, t0)
+}
+
+/// A short fight in 1DQ1-A near the end of [`fleet_moves`]: one ship lost with its pod, and one
+/// kill by two of the fleet. Invented names, fixture systems.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_kills(fleet_id: &str, members: &[crate::fleets::model::Member], t0: i64) -> Vec<crate::store::FleetKill> {
+    use crate::store::FleetKill;
+    let (a, b) = (members[5].character_id, members[6].character_id);
+    let at = t0 + 1100;
+    vec![
+        FleetKill {
+            fleet_id: fleet_id.into(),
+            kill_id: 900_001,
+            at,
+            system_id: 30_004_759,
+            loss: true,
+            victim_char: a,
+            victim_name: members[5].name.clone(),
+            ship_type_id: 11_176,
+            value: 48_000_000.0,
+            members: vec![a],
+            pod_of: 0,
+        },
+        FleetKill {
+            fleet_id: fleet_id.into(),
+            kill_id: 900_002,
+            at: at + 20,
+            system_id: 30_004_759,
+            loss: true,
+            victim_char: a,
+            victim_name: members[5].name.clone(),
+            ship_type_id: 670,
+            value: 35_000_000.0,
+            members: vec![a],
+            pod_of: 900_001,
+        },
+        FleetKill {
+            fleet_id: fleet_id.into(),
+            kill_id: 900_003,
+            at: at + 40,
+            system_id: 30_004_759,
+            loss: false,
+            victim_char: 91_000_001,
+            victim_name: "Sample Hostile".into(),
+            ship_type_id: 11_381,
+            value: 62_000_000.0,
+            members: vec![a, b],
+            pod_of: 0,
+        },
+    ]
 }
 
 /// A second open ping, a carrier in range of staging, so the map has two capitals to switch between.

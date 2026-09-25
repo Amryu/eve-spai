@@ -1364,6 +1364,24 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
 
+        // A battle asked for from elsewhere (a fleet's report) that is still being fetched and
+        // rebuilt: opened as soon as it exists, given up on after a minute.
+        if let Some((ids, since)) = self.battle_select_pending.clone() {
+            let found = source
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|b| b.engagements.iter().any(|e| ids.contains(&e.kill_id)))
+                .and_then(|b| b.engagements.iter().map(|e| e.kill_id).max());
+            if let Some(kid) = found {
+                self.battle_selected = Some(kid);
+                self.battle_select_pending = None;
+            } else if since.elapsed() > std::time::Duration::from_secs(60) {
+                self.battle_select_pending = None;
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        }
         if let Some(kid) = self.battle_selected {
             let exists = source
                 .lock()
