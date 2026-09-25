@@ -1910,6 +1910,30 @@ impl SpaiApp {
                                 changed |= ui.add(egui::TextEdit::singleline(&mut a.pushover_user).desired_width(220.0)).changed();
                             });
                         }
+                        changed |= ui
+                            .checkbox(&mut a.ntfy_enabled, "Mobile push (ntfy)")
+                            .on_hover_text("Install the ntfy app and subscribe to the same topic. Anyone who knows a public topic's name can read it, so pick one nobody will guess, or use a token.")
+                            .changed();
+                        if a.ntfy_enabled {
+                            egui::Grid::new("ntfy_settings").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                                ui.label("Server");
+                                changed |= ui
+                                    .add(egui::TextEdit::singleline(&mut a.ntfy_server).hint_text(crate::settings::DEFAULT_NTFY_SERVER).desired_width(220.0))
+                                    .changed();
+                                ui.end_row();
+                                ui.label("Topic");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut a.ntfy_topic).desired_width(220.0)).changed();
+                                ui.end_row();
+                                ui.label("Token");
+                                changed |= ui
+                                    .add(egui::TextEdit::singleline(&mut a.ntfy_token).password(true).hint_text("only for a protected topic").desired_width(220.0))
+                                    .changed();
+                                ui.end_row();
+                            });
+                            if ui.button("Send a test").on_hover_text("Push a test message to the topic").clicked() {
+                                crate::push::ntfy(&a.ntfy_server, &a.ntfy_topic, &a.ntfy_token, "EVE Spai", "Test push from EVE Spai", 0);
+                            }
+                        }
                     }
                     ui.label(
                         egui::RichText::new("Alert rules live in the Alerts tab.").weak(),

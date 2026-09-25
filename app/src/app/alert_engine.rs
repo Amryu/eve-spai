@@ -588,6 +588,16 @@ impl AlertEngine {
             if f.push && acfg.push_enabled {
                 crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
             }
+            if f.push && acfg.ntfy_enabled {
+                crate::push::ntfy(
+                    &acfg.ntfy_server,
+                    &acfg.ntfy_topic,
+                    &acfg.ntfy_token,
+                    &f.title,
+                    &f.text,
+                    f.sev as u8,
+                );
+            }
         }
         true
     }

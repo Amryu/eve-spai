@@ -540,10 +540,18 @@ pub struct AlertSettings {
     pub push_enabled: bool,
     pub pushover_token: String,
     pub pushover_user: String,
+    /// Push through ntfy as well as, or instead of, Pushover.
+    pub ntfy_enabled: bool,
+    pub ntfy_server: String,
+    pub ntfy_topic: String,
+    /// For a protected topic; empty for a public one.
+    pub ntfy_token: String,
     pub rules: Vec<AlertRule>,
     pub seeded: bool,
     pub compact_mode: bool,
 }
+
+pub const DEFAULT_NTFY_SERVER: &str = "https://ntfy.sh";
 
 impl Default for AlertSettings {
     fn default() -> Self {
@@ -562,6 +570,10 @@ impl Default for AlertSettings {
             push_enabled: false,
             pushover_token: String::new(),
             pushover_user: String::new(),
+            ntfy_enabled: false,
+            ntfy_server: DEFAULT_NTFY_SERVER.to_owned(),
+            ntfy_topic: String::new(),
+            ntfy_token: String::new(),
             rules: vec![default_rule()],
             seeded: true,
             compact_mode: false,
