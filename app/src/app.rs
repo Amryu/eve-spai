@@ -1111,6 +1111,11 @@ impl SpaiApp {
             }
             settings.jabber_ping_rules_seeded = true;
         }
+        if settings.migrate_mention_sound() {
+            if let Some(s) = &store {
+                let _ = s.save_settings(&settings);
+            }
+        }
         if !settings.fleet_window_forced {
             settings.fleet_ping_window = true;
             settings.fleet_window_forced = true;

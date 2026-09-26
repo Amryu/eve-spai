@@ -1404,6 +1404,8 @@ mod tests {
 
     #[test]
     fn a_probe_paste_keeps_what_was_scanned_and_drops_what_is_gone() {
+        // The writes go through the disk-space gate, which the disk-full tests move.
+        let _guard = crate::disk::test_guard();
         use crate::wormholes::probe_scan;
         let s = mem_store();
         let first = probe_scan(

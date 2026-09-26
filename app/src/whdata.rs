@@ -263,6 +263,29 @@ pub fn class_summary(class: Class) -> &'static str {
 
 pub const SHATTERED_NOTE: &str = "Shattered: no moons, richer ore and gas sites, and no Upwell structures can be anchored.";
 
+/// The five drifter systems: class number, the name intel uses, system id.
+pub const DRIFTERS: [(u8, &str, i64); 5] = [
+    (14, "sentinel", 31_000_001),
+    (15, "barbican", 31_000_002),
+    (16, "vidette", 31_000_003),
+    (17, "conflux", 31_000_004),
+    (18, "redoubt", 31_000_006),
+];
+
+/// The drifter system a hole type leads to: B735 to Barbican and so on.
+pub fn drifter_for_code(code: &str) -> Option<i64> {
+    match hole_type(code)?.dest {
+        Dest::Class(Class::Drifter(n)) => DRIFTERS.iter().find(|d| d.0 == n).map(|d| d.2),
+        _ => None,
+    }
+}
+
+/// The drifter system a message names, as a whole word.
+pub fn drifter_in_text(text: &str) -> Option<i64> {
+    let words: Vec<String> = text.split(|c: char| !c.is_alphanumeric()).map(str::to_lowercase).collect();
+    DRIFTERS.iter().find(|d| words.iter().any(|w| w == d.1)).map(|d| d.2)
+}
+
 /// An effect's modifiers at a system's strength, e.g. ("Armor HP", "+44%").
 pub fn effect_mods(effect: &str, class: Class) -> Vec<(String, String)> {
     let (Some(mods), Some(tier)) = (DATA.effects.get(effect), class.effect_tier()) else { return Vec::new() };
@@ -369,6 +392,17 @@ pub fn possible_holes(from: Class, to: Class) -> Vec<Candidate> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_drifter_hole_is_placed_by_its_code_or_by_name() {
+        assert_eq!(drifter_for_code("B735"), Some(31_000_002));
+        assert_eq!(drifter_for_code("V928"), Some(31_000_003));
+        assert_eq!(drifter_for_code("K162"), None);
+        assert_eq!(drifter_in_text("barbican hole in 1DQ1-A"), Some(31_000_002));
+        assert_eq!(drifter_in_text("Redoubt, 4 jumps"), Some(31_000_006));
+        assert_eq!(drifter_in_text("sentinels on gate"), None, "whole words only");
+    }
+
     use super::*;
 
     #[test]

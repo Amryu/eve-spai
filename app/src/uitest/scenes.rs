@@ -652,6 +652,18 @@ fn wormholes_focus_scene(
     ];
     let mut holes = holes;
     holes.push(Wormhole {
+        id: 5,
+        system_id: 30_003_704,
+        wh_type: Some("B735".into()),
+        dest: DestClass::Wspace,
+        dest_system_id: Some(31_000_002),
+        is_drifter: true,
+        reported_at: now - 120,
+        source: Source::Intel,
+        updated_at: now - 120,
+        ..Default::default()
+    });
+    holes.push(Wormhole {
         id: 4,
         system_id: 31_000_005,
         signature: Some("THR-001".into()),
@@ -693,6 +705,9 @@ fn wormholes_focus_scene(
                     ],
                 );
             }
+            if name.contains("_legend") {
+                a.settings.wh_legend_open = true;
+            }
             if name.ends_with("_pins") {
                 a.settings.wh_route_pins = vec!["319-3D".into()];
             }
@@ -700,7 +715,7 @@ fn wormholes_focus_scene(
                 a.wh_share.open = true;
             }
             if name.ends_with("_zoomed_out") {
-                a.wh_graph.set_zoom(0.5);
+                a.wh_graph.set_zoom(0.25);
             }
             if focus.is_some() {
                 a.wh_graph.set_focus(focus);
@@ -1771,6 +1786,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
@@ -2756,6 +2773,35 @@ fn uitest_fleet_command_is_locked_until_the_dashboard_confirms_a_commander() {
     let mut open = fleet_lock_scene("fleet_settings_unlocked", true);
     let h = harness::build(&mut open, false);
     assert!(h.query_by_label_contains("Enable the fleet dashboard").is_some());
+}
+
+/// Hovering a hole's line shows what is known about it next to the pointer, not at an edge of
+/// the map the line happens to belong to.
+#[test]
+fn uitest_a_holes_tooltip_appears_at_the_pointer() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut scene = wormholes_scene("wh_edge_tooltip", [1280.0, 800.0], false, None);
+    let mut harness = harness::build(&mut scene, false);
+    // Hole 3 is 7-K5EL to 1DQ1-A.
+    let line = crate::app::wh_graph::EDGE_PROBE
+        .with(|p| p.borrow().iter().find(|(id, _)| *id == 3).map(|(_, l)| l.clone()))
+        .expect("the line was drawn");
+    let mid = line[0].lerp(line[line.len() - 1], 0.5);
+    harness.event(egui::Event::PointerMoved(mid));
+    harness.run_steps(6);
+    let tip = harness
+        .root()
+        .children_recursive()
+        .find(|n| {
+            let a = n.accesskit_node();
+            a.label().or_else(|| a.value()).unwrap_or_default().contains("\u{2192} 1DQ1-A")
+        })
+        .and_then(|n| n.accesskit_node().bounding_box())
+        .expect("a tooltip about the hole");
+    let (x, y) = (mid.x as f64, mid.y as f64);
+    let dx = if x < tip.x0 { tip.x0 - x } else if x > tip.x1 { x - tip.x1 } else { 0.0 };
+    let dy = if y < tip.y0 { tip.y0 - y } else if y > tip.y1 { y - tip.y1 } else { 0.0 };
+    assert!(dx.hypot(dy) < 60.0, "tooltip {tip:?} is far from the pointer at {mid:?}");
 }
 
 /// Who sent a ping and who it went to decides whether it applies to you, so the footer stays at

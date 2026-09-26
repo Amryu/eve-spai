@@ -601,7 +601,13 @@ impl SpaiApp {
                     ui.end_row();
                     ui.label("Type");
                     let codes: Vec<&str> = crate::whdata::types().iter().map(|t| t.code.as_str()).collect();
-                    wh_type_picker(ui, "wh_form_type", 200.0, &mut form.wh_type, &codes);
+                    if wh_type_picker(ui, "wh_form_type", 200.0, &mut form.wh_type, &codes) {
+                        // A known type decides the size; it can still be corrected below.
+                        let sizes = crate::wormholes::sizes_for(&[form.wh_type.as_str()]);
+                        if sizes.len() == 1 {
+                            form.size = Some(sizes[0]);
+                        }
+                    }
                     ui.end_row();
                     ui.label("Leads to");
                     ui.add(egui::TextEdit::singleline(&mut form.dest).hint_text("system, if known").desired_width(200.0));
@@ -610,10 +616,35 @@ impl SpaiApp {
                     ui.add(egui::TextEdit::singleline(&mut form.dest_sig).hint_text("the other side").desired_width(200.0));
                     ui.end_row();
                     ui.label("Size");
-                    let codes: Vec<&str> = if form.wh_type.is_empty() { Vec::new() } else { vec![form.wh_type.as_str()] };
-                    let sizes = if codes.is_empty() { vec![ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge] } else { crate::wormholes::sizes_for(&codes) };
-                    let sizes: Vec<_> = sizes.into_iter().map(|s| (s, s.short(), s.label())).collect();
-                    choice_row(ui, &mut form.size, &sizes);
+                    // Every size stays open: a recorded type can be wrong, or be the other side's.
+                    let sizes: Vec<_> = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge]
+                        .into_iter()
+                        .map(|s| (s, s.short(), s.label()))
+                        .collect();
+                    ui.vertical(|ui| {
+                        choice_row(ui, &mut form.size, &sizes);
+                        let implied = crate::whdata::hole_type(&form.wh_type).filter(|t| t.jump_mass > 0);
+                        if let Some(t) = implied {
+                            let fits = crate::wormholes::size_for_jump_mass(t.jump_mass);
+                            match form.size {
+                                Some(chosen) if chosen != fits => {
+                                    ui.colored_label(
+                                        crate::theme::standing::WARNING,
+                                        format!(
+                                            "{} {} takes up to {}, not {}: check the type or the size",
+                                            egui_phosphor::regular::WARNING,
+                                            t.code,
+                                            fits.short(),
+                                            chosen.short()
+                                        ),
+                                    );
+                                }
+                                _ => {
+                                    ui.label(egui::RichText::new(format!("{} takes up to {}", t.code, fits.short())).weak());
+                                }
+                            }
+                        }
+                    });
                     ui.end_row();
                     ui.label("Time left");
                     let lives: Vec<_> = crate::wormholes::Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();

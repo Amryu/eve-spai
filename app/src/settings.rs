@@ -164,6 +164,10 @@ pub struct Settings {
     pub jabber_ping_sound: String,
     #[serde(default = "default_mention_sound")]
     pub jabber_mention_sound: String,
+    /// Mentions used to default to `warning`; set once those were moved to the `mention` tone, so
+    /// someone who picks `warning` again afterwards keeps it.
+    #[serde(default)]
+    pub jabber_mention_sound_migrated: bool,
     #[serde(default = "default_volume")]
     pub jabber_msg_volume: f32,
     #[serde(default = "default_volume")]
@@ -262,6 +266,9 @@ pub struct Settings {
     /// locked without it, or once it is older than `fleets::unlock::GRACE_SECS`.
     #[serde(default)]
     pub fleet_unlock: Option<FleetUnlock>,
+    /// Whether the wormhole map's legend is unfolded.
+    #[serde(default)]
+    pub wh_legend_open: bool,
     /// The sharing group local wormhole changes are sent to; `None` keeps them local.
     #[serde(default)]
     pub wh_share_target: Option<String>,
@@ -963,8 +970,23 @@ fn default_msg_sound() -> String {
 fn default_ping_sound() -> String {
     "horn".to_owned()
 }
+impl Settings {
+    /// Moves mentions still on the old `warning` default to the `mention` tone, once. Returns
+    /// whether anything changed and needs saving.
+    pub fn migrate_mention_sound(&mut self) -> bool {
+        if self.jabber_mention_sound_migrated {
+            return false;
+        }
+        if self.jabber_mention_sound.eq_ignore_ascii_case("warning") {
+            self.jabber_mention_sound = "mention".to_owned();
+        }
+        self.jabber_mention_sound_migrated = true;
+        true
+    }
+}
+
 fn default_mention_sound() -> String {
-    "warning".to_owned()
+    "mention".to_owned()
 }
 fn default_alert_jumps() -> u32 {
     5
@@ -1341,6 +1363,7 @@ impl Default for Settings {
             jabber_msg_sound: default_msg_sound(),
             jabber_ping_sound: default_ping_sound(),
             jabber_mention_sound: default_mention_sound(),
+            jabber_mention_sound_migrated: true,
             jabber_msg_volume: 1.0,
             jabber_ping_volume: 1.0,
             jabber_mention_volume: 1.0,
@@ -1372,6 +1395,7 @@ impl Default for Settings {
             wh_route_kinds: default_wh_route_kinds(),
             wh_route_pins: Vec::new(),
             wh_share_target: None,
+            wh_legend_open: false,
             fleet_unlock: None,
             sound_master_volume: 1.0,
             sound_muted: false,
@@ -2322,6 +2346,20 @@ mod tab_persistence_tests {
 
 #[cfg(test)]
 mod web_settings_tests {
+
+    #[test]
+    fn mentions_on_the_old_default_move_to_the_mention_tone_once() {
+        let mut s: Settings = serde_json::from_str(r#"{"jabber_mention_sound":"warning"}"#).unwrap();
+        assert!(s.migrate_mention_sound());
+        assert_eq!(s.jabber_mention_sound, "mention");
+        s.jabber_mention_sound = "warning".into();
+        assert!(!s.migrate_mention_sound(), "picked again on purpose afterwards: kept");
+        assert_eq!(s.jabber_mention_sound, "warning");
+        let mut chosen: Settings = serde_json::from_str(r#"{"jabber_mention_sound":"horn"}"#).unwrap();
+        chosen.migrate_mention_sound();
+        assert_eq!(chosen.jabber_mention_sound, "horn", "a sound someone chose is left alone");
+    }
+
     use super::*;
 
     #[test]

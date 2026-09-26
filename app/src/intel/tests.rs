@@ -1358,6 +1358,15 @@ fn combat_prob_is_probes_not_pilots() {
 }
 
 #[test]
+fn a_named_drifter_system_is_a_drifter_hole() {
+    let s = systems();
+    let r = analyze("barbican in Rancer", &s, &noships(), &noknown(), 1, "ch", "drf1");
+    assert!(r.wormhole, "a drifter system named is a hole report");
+    assert!(r.wh_drifter);
+    assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("barbican")), "not a pilot: {:?}", r.pilots);
+}
+
+#[test]
 fn thera_hole_is_a_wormhole() {
     let s = systems();
     let r = analyze("thera hole in Rancer", &s, &noships(), &noknown(), 1, "ch", "wwhh");

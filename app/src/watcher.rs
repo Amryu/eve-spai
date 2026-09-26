@@ -273,17 +273,23 @@ fn scan(
                             Some(d) if !matches!(d, DestClass::Unknown) => d,
                             _ => report.wh_dest.unwrap_or(DestClass::Unknown),
                         };
+                        // A drifter hole leads to one known system, named by its type or by intel.
+                        let drifter_dest = report
+                            .wh_type
+                            .as_deref()
+                            .and_then(crate::whdata::drifter_for_code)
+                            .or_else(|| crate::whdata::drifter_in_text(&report.text));
                         let wh = crate::wormholes::Wormhole {
                             id: 0,
                             system_id: sys.id,
                             signature: report.wh_sig.clone(),
                             wh_type: report.wh_type.clone(),
-                            dest,
-                            dest_system_id: None,
+                            dest: if drifter_dest.is_some() { DestClass::Wspace } else { dest },
+                            dest_system_id: drifter_dest,
                             dest_signature: None,
                             dest_wh_type: None,
                             size: cat.and_then(|w| w.size()),
-                            is_drifter: cat.is_some_and(|w| w.is_drifter()) || report.wh_drifter,
+                            is_drifter: cat.is_some_and(|w| w.is_drifter()) || report.wh_drifter || drifter_dest.is_some(),
                             reported_at: received,
                             explicit_expiry: report.wh_eol.then_some(received + 4 * 3600),
                             source: crate::wormholes::Source::Intel,

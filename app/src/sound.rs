@@ -29,10 +29,10 @@ const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 /// build that listed it would resolve it to `None` and play silence, with nothing telling the user.
 #[cfg(not(feature = "fleet"))]
 pub const PRESETS: &[&str] =
-    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn"];
+    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "mention"];
 #[cfg(feature = "fleet")]
 pub const PRESETS: &[&str] =
-    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "siren"];
+    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "mention", "siren"];
 
 fn preset(name: &str) -> Option<Tone> {
     let s = |f0: f32, f1: f32, ms: u32| Seg { f0, f1, ms };
@@ -55,6 +55,12 @@ fn preset(name: &str) -> Option<Tone> {
         "beep" => blip(vec![s(880.0, 880.0, 110)], 0.26),
         "chime" => blip(vec![s(1046.0, 1568.0, 220)], 0.24),
         "sweep" => blip(vec![s(400.0, 1400.0, 260)], 0.28),
+        // Someone said your name: a quick rising C-E-G, bright and friendly where `warning`'s two
+        // flat notes read as a problem.
+        "mention" => blip(
+            vec![s(1046.5, 1046.5, 70), s(0.0, 0.0, 25), s(1318.5, 1318.5, 70), s(0.0, 0.0, 25), s(1568.0, 1568.0, 150)],
+            0.24,
+        ),
         "horn" => Tone {
             segs: vec![
                 s(293.66, 293.66, 200),

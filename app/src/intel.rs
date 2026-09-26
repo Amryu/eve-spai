@@ -2494,15 +2494,17 @@ pub fn analyze_ctx(
     let is_wh_msg = lower.contains("wormhole")
         || wh_code.is_some()
         || lower_tokens.iter().any(|t| {
-            matches!(t.as_str(), "wh" | "hole" | "holes" | "thera" | "turnur")
-                && !pilot_tokens.contains(t)
+            matches!(
+                t.as_str(),
+                "wh" | "hole" | "holes" | "thera" | "turnur" | "sentinel" | "barbican" | "vidette" | "conflux" | "redoubt"
+            ) && !pilot_tokens.contains(t)
         });
     let (wh_dest, wh_size, wh_eol, wh_drifter, wh_sig) = if is_wh_msg {
         (
             parse_wh_dest(&lower, &lower_tokens),
             parse_wh_size(&lower, &lower_tokens),
             lower.contains("eol") || lower.contains("end of life") || lower.contains("dying"),
-            lower.contains("drifter"),
+            lower.contains("drifter") || crate::whdata::drifter_in_text(&lower).is_some(),
             tokens.iter().find(|t| looks_like_sig(t)).map(|t| t.to_uppercase()),
         )
     } else {
