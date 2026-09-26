@@ -54,10 +54,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
-            libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
-          # No gtk or webkit here on purpose: this job builds default features, which never enable
-          # `fleet-auth`, so nothing links the sign-in webview. cross-check.yml needs them because
-          # it runs --all-features.
+            libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config \
+            libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev
+          # gtk and webkit only for the second binary, the fleet sign-in helper: the app itself is
+          # built without `fleet-auth` so it starts on machines that have neither.
 
       # Cargo.toml is the source of truth, so a mismatched tag fails the build instead of rewriting it.
       - name: Verify Cargo.toml version matches tag
@@ -72,8 +72,16 @@ jobs:
           fi
           echo "Version $CARGO matches tag v$TAG."
 
+      # Windows and macOS carry the sign-in webview in the app: their browser engine ships with the
+      # OS. Linux builds the app without it, then the same source again with it, as the helper.
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            cargo build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }} --features fleet-auth
+          fi
 
       - name: Stage artifact
         shell: bash
@@ -81,6 +89,12 @@ jobs:
           mkdir dist
           cp "target/${{ matrix.target }}/release/eve-spai${{ matrix.ext }}" \
              "dist/eve-spai-${{ matrix.name }}${{ matrix.ext }}"
+
+      - name: Build the Linux sign-in helper
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --target ${{ matrix.target }} --features fleet-auth
+          cp "target/${{ matrix.target }}/release/eve-spai" "dist/eve-spai-fleet-login-${{ matrix.name }}"
 
       - uses: actions/upload-artifact@v6
         with:

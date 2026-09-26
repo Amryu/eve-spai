@@ -584,7 +584,7 @@ impl SpaiApp {
     /// comms, and a socket on the LAN should not be able to broadcast to an alliance.
     #[cfg(feature = "fleet")]
     pub(crate) fn web_rescue_side(&self) -> Option<crate::web::rescue::RescueSide> {
-        if !self.settings.fc_rescue_enabled {
+        if !self.rescue_on() {
             return None;
         }
         let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());

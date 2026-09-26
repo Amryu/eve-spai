@@ -106,6 +106,8 @@ pub struct Available {
     pub version: String,
     pub html_url: String,
     pub asset_api_url: Option<String>,
+    /// Linux: the fleet sign-in helper that goes next to the binary.
+    pub helper_api_url: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -141,6 +143,11 @@ fn asset_name() -> &'static str {
         "eve-spai-linux-x86_64"
     }
 }
+
+/// Linux keeps WebKitGTK out of the app; the fleet sign-in window is this separate binary, as
+/// published and as installed next to the app.
+const HELPER_ASSET: &str = "eve-spai-fleet-login-linux-x86_64";
+pub const HELPER_NAME: &str = "eve-spai-fleet-login";
 
 fn http() -> Option<reqwest::blocking::Client> {
     crate::http::client(20).ok()
@@ -200,7 +207,8 @@ pub fn spawn_check(state: SharedUpdate, skip_version: String, announce: bool, ct
         let asset_api_url = json["assets"].as_array().and_then(|a| {
             a.iter().find(|x| x["name"].as_str() == Some(asset_name())).and_then(|x| x["url"].as_str())
         }).map(|s| s.to_owned());
-        state.lock().unwrap().available = Some(Available { version: tag, html_url, asset_api_url });
+        let helper_api_url = cfg!(target_os = "linux").then(|| helper_url(&json)).flatten();
+        state.lock().unwrap().available = Some(Available { version: tag, html_url, asset_api_url, helper_api_url });
         finish(&state);
     });
 }
@@ -212,14 +220,55 @@ fn is_newer(a: &str, b: &str) -> bool {
     parse(a) > parse(b)
 }
 
-pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
-    use anyhow::Context;
+fn helper_url(release: &serde_json::Value) -> Option<String> {
+    release["assets"].as_array()?.iter().find(|x| x["name"].as_str() == Some(HELPER_ASSET))?["url"].as_str().map(str::to_owned)
+}
+
+fn download(api_url: &str) -> anyhow::Result<Vec<u8>> {
     let client = crate::http::client(180)?;
-    let mut req = client.get(asset_api_url).header("Accept", "application/octet-stream");
+    let mut req = client.get(api_url).header("Accept", "application/octet-stream");
     if let Some(t) = token() {
         req = req.header("Authorization", format!("token {t}"));
     }
-    let bytes = req.send()?.error_for_status()?.bytes()?;
+    Ok(req.send()?.error_for_status()?.bytes()?.to_vec())
+}
+
+/// Puts the fleet sign-in helper from `api_url` next to this binary.
+pub fn install_helper(api_url: &str) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+    let bytes = download(api_url)?;
+    let exe = std::env::current_exe().context("locating current executable")?;
+    let dest = exe.with_file_name(HELPER_NAME);
+    let tmp = dest.with_extension("new");
+    std::fs::write(&tmp, &bytes).context("writing the sign-in helper")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&tmp, &dest).context("installing the sign-in helper")?;
+    Ok(dest)
+}
+
+/// The sign-in helper of the release this binary is, for an install that predates it: an older
+/// updater replaced only the main binary.
+#[cfg_attr(any(feature = "fleet-auth", not(feature = "fleet")), allow(dead_code))]
+pub fn fetch_helper_for_current() -> anyhow::Result<std::path::PathBuf> {
+    let client = http().ok_or_else(|| anyhow::anyhow!("couldn't start the HTTP client"))?;
+    let mut req = client
+        .get(format!("https://api.github.com/repos/{REPO}/releases/tags/v{}", current()))
+        .header("Accept", "application/vnd.github+json");
+    if let Some(t) = token() {
+        req = req.header("Authorization", format!("token {t}"));
+    }
+    let json: serde_json::Value = req.send()?.error_for_status()?.json()?;
+    let url = helper_url(&json).ok_or_else(|| anyhow::anyhow!("release v{} has no sign-in helper", current()))?;
+    install_helper(&url)
+}
+
+pub fn download_and_replace(asset_api_url: &str, helper_api_url: Option<&str>) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let bytes = download(asset_api_url)?;
 
     let exe = std::env::current_exe().context("locating current executable")?;
     let new_path = exe.with_extension("new");
@@ -259,6 +308,13 @@ pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
     #[cfg(not(windows))]
     {
         std::fs::rename(&new_path, &exe).context("replacing binary")?;
+    }
+    // After the app itself: a helper that fails to arrive only costs the sign-in, which fetches
+    // it again on first use.
+    if let Some(url) = helper_api_url {
+        if let Err(e) = install_helper(url) {
+            eprintln!("[update] the fleet sign-in helper did not install: {e:#}");
+        }
     }
     Ok(())
 }

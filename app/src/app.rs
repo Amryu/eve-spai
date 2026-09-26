@@ -866,6 +866,14 @@ pub struct SpaiApp {
     fleet_backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
     #[cfg(feature = "fleet")]
     fleet_login: crate::fleets::login::SharedLogin,
+    /// The last answer to "is this account a commander", from the share thread's check.
+    #[cfg(feature = "fleet")]
+    fleet_unlock_check: std::sync::Arc<std::sync::Mutex<Option<crate::fleets::unlock::Check>>>,
+    #[cfg(feature = "fleet")]
+    fleet_unlock_asked: Option<std::time::Instant>,
+    /// Why fleet command is still locked, or that its session ran out.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_unlock_note: Option<String>,
     /// The server's full text behind a failed fleet-boss check, while its dialog is open.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_boss_detail: Option<String>,
@@ -1747,6 +1755,12 @@ impl SpaiApp {
             #[cfg(feature = "fleet")]
             fleet_login: Default::default(),
             #[cfg(feature = "fleet")]
+            fleet_unlock_check: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_unlock_asked: None,
+            #[cfg(feature = "fleet")]
+            fleet_unlock_note: None,
+            #[cfg(feature = "fleet")]
             fleet_boss_detail: None,
             #[cfg(feature = "fleet")]
             fleet_snowflakes_open: None,
@@ -1855,6 +1869,29 @@ impl SpaiApp {
         };
         app.tab_set().normalize();
         app
+    }
+
+    /// Fleet command is compiled in everywhere, but only for dashboard-confirmed commanders.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_unlocked(&self) -> bool {
+        self.settings.fleet_unlock.as_ref().is_some_and(|u| {
+                chrono::Utc::now().timestamp() - u.verified_at < crate::fleets::unlock::GRACE_SECS
+            })
+    }
+
+    #[cfg(not(feature = "fleet"))]
+    pub(crate) fn fleet_unlocked(&self) -> bool {
+        false
+    }
+
+    /// The fleet dashboard: unlocked and switched on.
+    pub(crate) fn fleet_on(&self) -> bool {
+        self.settings.fleet_enabled && self.fleet_unlocked()
+    }
+
+    /// The delve911 rescue, which runs on fleet command.
+    pub(crate) fn rescue_on(&self) -> bool {
+        self.fleet_on() && self.settings.fc_rescue_enabled
     }
 
     pub(crate) fn open_system(&mut self, system_id: i64) {
@@ -2226,6 +2263,7 @@ impl SpaiApp {
         // SDE ship name (lowercased) -> group, so a ping naming a specific hull resolves to a
         // capital class (e.g. "Phoenix Navy Issue" -> Dreadnought). Built outside the chat-log
         // branch: the jabber delve911 ingest needs it even with no EVE log directory configured.
+        #[cfg(feature = "fleet")]
         let ship_groups = std::sync::Arc::new(
             store
                 .all_ships()
@@ -2244,19 +2282,6 @@ impl SpaiApp {
         if let Some(dir) = self.chat_dir.clone() {
             let ships = std::sync::Arc::new(store.ship_index());
             self.ship_index = Some(ships.clone());
-            #[cfg(feature = "fleet")]
-            let rescue_channel = if self.settings.fc_rescue_enabled {
-                self.settings.rescue_channel.clone()
-            } else {
-                String::new()
-            };
-            #[cfg(not(feature = "fleet"))]
-            let rescue_channel = String::new();
-            // Built as a local because `#[cfg]` can't be applied to a call argument.
-            #[cfg(feature = "fleet")]
-            let rescue_handle = self.rescue.clone();
-            #[cfg(not(feature = "fleet"))]
-            let rescue_handle = ();
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
@@ -2267,9 +2292,6 @@ impl SpaiApp {
                 self.sightings.clone(),
                 self.activity.clone(),
                 self.revivals.clone(),
-                rescue_handle,
-                rescue_channel,
-                ship_groups,
                 self.intel_inject.clone(),
                 ctx.clone(),
             );
@@ -3428,11 +3450,11 @@ impl SpaiApp {
                 let mut expanded = self.settings.nav_expanded;
                 let badged: &[nav::View] = if badge { &[nav::View::Jabber] } else { &[] };
                 let warned: &[nav::View] = if jabber_down { &[nav::View::Jabber] } else { &[] };
-                let has_fleet = cfg!(feature = "fleet") && self.settings.fleet_enabled;
+                let has_fleet = self.fleet_on();
                 // A rescue runs on a fleet preset and hands over to the fleet tab, so it is part
                 // of fleet command rather than a feature beside it. It keeps its own switch only
                 // because it also needs the delve911 rooms joined.
-                let has_rescue = has_fleet && self.settings.fc_rescue_enabled;
+                let has_rescue = self.rescue_on();
                 let rows: Vec<nav::View> = nav::View::primary()
                     .iter()
                     .copied()
@@ -3835,6 +3857,9 @@ impl eframe::App for SpaiApp {
         self.poll_jabber_notify(&ctx);
         self.poll_kill_fetches();
         self.dscan_dialog(&ctx);
+        #[cfg(feature = "fleet")]
+        self.fleet_unlock_tick(&ctx);
+        crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);
         self.wh_share_window(&ctx);
         self.wh_detect_poll();
@@ -6531,8 +6556,17 @@ fn rescue_comms_invite(author: Option<&str>, op: u8) -> Option<String> {
 
 /// Empty setting -> the goonfleet default room the app already joins.
 #[cfg(feature = "fleet")]
+/// A room from its configured name: empty is `default`, a bare name is on the Goonfleet
+/// conference server, and anything with an `@` is taken as a full JID.
 pub(crate) fn goon_jid(cfg: &str, default: &str) -> String {
-    if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
+    let cfg = cfg.trim();
+    if cfg.is_empty() {
+        default.to_string()
+    } else if cfg.contains('@') {
+        cfg.to_string()
+    } else {
+        format!("{cfg}@conference.goonfleet.com")
+    }
 }
 
 /// Floating pin, for viewports whose content is a bare central panel with no row to host it.

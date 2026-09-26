@@ -117,7 +117,7 @@ pub fn play_prio(spec: &str, prio: u8, volume: f32) {
 /// alerts once. The gate is refreshed on every message, so it re-arms only after 5 minutes of quiet
 /// (the next message after a lull alerts again). Independent of the global 2s gate.
 #[cfg(feature = "fleet")]
-pub fn play_delve911_alert() {
+pub fn play_delve911_alert(spec: &str, volume: f32) {
     const DELVE911_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
     static GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     let should_play = {
@@ -128,7 +128,7 @@ pub fn play_delve911_alert() {
         play
     };
     if should_play {
-        play("siren", 1.0);
+        play(spec, volume);
     }
 }
 
@@ -143,12 +143,32 @@ fn gate_allows(
     }
 }
 
+/// The master volume as f32 bits, and whether everything is muted. Set by the app from settings;
+/// every sound goes through [`play`], so nothing can skip them.
+static MASTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+static MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_master(volume: f32, muted: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    MASTER.store(volume.clamp(0.0, 1.0).to_bits(), Relaxed);
+    MUTED.store(muted, Relaxed);
+}
+
+fn master() -> f32 {
+    use std::sync::atomic::Ordering::Relaxed;
+    if MUTED.load(Relaxed) {
+        0.0
+    } else {
+        f32::from_bits(MASTER.load(Relaxed))
+    }
+}
+
 pub fn play(spec: &str, volume: f32) {
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("off") {
         return;
     }
-    let volume = volume.clamp(0.0, 1.0);
+    let volume = (volume * master()).clamp(0.0, 1.0);
     if volume < 0.005 {
         return;
     }

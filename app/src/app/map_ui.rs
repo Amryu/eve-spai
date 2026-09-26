@@ -569,7 +569,7 @@ impl SpaiApp {
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
         #[cfg(feature = "fleet")]
-        let rescue_active = self.settings.fc_rescue_enabled;
+        let rescue_active = self.rescue_on();
         let ov = self.map_overlays;
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let show_sys_labels = zoomed;
@@ -2022,7 +2022,7 @@ impl SpaiApp {
         }
 
         #[cfg(feature = "fleet")]
-        if self.settings.fc_rescue_enabled {
+        if self.rescue_on() {
             ui.separator();
             ui.label(egui::RichText::new("delve911 rescue").strong());
             if ui.button(format!("{}  Open delve911 feed", icon::CHAT_CENTERED_DOTS)).clicked() {

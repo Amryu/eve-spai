@@ -101,13 +101,14 @@ impl SpaiApp {
                 Some(url) => {
                     self.update.lock().unwrap().installing = true;
                     let (upd, url, ctx2) = (self.update.clone(), url.clone(), ctx.clone());
+                    let helper = av.helper_api_url.clone();
                     std::thread::spawn(move || {
                         // In a machine-wide install the exe dir needs elevation to overwrite, so hand
                         // the swap to an admin helper (UAC prompt); otherwise do it in-process.
                         let res = if crate::update::update_needs_admin() {
                             crate::update::elevated_update(&url)
                         } else {
-                            crate::update::download_and_replace(&url)
+                            crate::update::download_and_replace(&url, helper.as_deref())
                         };
                         let mut s = upd.lock().unwrap();
                         s.installing = false;
@@ -266,7 +267,7 @@ impl SpaiApp {
             // During a rescue, also capture the dscan breakdown onto the rescue state so the FC
             // sees what is on grid without leaving the window.
             #[cfg(feature = "fleet")]
-            if self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active {
+            if self.rescue_on() && self.rescue.lock().unwrap().active {
                 let parsed = crate::rescue::parse_raw_dscan(&text);
                 if !parsed.is_empty() {
                     self.rescue.lock().unwrap().dscan = Some(parsed);

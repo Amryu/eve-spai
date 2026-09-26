@@ -1951,6 +1951,8 @@ mod jabber_rescue_room_tests {
         let ctx = egui::Context::default();
         let mut a = SpaiApp::build(&ctx, true);
         a.settings.fc_rescue_enabled = rescue_on;
+        a.settings.fleet_enabled = true;
+        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
         (ctx, a)
     }
 
@@ -2369,6 +2371,8 @@ mod jabber_force_join_tests {
     fn enabling_rescue_mode_is_not_a_force_join() {
         let (_ctx, mut a) = app();
         a.settings.fc_rescue_enabled = true;
+        a.settings.fleet_enabled = true;
+        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
         let rescue = a.jabber_rescue_rooms();
         a.jabber_reconcile(&frame(&[]));
         // Held open by the pin, and already recorded, so a later join is not "first sight".

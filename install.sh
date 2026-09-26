@@ -50,6 +50,30 @@ chmod +x "$tmp"
 mv "$tmp" "$PREFIX/eve-spai"
 echo "Installed eve-spai $tag to $PREFIX/eve-spai"
 
+# Linux: the fleet sign-in window is a separate binary, so the app starts without WebKitGTK.
+if [ "$plat" = "linux" ]; then
+  helper="eve-spai-fleet-login-$plat-$a"
+  if printf '%s' "$release_json" | grep -q "\"name\": *\"$helper\""; then
+    htmp="$(mktemp)"
+    curl -fsSL "https://github.com/$REPO/releases/download/$tag/$helper" -o "$htmp" \
+      && chmod +x "$htmp" && mv "$htmp" "$PREFIX/eve-spai-fleet-login" \
+      && echo "Installed the fleet sign-in helper to $PREFIX/eve-spai-fleet-login"
+  fi
+  found=""
+  for d in /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu /lib64 /lib/x86_64-linux-gnu /usr/local/lib; do
+    [ -e "$d/libwebkit2gtk-4.1.so.0" ] && found=1
+  done
+  if [ -z "$found" ]; then
+    echo
+    echo "Note: signing in to the fleet dashboard (fleet commanders only) needs WebKitGTK 4.1,"
+    echo "which was not found. Everything else works without it. To add it:"
+    echo "  Fedora:                     sudo dnf install webkit2gtk4.1"
+    echo "  Bazzite / atomic Fedora:    rpm-ostree install webkit2gtk4.1   (then reboot)"
+    echo "  Debian / Ubuntu:            sudo apt install libwebkit2gtk-4.1-0"
+    echo "  Arch:                       sudo pacman -S webkit2gtk-4.1"
+  fi
+fi
+
 # macOS: clear the quarantine flag so Gatekeeper doesn't block it.
 [ "$plat" = "macos" ] && xattr -dr com.apple.quarantine "$PREFIX/eve-spai" 2>/dev/null || true
 

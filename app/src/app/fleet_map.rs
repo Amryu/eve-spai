@@ -1089,7 +1089,7 @@ impl SpaiApp {
     /// A closed fleet whose fights were not recorded live gets them from zKillboard once: its
     /// participants' kills and losses during its run. Saved with the fleet, so it happens once.
     pub(crate) fn fleet_backfill_poll(&mut self) {
-        if self.headless || !self.settings.fleet_enabled {
+        if self.headless || !self.fleet_on() {
             return;
         }
         // First, before anything below can return: a backfill that finished is noticed every frame,
@@ -1190,7 +1190,7 @@ impl SpaiApp {
         /// A recording not refreshed for this long belongs to a fleet long gone.
         const RESUME_WITHIN: i64 = 12 * 3600;
 
-        if self.headless || !self.settings.fleet_enabled {
+        if self.headless || !self.fleet_on() {
             return;
         }
         let Some(systems) = self.systems.clone() else { return };

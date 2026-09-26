@@ -504,7 +504,7 @@ impl SpaiApp {
                         self.travel_changed = newsys;
                         self.travel_changed_at = Some(chrono::Utc::now().timestamp());
                         if much_longer {
-                            crate::sound::play_prio("danger", 2, 1.0);
+                            crate::sound::play_prio(&self.settings.sound_reroute, 2, self.settings.sound_reroute_volume);
                         }
                     }
                 }

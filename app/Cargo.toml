@@ -10,16 +10,16 @@ name = "eve-spai"
 path = "src/main.rs"
 
 [features]
-default = []
+# Fleet command is compiled into every build, and unlocks at runtime only for accounts the fleet
+# dashboard confirms as skirmish commanders or above (`fleets::unlock`).
+default = ["fleet"]
 # Kept as an alias so `--features fc-rescue` in anyone's muscle memory, scripts or CI still works.
 # The rescue is not a separate feature any more: a rescue is a fleet, its ping comes from a fleet
 # preset and its tracking hands over to the fleet tab, so nothing gates on this name.
 fc-rescue = ["fleet"]
 # Fleet command: the GSF dashboard mirror, and the FC-only delve911 capital rescue that runs on it.
-# Off by default, because both are Imperium-specific and talk to services a stock build has no
-# business knowing about. Build with `cargo build --features fleet`. Writes are a dry run until the
-# user signs in and turns them on. CI's cross-check passes --all-features so the gated code and its
-# tests keep compiling.
+# On by default, locked at runtime until the dashboard confirms a commander. Writes are a dry run
+# until the user signs in and turns them on. `--no-default-features` builds without it.
 fleet = []
 # Signing in to that dashboard for real. Separate from `fleet`, and its crates optional, because on
 # Linux it is the only dependency in this file that needs system libraries (gtk3 and
@@ -27,6 +27,8 @@ fleet = []
 # that lands on its own origin, so the cookie has to come out of a browser engine we drive. Windows
 # and macOS use the engine the OS ships, so they need nothing installed and `--all-features` on
 # those runners compiles it.
+# Release builds turn it on for Windows and macOS. Linux releases ship it as a second binary,
+# `eve-spai-fleet-login`, so the app itself starts without WebKitGTK installed.
 # Build with `cargo build --features fleet-auth`.
 fleet-auth = ["fleet", "dep:wry", "dep:tao", "dep:webkit2gtk"]
 

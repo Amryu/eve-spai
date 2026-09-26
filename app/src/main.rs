@@ -194,7 +194,7 @@ fn main() -> eframe::Result<()> {
     // The elevated helper: swap the binary with admin rights, then exit. No window, no lock. Its exit
     // code tells the parent whether the swap landed.
     if let Some(url) = update::apply_update_arg() {
-        match update::download_and_replace(&url) {
+        match update::download_and_replace(&url, None) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 eprintln!("[update] elevated swap failed: {e:#}");

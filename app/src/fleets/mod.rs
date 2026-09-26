@@ -27,6 +27,7 @@ pub mod model;
 pub mod movement;
 pub mod br;
 pub mod tracker;
+pub mod unlock;
 pub mod ping;
 pub mod seed;
 pub mod spoof;
@@ -66,22 +67,15 @@ pub fn choose_backend(
     }
 }
 
-/// The signed-in backend, when there is a session to sign in with and the user has turned it on.
+/// The signed-in backend, whenever there is a stored session.
 pub fn live_backend(
     settings: &crate::settings::Settings,
 ) -> Option<std::sync::Arc<dyn backend::FleetBackend>> {
-    if !settings.fleet_live {
-        return None;
-    }
     let text = std::env::var(COOKIE_ENV)
         .ok()
         .filter(|t| !t.trim().is_empty())
         .or_else(creds::load)?;
-    let mode = if settings.fleet_send_writes {
-        backend::Mode::Live
-    } else {
-        backend::Mode::ReadOnly
-    };
+    let mode = backend::Mode::Live;
     let b = http::HttpBackend::new(
         http::Cookies::restore(&text),
         // The character picked in the top bar, as the session's default FC. The start form's FC

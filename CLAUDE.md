@@ -17,17 +17,21 @@ mirror itself to a local web view. It uses only EVE's public static data.
   build, but a slowdown that also shows in release is a real regression.
 - `cargo test` does NOT rebuild the `eve-spai` binary. Run `cargo build` before relaunching the
   app, or you run a stale binary and a fix looks like it did nothing.
-- **`fleet` is an opt-in Cargo feature, off by default.** It gates fleet command: the GSF
+- **`fleet` is a default Cargo feature, locked at runtime.** It gates fleet command: the GSF
   dashboard mirror (`fleets/`, `app/fleet_ui.rs`) and the FC-only delve911 capital rescue that runs
-  on it (`rescue.rs`, `app/rescue_ui.rs`, the ESI fleet poller, the delve911 sound). The two used
-  to be separate features; a rescue now runs on a fleet preset and hands over to fleet tracking, so
-  they are one. `fc-rescue` survives only as an alias for `fleet`, for existing command lines.
-  Published releases are built without it; build your own with
-  `cargo build --release --features fleet`. A bare `cargo test` skips its tests, so use
-  `cargo test --features fleet` when touching that code. CI tests with and without it.
-  `fleet-auth` adds the sign-in webview on top, on Linux, Windows and macOS. On Linux it needs gtk3
-  and webkit2gtk-4.1 on the machine and a binary built with it will not start without them, so
-  never install one casually. Windows (WebView2) and macOS (WKWebView) use the engine the OS ships.
+  on it (`rescue.rs`, `app/rescue_ui.rs`, the ESI fleet poller, the delve911 sound). `fc-rescue`
+  survives only as an alias for `fleet`. Every build carries it, but it stays locked until the
+  fleet dashboard confirms a skirmish commander or above (`fleets/unlock.rs`: `startFleet` plus a
+  command group of SC, FC, TC, CC, Coord or GB/PP; 30-day grace offline). Before that, settings
+  show only the dashboard sign-in and the Fleet and Rescue tabs are hidden: gate new fleet code on
+  `fleet_on()` / `rescue_on()`, never on the raw settings flags. `--no-default-features` builds
+  without it; CI tests with and without it.
+  `fleet-auth` adds the sign-in webview. Windows (WebView2) and macOS (WKWebView) releases are
+  built with it, since the engine ships with the OS. On Linux it needs gtk3 and webkit2gtk-4.1 and
+  a binary linked with it will not start without them, so the Linux release ships the app without
+  it plus the same source built with it as `eve-spai-fleet-login`, installed next to the app by
+  `install.sh` and the updater. The app runs that helper for the sign-in, tells the user when
+  WebKitGTK is missing, and downloads the helper itself when an older updater left it out.
   The Windows side type-checks locally with `zig cc` standing in for MinGW (`ring` and `aws-lc-sys`
   need a C compiler): point `CC_x86_64_pc_windows_gnu` at a wrapper that drops cc-rs's
   `--target=<rust triple>` and passes `-target x86_64-windows-gnu`, then

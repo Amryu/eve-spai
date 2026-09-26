@@ -24,7 +24,7 @@ impl SpaiApp {
     /// EVE channel of the same name; the real pings come through the MUC, so both feed `rescue`.
     #[cfg(feature = "fleet")]
     pub(crate) fn ingest_delve911_jabber(&mut self) {
-        if !self.settings.fc_rescue_enabled {
+        if !self.rescue_on() {
             return;
         }
         let (Some(systems), Some(ships)) = (self.systems.clone(), self.ship_groups.clone()) else {
@@ -167,26 +167,19 @@ impl SpaiApp {
         }
         ui.add_space(4.0);
         egui::Grid::new("rescue_settings_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("delve911 channel");
+            ui.label("delve911 room").on_hover_text(
+                "The Jabber room on conference.goonfleet.com where rescue requests come in.",
+            );
             changed |= ui
-                .add(egui::TextEdit::singleline(&mut self.settings.rescue_channel).desired_width(220.0))
+                .add(egui::TextEdit::singleline(&mut self.settings.rescue_delve911_jid).hint_text("delve911").desired_width(220.0))
                 .changed();
             ui.end_row();
-            ui.label("skirmish_commanders JID");
+            ui.label("Skirmish commanders room").on_hover_text("The Jabber room ping requests go to, on conference.goonfleet.com.");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut self.settings.rescue_skirmish_jid)
-                        .hint_text("empty = skirmish_commanders@conference.goonfleet.com")
-                        .desired_width(280.0),
-                )
-                .changed();
-            ui.end_row();
-            ui.label("delve911 room JID");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.settings.rescue_delve911_jid)
-                        .hint_text("empty = delve911@conference.goonfleet.com")
-                        .desired_width(280.0),
+                        .hint_text("skirmish_commanders")
+                        .desired_width(220.0),
                 )
                 .changed();
             ui.end_row();
@@ -611,6 +604,8 @@ impl SpaiApp {
                 .map(|(_, c)| c.verdict())
         };
         let (jab_connected, jab_status, jab_retry_in, _) = self.jabber_conn();
+        let jabber_set_up = !self.settings.jabber_jid.trim().is_empty();
+        let mut open_jabber = false;
         let mut retry_click = false;
         let mut set_dest: Option<i64> = None;
         let mut start_tracking = false;
@@ -643,7 +638,22 @@ impl SpaiApp {
 
             // Nothing sent from this window can leave the machine while XMPP is down, and an empty
             // chat pane looks identical to a quiet channel, so say so loudly.
-            if !jab_connected {
+            if !jab_connected && !jabber_set_up {
+                // Never set up: retrying has nothing to connect with.
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
+                        format!(
+                            "{}  Jabber is not set up: rescue pings to delve911 and the skirmish channel go through it.",
+                            egui_phosphor::regular::PLUGS
+                        ),
+                    );
+                    if ui.button("Set up Jabber").clicked() {
+                        open_jabber = true;
+                    }
+                });
+                ui.separator();
+            } else if !jab_connected {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
@@ -1249,6 +1259,9 @@ impl SpaiApp {
             self.needs_save = true;
         }
 
+        if open_jabber {
+            self.view = nav::View::Jabber;
+        }
         if retry_click {
             self.jabber_retry();
         }

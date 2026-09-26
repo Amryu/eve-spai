@@ -521,7 +521,6 @@ impl SpaiApp {
         ui: &mut egui::Ui,
         ru: &mut crate::settings::AlertRule,
         i: usize,
-        global_volume: f32,
         notes: &crate::notes::NotesView,
     ) -> (bool, Option<crate::pickers::PickerKind>) {
         use crate::settings::Severity::*;
@@ -635,9 +634,7 @@ impl SpaiApp {
                 changed |= ui.checkbox(&mut ru.system_notification, "notify").changed();
                 changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
                 changed |= ui.checkbox(&mut ru.push, "push").changed();
-                ui.label("sound");
-                let eff_vol = ru.volume.unwrap_or(global_volume);
-                changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound, eff_vol);
+                ui.label(egui::RichText::new("sound: under Settings, Sounds").weak());
                 ui.label("severity");
                 egui::ComboBox::from_id_salt(("rsevover", i))
                     .selected_text(match ru.severity_override {
@@ -663,18 +660,6 @@ impl SpaiApp {
                         "Override the alert's severity (sound + colour). Leave 'keep' \
                          to use the event's own severity. Set Info to show it silently.",
                     );
-                let mut custom = ru.volume.is_some();
-                if ui
-                    .checkbox(&mut custom, "custom volume")
-                    .on_hover_text("Override the global intel-alert volume for this rule")
-                    .changed()
-                {
-                    ru.volume = if custom { Some(global_volume) } else { None };
-                    changed = true;
-                }
-                if let Some(v) = ru.volume.as_mut() {
-                    changed |= volume_slider(ui, v);
-                }
             }
             ui.label("cooldown");
             changed |= ui
@@ -881,12 +866,10 @@ impl SpaiApp {
                         );
                     });
                     ui.add_space(6.0);
-                    let global_volume = self.settings.alerts.alert_volume;
                     let (c, want) = Self::alert_rule_config(
                         ui,
                         &mut self.settings.alerts.rules[idx],
                         idx,
-                        global_volume,
                         &self.notes_view,
                     );
                     changed |= c;
@@ -1827,6 +1810,10 @@ impl SpaiApp {
 
                     ui.separator();
 
+                    changed |= self.sounds_settings_section(ui);
+
+                    ui.separator();
+
                     ui.label(egui::RichText::new("Alerts").strong());
                     changed |= ui
                         .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
@@ -1869,33 +1856,7 @@ impl SpaiApp {
                             .checkbox(&mut a.compact_mode, "Compact alert window")
                             .on_hover_text("Tighter rows and title bar. Hover cards pop out in their own window.")
                             .changed();
-                        ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
-                        ui.horizontal(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(64.0, ui.spacing().interact_size.y),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.label("Volume");
-                                },
-                            );
-                            changed |= volume_slider(ui, &mut a.alert_volume);
-                        });
-                        let alert_vol = a.alert_volume;
-                        for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
-                            if a.sounds.len() <= i {
-                                a.sounds.resize(i + 1, "off".to_owned());
-                            }
-                            ui.horizontal(|ui| {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(64.0, ui.spacing().interact_size.y),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(*lbl);
-                                    },
-                                );
-                                changed |= sound_picker(ui, ("severity_sound", i), false, &mut a.sounds[i], alert_vol);
-                            });
-                        }
+                        ui.label(egui::RichText::new("Alert sounds and their volume are under Sounds, above.").weak());
                         changed |= ui
                             .checkbox(&mut a.push_enabled, "Mobile push (Pushover)")
                             .on_hover_text("Install the Pushover app; create an application for the token")
@@ -2053,7 +2014,7 @@ impl SpaiApp {
                         changed |= self.fleet_settings_section(ui);
                     }
                     #[cfg(feature = "fleet")]
-                    {
+                    if self.fleet_unlocked() {
                         ui.add_space(12.0);
                         ui.separator();
                         changed |= self.rescue_settings_section(ui);
@@ -2103,4 +2064,134 @@ impl SpaiApp {
 }
 
 impl SpaiApp {
+}
+
+impl SpaiApp {
+    /// Every sound the app can play, in one place, with a master volume over all of them. A
+    /// feature that is switched off (or locked) is left out, and so are its sounds.
+    pub(crate) fn sounds_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.label(egui::RichText::new("Sounds").strong());
+        ui.horizontal(|ui| {
+            changed |= ui.checkbox(&mut self.settings.sound_muted, "Mute all").changed();
+            ui.add_space(12.0);
+            ui.label("Master volume");
+            ui.add_enabled_ui(!self.settings.sound_muted, |ui| {
+                changed |= volume_slider(ui, &mut self.settings.sound_master_volume);
+            });
+        });
+        ui.label(egui::RichText::new("Each sound's own volume is scaled by the master volume.").weak());
+
+        // A per-rule volume that falls back to a shared one until it is set.
+        fn own_volume(ui: &mut egui::Ui, v: &mut Option<f32>, shared: f32) -> bool {
+            let mut x = v.unwrap_or(shared);
+            let mut changed = false;
+            if volume_slider(ui, &mut x) {
+                *v = Some(x);
+                changed = true;
+            }
+            if v.is_some() && ui.small_button(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to the shared volume").clicked() {
+                *v = None;
+                changed = true;
+            }
+            changed
+        }
+        // A rule by name; one that is switched off is dimmed but still here to set.
+        fn rule_label(ui: &mut egui::Ui, name: &str, enabled: bool) {
+            let text = egui::RichText::new(format!("{} {name}", egui_phosphor::regular::FUNNEL));
+            let r = ui.label(if enabled { text } else { text.weak() });
+            if !enabled {
+                r.on_hover_text("This rule is switched off");
+            }
+        }
+        let group = |ui: &mut egui::Ui, title: &str| {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(title).underline());
+        };
+
+        let muted = self.settings.sound_muted;
+        ui.add_enabled_ui(!muted, |ui| {
+            if self.settings.alert_enabled {
+                group(ui, "Intel alerts");
+                egui::Grid::new("sounds_alerts").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                    let a = &mut self.settings.alerts;
+                    ui.label("Shared volume");
+                    ui.label("");
+                    changed |= volume_slider(ui, &mut a.alert_volume);
+                    ui.end_row();
+                    let vol = a.alert_volume;
+                    for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
+                        if a.sounds.len() <= i {
+                            a.sounds.resize(i + 1, "off".to_owned());
+                        }
+                        ui.label(*lbl);
+                        changed |= sound_picker(ui, ("sounds_severity", i), false, &mut a.sounds[i], vol);
+                        ui.label("");
+                        ui.end_row();
+                    }
+                    for (i, rule) in a.rules.iter_mut().enumerate() {
+                        rule_label(ui, &rule.name, rule.enabled);
+                        let v = rule.volume.unwrap_or(vol);
+                        changed |= sound_picker(ui, ("sounds_rule", i), true, &mut rule.sound, v);
+                        ui.horizontal(|ui| changed |= own_volume(ui, &mut rule.volume, vol));
+                        ui.end_row();
+                    }
+                });
+            }
+
+            if self.settings.jabber_enabled || !self.settings.jabber_jid.trim().is_empty() {
+                group(ui, "Jabber");
+                changed |= ui.checkbox(&mut self.settings.jabber_sound_enabled, "Play Jabber sounds").changed();
+                ui.add_enabled_ui(self.settings.jabber_sound_enabled, |ui| {
+                    egui::Grid::new("sounds_jabber").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                        let st = &mut self.settings;
+                        for (label, salt, sound, vol) in [
+                            ("Messages", "msg", &mut st.jabber_msg_sound, &mut st.jabber_msg_volume),
+                            ("Fleet pings", "ping", &mut st.jabber_ping_sound, &mut st.jabber_ping_volume),
+                            ("Mentions", "mention", &mut st.jabber_mention_sound, &mut st.jabber_mention_volume),
+                        ] {
+                            ui.label(label);
+                            changed |= sound_picker(ui, ("sounds_jabber", salt), false, sound, *vol);
+                            changed |= volume_slider(ui, vol);
+                            ui.end_row();
+                        }
+                        let ping_vol = st.jabber_ping_volume;
+                        for (i, rule) in st.jabber_ping_rules.iter_mut().enumerate() {
+                            rule_label(ui, &rule.name, rule.enabled);
+                            let v = rule.volume.unwrap_or(ping_vol);
+                            changed |= sound_picker(ui, ("sounds_ping_rule", i), true, &mut rule.sound, v);
+                            ui.horizontal(|ui| changed |= own_volume(ui, &mut rule.volume, ping_vol));
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+
+            group(ui, "Map and travel");
+            egui::Grid::new("sounds_map").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                let st = &mut self.settings;
+                for (label, hint, salt, sound, vol) in [
+                    ("Threat nearby", "Map safety mode: a hostile report or kill turned up within range.", "safety", &mut st.sound_safety, &mut st.sound_safety_volume),
+                    ("Route rerouted", "Live travel: the route got much longer to go round danger.", "reroute", &mut st.sound_reroute, &mut st.sound_reroute_volume),
+                ] {
+                    ui.label(label).on_hover_text(hint);
+                    changed |= sound_picker(ui, ("sounds_map", salt), false, sound, *vol);
+                    changed |= volume_slider(ui, vol);
+                    ui.end_row();
+                }
+            });
+
+            if self.rescue_on() {
+                group(ui, "Rescue");
+                egui::Grid::new("sounds_rescue").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                    let st = &mut self.settings;
+                    ui.label("delve911 callout").on_hover_text("A rescue request in delve911. At most once every five minutes.");
+                    changed |= sound_picker(ui, ("sounds_rescue", 0), false, &mut st.sound_delve911, st.sound_delve911_volume);
+                    changed |= volume_slider(ui, &mut st.sound_delve911_volume);
+                    ui.end_row();
+                });
+            }
+        });
+        changed
+    }
 }

@@ -5,14 +5,12 @@
 //! window and setting its cookie policy is the same on all three, so only those are per platform.
 //! Released binaries are built with default features, so they never link any of it.
 
-use std::process::{Command, Stdio};
 
-use super::{set, LoginStatus, LoginToMain, SharedLogin, FLAG};
+use super::{set, LoginStatus, LoginToMain, SharedLogin};
 
 const SIGN_IN: &str = "https://fleets.gnf.lt/api/sign-in";
 const ORIGIN: &str = "https://fleets.gnf.lt";
 /// The GICE round trip can involve an EVE SSO login and a 2FA prompt, so the cap is generous.
-const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 /// ASP.NET Core's session cookie, whatever the rest of its name turns out to be.
 const SESSION_PREFIX: &str = ".AspNetCore.";
 /// What the HTTP client that verifies the captured session reports itself as.
@@ -41,57 +39,9 @@ pub fn spawn_login(shared: SharedLogin, ctx: egui::Context) {
 }
 
 fn run_parent() -> LoginStatus {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return LoginStatus::Failed(format!("cannot find this binary: {e}")),
-    };
-    let mut child = match Command::new(exe)
-        .arg(FLAG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return LoginStatus::Failed(format!("cannot start the sign-in window: {e}")),
-    };
-    let Some(mut out) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return LoginStatus::Failed("the sign-in window has no output pipe".to_owned());
-    };
-
-    // Read on a thread so a child that hangs on webkit still hits the deadline.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        loop {
-            match crate::ipc::recv::<LoginToMain, _>(&mut out) {
-                Ok(LoginToMain::Hello) => continue,
-                Ok(msg) => {
-                    let _ = tx.send(Some(msg));
-                    return;
-                }
-                Err(_) => {
-                    let _ = tx.send(None);
-                    return;
-                }
-            }
-        }
-    });
-    let got = rx.recv_timeout(WAIT);
-    // Unconditionally, so a cancelled or timed-out login leaves no webkit process behind.
-    let _ = child.kill();
-    let _ = child.wait();
-
-    match got {
-        Ok(Some(LoginToMain::Ok { cookies })) => match crate::fleets::creds::save(&cookies) {
-            Ok(()) => LoginStatus::Done(cookies),
-            Err(e) => LoginStatus::Failed(format!("signed in, but the keychain refused: {e:#}")),
-        },
-        Ok(Some(LoginToMain::Failed { why })) => LoginStatus::Failed(why),
-        Ok(Some(LoginToMain::Cancelled)) | Ok(None) => LoginStatus::Idle,
-        Ok(Some(LoginToMain::Hello)) => LoginStatus::Idle,
-        Err(_) => LoginStatus::Failed("the sign-in window timed out".to_owned()),
+    match std::env::current_exe() {
+        Ok(exe) => super::run_login_process(&exe),
+        Err(e) => LoginStatus::Failed(format!("cannot find this binary: {e}")),
     }
 }
 

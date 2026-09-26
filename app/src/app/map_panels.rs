@@ -1200,7 +1200,7 @@ impl SpaiApp {
             None => {}
             Some(prev) => {
                 if current.iter().any(|s| !prev.contains(s)) {
-                    crate::sound::play_prio("danger", 2, 1.0);
+                    crate::sound::play_prio(&self.settings.sound_safety, 2, self.settings.sound_safety_volume);
                     self.flash_until = ctx.input(|i| i.time) + 0.8;
                     ctx.request_repaint();
                 }

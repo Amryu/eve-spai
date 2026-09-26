@@ -238,6 +238,30 @@ pub struct Settings {
     /// Systems the wormhole map's Routes panel measures from the selected system.
     #[serde(default)]
     pub wh_route_pins: Vec<String>,
+    /// Every sound the app plays is scaled by this, and none plays while muted.
+    #[serde(default = "default_volume")]
+    pub sound_master_volume: f32,
+    #[serde(default)]
+    pub sound_muted: bool,
+    /// Map safety mode: a threat turned up within range.
+    #[serde(default = "default_danger_sound")]
+    pub sound_safety: String,
+    #[serde(default = "default_volume")]
+    pub sound_safety_volume: f32,
+    /// Live travel: the route was rerouted much longer around danger.
+    #[serde(default = "default_danger_sound")]
+    pub sound_reroute: String,
+    #[serde(default = "default_volume")]
+    pub sound_reroute_volume: f32,
+    /// The delve911 rescue callout.
+    #[serde(default = "default_siren_sound")]
+    pub sound_delve911: String,
+    #[serde(default = "default_volume")]
+    pub sound_delve911_volume: f32,
+    /// When the fleet dashboard last confirmed a commander rank, and which. Fleet command stays
+    /// locked without it, or once it is older than `fleets::unlock::GRACE_SECS`.
+    #[serde(default)]
+    pub fleet_unlock: Option<FleetUnlock>,
     /// The sharing group local wormhole changes are sent to; `None` keeps them local.
     #[serde(default)]
     pub wh_share_target: Option<String>,
@@ -270,14 +294,6 @@ pub struct Settings {
     /// real one. Kept because settings are rewritten whole, and dropping a field an older config
     /// carries is the kind of change that has cost a full settings reset before.
     pub fleet_character: String,
-    /// Whether a stored dashboard session is used at all. Off until the user signs in, so a build
-    /// with the feature on still starts on the dry run.
-    #[serde(default)]
-    pub fleet_live: bool,
-    /// Whether the live session sends writes. Off separately from `fleet_live`, so a session can be
-    /// watched for a while before it is allowed to start, ping or kick anything.
-    #[serde(default)]
-    pub fleet_send_writes: bool,
     /// Which boosts each doctrine wants, and how badly.
     #[serde(default)]
     pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
@@ -322,8 +338,6 @@ pub struct Settings {
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
     pub fc_rescue_enabled: bool,
-    #[serde(default = "default_rescue_channel")]
-    pub rescue_channel: String,
     #[serde(default = "default_rescue_staging")]
     pub rescue_staging_system: String,
     /// System ids that host a friendly cyno generator (ESI can't enumerate these).
@@ -340,11 +354,12 @@ pub struct Settings {
     /// The cap-save template has been turned into a fleet preset, so it is not done twice.
     #[serde(default)]
     pub rescue_preset_seeded: bool,
-    /// skirmish_commanders room JID: where the FC posts `!bping <group>` ping requests and watches
-    /// the responses. coord/fc/all are directorbot ping groups, not separate rooms.
+    /// The skirmish_commanders room, by name (or a full JID): where the FC posts `!bping <group>`
+    /// ping requests and watches the responses. Empty is skirmish_commanders.
     #[serde(default)]
     pub rescue_skirmish_jid: String,
-    /// XMPP room JID for the delve911 conference, so the FC can respond from the rescue window.
+    /// The delve911 room, by name (or a full JID). The name is also the in-game channel whose chat
+    /// log is watched. Empty is delve911.
     #[serde(default)]
     pub rescue_delve911_jid: String,
     #[serde(default = "default_rescue_col_ops")]
@@ -564,6 +579,12 @@ pub struct AlertSettings {
     pub rules: Vec<AlertRule>,
     pub seeded: bool,
     pub compact_mode: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FleetUnlock {
+    pub verified_at: i64,
+    pub command_group: String,
 }
 
 fn default_wh_route_kinds() -> Vec<String> {
@@ -928,6 +949,14 @@ fn default_true() -> bool {
 fn default_volume() -> f32 {
     1.0
 }
+fn default_danger_sound() -> String {
+    "danger".into()
+}
+
+fn default_siren_sound() -> String {
+    "siren".into()
+}
+
 fn default_msg_sound() -> String {
     "chime".to_owned()
 }
@@ -1210,9 +1239,6 @@ pub struct FleetBoostRequirement {
 /// Accept both the old form (a list of plain name strings) and the new `{name, description}` form,
 /// so a config saved before descriptions existed still loads instead of resetting all settings.
 
-fn default_rescue_channel() -> String {
-    "delve911".to_owned()
-}
 fn default_rescue_staging() -> String {
     "C-J6MT".to_owned()
 }
@@ -1346,6 +1372,15 @@ impl Default for Settings {
             wh_route_kinds: default_wh_route_kinds(),
             wh_route_pins: Vec::new(),
             wh_share_target: None,
+            fleet_unlock: None,
+            sound_master_volume: 1.0,
+            sound_muted: false,
+            sound_safety: default_danger_sound(),
+            sound_safety_volume: 1.0,
+            sound_reroute: default_danger_sound(),
+            sound_reroute_volume: 1.0,
+            sound_delve911: default_siren_sound(),
+            sound_delve911_volume: 1.0,
             minimize_to_tray: true,
             autostart: false,
             main_window_pos: None,
@@ -1357,8 +1392,6 @@ impl Default for Settings {
             fleet_enabled: false,
             fleet_presets: Vec::new(),
             fleet_character: String::new(),
-            fleet_live: false,
-            fleet_send_writes: false,
             fleet_boost_requirements: Vec::new(),
             rescue_doctrines: Vec::new(),
             rescue_doctrine: String::new(),
@@ -1370,7 +1403,6 @@ impl Default for Settings {
             fleet_doctrine_lines: Vec::new(),
             fleet_doctrine_strict: Vec::new(),
             fc_rescue_enabled: false,
-            rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
             cyno_generators: Vec::new(),
             rescue_op_channel: default_rescue_op_channel(),

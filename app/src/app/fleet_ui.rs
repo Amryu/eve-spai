@@ -671,7 +671,7 @@ impl SpaiApp {
     /// alliance's own. Boot is nine reads and happens once per run.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boot_once(&mut self) {
-        if self.fleet_booted || !self.settings.fleet_enabled {
+        if self.fleet_booted || !self.fleet_on() {
             return;
         }
         self.fleet_booted = true;
@@ -752,6 +752,11 @@ impl SpaiApp {
             "skirmish_commanders@conference.goonfleet.com",
         );
         let can_jabber = self.jabber_conn().0 && !skirmish_jid.is_empty();
+        let jabber_why = if self.settings.jabber_jid.trim().is_empty() {
+            "Jabber is not set up: sign in on the Jabber tab to post pings from here."
+        } else {
+            "Jabber is not connected."
+        };
 
         egui::Panel::top("fleet_subnav").show_inside(ui, |ui| {
             ui.add_space(4.0);
@@ -867,6 +872,7 @@ impl SpaiApp {
                     &mut act,
                     &local_ping,
                     can_jabber,
+                    jabber_why,
                     mode,
                     &mut chat,
                 ),
@@ -1299,9 +1305,82 @@ impl SpaiApp {
         self.fleet_dispatch(Cmd::Preview(req));
     }
 
+    /// Asks the dashboard whether the stored session is a commander's: at start, after each
+    /// sign-in, and every few hours. A lower rank locks fleet command at once; an expired session
+    /// or an unreachable dashboard leaves the last unlock to run out on its own.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_unlock_tick(&mut self, ctx: &egui::Context) {
+        use crate::fleets::unlock::{self, Check};
+        if self.headless {
+            return;
+        }
+        if let Some(result) = self.fleet_unlock_check.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            match result {
+                Check::Qualified(group) => {
+                    self.settings.fleet_unlock =
+                        Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: group });
+                    self.fleet_unlock_note = None;
+                }
+                Check::Unqualified(why) => {
+                    self.settings.fleet_unlock = None;
+                    self.fleet_unlock_note = Some(why);
+                }
+                Check::NoSession => {
+                    self.fleet_unlock_note = self
+                        .settings
+                        .fleet_unlock
+                        .is_some()
+                        .then(|| "The dashboard session has ended; sign in again to keep fleet command unlocked.".to_owned());
+                }
+                Check::Unreachable(why) => {
+                    self.fleet_unlock_note = Some(format!("The fleet dashboard could not be reached: {why}"));
+                }
+            }
+            self.needs_save = true;
+        }
+        let due = self
+            .fleet_unlock_asked
+            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(unlock::RECHECK_SECS));
+        let has_session = crate::fleets::creds::has()
+            || std::env::var(crate::fleets::COOKIE_ENV).is_ok_and(|t| !t.trim().is_empty());
+        if due && has_session {
+            self.fleet_unlock_asked = Some(std::time::Instant::now());
+            let (slot, ctx) = (self.fleet_unlock_check.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let r = unlock::check_stored();
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    /// Settings before the dashboard has confirmed a commander: only the sign-in.
+    #[cfg(feature = "fleet")]
+    fn fleet_locked_section(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.heading("Fleet command");
+        ui.label(
+            egui::RichText::new(
+                "Fleet tracking, pings, composition and the delve911 rescue, for GSF skirmish \
+                 commanders and above. Sign in to the fleet dashboard to unlock them.",
+            )
+            .weak(),
+        );
+        if let Some(why) = crate::fleets::login::webkit_missing() {
+            ui.colored_label(crate::theme::standing::WARNING, why);
+        }
+        if let Some(note) = &self.fleet_unlock_note {
+            ui.colored_label(crate::theme::standing::WARNING, note);
+        }
+        ui.add_space(4.0);
+        self.fleet_sign_in_row(ui)
+    }
+
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = self.fleet_apply_login();
+        if !self.fleet_unlocked() {
+            return changed | self.fleet_locked_section(ui);
+        }
         ui.heading("Fleet dashboard");
         ui.label(
             egui::RichText::new(
@@ -1688,13 +1767,11 @@ impl SpaiApp {
     }
 
     /// Signing in to the dashboard, and how much of what the tab does actually goes out.
+    /// Sign in, sign out, and where the login stands.
     #[cfg(feature = "fleet")]
-    fn fleet_sign_in_ui(&mut self, ui: &mut egui::Ui) -> bool {
-        use crate::fleets::backend::Mode;
+    fn fleet_sign_in_row(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::fleets::login::LoginStatus;
-
         let mut changed = false;
-        ui.label(egui::RichText::new("Sign-in").strong());
         let signed_in = crate::fleets::creds::has()
             || std::env::var(crate::fleets::COOKIE_ENV).is_ok_and(|t| !t.trim().is_empty());
         ui.horizontal(|ui| {
@@ -1705,8 +1782,6 @@ impl SpaiApp {
                 && ui.button(format!("{}  Sign out", egui_phosphor::regular::SIGN_OUT)).clicked()
             {
                 crate::fleets::creds::forget();
-                self.settings.fleet_live = false;
-                self.settings.fleet_send_writes = false;
                 self.fleet_set_backend(std::sync::Arc::new(
                     crate::fleets::spoof::SpoofBackend::seeded(),
                 ));
@@ -1728,33 +1803,17 @@ impl SpaiApp {
                 }
             }
         });
+        changed
+    }
 
+    #[cfg(feature = "fleet")]
+    fn fleet_sign_in_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::fleets::backend::Mode;
+
+        let mut changed = false;
+        ui.label(egui::RichText::new("Sign-in").strong());
+        changed |= self.fleet_sign_in_row(ui);
         let mode = self.fleet_backend.mode();
-        ui.add_enabled_ui(signed_in, |ui| {
-            if ui
-                .checkbox(&mut self.settings.fleet_live, "Use the stored session")
-                .on_hover_text("Off, the tab reads from the local seed file and sends nothing.")
-                .changed()
-            {
-                changed = true;
-            }
-            if ui
-                .checkbox(
-                    &mut self.settings.fleet_send_writes,
-                    "Send writes: start, ping, MOTD, invites and kicks",
-                )
-                .on_hover_text(
-                    "Off, every action still records the request it would send. The preview is \
-                     sent either way: it renders the ping and changes nothing upstream.",
-                )
-                .changed()
-            {
-                changed = true;
-            }
-        });
-        if changed {
-            self.fleet_reload_backend();
-        }
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(match mode {
@@ -1793,9 +1852,9 @@ impl SpaiApp {
         if !done {
             return false;
         }
-        // A fresh session is only useful turned on, and the user just asked for it by signing in.
-        self.settings.fleet_live = true;
         self.fleet_reload_backend();
+        // And it may be the one that unlocks fleet command: ask now rather than in a few hours.
+        self.fleet_unlock_asked = None;
         true
     }
 
@@ -2730,6 +2789,7 @@ fn start_page(
     act: &mut FormAct,
     local_ping: &str,
     can_jabber: bool,
+    jabber_why: &str,
     mode: crate::fleets::backend::Mode,
     chat: &mut ChatDock,
 ) {
@@ -2810,7 +2870,7 @@ fn start_page(
                         .on_hover_text(
                             "Post the ping to skirmish_commanders as !bping coord",
                         )
-                        .on_disabled_hover_text("Jabber is not connected.");
+                        .on_disabled_hover_text(jabber_why);
                     if resp.clicked() {
                         act.jabber_ping = Some(crate::fleets::ping::COORD);
                     }

@@ -23,13 +23,6 @@ fn revival_refresh(current_until: Option<i64>, triggered: bool, now: i64) -> Opt
     (already || triggered).then_some(now + REVIVAL_TTL_SECS)
 }
 
-/// The rescue state handle, degraded to `()` when the FC rescue feature is off. Keeping one
-/// signature avoids `#[cfg]`-ing the arguments at the call site, which Rust does not allow.
-#[cfg(feature = "fleet")]
-pub type RescueHandle = Arc<Mutex<crate::rescue::RescueState>>;
-#[cfg(not(feature = "fleet"))]
-pub type RescueHandle = ();
-
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     chat_dir: PathBuf,
@@ -41,15 +34,11 @@ pub fn spawn(
     sightings: crate::intel::SharedSightings,
     activity: crate::activity::SharedActivity,
     revivals: SharedRevivals,
-    rescue: RescueHandle,
-    rescue_channel: String,
-    ship_groups: Arc<HashMap<String, String>>,
     inject: SharedInject,
     ctx: egui::Context,
 ) {
     let _ = std::thread::Builder::new().name("intel-watcher".into()).spawn(move || {
         let channels: Vec<String> = channels.iter().map(|c| c.to_lowercase()).collect();
-        let rescue_channel = rescue_channel.to_lowercase();
         // Where each log has been read to, and the channel its header named.
         let mut tails: HashMap<PathBuf, (u64, String)> = HashMap::new();
         let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
@@ -70,9 +59,6 @@ pub fn spawn(
                 &sightings,
                 &activity,
                 &revivals,
-                &rescue,
-                &rescue_channel,
-                &ship_groups,
                 &inject,
                 &ctx,
                 &mut tails,
@@ -88,8 +74,6 @@ pub fn spawn(
 }
 
 #[allow(clippy::too_many_arguments)]
-// rescue/rescue_channel/ship_groups feed only the FC-rescue branch below.
-#[cfg_attr(not(feature = "fleet"), allow(unused_variables))]
 fn scan(
     chat_dir: &PathBuf,
     channels: &[String],
@@ -100,9 +84,6 @@ fn scan(
     sightings: &crate::intel::SharedSightings,
     activity: &crate::activity::SharedActivity,
     revivals: &SharedRevivals,
-    rescue: &RescueHandle,
-    rescue_channel: &str,
-    ship_groups: &HashMap<String, String>,
     inject: &SharedInject,
     ctx: &egui::Context,
     tails: &mut HashMap<PathBuf, (u64, String)>,
@@ -172,52 +153,7 @@ fn scan(
     }
 
     for (meta, messages) in batches {
-        #[cfg(feature = "fleet")]
-        let is_rescue =
-            !rescue_channel.is_empty() && meta.channel.eq_ignore_ascii_case(rescue_channel);
-        #[cfg(not(feature = "fleet"))]
-        let is_rescue = false;
-        if !is_rescue && !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
-            continue;
-        }
-        #[cfg(feature = "fleet")]
-        if is_rescue {
-            if !messages.is_empty() {
-                let now = chrono::Utc::now().timestamp();
-                let mut events = Vec::new();
-                {
-                    // Brief intel lock only for cross-channel line dedup; released before the
-                    // rescue lock so lock order stays intel -> rescue, never the reverse.
-                    let mut st = state.lock().unwrap();
-                    for m in &messages {
-                        if m.author.eq_ignore_ascii_case("EVE System") {
-                            continue;
-                        }
-                        if st.duplicate_line(&meta.channel, &m.timestamp, &m.author, &m.text) {
-                            continue;
-                        }
-                        let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
-                        let (author, text) = (m.author.clone(), m.text.clone());
-                        // Pure parser under catch_unwind: a bad line drops one event, never the app.
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            crate::rescue::parse_event(&author, &text, received, systems, ship_groups)
-                        })) {
-                            Ok(ev) => events.push(ev),
-                            Err(_) => {
-                                eprintln!("[watcher] rescue parser panicked, skipping: {:?}", m.text)
-                            }
-                        }
-                    }
-                }
-                if !events.is_empty() {
-                    let mut r = rescue.lock().unwrap();
-                    for ev in events {
-                        r.push_event(ev);
-                    }
-                    drop(r);
-                    any_new = true;
-                }
-            }
+        if !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
             continue;
         }
         let regions = channel_regions
@@ -503,7 +439,6 @@ mod tests {
         };
         inject.lock().unwrap().push(("Test.Intel".into(), msg("Rancer 3 reds")));
         inject.lock().unwrap().push(("Other.Channel".into(), msg("Rancer 5 reds")));
-        let rescue: RescueHandle = Default::default();
         scan(
             &std::path::PathBuf::from("/nonexistent/eve-spai-test-chatlogs"),
             &["test.intel".to_owned()],
@@ -514,9 +449,6 @@ mod tests {
             &Default::default(),
             &Default::default(),
             &Default::default(),
-            &rescue,
-            "",
-            &HashMap::new(),
             &inject,
             &egui::Context::default(),
             &mut HashMap::new(),

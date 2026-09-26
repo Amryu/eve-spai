@@ -330,6 +330,31 @@ fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// `bind` opens the advanced part with an address being typed, which is where the field says whether
 /// it is bound, waiting or holding something that is not an address.
+/// The whole settings column, with fleet command locked or unlocked.
+#[cfg(feature = "fleet")]
+fn fleet_lock_scene(name: &'static str, unlocked: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [980.0, 3400.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Settings;
+            a.settings.eve_logs_dir = "/fixture/EVE/logs".to_owned();
+            a.settings.eve_settings_dir = "/fixture/EVE/settings".to_owned();
+            a.settings.fleet_enabled = true;
+            if unlocked {
+                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock {
+                    verified_at: chrono::Utc::now().timestamp(),
+                    command_group: "SC".into(),
+                });
+            }
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 fn web_settings_scene_cfg(name: &'static str, size: [f32; 2], bind: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -881,6 +906,8 @@ fn jabber_sidebar_scene_cfg(
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             *a.jabber.lock().unwrap() = fixtures::jabber_state();
             a.settings.fc_rescue_enabled = rescue;
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a
         });
         app.jabber_sidebar_for_test(ui, &f, convos);
@@ -896,6 +923,7 @@ fn fleet_advert_scene(name: &'static str, size: [f32; 2], up: bool) -> Scene {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
             fixtures::open_first_fleet(&a);
@@ -986,6 +1014,7 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
             a
@@ -1012,6 +1041,7 @@ fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> 
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::fleet_presets();
             a.view = View::Fleet;
             // Traffic in both docked rooms, or the chat renders an empty box and its spacing is
@@ -1070,6 +1100,7 @@ fn fleet_detail_scene_closed(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = tab;
             // The app opens it by default, and the composition tab now leans on it for
@@ -1113,6 +1144,7 @@ fn fleet_map_scene_at(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Map;
             let (g, coords) = fixtures::fleet_map_world();
@@ -1168,6 +1200,7 @@ fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
@@ -1199,6 +1232,7 @@ fn fleet_confirm_scene(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.fleet_booted = true;
             a.fleet_confirm = Some((
                 crate::fleets::model::FleetId("fixture-fleet".to_owned()),
@@ -1229,6 +1263,9 @@ fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::rescue_presets();
             a.settings.rescue_preset = "Capital Save".to_owned();
             fixtures::seed_fleet_state(&a);
@@ -1259,6 +1296,7 @@ fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::fleet_presets();
             a.fleet_booted = true;
             a.fleet_quick_open = true;
@@ -1279,6 +1317,7 @@ fn fleet_hull_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_hulls = fixtures::fleet_hulls();
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
@@ -1303,6 +1342,7 @@ fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements =
                 crate::fleets::boosts::default_rules(46, false);
             fixtures::seed_fleet_state(&a);
@@ -1333,6 +1373,7 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             // The ping window is its own viewport in the app; rendered inline beside a dialog it
             // lands on top of it and this scene is about the dialog.
             a.settings.fleet_ping_window = false;
@@ -1396,6 +1437,7 @@ fn fleet_side_search_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::fleet_presets();
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
@@ -1420,6 +1462,7 @@ fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
             std::env::set_var("EVE_SPAI_FLEET_SEED", "/fixture/EVE/fleet-seed.json");
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
@@ -1441,6 +1484,7 @@ fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
             fixtures::record_fleet_requests(&a);
@@ -2695,6 +2739,23 @@ fn uitest_wormhole_map_side_panel_lists_the_selected_system() {
         })
         .collect();
     assert!(widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "{widths:?}");
+}
+
+/// Fleet command stays out of sight until the dashboard confirms a commander: settings offer only
+/// the sign-in, and the Fleet tab is not in the rail. Unlocked, the dashboard's own settings show.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_command_is_locked_until_the_dashboard_confirms_a_commander() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut locked = fleet_lock_scene("fleet_settings_locked", false);
+    let h = harness::build(&mut locked, false);
+    assert!(h.query_by_label_contains("Sign in to the fleet dashboard to unlock them").is_some());
+    assert!(h.query_by_label_contains("Enable the fleet dashboard").is_none(), "no fleet options before unlocking");
+    assert!(h.query_by_label("Fleet").is_none(), "no Fleet tab in the rail");
+    drop(h);
+    let mut open = fleet_lock_scene("fleet_settings_unlocked", true);
+    let h = harness::build(&mut open, false);
+    assert!(h.query_by_label_contains("Enable the fleet dashboard").is_some());
 }
 
 /// Who sent a ping and who it went to decides whether it applies to you, so the footer stays at
@@ -5240,6 +5301,7 @@ fn uitest_boss_detail_window_height_settles() {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.fleet_boss_detail = Some(
                 (0..40).map(|i| format!("   at Fleet.Check frame {i}")).collect::<Vec<_>>().join("\n"),
             );
@@ -5500,6 +5562,7 @@ fn uitest_preset_rows_are_one_width_and_stay_put() {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             // Mixed lengths and a folder: a long name must truncate rather than widen its row,
             // and an indented row must still agree with its neighbours.
             a.settings.fleet_presets = (0..6)
@@ -5984,6 +6047,7 @@ fn uitest_the_advert_shows_in_the_title_row() {
             let a = app.get_or_insert_with(|| {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fleet_enabled = true;
+                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
                 a.view = View::Fleet;
                 fixtures::seed_fleet_state(&a);
                 fixtures::open_first_fleet(&a);
@@ -6042,6 +6106,9 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fc_rescue_enabled = true;
                 a.settings.fleet_enabled = true;
+                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+                a.settings.fleet_enabled = true;
+                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
                 a.settings.fleet_presets = fixtures::rescue_presets();
                 a.settings.rescue_preset = "Capital Save".to_owned();
                 fixtures::seed_fleet_state(&a);
@@ -6102,6 +6169,7 @@ fn uitest_a_preset_name_can_repeat_across_folders() {
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
     a.settings.fleet_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
     fixtures::seed_fleet_state(&a);
     let save = |a: &mut crate::app::SpaiApp, label: &str, folder: &str| {
         a.fleet_apply_form_for_test(FormAct {
@@ -6152,6 +6220,9 @@ fn uitest_the_rescue_lists_every_capital_save_preset() {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             let cap = |folder: &str, label: &str, channel: i32| crate::settings::FleetPreset {
                 label: label.to_owned(),
                 folder: folder.to_owned(),
@@ -6231,6 +6302,7 @@ fn uitest_presets_and_folders_reorder_by_dragging() {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             let p = |folder: &str, label: &str| crate::settings::FleetPreset {
                 label: label.to_owned(),
                 folder: folder.to_owned(),
@@ -6338,6 +6410,9 @@ fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::rescue_presets();
             a.settings.rescue_preset = "Capital Save".to_owned();
             // The template names the op, so the stop-gap draft says which op it is for.
@@ -6406,6 +6481,7 @@ fn uitest_starting_a_fleet_opens_it() {
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
     a.settings.fleet_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
     fixtures::seed_fleet_state(&a);
     fixtures::open_fleet_start(&a);
     {
@@ -6446,6 +6522,7 @@ fn uitest_join_comms_is_not_offered_on_your_own_fleet() {
             let a = app.get_or_insert_with(|| {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fleet_enabled = true;
+                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
                 a.view = View::Fleet;
                 fixtures::seed_fleet_state(&a);
                 fixtures::open_first_fleet(&a);
@@ -6495,6 +6572,7 @@ fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
             fixtures::seed_fleet_state(&a);
@@ -6530,6 +6608,7 @@ fn uitest_a_name_search_waits_for_the_typing_to_pause() {
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
     a.settings.fleet_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
     fixtures::seed_fleet_state(&a);
     for typed in ["amr", "amry", "amryu", "amryu a", "amryu al"] {
         a.fleet_apply_form_for_test(FormAct {

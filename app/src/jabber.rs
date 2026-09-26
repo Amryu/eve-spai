@@ -180,6 +180,8 @@ pub struct JabberNotifyCfg {
     pub ping_volume: f32,
     pub msg_volume: f32,
     pub mention_volume: f32,
+    pub delve911_sound: String,
+    pub delve911_volume: f32,
     pub mention_names: Vec<String>,
     pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
@@ -1047,9 +1049,12 @@ fn handle_event(
             if !delayed && !own && !stand_down {
                 let local = room.split('@').next().unwrap_or(&room);
                 if local.eq_ignore_ascii_case("delve911") {
-                    let sound_on = state.lock().unwrap().notify_cfg.sound_enabled;
+                    let (sound_on, spec, vol) = {
+                        let s = state.lock().unwrap();
+                        (s.notify_cfg.sound_enabled, s.notify_cfg.delve911_sound.clone(), s.notify_cfg.delve911_volume)
+                    };
                     if sound_on {
-                        crate::sound::play_delve911_alert();
+                        crate::sound::play_delve911_alert(&spec, vol);
                     }
                 }
             }

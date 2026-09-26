@@ -45,7 +45,7 @@ impl SpaiApp {
     /// rescue with no error anywhere. Both are pinned: always joined, never removable.
     pub(crate) fn jabber_rescue_rooms(&self) -> Vec<String> {
         #[cfg(feature = "fleet")]
-        if self.settings.fc_rescue_enabled {
+        if self.rescue_on() {
             return [
                 goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"),
                 goon_jid(
@@ -189,6 +189,8 @@ impl SpaiApp {
             st.notify_cfg.ping_volume = self.settings.jabber_ping_volume;
             st.notify_cfg.msg_volume = self.settings.jabber_msg_volume;
             st.notify_cfg.mention_volume = self.settings.jabber_mention_volume;
+            st.notify_cfg.delve911_sound = self.settings.sound_delve911.clone();
+            st.notify_cfg.delve911_volume = self.settings.sound_delve911_volume;
             st.notify_cfg.mention_names = self.mention_names();
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
@@ -245,6 +247,7 @@ impl SpaiApp {
             return;
         }
         let mut changed = false;
+        let mut go_sounds = false;
         let keep = Self::dialog_viewport(
             ctx,
             "jabber_alerts_window",
@@ -253,44 +256,10 @@ impl SpaiApp {
             |ui| {
               egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("snd").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                    changed |= ui
-                        .checkbox(&mut self.settings.jabber_sound_enabled, "Notification sounds")
-                        .changed();
-                    ui.end_row();
-                    let msg_vol = self.settings.jabber_msg_volume;
-                    let ping_vol = self.settings.jabber_ping_volume;
-                    let mention_vol = self.settings.jabber_mention_volume;
-                    ui.label("Message sound");
-                    changed |= sound_picker(ui, "jabber_msg", false, &mut self.settings.jabber_msg_sound, msg_vol);
-                    ui.end_row();
-                    ui.label("Message volume");
-                    changed |= volume_slider(ui, &mut self.settings.jabber_msg_volume);
-                    ui.end_row();
-                    ui.label("Default ping sound");
-                    changed |= sound_picker(ui, "jabber_ping", false, &mut self.settings.jabber_ping_sound, ping_vol);
-                    ui.end_row();
-                    ui.label("Fleet ping volume");
-                    changed |= volume_slider(ui, &mut self.settings.jabber_ping_volume);
-                    ui.end_row();
-                    ui.label("Mention sound");
-                    changed |= sound_picker(ui, "jabber_mention", false, &mut self.settings.jabber_mention_sound, mention_vol);
-                    ui.end_row();
-                    ui.label("Mention volume");
-                    changed |= volume_slider(ui, &mut self.settings.jabber_mention_volume);
-                    ui.end_row();
                     ui.label("");
-                    // At body size this line is wider than the dialog, and the grid cell it sits
-                    // in imposes no wrap width of its own.
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(
-                                "presets: horn · chime · beep · sweep · info · warning · danger · \
-                                 critical · off, or a file path",
-                            )
-                            .weak(),
-                        )
-                        .wrap(),
-                    );
+                    if ui.link("Sounds and their volume are under Settings, Sounds").clicked() {
+                        go_sounds = true;
+                    }
                     ui.end_row();
                     ui.label("Mention words");
                     if ui
@@ -440,6 +409,9 @@ impl SpaiApp {
               });
             },
         );
+        if go_sounds {
+            self.view = crate::nav::View::Settings;
+        }
         if !keep {
             self.ping_rules_open = false;
             self.ping_rule_editing = None;
@@ -459,7 +431,6 @@ impl SpaiApp {
             return;
         }
         let mut changed = false;
-        let global_ping_vol = self.settings.jabber_ping_volume;
         let keep = Self::dialog_viewport(
             ctx,
             "ping_rule_editor",
@@ -513,27 +484,7 @@ impl SpaiApp {
                         changed |= ui.checkbox(&mut r.push, "Push").changed();
                     });
                 });
-                ui.add_enabled_ui(!r.suppress && r.notify, |ui| {
-                    let eff_vol = r.volume.unwrap_or(global_ping_vol);
-                    ui.horizontal(|ui| {
-                        ui.label("Sound");
-                        changed |= sound_picker(ui, ("ping_rule", i), true, &mut r.sound, eff_vol);
-                    });
-                    ui.horizontal(|ui| {
-                        let mut custom = r.volume.is_some();
-                        if ui
-                            .checkbox(&mut custom, "Custom volume")
-                            .on_hover_text("Override the global fleet-ping volume for this rule")
-                            .changed()
-                        {
-                            r.volume = if custom { Some(global_ping_vol) } else { None };
-                            changed = true;
-                        }
-                        if let Some(v) = r.volume.as_mut() {
-                            changed |= volume_slider(ui, v);
-                        }
-                    });
-                });
+                ui.label(egui::RichText::new("The rule's sound is set under Settings, Sounds.").weak());
               }
                 ui.add_space(8.0);
                 ui.separator();

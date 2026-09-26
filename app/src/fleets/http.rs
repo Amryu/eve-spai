@@ -1141,8 +1141,7 @@ mod boot_probe {
             let p = std::env::var("SPAI_SETTINGS_JSON").expect("SPAI_SETTINGS_JSON");
             serde_json::from_str(&std::fs::read_to_string(p).expect("read")).expect("parse")
         };
-        println!("fleet_live={} creds_present={}", settings.fleet_live,
-                 crate::fleets::creds::has());
+        println!("creds_present={}", crate::fleets::creds::has());
         let disk = crate::fleets::seed::load();
         println!("seed::load -> placeholder={} logi={:?}", disk.placeholder,
                  disk.logi_channels.iter().map(|c| c.name.as_str()).take(3).collect::<Vec<_>>());
