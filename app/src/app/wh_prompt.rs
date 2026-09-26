@@ -17,14 +17,14 @@ pub(crate) struct Pending {
     pub(crate) certain: bool,
     /// The types that could have connected the two systems.
     pub(crate) candidates: Vec<&'static str>,
-    /// Of those, the ones that can only have sat in `to`, with their K162 in `from`.
-    reverse_only: Vec<&'static str>,
     /// The entry recorded for it already, for a certain hole.
     pub(crate) row: Option<i64>,
     /// The user said a possible hole was one.
     pub(crate) confirmed: bool,
     /// The hull it was passed in, when that hull is one holes are rolled with.
     pub(crate) rolling_hull: Option<String>,
+    /// The signatures were filled in from saved scans once already; not again over the user.
+    sigs_filled: bool,
     sig_here: String,
     sig_there: String,
     wh_type: String,
@@ -41,8 +41,6 @@ impl Pending {
         let mut candidates: Vec<&'static str> = cands.iter().map(|c| c.code).collect();
         candidates.sort_unstable();
         candidates.dedup();
-        let reverse_only: Vec<&'static str> =
-            candidates.iter().copied().filter(|code| cands.iter().all(|c| c.code != *code || c.reverse)).collect();
         let picked = [wh_type.as_str()];
         let sizes = crate::wormholes::sizes_for(if wh_type.is_empty() { &candidates } else { &picked });
         Pending {
@@ -52,17 +50,18 @@ impl Pending {
             at,
             certain,
             candidates,
-            reverse_only,
             row: None,
             confirmed: false,
             rolling_hull: None,
+            sigs_filled: false,
             sig_here: String::new(),
             sig_there: String::new(),
             wh_type,
             // One size is all a known type can be.
             size: (sizes.len() == 1).then(|| sizes[0]),
-            life: None,
-            mass: None,
+            // The usual state of a hole someone just went through; one click to change.
+            life: Some(Life::UnderDay),
+            mass: Some(Mass::Fresh),
             rolled: false,
             note: String::new(),
         }
@@ -77,10 +76,40 @@ const ROLLING_HULLS: [i64; 3] = [19_744, 641, 47_466];
 /// How long a probe scanner copy on the clipboard is offered as signature choices.
 const PROBE_SCAN_FOR: std::time::Duration = std::time::Duration::from_secs(900);
 
+/// Between a drifter system and k-space the hole is that drifter's own type (C414 for Conflux),
+/// whichever way it is taken. Filled in, and still changeable.
+fn drifter_type(geo: &crate::geo::Systems, p: &mut Pending) {
+    let kspace = |id: i64| geo.info_of(id).is_some_and(|i| crate::whdata::class_of(id, i.security, &i.region).is_kspace());
+    let code = match (crate::whdata::drifter_code(p.from), crate::whdata::drifter_code(p.to)) {
+        (Some(c), None) if kspace(p.to) => c,
+        (None, Some(c)) if kspace(p.from) => c,
+        _ => return,
+    };
+    p.wh_type = code.to_owned();
+    if !p.candidates.contains(&code) {
+        p.candidates.insert(0, code);
+    }
+    let sizes = crate::wormholes::sizes_for(&[code]);
+    p.size = (sizes.len() == 1).then(|| sizes[0]);
+}
+
+/// A hole type as entered, or `None` for none or K162: K162 is the far end of any hole, so naming it
+/// says nothing about which kind this one is.
+pub(crate) fn known_type(entered: &str) -> Option<String> {
+    let t = entered.trim().to_uppercase();
+    (!t.is_empty() && t != "K162").then_some(t)
+}
+
 /// The first three letters of a signature, as a scout names it.
+/// A signature as the form writes it: "ABC-123" in full when the digits are known, else "ABC".
 fn sig_id(s: &str) -> Option<String> {
-    let letters: String = s.chars().filter(|c| c.is_ascii_alphabetic()).take(3).collect::<String>().to_uppercase();
-    (letters.len() == 3).then_some(letters)
+    let s = s.trim().to_uppercase();
+    let letters: String = s.chars().filter(|c| c.is_ascii_alphabetic()).take(3).collect();
+    if letters.len() != 3 {
+        return None;
+    }
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).take(3).collect();
+    Some(if digits.len() == 3 { format!("{letters}-{digits}") } else { letters })
 }
 
 impl SpaiApp {
@@ -120,13 +149,31 @@ impl SpaiApp {
                 last_jump: m.last_jump,
             };
             let clones = self.wh_clones.lock().unwrap().get(&t.character).cloned().unwrap_or_default();
-            match crate::whdetect::classify(&t, &geo, &clones) {
+            let verdict = crate::whdetect::classify(&t, &geo, &clones);
+            // A hole already saved with what the user knows about it needs nothing more, whichever
+            // way it is taken: note the jump and ask nothing.
+            if matches!(verdict, Verdict::Hole(_) | Verdict::Possible(_)) {
+                let known = self.store.as_ref().and_then(|s| s.wormhole_between(t.from, t.to)).filter(|w| {
+                    w.signature.is_some() || w.dest_signature.is_some() || w.wh_type.is_some() || w.life.is_some() || w.mass.is_some()
+                });
+                if let (Some(w), Some(store)) = (known, &self.store) {
+                    store.audit_wormhole(&w.uid, &t.character, Source::Auto, &[("jumped", format!("{} to {}", t.from, t.to))]);
+                    continue;
+                }
+            }
+            match verdict {
                 Verdict::Hole(c) => {
                     let mut p = Pending::new(t.character.clone(), t.from, t.to, t.at, true, c);
                     p.rolling_hull = rolling_hull;
+                    drifter_type(&geo, &mut p);
                     let entry = self.wh_entry(&geo, &p);
                     if let Some(store) = &self.store {
-                        let id = store.upsert_wormhole(&entry);
+                        // One hole whichever way it is taken: a hole already joining the two
+                        // systems is the one to fill in, not a second one pointing back.
+                        let id = match store.wormhole_between(t.from, t.to) {
+                            Some(w) => w.id,
+                            None => store.upsert_wormhole(&entry),
+                        };
                         if let Some(row) = store.wormhole_by_id(id) {
                             store.audit_wormhole(&row.uid, &p.character, Source::Auto, &[("jumped", format!("{} to {}", t.from, t.to))]);
                         }
@@ -141,6 +188,8 @@ impl SpaiApp {
                     }
                     let mut p = Pending::new(t.character, t.from, t.to, t.at, false, c);
                     p.rolling_hull = rolling_hull;
+                    drifter_type(&geo, &mut p);
+                    p.row = self.store.as_ref().and_then(|s| s.wormhole_between(t.from, t.to)).map(|w| w.id);
                     self.wh_queue(p);
                 }
                 Verdict::Explained(_) => {}
@@ -157,23 +206,19 @@ impl SpaiApp {
 
     /// The entry a pending jump makes, from what the user has filled in so far.
     fn wh_entry(&self, geo: &crate::geo::Systems, p: &Pending) -> Wormhole {
-        let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_uppercase());
         let drifter = matches!(
             geo.info_of(p.to).map(|i| crate::whdata::class_of(p.to, i.security, &i.region)),
             Some(crate::whdata::Class::Drifter(_))
         );
         let now = chrono::Utc::now().timestamp();
         let observed = (p.life.is_some() || p.mass.is_some()).then_some(now);
-        // A type that only opens on the far side leaves its K162 on this one.
-        let (here_type, far_type) = match text(&p.wh_type) {
-            Some(t) if p.reverse_only.iter().any(|r| r.eq_ignore_ascii_case(&t)) => (Some("K162".to_owned()), Some(t)),
-            t => (t, None),
-        };
+        // One type per hole, whichever side it was read on; K162 only means "not known".
+        let here_type = known_type(&p.wh_type);
         Wormhole {
             system_id: p.from,
             signature: sig_id(&p.sig_here),
             wh_type: here_type,
-            dest_wh_type: far_type,
+            dest_wh_type: None,
             dest: crate::app::wormholes_ui::dest_class(geo, p.to),
             dest_system_id: Some(p.to),
             dest_signature: sig_id(&p.sig_there),
@@ -235,12 +280,65 @@ impl SpaiApp {
             });
         }
         let pos = self.wh_prompt_pos.unwrap_or((200.0, 200.0));
-        let probe: Vec<String> = self
+        let copied: Vec<(String, String)> = self
             .wh_probe
             .as_ref()
             .filter(|(_, at)| at.elapsed() < PROBE_SCAN_FOR)
-            .map(|(sigs, _)| sigs.iter().filter_map(|(id, _)| sig_id(id)).collect())
+            .map(|(sigs, _)| sigs.iter().filter_map(|(id, _)| Some((sig_id(id)?, "from your last probe scanner copy".to_owned()))).collect())
             .unwrap_or_default();
+        // Each side's wormhole signatures from its saved scans, then the clipboard's.
+        let (from, to) = self.wh_pending.front().map(|p| (p.from, p.to)).unwrap_or_default();
+        let saved = |system: i64| -> Vec<(String, String, String)> {
+            self.store
+                .as_ref()
+                .map(|s| s.system_sigs(system))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.group.is_empty() || s.group.to_lowercase().contains("wormhole"))
+                .filter_map(|s| Some((sig_id(&s.sig)?, s.name.clone(), s.group.clone())))
+                .collect()
+        };
+        let options = |system: i64| -> Vec<(String, String)> {
+            let mut o: Vec<(String, String)> = saved(system)
+                .into_iter()
+                .map(|(sig, name, group)| {
+                    let what = if name.is_empty() { if group.is_empty() { "not scanned yet".to_owned() } else { group } } else { name };
+                    (sig, what)
+                })
+                .collect();
+            for c in &copied {
+                if !o.iter().any(|(s, _)| *s == c.0) {
+                    o.push(c.clone());
+                }
+            }
+            o
+        };
+        let (here_opts, there_opts) = (options(from), options(to));
+        if let Some(p) = self.wh_pending.front_mut().filter(|p| !p.sigs_filled) {
+            p.sigs_filled = true;
+            let into_drifter = geo
+                .info_of(p.to)
+                .is_some_and(|i| matches!(crate::whdata::class_of(p.to, i.security, &i.region), crate::whdata::Class::Drifter(_)));
+            let pick = |sigs: Vec<(String, String, String)>, drifter: bool| -> Option<String> {
+                let holes: Vec<&(String, String, String)> = sigs.iter().filter(|s| s.2.to_lowercase().contains("wormhole")).collect();
+                if drifter {
+                    let unid: Vec<_> = holes.iter().filter(|s| s.1.to_lowercase().contains("unidentified")).collect();
+                    if let [only] = unid.as_slice() {
+                        return Some(only.0.clone());
+                    }
+                }
+                match holes.as_slice() {
+                    [only] => Some(only.0.clone()),
+                    _ => None,
+                }
+            };
+            if p.sig_here.is_empty() {
+                p.sig_here = pick(saved(from), into_drifter).unwrap_or_default();
+            }
+            if p.sig_there.is_empty() {
+                p.sig_there = pick(saved(to), false).unwrap_or_default();
+            }
+        }
         let name = |id: i64| geo.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string());
         let count = self.wh_pending.len();
         let mut act = PromptAct::None;
@@ -260,7 +358,7 @@ impl SpaiApp {
                 ontop_pin(ctx, "wh_prompt");
                 egui::CentralPanel::default().frame(egui::Frame::central_panel(&ctx.style())).show(ctx, |ui| {
                     if let Some(p) = self.wh_pending.front_mut() {
-                        act = wh_prompt_body(ui, p, count, &name, &probe);
+                        act = wh_prompt_body(ui, p, count, &name, &here_opts, &there_opts);
                     }
                 });
             },
@@ -300,8 +398,26 @@ impl SpaiApp {
         if p.rolled {
             changes.push(("rolled", "yes".to_owned()));
         }
-        let id = match p.row.and_then(|id| store.wormhole_by_id(id)) {
+        // The row the jump found is only filled in when it is this hole: never a different one's
+        // signature or far side overwritten.
+        let id = match p.row.and_then(|id| store.wormhole_by_id(id)).filter(|row| {
+            let mine = Wormhole { system_id: row.system_id, dest_system_id: Some(if row.system_id == p.from { p.to } else { p.from }), ..Default::default() };
+            let (near, far) = if row.system_id == p.from { (&entry.signature, &entry.dest_signature) } else { (&entry.dest_signature, &entry.signature) };
+            !row.conflicts(&Wormhole { signature: near.clone(), dest_signature: far.clone(), ..mine })
+        }) {
             Some(mut row) => {
+                // The row may run the other way from this jump: then this side is its far side.
+                let entry = if row.system_id == p.from {
+                    entry
+                } else {
+                    Wormhole {
+                        signature: entry.dest_signature.clone(),
+                        dest_signature: entry.signature.clone(),
+                        wh_type: entry.dest_wh_type.clone(),
+                        dest_wh_type: entry.wh_type.clone(),
+                        ..entry
+                    }
+                };
                 row.signature = entry.signature.or(row.signature);
                 row.dest_signature = entry.dest_signature.or(row.dest_signature);
                 row.wh_type = entry.wh_type.or(row.wh_type);
@@ -320,6 +436,7 @@ impl SpaiApp {
             }
             None => store.upsert_wormhole(&entry),
         };
+        store.absorb_twins(id);
         if let Some(row) = store.wormhole_by_id(id) {
             store.audit_wormhole(&row.uid, &p.character, Source::Auto, &changes);
         }
@@ -330,7 +447,7 @@ impl SpaiApp {
     }
 }
 
-enum PromptAct {
+pub(crate) enum PromptAct {
     None,
     Save,
     Skip,
@@ -338,7 +455,14 @@ enum PromptAct {
 }
 
 /// The questions for one pending jump.
-fn wh_prompt_body(ui: &mut egui::Ui, p: &mut Pending, count: usize, name: &dyn Fn(i64) -> String, probe: &[String]) -> PromptAct {
+pub(crate) fn wh_prompt_body(
+    ui: &mut egui::Ui,
+    p: &mut Pending,
+    count: usize,
+    name: &dyn Fn(i64) -> String,
+    here_opts: &[(String, String)],
+    there_opts: &[(String, String)],
+) -> PromptAct {
     use egui_phosphor::regular as icon;
     let mut act = PromptAct::None;
     let n = if count > 1 { format!(" (1 of {count})") } else { String::new() };
@@ -360,25 +484,25 @@ fn wh_prompt_body(ui: &mut egui::Ui, p: &mut Pending, count: usize, name: &dyn F
     if p.certain {
         ui.label(egui::RichText::new("Recorded as auto-detected. Add what you know:").weak());
     }
-    let sig_row = |ui: &mut egui::Ui, value: &mut String| {
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::TextEdit::singleline(value).hint_text("ABC").char_limit(7).desired_width(60.0));
-            for s in probe {
-                if ui.small_button(s.as_str()).on_hover_text("From your last probe scanner copy").clicked() {
-                    *value = s.clone();
-                }
-            }
-        });
+    // One field with the known signatures in a list beside it: a button each floods the window.
+    let sig_row = |ui: &mut egui::Ui, salt: &str, value: &mut String, opts: &[(String, String)]| {
+        crate::app::wormholes_ui::sig_field(ui, salt, value, "ABC", opts);
     };
     egui::Grid::new("wh_prompt_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label(format!("Sig in {}", name(p.from)));
-        sig_row(ui, &mut p.sig_here);
+        sig_row(ui, "wh_prompt_sig_here", &mut p.sig_here, here_opts);
         ui.end_row();
         ui.label(format!("Sig in {}", name(p.to)));
-        sig_row(ui, &mut p.sig_there);
+        sig_row(ui, "wh_prompt_sig_there", &mut p.sig_there, there_opts);
         ui.end_row();
         ui.label("Type");
-        let candidates = p.candidates.clone();
+        // The likely types first, then every other one: the guess can be wrong.
+        let mut candidates: Vec<&str> = p.candidates.clone();
+        for t in crate::whdata::types() {
+            if !candidates.contains(&t.code.as_str()) {
+                candidates.push(t.code.as_str());
+            }
+        }
         if crate::app::wormholes_ui::wh_type_picker(ui, "wh_prompt_type", 170.0, &mut p.wh_type, &candidates) {
             let sizes = crate::wormholes::sizes_for(&[p.wh_type.as_str()]);
             p.size = (sizes.len() == 1).then(|| sizes[0]);
@@ -424,9 +548,16 @@ mod tests {
 
     #[test]
     fn a_signature_is_named_by_its_three_letters() {
-        assert_eq!(sig_id("abc-123").as_deref(), Some("ABC"));
+        assert_eq!(sig_id("abc-123").as_deref(), Some("ABC-123"));
         assert_eq!(sig_id("XYZ").as_deref(), Some("XYZ"));
         assert_eq!(sig_id("ab"), None);
+    }
+
+    #[test]
+    fn k162_or_nothing_is_an_unknown_type() {
+        assert_eq!(known_type(" k162 "), None);
+        assert_eq!(known_type(""), None);
+        assert_eq!(known_type("k329"), Some("K329".into()));
     }
 
     #[test]

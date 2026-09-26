@@ -331,6 +331,10 @@ impl SpaiApp {
                     .checkbox(&mut self.settings.wh_ask, "Ask for the signature")
                     .on_hover_text("A small window beside the EVE client asks for the signature, type and state of each hole")
                     .changed();
+                changed |= ui
+                    .checkbox(&mut self.settings.wh_auto_probe, "Save probe scanner copies automatically")
+                    .on_hover_text("Copying the probe scanner saves its signatures to the system your active character is in")
+                    .changed();
                 ui.separator();
                 if ui.button(format!("{}  Sharing…", icon::USERS_THREE)).on_hover_text("Share wormholes with others, end-to-end encrypted").clicked() {
                     self.wh_share.open = true;
@@ -587,6 +591,21 @@ impl SpaiApp {
         let Some(mut form) = self.wh_form.take() else { return };
         let mut open = true;
         let mut save = false;
+        // The signatures saved for each side's system, to pick from.
+        let sigs_of = |name: &str| -> Vec<(String, String)> {
+            let Some(id) = self.systems.as_ref().and_then(|g| g.lookup(name.trim())).map(|i| i.id) else { return Vec::new() };
+            let mut list = self.store.as_ref().map(|s| s.system_sigs(id)).unwrap_or_default();
+            // Wormholes first, then what is not scanned yet, then the rest; by signature within.
+            let rank = |g: &str| if g.to_lowercase().contains("wormhole") { 0 } else if g.is_empty() { 1 } else { 2 };
+            list.sort_by(|a, b| rank(&a.group).cmp(&rank(&b.group)).then(a.sig.cmp(&b.sig)));
+            list.into_iter()
+                .map(|s| {
+                    let what = if s.name.is_empty() { if s.group.is_empty() { "not scanned yet".to_owned() } else { s.group } } else { s.name };
+                    (s.sig, what)
+                })
+                .collect()
+        };
+        let (here_sigs, there_sigs) = (sigs_of(&form.system), sigs_of(&form.dest));
         egui::Window::new(if form.id.is_some() { "Edit wormhole" } else { "Add wormhole" })
             .open(&mut open)
             .collapsible(false)
@@ -597,12 +616,12 @@ impl SpaiApp {
                     ui.add(egui::TextEdit::singleline(&mut form.system).desired_width(200.0));
                     ui.end_row();
                     ui.label("Signature");
-                    ui.add(egui::TextEdit::singleline(&mut form.sig).hint_text("ABC-123").desired_width(200.0));
+                    sig_field(ui, "wh_form_sig", &mut form.sig, "ABC-123", &here_sigs);
                     ui.end_row();
                     ui.label("Type");
                     let codes: Vec<&str> = crate::whdata::types().iter().map(|t| t.code.as_str()).collect();
                     if wh_type_picker(ui, "wh_form_type", 200.0, &mut form.wh_type, &codes) {
-                        // A known type decides the size; it can still be corrected below.
+                        // A type's size is fixed by its jump mass; it can still be corrected below.
                         let sizes = crate::wormholes::sizes_for(&[form.wh_type.as_str()]);
                         if sizes.len() == 1 {
                             form.size = Some(sizes[0]);
@@ -610,10 +629,10 @@ impl SpaiApp {
                     }
                     ui.end_row();
                     ui.label("Leads to");
-                    ui.add(egui::TextEdit::singleline(&mut form.dest).hint_text("system, if known").desired_width(200.0));
+                    ui.add(egui::TextEdit::singleline(&mut form.dest).hint_text("system or Highsec, C5...").desired_width(200.0));
                     ui.end_row();
                     ui.label("Its signature");
-                    ui.add(egui::TextEdit::singleline(&mut form.dest_sig).hint_text("the other side").desired_width(200.0));
+                    sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "the other side", &there_sigs);
                     ui.end_row();
                     ui.label("Size");
                     // Every size stays open: a recorded type can be wrong, or be the other side's.
@@ -631,7 +650,7 @@ impl SpaiApp {
                                     ui.colored_label(
                                         crate::theme::standing::WARNING,
                                         format!(
-                                            "{} {} takes up to {}, not {}: check the type or the size",
+                                            "{} {} is always a {} hole, not {}: check the type or the size",
                                             egui_phosphor::regular::WARNING,
                                             t.code,
                                             fits.short(),
@@ -640,7 +659,7 @@ impl SpaiApp {
                                     );
                                 }
                                 _ => {
-                                    ui.label(egui::RichText::new(format!("{} takes up to {}", t.code, fits.short())).weak());
+                                    ui.label(egui::RichText::new(format!("{} is always a {} hole", t.code, fits.short())).weak());
                                 }
                             }
                         }
@@ -682,8 +701,10 @@ impl SpaiApp {
                 return;
             };
             let dest_id = if form.dest.trim().is_empty() { None } else { lookup(&form.dest) };
-            if !form.dest.trim().is_empty() && dest_id.is_none() {
-                form.error = Some(format!("No system called {:?}.", form.dest.trim()));
+            // Not a system: it may be a kind of space ("Highsec", "C5", "0.0").
+            let dest_kind = dest_id.is_none().then(|| crate::wormholes::DestClass::from_words(&form.dest)).flatten();
+            if !form.dest.trim().is_empty() && dest_id.is_none() && dest_kind.is_none() {
+                form.error = Some(format!("No system or kind of space called {:?}.", form.dest.trim()));
                 self.wh_form = Some(form);
                 return;
             }
@@ -691,13 +712,14 @@ impl SpaiApp {
             let hole = crate::whdata::hole_type(&form.wh_type);
             let dest = match (dest_id, hole.map(|h| h.dest)) {
                 (Some(d), _) => geo.as_ref().map_or(crate::wormholes::DestClass::Unknown, |g| dest_class(g, d)),
+                (None, _) if dest_kind.is_some() => dest_kind.unwrap_or_default(),
                 (None, Some(crate::whdata::Dest::Class(c))) => class_dest(c),
                 _ => crate::wormholes::DestClass::Unknown,
             };
             let fresh = Wormhole {
                 system_id: sys,
                 signature: text(&form.sig),
-                wh_type: text(&form.wh_type),
+                wh_type: crate::app::wh_prompt::known_type(&form.wh_type),
                 dest,
                 dest_system_id: dest_id,
                 dest_signature: text(&form.dest_sig),
@@ -749,6 +771,7 @@ impl SpaiApp {
                     }
                     None => store.upsert_wormhole(&fresh),
                 };
+                store.absorb_twins(id);
                 if let Some(row) = store.wormhole_by_id(id) {
                     store.audit_wormhole(&row.uid, &who, Source::Manual, &changes);
                 }
@@ -801,8 +824,12 @@ pub(crate) struct WhForm {
 
 impl WhForm {
     /// A new hole behind a scanned signature.
-    pub(crate) fn at(system: String, sig: String) -> Self {
-        WhForm { system, sig, ..Default::default() }
+    pub(crate) fn at(system: String, sig: String, wh_type: Option<&str>) -> Self {
+        let wh_type = wh_type.unwrap_or_default().to_owned();
+        let size = crate::whdata::hole_type(&wh_type)
+            .filter(|t| t.jump_mass > 0)
+            .map(|t| crate::wormholes::size_for_jump_mass(t.jump_mass));
+        WhForm { system, sig, wh_type, size, ..Default::default() }
     }
 
     fn of(w: &crate::wormholes::Wormhole, geo: Option<&crate::geo::Systems>) -> Self {
@@ -812,7 +839,12 @@ impl WhForm {
             system: name(w.system_id),
             sig: w.signature.clone().unwrap_or_default(),
             wh_type: w.wh_type.clone().unwrap_or_default(),
-            dest: w.dest_system_id.map(name).unwrap_or_default(),
+            // A far side known only by its kind shows the kind, so saving keeps it.
+            dest: match w.dest_system_id {
+                Some(id) => name(id),
+                None if w.dest != crate::wormholes::DestClass::Unknown => w.dest.label().to_owned(),
+                None => String::new(),
+            },
             dest_sig: w.dest_signature.clone().unwrap_or_default(),
             size: w.size,
             mass: w.mass,
@@ -1028,4 +1060,24 @@ fn tonnes(kg: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// A signature typed in, or picked from the ones saved for that system.
+pub(crate) fn sig_field(ui: &mut egui::Ui, salt: &str, value: &mut String, hint: &str, saved: &[(String, String)]) {
+    use crate::app::SteadySelect as _;
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(if saved.is_empty() { 200.0 } else { 160.0 }));
+        if saved.is_empty() {
+            return;
+        }
+        egui::ComboBox::from_id_salt(salt).width(32.0).selected_text("").show_ui(ui, |ui| {
+            for (sig, what) in saved {
+                if ui.menu_label(value.eq_ignore_ascii_case(sig), format!("{sig}  {what}")).clicked() {
+                    *value = sig.clone();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Signatures saved for this system");
+    });
 }

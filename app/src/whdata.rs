@@ -185,12 +185,22 @@ fn load() -> Data {
     let types = raw
         .types
         .into_iter()
-        .map(|t| HoleType {
-            dest: match t.dest.as_str() {
+        .map(|t| {
+            let dest = match t.dest.as_str() {
                 "ks" => Dest::AnyKspace,
                 d => Class::parse(d).map_or(Dest::Unknown, Dest::Class),
-            },
-            src: t.src.iter().filter_map(|s| Class::parse(s)).collect(),
+            };
+            let mut src: Vec<Class> = t.src.iter().filter_map(|s| Class::parse(s)).collect();
+            // anoik lists no origin for the drifter holes; they open in k-space, by the Jove
+            // observatories, as the "Unidentified Wormhole".
+            if src.is_empty() && matches!(dest, Dest::Class(Class::Drifter(_))) {
+                src = vec![Class::Hs, Class::Ls, Class::Ns];
+            }
+            (t, dest, src)
+        })
+        .map(|(t, dest, src)| HoleType {
+            dest,
+            src,
             code: t.code,
             is_static: t.is_static,
             lifetime_h: t.lifetime_h,
@@ -278,6 +288,13 @@ pub fn drifter_for_code(code: &str) -> Option<i64> {
         Dest::Class(Class::Drifter(n)) => DRIFTERS.iter().find(|d| d.0 == n).map(|d| d.2),
         _ => None,
     }
+}
+
+/// The one hole type into drifter system `id` (C414 for Conflux), which is what any "Unidentified
+/// Wormhole" there is.
+pub fn drifter_code(id: i64) -> Option<&'static str> {
+    let n = DRIFTERS.iter().find(|d| d.2 == id)?.0;
+    DATA.types.iter().find(|t| t.dest == Dest::Class(Class::Drifter(n))).map(|t| t.code.as_str())
 }
 
 /// The drifter system a message names, as a whole word.
@@ -394,6 +411,13 @@ pub fn possible_holes(from: Class, to: Class) -> Vec<Candidate> {
 mod tests {
 
     #[test]
+    fn into_a_drifter_system_from_k_space_only_its_own_hole_fits() {
+        let c: Vec<&str> = possible_holes(Class::Ns, Class::Drifter(17)).iter().map(|c| c.code).collect();
+        assert_eq!(c, vec!["C414"], "Conflux is reached by C414 alone");
+    }
+
+
+    #[test]
     fn a_drifter_hole_is_placed_by_its_code_or_by_name() {
         assert_eq!(drifter_for_code("B735"), Some(31_000_002));
         assert_eq!(drifter_for_code("V928"), Some(31_000_003));
@@ -401,6 +425,8 @@ mod tests {
         assert_eq!(drifter_in_text("barbican hole in 1DQ1-A"), Some(31_000_002));
         assert_eq!(drifter_in_text("Redoubt, 4 jumps"), Some(31_000_006));
         assert_eq!(drifter_in_text("sentinels on gate"), None, "whole words only");
+        assert_eq!(drifter_code(31_000_004), Some("C414"), "Conflux");
+        assert_eq!(drifter_code(30_000_142), None);
     }
 
     use super::*;

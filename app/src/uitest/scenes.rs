@@ -1789,6 +1789,24 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
+    // The popup after a jump, in a system with a busy probe scan: the signatures fold into a list.
+    v.push(Scene::ui("wh_prompt_many_sigs", [400.0, 460.0], {
+        use crate::whdata::Candidate;
+        let mut p = crate::app::wh_prompt::Pending::new(
+            "Test Pilot".into(),
+            30_000_142,
+            31_000_004,
+            0,
+            true,
+            vec![Candidate { code: "C414", reverse: false }],
+        );
+        let opts: Vec<(String, String)> =
+            (0..25).map(|i| (format!("{}{}{}", (b'A' + i % 26) as char, (b'B' + i % 20) as char, (b'C' + i % 17) as char), "Unstable Wormhole".to_owned())).collect();
+        move |ui| {
+            let name = |id: i64| if id == 30_000_142 { "Jita".to_owned() } else { "Conflux".to_owned() };
+            let _ = crate::app::wh_prompt::wh_prompt_body(ui, &mut p, 1, &name, &opts, &opts);
+        }
+    }));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
     v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));
@@ -2789,19 +2807,23 @@ fn uitest_a_holes_tooltip_appears_at_the_pointer() {
     let mid = line[0].lerp(line[line.len() - 1], 0.5);
     harness.event(egui::Event::PointerMoved(mid));
     harness.run_steps(6);
-    let tip = harness
+    let (text, tip) = harness
         .root()
         .children_recursive()
-        .find(|n| {
+        .find_map(|n| {
             let a = n.accesskit_node();
-            a.label().or_else(|| a.value()).unwrap_or_default().contains("\u{2192} 1DQ1-A")
+            let text = a.label().or_else(|| a.value()).unwrap_or_default();
+            text.contains("\u{2192} 1DQ1-A").then(|| (text, a.bounding_box()))
         })
-        .and_then(|n| n.accesskit_node().bounding_box())
+        .and_then(|(t, b)| Some((t, b?)))
         .expect("a tooltip about the hole");
     let (x, y) = (mid.x as f64, mid.y as f64);
     let dx = if x < tip.x0 { tip.x0 - x } else if x > tip.x1 { x - tip.x1 } else { 0.0 };
     let dy = if y < tip.y0 { tip.y0 - y } else if y > tip.y1 { y - tip.y1 } else { 0.0 };
     assert!(dx.hypot(dy) < 60.0, "tooltip {tip:?} is far from the pointer at {mid:?}");
+    // Unwrapped: as many rows as the text has lines, none broken to fit a narrow box.
+    let lines = text.lines().count() as f64;
+    assert!(tip.y1 - tip.y0 < lines * 24.0, "{lines} lines laid out {:.0}px tall: wrapped", tip.y1 - tip.y0);
 }
 
 /// Who sent a ping and who it went to decides whether it applies to you, so the footer stays at

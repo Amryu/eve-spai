@@ -26,16 +26,41 @@ thread_local! {
 /// belongs to the whole map, and egui places and gates it for the map, not for the line.
 fn line_tip(ui: &egui::Ui, pointer: Option<egui::Pos2>, text: String) {
     let Some(at) = pointer else { return };
+    // Laid out at full width first: wrapping to whatever room is left beside the pointer is what
+    // squeezed it near the right edge.
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let text_size = ui.painter().layout_no_wrap(text.clone(), font, ui.visuals().text_color()).size();
+    let margin = egui::Frame::popup(ui.style()).total_margin().sum();
+    let size = text_size + margin + egui::vec2(2.0, 2.0);
+    let pos = tip_pos(at, size, ui.ctx().content_rect());
     egui::Area::new(ui.id().with("wh_line_tip"))
         .order(egui::Order::Tooltip)
-        .fixed_pos(at + egui::vec2(14.0, 14.0))
-        .constrain(true)
+        .fixed_pos(pos)
         .interactable(false)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(text);
+                ui.add(egui::Label::new(text).extend());
             });
         });
+}
+
+/// Below and right of the pointer, flipped to the other side on whichever axis would run off
+/// `screen`, and kept on it as a last resort.
+fn tip_pos(pointer: egui::Pos2, size: egui::Vec2, screen: egui::Rect) -> egui::Pos2 {
+    const GAP: f32 = 14.0;
+    let mut p = pointer + egui::vec2(GAP, GAP);
+    if p.x + size.x > screen.right() {
+        p.x = pointer.x - GAP - size.x;
+    }
+    if p.y + size.y > screen.bottom() {
+        p.y = pointer.y - GAP - size.y;
+    }
+    egui::pos2(p.x.clamp(screen.left(), (screen.right() - size.x).max(screen.left())), p.y.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top())))
+}
+
+/// An "Unidentified Wormhole" in a drifter system can only be that system's own hole type.
+fn unidentified_type(system: i64, name: &str) -> Option<&'static str> {
+    name.to_lowercase().contains("unidentified").then(|| whdata::drifter_code(system)).flatten()
 }
 
 fn node_size(id: i64) -> egui::Vec2 {
@@ -59,6 +84,9 @@ const GRID: f32 = 10.0;
 /// How far out of a box an edge runs before it turns.
 const STUB: f32 = 20.0;
 const MIN_ZOOM: f32 = 0.25;
+/// How long before and after a probe scanner copy the system must stay the same for the copy to
+/// be saved to it.
+const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +95,18 @@ enum SideTab {
     Info,
     Routes,
     Sigs,
+}
+
+/// A hole's type, whichever side it was read on; between a drifter system and k-space, that
+/// drifter's own type when none was entered.
+fn hole_code(w: &Wormhole) -> Option<String> {
+    let wspace = |id: i64| (31_000_000..32_000_000).contains(&id);
+    let drifter = || match (crate::whdata::drifter_code(w.system_id), w.dest_system_id) {
+        (Some(c), Some(d)) if !wspace(d) => Some(c.to_owned()),
+        (None, Some(d)) if !wspace(w.system_id) => crate::whdata::drifter_code(d).map(str::to_owned),
+        _ => None,
+    };
+    w.wh_type.clone().or_else(|| w.dest_wh_type.clone()).or_else(drifter)
 }
 
 /// The known hole behind signature `sig` in `system`, matched on its first three letters.
@@ -116,6 +156,13 @@ pub(crate) struct WhGraphView {
     sigs: Option<(i64, Vec<crate::store::SystemSig>)>,
     sigs_pruned: bool,
     sig_note: Option<String>,
+    /// When the clipboard was last looked at for a probe scan, and what it held.
+    probe_checked: Option<std::time::Instant>,
+    probe_seen: Option<u64>,
+    /// A copied scan waiting to be sure of its system, and when it was copied.
+    probe_pending: Option<(Vec<crate::wormholes::ScanSig>, std::time::Instant)>,
+    /// The active character's system and since when it has been that one.
+    probe_system: Option<(i64, std::time::Instant)>,
     /// The signature whose hole is open for changes.
     sig_edit: Option<String>,
     keep_missing: bool,
@@ -1487,11 +1534,12 @@ impl SpaiApp {
                     for w in holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)) {
                         any = true;
                         // Seen from the selected side.
-                        let (sig, ty, far, far_sig) = if w.system_id == sel {
-                            (&w.signature, &w.wh_type, w.dest_system_id, &w.dest_signature)
+                        let (sig, far, far_sig) = if w.system_id == sel {
+                            (&w.signature, w.dest_system_id, &w.dest_signature)
                         } else {
-                            (&w.dest_signature, &w.dest_wh_type, Some(w.system_id), &w.signature)
+                            (&w.dest_signature, Some(w.system_id), &w.signature)
                         };
+                        let ty = hole_code(w);
                         ui.label(sig.as_deref().unwrap_or("—"));
                         ui.label(ty.as_deref().unwrap_or("—"));
                         match far {
@@ -1657,12 +1705,16 @@ impl SpaiApp {
                         let hole = sig_hole(holes, sel, &sg.sig);
                         match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
                             Some(Some(f)) => {
-                                if ui.link(format!("{} {}", icon::ARROW_RIGHT, name(f))).clicked() {
+                                let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
+                                if ui.link(format!("{code}{} {}", icon::ARROW_RIGHT, name(f))).clicked() {
                                     select = Some(f);
                                 }
                             }
                             _ => {
-                                ui.label(if sg.name.is_empty() { "—" } else { sg.name.as_str() });
+                                match unidentified_type(sel, &sg.name) {
+                                    Some(code) => ui.label(format!("{code} \u{b7} {}", sg.name)),
+                                    None => ui.label(if sg.name.is_empty() { "—" } else { sg.name.as_str() }),
+                                };
                             }
                         }
                         ui.horizontal(|ui| {
@@ -1711,7 +1763,7 @@ impl SpaiApp {
                         let ty = if here { &mut w.wh_type } else { &mut w.dest_wh_type };
                         let mut code = ty.clone().unwrap_or_default();
                         if crate::app::wormholes_ui::wh_type_picker(ui, "wh_sig_type", 150.0, &mut code, &codes) {
-                            *ty = (!code.is_empty()).then_some(code.clone());
+                            *ty = crate::app::wh_prompt::known_type(&code);
                             if let Some(s) = crate::wormholes::sizes_for(&[code.as_str()]).first().filter(|_| !code.is_empty() && code != "K162") {
                                 w.size = Some(*s);
                             }
@@ -1763,7 +1815,13 @@ impl SpaiApp {
             self.wh_quick_save(&was, w, now);
         }
         if let Some(sig) = new_hole {
-            self.wh_form = Some(crate::app::wormholes_ui::WhForm::at(info.name.clone(), sig));
+            let wh_type = self
+                .wh_graph
+                .sigs
+                .as_ref()
+                .and_then(|(_, l)| l.iter().find(|s| s.sig == sig))
+                .and_then(|s| unidentified_type(sel, &s.name));
+            self.wh_form = Some(crate::app::wormholes_ui::WhForm::at(info.name.clone(), sig, wh_type));
         }
         if let Some(sig) = drop_sig {
             if let Some(s) = self.store.as_ref() {
@@ -1864,6 +1922,77 @@ impl SpaiApp {
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
         self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed"));
+    }
+
+    /// A probe scanner copy on the clipboard is saved to where the active character is, wormhole
+    /// space or not, without a paste.
+    pub(crate) fn poll_probe_clipboard(&mut self, ctx: &egui::Context) {
+        if !self.settings.wh_auto_probe {
+            return;
+        }
+        self.apply_probe_scan();
+        if self.wh_graph.probe_pending.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+        if self.wh_graph.probe_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200)) {
+            return;
+        }
+        self.wh_graph.probe_checked = Some(std::time::Instant::now());
+        if self.dscan_clip.is_none() {
+            self.dscan_clip = arboard::Clipboard::new().ok();
+        }
+        let Some(text) = self.dscan_clip.as_mut().and_then(|c| c.get_text().ok()) else { return };
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut h);
+            h.finish()
+        };
+        // Whatever was on the clipboard at start is an old copy, from wherever that was.
+        let first = self.wh_graph.probe_seen.is_none();
+        if self.wh_graph.probe_seen == Some(hash) {
+            return;
+        }
+        self.wh_graph.probe_seen = Some(hash);
+        if first {
+            return;
+        }
+        let scan = crate::wormholes::probe_scan(&text);
+        if !scan.is_empty() {
+            self.wh_graph.probe_pending = Some((scan, std::time::Instant::now()));
+        }
+    }
+
+    /// Saves a held probe scan once it is clear which system it belongs to: the location poller
+    /// lags a jump, so the character must have stayed put from well before the copy to well after.
+    fn apply_probe_scan(&mut self) {
+        let system = self.player.lock().unwrap().system_id;
+        if system != self.wh_graph.probe_system.map(|(s, _)| s) {
+            self.wh_graph.probe_system = system.map(|s| (s, std::time::Instant::now()));
+        }
+        let Some((_, copied)) = &self.wh_graph.probe_pending else { return };
+        let copied = *copied;
+        if copied.elapsed() < PROBE_SETTLE {
+            return;
+        }
+        let Some((scan, _)) = self.wh_graph.probe_pending.take() else { return };
+        // `since` after the copy saturates to zero, so a change after it fails this too.
+        let settled = self.wh_graph.probe_system.filter(|(_, since)| copied.duration_since(*since) >= PROBE_SETTLE);
+        let Some((system, _)) = settled else {
+            self.wh_graph.sig_note =
+                Some("A probe scan was not saved: the system changed around the time it was copied. Paste it here if it is this one.".into());
+            return;
+        };
+        let now = chrono::Utc::now().timestamp();
+        let who = {
+            let p = self.player.lock().unwrap();
+            if p.active_name.is_empty() { "me".to_owned() } else { p.active_name.clone() }
+        };
+        let Some(store) = self.store.as_ref() else { return };
+        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, true);
+        let name = self.systems.as_ref().and_then(|g| g.info_of(system)).map(|i| i.name.clone()).unwrap_or_default();
+        self.wh_graph.sigs = None;
+        self.wh_graph.sig_note = Some(format!("Probe scan of {name} saved: {added} new, {updated} updated, {removed} removed"));
     }
 
     pub(crate) fn wh_graph_reset_layout(&mut self) {
@@ -2089,6 +2218,17 @@ mod tests {
         let z = zigzag(&line, 5.0, 3.0);
         assert_eq!((z[0], *z.last().unwrap()), (line[0], line[1]));
         assert!(z.iter().any(|p| p.y > 2.0) && z.iter().any(|p| p.y < -2.0));
+    }
+
+    #[test]
+    fn a_tooltip_flips_away_from_the_screen_edges() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        let size = egui::vec2(300.0, 120.0);
+        assert_eq!(tip_pos(egui::pos2(100.0, 100.0), size, screen), egui::pos2(114.0, 114.0), "room: below right");
+        let p = tip_pos(egui::pos2(900.0, 100.0), size, screen);
+        assert!(p.x + size.x <= 900.0, "near the right edge it goes left of the pointer: {p:?}");
+        let p = tip_pos(egui::pos2(100.0, 750.0), size, screen);
+        assert!(p.y + size.y <= 750.0, "near the bottom it goes above: {p:?}");
     }
 
     #[test]

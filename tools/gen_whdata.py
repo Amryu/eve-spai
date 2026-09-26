@@ -72,6 +72,31 @@ def types_from(anoik):
     return out
 
 
+def esi_dogma(types):
+    """Masses and lifetime from the game's own type attributes, which anoik has been wrong about
+    (K329 is a 375,000 t hole, anoik says 2,000,000 t). Prints every correction."""
+    for t in types:
+        tid = t.get("type_id") or 0
+        if not tid:
+            continue
+        try:
+            d = json.loads(fetch(f"https://esi.evetech.net/latest/universe/types/{tid}/"))
+        except Exception as e:  # noqa: BLE001
+            print(f"  {t['code']}: ESI failed ({e}), keeping anoik's numbers")
+            continue
+        a = {x["attribute_id"]: x["value"] for x in d.get("dogma_attributes", [])}
+        fresh = dict(
+            jump_mass=int(a.get(1385, t["jump_mass"])),
+            total_mass=int(a.get(1383, t["total_mass"])),
+            lifetime_h=(a[1382] / 60) if 1382 in a else t["lifetime_h"],
+        )
+        changed = {k: (t[k], v) for k, v in fresh.items() if t[k] != v}
+        if changed:
+            print(f"  {t['code']}: {changed}")
+        t.update(fresh)
+    return types
+
+
 def systems_from(anoik):
     # [id, class, effect or null, [statics], sun, [planet kinds], moons], compact on purpose:
     # 2600 of them. Celestials are [group, type, ...]: 6 sun, 7 planet, 8 moon.
@@ -108,10 +133,10 @@ def main():
         attribution=(
             "Wormhole types, J-space classes, effects and statics: anoik.is. "
             "Pochven C729 spawn zones: Jambeeno (jambeeno.com), CC BY 4.0. "
-            "Masses and lifetimes of the types anoik lacks: CCP SDE."
+            "Masses and lifetimes: EVE's own type data via ESI."
         ),
         anoik_version=anoik.get("version"),
-        types=types_from(anoik),
+        types=esi_dogma(types_from(anoik)),
         systems=systems_from(anoik),
         effects=anoik.get("effects", {}),
         c729=c729,

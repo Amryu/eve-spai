@@ -100,8 +100,13 @@ pub fn spawn_location_poller(
                             docked_after: docked,
                             last_jump: None,
                         };
+                        // No jump drive or bridge works into or out of w-space (drifter systems
+                        // included), so such a move is a hole without asking for fatigue.
+                        let wspace = |id: i64| (31_000_000..32_000_000).contains(&id);
+                        let from_wspace = wspace(was.system) || wspace(sys);
                         let token = store
                             .character_by_name(&ch.name)
+                            .filter(|_| !from_wspace)
                             .filter(|c| c.scopes.split_whitespace().any(|s| s == FATIGUE_SCOPE))
                             .and_then(|c| Some((c.id, current_access_token(&store, &client_id, c.id, c.expires_at)?)));
                         match token {

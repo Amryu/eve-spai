@@ -266,6 +266,9 @@ pub struct Settings {
     /// locked without it, or once it is older than `fleets::unlock::GRACE_SECS`.
     #[serde(default)]
     pub fleet_unlock: Option<FleetUnlock>,
+    /// Save a probe scanner copy to the active character's system as soon as it is on the clipboard.
+    #[serde(default = "default_true")]
+    pub wh_auto_probe: bool,
     /// Whether the wormhole map's legend is unfolded.
     #[serde(default)]
     pub wh_legend_open: bool,
@@ -1396,6 +1399,7 @@ impl Default for Settings {
             wh_route_pins: Vec::new(),
             wh_share_target: None,
             wh_legend_open: false,
+            wh_auto_probe: true,
             fleet_unlock: None,
             sound_master_volume: 1.0,
             sound_muted: false,

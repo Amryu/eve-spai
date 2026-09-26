@@ -51,17 +51,19 @@ impl Store {
         // splits them (signatures differ); their system+dest dedup key collapses them instead.
         let special = matches!(incoming.dest, DestClass::Thera | DestClass::Turnur);
         if !special {
-            if let Some(sig) = incoming.signature.as_deref().filter(|s| !s.is_empty()) {
+            // Matched on the three letters: "ABC" and "ABC-123" are the same signature.
+            let letters = incoming.signature.as_deref().map(sig_letters).filter(|s| s.len() == 3);
+            if let Some(sig) = letters.as_deref() {
                 if let Some(mut near) = self.wormhole_where(
-                    "system_id=?1 AND signature=?2",
+                    "dead = 0 AND system_id=?1 AND upper(substr(signature,1,3))=?2",
                     params![incoming.system_id, sig],
-                ) {
+                ).filter(|n| !n.conflicts(incoming)) {
                     near.merge_from(incoming);
                     self.write_wormhole(&near);
                     return near.id;
                 }
                 if let Some(mut owner) = self.wormhole_where(
-                    "dest_system_id=?1 AND dest_signature=?2",
+                    "dead = 0 AND dest_system_id=?1 AND upper(substr(dest_signature,1,3))=?2",
                     params![incoming.system_id, sig],
                 ) {
                     owner.confirm_far(incoming);
@@ -70,13 +72,19 @@ impl Store {
                 }
             }
         }
-        let key = incoming.dedup_key();
-        if let Some(mut existing) = self.wormhole_where("dedup=?1", params![key]) {
-            existing.merge_from(incoming);
-            self.write_wormhole(&existing);
-            return existing.id;
-        }
+        let mut key = incoming.dedup_key();
         let uid = if incoming.uid.is_empty() { new_uid() } else { incoming.uid.clone() };
+        if let Some(mut existing) = self.wormhole_where("dedup=?1", params![key]) {
+            // An older row can hold a key that no longer says what it is (a signature or far side
+            // added since); a different hole under it gets a key of its own, never its fields.
+            if !special && existing.conflicts(incoming) {
+                key = format!("{key}|{uid}");
+            } else {
+                existing.merge_from(incoming);
+                self.write_wormhole(&existing);
+                return existing.id;
+            }
+        }
         let _ = self.conn.execute(
             "INSERT INTO wormholes(dedup, system_id, signature, wh_type, dest_class,
                 dest_system_id, dest_signature, dest_wh_type, size, is_drifter, reported_at,
@@ -215,7 +223,11 @@ impl Store {
         self.share_track_sigs(system_id, scan, drop_missing, now);
         let mut removed = 0;
         if drop_missing {
-            for sig in old.keys().filter(|k| !scan.iter().any(|s| &s.id == *k)) {
+            // Only kinds the paste covers: a copy with no anomalies in it (the scanner filtered to
+            // signatures, say) says nothing about the anomalies, so they stay.
+            let kinds: std::collections::HashSet<String> = scan.iter().map(|s| s.kind.to_lowercase()).collect();
+            let covered = |o: &SystemSig| kinds.contains(&o.kind.to_lowercase());
+            for sig in old.iter().filter(|(k, o)| covered(o) && !scan.iter().any(|s| &s.id == *k)).map(|(k, _)| k) {
                 self.exec_historic("DELETE FROM system_sigs WHERE system_id=?1 AND sig=?2", params![system_id, sig]);
                 removed += 1;
             }
@@ -251,6 +263,68 @@ impl Store {
 
     pub fn clear_wh_layout(&self) {
         self.exec_historic("DELETE FROM wh_layout", []);
+    }
+
+    /// A live hole joining `a` and `b`, recorded either way round.
+    pub fn wormhole_between(&self, a: i64, b: i64) -> Option<crate::wormholes::Wormhole> {
+        self.wormhole_where(
+            "dead = 0 AND ((system_id=?1 AND dest_system_id=?2) OR (system_id=?2 AND dest_system_id=?1))",
+            params![a, b],
+        )
+    }
+
+    /// Folds into hole `id` the other rows that are the same hole by signature: one entered from
+    /// the signatures tab or intel with no far side yet, or written from the far side. Their
+    /// details join `id` and the twins go, so one hole is one connection.
+    pub fn absorb_twins(&self, id: i64) {
+        let Some(mut row) = self.wormhole_by_id(id) else { return };
+        let letters = |s: &Option<String>| s.as_deref().map(sig_letters).filter(|s| s.len() == 3);
+        let (near, far) = (letters(&row.signature), letters(&row.dest_signature));
+        let mut gone = Vec::new();
+        for other in self.wormholes() {
+            if other.id == id {
+                continue;
+            }
+            let theirs = letters(&other.signature);
+            let same_way = other.system_id == row.system_id
+                && theirs.is_some() && theirs == near
+                && other.dest_system_id.is_none_or(|d| Some(d) == row.dest_system_id);
+            let other_way = Some(other.system_id) == row.dest_system_id
+                && theirs.is_some() && theirs == far
+                && other.dest_system_id.is_none_or(|d| d == row.system_id);
+            // "ABC-123" says more than "ABC".
+            let fuller = |mine: &mut Option<String>, theirs: &Option<String>| {
+                if theirs.as_ref().map_or(0, |s| s.len()) > mine.as_ref().map_or(0, |s| s.len()) {
+                    *mine = theirs.clone();
+                }
+            };
+            if same_way {
+                fuller(&mut row.signature, &other.signature);
+                row.merge_from(&other);
+            } else if other_way {
+                fuller(&mut row.dest_signature, &other.signature);
+                row.merge_from(&crate::wormholes::Wormhole {
+                    system_id: row.system_id,
+                    signature: other.dest_signature.clone(),
+                    wh_type: other.dest_wh_type.clone(),
+                    dest_system_id: Some(other.system_id),
+                    dest_signature: other.signature.clone(),
+                    dest_wh_type: other.wh_type.clone(),
+                    dest: row.dest,
+                    ..other.clone()
+                });
+            } else {
+                continue;
+            }
+            gone.push(other.id);
+        }
+        if gone.is_empty() {
+            return;
+        }
+        self.write_wormhole(&row);
+        for g in gone {
+            let _ = self.conn.execute("DELETE FROM wormholes WHERE id = ?1", params![g]);
+        }
     }
 
     pub fn wormhole_by_id(&self, id: i64) -> Option<crate::wormholes::Wormhole> {
@@ -383,4 +457,8 @@ impl Store {
             observed_at: row.get(21)?,
         })
     }
+}
+
+fn sig_letters(s: &str) -> String {
+    s.trim().chars().take(3).collect::<String>().to_uppercase()
 }

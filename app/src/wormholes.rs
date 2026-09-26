@@ -25,6 +25,20 @@ impl DestClass {
         }
     }
 
+    /// A kind of space as people write it: "Highsec", "High-Sec", "HS", "0.0", "C5", "J-space"...
+    pub fn from_words(text: &str) -> Option<DestClass> {
+        let t: String = text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+        Some(match t.as_str() {
+            "highsec" | "hisec" | "high" | "hs" | "hisek" | "highsek" => DestClass::Highsec,
+            "lowsec" | "losec" | "low" | "ls" | "losek" | "lowsek" => DestClass::Lowsec,
+            "nullsec" | "null" | "ns" | "00" | "nullsek" | "zerozero" => DestClass::Nullsec,
+            "wspace" | "jspace" | "wh" | "wormhole" | "c1" | "c2" | "c3" | "c4" | "c5" | "c6" | "c13" => DestClass::Wspace,
+            "thera" => DestClass::Thera,
+            "turnur" => DestClass::Turnur,
+            _ => return None,
+        })
+    }
+
     pub fn from_code(code: &str) -> DestClass {
         match code {
             "hs" => DestClass::Highsec,
@@ -595,6 +609,9 @@ impl Wormhole {
         });
         match sig_id {
             Some(id) if !id.is_empty() => format!("{}|sig:{}", self.system_id, id),
+            // A jumped hole knows both ends: keyed on them, not on "some hole into nullsec", which
+            // would fold it into any older hole from the same system.
+            _ if self.dest_system_id.is_some() => format!("{}|to:{}", self.system_id, self.dest_system_id.unwrap_or_default()),
             _ => format!(
                 "{}|{}|{}",
                 self.system_id,
@@ -602,6 +619,18 @@ impl Wormhole {
                 self.dest.code()
             ),
         }
+    }
+
+    /// Whether `other` cannot be this hole: its far system or its signature is a different one.
+    pub fn conflicts(&self, other: &Wormhole) -> bool {
+        let letters = |s: &Option<String>| {
+            s.as_deref().map(|s| s.trim().chars().take(3).collect::<String>().to_uppercase()).filter(|s| s.len() == 3)
+        };
+        let differ = |a: Option<String>, b: Option<String>| a.is_some() && b.is_some() && a != b;
+        self.system_id != other.system_id
+            || differ(self.dest_system_id.map(|d| d.to_string()), other.dest_system_id.map(|d| d.to_string()))
+            || differ(letters(&self.signature), letters(&other.signature))
+            || differ(letters(&self.dest_signature), letters(&other.dest_signature))
     }
 
     pub fn merge_from(&mut self, other: &Wormhole) {
@@ -736,6 +765,19 @@ fn parse_rfc3339(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_kind_of_space_reads_however_it_is_written() {
+        for w in ["Highsec", "High-Sec", "HS", "hisec"] {
+            assert_eq!(DestClass::from_words(w), Some(DestClass::Highsec), "{w}");
+        }
+        assert_eq!(DestClass::from_words("0.0"), Some(DestClass::Nullsec));
+        assert_eq!(DestClass::from_words("Low-sec"), Some(DestClass::Lowsec));
+        assert_eq!(DestClass::from_words("C5"), Some(DestClass::Wspace));
+        assert_eq!(DestClass::from_words("J-space"), Some(DestClass::Wspace));
+        assert_eq!(DestClass::from_words("1DQ1-A"), None);
+    }
+
     use super::*;
 
     fn wh(drifter: bool, reported: i64) -> Wormhole {
