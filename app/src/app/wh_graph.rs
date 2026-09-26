@@ -523,6 +523,7 @@ fn rounded(path: &[egui::Pos2], radius: f32) -> Vec<egui::Pos2> {
 }
 
 /// A position for every node, in BFS order per chain so a node comes after its parent.
+#[cfg(test)]
 pub(crate) fn auto_layout(edges: &[(i64, i64)], score: impl Fn(i64) -> i64) -> Vec<(i64, Option<i64>, egui::Pos2)> {
     auto_layout_with(edges, &[], score)
 }
