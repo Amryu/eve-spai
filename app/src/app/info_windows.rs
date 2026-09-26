@@ -262,6 +262,8 @@ impl SpaiApp {
             if ui.add_enabled(has_char, egui::Button::new("Set Destination")).clicked() {
                 self.set_destination_esi(cid.clone(), cname.clone(), id);
                 self.route_destination = Some(id);
+                // The planner's own route would hide this one, holes and all.
+                self.map_route_clear();
                 self.note_ingame_route();
             }
             if ui.add_enabled(has_char, egui::Button::new("Add Waypoint")).clicked() {

@@ -40,7 +40,7 @@ pub fn spawn_login(shared: SharedLogin, ctx: egui::Context) {
 
 fn run_parent() -> LoginStatus {
     match std::env::current_exe() {
-        Ok(exe) => super::run_login_process(&exe),
+        Ok(exe) => super::run_login_process(&super::on_disk(exe)),
         Err(e) => LoginStatus::Failed(format!("cannot find this binary: {e}")),
     }
 }

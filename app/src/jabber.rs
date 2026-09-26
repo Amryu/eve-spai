@@ -186,6 +186,7 @@ pub struct JabberNotifyCfg {
     pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
     pub muted: std::collections::BTreeMap<String, i64>,
+    pub push: crate::push::Targets,
 }
 
 /// A mention is any of `names` appearing in the body as a whole word (or whole phrase), so "seb"
@@ -262,6 +263,8 @@ fn fire_arrival_notification(
     if is_muted(&cfg.muted, key) && !(mention.is_some() && cfg.mention_ignores_mute) {
         return;
     }
+    // Only a ping rule with Push ticked pushes; unmatched pings stay on this machine.
+    let push = ping.and_then(|p| crate::pings::match_ping_rule(&cfg.ping_rules, p)).is_some_and(|r| r.push && !r.suppress);
     let (suppress, notify, sound, prio, volume) = match ping {
         Some(p) => match crate::pings::match_ping_rule(&cfg.ping_rules, p) {
             Some(r) => (
@@ -287,6 +290,12 @@ fn fire_arrival_notification(
         }
         None => (false, true, cfg.msg_sound.clone(), 0u8, cfg.msg_volume),
     };
+    if push {
+        if let Some(p) = ping {
+            let (title, body) = ping_push_text(p);
+            cfg.push.send(&title, &body, 2);
+        }
+    }
     if suppress || !notify {
         return;
     }
@@ -309,6 +318,20 @@ fn fire_arrival_notification(
             None => format!("FC: {fc}"),
         };
         crate::app::notify_os("Fleet ping", &body);
+    }
+}
+
+fn ping_push_text(p: &Ping) -> (String, String) {
+    match p {
+        Ping::Fleet { fc, doctrine, description, raw, .. } => {
+            let head = match doctrine {
+                Some(d) => format!("FC: {fc} \u{00B7} {d}"),
+                None => format!("FC: {fc}"),
+            };
+            let text = if description.trim().is_empty() { raw.trim() } else { description.trim() };
+            ("Fleet ping".to_owned(), if text.is_empty() { head } else { format!("{head}\n{text}") })
+        }
+        Ping::Plain { text, .. } => ("Ping".to_owned(), text.trim().to_owned()),
     }
 }
 

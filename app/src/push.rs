@@ -1,11 +1,36 @@
 
-pub fn pushover(token: &str, user: &str, message: &str) {
+/// Where pushes go, read from the alert settings: Pushover and ntfy, each when set up and on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Targets {
+    pushover: Option<(String, String)>,
+    ntfy: Option<(String, String, String)>,
+}
+
+impl Targets {
+    pub fn of(a: &crate::settings::AlertSettings) -> Self {
+        Targets {
+            pushover: a.push_enabled.then(|| (a.pushover_token.clone(), a.pushover_user.clone())),
+            ntfy: a.ntfy_enabled.then(|| (a.ntfy_server.clone(), a.ntfy_topic.clone(), a.ntfy_token.clone())),
+        }
+    }
+
+    pub fn send(&self, title: &str, message: &str, severity: u8) {
+        if let Some((token, user)) = &self.pushover {
+            pushover(token, user, title, message);
+        }
+        if let Some((server, topic, token)) = &self.ntfy {
+            ntfy(server, topic, token, title, message, severity);
+        }
+    }
+}
+
+pub fn pushover(token: &str, user: &str, title: &str, message: &str) {
     if token.trim().is_empty() || user.trim().is_empty() {
         return;
     }
     let token = token.trim().to_owned();
     let user = user.trim().to_owned();
-    let message = message.to_owned();
+    let (title, message) = (format!("EVE Spai - {title}"), message.to_owned());
     std::thread::spawn(move || {
         let Ok(client) = crate::http::client(15)
         else {
@@ -17,7 +42,7 @@ pub fn pushover(token: &str, user: &str, message: &str) {
                 ("token", token.as_str()),
                 ("user", user.as_str()),
                 ("message", message.as_str()),
-                ("title", "EVE Spai - intel"),
+                ("title", title.as_str()),
             ])
             .send();
     });

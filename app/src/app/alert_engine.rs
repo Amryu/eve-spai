@@ -578,6 +578,7 @@ impl AlertEngine {
                 log.drain(0..len - 50);
             }
         }
+        let push = crate::push::Targets::of(&acfg);
         for f in &fired {
             if f.sys {
                 notify(f.title.clone(), f.body.clone());
@@ -585,18 +586,8 @@ impl AlertEngine {
             if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
                 crate::sound::play_prio(&f.sound, f.sev as u8, f.volume);
             }
-            if f.push && acfg.push_enabled {
-                crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
-            }
-            if f.push && acfg.ntfy_enabled {
-                crate::push::ntfy(
-                    &acfg.ntfy_server,
-                    &acfg.ntfy_topic,
-                    &acfg.ntfy_token,
-                    &f.title,
-                    &f.text,
-                    f.sev as u8,
-                );
+            if f.push {
+                push.send(&f.title, &f.text, f.sev as u8);
             }
         }
         true

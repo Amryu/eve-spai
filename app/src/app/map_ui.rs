@@ -14,16 +14,27 @@ impl SpaiApp {
         const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
         const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
         const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-        for (i, h) in o.hops.iter().enumerate().skip(1) {
-            let (Some(&a), Some(&b)) = (pos.get(&o.hops[i - 1].id), pos.get(&h.id)) else {
+        // A J-space system has no place on this map: the hop is drawn between the k-space systems
+        // on either side of it, as a hole, rather than dropped.
+        let mut last: Option<(i64, egui::Pos2)> = None;
+        let mut through_jspace = false;
+        for h in &o.hops {
+            let Some(&b) = pos.get(&h.id) else {
+                through_jspace |= last.is_some();
                 continue;
             };
+            let Some((prev_id, a)) = last.replace((h.id, b)) else { continue };
+            let hole = std::mem::take(&mut through_jspace) || (h.kind == 0 && self.leg_kind(prev_id, h.id, false) == Leg::Hole);
+            if hole {
+                dashed_flow(painter, a, b, Leg::Hole.color(), phase);
+                continue;
+            }
             match h.kind {
                 2 | 1 => {
                     let (ca, cb) = if h.kind == 2 {
                         (PICK_JUMP, PICK_JUMP)
                     } else {
-                        self.bridge_colors(o.hops[i - 1].id, h.id, PICK_BRIDGE)
+                        self.bridge_colors(prev_id, h.id, PICK_BRIDGE)
                     };
                     // Dashed and crawling like the gates and like the browser's: an arc drawn
                     // solid while the rest of the route moves reads as a different kind of thing.
@@ -435,6 +446,8 @@ impl SpaiApp {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
                 self.set_destination_esi(cid, self.active_character.clone(), sid);
                 self.route_destination = Some(sid);
+                // The planner's own route would hide this one, holes and all.
+                self.map_route_clear();
                 self.ingame_route = true;
                 ui.close();
             }

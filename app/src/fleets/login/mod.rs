@@ -72,6 +72,16 @@ pub use webview::{run_child, spawn_login};
 )))]
 pub use other::{run_child, spawn_login};
 
+/// The binary at `exe`'s path now. Linux names a running binary that was replaced since it started
+/// "<path> (deleted)", which cannot be started; the file now at `<path>` can.
+pub(crate) fn on_disk(exe: std::path::PathBuf) -> std::path::PathBuf {
+    let s = exe.to_string_lossy();
+    match s.strip_suffix(" (deleted)") {
+        Some(live) if std::path::Path::new(live).exists() => std::path::PathBuf::from(live),
+        _ => exe,
+    }
+}
+
 /// How long a sign-in window may stay open.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 

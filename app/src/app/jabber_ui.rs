@@ -195,6 +195,7 @@ impl SpaiApp {
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
             st.notify_cfg.muted = self.settings.jabber_muted.clone();
+            st.notify_cfg.push = crate::push::Targets::of(&self.settings.alerts);
             std::mem::take(&mut st.notify)
         };
         if events.is_empty() {
