@@ -552,6 +552,23 @@ fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// The wormhole table with rows in it. Headless populates no cache, so `view_wormholes` only ever
 /// shows the empty state and the column headers never render.
 fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    wormholes_scene(name, size, true, None)
+}
+
+/// The same holes on the wormhole map, with `selected` open in the side panel.
+fn wormholes_scene(name: &'static str, size: [f32; 2], table: bool, selected: Option<i64>) -> Scene {
+    wormholes_focus_scene(name, size, table, selected, None)
+}
+
+/// Focused on `focus`, with 319-3D pinned: it is off the hole chain, so it hangs off the nearest
+/// k-space exit by its gate jumps.
+fn wormholes_focus_scene(
+    name: &'static str,
+    size: [f32; 2],
+    table: bool,
+    selected: Option<i64>,
+    focus: Option<i64>,
+) -> Scene {
     use crate::wormholes::{DestClass, ShipSize, Source, Wormhole};
     harness::scratch_profile();
     let now = fixtures::now();
@@ -571,6 +588,7 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
             explicit_expiry: Some(now + 6 * 3600),
             source: Source::EveScout,
             updated_at: now - 600,
+            ..Default::default()
         },
         Wormhole {
             id: 2,
@@ -587,6 +605,7 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
             explicit_expiry: None,
             source: Source::Intel,
             updated_at: now - 1_800,
+            ..Default::default()
         },
         Wormhole {
             id: 3,
@@ -603,8 +622,23 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
             explicit_expiry: Some(now + 1_800),
             source: Source::Manual,
             updated_at: now - 90,
+            ..Default::default()
         },
     ];
+    let mut holes = holes;
+    holes.push(Wormhole {
+        id: 4,
+        system_id: 31_000_005,
+        signature: Some("THR-001".into()),
+        wh_type: Some("Q063".into()),
+        dest: DestClass::Highsec,
+        dest_system_id: Some(30_000_142),
+        dest_signature: Some("JIT-002".into()),
+        reported_at: now - 300,
+        source: Source::EveScout,
+        updated_at: now - 300,
+        ..Default::default()
+    });
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
         let app = app.get_or_insert_with(|| {
@@ -612,10 +646,43 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
             a.view = View::Wormholes;
             a.systems = Some(fixtures::systems());
             a.wh_cache = holes.clone();
+            a.wh_graph.table = table;
+            a.wh_graph.selected = selected;
+            if name.ends_with("_sigs") {
+                let sig = |sig: &str, kind: &str, group: &str, name: &str, ago: i64| crate::store::SystemSig {
+                    sig: sig.into(),
+                    kind: kind.into(),
+                    group: group.into(),
+                    name: name.into(),
+                    added_at: now - ago,
+                    updated_at: now - 20,
+                    who: "Kasper Stad".into(),
+                };
+                a.wh_graph.show_sigs(
+                    30_004_759,
+                    vec![
+                        sig("WKR-862", "Cosmic Anomaly", "Combat Site", "Angel Haven", 20),
+                        sig("ABC-123", "Cosmic Signature", "Wormhole", "Unstable Wormhole", 600),
+                        sig("GIN-924", "Cosmic Signature", "Data Site", "Unsecured Frontier Server", 3_700),
+                        sig("XYZ-999", "Cosmic Signature", "", "", 90_000),
+                    ],
+                );
+            }
+            if name.ends_with("_sharing") {
+                a.wh_share.open = true;
+            }
+            if name.ends_with("_zoomed_out") {
+                a.wh_graph.set_zoom(0.35);
+            }
+            if focus.is_some() {
+                a.wh_graph.set_focus(focus);
+                a.settings.wh_route_pins = vec!["319-3D".into()];
+            }
             a
         });
         app.root_chrome(ui);
         app.root_central(ui, None);
+        app.wh_share_window(ui.ctx());
     })
 }
 
@@ -1653,6 +1720,13 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
+    v.push(wormholes_scene("view_wormholes_map", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
+    v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));
     v.push(map_layers_scene("map_layers", [320.0, 800.0]));
     // One bridge per zone pair, drawn with the map's own helpers: both ways, one-way with its
     // arrow clear of the dot, excluded, and a crawling route hop.
@@ -1964,7 +2038,8 @@ fn uitest_layout() {
 #[test]
 #[ignore = "renders every scene to target/uishots; run with --ignored"]
 fn uitest_screenshots() {
-    for mut scene in all() {
+    let only = std::env::var("SPAI_SHOT_ONLY").unwrap_or_default();
+    for mut scene in all().into_iter().filter(|s| s.name.contains(only.as_str())) {
         let name = scene.name;
         let mut harness = harness::build(&mut scene, true);
         harness::shot(&mut harness, name);
@@ -2592,6 +2667,30 @@ fn uitest_wormhole_table_text_is_body_size() {
         drifter >= cell - 0.5,
         "the drifter tag is {drifter:.1}px tall against a {cell:.1}px cell"
     );
+}
+
+/// The selected system's holes and routes sit beside the map, readable at body size.
+#[test]
+fn uitest_wormhole_map_side_panel_lists_the_selected_system() {
+    let mut scene = wormholes_scene("wormhole_map_probe", [1280.0, 800.0], false, Some(30_004_759));
+    let harness = harness::build(&mut scene, false);
+    let body = label_height(&harness, "Connections");
+    assert!(label_height(&harness, "ABC-123") >= body - 0.5);
+    // Info, Routes and Signatures are tabs of one width.
+    use egui_kittest::kittest::NodeT as _;
+    let widths: Vec<f64> = ["Info", "Routes", "Signatures"]
+        .iter()
+        .map(|t| {
+            let n = harness
+                .root()
+                .children_recursive()
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button && n.accesskit_node().label().as_deref() == Some(*t))
+                .unwrap_or_else(|| panic!("no {t} tab"));
+            let b = n.accesskit_node().bounding_box().unwrap();
+            b.x1 - b.x0
+        })
+        .collect();
+    assert!(widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "{widths:?}");
 }
 
 /// Who sent a ping and who it went to decides whether it applies to you, so the footer stays at
@@ -6803,9 +6902,17 @@ fn uitest_jabber_resize_keeps_the_bottom_message() {
 #[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_picker_fills_the_sidebar_and_holds() {
+    for name in ["fleet_map", "fleet_map_pilot"] {
+        picker_holds(name);
+    }
+}
+
+/// `fleet_map_pilot` follows a pilot, which puts a ✕ beside the picker: the row that grew.
+#[cfg(feature = "fleet")]
+fn picker_holds(name: &str) {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
-    let mut scene = all().into_iter().find(|s| s.name == "fleet_map").expect("scene");
+    let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
     let mut harness = harness::build(&mut scene, false);
     let picker = |h: &egui_kittest::Harness<'_>| {
         h.root()
@@ -6827,7 +6934,31 @@ fn uitest_fleet_map_picker_fills_the_sidebar_and_holds() {
     let first = picker(&harness);
     harness.run_steps(20);
     let later = picker(&harness);
-    assert!((later.x1 - later.x0 - (first.x1 - first.x0)).abs() < 0.5, "the picker grew: {first:?} -> {later:?}");
+    assert!((later.x1 - later.x0 - (first.x1 - first.x0)).abs() < 0.5, "{name}: the picker grew: {first:?} -> {later:?}");
     let (left, right) = tabs(&harness);
-    assert!((later.x0 - left).abs() < 2.0 && (right - later.x1).abs() < 8.0, "the picker does not span the sidebar: {later:?} vs {left}..{right}");
+    assert!((later.x0 - left).abs() < 2.0, "{name}: the picker does not start at the sidebar's edge: {later:?} vs {left}");
+    assert!(right - later.x1 < 60.0 && later.x1 <= right + 0.5, "{name}: the picker does not reach across: {later:?} vs {right}");
+}
+
+/// The hole type list is long, so its combo box filters as you type and Enter takes the match.
+#[test]
+fn uitest_wormhole_type_picker_is_searchable() {
+    use egui_kittest::kittest::Queryable as _;
+    let picked = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let out = picked.clone();
+    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(400.0, 500.0)).build_ui(move |ui| {
+        let codes: Vec<&str> = crate::whdata::types().iter().map(|t| t.code.as_str()).collect();
+        let mut v = out.lock().unwrap();
+        crate::app::wormholes_ui::wh_type_picker(ui, "probe", 200.0, &mut v, &codes);
+    });
+    harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+    harness.run();
+    assert!(harness.query_by_label_contains("K162").is_some(), "the full list shows first");
+    harness.get_by_role(egui::accesskit::Role::TextInput).type_text("H296");
+    harness.run();
+    assert!(harness.query_by_label_contains("K162").is_none(), "other codes are filtered out");
+    assert!(harness.query_by_label_contains("H296").is_some());
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(*picked.lock().unwrap(), "H296");
 }

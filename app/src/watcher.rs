@@ -352,6 +352,7 @@ fn scan(
                             explicit_expiry: report.wh_eol.then_some(received + 4 * 3600),
                             source: crate::wormholes::Source::Intel,
                             updated_at: received,
+                            ..Default::default()
                         };
                         if let Some(store) = db {
                             store.upsert_wormhole(&wh);

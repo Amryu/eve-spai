@@ -132,6 +132,10 @@ impl SpaiApp {
             self.needs_save = true;
             replan = true;
         }
+        if self.map_route_kind != "jump" && self.settings.route_via_wormholes && self.wh_route_kinds_ui(ui) {
+            self.needs_save = true;
+            replan = true;
+        }
 
         if self.map_route_kind == "jump" {
             egui::CollapsingHeader::new(format!(

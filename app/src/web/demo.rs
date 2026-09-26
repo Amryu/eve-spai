@@ -364,6 +364,7 @@ pub fn detail() -> super::Detail {
         explicit_expiry: None,
         source: crate::wormholes::Source::Manual,
         updated_at: 0,
+        ..Default::default()
     }];
     st.sov_upgrades = vec![crate::settings::SovUpgrade {
         system: "1DQ1-A".to_owned(),

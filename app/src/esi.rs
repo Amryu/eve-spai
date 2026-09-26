@@ -20,20 +20,81 @@ pub struct Player {
 
 pub type SharedPlayer = Arc<Mutex<Player>>;
 
-pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui::Context) {
+/// A character's system changed between two polls: where from, where to, and the ship and dock
+/// state either side. What made the change is decided elsewhere (`whdetect`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Moved {
+    pub character: String,
+    pub from: i64,
+    pub to: i64,
+    pub at: i64,
+    pub gap_secs: i64,
+    pub ship_before: Option<i64>,
+    pub ship_after: Option<i64>,
+    pub docked_after: bool,
+}
+
+pub type SharedMoves = Arc<Mutex<Vec<Moved>>>;
+
+/// Per character: the system of the home clone and of each jump clone in an NPC station. A clone in
+/// a player structure is left out: its system needs a scope the app does not ask for.
+pub type SharedClones = Arc<Mutex<std::collections::HashMap<String, crate::whdetect::Clones>>>;
+
+/// The scope clone locations need. Characters signed in before it was added lack it until they
+/// sign in again.
+pub(crate) const CLONES_SCOPE: &str = "esi-clones.read_clones.v1";
+const CLONES_EVERY: i64 = 3600;
+
+/// Where a character was at the last poll it answered, kept across polls it did not.
+struct Seen {
+    system: i64,
+    ship: Option<i64>,
+    at: i64,
+}
+
+pub fn spawn_location_poller(
+    client_id: String,
+    player: SharedPlayer,
+    moves: SharedMoves,
+    clones: SharedClones,
+    ctx: egui::Context,
+) {
     let _ = std::thread::Builder::new().name("esi-location".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
         else {
             return;
         };
+        let mut seen: std::collections::HashMap<String, Seen> = std::collections::HashMap::new();
+        let mut clones_at: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut station_system: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
         loop {
             std::thread::sleep(POLL);
             let active = player.lock().unwrap().active_name.clone();
             let Ok(store) = Store::open() else { continue };
+            let now = chrono::Utc::now().timestamp();
             let mut fresh: std::collections::HashMap<String, (i64, bool)> =
                 std::collections::HashMap::new();
             for ch in store.list_characters() {
-                if let Some((sys, docked)) = location_for(&client, &store, &client_id, &ch.name) {
+                if clones_at.get(&ch.name).is_none_or(|t| now - t >= CLONES_EVERY) {
+                    clones_at.insert(ch.name.clone(), now);
+                    if let Some(c) = clones_for(&client, &store, &client_id, &ch.name, &mut station_system) {
+                        clones.lock().unwrap().insert(ch.name.clone(), c);
+                    }
+                }
+                if let Some((sys, docked, ship)) = location_for(&client, &store, &client_id, &ch.name) {
+                    if let Some(was) = seen.get(&ch.name).filter(|w| w.system != sys) {
+                        moves.lock().unwrap().push(Moved {
+                            character: ch.name.clone(),
+                            from: was.system,
+                            to: sys,
+                            at: now,
+                            gap_secs: now - was.at,
+                            ship_before: was.ship,
+                            ship_after: ship,
+                            docked_after: docked,
+                        });
+                    }
+                    seen.insert(ch.name.clone(), Seen { system: sys, ship, at: now });
                     fresh.insert(ch.name, (sys, docked));
                 }
             }
@@ -57,7 +118,7 @@ fn location_for(
     store: &Store,
     client_id: &str,
     name: &str,
-) -> Option<(i64, bool)> {
+) -> Option<(i64, bool, Option<i64>)> {
     let character = store.character_by_name(name)?;
     let token = current_access_token(store, client_id, character.id, character.expires_at)?;
 
@@ -85,9 +146,78 @@ fn location_for(
         structure_id: Option<i64>,
     }
     let url = format!("{LOCATION_URL}/{}/location/", character.id);
-    let loc: Location = client.get(url).bearer_auth(token).send().ok()?.json().ok()?;
+    let loc: Location = client.get(url).bearer_auth(&token).send().ok()?.json().ok()?;
     let docked = loc.station_id.is_some() || loc.structure_id.is_some();
-    Some((loc.solar_system_id, docked))
+    #[derive(Deserialize)]
+    struct Ship {
+        ship_type_id: i64,
+    }
+    let ship = client
+        .get(format!("{LOCATION_URL}/{}/ship/", character.id))
+        .bearer_auth(&token)
+        .send()
+        .ok()
+        .and_then(|r| r.json::<Ship>().ok())
+        .map(|s| s.ship_type_id);
+    Some((loc.solar_system_id, docked, ship))
+}
+
+/// The systems of a character's home and jump clones, for telling a death or a clone jump from a
+/// wormhole. `station_system` caches station lookups across calls.
+fn clones_for(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    name: &str,
+    station_system: &mut std::collections::HashMap<i64, i64>,
+) -> Option<crate::whdetect::Clones> {
+    let character = store.character_by_name(name)?;
+    if !character.scopes.split_whitespace().any(|s| s == CLONES_SCOPE) {
+        return None;
+    }
+    let token = current_access_token(store, client_id, character.id, character.expires_at)?;
+    #[derive(Deserialize)]
+    struct Place {
+        location_id: i64,
+        location_type: String,
+    }
+    #[derive(Deserialize)]
+    struct Clones {
+        home_location: Option<Place>,
+        #[serde(default)]
+        jump_clones: Vec<Place>,
+    }
+    let c: Clones = client
+        .get(format!("{LOCATION_URL}/{}/clones/", character.id))
+        .bearer_auth(&token)
+        .send()
+        .ok()?
+        .json()
+        .ok()?;
+    let mut system_of = |p: &Place| -> Option<i64> {
+        if p.location_type != "station" {
+            return None;
+        }
+        if let Some(s) = station_system.get(&p.location_id) {
+            return Some(*s);
+        }
+        #[derive(Deserialize)]
+        struct Station {
+            system_id: i64,
+        }
+        let s: Station = client
+            .get(format!("https://esi.evetech.net/latest/universe/stations/{}/", p.location_id))
+            .send()
+            .ok()?
+            .json()
+            .ok()?;
+        station_system.insert(p.location_id, s.system_id);
+        Some(s.system_id)
+    };
+    Some(crate::whdetect::Clones {
+        home_system: c.home_location.as_ref().and_then(&mut system_of),
+        jump_clone_systems: c.jump_clones.iter().filter_map(&mut system_of).collect(),
+    })
 }
 
 /// Contact standings by character, corporation or alliance id. The character's own contacts win

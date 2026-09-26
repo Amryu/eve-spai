@@ -226,6 +226,21 @@ pub struct Settings {
     pub dscan_service: DscanService,
     #[serde(default)]
     pub route_via_wormholes: bool,
+    /// Record wormholes our own characters go through, from how their systems change.
+    #[serde(default = "default_true")]
+    pub wh_detect: bool,
+    /// Ask for the signature and more when one of them does.
+    #[serde(default = "default_true")]
+    pub wh_ask: bool,
+    /// The kinds of hole routes may go through, by `HoleKind::code`.
+    #[serde(default = "default_wh_route_kinds")]
+    pub wh_route_kinds: Vec<String>,
+    /// Systems the wormhole map's Routes panel measures from the selected system.
+    #[serde(default)]
+    pub wh_route_pins: Vec<String>,
+    /// The sharing group local wormhole changes are sent to; `None` keeps them local.
+    #[serde(default)]
+    pub wh_share_target: Option<String>,
     #[serde(default = "default_true")]
     pub minimize_to_tray: bool,
     #[serde(default)]
@@ -549,6 +564,10 @@ pub struct AlertSettings {
     pub rules: Vec<AlertRule>,
     pub seeded: bool,
     pub compact_mode: bool,
+}
+
+fn default_wh_route_kinds() -> Vec<String> {
+    crate::wormholes::HoleKind::ALL.iter().map(|k| k.code().to_owned()).collect()
 }
 
 pub const DEFAULT_NTFY_SERVER: &str = "https://ntfy.sh";
@@ -1322,6 +1341,11 @@ impl Default for Settings {
             dscan_autoupload: false,
             dscan_service: DscanService::Auto,
             route_via_wormholes: false,
+            wh_detect: true,
+            wh_ask: true,
+            wh_route_kinds: default_wh_route_kinds(),
+            wh_route_pins: Vec::new(),
+            wh_share_target: None,
             minimize_to_tray: true,
             autostart: false,
             main_window_pos: None,

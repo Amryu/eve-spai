@@ -103,7 +103,102 @@ CREATE TABLE IF NOT EXISTS wormholes (
     explicit_expiry INTEGER,
     source          TEXT NOT NULL,
     updated_at      INTEGER NOT NULL,
-    dead            INTEGER NOT NULL DEFAULT 0
+    dead            INTEGER NOT NULL DEFAULT 0,
+    seen_by         INTEGER NOT NULL DEFAULT 0,
+    detected_by     TEXT,
+    jumped_at       INTEGER,
+    mass            TEXT,
+    note            TEXT,
+    uid             TEXT,
+    life            TEXT,
+    observed_at     INTEGER,
+    group_id        TEXT
+);
+-- Who told us each thing about a hole and when, kept for when entries are shared between users.
+CREATE TABLE IF NOT EXISTS wormhole_audit (
+    uid    TEXT NOT NULL,
+    at     INTEGER NOT NULL,
+    who    TEXT NOT NULL,
+    source TEXT NOT NULL,
+    field  TEXT NOT NULL,
+    value  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wormhole_audit ON wormhole_audit(uid, at);
+-- The probe scanner's signatures and anomalies per system, as pasted.
+CREATE TABLE IF NOT EXISTS system_sigs (
+    system_id  INTEGER NOT NULL,
+    sig        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    grp        TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    added_at   INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    who        TEXT NOT NULL,
+    PRIMARY KEY (system_id, sig)
+);
+-- Wormhole sharing groups this install is in, and what it needs to read and write their logs.
+CREATE TABLE IF NOT EXISTS share_groups (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    char_id   INTEGER NOT NULL,
+    role      TEXT NOT NULL,
+    epoch     INTEGER NOT NULL DEFAULT 0,
+    cursor    INTEGER NOT NULL DEFAULT 0,
+    joined_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS share_keys (
+    group_id TEXT NOT NULL,
+    epoch    INTEGER NOT NULL,
+    key      TEXT NOT NULL,
+    PRIMARY KEY (group_id, epoch)
+);
+CREATE TABLE IF NOT EXISTS share_members (
+    group_id TEXT NOT NULL,
+    char_id  INTEGER NOT NULL,
+    body     TEXT NOT NULL,
+    PRIMARY KEY (group_id, char_id)
+);
+CREATE TABLE IF NOT EXISTS share_applied (
+    op_id    TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    at       INTEGER NOT NULL
+);
+-- Local changes waiting to be sent. A hole is listed once however often it changes.
+CREATE TABLE IF NOT EXISTS share_outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,
+    uid        TEXT,
+    payload    TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_share_outbox_uid ON share_outbox(kind, uid);
+-- When and by whom each field of a hole was last set; author 0 is a local change not yet sent.
+CREATE TABLE IF NOT EXISTS wh_field_clock (
+    uid   TEXT NOT NULL,
+    field TEXT NOT NULL,
+    at    INTEGER NOT NULL,
+    by    INTEGER NOT NULL,
+    PRIMARY KEY (uid, field)
+);
+-- Secrets of the invites this install made, to check who answers them. Never sent anywhere.
+CREATE TABLE IF NOT EXISTS share_invites (
+    id         TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL,
+    secret     TEXT NOT NULL,
+    for_char   INTEGER NOT NULL DEFAULT 0,
+    for_name   TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+-- Another uid a hole was shared under, and the one it is kept under here.
+CREATE TABLE IF NOT EXISTS wh_uid_alias (
+    alias TEXT PRIMARY KEY,
+    uid   TEXT NOT NULL
+);
+-- Where the user dragged a system on the wormhole map.
+CREATE TABLE IF NOT EXISTS wh_layout (
+    system_id INTEGER PRIMARY KEY,
+    x         REAL NOT NULL,
+    y         REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kill_intel (
     killmail_id  INTEGER PRIMARY KEY,
@@ -359,6 +454,8 @@ pub struct Store {
     /// Set when the stored settings could not be parsed AND could not be stashed, which on a full
     /// disk is the case where saving defaults over them destroys the only copy.
     settings_locked: std::cell::Cell<bool>,
+    /// Set while a change from a sharing group is written, so it is not sent back out.
+    applying_remote: std::cell::Cell<bool>,
 }
 
 /// How long the kill archive is kept. The firehose writes a row per killmail, so without retention
@@ -373,6 +470,8 @@ mod battles;
 
 mod wormholes;
 
+mod share;
+
 mod characters;
 
 #[cfg(feature = "fleet")]
@@ -380,6 +479,8 @@ mod fleet_moves;
 
 mod fleet_kills;
 pub use fleet_kills::FleetKill;
+pub use share::{Outgoing, ShareGroup};
+pub use wormholes::SystemSig;
 impl Store {
     /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than
     /// queued. Buffering it would trade a disk problem for a memory problem, and this is the
@@ -411,6 +512,20 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn mem() -> Self {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        Store {
+            conn,
+            path: std::path::PathBuf::new(),
+            sys_cache: std::cell::RefCell::new(None),
+            settings_locked: std::cell::Cell::new(false),
+            applying_remote: std::cell::Cell::new(false),
+            place_cache: std::cell::RefCell::new(None),
+        }
+    }
+
     pub fn open() -> Result<Self> {
         let dir = data_dir()?;
         std::fs::create_dir_all(&dir)?;
@@ -426,6 +541,15 @@ impl Store {
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dead INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN seen_by INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN detected_by TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN jumped_at INTEGER", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN mass TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN note TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN uid TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN life TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN observed_at INTEGER", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN group_id TEXT", []);
         let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_name TEXT", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_dist REAL", []);
@@ -448,6 +572,7 @@ impl Store {
             path,
             sys_cache: std::cell::RefCell::new(None),
             settings_locked: std::cell::Cell::new(false),
+            applying_remote: std::cell::Cell::new(false),
             place_cache: std::cell::RefCell::new(None),
         })
     }
@@ -828,7 +953,7 @@ impl Store {
 
     const WH_COLS: &'static str = "id, system_id, signature, wh_type, dest_class,
         dest_system_id, dest_signature, dest_wh_type, size, is_drifter, reported_at,
-        explicit_expiry, source, updated_at";
+        explicit_expiry, source, updated_at, seen_by, detected_by, jumped_at, mass, note, uid, life, observed_at";
 
     pub fn traits_baked(&self) -> bool {
         self.conn
@@ -1277,16 +1402,31 @@ mod tests {
         assert!(s.load_notes().folders.is_empty());
     }
 
+    #[test]
+    fn a_probe_paste_keeps_what_was_scanned_and_drops_what_is_gone() {
+        use crate::wormholes::probe_scan;
+        let s = mem_store();
+        let first = probe_scan(
+            "WKR-862\tCosmic Anomaly\tCombat Site\tAngel Haven\t100,0%\t2,37 AU\n\
+             ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU\n\
+             XYZ-999\tCosmic Signature\t\t\t12,0%\t20 AU",
+        );
+        assert_eq!(s.merge_system_sigs(7, &first, "Pilot", 100, false), (3, 0, 0));
+        // Rescanned without the wormhole's details, the site gone, the unknown one now scanned.
+        let second = probe_scan(
+            "ABC-123\tCosmic Signature\t\t\t40,0%\t8 AU\n\
+             XYZ-999\tCosmic Signature\tData Site\tUnsecured Frontier Server\t100,0%\t20 AU",
+        );
+        assert_eq!(s.merge_system_sigs(7, &second, "Other", 200, true), (0, 1, 1));
+        let sigs = s.system_sigs(7);
+        let abc = sigs.iter().find(|x| x.sig == "ABC-123").unwrap();
+        assert_eq!((abc.group.as_str(), abc.added_at, abc.updated_at), ("Wormhole", 100, 200));
+        assert_eq!(sigs.iter().find(|x| x.sig == "XYZ-999").unwrap().name, "Unsecured Frontier Server");
+        assert!(!sigs.iter().any(|x| x.sig == "WKR-862"));
+    }
+
     fn mem_store() -> Store {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        Store {
-            conn,
-            path: std::path::PathBuf::new(),
-            sys_cache: std::cell::RefCell::new(None),
-            settings_locked: std::cell::Cell::new(false),
-            place_cache: std::cell::RefCell::new(None),
-        }
+        Store::mem()
     }
 
     /// A store whose database cannot grow past `pages`. SQLite answers a write past the cap with
@@ -1449,6 +1589,7 @@ mod tests {
             explicit_expiry: None,
             source: Source::EveScout,
             updated_at: 1_700_000_000,
+            ..Default::default()
         }
     }
 
@@ -1505,6 +1646,7 @@ mod tests {
             path: path.clone(),
             sys_cache: std::cell::RefCell::new(None),
             settings_locked: std::cell::Cell::new(false),
+            applying_remote: std::cell::Cell::new(false),
             place_cache: std::cell::RefCell::new(None),
         };
         assert!(s.write_probe().is_err(), "a read-only DB must fail the probe");
@@ -1591,6 +1733,37 @@ mod tests {
         // A fetch that lists nothing must not touch a hole EVE-Scout never sourced.
         s.retire_missing_evescout(&HashSet::new());
         assert_eq!(s.wormholes().len(), 1, "intel holes are not Scout's to retire");
+    }
+
+    /// A hole one of our characters went through keeps being ours when intel reports it too, and
+    /// what was noted about it comes back out of the table.
+    #[test]
+    fn an_auto_detected_hole_keeps_its_origin_and_details() {
+        use crate::wormholes::Source;
+        let s = mem_store();
+        let mut auto = a_hole(30_000_142, "ABC-123");
+        auto.source = Source::Auto;
+        auto.detected_by = Some("Test Pilot".into());
+        auto.jumped_at = Some(1_700_000_100);
+        auto.mass = Some(crate::wormholes::Mass::Reduced);
+        auto.life = Some(crate::wormholes::Life::Under4h);
+        auto.observed_at = Some(1_700_000_200);
+        auto.note = Some("rolled once".into());
+        let id = s.upsert_wormhole(&auto);
+        let mut intel = a_hole(30_000_142, "ABC-123");
+        intel.source = Source::Intel;
+        assert_eq!(s.upsert_wormhole(&intel), id, "the intel report lands on the same hole");
+        let got = s.wormhole_by_id(id).expect("the row");
+        assert_eq!(got.source, Source::Auto, "the first origin stays");
+        assert_ne!(got.seen_by & Source::Intel.bit(), 0, "intel is recorded as having seen it");
+        assert_ne!(got.seen_by & Source::Auto.bit(), 0);
+        assert_eq!(got.detected_by.as_deref(), Some("Test Pilot"));
+        assert_eq!(got.jumped_at, Some(1_700_000_100));
+        assert_eq!(got.mass, Some(crate::wormholes::Mass::Reduced));
+        assert_eq!(got.life, Some(crate::wormholes::Life::Under4h));
+        assert_eq!(got.observed_at, Some(1_700_000_200));
+        assert_eq!(got.note.as_deref(), Some("rolled once"));
+        assert_eq!(got.uid.len(), 32, "a sync id is given on insert");
     }
 
     #[test]

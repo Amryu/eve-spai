@@ -440,3 +440,88 @@ async fn expired_session_rejected() {
     let (status, _) = send(&app, "GET", "/api/br/mine", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+async fn send_json(app: &axum::Router, method: &str, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// Groups hold only what their members encrypted; this checks the server's side of it: who may
+/// read, write and manage, the join handshake, and a removal that rotates the key.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn wormhole_group_membership_and_log() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    sqlx::query("TRUNCATE wh_groups CASCADE").execute(&pool).await.unwrap();
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool.clone(), base_config(url));
+    let owner = mint(&app, 90_000_001, "Owner").await;
+    let joiner = mint(&app, 90_000_002, "Joiner").await;
+    let outsider = mint(&app, 90_000_003, "Outsider").await;
+
+    let (s, v) = send_json(&app, "POST", "/api/wh/groups", &owner, json!({ "wrapped": "k0-owner" })).await;
+    assert_eq!(s, StatusCode::OK, "{v:?}");
+    let g = v["id"].as_str().unwrap().to_string();
+
+    let (s, v) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "genesis", "epoch": 0, "keep": true, "blob": "sealed-0" })).await;
+    assert_eq!(s, StatusCode::OK);
+    let first = v["seq"].as_i64().unwrap();
+    let (_, again) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "genesis", "epoch": 0, "keep": true, "blob": "sealed-0" })).await;
+    assert_eq!(again["seq"].as_i64(), Some(first), "a retried entry keeps its place");
+
+    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&outsider), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "outsiders read nothing");
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &outsider, json!({ "op_id": "x", "epoch": 0, "keep": false, "blob": "x" })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "outsiders write nothing");
+
+    // Invite, join, approve.
+    let (s, v) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/invites"), &owner, json!({ "blob": "invite", "ttl_secs": 3600 })).await;
+    assert_eq!(s, StatusCode::OK);
+    let inv = v["id"].as_str().unwrap().to_string();
+    let (s, v) = send(&app, "GET", &format!("/api/wh/invites/{inv}"), Some(&joiner), None).await;
+    assert_eq!((s, v["blob"].as_str()), (StatusCode::OK, Some("invite")));
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/invites/{inv}/join"), &joiner, json!({ "body": "keys+mac" })).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/invites/{inv}/join"), &outsider, json!({ "body": "keys+mac" })).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "an invite works once");
+    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not in before approval");
+    let (_, reqs) = send(&app, "GET", &format!("/api/wh/groups/{g}/requests"), Some(&owner), None).await;
+    assert_eq!(reqs[0]["body"].as_str(), Some("keys+mac"));
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/requests/90000002/approve"), &owner, json!({ "keys": [{ "epoch": 0, "wrapped": "k0-joiner" }] })).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, keys) = send(&app, "GET", &format!("/api/wh/groups/{g}/keys"), Some(&joiner), None).await;
+    assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-joiner"), "each member gets only their own wrapped key");
+    let (_, ops) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
+    assert_eq!(ops[0]["author"].as_i64(), Some(90_000_001));
+
+    // A member cannot manage; the owner removes them, rotating the key for whoever stays.
+    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/requests"), Some(&joiner), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000002/remove"), &owner, json!({ "epoch": 1, "keys": [] })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "the owner would lose the key");
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000002/remove"), &owner, json!({ "epoch": 1, "keys": [{ "char_id": 90000001, "wrapped": "k1-owner" }] })).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "removed members read nothing new");
+    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000001/remove"), &owner, json!({ "epoch": 2, "keys": [] })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the owner cannot be removed");
+
+    // Data expires; membership stays.
+    sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days'").execute(&pool).await.unwrap();
+    send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "data", "epoch": 1, "keep": false, "blob": "hole" })).await;
+    sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days' WHERE op_id = 'data'").execute(&pool).await.unwrap();
+    eve_spai_br::whshare::sweep(&pool).await.unwrap();
+    let left: Vec<String> = sqlx::query_scalar("SELECT op_id FROM wh_ops ORDER BY seq").fetch_all(&pool).await.unwrap();
+    assert_eq!(left, vec!["genesis".to_string()]);
+}

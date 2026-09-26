@@ -272,7 +272,7 @@ fn default_threat_jumps() -> u32 {
 
 mod notes_ui;
 mod dscan_update;
-mod wormholes_ui;
+pub(crate) mod wormholes_ui;
 mod views;
 mod lookup_ui;
 mod web_glue;
@@ -302,6 +302,9 @@ pub(crate) use chat_tabs::*;
 mod char_rings;
 pub(crate) use char_rings::*;
 mod alert_engine;
+pub(crate) mod wh_prompt;
+pub(crate) mod wh_graph;
+pub(crate) mod wh_share_ui;
 pub(crate) use alert_engine::*;
 #[cfg(test)]
 mod tests;
@@ -500,6 +503,21 @@ pub struct SpaiApp {
     ship_by_id: std::collections::HashMap<i64, String>,
     kills_loaded: bool,
     pub(crate) player: crate::esi::SharedPlayer,
+    /// Our characters' system changes, as the location poller saw them, waiting to be judged.
+    wh_moves: crate::esi::SharedMoves,
+    /// Our characters' home and jump clone systems.
+    wh_clones: crate::esi::SharedClones,
+    /// Jumps that were, or may have been, through a wormhole, waiting for the user to say which.
+    pub(crate) wh_pending: std::collections::VecDeque<crate::app::wh_prompt::Pending>,
+    /// Pairs the user said were not a hole, and when: not asked about again for a while.
+    wh_not_holes: std::collections::HashMap<(i64, i64), i64>,
+    /// Hull name and group by ship type id: a capital jump is not a hole, and some hulls roll them.
+    wh_hulls: Option<std::collections::HashMap<i64, (String, String)>>,
+    /// The wormhole signatures of the last probe scanner copy on the clipboard, and when.
+    wh_probe: Option<(Vec<(String, String)>, std::time::Instant)>,
+    wh_probe_checked: Option<std::time::Instant>,
+    /// Where the wormhole prompt sits while it is up.
+    wh_prompt_pos: Option<(f32, f32)>,
     /// UI-thread state the web publisher cannot work out for itself, pushed down once a
     /// frame. Same arrangement as `AlertEngine::config`.
     web_facts: crate::web::facts::SharedFacts,
@@ -652,6 +670,15 @@ pub struct SpaiApp {
     wh_filter_dest: Option<crate::wormholes::DestClass>,
     wh_filter_source: Option<crate::wormholes::Source>,
     wh_filter_expiring: bool,
+    /// The add/edit form, while it is open.
+    wh_form: Option<crate::app::wormholes_ui::WhForm>,
+    /// The system whose wormhole facts the side panel shows, and the box that looks one up.
+    wh_info: Option<i64>,
+    wh_info_query: String,
+    pub(crate) wh_graph: crate::app::wh_graph::WhGraphView,
+    pub(crate) wh_share: crate::app::wh_share_ui::ShareUi,
+    /// The sharing group each hole came from, by uid.
+    pub(crate) wh_group_of: std::collections::HashMap<String, String>,
     map_overlays: MapOverlays,
     map_mode: MapMode,
     standard_overlays: MapOverlays,
@@ -1119,11 +1146,13 @@ impl SpaiApp {
 
         let player: crate::esi::SharedPlayer =
             std::sync::Arc::new(std::sync::Mutex::new(crate::esi::Player::default()));
+        let wh_moves: crate::esi::SharedMoves = Default::default();
+        let wh_clones: crate::esi::SharedClones = Default::default();
         if let Some(store) = &store {
             let _ = store;
             let cid = non_empty_or(&settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
             if !headless {
-                crate::esi::spawn_location_poller(cid, player.clone(), ctx.clone());
+                crate::esi::spawn_location_poller(cid, player.clone(), wh_moves.clone(), wh_clones.clone(), ctx.clone());
                 // Its own thread rather than a frame-driven poll: the window minimises to tray
                 // while the kill firehose keeps writing, which is exactly when the disk fills.
                 crate::disk::spawn_monitor(ctx.clone());
@@ -1439,6 +1468,14 @@ impl SpaiApp {
             ship_by_id: std::collections::HashMap::new(),
             kills_loaded: false,
             player,
+            wh_moves,
+            wh_clones,
+            wh_pending: Default::default(),
+            wh_not_holes: Default::default(),
+            wh_hulls: None,
+            wh_probe: None,
+            wh_probe_checked: None,
+            wh_prompt_pos: None,
             systems: None,
             bridges_applied: Default::default(),
             system_status,
@@ -1544,6 +1581,12 @@ impl SpaiApp {
             wh_filter_dest: None,
             wh_filter_source: None,
             wh_filter_expiring: false,
+            wh_form: None,
+            wh_info: None,
+            wh_info_query: String::new(),
+            wh_graph: Default::default(),
+            wh_share: Default::default(),
+            wh_group_of: Default::default(),
             map_overlays: pv.overlays,
             map_mode: MapMode::Standard,
             standard_overlays: pv.overlays,
@@ -3792,6 +3835,10 @@ impl eframe::App for SpaiApp {
         self.poll_jabber_notify(&ctx);
         self.poll_kill_fetches();
         self.dscan_dialog(&ctx);
+        self.wh_share_tick(&ctx);
+        self.wh_share_window(&ctx);
+        self.wh_detect_poll();
+        self.wh_prompt_window(&ctx);
         self.ping_rules_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
@@ -4562,8 +4609,6 @@ pub(crate) trait SteadySelect {
     ) -> egui::Response;
 
     /// The same, at a fixed size, for a row of tabs that must not move as the pointer crosses it.
-    /// Only the fleet tabs use it, and the hover test that pins it runs without the feature.
-    #[cfg(any(feature = "fleet", test))]
     fn menu_label_sized<'a>(
         &mut self,
         size: impl Into<egui::Vec2>,
@@ -4586,7 +4631,6 @@ impl SteadySelect for egui::Ui {
         )
     }
 
-    #[cfg(any(feature = "fleet", test))]
     fn menu_label_sized<'a>(
         &mut self,
         size: impl Into<egui::Vec2>,

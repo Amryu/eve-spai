@@ -11,6 +11,7 @@ pub mod routes;
 pub mod session;
 pub mod state;
 pub mod views;
+pub mod whshare;
 
 use anyhow::Context;
 use br_core::battle::BattleReportDoc;
@@ -74,6 +75,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     let verifier = Verifier::live(cfg.jwks_url.clone(), cfg.client_id.clone());
     let state = AppState::new(pool, verifier, cfg.clone());
+    let sweep_db = state.db.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = whshare::sweep(&sweep_db).await {
+                tracing::warn!(error = %e, "wormhole share sweep failed");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
     let app = routes::router(state);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)

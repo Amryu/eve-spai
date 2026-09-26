@@ -824,30 +824,34 @@ impl SpaiApp {
                 focus = None;
             }
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                // The panel's width less what the box adds around it: sized from the panel exactly,
-                // the panel grew to fit it every frame until it hit its maximum.
-                let x_w = if focus.is_some() { ui.spacing().interact_size.y + ui.spacing().item_spacing.x + 4.0 } else { 0.0 };
-                let width = ui.available_width() - x_w;
-                egui::ComboBox::from_id_salt("fleet_map_focus")
-                    .width(width.max(80.0))
-                    .selected_text(current.clone().unwrap_or_else(|| "Whole fleet".to_owned()))
-                    .show_ui(ui, |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.fleet_map.search).hint_text("Search"));
-                        if ui.menu_label(focus.is_none(), "Whole fleet").clicked() {
-                            focus = None;
-                        }
-                        let q = self.fleet_map.search.to_lowercase();
-                        for (id, n) in everyone.iter().filter(|(_, n)| q.is_empty() || n.to_lowercase().contains(&q)) {
-                            if ui.menu_label(focus == Some(*id), n.as_str()).clicked() {
-                                focus = Some(*id);
+            // Right to left: the ✕ first, then the picker gets exactly what is left. Guessing the
+            // ✕'s width short made the row wider than the panel, and the panel grew to fit it every
+            // frame until it hit its maximum.
+            let row_h = ui.spacing().interact_size.y;
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if focus.is_some() && ui.button(egui_phosphor::regular::X).on_hover_text("Back to the whole fleet").clicked() {
+                        focus = None;
+                    }
+                    egui::ComboBox::from_id_salt("fleet_map_focus")
+                        .width(ui.available_width().max(80.0))
+                        .selected_text(current.clone().unwrap_or_else(|| "Whole fleet".to_owned()))
+                        .show_ui(ui, |ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.fleet_map.search).hint_text("Search"));
+                            if ui.menu_label(focus.is_none(), "Whole fleet").clicked() {
+                                focus = None;
                             }
-                        }
-                    });
-                if focus.is_some() && ui.button(egui_phosphor::regular::X).on_hover_text("Back to the whole fleet").clicked() {
-                    focus = None;
-                }
-            });
+                            let q = self.fleet_map.search.to_lowercase();
+                            for (id, n) in everyone.iter().filter(|(_, n)| q.is_empty() || n.to_lowercase().contains(&q)) {
+                                if ui.menu_label(focus == Some(*id), n.as_str()).clicked() {
+                                    focus = Some(*id);
+                                }
+                            }
+                        });
+                },
+            );
             if let Some(f) = focus {
                 ui.label(egui::RichText::new(match pilots.get(&f) {
                     Some(s) => format!("In {}, {}", name(s.system_id), s.ship_name),

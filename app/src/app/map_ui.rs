@@ -2133,6 +2133,9 @@ impl SpaiApp {
             });
         }
         system_chips_ex(ui, &self.systems, &status, id, true, false);
+        if let Some(line) = self.systems.as_ref().and_then(|g| g.info_of(id)).and_then(|i| wh_tip_line(id, i)) {
+            ui.label(line);
+        }
         if let Some(n) = NoteTip::of(&self.notes_view, self.notes_view.system(id)) {
             note_tip_ui(ui, &n);
         }
@@ -2283,4 +2286,23 @@ mod highlight_tests {
         assert_eq!(highlight_window(Severity::Critical, 300, 0), 0);
         assert_eq!(highlight_window(Severity::Danger, -5, 900), 0);
     }
+}
+
+/// Class, effect and statics of a J-system, or where a Pochven system's C729 opens.
+fn wh_tip_line(id: i64, info: &crate::geo::SystemInfo) -> Option<String> {
+    use crate::whdata::{self, Class};
+    let class = whdata::class_of(id, info.security, &info.region);
+    if class == Class::Pochven {
+        let zone = whdata::c729_zone(&info.name);
+        return (!zone.is_empty()).then(|| format!("C729 opens in: {}", zone.join(", ")));
+    }
+    let j = whdata::jsystem(id)?;
+    let mut parts = vec![class.label()];
+    if let Some(e) = &j.effect {
+        parts.push(e.clone());
+    }
+    if !j.statics.is_empty() {
+        parts.push(format!("statics {}", j.statics.join(" ")));
+    }
+    Some(parts.join(" \u{b7} "))
 }

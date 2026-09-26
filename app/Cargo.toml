@@ -67,6 +67,7 @@ keyring = "4"
 # for the encrypted fallback when the OS keychain is unavailable (see `sealed.rs`): AEAD and a KDF
 # from a reviewed implementation rather than anything hand-rolled.
 ring = "0.17"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # gzip the battle-report JSON before uploading to the sharing server (Content-Encoding: gzip).

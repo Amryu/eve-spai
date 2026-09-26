@@ -1,6 +1,6 @@
 const DAY: i64 = 86_400;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DestClass {
     Highsec,
     Lowsec,
@@ -8,6 +8,7 @@ pub enum DestClass {
     Wspace,
     Thera,
     Turnur,
+    #[default]
     Unknown,
 }
 
@@ -97,11 +98,14 @@ impl ShipSize {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     EveScout,
+    #[default]
     Intel,
     Manual,
+    /// Seen by one of this app's own characters moving through it.
+    Auto,
 }
 
 impl Source {
@@ -110,6 +114,7 @@ impl Source {
             Source::EveScout => "eve-scout",
             Source::Intel => "intel",
             Source::Manual => "manual",
+            Source::Auto => "auto",
         }
     }
 
@@ -117,17 +122,260 @@ impl Source {
         match code {
             "eve-scout" => Source::EveScout,
             "manual" => Source::Manual,
+            "auto" => Source::Auto,
             _ => Source::Intel,
         }
     }
+
+    /// Its bit in `Wormhole::seen_by`.
+    pub fn bit(self) -> u8 {
+        match self {
+            Source::EveScout => 1,
+            Source::Intel => 2,
+            Source::Manual => 4,
+            Source::Auto => 8,
+        }
+    }
+
+    pub const ALL: [Source; 4] = [Source::EveScout, Source::Intel, Source::Manual, Source::Auto];
 
     pub fn label(self) -> &'static str {
         match self {
             Source::EveScout => "EVE-Scout",
             Source::Intel => "Intel",
             Source::Manual => "Manual",
+            Source::Auto => "Auto-detected",
         }
     }
+}
+
+/// How long a hole has left, as its info window reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Life {
+    OverDay,
+    UnderDay,
+    Under4h,
+    Under1h,
+    /// Past its reliable lifetime: it can close at any moment. CCP gives no length for this stage.
+    Expired,
+}
+
+impl Life {
+    pub const ALL: [Life; 5] = [Life::OverDay, Life::UnderDay, Life::Under4h, Life::Under1h, Life::Expired];
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Life::OverDay => ">1d",
+            Life::UnderDay => "<1d",
+            Life::Under4h => "<4h",
+            Life::Under1h => "<1h",
+            Life::Expired => "Expired",
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Life::OverDay => "gt1d",
+            Life::UnderDay => "lt1d",
+            Life::Under4h => "lt4h",
+            Life::Under1h => "lt1h",
+            Life::Expired => "expired",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Life> {
+        Life::ALL.into_iter().find(|l| l.code() == code)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Life::OverDay => "More than a day",
+            Life::UnderDay => "Less than a day",
+            Life::Under4h => "Less than 4 hours",
+            Life::Under1h => "Less than an hour",
+            Life::Expired => "Expired, closing any moment",
+        }
+    }
+
+    /// The latest it can close, seen at `at`. More than a day says nothing about an end. An expired
+    /// hole is kept for an hour, since nobody knows how long that stage lasts.
+    pub fn closes_by(self, at: i64) -> Option<i64> {
+        match self {
+            Life::OverDay => None,
+            Life::UnderDay => Some(at + DAY),
+            Life::Under4h => Some(at + 4 * 3600),
+            Life::Under1h | Life::Expired => Some(at + 3600),
+        }
+    }
+}
+
+/// How much of a hole's mass is left, as its info window reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mass {
+    Fresh,
+    Reduced,
+    Critical,
+}
+
+impl Mass {
+    pub const ALL: [Mass; 3] = [Mass::Fresh, Mass::Reduced, Mass::Critical];
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Mass::Fresh => ">50%",
+            Mass::Reduced => "<50%",
+            Mass::Critical => "<10%",
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Mass::Fresh => "fresh",
+            Mass::Reduced => "reduced",
+            Mass::Critical => "critical",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Mass> {
+        Mass::ALL.into_iter().find(|m| m.code() == code)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mass::Fresh => "More than 50%",
+            Mass::Reduced => "Less than 50%",
+            Mass::Critical => "Less than 10%",
+        }
+    }
+}
+
+/// What a hole connects, for choosing which ones routes may use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoleKind {
+    Thera,
+    Turnur,
+    /// Straight to another part of k-space (S199, N944 and the like).
+    Kspace,
+    Jspace,
+    Drifter,
+    Pochven,
+}
+
+impl HoleKind {
+    pub const ALL: [HoleKind; 6] =
+        [HoleKind::Thera, HoleKind::Turnur, HoleKind::Kspace, HoleKind::Jspace, HoleKind::Drifter, HoleKind::Pochven];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            HoleKind::Thera => "thera",
+            HoleKind::Turnur => "turnur",
+            HoleKind::Kspace => "kspace",
+            HoleKind::Jspace => "jspace",
+            HoleKind::Drifter => "drifter",
+            HoleKind::Pochven => "pochven",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HoleKind::Thera => "Thera",
+            HoleKind::Turnur => "Turnur",
+            HoleKind::Kspace => "K-space",
+            HoleKind::Jspace => "J-space",
+            HoleKind::Drifter => "Drifter",
+            HoleKind::Pochven => "Pochven",
+        }
+    }
+
+    /// The kind of a hole from `a` to `b`, by the more particular of its two ends.
+    pub fn of(geo: &crate::geo::Systems, a: i64, b: i64, drifter: bool) -> HoleKind {
+        use crate::whdata::Class;
+        let class = |id: i64| geo.info_of(id).map(|i| crate::whdata::class_of(id, i.security, &i.region));
+        let (ca, cb) = (class(a), class(b));
+        let either = |f: &dyn Fn(Class) -> bool| ca.is_some_and(f) || cb.is_some_and(f);
+        if drifter || either(&|c| matches!(c, Class::Drifter(_))) {
+            HoleKind::Drifter
+        } else if either(&|c| c == Class::Thera) {
+            HoleKind::Thera
+        } else if either(&|c| c == Class::Turnur) {
+            HoleKind::Turnur
+        } else if either(&|c| c == Class::Pochven) {
+            HoleKind::Pochven
+        } else if either(&|c| matches!(c, Class::W(_))) || crate::geo::is_wormhole_system(a) || crate::geo::is_wormhole_system(b) {
+            HoleKind::Jspace
+        } else {
+            HoleKind::Kspace
+        }
+    }
+}
+
+/// The biggest hull a hole of `jump_mass` kg passes.
+pub fn size_for_jump_mass(jump_mass: u64) -> ShipSize {
+    match jump_mass {
+        m if m <= 5_000_000 => ShipSize::Frigate,
+        m if m <= 62_000_000 => ShipSize::Medium,
+        m if m <= 410_000_000 => ShipSize::Large,
+        _ => ShipSize::XLarge,
+    }
+}
+
+/// The sizes a hole of one of `codes` can be; every size when none of them is known.
+pub fn sizes_for(codes: &[&str]) -> Vec<ShipSize> {
+    let mut out: Vec<ShipSize> = codes
+        .iter()
+        .filter_map(|c| crate::whdata::hole_type(c))
+        .filter(|t| t.jump_mass > 0)
+        .map(|t| size_for_jump_mass(t.jump_mass))
+        .collect();
+    let all = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge];
+    if out.is_empty() {
+        return all.to_vec();
+    }
+    out.sort_by_key(|s| all.iter().position(|a| a == s));
+    out.dedup();
+    out
+}
+
+/// One row of a probe scanner copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanSig {
+    pub id: String,
+    /// "Cosmic Signature" or "Cosmic Anomaly".
+    pub kind: String,
+    /// e.g. "Combat Site", "Wormhole"; empty until scanned.
+    pub group: String,
+    pub name: String,
+}
+
+fn is_sig_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7 && b[..3].iter().all(u8::is_ascii_uppercase) && b[3] == b'-' && b[4..].iter().all(u8::is_ascii_digit)
+}
+
+/// Every row of a probe scanner copy (select all, copy): id, kind, group, name, strength, distance.
+pub fn probe_scan(text: &str) -> Vec<ScanSig> {
+    text.lines()
+        .filter_map(|l| {
+            let cols: Vec<&str> = l.split('\t').map(str::trim).collect();
+            let id = *cols.first()?;
+            (cols.len() >= 3 && is_sig_id(id)).then(|| ScanSig {
+                id: id.to_owned(),
+                kind: cols[1].to_owned(),
+                group: cols[2].to_owned(),
+                name: cols.get(3).map_or(String::new(), |n| (*n).to_owned()),
+            })
+        })
+        .collect()
+}
+
+/// The signatures of a probe scanner copy (select all, copy): the id and the group, which is empty
+/// until the signature is scanned. Only the ones that are or may be wormholes.
+pub fn probe_sigs(text: &str) -> Vec<(String, String)> {
+    probe_scan(text)
+        .into_iter()
+        .filter(|s| s.group.is_empty() || s.group.to_lowercase().contains("wormhole"))
+        .map(|s| (s.id, s.group))
+        .collect()
 }
 
 pub struct Wh(pub &'static str, pub DestClass, pub Option<ShipSize>, pub bool);
@@ -255,15 +503,18 @@ pub static WH_TYPES: &[Wh] = &[
     Wh("Z971", DestClass::Wspace, Some(ShipSize::Medium), false),
 ];
 
+/// Whose facts win where two sources disagree. It decides fields only; the entry keeps the source
+/// that first reported it.
 fn rank(s: Source) -> u8 {
     match s {
-        Source::EveScout => 2,
-        Source::Manual => 1,
+        Source::EveScout => 3,
+        Source::Manual => 2,
+        Source::Auto => 1,
         Source::Intel => 0,
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Wormhole {
     pub id: i64,
     pub system_id: i64,
@@ -277,8 +528,21 @@ pub struct Wormhole {
     pub is_drifter: bool,
     pub reported_at: i64,
     pub explicit_expiry: Option<i64>,
+    /// Where the entry came from first. Kept as it is when other sources confirm it.
     pub source: Source,
     pub updated_at: i64,
+    /// Every source that has reported this hole, as `Source::bit` flags.
+    pub seen_by: u8,
+    /// The character that went through, for an auto-detected hole.
+    pub detected_by: Option<String>,
+    pub jumped_at: Option<i64>,
+    pub mass: Option<Mass>,
+    pub life: Option<Life>,
+    /// When the mass and time left were last read off the hole.
+    pub observed_at: Option<i64>,
+    pub note: Option<String>,
+    /// Stable across machines, for syncing entries later.
+    pub uid: String,
 }
 
 impl Wormhole {
@@ -363,9 +627,16 @@ impl Wormhole {
             self.explicit_expiry = other.explicit_expiry;
         }
         self.updated_at = self.updated_at.max(other.updated_at);
-        if rank(other.source) > rank(self.source) {
-            self.source = other.source;
+        self.seen_by |= self.source.bit() | other.source.bit() | other.seen_by;
+        self.detected_by = self.detected_by.take().or_else(|| other.detected_by.clone());
+        self.jumped_at = self.jumped_at.or(other.jumped_at);
+        // A later reading of a hole's state is the better one: holes only ever degrade.
+        if other.observed_at.is_some() && other.observed_at >= self.observed_at {
+            self.mass = other.mass.or(self.mass);
+            self.life = other.life.or(self.life);
+            self.observed_at = other.observed_at;
         }
+        self.note = self.note.take().or_else(|| other.note.clone());
     }
 
     pub fn confirm_far(&mut self, far: &Wormhole) {
@@ -431,9 +702,13 @@ fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
     if s.signature_type.as_deref() != Some("wormhole") {
         return None;
     }
-    let dest = match s.out_system_name.as_deref() {
-        Some("Turnur") => DestClass::Turnur,
-        _ => DestClass::Thera,
+    // By the far system's id: everything that was not Turnur used to read as Thera.
+    let dest = match s.out_system_id {
+        crate::whdata::THERA => DestClass::Thera,
+        crate::whdata::TURNUR => DestClass::Turnur,
+        id if crate::geo::is_wormhole_system(id) => DestClass::Wspace,
+        _ if s.out_system_name.as_deref() == Some("Turnur") => DestClass::Turnur,
+        _ => DestClass::Unknown,
     };
     let reported = s.created_at.as_deref().and_then(parse_rfc3339).unwrap_or(now);
     Some(Wormhole {
@@ -451,6 +726,7 @@ fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
         explicit_expiry: s.remaining_hours.map(|h| now + h * 3600),
         source: Source::EveScout,
         updated_at: now,
+        ..Default::default()
     })
 }
 
@@ -478,6 +754,7 @@ mod tests {
             explicit_expiry: None,
             source: Source::Intel,
             updated_at: reported,
+            ..Default::default()
         }
     }
 
@@ -535,6 +812,49 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_scanner_copy_gives_its_wormhole_sigs() {
+        let scan = "ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t2,34 AU\n\
+                    DEF-456\tCosmic Signature\tData Site\tForgotten Relay\t100,0%\t5 AU\n\
+                    GHI-789\tCosmic Signature\t\t\t12,5%\t9 AU\n\
+                    not a scan line";
+        assert_eq!(
+            probe_sigs(scan),
+            vec![("ABC-123".to_owned(), "Wormhole".to_owned()), ("GHI-789".to_owned(), String::new())]
+        );
+    }
+
+    /// Holes only degrade: the latest reading of time and mass stands, an older one never
+    /// overwrites it.
+    #[test]
+    fn the_latest_reading_of_a_hole_wins() {
+        let mut hole = wh(false, 1000);
+        hole.mass = Some(Mass::Fresh);
+        hole.life = Some(Life::OverDay);
+        hole.observed_at = Some(1000);
+        let mut later = wh(false, 2000);
+        later.mass = Some(Mass::Critical);
+        later.life = Some(Life::Under4h);
+        later.observed_at = Some(2000);
+        hole.merge_from(&later);
+        assert_eq!((hole.mass, hole.life, hole.observed_at), (Some(Mass::Critical), Some(Life::Under4h), Some(2000)));
+        let mut stale = wh(false, 3000);
+        stale.mass = Some(Mass::Fresh);
+        stale.observed_at = Some(1500);
+        hole.merge_from(&stale);
+        assert_eq!(hole.mass, Some(Mass::Critical), "an older reading does not undo a newer one");
+        assert_eq!(Life::Under4h.closes_by(100), Some(100 + 4 * 3600));
+        assert_eq!(Life::OverDay.closes_by(100), None);
+    }
+
+    #[test]
+    fn sizes_follow_the_hole_type() {
+        assert_eq!(sizes_for(&["C247"]), vec![ShipSize::Large]);
+        assert_eq!(sizes_for(&["E004"]), vec![ShipSize::Frigate]);
+        assert_eq!(sizes_for(&[]).len(), 4, "unknown type, any size");
+        assert_eq!(sizes_for(&["S199"]), vec![ShipSize::XLarge]);
+    }
+
+    #[test]
     fn intel_fills_unknown_then_evescout_upgrades() {
         let mut base = wh(false, 1000);
         base.dest = DestClass::Unknown;
@@ -549,7 +869,9 @@ mod tests {
         base.merge_from(&scout);
         assert_eq!(base.dest, DestClass::Thera);
         assert_eq!(base.size, Some(ShipSize::XLarge));
-        assert_eq!(base.source, Source::EveScout);
+        assert_eq!(base.source, Source::Intel, "the first report keeps the entry's origin");
+        assert_ne!(base.seen_by & Source::EveScout.bit(), 0, "EVE-Scout is recorded as having seen it");
+        assert_ne!(base.seen_by & Source::Intel.bit(), 0);
     }
 
     #[test]

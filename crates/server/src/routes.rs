@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/br/{id}", get(fetch_json).delete(delete_report))
         .route("/br", get(directory))
         .route("/br/{id}", get(viewer))
+        .merge(crate::whshare::routes())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_compressed))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)

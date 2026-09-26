@@ -84,6 +84,7 @@ mod wh_overlay_tests {
             explicit_expiry: None,
             source: Source::Intel,
             updated_at: 0,
+            ..Default::default()
         }
     }
 

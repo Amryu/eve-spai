@@ -39,6 +39,7 @@ fn build_systems() -> Systems {
         (30_004_608, "319-3D", -0.41, "Delve"),
         (30_003_704, "7-K5EL", -0.29, "Fountain"),
         (30_000_142, "Jita", 0.95, "The Forge"),
+        (31_000_005, "Thera", -1.0, "G-R00031"),
     ] {
         by_name.insert(
             name.to_lowercase(),
