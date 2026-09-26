@@ -117,6 +117,7 @@ impl SpaiApp {
                 ship_before: m.ship_before,
                 ship_after: m.ship_after,
                 docked_after: m.docked_after,
+                last_jump: m.last_jump,
             };
             let clones = self.wh_clones.lock().unwrap().get(&t.character).cloned().unwrap_or_default();
             match crate::whdetect::classify(&t, &geo, &clones) {

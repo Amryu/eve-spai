@@ -10,14 +10,16 @@ use super::SpaiApp;
 use crate::whdata::{self, Class};
 use crate::wormholes::{Life, Mass, ShipSize, Wormhole};
 
-const NODE: egui::Vec2 = egui::vec2(170.0, 50.0);
-const COL: f32 = 300.0;
+/// Wide enough that at [`MIN_ZOOM`] a name still fits its scaled box, so no box grows past its
+/// place when zoomed out.
+const NODE: egui::Vec2 = egui::vec2(240.0, 50.0);
+const COL: f32 = 360.0;
 const ROW: f32 = 70.0;
 const CHAIN_GAP: f32 = 50.0;
 const GRID: f32 = 10.0;
 /// How far out of a box an edge runs before it turns.
 const STUB: f32 = 20.0;
-const MIN_ZOOM: f32 = 0.3;
+const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub(crate) struct WhGraphView {
     /// The signature whose hole is open for changes.
     sig_edit: Option<String>,
     keep_missing: bool,
+    /// The last routes worked out, and what they were worked out for.
+    route_cache: Option<(u64, Vec<Option<Vec<egui::Pos2>>>)>,
     /// Gate jumps from each pinned system, for joining it to the focused chain.
     gate_dist: HashMap<i64, HashMap<i64, u32>>,
 }
@@ -131,6 +135,30 @@ impl WhGraphView {
         self.zoom = zoom;
     }
 
+    /// Routes for `links`, worked out again only when a box moves or the links change.
+    fn routes(
+        &mut self,
+        boxes: &HashMap<i64, egui::Rect>,
+        links: &[(i64, i64, bool)],
+        parent: &HashMap<i64, i64>,
+    ) -> Vec<Option<Vec<egui::Pos2>>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut placed: Vec<(i64, i32, i32)> = boxes.iter().map(|(id, r)| (*id, r.min.x as i32, r.min.y as i32)).collect();
+        placed.sort_unstable();
+        placed.hash(&mut h);
+        links.hash(&mut h);
+        let key = h.finish();
+        if let Some((k, r)) = &self.route_cache {
+            if *k == key {
+                return r.clone();
+            }
+        }
+        let r = route_all(boxes, links, parent);
+        self.route_cache = Some((key, r.clone()));
+        r
+    }
+
     fn zoom_by(&mut self, factor: f32, rect: egui::Rect) {
         let old = self.zoom;
         let new = (old * factor).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -138,6 +166,73 @@ impl WhGraphView {
         self.pan += rel * (1.0 - new / old);
         self.zoom = new;
     }
+}
+
+/// Centres for a label of `size` along the straight leg from `from` towards `to`, nearest `from`
+/// first, each keeping the whole label on the leg.
+fn along(from: egui::Pos2, to: egui::Pos2, size: egui::Vec2) -> Vec<egui::Pos2> {
+    let v = to - from;
+    let len = v.length();
+    if len < 1.0 {
+        return Vec::new();
+    }
+    let dir = v / len;
+    let half = if dir.x.abs() > dir.y.abs() { size.x / 2.0 } else { size.y / 2.0 };
+    let mut out = Vec::new();
+    let mut d = half + 4.0;
+    while d <= len + half {
+        out.push(from + dir * d);
+        d += 6.0;
+    }
+    out
+}
+
+/// The first of `spots` where a label of `size` touches no label in `taken` and no system box,
+/// preferring spots off every line in `others`: a label on a stretch two lines share could belong
+/// to either.
+fn first_free(
+    spots: impl IntoIterator<Item = egui::Pos2>,
+    size: egui::Vec2,
+    taken: &[egui::Rect],
+    boxes: &[egui::Rect],
+    others: &[&[egui::Pos2]],
+) -> Option<egui::Rect> {
+    let rects: Vec<egui::Rect> = spots.into_iter().map(|c| egui::Rect::from_center_size(c, size)).collect();
+    let free = |r: &egui::Rect| !taken.iter().any(|t| t.expand(2.0).intersects(*r)) && !boxes.iter().any(|b| b.expand(4.0).intersects(*r));
+    let on_other = |r: &egui::Rect| {
+        others.iter().any(|l| l.windows(2).any(|s| egui::Rect::from_two_pos(s[0], s[1]).expand(1.0).intersects(*r)))
+    };
+    rects.iter().find(|r| free(r) && !on_other(r)).or_else(|| rects.iter().find(|r| free(r))).copied()
+}
+
+/// The connected groups of systems in `edges`.
+fn components(edges: &[(i64, i64)]) -> Vec<Vec<i64>> {
+    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+    for &(a, b) in edges {
+        adj.entry(a).or_default().push(b);
+        adj.entry(b).or_default().push(a);
+    }
+    let mut keys: Vec<i64> = adj.keys().copied().collect();
+    keys.sort_unstable();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for k in keys {
+        if !seen.insert(k) {
+            continue;
+        }
+        let mut comp = vec![k];
+        let mut q = VecDeque::from([k]);
+        while let Some(u) = q.pop_front() {
+            for v in &adj[&u] {
+                if seen.insert(*v) {
+                    comp.push(*v);
+                    q.push_back(*v);
+                }
+            }
+        }
+        out.push(comp);
+    }
+    out
 }
 
 /// The systems at most `depth` known holes from `from`.
@@ -158,25 +253,202 @@ fn within(holes: &[Wormhole], from: i64, depth: u8) -> HashSet<i64> {
     seen
 }
 
-/// A right-angled path between two boxes, turning just past the left (or upper) one so that the
-/// edges out of a system share one trunk and then branch. Returns whether it starts at `a`.
-fn edge_path(a: egui::Rect, b: egui::Rect, stub: f32) -> (Vec<egui::Pos2>, bool) {
+/// Right-angled routes for every link, from its first system to its second, in map units.
+///
+/// Each link tries a handful of shapes (a bend near either end or midway, a detour round the right
+/// or left, down-across-down) with entry points a little off the box centre, and takes the
+/// cheapest: through another system's box is ruled out; along another link's line is costly unless
+/// both are holes out of the same system (their shared trunk is the fan-out); then short and few
+/// bends. Links are routed in order, each seeing the ones before it.
+pub(crate) fn route_all(
+    boxes: &HashMap<i64, egui::Rect>,
+    links: &[(i64, i64, bool)],
+    parent: &HashMap<i64, i64>,
+) -> Vec<Option<Vec<egui::Pos2>>> {
+    let mut done: Vec<(Vec<egui::Pos2>, i64, i64, bool)> = Vec::new();
+    let mut out: Vec<Option<Vec<egui::Pos2>>> = vec![None; links.len()];
+    let mut degree: HashMap<i64, usize> = HashMap::new();
+    for &(a, b, _) in links {
+        *degree.entry(a).or_default() += 1;
+        *degree.entry(b).or_default() += 1;
+    }
+    // Holes before gate links, and within each the straightest first: a level link keeps the
+    // middle of its box and the others fan out above and below it.
+    let mut order: Vec<usize> = (0..links.len()).collect();
+    let rise = |i: usize| {
+        let (a, b, _) = links[i];
+        match (boxes.get(&a), boxes.get(&b)) {
+            (Some(ra), Some(rb)) => (ra.center().y - rb.center().y).abs() as i64,
+            _ => i64::MAX,
+        }
+    };
+    order.sort_by_key(|&i| (!links[i].2, rise(i), i));
+    for i in order {
+        let (a, b, hole) = links[i];
+        let (Some(ra), Some(rb)) = (boxes.get(&a), boxes.get(&b)) else { continue };
+        // On a tie the bend sits by the system the branch grows from (else the busier one), so
+        // its links fan out from one trunk there.
+        let a_hub = match (parent.get(&b) == Some(&a), parent.get(&a) == Some(&b)) {
+            (true, _) => true,
+            (_, true) => false,
+            _ => degree.get(&a) >= degree.get(&b),
+        };
+        let best = candidates(*ra, *rb, a_hub)
+            .into_iter()
+            .map(|p| {
+                let cost = route_cost(&p, a, b, hole, boxes, &done);
+                (p, cost)
+            })
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|(p, _)| p);
+        if let Some(p) = &best {
+            done.push((p.clone(), a, b, hole));
+        }
+        out[i] = best;
+    }
+    out
+}
+
+fn candidates(a: egui::Rect, b: egui::Rect, a_hub: bool) -> Vec<Vec<egui::Pos2>> {
     use egui::pos2;
-    let a_left = a.center().x <= b.center().x;
-    let (l, r) = if a_left { (a, b) } else { (b, a) };
-    if r.left() - l.right() >= 2.0 * stub {
-        let x = l.right() + stub;
-        let path = vec![pos2(l.right(), l.center().y), pos2(x, l.center().y), pos2(x, r.center().y), pos2(r.left(), r.center().y)];
-        return (simplify(path), a_left);
+    const OFFSETS: [f32; 5] = [0.0, 8.0, -8.0, 16.0, -16.0];
+    let mut out = Vec::new();
+    let (ya, yb) = (a.center().y, b.center().y);
+    let (xa, xb) = (a.center().x, b.center().x);
+    for oa in OFFSETS {
+        for ob in OFFSETS {
+            let (pa, pb) = (ya + oa, yb + ob);
+            // Side to side, with the bend near either end or midway.
+            if b.left() - a.right() >= 2.0 * STUB {
+                let (near_a, near_b) = (a.right() + STUB, b.left() - STUB);
+                let order = if a_hub { [near_a, near_b] } else { [near_b, near_a] };
+                for x in [order[0], order[1], (a.right() + b.left()) / 2.0] {
+                    out.push(vec![pos2(a.right(), pa), pos2(x, pa), pos2(x, pb), pos2(b.left(), pb)]);
+                }
+            }
+            if a.left() - b.right() >= 2.0 * STUB {
+                let (near_a, near_b) = (a.left() - STUB, b.right() + STUB);
+                let order = if a_hub { [near_a, near_b] } else { [near_b, near_a] };
+                for x in [order[0], order[1], (a.left() + b.right()) / 2.0] {
+                    out.push(vec![pos2(a.left(), pa), pos2(x, pa), pos2(x, pb), pos2(b.right(), pb)]);
+                }
+            }
+            // Round the right or the left, for boxes in one column.
+            for k in 1..=3 {
+                let x = a.right().max(b.right()) + STUB * k as f32;
+                out.push(vec![pos2(a.right(), pa), pos2(x, pa), pos2(x, pb), pos2(b.right(), pb)]);
+                let x = a.left().min(b.left()) - STUB * k as f32;
+                out.push(vec![pos2(a.left(), pa), pos2(x, pa), pos2(x, pb), pos2(b.left(), pb)]);
+            }
+            // Down, across and down.
+            let (qa, qb) = (xa + oa, xb + ob);
+            if b.top() - a.bottom() >= 2.0 * STUB {
+                for y in [a.bottom() + STUB, b.top() - STUB] {
+                    out.push(vec![pos2(qa, a.bottom()), pos2(qa, y), pos2(qb, y), pos2(qb, b.top())]);
+                }
+            }
+            if a.top() - b.bottom() >= 2.0 * STUB {
+                for y in [a.top() - STUB, b.bottom() + STUB] {
+                    out.push(vec![pos2(qa, a.top()), pos2(qa, y), pos2(qb, y), pos2(qb, b.bottom())]);
+                }
+            }
+        }
     }
-    let a_top = a.center().y <= b.center().y;
-    let (t, u) = if a_top { (a, b) } else { (b, a) };
-    if u.top() - t.bottom() >= 2.0 * stub {
-        let y = t.bottom() + stub;
-        let path = vec![pos2(t.center().x, t.bottom()), pos2(t.center().x, y), pos2(u.center().x, y), pos2(u.center().x, u.top())];
-        return (simplify(path), a_top);
+    out.into_iter().map(simplify).collect()
+}
+
+fn route_cost(path: &[egui::Pos2], a: i64, b: i64, hole: bool, boxes: &HashMap<i64, egui::Rect>, done: &[(Vec<egui::Pos2>, i64, i64, bool)]) -> f32 {
+    let mut cost = 0.0;
+    for s in path.windows(2) {
+        let seg = egui::Rect::from_two_pos(s[0], s[1]).expand(0.5);
+        for (id, r) in boxes {
+            if *id != a && *id != b && r.shrink(1.0).intersects(seg) {
+                cost += 1_000_000.0;
+            }
+        }
+        cost += (s[1] - s[0]).length();
+        for (other, oa, ob, other_hole) in done {
+            // Holes out of one system share their trunk; any other shared stretch is ambiguous.
+            let fan_out = hole && *other_hole && (*oa == a || *ob == a || *oa == b || *ob == b);
+            let per_px = if fan_out { 0.0 } else { 60.0 };
+            for t in other.windows(2) {
+                cost += per_px * overlap(s[0], s[1], t[0], t[1]);
+                if !fan_out && crosses(s[0], s[1], t[0], t[1]) {
+                    cost += 40.0;
+                }
+            }
+        }
     }
-    (vec![a.center(), b.center()], true)
+    // Off-centre ports are for keeping off other lines, not for shaving a few pixels.
+    let off = |p: egui::Pos2, r: &egui::Rect| {
+        if (p.x - r.left()).abs() < 0.5 || (p.x - r.right()).abs() < 0.5 { (p.y - r.center().y).abs() } else { (p.x - r.center().x).abs() }
+    };
+    let ports = boxes.get(&a).map_or(0.0, |r| off(path[0], r)) + boxes.get(&b).map_or(0.0, |r| off(path[path.len() - 1], r));
+    cost + 25.0 * path.len().saturating_sub(2) as f32 + 4.0 * ports
+}
+
+/// Whether an upright and a flat segment cross inside both, not just touch at an end.
+fn crosses(a0: egui::Pos2, a1: egui::Pos2, b0: egui::Pos2, b1: egui::Pos2) -> bool {
+    let inside = |v: f32, p: f32, q: f32| v > p.min(q) + 0.5 && v < p.max(q) - 0.5;
+    let cross = |u0: egui::Pos2, u1: egui::Pos2, f0: egui::Pos2, f1: egui::Pos2| {
+        (u0.x - u1.x).abs() < 0.5 && (f0.y - f1.y).abs() < 0.5 && inside(u0.x, f0.x, f1.x) && inside(f0.y, u0.y, u1.y)
+    };
+    cross(a0, a1, b0, b1) || cross(b0, b1, a0, a1)
+}
+
+/// How long two axis-aligned segments run along each other.
+fn overlap(a0: egui::Pos2, a1: egui::Pos2, b0: egui::Pos2, b1: egui::Pos2) -> f32 {
+    let run = |p0: f32, p1: f32, q0: f32, q1: f32| (p0.max(p1).min(q0.max(q1)) - p0.min(p1).max(q0.min(q1))).max(0.0);
+    let flat = |p: egui::Pos2, q: egui::Pos2| (p.y - q.y).abs() < 0.5;
+    let upright = |p: egui::Pos2, q: egui::Pos2| (p.x - q.x).abs() < 0.5;
+    if flat(a0, a1) && flat(b0, b1) && (a0.y - b0.y).abs() < 3.0 {
+        run(a0.x, a1.x, b0.x, b1.x)
+    } else if upright(a0, a1) && upright(b0, b1) && (a0.x - b0.x).abs() < 3.0 {
+        run(a0.y, a1.y, b0.y, b1.y)
+    } else {
+        0.0
+    }
+}
+
+/// Label centres along the whole of `path` from one end, keeping the label on a leg.
+fn walk_all(path: &[egui::Pos2], from_start: bool, size: egui::Vec2) -> Vec<egui::Pos2> {
+    let pts: Vec<egui::Pos2> = if from_start { path.to_vec() } else { path.iter().rev().copied().collect() };
+    pts.windows(2).flat_map(|s| along(s[0], s[1], size)).collect()
+}
+
+/// [`first_free`] with no fallback: only spots off every other line.
+fn first_free_strict(
+    spots: impl IntoIterator<Item = egui::Pos2>,
+    size: egui::Vec2,
+    taken: &[egui::Rect],
+    boxes: &[egui::Rect],
+    others: &[&[egui::Pos2]],
+) -> Option<egui::Rect> {
+    let on_other = |r: &egui::Rect| {
+        others.iter().any(|l| l.windows(2).any(|s| egui::Rect::from_two_pos(s[0], s[1]).expand(1.0).intersects(*r)))
+    };
+    spots
+        .into_iter()
+        .map(|c| egui::Rect::from_center_size(c, size))
+        .find(|r| !taken.iter().any(|t| t.expand(2.0).intersects(*r)) && !boxes.iter().any(|b| b.expand(4.0).intersects(*r)) && !on_other(r))
+}
+
+/// Label centres along `path` from one end towards its middle, keeping the label on a leg.
+fn walk(path: &[egui::Pos2], from_start: bool, size: egui::Vec2) -> Vec<egui::Pos2> {
+    let pts: Vec<egui::Pos2> = if from_start { path.to_vec() } else { path.iter().rev().copied().collect() };
+    let total: f32 = pts.windows(2).map(|s| (s[1] - s[0]).length()).sum();
+    let mut out = Vec::new();
+    let mut gone = 0.0;
+    for s in pts.windows(2) {
+        let len = (s[1] - s[0]).length();
+        for c in along(s[0], s[1], size) {
+            if gone + (c - s[0]).length() <= total / 2.0 {
+                out.push(c);
+            }
+        }
+        gone += len;
+    }
+    out
 }
 
 /// Drops points that do not turn the path.
@@ -406,28 +678,52 @@ impl SpaiApp {
             holes.retain(|w| near.contains(&w.system_id) && w.dest_system_id.is_none_or(|b| near.contains(&b)));
         }
         let mut edges: Vec<(i64, i64)> = holes.iter().filter_map(|w| Some((w.system_id, w.dest_system_id?))).collect();
-        // Focused: each pinned system joins the chain at its nearest k-space exit, by gates.
+        // Pinned systems join the holes by gates, so they tie the chains together.
         let mut gate_links: Vec<(i64, i64, u32)> = Vec::new();
-        if let Some(f) = focus {
-            let mut exits: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).chain([f]).collect();
-            exits.sort_unstable();
-            exits.dedup();
-            let in_chain = exits.clone();
-            exits.retain(|id| {
-                geo.info_of(*id).is_some_and(|i| whdata::class_of(*id, i.security, &i.region).is_kspace())
-            });
-            for pin in self.settings.wh_route_pins.clone() {
-                let Some(pid) = geo.lookup(&pin).map(|i| i.id) else { continue };
-                if in_chain.contains(&pid) {
-                    continue;
-                }
-                let dist = self.wh_graph.gate_dist.entry(pid).or_insert_with(|| geo.distances_from(pid, 100));
-                if let Some((exit, n)) = exits.iter().filter_map(|e| Some((*e, *dist.get(e)?))).min_by_key(|(_, n)| *n) {
-                    gate_links.push((exit, pid, n));
-                    edges.push((exit, pid));
+        let pins: Vec<i64> = self.settings.wh_route_pins.iter().filter_map(|p| geo.lookup(p).map(|i| i.id)).collect();
+        let kspace = |id: &i64| geo.info_of(*id).is_some_and(|i| whdata::class_of(*id, i.security, &i.region).is_kspace());
+        let chains: Vec<Vec<i64>> = match focus {
+            Some(f) => {
+                let mut all: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).chain([f]).collect();
+                all.sort_unstable();
+                all.dedup();
+                vec![all]
+            }
+            None => components(&edges),
+        };
+        // Where a pinned system is reached by gates: itself in k-space; a pinned wormhole system
+        // (Thera, a J-system) has no gates, so the k-space exits of its own chain stand in for it.
+        let anchors: HashMap<i64, Vec<i64>> = pins
+            .iter()
+            .map(|p| {
+                let own = if kspace(p) {
+                    vec![*p]
+                } else {
+                    chains.iter().find(|c| c.contains(p)).map(|c| c.iter().copied().filter(|e| kspace(e)).collect()).unwrap_or_default()
+                };
+                (*p, own)
+            })
+            .collect();
+        for a in anchors.values().flatten() {
+            self.wh_graph.gate_dist.entry(*a).or_insert_with(|| geo.distances_from(*a, 100));
+        }
+        let dist = |from: i64, exit: i64| self.wh_graph.gate_dist.get(&from).and_then(|d| d.get(&exit).copied());
+        // Every chain reaches every pinned system through its own closest exit; a pinned system is
+        // one box however many chains lead to it. A wormhole pin is met at its chain's closest exit.
+        for chain in &chains {
+            for pid in pins.iter().filter(|p| !chain.contains(p)) {
+                let best = anchors[pid]
+                    .iter()
+                    .flat_map(|a| chain.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, *a, dist(*a, *e)?))))
+                    .min_by_key(|(_, _, n)| *n);
+                if let Some((exit, anchor, n)) = best {
+                    if !gate_links.iter().any(|(x, y, _)| (*x, *y) == (exit, anchor) || (*x, *y) == (anchor, exit)) {
+                        gate_links.push((exit, anchor, n));
+                    }
                 }
             }
         }
+        edges.extend(gate_links.iter().map(|(e, p, _)| (*e, *p)));
         let chars: HashMap<String, (i64, bool)> = self.player.lock().unwrap().locations.clone();
         let mut here: HashMap<i64, Vec<String>> = HashMap::new();
         for (name, (sys, _)) in &chars {
@@ -437,7 +733,9 @@ impl SpaiApp {
             if focus == Some(id) {
                 return i64::MAX;
             }
-            here.get(&id).map_or(0, |v| 100 + v.len() as i64)
+            // Pinned systems are where the chains hang from, unless a character is somewhere.
+            let pinned = if pins.contains(&id) { 50 } else { 0 };
+            here.get(&id).map_or(pinned, |v| 100 + v.len() as i64)
         };
         let auto = auto_layout(&edges, score);
         if self.wh_graph.dragged.is_none() {
@@ -547,7 +845,7 @@ impl SpaiApp {
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals().clone();
         let body = egui::TextStyle::Body.resolve(ui.style());
-        // Names never shrink below a readable size; zoomed out, a box shrinks to its name instead.
+        // Names never shrink below a readable size; the boxes are wide enough to hold them at any zoom.
         let font = egui::FontId::new((body.size * zoom).clamp(12.0, body.size * 1.5), body.family.clone());
         let detail = zoom >= 0.65;
         let line1_of = |id: i64| {
@@ -562,12 +860,7 @@ impl SpaiApp {
             .iter()
             .map(|(id, p)| {
                 let g = line1_of(*id);
-                let r = if detail {
-                    egui::Rect::from_min_size(to_screen(*p), NODE * zoom)
-                } else {
-                    let fit = g.as_ref().map_or(egui::Vec2::ZERO, |g| g.size() + egui::vec2(12.0, 6.0));
-                    egui::Rect::from_center_size(to_screen(*p + NODE / 2.0), fit.max(NODE * zoom))
-                };
+                let r = egui::Rect::from_min_size(to_screen(*p), NODE * zoom);
                 (*id, (r, g))
             })
             .collect();
@@ -584,70 +877,96 @@ impl SpaiApp {
 
         let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
         let mut hovered_edge: Option<&Wormhole> = None;
-        let node_rect = |id: i64| rects.get(&id).map(|(r, _)| *r);
-        for w in &holes {
-            let Some(b) = w.dest_system_id else { continue };
-            let (Some(ra), Some(rb)) = (node_rect(w.system_id), node_rect(b)) else { continue };
-            let (path, a_first) = edge_path(ra, rb, STUB * zoom);
-            let line = rounded(&path, 10.0 * zoom);
+        // Routes and label spots are worked out on the map's own boxes, in map units, and only
+        // then scaled: neither how an edge runs nor where its labels sit depends on the zoom.
+        let world: HashMap<i64, egui::Rect> = pos.iter().map(|(id, p)| (*id, egui::Rect::from_min_size(*p, NODE))).collect();
+        let links: Vec<(i64, i64, bool)> = holes
+            .iter()
+            .map(|w| (w.system_id, w.dest_system_id.unwrap_or(0), true))
+            .chain(gate_links.iter().map(|(e, p, _)| (*e, *p, false)))
+            .collect();
+        let parent: HashMap<i64, i64> = auto.iter().filter_map(|(n, p, _)| Some((*n, (*p)?))).collect();
+        let routes = self.wh_graph.routes(&world, &links, &parent);
+        let hole_paths: Vec<Option<Vec<egui::Pos2>>> = routes[..holes.len()].to_vec();
+        let link_paths: Vec<Option<Vec<egui::Pos2>>> = routes[holes.len()..].to_vec();
+        let screen = |path: &[egui::Pos2]| rounded(&path.iter().map(|p| to_screen(*p)).collect::<Vec<_>>(), 10.0 * zoom);
+        let hit = |line: &[egui::Pos2]| pointer.is_some_and(|p| line.windows(2).any(|s| dist_to_segment(p, s[0], s[1]) < 6.0));
+
+        // Every line first, so no line is ever drawn over a label.
+        for (wi, w) in holes.iter().enumerate() {
+            let Some(path) = &hole_paths[wi] else { continue };
+            let line = screen(path);
             let color = if w.is_drifter { crate::theme::standing::WARNING } else { mass_color(w.mass) };
-            let hot = hovered_edge.is_none()
-                && pointer.is_some_and(|p| line.windows(2).any(|s| dist_to_segment(p, s[0], s[1]) < 6.0));
+            let hot = hovered_edge.is_none() && hit(&line);
             let width = if hot { 4.0 } else { 2.5 };
             let short = matches!(w.life, Some(Life::Under4h | Life::Under1h | Life::Expired))
                 || w.hours_left(now).is_some_and(|h| h < 4);
             if short {
                 painter.extend(egui::Shape::dashed_line(&line, egui::Stroke::new(width, color), 8.0, 6.0));
             } else {
-                painter.add(egui::Shape::line(line.clone(), egui::Stroke::new(width, color)));
+                painter.add(egui::Shape::line(line, egui::Stroke::new(width, color)));
             }
             if hot {
                 hovered_edge = Some(w);
             }
-            if !detail {
-                continue;
-            }
-            // Both signatures sit on the last leg, which belongs to this edge alone: the legs
-            // before it are shared with the other holes out of the same system.
-            let (near_sig, far_sig) =
-                if a_first { (&w.signature, &w.dest_signature) } else { (&w.dest_signature, &w.signature) };
-            let (s0, s1) = (path[path.len() - 2], path[path.len() - 1]);
-            let dir = (s1 - s0).normalized();
-            let chip = |sig: &String| painter.layout_no_wrap(sig.chars().take(3).collect(), font.clone(), visuals.text_color());
-            let mut room = (s1 - s0).length() - 8.0;
-            for (sig, near) in [(far_sig, false), (near_sig, true)] {
-                let Some(sig) = sig else { continue };
-                let g = chip(sig);
-                let need = g.size().x + 16.0;
-                if room < need {
-                    continue;
-                }
-                room -= need;
-                let at = if near { s0 + dir * (need / 2.0 + 4.0) } else { s1 - dir * (need / 2.0 + 4.0) };
-                let r = egui::Rect::from_center_size(at, g.size()).expand2(egui::vec2(4.0, 1.0));
-                painter.rect_filled(r, 3.0, visuals.extreme_bg_color);
-                painter.galley(r.min + egui::vec2(4.0, 1.0), g, visuals.text_color());
-            }
         }
-
         let mut hovered_link: Option<(i64, i64, u32)> = None;
-        for &(exit, pin, n) in &gate_links {
-            let (Some(ra), Some(rb)) = (node_rect(exit), node_rect(pin)) else { continue };
-            let (path, _) = edge_path(ra, rb, STUB * zoom);
-            let line = rounded(&path, 10.0 * zoom);
-            let color = visuals.weak_text_color();
-            let hot = hovered_edge.is_none()
-                && hovered_link.is_none()
-                && pointer.is_some_and(|p| line.windows(2).any(|s| dist_to_segment(p, s[0], s[1]) < 6.0));
-            painter.extend(egui::Shape::dotted_line(&line, color, 6.0, if hot { 2.0 } else { 1.3 }));
+        let link_color = visuals.weak_text_color();
+        for (li, &(exit, pin, n)) in gate_links.iter().enumerate() {
+            let Some(path) = &link_paths[li] else { continue };
+            let line = screen(path);
+            let hot = hovered_edge.is_none() && hovered_link.is_none() && hit(&line);
+            painter.extend(egui::Shape::dotted_line(&line, link_color, 6.0, if hot { 2.0 } else { 1.3 }));
             if hot {
                 hovered_link = Some((exit, pin, n));
             }
-            let (s0, s1) = (path[path.len() - 2], path[path.len() - 1]);
+        }
+
+        // Then the labels, in map units, each off every other label, every box and, where it can
+        // be, every line that is not its own: a label on a shared stretch could belong to either.
+        let lines: Vec<&[egui::Pos2]> = hole_paths.iter().chain(link_paths.iter()).map(|p| p.as_deref().unwrap_or(&[])).collect();
+        let others = |own: usize| lines.iter().enumerate().filter(move |(i, _)| *i != own).map(|(_, l)| *l).collect::<Vec<_>>();
+        let boxes: Vec<egui::Rect> = pos.values().map(|p| egui::Rect::from_min_size(*p, NODE)).collect();
+        let mut taken: Vec<egui::Rect> = Vec::new();
+        let draw_label = |r: egui::Rect, g: std::sync::Arc<egui::Galley>, border: Option<egui::Color32>| {
+            let sr = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+            match border {
+                Some(c) => painter.rect(sr, 3.0, visuals.extreme_bg_color, egui::Stroke::new(1.0, c), egui::StrokeKind::Outside),
+                None => painter.rect_filled(sr, 3.0, visuals.extreme_bg_color),
+            };
+            painter.galley(sr.center() - g.size() / 2.0, g, visuals.text_color());
+        };
+        let pad = egui::vec2(8.0, 2.0);
+        if detail {
+            for (wi, w) in holes.iter().enumerate() {
+                let Some(path) = &hole_paths[wi] else { continue };
+                // Routes run from the hole's own system to the far one; each side's tag stays on
+                // its own half, as near its own box as it can be off the other lines.
+                // Only on a stretch this hole has to itself: on a shared trunk a tag could belong
+                // to any of the holes on it. No such spot, no tag (hovering the line says it).
+                let own = others(wi);
+                for (sig, near) in [(&w.dest_signature, false), (&w.signature, true)] {
+                    let Some(sig) = sig else { continue };
+                    let g = painter.layout_no_wrap(sig.chars().take(3).collect(), font.clone(), visuals.text_color());
+                    let size = (g.size() + pad) / zoom;
+                    let spots = walk_all(path, near, size);
+                    let Some(r) = first_free_strict(spots, size, &taken, &boxes, &own) else { continue };
+                    taken.push(r);
+                    draw_label(r, g, None);
+                }
+            }
+        }
+        for (li, &(_, _, n)) in gate_links.iter().enumerate() {
+            let Some(path) = &link_paths[li] else { continue };
             let g = painter.layout_no_wrap(format!("{n}j"), font.clone(), visuals.text_color());
-            let r = egui::Rect::from_center_size(s0.lerp(s1, 0.5), g.size()).expand2(egui::vec2(4.0, 1.0));
-            painter.rect(r, 3.0, visuals.extreme_bg_color, egui::Stroke::new(1.0, color), egui::StrokeKind::Outside);
-            painter.galley(r.min + egui::vec2(4.0, 1.0), g, visuals.text_color());
+            let size = (g.size() + pad) / zoom;
+            // Anywhere along its own route, the legs nearest the pinned system first; a label with
+            // nowhere free is left off (hovering the line still says it) rather than drawn over another.
+            let mut spots = walk(path, false, size);
+            spots.extend(walk(path, true, size));
+            let Some(r) = first_free(spots, size, &taken, &boxes, &others(holes.len() + li)) else { continue };
+            taken.push(r);
+            draw_label(r, g, Some(link_color));
         }
 
         let mut clicked: Option<i64> = None;
@@ -714,7 +1033,9 @@ impl SpaiApp {
             let Some(line1) = line1 else { continue };
             let line1_h = line1.size().y;
             if !detail {
-                painter.galley(r.center() - line1.size() / 2.0, line1, visuals.text_color());
+                let clip = painter.with_clip_rect(r.shrink(2.0).intersect(rect));
+                let at = egui::pos2(r.left() + 6.0, r.center().y - line1.size().y / 2.0);
+                clip.galley(at, line1, visuals.text_color());
                 continue;
             }
             let painter = painter.with_clip_rect(r.shrink(2.0).intersect(rect));
@@ -1040,45 +1361,48 @@ impl SpaiApp {
                 if targets.is_empty() {
                     ui.label(egui::RichText::new("Pin a system to see how far it is.").weak());
                 }
-                egui::Grid::new("wh_graph_routes").spacing([10.0, 4.0]).show(ui, |ui| {
-                    for (label, dest, is_pin) in &targets {
-                        let route = geo.route_with(sel, *dest, true, true, &adj, |_| true);
-                        ui.horizontal(|ui| {
-                            if *is_pin && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
-                                unpin = Some(label.clone());
-                            }
-                            if !*is_pin {
-                                ui.label(egui::RichText::new(icon::USER).weak());
-                            }
-                            let dest_name = name(*dest);
-                            let text = if *is_pin || dest_name == *label { label.clone() } else { format!("{label} ({dest_name})") };
-                            if ui.link(text).clicked() {
-                                select = Some(*dest);
-                            }
-                        });
-                        match &route {
-                            Some(r) => {
-                                ui.label(format!("{}j", r.len() - 1));
-                                let (resp, painter) =
-                                    ui.allocate_painter(egui::vec2(((r.len().saturating_sub(1)) as f32 * 10.0).min(200.0), 14.0), egui::Sense::hover());
-                                for (i, s) in r.iter().skip(1).take(20).enumerate() {
-                                    let color = geo
-                                        .info_of(*s)
-                                        .map(|i| class_color(whdata::class_of(*s, i.security, &i.region), i.security))
-                                        .unwrap_or(egui::Color32::GRAY);
-                                    let at = resp.rect.min + egui::vec2(i as f32 * 10.0, 2.0);
-                                    painter.rect_filled(egui::Rect::from_min_size(at, egui::vec2(8.0, 10.0)), 1.0, color);
-                                }
-                                resp.on_hover_text(r.iter().skip(1).map(|s| name(*s)).collect::<Vec<_>>().join(" \u{2192} "));
-                            }
-                            None => {
-                                ui.label(egui::RichText::new("no route").weak());
-                                ui.label("");
-                            }
+                for (label, dest, is_pin) in &targets {
+                    let route = geo.route_with(sel, *dest, true, true, &adj, |_| true);
+                    ui.horizontal(|ui| {
+                        if *is_pin && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                            unpin = Some(label.clone());
                         }
-                        ui.end_row();
+                        if !*is_pin {
+                            ui.label(egui::RichText::new(icon::USER).weak());
+                        }
+                        let dest_name = name(*dest);
+                        let text = if *is_pin || dest_name == *label { label.clone() } else { format!("{label} ({dest_name})") };
+                        if ui.link(text).clicked() {
+                            select = Some(*dest);
+                        }
+                        match &route {
+                            Some(r) => ui.label(format!("{}j", r.len() - 1)),
+                            None => ui.label(egui::RichText::new("no route").weak()),
+                        };
+                    });
+                    if let Some(r) = &route {
+                        // One square per jump, wrapped to the panel's width, at least ten a row.
+                        const STEP: f32 = 10.0;
+                        const ROW: f32 = 13.0;
+                        let hops = r.len().saturating_sub(1);
+                        // The visible width: wider content above can stretch the layout past it.
+                        let visible = ui.clip_rect().right().min(ui.max_rect().right()) - ui.cursor().left();
+                        let per_row = (((visible + 2.0) / STEP) as usize).max(10);
+                        let rows = hops.div_ceil(per_row).max(1);
+                        let (resp, painter) =
+                            ui.allocate_painter(egui::vec2(hops.min(per_row) as f32 * STEP, rows as f32 * ROW), egui::Sense::hover());
+                        for (i, s) in r.iter().skip(1).enumerate() {
+                            let color = geo
+                                .info_of(*s)
+                                .map(|i| class_color(whdata::class_of(*s, i.security, &i.region), i.security))
+                                .unwrap_or(egui::Color32::GRAY);
+                            let at = resp.rect.min + egui::vec2((i % per_row) as f32 * STEP, (i / per_row) as f32 * ROW + 1.0);
+                            painter.rect_filled(egui::Rect::from_min_size(at, egui::vec2(8.0, 10.0)), 1.0, color);
+                        }
+                        resp.on_hover_text(r.iter().skip(1).map(|s| name(*s)).collect::<Vec<_>>().join(" \u{2192} "));
                     }
-                });
+                    ui.add_space(4.0);
+                }
                 ui.horizontal(|ui| {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut self.wh_graph.pin_query).hint_text("Add a system").desired_width(160.0),
@@ -1405,19 +1729,37 @@ mod tests {
     }
 
     #[test]
-    fn edges_run_at_right_angles_and_share_a_trunk() {
+    fn routes_run_at_right_angles_and_fan_out_on_one_trunk() {
         let parent = egui::Rect::from_min_size(egui::pos2(0.0, 100.0), NODE);
         let up = egui::Rect::from_min_size(egui::pos2(COL, 0.0), NODE);
         let down = egui::Rect::from_min_size(egui::pos2(COL, 200.0), NODE);
-        let (p1, fwd) = edge_path(parent, up, STUB);
-        let (p2, _) = edge_path(down, parent, STUB);
-        assert!(fwd);
-        for p in [&p1, &p2] {
-            assert!(p.windows(2).all(|s| s[0].x == s[1].x || s[0].y == s[1].y), "{p:?}");
-            assert_eq!(p[1].x, NODE.x + STUB, "turns just past the parent");
+        let boxes = HashMap::from([(1, parent), (2, up), (3, down)]);
+        let r = route_all(&boxes, &[(1, 2, true), (1, 3, true)], &HashMap::new());
+        for p in r.iter().flatten() {
+            assert!(p.windows(2).all(|s| (s[0].x - s[1].x).abs() < 0.5 || (s[0].y - s[1].y).abs() < 0.5), "{p:?}");
+            assert_eq!(p[0], egui::pos2(NODE.x, 125.0), "out of the parent's side");
         }
-        let (flat, _) = edge_path(parent, egui::Rect::from_min_size(egui::pos2(COL, 100.0), NODE), STUB);
-        assert_eq!(flat.len(), 2, "level boxes join with one straight line");
+    }
+
+    #[test]
+    fn a_route_never_crosses_another_box() {
+        // Three in one column: the top to the bottom must go round the middle one.
+        let at = |y: f32| egui::Rect::from_min_size(egui::pos2(0.0, y), NODE);
+        let boxes = HashMap::from([(1, at(0.0)), (2, at(100.0)), (3, at(200.0))]);
+        let p = route_all(&boxes, &[(1, 3, true)], &HashMap::new())[0].clone().unwrap();
+        for s in p.windows(2) {
+            assert!(!boxes[&2].shrink(1.0).intersects(egui::Rect::from_two_pos(s[0], s[1])), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn two_links_into_one_box_do_not_share_a_line() {
+        let at = |x: f32, y: f32| egui::Rect::from_min_size(egui::pos2(x, y), NODE);
+        let boxes = HashMap::from([(1, at(0.0, 0.0)), (2, at(0.0, 100.0)), (9, at(COL, 0.0))]);
+        let r = route_all(&boxes, &[(1, 9, false), (2, 9, false)], &HashMap::new());
+        let (a, b) = (r[0].clone().unwrap(), r[1].clone().unwrap());
+        let shared: f32 = a.windows(2).flat_map(|s| b.windows(2).map(move |t| overlap(s[0], s[1], t[0], t[1]))).sum();
+        assert!(shared < 1.0, "{a:?} {b:?}");
     }
 
     #[test]
@@ -1426,6 +1768,75 @@ mod tests {
         let holes = [hole(1, 2), hole(2, 3), hole(3, 4), hole(9, 8)];
         assert_eq!(within(&holes, 2, 1), HashSet::from([1, 2, 3]));
         assert_eq!(within(&holes, 1, 2), HashSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn labels_never_land_on_each_other() {
+        // Two routes ending on the same leg into one box, as in a staging system two chains reach.
+        let size = egui::vec2(30.0, 16.0);
+        let target = egui::Rect::from_min_size(egui::pos2(300.0, 0.0), egui::vec2(100.0, 40.0));
+        let leg = |from: egui::Pos2| {
+            let mid = from.lerp(egui::pos2(300.0, 20.0), 0.5);
+            let mut spots = along(mid, egui::pos2(300.0, 20.0), size);
+            spots.extend(along(mid, from, size));
+            spots
+        };
+        let mut taken = Vec::new();
+        for from in [egui::pos2(100.0, 20.0), egui::pos2(160.0, 20.0), egui::pos2(220.0, 20.0)] {
+            if let Some(r) = first_free(leg(from), size, &taken, &[target], &[]) {
+                assert!(!r.intersects(target));
+                taken.push(r);
+            }
+        }
+        assert!(taken.len() >= 2);
+        for (i, a) in taken.iter().enumerate() {
+            for b in &taken[i + 1..] {
+                assert!(!a.intersects(*b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_keeps_off_a_line_it_shares() {
+        // Ours comes up and joins theirs; ours must be labelled on its own vertical stretch.
+        let size = egui::vec2(30.0, 16.0);
+        let theirs = [egui::pos2(0.0, 0.0), egui::pos2(300.0, 0.0)];
+        let ours = [egui::pos2(150.0, 200.0), egui::pos2(150.0, 0.0), egui::pos2(300.0, 0.0)];
+        let mut spots = Vec::new();
+        for seg in ours.windows(2).rev() {
+            let mid = seg[0].lerp(seg[1], 0.5);
+            spots.extend(along(mid, seg[1], size));
+            spots.extend(along(mid, seg[0], size));
+        }
+        let r = first_free(spots, size, &[], &[], &[&theirs]).unwrap();
+        assert!((r.center().x - 150.0).abs() < 1.0 && r.center().y > 10.0, "{r:?}");
+    }
+
+    #[test]
+    fn a_fan_of_three_keeps_the_level_one_in_the_middle_and_never_overlaps() {
+        let at = |x: f32, y: f32| egui::Rect::from_min_size(egui::pos2(x, y), NODE);
+        let boxes = HashMap::from([(1, at(0.0, 100.0)), (2, at(COL, 0.0)), (3, at(COL, 100.0)), (4, at(COL, 200.0))]);
+        let r = route_all(&boxes, &[(1, 2, false), (1, 3, false), (1, 4, false)], &HashMap::new());
+        let paths: Vec<Vec<egui::Pos2>> = r.into_iter().map(Option::unwrap).collect();
+        assert_eq!(paths[1].len(), 2, "the level one runs straight: {:?}", paths[1]);
+        assert_eq!(paths[1][0].y, boxes[&1].center().y, "out of the middle");
+        for i in 0..3 {
+            for j in i + 1..3 {
+                let shared: f32 = paths[i].windows(2).flat_map(|s| paths[j].windows(2).map(move |t| overlap(s[0], s[1], t[0], t[1]))).sum();
+                let crossing = paths[i].windows(2).any(|s| paths[j].windows(2).any(|t| crosses(s[0], s[1], t[0], t[1])));
+                assert!(shared < 1.0 && !crossing, "{:?} and {:?}", paths[i], paths[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn chains_are_found_apart() {
+        let mut c = components(&[(1, 2), (2, 3), (7, 8)]);
+        for x in &mut c {
+            x.sort_unstable();
+        }
+        c.sort();
+        assert_eq!(c, vec![vec![1, 2, 3], vec![7, 8]]);
     }
 
     #[test]

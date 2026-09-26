@@ -79,6 +79,30 @@ impl SpaiApp {
         }
     }
 
+    /// The sharing state as one line of text for the Wormholes header: nothing when not in a
+    /// group. Text only, so the row never changes height as syncs come and go.
+    pub(crate) fn share_status_line(&self) -> Option<(String, egui::Color32, String)> {
+        use egui_phosphor::regular as icon;
+        if self.wh_share.groups.is_empty() {
+            return None;
+        }
+        let status = self.wh_share.handle.as_ref()?.status.lock().unwrap().clone();
+        let weak = egui::Color32::from_gray(150);
+        if let Some(e) = status.error {
+            return Some((format!("{}  Sync failed", icon::CLOUD_WARNING), crate::theme::standing::WARNING, e));
+        }
+        if status.busy {
+            return Some((format!("{}  Syncing", icon::CLOUD_ARROW_UP), weak, "Sending and fetching group changes".into()));
+        }
+        let last = status.synced_at.values().copied().min();
+        let names: Vec<&str> = self.wh_share.groups.iter().map(|g| g.name.as_str()).collect();
+        let text = match last {
+            Some(t) => format!("{}  Synced {} ago", icon::CLOUD_CHECK, human_ago(chrono::Utc::now().timestamp() - t)),
+            None => format!("{}  Not synced yet", icon::CLOUD_CHECK),
+        };
+        Some((text, weak, format!("Sharing with {}", names.join(", "))))
+    }
+
     /// The name of the sharing group a hole came from, for badges.
     pub(crate) fn share_group_name(&self, id: &str) -> Option<&str> {
         self.wh_share.groups.iter().find(|g| g.id == id).map(|g| g.name.as_str())

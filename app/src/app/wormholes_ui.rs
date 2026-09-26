@@ -255,7 +255,10 @@ impl SpaiApp {
         let missing: Vec<&str> = self
             .characters
             .iter()
-            .filter(|c| !c.scopes.split_whitespace().any(|s| s == crate::esi::CLONES_SCOPE))
+            .filter(|c| {
+                let has = |scope: &str| c.scopes.split_whitespace().any(|s| s == scope);
+                !has(crate::esi::CLONES_SCOPE) || !has(crate::esi::FATIGUE_SCOPE)
+            })
             .map(|c| c.name.as_str())
             .collect();
         let missing = (self.settings.wh_detect && !missing.is_empty()).then(|| missing.join(", "));
@@ -347,9 +350,22 @@ impl SpaiApp {
             if changed {
                 self.needs_save = true;
             }
+            if let Some((text, color, hover)) = self.share_status_line() {
+                // A fixed width, so "Syncing" and "Synced 2m ago" wrap the row the same way.
+                let size = egui::vec2(160.0, ui.spacing().interact_size.y);
+                let r = ui
+                    .allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_size(size);
+                        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate().sense(egui::Sense::click()))
+                    })
+                    .inner;
+                if r.on_hover_text(format!("{hover}\nClick for the sharing window")).clicked() {
+                    self.wh_share.open = true;
+                }
+            }
             if let Some(names) = &missing {
                 ui.label(egui::RichText::new(icon::WARNING).color(crate::theme::standing::WARNING)).on_hover_text(format!(
-                    "Sign in again with {names} to let deaths and clone jumps be told from wormholes."
+                    "Sign in again with {names} to let deaths, clone jumps and bridges be told from wormholes."
                 ));
             }
         });

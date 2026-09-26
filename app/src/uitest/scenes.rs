@@ -668,11 +668,14 @@ fn wormholes_focus_scene(
                     ],
                 );
             }
+            if name.ends_with("_pins") {
+                a.settings.wh_route_pins = vec!["319-3D".into()];
+            }
             if name.ends_with("_sharing") {
                 a.wh_share.open = true;
             }
             if name.ends_with("_zoomed_out") {
-                a.wh_graph.set_zoom(0.35);
+                a.wh_graph.set_zoom(0.5);
             }
             if focus.is_some() {
                 a.wh_graph.set_focus(focus);
@@ -1724,6 +1727,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
     v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));

@@ -32,6 +32,8 @@ pub struct Moved {
     pub ship_before: Option<i64>,
     pub ship_after: Option<i64>,
     pub docked_after: bool,
+    /// The character's last jump drive jump or bridge, from its jump fatigue.
+    pub last_jump: Option<i64>,
 }
 
 pub type SharedMoves = Arc<Mutex<Vec<Moved>>>;
@@ -44,6 +46,10 @@ pub type SharedClones = Arc<Mutex<std::collections::HashMap<String, crate::whdet
 /// sign in again.
 pub(crate) const CLONES_SCOPE: &str = "esi-clones.read_clones.v1";
 const CLONES_EVERY: i64 = 3600;
+/// Jump fatigue: a jump drive jump or a titan/black ops bridge sets its last jump time.
+pub(crate) const FATIGUE_SCOPE: &str = "esi-characters.read_fatigue.v1";
+/// How long after a move is seen its fatigue is asked for, waiting for the jump to show up.
+const FATIGUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Where a character was at the last poll it answered, kept across polls it did not.
 struct Seen {
@@ -83,7 +89,7 @@ pub fn spawn_location_poller(
                 }
                 if let Some((sys, docked, ship)) = location_for(&client, &store, &client_id, &ch.name) {
                     if let Some(was) = seen.get(&ch.name).filter(|w| w.system != sys) {
-                        moves.lock().unwrap().push(Moved {
+                        let moved = Moved {
                             character: ch.name.clone(),
                             from: was.system,
                             to: sys,
@@ -92,7 +98,24 @@ pub fn spawn_location_poller(
                             ship_before: was.ship,
                             ship_after: ship,
                             docked_after: docked,
-                        });
+                            last_jump: None,
+                        };
+                        let token = store
+                            .character_by_name(&ch.name)
+                            .filter(|c| c.scopes.split_whitespace().any(|s| s == FATIGUE_SCOPE))
+                            .and_then(|c| Some((c.id, current_access_token(&store, &client_id, c.id, c.expires_at)?)));
+                        match token {
+                            // Asked on its own thread so the other characters' polls do not wait.
+                            Some((id, token)) => {
+                                let (client, moves, ctx, since) = (client.clone(), moves.clone(), ctx.clone(), was.at);
+                                let _ = std::thread::Builder::new().name("esi-fatigue".into()).spawn(move || {
+                                    let last_jump = recent_jump(&client, id, &token, since);
+                                    moves.lock().unwrap().push(Moved { last_jump, ..moved });
+                                    ctx.request_repaint();
+                                });
+                            }
+                            None => moves.lock().unwrap().push(moved),
+                        }
                     }
                     seen.insert(ch.name.clone(), Seen { system: sys, ship, at: now });
                     fresh.insert(ch.name, (sys, docked));
@@ -111,6 +134,33 @@ pub fn spawn_location_poller(
             }
         }
     });
+}
+
+/// The character's last jump, polled until it falls after `since` or [`FATIGUE_WAIT`] runs out.
+/// The last value read either way.
+fn recent_jump(client: &reqwest::blocking::Client, char_id: i64, token: &str, since: i64) -> Option<i64> {
+    #[derive(Deserialize)]
+    struct Fatigue {
+        last_jump_date: Option<String>,
+    }
+    let deadline = std::time::Instant::now() + FATIGUE_WAIT;
+    let mut last = None;
+    loop {
+        let read = client
+            .get(format!("{LOCATION_URL}/{char_id}/fatigue/"))
+            .bearer_auth(token)
+            .send()
+            .ok()
+            .and_then(|r| r.json::<Fatigue>().ok())
+            .and_then(|f| f.last_jump_date)
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(&d).ok())
+            .map(|d| d.timestamp());
+        last = read.or(last);
+        if last.is_some_and(|t| t >= since) || std::time::Instant::now() >= deadline {
+            return last;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
 
 fn location_for(

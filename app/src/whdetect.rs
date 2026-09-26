@@ -22,6 +22,8 @@ pub struct Transition {
     /// The hull group after the move, e.g. "Titan" or "Black Ops".
     pub group_after: Option<String>,
     pub docked_after: bool,
+    /// The last jump drive jump or bridge, from jump fatigue, when it could be read.
+    pub last_jump: Option<i64>,
 }
 
 /// What the character's clones say about where it can appear without flying there.
@@ -38,6 +40,8 @@ pub enum Explained {
     Death,
     JumpClone,
     CapitalJump,
+    /// Jump fatigue shows a jump drive jump or a bridge in the window of the move.
+    Jumped,
     /// No hole type connects the two systems' kinds of space.
     NoHoleFits,
     /// Pochven reached from outside its C729 zone: a Pochven filament.
@@ -102,6 +106,12 @@ pub fn classify_with(t: &Transition, facts: &dyn SystemFacts, geo: &crate::geo::
         // A system the SDE does not know is past anything to judge.
         return Verdict::Possible(Vec::new());
     };
+    // Slack either side: the poll times and ESI's clock need not agree to the second.
+    let jumped_in_window = t.last_jump.is_some_and(|j| j >= t.at - t.gap_secs - 5 && j <= t.at + 5);
+    let plain_kspace = |c: Class| matches!(c, Class::Hs | Class::Ls | Class::Ns);
+    if jumped_in_window && plain_kspace(cf) && plain_kspace(ct) {
+        return Verdict::Explained(Explained::Jumped);
+    }
     let capital = t.group_after.as_deref().is_some_and(|g| CAPITAL_GROUPS.contains(&g));
     if capital && cf.is_kspace() && ct.is_kspace() && geo.ly_between(t.from, t.to).is_some_and(|ly| ly <= 10.0) {
         return Verdict::Explained(Explained::CapitalJump);
@@ -192,6 +202,7 @@ mod tests {
             ship_after: Some(11_176),
             group_after: Some("Interceptor".into()),
             docked_after: false,
+            last_jump: None,
         }
     }
 
@@ -249,6 +260,18 @@ mod tests {
             v => panic!("Isanamo hosts Kino's C729: {v:?}"),
         }
         assert_eq!(verdict(&t(JITA, KINO), &Clones::default()), Verdict::Explained(Explained::Filament), "highsec outside the zone");
+    }
+
+    #[test]
+    fn a_bridge_shown_by_jump_fatigue_is_not_a_hole() {
+        let mut tr = t(NULL_A, NULL_B);
+        tr.last_jump = Some(tr.at - 10);
+        assert_eq!(verdict(&tr, &Clones::default()), Verdict::Explained(Explained::Jumped), "a bridged subcap");
+        tr.last_jump = Some(tr.at - 3600);
+        assert!(matches!(verdict(&tr, &Clones::default()), Verdict::Possible(_)), "an old jump explains nothing");
+        let mut into_j = t(NULL_A, JSYS);
+        into_j.last_jump = Some(into_j.at - 10);
+        assert!(matches!(verdict(&into_j, &Clones::default()), Verdict::Hole(_)), "nothing jumps into J-space");
     }
 
     #[test]
