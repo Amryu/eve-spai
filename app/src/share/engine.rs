@@ -673,7 +673,7 @@ mod end_to_end {
         let a = Install::new(&base, &secret);
         let b = Install::new(&base, &secret);
         let hole = |sig: &str| Wormhole {
-            system_id: 31_000_001,
+            system_id: 31_000_200,
             signature: Some(sig.into()),
             dest: DestClass::Highsec,
             dest_system_id: Some(30_000_142),

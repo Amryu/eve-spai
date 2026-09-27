@@ -3858,7 +3858,6 @@ impl eframe::App for SpaiApp {
         }
         self.setup_wizard(&ctx);
         self.poll_dscan_clipboard(&ctx);
-        self.poll_probe_clipboard(&ctx);
         self.poll_local_scan(&ctx);
         self.maybe_refresh_standings(&ctx);
         self.poll_jabber_notify(&ctx);

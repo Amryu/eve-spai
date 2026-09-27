@@ -35,7 +35,7 @@ pub(crate) fn systems_bridged_island() -> Arc<Systems> {
 /// [`systems`] plus made-up J-space (`31_000_1nn`, "J1000nn") and nullsec (`30_009_00n`,
 /// "FAKE-n") systems, for a wormhole map busy enough to lay out.
 pub(crate) fn systems_wh_busy() -> Arc<Systems> {
-    let mut extra: Vec<(i64, String, f64, String)> = (1..=20).map(|n| (31_000_100 + n, format!("J1000{n:02}"), -1.0, "C-R00012".to_owned())).collect();
+    let mut extra: Vec<(i64, String, f64, String)> = (1..=130).map(|n| (31_000_100 + n, format!("J1{n:05}"), -1.0, "C-R00012".to_owned())).collect();
     extra.extend((1..=3).map(|n| (30_009_000 + n, format!("FAKE-{n}"), -0.4, "Delve".to_owned())));
     Arc::new(build_systems_with(&extra))
 }

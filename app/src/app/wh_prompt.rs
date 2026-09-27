@@ -9,6 +9,8 @@ use crate::wormholes::{Life, Mass, ShipSize, Source, Wormhole};
 
 /// One jump waiting for the user.
 pub(crate) struct Pending {
+    /// Why the last Save was refused.
+    pub(crate) error: Option<String>,
     pub(crate) character: String,
     pub(crate) from: i64,
     pub(crate) to: i64,
@@ -44,6 +46,7 @@ impl Pending {
         let picked = [wh_type.as_str()];
         let sizes = crate::wormholes::sizes_for(if wh_type.is_empty() { &candidates } else { &picked });
         Pending {
+            error: None,
             character,
             from,
             to,
@@ -160,6 +163,11 @@ impl SpaiApp {
                     store.audit_wormhole(&w.uid, &t.character, Source::Auto, &[("jumped", format!("{} to {}", t.from, t.to))]);
                     continue;
                 }
+            }
+            // No hole joins these two (a drifter system and one without a Jove Observatory): the
+            // move was something else.
+            if crate::whdata::connection_problem(t.from, Some(t.to), |_| None, None, None).is_some() {
+                continue;
             }
             match verdict {
                 Verdict::Hole(c) => {
@@ -288,13 +296,15 @@ impl SpaiApp {
             .unwrap_or_default();
         // Each side's wormhole signatures from its saved scans, then the clipboard's.
         let (from, to) = self.wh_pending.front().map(|p| (p.from, p.to)).unwrap_or_default();
+        // The hole this jump is filling in may keep its own signatures.
+        let row = self.wh_pending.front().and_then(|p| p.row);
         let saved = |system: i64| -> Vec<(String, String, String)> {
             self.store
                 .as_ref()
                 .map(|s| s.system_sigs(system))
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|s| s.group.is_empty() || s.group.to_lowercase().contains("wormhole"))
+                .filter(|s| crate::app::wormholes_ui::offerable(s, system, &self.wh_cache, row))
                 .filter_map(|s| Some((sig_id(&s.sig)?, s.name.clone(), s.group.clone())))
                 .collect()
         };
@@ -379,7 +389,13 @@ impl SpaiApp {
 
     /// Writes what the front of the queue was answered with, and who said it.
     fn wh_save_front(&mut self, geo: &crate::geo::Systems) {
-        let Some(p) = self.wh_pending.pop_front() else { return };
+        let Some(mut p) = self.wh_pending.pop_front() else { return };
+        let class = |id: i64| geo.info_of(id).map(|i| crate::whdata::class_of(id, i.security, &i.region));
+        if let Some(why) = crate::whdata::connection_problem(p.from, Some(p.to), class, known_type(&p.wh_type).as_deref(), None) {
+            p.error = Some(why);
+            self.wh_pending.push_front(p);
+            return;
+        }
         let entry = self.wh_entry(geo, &p);
         let Some(store) = &self.store else { return };
         let mut changes: Vec<(&str, String)> = Vec::new();
@@ -468,7 +484,7 @@ pub(crate) fn wh_prompt_body(
     let n = if count > 1 { format!(" (1 of {count})") } else { String::new() };
     ui.label(egui::RichText::new(format!("{}  Wormhole?{n}", icon::SPIRAL)).strong());
     let when = chrono::DateTime::from_timestamp(p.at, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default();
-    ui.label(format!("{}: {} \u{2192} {} at {when}", p.character, name(p.from), name(p.to)));
+    ui.label(format!("{}: {} {} {} at {when}", p.character, name(p.from), egui_phosphor::regular::ARROW_RIGHT, name(p.to)));
     if !(p.certain || p.confirmed) {
         ui.label(egui::RichText::new("That jump fits a wormhole, a filament, a clone or a capital jump.").weak());
         ui.horizontal(|ui| {
@@ -486,14 +502,11 @@ pub(crate) fn wh_prompt_body(
     }
     // One field with the known signatures in a list beside it: a button each floods the window.
     let sig_row = |ui: &mut egui::Ui, salt: &str, value: &mut String, opts: &[(String, String)]| {
-        crate::app::wormholes_ui::sig_field(ui, salt, value, "ABC", opts);
+        crate::app::wormholes_ui::sig_field(ui, salt, value, "ABC-123", opts);
     };
     egui::Grid::new("wh_prompt_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label(format!("Sig in {}", name(p.from)));
         sig_row(ui, "wh_prompt_sig_here", &mut p.sig_here, here_opts);
-        ui.end_row();
-        ui.label(format!("Sig in {}", name(p.to)));
-        sig_row(ui, "wh_prompt_sig_there", &mut p.sig_there, there_opts);
         ui.end_row();
         ui.label("Type");
         // The likely types first, then every other one: the guess can be wrong.
@@ -507,6 +520,9 @@ pub(crate) fn wh_prompt_body(
             let sizes = crate::wormholes::sizes_for(&[p.wh_type.as_str()]);
             p.size = (sizes.len() == 1).then(|| sizes[0]);
         }
+        ui.end_row();
+        ui.label(format!("Sig in {}", name(p.to)));
+        sig_row(ui, "wh_prompt_sig_there", &mut p.sig_there, there_opts);
         ui.end_row();
         ui.label("Size");
         let known: Vec<&str> = if p.wh_type.is_empty() { p.candidates.clone() } else { vec![p.wh_type.as_str()] };
@@ -524,6 +540,11 @@ pub(crate) fn wh_prompt_body(
         if let Some(hull) = &p.rolling_hull {
             ui.label("Rolling?");
             ui.checkbox(&mut p.rolled, format!("Passed in a {hull}: mark it rolled"));
+            ui.end_row();
+        }
+        if let Some(e) = &p.error {
+            ui.label("");
+            ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
             ui.end_row();
         }
         ui.label("Note");

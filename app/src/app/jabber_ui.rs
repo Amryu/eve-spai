@@ -191,6 +191,7 @@ impl SpaiApp {
             st.notify_cfg.mention_volume = self.settings.jabber_mention_volume;
             st.notify_cfg.delve911_sound = self.settings.sound_delve911.clone();
             st.notify_cfg.delve911_volume = self.settings.sound_delve911_volume;
+            st.notify_cfg.delve911_siren = self.rescue_on();
             st.notify_cfg.mention_names = self.mention_names();
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();

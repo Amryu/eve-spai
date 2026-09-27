@@ -46,6 +46,11 @@ impl Store {
     }
 
     pub(crate) fn upsert_wormhole_locked(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
+        // Whoever sends it (a paste, intel, a group, a scout feed): a hole that cannot exist is not
+        // stored. 0 is no row.
+        if crate::whdata::connection_problem(incoming.system_id, incoming.dest_system_id, |_| None, None, None).is_some() {
+            return 0;
+        }
         use crate::wormholes::DestClass;
         // Signature-matching an intel report and the EVE-Scout entry for one Thera/Turnur connection
         // splits them (signatures differ); their system+dest dedup key collapses them instead.
@@ -108,6 +113,9 @@ impl Store {
     }
 
     pub(crate) fn write_wormhole(&self, w: &crate::wormholes::Wormhole) {
+        if crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_some() {
+            return;
+        }
         let before = self.wormhole_by_id(w.id);
         let _ = self.conn.execute(
             "UPDATE wormholes SET system_id=?2, signature=?3, wh_type=?4, dest_class=?5,

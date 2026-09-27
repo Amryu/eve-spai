@@ -1610,7 +1610,7 @@ mod tests {
             signature: None,
             wh_type: Some("C414".into()),
             dest: DestClass::Nullsec,
-            dest_system_id: Some(30_004_759),
+            dest_system_id: Some(30_000_224),
             source: Source::Auto,
             ..a_hole(31_000_004, "")
         });
@@ -1620,7 +1620,7 @@ mod tests {
         s.absorb_twins(jumped);
         assert!(s.wormhole_by_id(scanned).is_none(), "the scanned twin is folded in");
         let w = s.wormhole_by_id(jumped).unwrap();
-        assert_eq!((w.signature.as_deref(), w.dest_system_id, w.wh_type.as_deref()), (Some("ABC-123"), Some(30_004_759), Some("C414")));
+        assert_eq!((w.signature.as_deref(), w.dest_system_id, w.wh_type.as_deref()), (Some("ABC-123"), Some(30_000_224), Some("C414")));
         assert_eq!(s.wormholes().len(), 1);
     }
 
@@ -1630,16 +1630,16 @@ mod tests {
         let _guard = crate::disk::test_guard();
         let s = mem_store();
         let jump = |to: i64| Wormhole { signature: None, dest: DestClass::Nullsec, dest_system_id: Some(to), source: Source::Auto, ..a_hole(31_000_004, "") };
-        let old = s.upsert_wormhole(&jump(30_004_759));
+        let old = s.upsert_wormhole(&jump(30_000_224));
         let mut row = s.wormhole_by_id(old).unwrap();
         row.signature = Some("ABC-123".into());
         s.write_wormhole(&row);
-        let new = s.upsert_wormhole(&jump(30_000_142));
+        let new = s.upsert_wormhole(&jump(30_000_235));
         assert_ne!(new, old, "a hole to another system is another hole");
         assert_eq!(s.wormhole_by_id(old).unwrap().signature.as_deref(), Some("ABC-123"));
-        assert_eq!(s.wormhole_by_id(old).unwrap().dest_system_id, Some(30_004_759));
+        assert_eq!(s.wormhole_by_id(old).unwrap().dest_system_id, Some(30_000_224));
         // A signature with other letters is another hole too, even under an old row's key.
-        let other = s.upsert_wormhole(&Wormhole { signature: Some("XYZ-999".into()), ..jump(30_004_759) });
+        let other = s.upsert_wormhole(&Wormhole { signature: Some("XYZ-999".into()), ..jump(30_000_224) });
         assert_ne!(other, old);
         assert_eq!(s.wormhole_by_id(old).unwrap().signature.as_deref(), Some("ABC-123"));
     }

@@ -232,6 +232,38 @@ pub fn hole_type(code: &str) -> Option<&'static HoleType> {
     DATA.types.iter().find(|t| t.code.eq_ignore_ascii_case(code.trim()))
 }
 
+/// Why a hole from `a` to `b` cannot exist, or `None` when it can. Only what is certain counts:
+/// the type data has gaps (nothing it lists reaches C13, say), so a pair no type is known for is
+/// not refused on that alone. `class` places a system when the caller can. A hole has one type
+/// whichever side it was read on (the other side shows K162), so a type fits when it leads to
+/// either end.
+pub fn connection_problem(a: i64, b: Option<i64>, class: impl Fn(i64) -> Option<Class>, type_a: Option<&str>, type_b: Option<&str>) -> Option<String> {
+    let b = b?;
+    if a == b {
+        return Some("A hole cannot lead back into its own system.".to_owned());
+    }
+    let kspace = |id: i64| (30_000_000..31_000_000).contains(&id);
+    for (d, k) in [(a, b), (b, a)] {
+        if drifter_code(d).is_some() && kspace(k) && !crate::jove::has(k) {
+            return Some("Drifter holes only open in systems with a Jove Observatory.".to_owned());
+        }
+    }
+    let (ca, cb) = (class(a), class(b));
+    let (Some(ca), Some(cb)) = (ca, cb) else { return None };
+    let fits = |t: &HoleType, c: Class| t.leads_to(c) || t.leads_to(as_band(c));
+    for code in [type_a, type_b] {
+        let Some(t) = code.and_then(hole_type).filter(|t| !matches!(t.dest, Dest::Unknown)) else { continue };
+        if !fits(t, ca) && !fits(t, cb) {
+            let to = match t.dest {
+                Dest::Class(d) => d.label(),
+                _ => "k-space".to_owned(),
+            };
+            return Some(format!("{} leads to {to}, and neither end is.", t.code));
+        }
+    }
+    None
+}
+
 pub fn types() -> &'static [HoleType] {
     &DATA.types
 }
@@ -409,6 +441,32 @@ pub fn possible_holes(from: Class, to: Class) -> Vec<Candidate> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn impossible_connections_are_named() {
+        let class = |id: i64| match id {
+            30_000_142 => Some(Class::Hs),
+            30_004_759 | 30_000_224 => Some(Class::Ns),
+            31_000_004 => Some(Class::Drifter(17)),
+            31_000_100 => Some(Class::W(5)),
+            _ => None,
+        };
+        assert!(connection_problem(1, None, class, None, None).is_none(), "far side unknown");
+        assert!(connection_problem(30_000_142, Some(30_000_142), class, None, None).is_some(), "into itself");
+        // Conflux and Jita: Jita has no Jove Observatory. 7-K5EL has one.
+        assert!(connection_problem(31_000_004, Some(30_000_142), class, None, None).is_some());
+        assert!(connection_problem(30_000_142, Some(31_000_004), class, None, None).is_some(), "either way round");
+        // A type reads the same from either side: N432 leads to C5, so one end must be a C5.
+        assert!(connection_problem(30_000_142, Some(31_000_100), class, Some("N432"), None).is_none(), "N432 leads to C5");
+        assert!(connection_problem(31_000_100, Some(30_000_142), class, Some("N432"), None).is_none(), "read on the far side");
+        assert!(connection_problem(30_000_142, Some(30_004_759), class, Some("N432"), None).is_some(), "no C5 at either end");
+        assert!(connection_problem(30_000_224, Some(31_000_004), class, None, Some("N432")).is_some());
+        // Leaving Conflux, the popup fills in C414 on Conflux's side: still Conflux's hole.
+        assert!(connection_problem(31_000_004, Some(30_000_224), class, Some("C414"), None).is_none());
+        assert!(connection_problem(30_000_142, Some(31_000_100), class, Some("K162"), None).is_none(), "K162 says nothing");
+        // No type known for the pair is not proof: the data has gaps.
+        assert!(connection_problem(31_000_100, Some(31_000_999), class, None, None).is_none());
+    }
 
     #[test]
     fn into_a_drifter_system_from_k_space_only_its_own_hole_fits() {

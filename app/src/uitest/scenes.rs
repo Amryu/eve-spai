@@ -585,6 +585,45 @@ fn wormholes_scene(name: &'static str, size: [f32; 2], table: bool, selected: Op
     wormholes_focus_scene(name, size, table, selected, None)
 }
 
+/// A map the size of a busy one: ten chains of eleven systems, a hundred holes.
+fn wormholes_big_scene(name: &'static str) -> Scene {
+    use crate::wormholes::{DestClass, Source, Wormhole};
+    harness::scratch_profile();
+    let now = fixtures::now();
+    let mut holes = Vec::new();
+    for c in 0..10i64 {
+        let base = 31_000_101 + c * 11;
+        for k in 1..11 {
+            holes.push(Wormhole {
+                id: holes.len() as i64 + 1,
+                system_id: base + (k - 1) / 2,
+                signature: Some(format!("A{:02}-{k:03}", c)),
+                dest: DestClass::Wspace,
+                dest_system_id: Some(base + k),
+                explicit_expiry: Some(now + (k % 5) * 3 * 3600),
+                reported_at: now - 600,
+                source: Source::Manual,
+                updated_at: now - 60,
+                ..Default::default()
+            });
+        }
+    }
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems_wh_busy());
+            a.wh_cache = holes.clone();
+            a.wh_graph_tidy();
+            a.wh_graph.hold_view(1.0);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// A map of several chains, one with a loop, laid out afresh in the style its name ends with.
 fn wormholes_layout_scene(name: &'static str) -> Scene {
     use crate::wormholes::{DestClass, Source, Wormhole};
@@ -622,6 +661,14 @@ fn wormholes_layout_scene(name: &'static str) -> Scene {
             system_id: *a,
             dest: DestClass::Wspace,
             dest_system_id: Some(*b),
+            // Holes sharing a trunk, each with its own time left.
+            explicit_expiry: name.ends_with("_timed").then(|| match i {
+                3 => now + 1800,
+                4 => now + 3 * 3600,
+                11 => now - 60,
+                12 => now + 3 * 3600,
+                _ => now + 20 * 3600,
+            }),
             reported_at: now - 600 * i as i64,
             source: Source::Manual,
             updated_at: now - 60,
@@ -786,6 +833,10 @@ fn wormholes_focus_scene(
             }
             if name.contains("_zoomed_out") {
                 a.wh_graph.set_zoom(0.25);
+            }
+            if name.ends_with("_char") {
+                // Online in 319-3D, which no known hole reaches.
+                a.player.lock().unwrap().locations.insert("Fixture Pilot".into(), (30_004_608, false));
             }
             if focus.is_some() {
                 a.wh_graph.set_focus(focus);
@@ -1855,13 +1906,29 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
-    for name in ["view_wormholes_layout_tree", "view_wormholes_layout_stacked", "view_wormholes_layout_layered", "view_wormholes_layout_down", "view_wormholes_layout_tree_zoomed_in", "view_wormholes_layout_tree_lost"] {
+    for name in ["view_wormholes_layout_tree", "view_wormholes_layout_stacked", "view_wormholes_layout_layered", "view_wormholes_layout_down", "view_wormholes_layout_tree_zoomed_in", "view_wormholes_layout_tree_lost", "view_wormholes_layout_tree_timed"] {
         v.push(wormholes_layout_scene(name));
     }
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_map_char", [1280.0, 800.0], false, None));
+    // Adding a hole: the same dialog the signatures tab and the table open.
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ctx("dialog_wh_form", [420.0, 420.0], move |ctx| {
+            let app = app.get_or_insert_with(|| {
+                harness::render_dialogs_on_the_root(ctx);
+                let mut a = crate::app::SpaiApp::build(ctx, true);
+                a.systems = Some(fixtures::systems());
+                a.open_wh_form(crate::app::wormholes_ui::WhForm::at("1DQ1-A".into(), String::new(), None));
+                a
+            });
+            app.wh_form_window(ctx);
+        })
+    });
     // A probe scan that no longer lists two holes' signatures, asking before they go.
     v.push({
         harness::scratch_profile();
@@ -6876,6 +6943,39 @@ fn uitest_lookup_fc_cell_explains_itself() {
         harness.query_by_label_contains("Monitor appearances").is_some(),
         "hovering the FC cell at {at:?} showed no breakdown"
     );
+}
+
+/// Frame cost of a busy wormhole map: still, panning, and dragging a system.
+#[test]
+#[ignore]
+fn uitest_bench_wormhole_map() {
+    let mut scene = wormholes_big_scene("bench_wormhole_map");
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(8);
+    let lines = crate::app::wh_graph::EDGE_PROBE.with(|p| p.borrow().len());
+    println!("lines drawn: {lines}");
+    assert!(lines >= 50, "the map drew too little");
+    // A box: just inside the start of the first line, which leaves its system's edge.
+    let first = crate::app::wh_graph::EDGE_PROBE.with(|p| p.borrow()[0].1[0]);
+    let on_box = first - egui::vec2(30.0, 0.0);
+    let empty = egui::pos2(1200.0, 780.0);
+    const FRAMES: usize = 60;
+    let t = std::time::Instant::now();
+    harness.run_steps(FRAMES);
+    println!("map still: {:.2} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64);
+    for (label, at) in [("panning", empty), ("dragging a system", on_box)] {
+        harness.event(egui::Event::PointerMoved(at));
+        harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        harness.run_steps(2);
+        let t = std::time::Instant::now();
+        for i in 0..FRAMES {
+            harness.event(egui::Event::PointerMoved(at + egui::vec2(i as f32 * 3.0, i as f32)));
+            harness.run_steps(1);
+        }
+        println!("map {label}: {:.2} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64);
+        harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        harness.run_steps(2);
+    }
 }
 
 /// Frame cost of the intel feed, still and scrolling: the feed virtualises by hand, so a card that

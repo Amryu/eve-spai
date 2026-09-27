@@ -466,7 +466,7 @@ mod tests {
 
     fn hole() -> Wormhole {
         Wormhole {
-            system_id: 31_000_001,
+            system_id: 31_000_200,
             signature: Some("ABC".into()),
             dest: DestClass::Highsec,
             dest_system_id: Some(30_000_142),

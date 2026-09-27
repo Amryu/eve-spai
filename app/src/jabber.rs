@@ -182,6 +182,9 @@ pub struct JabberNotifyCfg {
     pub mention_volume: f32,
     pub delve911_sound: String,
     pub delve911_volume: f32,
+    /// Rescue Mode is on and unlocked. Off (the default, and before the UI first sets it), the
+    /// delve911 room is a room like any other.
+    pub delve911_siren: bool,
     pub mention_names: Vec<String>,
     pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
@@ -1074,7 +1077,8 @@ fn handle_event(
                 if local.eq_ignore_ascii_case("delve911") {
                     let (sound_on, spec, vol) = {
                         let s = state.lock().unwrap();
-                        (s.notify_cfg.sound_enabled, s.notify_cfg.delve911_sound.clone(), s.notify_cfg.delve911_volume)
+                        let c = &s.notify_cfg;
+                        (c.sound_enabled && c.delve911_siren, c.delve911_sound.clone(), c.delve911_volume)
                     };
                     if sound_on {
                         crate::sound::play_delve911_alert(&spec, vol);

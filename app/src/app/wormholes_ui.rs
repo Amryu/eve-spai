@@ -88,7 +88,8 @@ impl SpaiApp {
             let now = chrono::Utc::now().timestamp();
             store.prune_wormholes(now);
             let mut whs = store.wormholes();
-            whs.retain(|w| !w.is_expired(now));
+            // Saved before these were refused, or by an older version.
+            whs.retain(|w| !w.is_expired(now) && crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_none());
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             self.wh_overlay = WhOverlay::build(&whs);
             self.wh_cache = whs;
@@ -276,7 +277,7 @@ impl SpaiApp {
             }
             ui.add_space(8.0);
             if ui.button(format!("{}  Add", icon::PLUS)).on_hover_text("Enter a hole by hand").clicked() {
-                self.wh_form = Some(WhForm::default());
+                self.wh_form = Some(WhForm::fresh());
             }
             ui.add_space(8.0);
             // A combo box does not wrap on its own.
@@ -330,10 +331,6 @@ impl SpaiApp {
                 changed |= ui
                     .checkbox(&mut self.settings.wh_ask, "Ask for the signature")
                     .on_hover_text("A small window beside the EVE client asks for the signature, type and state of each hole")
-                    .changed();
-                changed |= ui
-                    .checkbox(&mut self.settings.wh_auto_probe, "Save probe scanner copies automatically")
-                    .on_hover_text("Copying the probe scanner saves its signatures to the system your active character is in")
                     .changed();
                 ui.separator();
                 if ui.button(format!("{}  Sharing…", icon::USERS_THREE)).on_hover_text("Share wormholes with others, end-to-end encrypted").clicked() {
@@ -557,6 +554,11 @@ impl SpaiApp {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn open_wh_form(&mut self, form: WhForm) {
+        self.wh_form = Some(form);
+    }
+
     pub(crate) fn wh_edit(&mut self, id: i64) {
         {
             self.wh_form = self.wh_cache.iter().find(|w| w.id == id).map(|w| {
@@ -578,7 +580,7 @@ impl SpaiApp {
     }
 
     /// The add/edit form. A new entry is Manual; an edited one keeps the origin it had.
-    fn wh_form_window(&mut self, ctx: &egui::Context) {
+    pub(crate) fn wh_form_window(&mut self, ctx: &egui::Context) {
         use crate::wormholes::{ShipSize, Source, Wormhole};
         let Some(mut form) = self.wh_form.take() else { return };
         let mut open = true;
@@ -587,6 +589,7 @@ impl SpaiApp {
         let sigs_of = |name: &str| -> Vec<(String, String)> {
             let Some(id) = self.systems.as_ref().and_then(|g| g.lookup(name.trim())).map(|i| i.id) else { return Vec::new() };
             let mut list = self.store.as_ref().map(|s| s.system_sigs(id)).unwrap_or_default();
+            list.retain(|s| offerable(s, id, &self.wh_cache, form.id));
             // Wormholes first, then what is not scanned yet, then the rest; by signature within.
             let rank = |g: &str| if g.to_lowercase().contains("wormhole") { 0 } else if g.is_empty() { 1 } else { 2 };
             list.sort_by(|a, b| rank(&a.group).cmp(&rank(&b.group)).then(a.sig.cmp(&b.sig)));
@@ -603,7 +606,7 @@ impl SpaiApp {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                egui::Grid::new("wh_form").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                egui::Grid::new("wh_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("System");
                     ui.add(egui::TextEdit::singleline(&mut form.system).desired_width(200.0));
                     ui.end_row();
@@ -624,7 +627,7 @@ impl SpaiApp {
                     ui.add(egui::TextEdit::singleline(&mut form.dest).hint_text("system or Highsec, C5...").desired_width(200.0));
                     ui.end_row();
                     ui.label("Its signature");
-                    sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "the other side", &there_sigs);
+                    sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "ABC-123", &there_sigs);
                     ui.end_row();
                     ui.label("Size");
                     // Every size stays open: a recorded type can be wrong, or be the other side's.
@@ -697,6 +700,12 @@ impl SpaiApp {
             let dest_kind = dest_id.is_none().then(|| crate::wormholes::DestClass::from_words(&form.dest)).flatten();
             if !form.dest.trim().is_empty() && dest_id.is_none() && dest_kind.is_none() {
                 form.error = Some(format!("No system or kind of space called {:?}.", form.dest.trim()));
+                self.wh_form = Some(form);
+                return;
+            }
+            let class = |id: i64| geo.as_ref()?.info_of(id).map(|i| crate::whdata::class_of(id, i.security, &i.region));
+            if let Some(why) = crate::whdata::connection_problem(sys, dest_id, class, Some(form.wh_type.as_str()), None) {
+                form.error = Some(why);
                 self.wh_form = Some(form);
                 return;
             }
@@ -796,6 +805,27 @@ impl SpaiApp {
     }
 }
 
+/// Whether a saved signature in `system` can still be picked for a hole: not scanned as something
+/// else, and not already another hole's (`except`, the hole being edited, may keep its own).
+pub(crate) fn offerable(s: &crate::store::SystemSig, system: i64, holes: &[crate::wormholes::Wormhole], except: Option<i64>) -> bool {
+    let group = s.group.to_lowercase();
+    if s.kind.to_lowercase().contains("anomal") || (!group.is_empty() && !group.contains("wormhole")) {
+        return false;
+    }
+    let letters = |x: &str| x.trim().chars().take(3).collect::<String>().to_uppercase();
+    let mine = letters(&s.sig);
+    !holes.iter().filter(|w| Some(w.id) != except).any(|w| {
+        let here = if w.system_id == system {
+            w.signature.as_deref()
+        } else if w.dest_system_id == Some(system) {
+            w.dest_signature.as_deref()
+        } else {
+            None
+        };
+        here.is_some_and(|h| letters(h) == mine)
+    })
+}
+
 /// The add/edit form's fields, as typed.
 #[derive(Default)]
 pub(crate) struct WhForm {
@@ -821,7 +851,13 @@ impl WhForm {
         let size = crate::whdata::hole_type(&wh_type)
             .filter(|t| t.jump_mass > 0)
             .map(|t| crate::wormholes::size_for_jump_mass(t.jump_mass));
-        WhForm { system, sig, wh_type, size, ..Default::default() }
+        WhForm { system, sig, wh_type, size, ..WhForm::fresh() }
+    }
+
+    /// A hole nobody has read yet, at what a hole just found usually is: under a day, over half
+    /// its mass. One click changes either.
+    pub(crate) fn fresh() -> Self {
+        WhForm { life: Some(crate::wormholes::Life::UnderDay), mass: Some(crate::wormholes::Mass::Fresh), ..Default::default() }
     }
 
     fn of(w: &crate::wormholes::Wormhole, geo: Option<&crate::geo::Systems>) -> Self {

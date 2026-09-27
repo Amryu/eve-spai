@@ -8,7 +8,7 @@ use egui_phosphor::regular as icon;
 
 use super::SpaiApp;
 use crate::whdata::{self, Class};
-use crate::wormholes::{Life, Mass, ShipSize, Wormhole};
+use crate::wormholes::{Life, Mass, Wormhole};
 
 /// Wide enough that at [`MIN_ZOOM`] a name still fits its scaled box, so no box grows past its
 /// place when zoomed out.
@@ -82,9 +82,6 @@ const GRID: f32 = 10.0;
 /// How far out of a box an edge runs before it turns.
 const STUB: f32 = 20.0;
 const MIN_ZOOM: f32 = 0.25;
-/// How long before and after a probe scanner copy the system must stay the same for the copy to
-/// be saved to it.
-const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -174,6 +171,15 @@ fn short_group(group: &str) -> &str {
     }
 }
 
+/// The lines last routed and what for. `partial` when some were kept from before during a drag.
+struct RouteCache {
+    key: u64,
+    boxes: HashMap<i64, egui::Rect>,
+    links: Vec<(i64, i64, bool)>,
+    paths: Vec<Option<Vec<egui::Pos2>>>,
+    partial: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct WhGraphView {
     pub(crate) table: bool,
@@ -193,18 +199,9 @@ pub(crate) struct WhGraphView {
     sigs: Option<(i64, Vec<crate::store::SystemSig>)>,
     sigs_pruned: bool,
     sig_note: Option<String>,
-    /// When the clipboard was last looked at for a probe scan, and what it held.
-    probe_checked: Option<std::time::Instant>,
-    probe_seen: Option<u64>,
-    /// A copied scan waiting to be sure of its system, and when it was copied.
-    probe_pending: Option<(Vec<crate::wormholes::ScanSig>, std::time::Instant)>,
-    /// The active character's system and since when it has been that one.
-    probe_system: Option<(i64, std::time::Instant)>,
-    /// The signature whose hole is open for changes.
-    sig_edit: Option<String>,
     keep_missing: bool,
     /// The last routes worked out, and what they were worked out for.
-    route_cache: Option<(u64, Vec<Option<Vec<egui::Pos2>>>)>,
+    route_cache: Option<RouteCache>,
     /// Gate jumps from each pinned system, for joining it to the focused chain.
     gate_dist: HashMap<i64, HashMap<i64, u32>>,
     /// The last auto layout and what it was worked out from: the layered one is too slow to
@@ -252,7 +249,6 @@ impl WhGraphView {
     pub(crate) fn show_sigs(&mut self, system: i64, sigs: Vec<crate::store::SystemSig>) {
         self.side_tab = SideTab::Sigs;
         self.sigs = Some((system, sigs));
-        self.sig_edit = self.sigs.as_ref().and_then(|(_, l)| l.iter().find(|s| s.group == "Wormhole")).map(|s| s.sig.clone());
     }
 
     #[cfg(test)]
@@ -287,14 +283,42 @@ impl WhGraphView {
         placed.hash(&mut h);
         links.hash(&mut h);
         let key = h.finish();
-        if let Some((k, r)) = &self.route_cache {
-            if *k == key {
-                return r.clone();
+        let dragging = self.drag.is_some();
+        if let Some(c) = &self.route_cache {
+            if c.key == key && (dragging || !c.partial) {
+                return c.paths.clone();
             }
         }
-        let r = route_all(boxes, links, parent);
-        self.route_cache = Some((key, r.clone()));
-        r
+        // While a box is dragged only its own lines, and those it now lies across, are routed
+        // again; the rest stay as they were. Letting go routes everything once more.
+        let (paths, partial) = match &self.route_cache {
+            Some(c) if dragging && c.links == links => {
+                let moved: Vec<egui::Rect> = boxes
+                    .iter()
+                    .filter(|(id, r)| c.boxes.get(id) != Some(r))
+                    .flat_map(|(id, r)| [Some(*r), c.boxes.get(id).copied()])
+                    .flatten()
+                    .collect();
+                let moved_ids: HashSet<i64> = boxes.iter().filter(|(id, r)| c.boxes.get(id) != Some(r)).map(|(id, _)| *id).collect();
+                let keep: Vec<Option<Vec<egui::Pos2>>> = links
+                    .iter()
+                    .zip(&c.paths)
+                    .map(|(&(a, b, _), p)| {
+                        let p = p.as_ref()?;
+                        let touches = moved_ids.contains(&a) || moved_ids.contains(&b);
+                        let crosses = p.windows(2).any(|s| {
+                            let seg = egui::Rect::from_two_pos(s[0], s[1]).expand(0.5);
+                            moved.iter().any(|r| r.shrink(1.0).intersects(seg))
+                        });
+                        (!touches && !crosses).then(|| p.clone())
+                    })
+                    .collect();
+                (route_some(boxes, links, parent, &keep), true)
+            }
+            _ => (route_all(boxes, links, parent), false),
+        };
+        self.route_cache = Some(RouteCache { key, boxes: boxes.clone(), links: links.to_vec(), paths: paths.clone(), partial });
+        paths
     }
 
     fn zoom_by(&mut self, factor: f32, rect: egui::Rect) {
@@ -413,8 +437,25 @@ pub(crate) fn route_all(
     links: &[(i64, i64, bool)],
     parent: &HashMap<i64, i64>,
 ) -> Vec<Option<Vec<egui::Pos2>>> {
-    let mut done: Vec<(Vec<egui::Pos2>, i64, i64, bool)> = Vec::new();
-    let mut out: Vec<Option<Vec<egui::Pos2>>> = vec![None; links.len()];
+    route_some(boxes, links, parent, &vec![None; links.len()])
+}
+
+/// [`route_all`] with the links that have a line in `keep` left on it: only the others are routed,
+/// around the kept ones.
+pub(crate) fn route_some(
+    boxes: &HashMap<i64, egui::Rect>,
+    links: &[(i64, i64, bool)],
+    parent: &HashMap<i64, i64>,
+    keep: &[Option<Vec<egui::Pos2>>],
+) -> Vec<Option<Vec<egui::Pos2>>> {
+    let bbox_of = |p: &[egui::Pos2]| p.iter().fold(egui::Rect::NOTHING, |r, q| r.union(egui::Rect::from_min_max(*q, *q)));
+    let mut done: Vec<Routed> = keep
+        .iter()
+        .zip(links)
+        .filter_map(|(k, &(a, b, hole))| k.as_ref().map(|p| Routed { path: p.clone(), a, b, hole, bbox: bbox_of(p) }))
+        .collect();
+    let mut out: Vec<Option<Vec<egui::Pos2>>> = keep.to_vec();
+    let box_list: Vec<(i64, egui::Rect)> = boxes.iter().map(|(id, r)| (*id, *r)).collect();
     let mut degree: HashMap<i64, usize> = HashMap::new();
     for &(a, b, _) in links {
         *degree.entry(a).or_default() += 1;
@@ -435,6 +476,9 @@ pub(crate) fn route_all(
     };
     order.sort_by_key(|&i| (!links[i].2, rise(i), i));
     for i in order {
+        if keep[i].is_some() {
+            continue;
+        }
         let (a, b, hole) = links[i];
         let (Some(ra), Some(rb)) = (boxes.get(&a), boxes.get(&b)) else { continue };
         // On a tie the bend sits by the system the branch grows from (else the busier one), so
@@ -444,16 +488,19 @@ pub(crate) fn route_all(
             (_, true) => false,
             _ => degree.get(&a) >= degree.get(&b),
         };
-        let best = candidates(*ra, *rb, a_hub)
-            .into_iter()
-            .map(|p| {
-                let cost = route_cost(&p, a, b, hole, boxes, &done);
-                (p, cost)
-            })
-            .min_by(|x, y| x.1.total_cmp(&y.1))
-            .map(|(p, _)| p);
+        // The first of the cheapest, as a plain minimum would pick; a candidate stops being costed
+        // once it is past the best so far.
+        let mut best: Option<(Vec<egui::Pos2>, f32)> = None;
+        for p in candidates(*ra, *rb, a_hub) {
+            let bound = best.as_ref().map_or(f32::INFINITY, |(_, c)| *c);
+            let cost = route_cost(&p, a, b, hole, boxes, &box_list, &done, bound);
+            if cost < bound {
+                best = Some((p, cost));
+            }
+        }
+        let best = best.map(|(p, _)| p);
         if let Some(p) = &best {
-            done.push((p.clone(), a, b, hole));
+            done.push(Routed { path: p.clone(), a, b, hole, bbox: bbox_of(p) });
         }
         out[i] = best;
     }
@@ -508,34 +555,64 @@ fn candidates(a: egui::Rect, b: egui::Rect, a_hub: bool) -> Vec<Vec<egui::Pos2>>
     out.into_iter().map(simplify).collect()
 }
 
-fn route_cost(path: &[egui::Pos2], a: i64, b: i64, hole: bool, boxes: &HashMap<i64, egui::Rect>, done: &[(Vec<egui::Pos2>, i64, i64, bool)]) -> f32 {
+/// A link already routed, with the box around its line for skipping it where it is far away.
+struct Routed {
+    path: Vec<egui::Pos2>,
+    a: i64,
+    b: i64,
+    hole: bool,
+    bbox: egui::Rect,
+}
+
+/// What `path` costs, or infinity once it is sure to be over `bound`.
+#[allow(clippy::too_many_arguments)]
+fn route_cost(
+    path: &[egui::Pos2],
+    a: i64,
+    b: i64,
+    hole: bool,
+    boxes: &HashMap<i64, egui::Rect>,
+    box_list: &[(i64, egui::Rect)],
+    done: &[Routed],
+    bound: f32,
+) -> f32 {
+    // Off-centre ports are for keeping off other lines, not for shaving a few pixels.
+    let off = |p: egui::Pos2, r: &egui::Rect| {
+        if (p.x - r.left()).abs() < 0.5 || (p.x - r.right()).abs() < 0.5 { (p.y - r.center().y).abs() } else { (p.x - r.center().x).abs() }
+    };
+    let ports = boxes.get(&a).map_or(0.0, |r| off(path[0], r)) + boxes.get(&b).map_or(0.0, |r| off(path[path.len() - 1], r));
+    let bends = 25.0 * path.len().saturating_sub(2) as f32;
+    let tail = bends + 4.0 * ports;
     let mut cost = 0.0;
     for s in path.windows(2) {
         let seg = egui::Rect::from_two_pos(s[0], s[1]).expand(0.5);
-        for (id, r) in boxes {
+        for (id, r) in box_list {
             if *id != a && *id != b && r.shrink(1.0).intersects(seg) {
                 cost += 1_000_000.0;
             }
         }
         cost += (s[1] - s[0]).length();
-        for (other, oa, ob, other_hole) in done {
+        // Lines further than this can neither run along nor cross the segment.
+        let near = seg.expand(3.5);
+        for other in done {
+            if !near.intersects(other.bbox) {
+                continue;
+            }
             // Holes out of one system share their trunk; any other shared stretch is ambiguous.
-            let fan_out = hole && *other_hole && (*oa == a || *ob == a || *oa == b || *ob == b);
+            let fan_out = hole && other.hole && (other.a == a || other.b == a || other.a == b || other.b == b);
             let per_px = if fan_out { 0.0 } else { 60.0 };
-            for t in other.windows(2) {
+            for t in other.path.windows(2) {
                 cost += per_px * overlap(s[0], s[1], t[0], t[1]);
                 if !fan_out && crosses(s[0], s[1], t[0], t[1]) {
                     cost += 40.0;
                 }
             }
         }
+        if cost + tail > bound {
+            return f32::INFINITY;
+        }
     }
-    // Off-centre ports are for keeping off other lines, not for shaving a few pixels.
-    let off = |p: egui::Pos2, r: &egui::Rect| {
-        if (p.x - r.left()).abs() < 0.5 || (p.x - r.right()).abs() < 0.5 { (p.y - r.center().y).abs() } else { (p.x - r.center().x).abs() }
-    };
-    let ports = boxes.get(&a).map_or(0.0, |r| off(path[0], r)) + boxes.get(&b).map_or(0.0, |r| off(path[path.len() - 1], r));
-    cost + 25.0 * path.len().saturating_sub(2) as f32 + 4.0 * ports
+    cost + bends + 4.0 * ports
 }
 
 /// Whether an upright and a flat segment cross inside both, not just touch at an end.
@@ -904,8 +981,14 @@ impl SpaiApp {
         // The drifter systems are hubs of their own: on the map and joined to the chains like
         // pinned systems, though the Routes panel lists only what the user pins.
         let drifters: Vec<i64> = whdata::DRIFTERS.iter().map(|d| d.2).filter(|id| geo.info_of(*id).is_some()).collect();
+        let chars: HashMap<String, (i64, bool)> = self.player.lock().unwrap().locations.clone();
+        // Where our online characters are is always on the map, with or without a known hole, and
+        // joined to the chains like a pinned system.
+        let mut char_systems: Vec<i64> = chars.values().map(|(s, _)| *s).filter(|id| geo.info_of(*id).is_some()).collect();
+        char_systems.sort_unstable();
+        char_systems.dedup();
         let mut pins: Vec<i64> = self.settings.wh_route_pins.iter().filter_map(|p| geo.lookup(p).map(|i| i.id)).collect();
-        for d in &drifters {
+        for d in drifters.iter().chain(&char_systems) {
             if !pins.contains(d) {
                 pins.push(*d);
             }
@@ -953,7 +1036,6 @@ impl SpaiApp {
             }
         }
         edges.extend(gate_links.iter().map(|(e, p, _)| (*e, *p)));
-        let chars: HashMap<String, (i64, bool)> = self.player.lock().unwrap().locations.clone();
         let mut here: HashMap<i64, Vec<String>> = HashMap::new();
         for (name, (sys, _)) in &chars {
             here.entry(*sys).or_default().push(name.clone());
@@ -966,7 +1048,10 @@ impl SpaiApp {
             let pinned = if pins.contains(&id) { 50 } else { 0 };
             here.get(&id).map_or(pinned, |v| 100 + v.len() as i64)
         };
-        let alone: Vec<i64> = if focus.is_none() { drifters.clone() } else { Vec::new() };
+        let mut alone: Vec<i64> = if focus.is_none() { drifters.clone() } else { Vec::new() };
+        alone.extend(char_systems.iter().copied());
+        alone.sort_unstable();
+        alone.dedup();
         let opts = self.wh_layout_opts();
         let auto = {
             use std::hash::{Hash, Hasher};
@@ -1236,8 +1321,13 @@ impl SpaiApp {
 
         #[cfg(test)]
         EDGE_PROBE.with(|p| p.borrow_mut().clear());
-        // Every line first, so no line is ever drawn over a label.
-        for (wi, w) in holes.iter().enumerate() {
+        // Every line first, so no line is ever drawn over a label. Solid ones go down first and
+        // each line on a thin band of the background: where lines share a stretch, a dashed one on
+        // top keeps its gaps instead of a solid one beneath showing through them.
+        let mut order: Vec<usize> = (0..holes.len()).collect();
+        order.sort_by_key(|&i| time_left(&holes[i], now));
+        for wi in order {
+            let w = &holes[wi];
             let Some(path) = &hole_paths[wi] else { continue };
             let line = screen(path);
             #[cfg(test)]
@@ -1245,7 +1335,11 @@ impl SpaiApp {
             // Colour is mass alone; how much time is left is the line's pattern.
             let hot = hovered_edge.is_none() && hit(&line);
             let width = if hot { 4.0 } else { 2.5 };
-            stroke_hole(&painter, &line, egui::Stroke::new(width, mass_color(w.mass)), time_left(w, now));
+            let t = time_left(w, now);
+            if t != TimeLeft::Plenty && t != TimeLeft::Under12h {
+                painter.add(egui::Shape::line(line.clone(), egui::Stroke::new(width + 3.0, visuals.panel_fill)));
+            }
+            stroke_hole(&painter, &line, egui::Stroke::new(width, mass_color(w.mass)), t);
             if hot {
                 hovered_edge = Some(w);
             }
@@ -1649,8 +1743,6 @@ impl SpaiApp {
         let mut unpin: Option<String> = None;
         let mut paste: Option<Option<String>> = None;
         let mut drop_sig: Option<String> = None;
-        let mut edit_sig: Option<String> = None;
-        let mut quick: Option<(Wormhole, Wormhole)> = None;
         let mut new_hole: Option<String> = None;
         egui::Panel::right("wh_graph_side").resizable(true).default_size(260.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -1889,8 +1981,11 @@ impl SpaiApp {
                                 super::human_ago(now - sg.updated_at)
                             ));
                             let is_hole = hole.is_some() || sg.group == "Wormhole";
-                            if is_hole && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Update this wormhole").clicked() {
-                                edit_sig = Some(sg.sig.clone());
+                            if is_hole && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this wormhole").clicked() {
+                                match hole {
+                                    Some(w) => edit = Some(w.id),
+                                    None => new_hole = Some(sg.sig.clone()),
+                                }
                             }
                             if ui.small_button(icon::X).on_hover_text("Remove").clicked() {
                                 drop_sig = Some(sg.sig.clone());
@@ -1899,85 +1994,12 @@ impl SpaiApp {
                         ui.end_row();
                     }
                 });
-                // The chosen hole's state, changed in place as it degrades.
-                let open_sig = self.wh_graph.sig_edit.clone();
-                if let Some(w) = open_sig.as_deref().and_then(|sig| sig_hole(holes, sel, sig)) {
-                    let mut w = w.clone();
-                    let was = w.clone();
-                    let here = w.system_id == sel;
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        let far = if here { w.dest_system_id } else { Some(w.system_id) };
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} {} {}",
-                                open_sig.as_deref().unwrap_or_default(),
-                                icon::ARROW_RIGHT,
-                                far.map(name).unwrap_or_else(|| w.dest.label().to_owned())
-                            ))
-                            .strong(),
-                        );
-                        if ui.small_button(icon::X).on_hover_text("Close").clicked() {
-                            self.wh_graph.sig_edit = None;
-                        }
-                    });
-                    egui::Grid::new("wh_graph_sig_edit").spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.label("Type");
-                        let codes: Vec<&str> = whdata::types().iter().map(|t| t.code.as_str()).collect();
-                        let ty = if here { &mut w.wh_type } else { &mut w.dest_wh_type };
-                        let mut code = ty.clone().unwrap_or_default();
-                        if crate::app::wormholes_ui::wh_type_picker(ui, "wh_sig_type", 150.0, &mut code, &codes) {
-                            *ty = crate::app::wh_prompt::known_type(&code);
-                            if let Some(s) = crate::wormholes::sizes_for(&[code.as_str()]).first().filter(|_| !code.is_empty() && code != "K162") {
-                                w.size = Some(*s);
-                            }
-                        }
-                        ui.end_row();
-                        ui.label("Size");
-                        let sizes: Vec<_> = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge]
-                            .into_iter()
-                            .map(|s| (s, s.short(), s.label()))
-                            .collect();
-                        crate::app::wormholes_ui::choice_row(ui, &mut w.size, &sizes);
-                        ui.end_row();
-                        ui.label("Time left");
-                        let lives: Vec<_> = Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();
-                        crate::app::wormholes_ui::choice_row(ui, &mut w.life, &lives);
-                        ui.end_row();
-                        ui.label("Mass left");
-                        let masses: Vec<_> = Mass::ALL.into_iter().map(|m| (m, m.short(), m.label())).collect();
-                        crate::app::wormholes_ui::choice_row(ui, &mut w.mass, &masses);
-                        ui.end_row();
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button(format!("{}  All fields", icon::PENCIL_SIMPLE)).clicked() {
-                            edit = Some(w.id);
-                        }
-                        if ui.button(format!("{}  Collapsed", icon::X)).on_hover_text("Mark this hole dead").clicked() {
-                            kill = Some(w.id);
-                        }
-                    });
-                    if w != was {
-                        quick = Some((was, w));
-                    }
-                } else if let Some(sig) = open_sig {
-                    // A wormhole signature not tied to a known hole yet: enter it.
-                    self.wh_graph.sig_edit = None;
-                    new_hole = Some(sig);
-                }
                     }
                 }
             });
         });
         if let Some(text) = paste {
             self.wh_graph_paste(sel, text, now);
-        }
-        if let Some(sig) = edit_sig {
-            self.wh_graph.sig_edit = (self.wh_graph.sig_edit.as_deref() != Some(sig.as_str())).then_some(sig);
-        }
-        if let Some((was, w)) = quick {
-            self.wh_quick_save(&was, w, now);
         }
         if let Some(sig) = new_hole {
             let wh_type = self
@@ -2012,38 +2034,6 @@ impl SpaiApp {
         if let Some(id) = edit {
             self.wh_edit(id);
         }
-    }
-
-    /// Writes a change made in the signatures tab, with who made it.
-    fn wh_quick_save(&mut self, was: &Wormhole, mut w: Wormhole, now: i64) {
-        let who = if self.settings.active_character.is_empty() { "me".to_owned() } else { self.settings.active_character.clone() };
-        let mut changes: Vec<(&str, String)> = Vec::new();
-        if w.wh_type != was.wh_type || w.dest_wh_type != was.dest_wh_type {
-            changes.push(("type", w.wh_type.clone().or(w.dest_wh_type.clone()).unwrap_or_default()));
-        }
-        if w.size != was.size {
-            changes.push(("size", w.size.map_or("unknown", |s| s.label()).to_owned()));
-        }
-        if w.life != was.life {
-            changes.push(("time left", w.life.map_or("unknown", |l| l.label()).to_owned()));
-            w.explicit_expiry = w.life.and_then(|l| l.closes_by(now)).or(was.explicit_expiry);
-        }
-        if w.mass != was.mass {
-            changes.push(("mass left", w.mass.map_or("unknown", |m| m.label()).to_owned()));
-        }
-        if w.life != was.life || w.mass != was.mass {
-            w.observed_at = Some(now);
-        }
-        w.updated_at = now;
-        w.seen_by |= crate::wormholes::Source::Manual.bit();
-        if let Some(store) = &self.store {
-            store.write_wormhole(&w);
-            store.audit_wormhole(&w.uid, &who, crate::wormholes::Source::Manual, &changes);
-        }
-        if let Some(c) = self.wh_cache.iter_mut().find(|c| c.id == w.id) {
-            *c = w;
-        }
-        self.wh_reloaded = None;
     }
 
     /// The selected system's pasted signatures, read once per system.
@@ -2089,78 +2079,6 @@ impl SpaiApp {
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
         self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed{linked}"));
-    }
-
-    /// A probe scanner copy on the clipboard is saved to where the active character is, wormhole
-    /// space or not, without a paste.
-    pub(crate) fn poll_probe_clipboard(&mut self, ctx: &egui::Context) {
-        if !self.settings.wh_auto_probe {
-            return;
-        }
-        self.apply_probe_scan();
-        if self.wh_graph.probe_pending.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        }
-        if self.wh_graph.probe_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200)) {
-            return;
-        }
-        self.wh_graph.probe_checked = Some(std::time::Instant::now());
-        if self.dscan_clip.is_none() {
-            self.dscan_clip = arboard::Clipboard::new().ok();
-        }
-        let Some(text) = self.dscan_clip.as_mut().and_then(|c| c.get_text().ok()) else { return };
-        let hash = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            text.hash(&mut h);
-            h.finish()
-        };
-        // Whatever was on the clipboard at start is an old copy, from wherever that was.
-        let first = self.wh_graph.probe_seen.is_none();
-        if self.wh_graph.probe_seen == Some(hash) {
-            return;
-        }
-        self.wh_graph.probe_seen = Some(hash);
-        if first {
-            return;
-        }
-        let scan = crate::wormholes::probe_scan(&text);
-        if !scan.is_empty() {
-            self.wh_graph.probe_pending = Some((scan, std::time::Instant::now()));
-        }
-    }
-
-    /// Saves a held probe scan once it is clear which system it belongs to: the location poller
-    /// lags a jump, so the character must have stayed put from well before the copy to well after.
-    fn apply_probe_scan(&mut self) {
-        let system = self.player.lock().unwrap().system_id;
-        if system != self.wh_graph.probe_system.map(|(s, _)| s) {
-            self.wh_graph.probe_system = system.map(|s| (s, std::time::Instant::now()));
-        }
-        let Some((_, copied)) = &self.wh_graph.probe_pending else { return };
-        let copied = *copied;
-        if copied.elapsed() < PROBE_SETTLE {
-            return;
-        }
-        let Some((scan, _)) = self.wh_graph.probe_pending.take() else { return };
-        // `since` after the copy saturates to zero, so a change after it fails this too.
-        let settled = self.wh_graph.probe_system.filter(|(_, since)| copied.duration_since(*since) >= PROBE_SETTLE);
-        let Some((system, _)) = settled else {
-            self.wh_graph.sig_note =
-                Some("A probe scan was not saved: the system changed around the time it was copied. Paste it here if it is this one.".into());
-            return;
-        };
-        let now = chrono::Utc::now().timestamp();
-        let who = {
-            let p = self.player.lock().unwrap();
-            if p.active_name.is_empty() { "me".to_owned() } else { p.active_name.clone() }
-        };
-        let Some(store) = self.store.as_ref() else { return };
-        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, true);
-        let linked = self.wh_probe_followup(system, &scan, true, &who);
-        let name = self.systems.as_ref().and_then(|g| g.info_of(system)).map(|i| i.name.clone()).unwrap_or_default();
-        self.wh_graph.sigs = None;
-        self.wh_graph.sig_note = Some(format!("Probe scan of {name} saved: {added} new, {updated} updated, {removed} removed{linked}"));
     }
 
     /// Carries a saved probe scan over to the holes: a lone unclaimed wormhole signature goes on
@@ -2461,6 +2379,83 @@ mod tests {
         });
         assert!(!clash, "the new one found its own room: {:?}", now[&4]);
         assert_eq!(now[&4].x, COL, "beside its parent's other holes");
+    }
+
+    #[test]
+    fn a_drag_reroutes_only_what_it_moves_and_letting_go_routes_everything() {
+        let auto = auto_layout(&[(1, 2), (1, 3), (3, 4), (5, 6)], |n| if n == 1 { 100 } else { 0 });
+        let boxes: HashMap<i64, egui::Rect> = auto.iter().map(|(n, _, p)| (*n, egui::Rect::from_min_size(*p, NODE))).collect();
+        let links = vec![(1, 2, true), (1, 3, true), (3, 4, true), (5, 6, true)];
+        let parent: HashMap<i64, i64> = auto.iter().filter_map(|(n, p, _)| Some((*n, (*p)?))).collect();
+        let mut view = WhGraphView::default();
+        let before = view.routes(&boxes, &links, &parent);
+        let mut moved = boxes.clone();
+        moved.insert(4, boxes[&4].translate(egui::vec2(0.0, 300.0)));
+        view.drag = Some((4, egui::Pos2::ZERO));
+        let during = view.routes(&moved, &links, &parent);
+        assert_eq!(during[3], before[3], "a line far from the drag is left alone");
+        assert_ne!(during[2], before[2], "the dragged system's own line follows it");
+        view.drag = None;
+        assert_eq!(view.routes(&moved, &links, &parent), route_all(&moved, &links, &parent), "letting go routes everything afresh");
+    }
+
+    /// How long routing takes on a map the size of a busy one: ~110 systems, ~100 holes.
+    #[test]
+    #[ignore]
+    fn bench_route_all() {
+        let mut edges = Vec::new();
+        for c in 0..10i64 {
+            let base = 31_000_100 + c * 20;
+            for k in 1..11 {
+                edges.push((base + (k - 1) / 2, base + k));
+            }
+        }
+        let auto = super::super::wh_layout::layout(&edges, &[], |_| 0, super::super::wh_layout::Opts::default());
+        let boxes: HashMap<i64, egui::Rect> = auto.iter().map(|(n, _, p)| (*n, egui::Rect::from_min_size(*p, node_size(*n)))).collect();
+        let links: Vec<(i64, i64, bool)> = edges.iter().map(|(a, b)| (*a, *b, true)).collect();
+        let parent: HashMap<i64, i64> = auto.iter().filter_map(|(n, p, _)| Some((*n, (*p)?))).collect();
+        let t = std::time::Instant::now();
+        let r = route_all(&boxes, &links, &parent);
+        eprintln!("BENCH route_all {} links, {} boxes: {:?}", links.len(), boxes.len(), t.elapsed());
+        assert_eq!(r.len(), links.len());
+        // A drag frame: one box moved, its lines routed again around the rest.
+        let mut view = WhGraphView::default();
+        view.routes(&boxes, &links, &parent);
+        view.drag = Some((31_000_105, egui::Pos2::ZERO));
+        let mut moved = boxes.clone();
+        let r5 = moved[&31_000_105];
+        moved.insert(31_000_105, r5.translate(egui::vec2(40.0, 30.0)));
+        let t = std::time::Instant::now();
+        let d = view.routes(&moved, &links, &parent);
+        eprintln!("BENCH drag frame: {:?}", t.elapsed());
+        assert!(links.iter().zip(&d).filter(|((a, b, _), _)| *a == 31_000_105 || *b == 31_000_105).all(|(_, p)| p.is_some()));
+    }
+
+    #[test]
+    fn the_dialogs_offer_only_free_wormhole_signatures() {
+        use crate::app::wormholes_ui::offerable;
+        let sig = |id: &str, kind: &str, group: &str| crate::store::SystemSig {
+            sig: id.into(),
+            kind: kind.into(),
+            group: group.into(),
+            name: String::new(),
+            added_at: 0,
+            updated_at: 0,
+            who: String::new(),
+        };
+        let here = 31_000_004;
+        let holes = [
+            Wormhole { id: 1, system_id: here, signature: Some("ABC-123".into()), ..Default::default() },
+            Wormhole { id: 2, system_id: 30_000_224, dest_system_id: Some(here), dest_signature: Some("XYZ".into()), ..Default::default() },
+        ];
+        let sig_kind = "Cosmic Signature";
+        assert!(offerable(&sig("NEW-001", sig_kind, "Wormhole"), here, &holes, None));
+        assert!(offerable(&sig("UNS-002", sig_kind, ""), here, &holes, None), "not scanned yet: could be one");
+        assert!(!offerable(&sig("DAT-003", sig_kind, "Data Site"), here, &holes, None), "scanned as something else");
+        assert!(!offerable(&sig("ANO-004", "Cosmic Anomaly", "Combat Site"), here, &holes, None));
+        assert!(!offerable(&sig("ABC-123", sig_kind, "Wormhole"), here, &holes, None), "another hole's, on its own side");
+        assert!(!offerable(&sig("XYZ-999", sig_kind, "Wormhole"), here, &holes, None), "another hole's, on the far side");
+        assert!(offerable(&sig("ABC-123", sig_kind, "Wormhole"), here, &holes, Some(1)), "the hole being edited keeps its own");
     }
 
     #[test]
