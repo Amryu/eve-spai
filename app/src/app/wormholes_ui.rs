@@ -340,14 +340,6 @@ impl SpaiApp {
                     self.wh_share.open = true;
                     ui.close();
                 }
-                if ui
-                    .button(format!("{}  Reset map layout", icon::ARROWS_CLOCKWISE))
-                    .on_hover_text("Forget where systems were dragged and lay the map out again")
-                    .clicked()
-                {
-                    self.wh_graph_reset_layout();
-                    ui.close();
-                }
             })
             .response
             .on_hover_text("Wormhole settings");

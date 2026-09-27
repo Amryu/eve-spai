@@ -12,7 +12,7 @@ use crate::wormholes::{Life, Mass, ShipSize, Wormhole};
 
 /// Wide enough that at [`MIN_ZOOM`] a name still fits its scaled box, so no box grows past its
 /// place when zoomed out.
-const NODE: egui::Vec2 = egui::vec2(240.0, 50.0);
+pub(crate) const NODE: egui::Vec2 = egui::vec2(240.0, 50.0);
 /// Drifter systems: their name, J-code and badge need more room.
 const WIDE_NODE: egui::Vec2 = egui::vec2(300.0, 50.0);
 
@@ -63,7 +63,7 @@ fn unidentified_type(system: i64, name: &str) -> Option<&'static str> {
     name.to_lowercase().contains("unidentified").then(|| whdata::drifter_code(system)).flatten()
 }
 
-fn node_size(id: i64) -> egui::Vec2 {
+pub(crate) fn node_size(id: i64) -> egui::Vec2 {
     if whdata::DRIFTERS.iter().any(|d| d.2 == id) { WIDE_NODE } else { NODE }
 }
 
@@ -77,9 +77,7 @@ fn display_name(id: i64, name: &str) -> String {
         None => name.to_owned(),
     }
 }
-const COL: f32 = 360.0;
-const ROW: f32 = 70.0;
-const CHAIN_GAP: f32 = 50.0;
+use super::wh_layout::COL;
 const GRID: f32 = 10.0;
 /// How far out of a box an edge runs before it turns.
 const STUB: f32 = 20.0;
@@ -170,6 +168,11 @@ pub(crate) struct WhGraphView {
     route_cache: Option<(u64, Vec<Option<Vec<egui::Pos2>>>)>,
     /// Gate jumps from each pinned system, for joining it to the focused chain.
     gate_dist: HashMap<i64, HashMap<i64, u32>>,
+    /// The last auto layout and what it was worked out from: the layered one is too slow to
+    /// redo every frame.
+    layout_cache: Option<(u64, Vec<(i64, Option<i64>, egui::Pos2)>)>,
+    /// The canvas as last drawn, whose shape the chains are packed to.
+    canvas: Option<egui::Rect>,
 }
 
 impl WhGraphView {
@@ -215,6 +218,19 @@ impl WhGraphView {
         self.zoom = zoom;
     }
 
+    /// The top left at `zoom`, whatever a fit asked for.
+    #[cfg(test)]
+    pub(crate) fn hold_view(&mut self, zoom: f32) {
+        self.zoom = zoom;
+        self.pan = egui::vec2(24.0, 24.0);
+        self.fit_pending = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pan_to(&mut self, pan: egui::Vec2) {
+        self.pan = pan;
+    }
+
     /// Routes for `links`, worked out again only when a box moves or the links change.
     fn routes(
         &mut self,
@@ -246,6 +262,16 @@ impl WhGraphView {
         self.pan += rel * (1.0 - new / old);
         self.zoom = new;
     }
+}
+
+/// Around the systems on the map, as far as the view may scroll.
+const CANVAS_MARGIN: f32 = 400.0;
+
+/// The map's extent: every box, plus [`CANVAS_MARGIN`] around them. Fixed while the map is, so the
+/// minimap keeps its scale as the view moves.
+fn canvas_of(pos: &HashMap<i64, egui::Pos2>) -> Option<egui::Rect> {
+    let content = pos.iter().fold(egui::Rect::NOTHING, |b, (id, p)| b.union(egui::Rect::from_min_size(*p, node_size(*id))));
+    content.is_positive().then(|| content.expand(CANVAS_MARGIN))
 }
 
 /// Centres for a label of `size` along the straight leg from `from` towards `to`, nearest `from`
@@ -358,7 +384,10 @@ pub(crate) fn route_all(
     let rise = |i: usize| {
         let (a, b, _) = links[i];
         match (boxes.get(&a), boxes.get(&b)) {
-            (Some(ra), Some(rb)) => (ra.center().y - rb.center().y).abs() as i64,
+            (Some(ra), Some(rb)) => {
+                let d = ra.center() - rb.center();
+                d.x.abs().min(d.y.abs()) as i64
+            }
             _ => i64::MAX,
         }
     };
@@ -423,12 +452,12 @@ fn candidates(a: egui::Rect, b: egui::Rect, a_hub: bool) -> Vec<Vec<egui::Pos2>>
             // Down, across and down.
             let (qa, qb) = (xa + oa, xb + ob);
             if b.top() - a.bottom() >= 2.0 * STUB {
-                for y in [a.bottom() + STUB, b.top() - STUB] {
+                for y in [a.bottom() + STUB, b.top() - STUB, (a.bottom() + b.top()) / 2.0] {
                     out.push(vec![pos2(qa, a.bottom()), pos2(qa, y), pos2(qb, y), pos2(qb, b.top())]);
                 }
             }
             if a.top() - b.bottom() >= 2.0 * STUB {
-                for y in [a.top() - STUB, b.bottom() + STUB] {
+                for y in [a.top() - STUB, b.bottom() + STUB, (a.top() + b.bottom()) / 2.0] {
                     out.push(vec![pos2(qa, a.top()), pos2(qa, y), pos2(qb, y), pos2(qb, b.bottom())]);
                 }
             }
@@ -572,98 +601,21 @@ fn rounded(path: &[egui::Pos2], radius: f32) -> Vec<egui::Pos2> {
 /// A position for every node, in BFS order per chain so a node comes after its parent.
 #[cfg(test)]
 pub(crate) fn auto_layout(edges: &[(i64, i64)], score: impl Fn(i64) -> i64) -> Vec<(i64, Option<i64>, egui::Pos2)> {
-    auto_layout_with(edges, &[], score)
-}
-
-/// [`auto_layout`] with `alone` placed too, as systems of their own when no edge reaches them.
-pub(crate) fn auto_layout_with(edges: &[(i64, i64)], alone: &[i64], score: impl Fn(i64) -> i64) -> Vec<(i64, Option<i64>, egui::Pos2)> {
-    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
-    for n in alone {
-        adj.entry(*n).or_default();
-    }
-    for &(a, b) in edges {
-        adj.entry(a).or_default().push(b);
-        adj.entry(b).or_default().push(a);
-    }
-    for v in adj.values_mut() {
-        v.sort_unstable();
-        v.dedup();
-    }
-    let mut nodes: Vec<i64> = adj.keys().copied().collect();
-    nodes.sort_unstable();
-    let mut seen = HashSet::new();
-    let mut chains: Vec<Vec<i64>> = Vec::new();
-    for &n in &nodes {
-        if seen.insert(n) {
-            let mut comp = vec![n];
-            let mut q = VecDeque::from([n]);
-            while let Some(u) = q.pop_front() {
-                for &v in &adj[&u] {
-                    if seen.insert(v) {
-                        comp.push(v);
-                        q.push_back(v);
-                    }
-                }
-            }
-            chains.push(comp);
-        }
-    }
-    let rank = |c: &Vec<i64>| (c.iter().map(|n| score(*n)).max().unwrap_or(0), c.len());
-    chains.sort_by_key(|c| std::cmp::Reverse(rank(c)));
-
-    let mut out = Vec::new();
-    let mut top = 0.0;
-    for comp in chains {
-        let root = *comp.iter().max_by_key(|n| (score(**n), adj[*n].len(), -**n)).unwrap();
-        let mut parent: HashMap<i64, Option<i64>> = HashMap::from([(root, None)]);
-        let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
-        let mut order = vec![root];
-        let mut q = VecDeque::from([root]);
-        while let Some(u) = q.pop_front() {
-            for &v in &adj[&u] {
-                if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(v) {
-                    e.insert(Some(u));
-                    children.entry(u).or_default().push(v);
-                    order.push(v);
-                    q.push_back(v);
-                }
-            }
-        }
-        // Leaves take one row each; a parent sits level with the middle of its children.
-        let mut y: HashMap<i64, f32> = HashMap::new();
-        let mut next_row = 0.0f32;
-        fn place(n: i64, children: &HashMap<i64, Vec<i64>>, y: &mut HashMap<i64, f32>, next_row: &mut f32) -> f32 {
-            let kids = children.get(&n).cloned().unwrap_or_default();
-            let at = if kids.is_empty() {
-                let r = *next_row;
-                *next_row += 1.0;
-                r
-            } else {
-                let rows: Vec<f32> = kids.iter().map(|k| place(*k, children, y, next_row)).collect();
-                (rows[0] + rows[rows.len() - 1]) / 2.0
-            };
-            y.insert(n, at);
-            at
-        }
-        place(root, &children, &mut y, &mut next_row);
-        let mut depth: HashMap<i64, u32> = HashMap::from([(root, 0)]);
-        for &n in &order {
-            if let Some(Some(p)) = parent.get(&n) {
-                depth.insert(n, depth[p] + 1);
-            }
-        }
-        for &n in &order {
-            out.push((n, parent[&n], egui::pos2(depth[&n] as f32 * COL, top + y[&n] * ROW)));
-        }
-        top += next_row * ROW + CHAIN_GAP;
-    }
-    out
+    super::wh_layout::layout(edges, &[], score, super::wh_layout::Opts::default())
 }
 
 /// The auto layout with systems already on the map (placed before, or dragged) kept where they
 /// are. A new system goes where the layout would put it relative to its parent, or to the nearest
 /// free spot from there: above or below first, then a column further out.
+#[cfg(test)]
 pub(crate) fn place(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &HashMap<i64, egui::Pos2>) -> HashMap<i64, egui::Pos2> {
+    place_with(auto, dragged, super::wh_layout::Opts::default())
+}
+
+/// [`place`] for a layout growing the way `opts` says: a new system looks beside its spot first,
+/// then a level further out.
+pub(crate) fn place_with(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &HashMap<i64, egui::Pos2>, opts: super::wh_layout::Opts) -> HashMap<i64, egui::Pos2> {
+    let (level, beside) = opts.steps();
     let auto_at: HashMap<i64, egui::Pos2> = auto.iter().map(|(n, _, p)| (*n, *p)).collect();
     let mut at: HashMap<i64, egui::Pos2> = HashMap::new();
     // Boxes differ in width, so each pair is checked with its own.
@@ -692,7 +644,7 @@ pub(crate) fn place(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &HashMap<i
             .flat_map(|col| {
                 (0..60).map(move |k: i32| {
                     let step = if k % 2 == 0 { k / 2 } else { -(k + 1) / 2 };
-                    want + egui::vec2(col as f32 * COL, step as f32 * ROW)
+                    want + level * col as f32 + beside * step as f32
                 })
             })
             .find(|c| clear(&at, *n, *c))
@@ -943,7 +895,25 @@ impl SpaiApp {
             here.get(&id).map_or(pinned, |v| 100 + v.len() as i64)
         };
         let alone: Vec<i64> = if focus.is_none() { drifters.clone() } else { Vec::new() };
-        let auto = auto_layout_with(&edges, &alone, score);
+        let opts = self.wh_layout_opts();
+        let auto = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).chain(alone.iter().copied()).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            let scored: Vec<(i64, i64)> = ids.iter().map(|id| (*id, score(*id))).collect();
+            (&edges, &alone, &scored, opts.style, opts.down, opts.aspect.map(f32::to_bits)).hash(&mut h);
+            let key = h.finish();
+            match &self.wh_graph.layout_cache {
+                Some((k, a)) if *k == key => a.clone(),
+                _ => {
+                    let a = super::wh_layout::layout(&edges, &alone, &score, opts);
+                    self.wh_graph.layout_cache = Some((key, a.clone()));
+                    a
+                }
+            }
+        };
         if self.wh_graph.dragged.is_none() {
             self.wh_graph.dragged = Some(
                 self.store
@@ -954,9 +924,9 @@ impl SpaiApp {
         }
         // A focused view is laid out around its system; moving things there is only for the moment.
         let mut pos = if focus.is_some() {
-            place(&auto, &self.wh_graph.focus_dragged)
+            place_with(&auto, &self.wh_graph.focus_dragged, opts)
         } else {
-            place(&auto, self.wh_graph.dragged.as_ref().unwrap())
+            place_with(&auto, self.wh_graph.dragged.as_ref().unwrap(), opts)
         };
         // Everything placed stays put from now on, so a system turning up (synced, detected or
         // added) never shuffles the ones already there. Remembered across restarts outside focus.
@@ -990,6 +960,7 @@ impl SpaiApp {
         // The view's own controls, a row above the canvas.
         let focus_name = focus.and_then(|f| geo.info_of(f)).map(|i| i.name.clone());
         let mut zoom_step: Option<f32> = None;
+        let mut tidy = false;
         {
             {
                 ui.horizontal_wrapped(|ui| {
@@ -1005,6 +976,54 @@ impl SpaiApp {
                         if ui.button(format!("{}  Fit", icon::CORNERS_OUT)).on_hover_text("Show everything").clicked() {
                             self.wh_graph.fit_pending = true;
                         }
+                        if ui
+                            .button(format!("{}  Tidy", icon::TREE_STRUCTURE))
+                            .on_hover_text("Lay the whole map out afresh, forgetting where systems were dragged")
+                            .clicked()
+                        {
+                            tidy = true;
+                        }
+                        ui.menu_button(format!("{}  Layout", icon::CARET_DOWN), |ui| {
+                            use super::wh_layout::Style;
+                            let style = Style::from_code(&self.settings.wh_layout_style);
+                            let pick = |ui: &mut egui::Ui, on: bool, label: &str, hint: &str| ui.menu_label(on, label).on_hover_text(hint).clicked();
+                            ui.label(egui::RichText::new("Style").weak());
+                            if pick(ui, style == Style::Tree, "Tree", "Each chain as a compact tree from its most important system") {
+                                self.settings.wh_layout_style = Style::Tree.code().to_owned();
+                                tidy = true;
+                            }
+                            if pick(ui, style == Style::Layered, "Layered", "Fewer crossing lines where holes close loops") {
+                                self.settings.wh_layout_style = Style::Layered.code().to_owned();
+                                tidy = true;
+                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new("Chains grow").weak());
+                            if pick(ui, !self.settings.wh_layout_down, "To the right", "Deeper systems further right") {
+                                self.settings.wh_layout_down = false;
+                                tidy = true;
+                            }
+                            if pick(ui, self.settings.wh_layout_down, "Downwards", "Deeper systems further down") {
+                                self.settings.wh_layout_down = true;
+                                tidy = true;
+                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new("Separate chains").weak());
+                            if pick(ui, self.settings.wh_layout_pack, "Packed to the window", "Side by side in rows, to fill the window's shape") {
+                                self.settings.wh_layout_pack = true;
+                                tidy = true;
+                            }
+                            if pick(ui, !self.settings.wh_layout_pack, "In one line", "One after another") {
+                                self.settings.wh_layout_pack = false;
+                                tidy = true;
+                            }
+                            ui.separator();
+                            if ui.checkbox(&mut self.settings.wh_minimap, "Minimap").changed() {
+                                self.needs_save = true;
+                            }
+                            if tidy {
+                                ui.close();
+                            }
+                        });
                         if ui.menu_label(self.settings.wh_legend_open, format!("{}  Legend", icon::BOOK_OPEN)).clicked() {
                             self.settings.wh_legend_open = !self.settings.wh_legend_open;
                             self.needs_save = true;
@@ -1030,11 +1049,16 @@ impl SpaiApp {
             }
         }
 
+        if tidy {
+            self.needs_save = true;
+            self.wh_graph_tidy();
+        }
         if self.settings.wh_legend_open {
             legend(ui);
         }
 
         let rect = ui.available_rect_before_wrap();
+        self.wh_graph.canvas = Some(rect);
         if let Some(f) = zoom_step {
             self.wh_graph.zoom_by(f, rect);
         }
@@ -1067,6 +1091,13 @@ impl SpaiApp {
                 }
                 self.wh_graph.zoom = new;
             }
+        }
+        // The view's centre stays over the systems, so the map cannot be scrolled off into nothing.
+        if let Some(canvas) = canvas_of(&pos) {
+            let content = canvas.shrink(CANVAS_MARGIN);
+            let centre = ((rect.center() - rect.min - self.wh_graph.pan) / self.wh_graph.zoom).to_pos2();
+            let c = centre.clamp(content.min, content.max);
+            self.wh_graph.pan = rect.center() - rect.min - c.to_vec2() * self.wh_graph.zoom;
         }
         let zoom = self.wh_graph.zoom;
         let origin = rect.min + self.wh_graph.pan;
@@ -1389,12 +1420,55 @@ impl SpaiApp {
                 self.wh_graph.selected = f;
             }
         }
+        if self.settings.wh_minimap && !pos.is_empty() {
+            self.wh_graph_minimap(ui, rect, &pos, &geo);
+        }
         if let Some(id) = opened {
             self.open_system(id);
         }
         if let Some(name) = pin {
             self.toggle_wh_pin(&name);
         }
+    }
+
+    /// The whole map in small in the canvas corner, with the part on screen outlined. Clicking or
+    /// dragging in it moves the view there.
+    fn wh_graph_minimap(&mut self, ui: &mut egui::Ui, rect: egui::Rect, pos: &HashMap<i64, egui::Pos2>, geo: &crate::geo::Systems) {
+        const MAX: egui::Vec2 = egui::vec2(200.0, 130.0);
+        let zoom = self.wh_graph.zoom;
+        let seen = egui::Rect::from_min_size((-self.wh_graph.pan / zoom).to_pos2(), rect.size() / zoom);
+        let Some(world) = canvas_of(pos) else { return };
+        // Nothing off screen to find: it would only cover boxes.
+        if seen.expand(4.0 / zoom).contains_rect(world.shrink(CANVAS_MARGIN)) {
+            return;
+        }
+        let scale = (MAX.x / world.width()).min(MAX.y / world.height());
+        let size = world.size() * scale;
+        let mini = egui::Rect::from_min_size(rect.right_bottom() - size - egui::vec2(12.0, 12.0), size);
+        if size.x > rect.width() * 0.5 || size.y > rect.height() * 0.5 {
+            return;
+        }
+        let resp = ui.interact(mini, ui.id().with("wh_minimap"), egui::Sense::click_and_drag());
+        let to_mini = |p: egui::Pos2| mini.min + (p - world.min) * scale;
+        let painter = ui.painter_at(mini.expand(2.0));
+        let visuals = ui.visuals();
+        painter.rect(mini, 4.0, visuals.extreme_bg_color.gamma_multiply(0.92), visuals.widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+        for (id, p) in pos {
+            let r = egui::Rect::from_min_max(to_mini(*p), to_mini(*p + node_size(*id)));
+            let col = geo
+                .info_of(*id)
+                .map(|i| class_color(whdata::class_of(*id, i.security, &i.region), i.security))
+                .unwrap_or(visuals.weak_text_color());
+            painter.rect_filled(r, 1.0, col.gamma_multiply(0.8));
+        }
+        let view = egui::Rect::from_min_max(to_mini(seen.min), to_mini(seen.max)).intersect(mini);
+        painter.rect(view, 2.0, visuals.selection.bg_fill.gamma_multiply(0.2), egui::Stroke::new(1.5, visuals.selection.stroke.color), egui::StrokeKind::Inside);
+        if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+            let target = world.min + (p - mini.min) / scale;
+            self.wh_graph.pan = rect.center() - rect.min - target.to_vec2() * zoom;
+            ui.ctx().request_repaint();
+        }
+        resp.on_hover_text("Click or drag to move the view");
     }
 
     /// Every J-space system with a known connection, to jump the map to it.
@@ -1993,6 +2067,24 @@ impl SpaiApp {
         let name = self.systems.as_ref().and_then(|g| g.info_of(system)).map(|i| i.name.clone()).unwrap_or_default();
         self.wh_graph.sigs = None;
         self.wh_graph.sig_note = Some(format!("Probe scan of {name} saved: {added} new, {updated} updated, {removed} removed"));
+    }
+
+    fn wh_layout_opts(&self) -> super::wh_layout::Opts {
+        // The aspect in steps of a tenth, so resizing the window by a few pixels keeps the layout.
+        let aspect = self.wh_graph.canvas.map(|r| (r.aspect_ratio() * 10.0).round() / 10.0).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.6);
+        super::wh_layout::Opts {
+            style: super::wh_layout::Style::from_code(&self.settings.wh_layout_style),
+            down: self.settings.wh_layout_down,
+            aspect: self.settings.wh_layout_pack.then_some(aspect),
+        }
+    }
+
+    /// Lays the whole map out afresh and shows all of it.
+    pub(crate) fn wh_graph_tidy(&mut self) {
+        self.wh_graph_reset_layout();
+        self.wh_graph.focus_dragged.clear();
+        self.wh_graph.layout_cache = None;
+        self.wh_graph.fit_pending = true;
     }
 
     pub(crate) fn wh_graph_reset_layout(&mut self) {

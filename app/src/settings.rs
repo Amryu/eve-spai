@@ -37,6 +37,9 @@ pub struct Settings {
     /// Lookup table columns the user switched off, by column key.
     #[serde(default)]
     pub lookup_hidden_columns: Vec<String>,
+    /// Leave pilots at +5 standing or better out of a looked-up local.
+    #[serde(default)]
+    pub lookup_hide_blues: bool,
     /// The version of the bundled bridge and upgrade defaults already applied.
     #[serde(default)]
     pub baked_defaults: u32,
@@ -272,6 +275,18 @@ pub struct Settings {
     /// Whether the wormhole map's legend is unfolded.
     #[serde(default)]
     pub wh_legend_open: bool,
+    /// The wormhole map's layout: "tree" or "layered".
+    #[serde(default)]
+    pub wh_layout_style: String,
+    /// Chains grow downwards instead of to the right.
+    #[serde(default)]
+    pub wh_layout_down: bool,
+    /// Chains packed in rows to the window's shape instead of one below the other.
+    #[serde(default = "default_true")]
+    pub wh_layout_pack: bool,
+    /// The small overview of the whole wormhole map in the canvas corner.
+    #[serde(default = "default_true")]
+    pub wh_minimap: bool,
     /// The sharing group local wormhole changes are sent to; `None` keeps them local.
     #[serde(default)]
     pub wh_share_target: Option<String>,
@@ -1316,6 +1331,7 @@ impl Default for Settings {
             baked_defaults: 0,
             lookup_history: Vec::new(),
             lookup_hidden_columns: Vec::new(),
+            lookup_hide_blues: false,
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_only_undocked: false,
@@ -1399,6 +1415,10 @@ impl Default for Settings {
             wh_route_pins: Vec::new(),
             wh_share_target: None,
             wh_legend_open: false,
+            wh_layout_style: String::new(),
+            wh_layout_down: false,
+            wh_layout_pack: true,
+            wh_minimap: true,
             wh_auto_probe: true,
             fleet_unlock: None,
             sound_master_volume: 1.0,

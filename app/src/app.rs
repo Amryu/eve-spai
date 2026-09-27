@@ -304,6 +304,7 @@ pub(crate) use char_rings::*;
 mod alert_engine;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
+pub(crate) mod wh_layout;
 pub(crate) mod wh_share_ui;
 pub(crate) use alert_engine::*;
 #[cfg(test)]

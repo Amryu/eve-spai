@@ -585,6 +585,74 @@ fn wormholes_scene(name: &'static str, size: [f32; 2], table: bool, selected: Op
     wormholes_focus_scene(name, size, table, selected, None)
 }
 
+/// A map of several chains, one with a loop, laid out afresh in the style its name ends with.
+fn wormholes_layout_scene(name: &'static str) -> Scene {
+    use crate::wormholes::{DestClass, Source, Wormhole};
+    harness::scratch_profile();
+    let now = fixtures::now();
+    let j = |n: i64| 31_000_100 + n;
+    let fake = |n: i64| 30_009_000 + n;
+    let links = [
+        (30_004_759, j(1)),
+        (j(1), j(2)),
+        (j(1), j(3)),
+        (j(2), j(4)),
+        (j(2), j(5)),
+        (j(5), fake(1)),
+        (j(3), j(6)),
+        (j(4), j(6)),
+        (j(3), j(16)),
+        (30_004_608, j(7)),
+        (j(7), j(8)),
+        (j(7), j(9)),
+        (j(7), j(10)),
+        (j(9), j(17)),
+        (fake(2), j(11)),
+        (j(11), j(12)),
+        (j(12), j(13)),
+        (j(13), j(14)),
+        (fake(3), j(15)),
+        (31_000_005, 30_000_142),
+    ];
+    let holes: Vec<Wormhole> = links
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| Wormhole {
+            id: i as i64 + 1,
+            system_id: *a,
+            dest: DestClass::Wspace,
+            dest_system_id: Some(*b),
+            reported_at: now - 600 * i as i64,
+            source: Source::Manual,
+            updated_at: now - 60,
+            ..Default::default()
+        })
+        .collect();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems_wh_busy());
+            a.wh_cache = holes.clone();
+            a.settings.wh_layout_style = if name.ends_with("_layered") { "layered".into() } else { "tree".into() };
+            a.settings.wh_layout_down = name.ends_with("_down");
+            a.settings.wh_layout_pack = !name.ends_with("_stacked");
+            a.wh_graph_tidy();
+            if name.ends_with("_zoomed_in") {
+                a.wh_graph.hold_view(1.0);
+            }
+            if name.ends_with("_lost") {
+                a.wh_graph.hold_view(1.0);
+                a.wh_graph.pan_to(egui::vec2(-50_000.0, -50_000.0));
+            }
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// Focused on `focus`, with 319-3D pinned: it is off the hole chain, so it hangs off the nearest
 /// k-space exit by its gate jumps.
 fn wormholes_focus_scene(
@@ -683,6 +751,8 @@ fn wormholes_focus_scene(
             a.view = View::Wormholes;
             a.systems = Some(fixtures::systems());
             a.wh_cache = holes.clone();
+            // The scratch profile is shared: positions another scene saved are not this one's.
+            a.wh_graph_reset_layout();
             a.wh_graph.table = table;
             a.wh_graph.selected = selected;
             if name.ends_with("_sigs") {
@@ -714,7 +784,7 @@ fn wormholes_focus_scene(
             if name.ends_with("_sharing") {
                 a.wh_share.open = true;
             }
-            if name.ends_with("_zoomed_out") {
+            if name.contains("_zoomed_out") {
                 a.wh_graph.set_zoom(0.25);
             }
             if focus.is_some() {
@@ -1785,6 +1855,9 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
+    for name in ["view_wormholes_layout_tree", "view_wormholes_layout_stacked", "view_wormholes_layout_layered", "view_wormholes_layout_down", "view_wormholes_layout_tree_zoomed_in", "view_wormholes_layout_tree_lost"] {
+        v.push(wormholes_layout_scene(name));
+    }
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
@@ -2804,7 +2877,18 @@ fn uitest_a_holes_tooltip_appears_at_the_pointer() {
     let line = crate::app::wh_graph::EDGE_PROBE
         .with(|p| p.borrow().iter().find(|(id, _)| *id == 3).map(|(_, l)| l.clone()))
         .expect("the line was drawn");
-    let mid = line[0].lerp(line[line.len() - 1], 0.5);
+    // Halfway along the line itself: a line bent round a box has nothing between its ends.
+    let half = line.windows(2).map(|s| s[0].distance(s[1])).sum::<f32>() / 2.0;
+    let mut left = half;
+    let mut mid = line[0];
+    for s in line.windows(2) {
+        let d = s[0].distance(s[1]);
+        if d >= left {
+            mid = s[0].lerp(s[1], left / d.max(f32::EPSILON));
+            break;
+        }
+        left -= d;
+    }
     harness.event(egui::Event::PointerMoved(mid));
     harness.run_steps(6);
     let (text, tip) = harness
@@ -6715,6 +6799,25 @@ fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
     harness.run();
     harness.run();
     assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");
+}
+
+/// With blues hidden, a pilot whose corporation or alliance is at +5 or better leaves the table
+/// and is counted instead; switched back, it returns.
+#[test]
+fn uitest_lookup_hides_blues() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "view_lookup_tab").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label("Test Logi").is_some(), "shown before hiding");
+    harness.get_by_label("Hide blues").click();
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Test Logi").is_none(), "a +10 contact stays in the table");
+    assert!(harness.query_by_label("1 blue hidden").is_some(), "the hidden pilot is not counted");
+    assert!(harness.query_by_label("Sample Hunter").is_some(), "a -5 pilot was hidden too");
+    harness.get_by_label("Hide blues").click();
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Test Logi").is_some(), "back once blues are shown");
 }
 
 /// Hovering anywhere in a row's FC cell gives the breakdown, not just over its number.

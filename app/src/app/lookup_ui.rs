@@ -339,7 +339,12 @@ impl SpaiApp {
         }
         self.needs_save = true;
         self.lookup_current = names;
-        crate::localscan::request(&self.lookup_table, &self.lookup_current, ctx);
+        crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), ctx);
+    }
+
+    /// Standings to leave blues out by, when the user has that on.
+    fn lookup_blues(&self) -> Option<std::collections::HashMap<i64, f32>> {
+        self.settings.lookup_hide_blues.then(|| self.standings.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     pub(crate) fn lookup_from_clipboard(&mut self, ctx: &egui::Context) {
@@ -451,7 +456,7 @@ impl SpaiApp {
             });
             if let Some(names) = pick {
                 self.lookup_current = names;
-                crate::localscan::request(&self.lookup_table, &self.lookup_current, &ctx);
+                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), &ctx);
             }
             ui.menu_button(format!("{}  Columns", icon::COLUMNS), |ui| {
                 for col in Col::ALL {
@@ -466,6 +471,18 @@ impl SpaiApp {
                     }
                 }
             });
+            if ui
+                .checkbox(&mut self.settings.lookup_hide_blues, "Hide blues")
+                .on_hover_text(format!(
+                    "Leave out pilots at +{:.0} standing or better, from your character's, corporation's or alliance's contacts. They are not looked up on zKillboard either.",
+                    crate::localscan::BLUE
+                ))
+                .changed()
+            {
+                self.needs_save = true;
+                // Turned off, the blues left out get looked up now.
+                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), &ctx);
+            }
             if let Some(n) = &self.lookup_note {
                 ui.label(egui::RichText::new(n).weak());
             }
@@ -485,7 +502,7 @@ impl SpaiApp {
 
     fn lookup_table_ui(&mut self, ui: &mut egui::Ui) {
         let now = chrono::Utc::now().timestamp();
-        let (rows, orgs) = {
+        let (mut rows, orgs) = {
             let t = self.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
             let rows: Vec<(String, Row)> = self
                 .lookup_current
@@ -494,6 +511,21 @@ impl SpaiApp {
                 .collect();
             (rows, t.orgs.clone())
         };
+        // Also blues loaded before the standings were, or before hiding was switched on.
+        let hide = self.settings.lookup_hide_blues;
+        let before = rows.len();
+        rows.retain(|(_, r)| {
+            !hide
+                || match r {
+                    Row::Blue(_) => false,
+                    Row::Done(s) => self.standing_of(s).is_none_or(|v| v < crate::localscan::BLUE),
+                    _ => true,
+                }
+        });
+        let hidden = before - rows.len();
+        if hidden > 0 {
+            ui.label(egui::RichText::new(format!("{hidden} blue{} hidden", if hidden == 1 { "" } else { "s" })).weak());
+        }
         let mut done: Vec<&Summary> = rows.iter().filter_map(|(_, r)| match r {
             Row::Done(s) => Some(s.as_ref()),
             _ => None,
@@ -668,6 +700,9 @@ impl SpaiApp {
                 }
                 Row::Failed(e) => {
                     ui.label(egui::RichText::new(e).weak());
+                }
+                Row::Blue(v) => {
+                    ui.label(egui::RichText::new(format!("Blue ({v:+.0}), not looked up")).weak());
                 }
                 Row::Done(_) => {}
             }

@@ -32,8 +32,21 @@ pub(crate) fn systems_bridged_island() -> Arc<Systems> {
     Arc::new(s)
 }
 
+/// [`systems`] plus made-up J-space (`31_000_1nn`, "J1000nn") and nullsec (`30_009_00n`,
+/// "FAKE-n") systems, for a wormhole map busy enough to lay out.
+pub(crate) fn systems_wh_busy() -> Arc<Systems> {
+    let mut extra: Vec<(i64, String, f64, String)> = (1..=20).map(|n| (31_000_100 + n, format!("J1000{n:02}"), -1.0, "C-R00012".to_owned())).collect();
+    extra.extend((1..=3).map(|n| (30_009_000 + n, format!("FAKE-{n}"), -0.4, "Delve".to_owned())));
+    Arc::new(build_systems_with(&extra))
+}
+
 fn build_systems() -> Systems {
+    build_systems_with(&[])
+}
+
+fn build_systems_with(extra: &[(i64, String, f64, String)]) -> Systems {
     let mut by_name = HashMap::new();
+    let extra = extra.iter().map(|(id, n, s, r)| (*id, n.as_str(), *s, r.as_str()));
     for (id, name, security, region) in [
         (30_004_759_i64, "1DQ1-A", -0.36_f64, "Delve"),
         (30_004_608, "319-3D", -0.41, "Delve"),
@@ -41,7 +54,10 @@ fn build_systems() -> Systems {
         (30_000_142, "Jita", 0.95, "The Forge"),
         (31_000_005, "Thera", -1.0, "G-R00031"),
         (31_000_002, "J110145", -1.0, "A-R00001"),
-    ] {
+    ]
+    .into_iter()
+    .chain(extra)
+    {
         by_name.insert(
             name.to_lowercase(),
             SystemInfo {

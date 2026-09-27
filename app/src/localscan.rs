@@ -337,6 +337,8 @@ pub enum Row {
     Done(Box<Summary>),
     /// No character by that name.
     Missing,
+    /// Left out at this standing, so never looked up on zKillboard.
+    Blue(f32),
     Failed(String),
 }
 
@@ -389,13 +391,22 @@ pub fn similar(old: &[String], new: &[String]) -> bool {
     shared * 2 >= a.len().min(b.len()) && shared * 3 >= a.len().max(b.len())
 }
 
-/// Queues `names` for lookup, skipping pilots already known this session.
-pub fn request(table: &SharedTable, names: &[String], ctx: &egui::Context) {
+/// Standing from which a pilot counts as blue.
+pub const BLUE: f32 = 5.0;
+
+/// Queues `names` for lookup, skipping pilots already known this session. With `blues` (standings
+/// by character, corporation or alliance id), pilots at [`BLUE`] or better are left out.
+pub fn request(table: &SharedTable, names: &[String], blues: Option<HashMap<i64, f32>>, ctx: &egui::Context) {
     let fresh: Vec<String> = {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         names
             .iter()
-            .filter(|n| !matches!(t.rows.get(&n.to_lowercase()), Some(Row::Pending | Row::Done(_) | Row::Missing)))
+            .filter(|n| match t.rows.get(&n.to_lowercase()) {
+                Some(Row::Pending | Row::Done(_) | Row::Missing) => false,
+                // Looked up after all once blues are no longer left out.
+                Some(Row::Blue(_)) => blues.is_none(),
+                _ => true,
+            })
             .cloned()
             .collect::<Vec<_>>()
             .into_iter()
@@ -409,10 +420,10 @@ pub fn request(table: &SharedTable, names: &[String], ctx: &egui::Context) {
     }
     let table = table.clone();
     let ctx = ctx.clone();
-    std::thread::spawn(move || resolve_and_fetch(table, fresh, ctx));
+    std::thread::spawn(move || resolve_and_fetch(table, fresh, blues, ctx));
 }
 
-fn resolve_and_fetch(table: SharedTable, names: Vec<String>, ctx: egui::Context) {
+fn resolve_and_fetch(table: SharedTable, names: Vec<String>, blues: Option<HashMap<i64, f32>>, ctx: egui::Context) {
     let Ok(client) = crate::http::client(ZKILL_TIMEOUT_SECS) else {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         for n in &names {
@@ -428,12 +439,28 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, ctx: egui::Context)
             None => failed = true,
         }
     }
+    let blue: HashMap<i64, f32> = match blues.filter(|b| !b.is_empty()) {
+        Some(standings) => {
+            let all: Vec<i64> = ids.values().map(|(id, _)| *id).collect();
+            crate::affiliation::lookup(&client, &all)
+                .into_iter()
+                .filter_map(|(id, (corp, alliance))| {
+                    let s = [Some(id), Some(corp), alliance].into_iter().flatten().find_map(|k| standings.get(&k).copied())?;
+                    (s >= BLUE).then_some((id, s))
+                })
+                .collect()
+        }
+        None => HashMap::new(),
+    };
     let spawn = {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         // Newest paste first: its pilots go ahead of anything still queued from an older one.
         for n in names.iter().rev() {
             let lc = n.to_lowercase();
             match ids.get(&lc) {
+                Some((id, _)) if blue.contains_key(id) => {
+                    t.rows.insert(lc, Row::Blue(blue[id]));
+                }
                 Some((id, canonical)) => t.queue.push_front(Job { name: canonical.clone(), id: *id, tries: 0 }),
                 None if failed => {
                     t.rows.insert(lc, Row::Failed("name lookup failed".into()));

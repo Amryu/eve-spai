@@ -85,6 +85,15 @@ fn fetch(client: &reqwest::blocking::Client, ids: &[i64], retry: &mut Vec<i64>, 
     }
 }
 
+/// Corporation and alliance of each of `ids` ESI could answer for, in one call per thousand.
+pub fn lookup(client: &reqwest::blocking::Client, ids: &[i64]) -> HashMap<i64, (i64, Option<i64>)> {
+    let (mut retry, mut refused) = (Vec::new(), Vec::new());
+    ids.chunks(1000)
+        .flat_map(|c| fetch(client, c, &mut retry, &mut refused))
+        .map(|a| (a.character_id, (a.corporation_id, a.alliance_id)))
+        .collect()
+}
+
 pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
     let _ = std::thread::Builder::new().name("affiliation".into()).spawn(move || {
         let Ok(client) = crate::http::client(20)
