@@ -22,15 +22,20 @@ const PER_PAGE: i64 = 20;
 
 pub fn router(state: AppState) -> Router {
     let max_compressed = state.cfg.max_compressed;
+    // Only the session mint and wormhole sharing are open to other clients' web pages.
+    let shared = Router::new().route("/api/session", post(create_session)).merge(crate::whshare::routes(state.clone()));
+    let shared = match crate::config::cors(&state.cfg.cors_origins) {
+        Some(cors) => shared.layer(cors),
+        None => shared,
+    };
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/session", post(create_session))
         .route("/api/br", get(list).post(upload))
         .route("/api/br/mine", get(mine))
         .route("/api/br/{id}", get(fetch_json).delete(delete_report))
         .route("/br", get(directory))
         .route("/br/{id}", get(viewer))
-        .merge(crate::whshare::routes())
+        .merge(shared)
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_compressed))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
@@ -99,6 +104,7 @@ async fn upload(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
+    identity.primary()?;
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -395,6 +401,7 @@ async fn mine(
     State(st): State<AppState>,
     SessionIdentity(identity): SessionIdentity,
 ) -> Result<Json<ReportPage>, AppError> {
+    identity.primary()?;
     let rows = sqlx::query(
         "SELECT id, title, systems, started_at, ended_at, kills, total_isk, \
          side_names, uploader_name, views, unlisted FROM battle_reports \
@@ -412,6 +419,7 @@ async fn delete_report(
     SessionIdentity(identity): SessionIdentity,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    identity.primary()?;
     let id = id.strip_suffix(".json").unwrap_or(&id).to_string();
     let owner: Option<i64> =
         sqlx::query_scalar("SELECT uploader_char_id FROM battle_reports WHERE id = $1")

@@ -220,6 +220,9 @@ impl Store {
 
     /// Folds a hole from `group` in. Returns whether anything here changed.
     pub fn share_apply_hole(&self, remote: &HoleState, group: &str, who: &str) -> bool {
+        if !hole::system_id_ok(remote.system_id) || remote.uid.is_empty() || remote.uid.len() > 64 {
+            return false;
+        }
         self.with_remote(|| {
             let uid = self.resolve_uid(&remote.uid);
             let mut row = match self.wormhole_where("uid=?1", params![uid]) {
@@ -273,9 +276,17 @@ impl Store {
     }
 
     pub fn share_apply_sigs(&self, system_id: i64, rows: &[SigRow], drop_missing: bool, at: i64, who: &str) {
+        // Bigger than any probe scan, or not a system: not something an honest client sends.
+        if !hole::system_id_ok(system_id) || rows.len() > 2000 {
+            return;
+        }
+        let fits = |r: &&SigRow| r.sig.chars().count() <= 16 && [&r.kind, &r.group, &r.name].iter().all(|s| s.chars().count() <= 100);
         self.with_remote(|| {
-            let scan: Vec<ScanSig> =
-                rows.iter().map(|r| ScanSig { id: r.sig.clone(), kind: r.kind.clone(), group: r.group.clone(), name: r.name.clone() }).collect();
+            let scan: Vec<ScanSig> = rows
+                .iter()
+                .filter(fits)
+                .map(|r| ScanSig { id: r.sig.clone(), kind: r.kind.clone(), group: r.group.clone(), name: r.name.clone() })
+                .collect();
             self.merge_system_sigs(system_id, &scan, who, at, drop_missing);
         });
     }

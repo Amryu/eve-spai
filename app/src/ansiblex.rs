@@ -191,6 +191,15 @@ fn decode_name(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_bridge_just_past_five_light_years_is_zone_two() {
+        // A24L-V and 2-Q4YG as the SDE places them: 4.9998 true light years apart, Zone 2 in game.
+        let a: [f64; 3] = [1.160_781_022_615_067_2e17, 9_368_791_524_235_738.0, -1.279_547_751_473_267e17];
+        let b: [f64; 3] = [1.616_295_694_556_217_3e17, -3_278_462_839_266_579.0, -1.295_560_624_698_161_4e17];
+        let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        assert_eq!(zone_for_ly(d / crate::map::LY_METERS), 2);
+    }
     use super::*;
     use crate::geo::SystemInfo;
     use std::collections::HashMap;

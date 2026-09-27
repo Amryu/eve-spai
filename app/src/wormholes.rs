@@ -361,7 +361,7 @@ pub struct ScanSig {
     pub name: String,
 }
 
-fn is_sig_id(s: &str) -> bool {
+pub(crate) fn is_sig_id(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 7 && b[..3].iter().all(u8::is_ascii_uppercase) && b[3] == b'-' && b[4..].iter().all(u8::is_ascii_digit)
 }

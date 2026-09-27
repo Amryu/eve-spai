@@ -69,7 +69,10 @@ impl Bounds {
     }
 }
 
-pub const LY_METERS: f64 = 9.460_730_472_580_8e15;
+/// The light year as EVE counts it for jump range and Ansiblex zones, rounded from the true
+/// 9.4607e15 m. 2-Q4YG is 4.9998 true light years from A24L-V and Zone 2 in game, which only this
+/// figure (5.0002) gives.
+pub const LY_METERS: f64 = 9.46e15;
 
 /// Max jump-drive ranges (light-years) at maxed skills (Jump Drive Calibration V, +100%).
 /// Values are the live SDE `jumpDriveRange` doubled: titan/super 3.0, other capitals 3.5,

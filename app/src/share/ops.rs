@@ -123,13 +123,20 @@ fn signed_bytes(group: &str, epoch: u32, op_id: &str, author: i64, sealed: &[u8]
     m
 }
 
+/// The payload format. A payload without `v` is version 1.
+pub const VERSION: u32 = 1;
+
 pub fn new_op_id() -> String {
     crypto::b64(&crypto::random32()[..16])
 }
 
 pub fn seal_op(op: &Op, group: &str, epoch: u32, key: &Key, author: i64, device: &DeviceKeys) -> Envelope {
     let op_id = new_op_id();
-    let plain = serde_json::to_vec(op).expect("ops serialize");
+    // The format version rides inside the sealed payload, where nobody can change it. Readers
+    // ignore fields they do not know, so older versions open this the same.
+    let mut value = serde_json::to_value(op).expect("ops serialize");
+    value["v"] = serde_json::Value::from(VERSION);
+    let plain = serde_json::to_vec(&value).expect("ops serialize");
     let sealed = crypto::seal(key, &context(group, epoch, &op_id), &plain);
     let sig = device.sign(&signed_bytes(group, epoch, &op_id, author, &sealed));
     Envelope { op_id, group: group.to_owned(), epoch, author, sealed, sig }
@@ -229,6 +236,23 @@ mod tests {
         let mut reauthored = env.clone();
         reauthored.author = 2;
         assert!(open_op(&reauthored, &key, &alice.public()).is_err());
+    }
+
+    #[test]
+    fn a_payload_opens_with_or_without_its_version() {
+        let (alice, key) = (DeviceKeys::generate(), crypto::random32());
+        let op = Op::SigDelete { system_id: 31_000_004, sig: "ABC-123".into() };
+        let env = seal_op(&op, "g1", 0, &key, 1, &alice);
+        let plain = crypto::open(&key, &context("g1", 0, &env.op_id), &env.sealed).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(v["v"], 1);
+        assert_eq!(open_op(&env, &key, &alice.public()).unwrap(), op);
+        // As released versions seal it, without `v`.
+        let op_id = new_op_id();
+        let sealed = crypto::seal(&key, &context("g1", 0, &op_id), &serde_json::to_vec(&op).unwrap());
+        let sig = alice.sign(&signed_bytes("g1", 0, &op_id, 1, &sealed));
+        let old = Envelope { op_id, group: "g1".into(), epoch: 0, author: 1, sealed, sig };
+        assert_eq!(open_op(&old, &key, &alice.public()).unwrap(), op);
     }
 
     #[test]

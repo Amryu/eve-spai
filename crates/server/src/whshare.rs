@@ -18,7 +18,7 @@ const RETENTION_HOURS: i64 = 72;
 const MAX_BLOB: usize = 2 * 1024 * 1024;
 const MAX_PAGE: i64 = 500;
 
-pub fn routes() -> Router<AppState> {
+pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/api/wh/groups", get(my_groups).post(create_group))
         .route("/api/wh/groups/{g}/members", get(members))
@@ -32,6 +32,24 @@ pub fn routes() -> Router<AppState> {
         .route("/api/wh/groups/{g}/requests/{c}", delete(reject))
         .route("/api/wh/invites/{i}", get(fetch_invite))
         .route("/api/wh/invites/{i}/join", post(join))
+        .layer(axum::middleware::from_fn_with_state(state, rate_limit))
+}
+
+/// Holds each character to its request budget. A request without a valid session goes through
+/// untouched: its route turns it away.
+async fn rate_limit(
+    State(st): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, AppError> {
+    let who = crate::session::bearer(req.headers()).ok().and_then(|t| st.session_verifier.verify(t).ok());
+    if let Some(me) = who {
+        let write = req.method() != axum::http::Method::GET;
+        if !st.take_request(me.char_id, write) {
+            return Err(AppError::TooManyRequests);
+        }
+    }
+    Ok(next.run(req).await)
 }
 
 fn new_id() -> String {

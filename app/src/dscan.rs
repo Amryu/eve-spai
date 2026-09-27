@@ -16,7 +16,8 @@ pub fn looks_like_dscan(text: &str) -> Option<usize> {
         .iter()
         .filter(|l| {
             let cols: Vec<&str> = l.split('\t').collect();
-            cols.len() >= 3 && is_distance(cols.last().unwrap())
+            // A probe scanner row ends in a distance too, but starts with its signature id.
+            cols.len() >= 3 && is_distance(cols.last().unwrap()) && !crate::wormholes::is_sig_id(cols[0].trim())
         })
         .count();
     (ok == lines.len()).then_some(ok)
@@ -48,7 +49,8 @@ pub fn looks_like_local(text: &str) -> Option<usize> {
         .map(|l| l.split('\t').next().unwrap_or(l).trim())
         .filter(|l| !l.is_empty())
         .collect();
-    if names.len() < 3 {
+    // Signature ids ("ABC-123") pass as names, and a probe scanner copy is nothing but those.
+    if names.len() < 3 || names.iter().all(|l| crate::wormholes::is_sig_id(l)) {
         return None;
     }
     names.iter().all(|l| is_valid_char_name(l)).then_some(names.len())
@@ -104,6 +106,17 @@ pub fn parse_dscan_ships_html(body: &str) -> Vec<(String, u32)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_probe_scan_is_not_a_dscan() {
+        let probe = "ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100.0%\t4.25 AU\n\
+                     GIN-924\tCosmic Signature\t\t\t12.3%\t11.02 AU\n\
+                     WKR-862\tCosmic Anomaly\tCombat Site\tAngel Haven\t100.0%\t2.10 AU";
+        assert_eq!(super::looks_like_dscan(probe), None);
+        assert_eq!(super::looks_like_local(probe), None, "nor a local");
+        let dscan = "11393\tFixture Pilot's Ishtar\tIshtar\t1,204 km\n17619\tSample Mission Site\tCaracal\t-";
+        assert_eq!(super::looks_like_dscan(dscan), Some(2));
+    }
     use super::*;
 
     #[test]

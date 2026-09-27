@@ -18,10 +18,22 @@ const ISSUERS: [&str; 3] = [
     "https://login.eveonline.com/",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Identity {
     pub char_id: i64,
     pub name: String,
+    /// The SSO application of another client allowed to share wormholes; `None` for EVE Spai's.
+    pub client: Option<String>,
+}
+
+impl Identity {
+    /// Battle reports are EVE Spai's own feature: other clients reach wormhole sharing only.
+    pub fn primary(&self) -> Result<(), crate::error::AppError> {
+        match self.client {
+            None => Ok(()),
+            Some(_) => Err(crate::error::AppError::Forbidden),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +56,22 @@ pub enum AuthError {
 struct Claims {
     sub: String,
     name: String,
+    #[serde(default)]
+    azp: Option<String>,
+    #[serde(default)]
+    aud: serde_json::Value,
+    /// A string for one scope, a list for several; absent without any.
+    #[serde(default)]
+    scp: serde_json::Value,
+}
+
+fn no_scopes(scp: &serde_json::Value) -> bool {
+    match scp {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
 }
 
 struct LiveKeys {
@@ -59,6 +87,8 @@ enum Source {
 pub struct Verifier {
     source: Source,
     audience: String,
+    /// Other applications allowed to sign in, and only without scopes.
+    extras: Vec<String>,
 }
 
 impl Verifier {
@@ -70,17 +100,24 @@ impl Verifier {
                 cache: RwLock::new(None),
             },
             audience: audience.into(),
+            extras: Vec::new(),
         }
     }
 
+    pub fn with_extras(mut self, extras: Vec<String>) -> Self {
+        self.extras = extras;
+        self
+    }
+
     pub fn from_jwks(jwks: &JwkSet, audience: impl Into<String>) -> anyhow::Result<Self> {
-        Ok(Self { source: Source::Static(build_keys(jwks)?), audience: audience.into() })
+        Ok(Self { source: Source::Static(build_keys(jwks)?), audience: audience.into(), extras: Vec::new() })
     }
 
     fn validation(&self) -> Validation {
         let mut v = Validation::new(Algorithm::RS256);
         v.set_issuer(&ISSUERS);
-        v.set_audience(&[self.audience.as_str()]);
+        let audiences: Vec<&str> = std::iter::once(self.audience.as_str()).chain(self.extras.iter().map(String::as_str)).collect();
+        v.set_audience(&audiences);
         // `exp` is in the default required-claims set and is validated automatically.
         v
     }
@@ -92,7 +129,32 @@ impl Verifier {
         let data = decode::<Claims>(token, &key, &self.validation())
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
         let char_id = parse_char_id(&data.claims.sub)?;
-        Ok(Identity { char_id, name: data.claims.name })
+        let client = self.client_of(&data.claims)?;
+        if client.is_some() && !no_scopes(&data.claims.scp) {
+            return Err(AuthError::Invalid("this client may only sign in without scopes".into()));
+        }
+        Ok(Identity { char_id, name: data.claims.name, client })
+    }
+
+    /// Which application the token was issued to: `azp` when EVE sets it, else the audience.
+    fn client_of(&self, claims: &Claims) -> Result<Option<String>, AuthError> {
+        let aud: Vec<&str> = match &claims.aud {
+            serde_json::Value::String(s) => vec![s.as_str()],
+            serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str()).collect(),
+            _ => Vec::new(),
+        };
+        let issued_to = match claims.azp.as_deref() {
+            Some(azp) => azp,
+            None if aud.contains(&self.audience.as_str()) => self.audience.as_str(),
+            None => aud.iter().copied().find(|a| self.extras.iter().any(|e| e == a)).unwrap_or_default(),
+        };
+        if issued_to == self.audience {
+            Ok(None)
+        } else if self.extras.iter().any(|e| e == issued_to) {
+            Ok(Some(issued_to.to_owned()))
+        } else {
+            Err(AuthError::Invalid("token issued to another application".into()))
+        }
     }
 
     async fn decoding_key(&self, kid: &str) -> Result<DecodingKey, AuthError> {
@@ -267,6 +329,52 @@ QxUVZGDK2388KblxKYy3YTE=\n\
         let key = EncodingKey::from_rsa_pem(TEST_PRIV_PEM.as_bytes()).unwrap();
         let token = encode(&header, &valid_claims(), &key).unwrap();
         assert!(matches!(verifier().verify(&token).await, Err(AuthError::UnknownKid)));
+    }
+
+    const EXTRA: &str = "third-party-client";
+
+    fn with_extra() -> Verifier {
+        Verifier::from_jwks(&test_jwks(), AUD).unwrap().with_extras(vec![EXTRA.to_owned()])
+    }
+
+    fn extra_claims(scp: serde_json::Value) -> serde_json::Value {
+        let mut c = valid_claims();
+        c["aud"] = json!([EXTRA, "EVE Online"]);
+        c["azp"] = json!(EXTRA);
+        if !scp.is_null() {
+            c["scp"] = scp;
+        }
+        c
+    }
+
+    #[tokio::test]
+    async fn eve_spai_keeps_its_scopes_and_needs_no_client_mark() {
+        let mut c = valid_claims();
+        c["azp"] = json!(AUD);
+        c["scp"] = json!(["esi-location.read_location.v1", "esi-fleets.read_fleet.v1"]);
+        let id = with_extra().verify(&sign(c)).await.unwrap();
+        assert_eq!(id.client, None);
+        // Tokens as live clients send them, without azp, still count as EVE Spai's.
+        assert_eq!(with_extra().verify(&sign(valid_claims())).await.unwrap().client, None);
+    }
+
+    #[tokio::test]
+    async fn another_client_signs_in_only_without_scopes() {
+        let v = with_extra();
+        let id = v.verify(&sign(extra_claims(json!(null)))).await.unwrap();
+        assert_eq!(id.client.as_deref(), Some(EXTRA));
+        assert!(v.verify(&sign(extra_claims(json!([])))).await.is_ok());
+        assert!(v.verify(&sign(extra_claims(json!("esi-location.read_location.v1")))).await.is_err(), "one scope");
+        assert!(v.verify(&sign(extra_claims(json!(["esi-location.read_location.v1"])))).await.is_err(), "a list");
+        // Not configured: refused like any other stranger.
+        assert!(verifier().verify(&sign(extra_claims(json!(null)))).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_token_claiming_one_client_for_another_audience_is_refused() {
+        let mut c = extra_claims(json!(null));
+        c["azp"] = json!("someone-else");
+        assert!(with_extra().verify(&sign(c)).await.is_err());
     }
 
     #[test]

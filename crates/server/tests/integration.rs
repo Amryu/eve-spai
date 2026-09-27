@@ -87,6 +87,9 @@ fn base_config(database_url: String) -> Config {
         uploads_per_hour: 60,
         session_secret: String::from_utf8(TEST_SESSION_SECRET.to_vec()).unwrap(),
         session_ttl_secs: 3600,
+        extra_client_ids: Vec::new(),
+        cors_origins: Vec::new(),
+        wh_rate: Default::default(),
     }
 }
 
@@ -149,7 +152,7 @@ async fn pool() -> Option<PgPool> {
 }
 
 fn app(pool: PgPool, cfg: Config) -> axum::Router {
-    let verifier = Verifier::from_jwks(&test_jwks(), cfg.client_id.clone()).unwrap();
+    let verifier = Verifier::from_jwks(&test_jwks(), cfg.client_id.clone()).unwrap().with_extras(cfg.extra_client_ids.clone());
     eve_spai_br::routes::router(AppState::new(pool, verifier, cfg))
 }
 
@@ -425,7 +428,7 @@ async fn raw_eve_token_rejected_on_protected_routes() {
 async fn wrong_secret_session_rejected() {
     let app = lazy_app();
     let (forged, _) = SessionIssuer::new(b"not-the-real-secret", 3600)
-        .issue(&Identity { char_id: 90000012, name: "Forger".into() })
+        .issue(&Identity { char_id: 90000012, name: "Forger".into(), client: None })
         .unwrap();
     let (status, _) = send(&app, "GET", "/api/br/mine", Some(&forged), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -435,7 +438,7 @@ async fn wrong_secret_session_rejected() {
 async fn expired_session_rejected() {
     let app = lazy_app();
     let (expired, _) = SessionIssuer::new(TEST_SESSION_SECRET, -3600)
-        .issue(&Identity { char_id: 90000013, name: "Late".into() })
+        .issue(&Identity { char_id: 90000013, name: "Late".into(), client: None })
         .unwrap();
     let (status, _) = send(&app, "GET", "/api/br/mine", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -524,4 +527,104 @@ async fn wormhole_group_membership_and_log() {
     eve_spai_br::whshare::sweep(&pool).await.unwrap();
     let left: Vec<String> = sqlx::query_scalar("SELECT op_id FROM wh_ops ORDER BY seq").fetch_all(&pool).await.unwrap();
     assert_eq!(left, vec!["genesis".to_string()]);
+}
+
+const THIRD_PARTY: &str = "third-party-client";
+const THIRD_PARTY_SITE: &str = "https://chains.example";
+
+fn third_party_app(rate: eve_spai_br::config::WhRate) -> axum::Router {
+    let mut cfg = base_config("postgres://u:p@localhost/db".into());
+    cfg.extra_client_ids = vec![THIRD_PARTY.into()];
+    cfg.cors_origins = vec![THIRD_PARTY_SITE.into()];
+    cfg.wh_rate = rate;
+    // No database here: routes that reach it fail fast instead of waiting out the default timeout.
+    let pool = PgPoolOptions::new().acquire_timeout(std::time::Duration::from_millis(200)).connect_lazy(&cfg.database_url).unwrap();
+    app(pool, cfg)
+}
+
+fn third_party_session(char_id: i64) -> String {
+    SessionIssuer::new(TEST_SESSION_SECRET, 3600)
+        .issue(&Identity { char_id, name: "Site Pilot".into(), client: Some(THIRD_PARTY.into()) })
+        .unwrap()
+        .0
+}
+
+fn scoped_third_party_token(char_id: i64, scp: Value) -> String {
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some(TEST_KID.to_string());
+    let mut claims = json!({
+        "sub": format!("CHARACTER:EVE:{char_id}"),
+        "name": "Site Pilot",
+        "iss": "login.eveonline.com",
+        "aud": [THIRD_PARTY, "EVE Online"],
+        "azp": THIRD_PARTY,
+        "exp": chrono::Utc::now().timestamp() + 3600,
+    });
+    if !scp.is_null() {
+        claims["scp"] = scp;
+    }
+    encode(&header, &claims, &EncodingKey::from_rsa_pem(TEST_PRIV_PEM.as_bytes()).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn another_client_mints_a_session_only_without_scopes() {
+    let app = third_party_app(Default::default());
+    let (status, body) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, Value::Null)), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["character_id"], 90000031);
+    let (status, _) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, json!(["esi-location.read_location.v1"]))), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // EVE Spai's own login, scopes and all, is untouched.
+    let (status, _) = send(&app, "POST", "/api/session", Some(&token(90000032, "Spai Pilot")), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn another_clients_session_is_kept_out_of_battle_reports() {
+    let app = third_party_app(Default::default());
+    let s = third_party_session(90000033);
+    for (method, uri) in [("GET", "/api/br/mine"), ("POST", "/api/br"), ("DELETE", "/api/br/abc")] {
+        let (status, _) = send(&app, method, uri, Some(&s), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+}
+
+async fn preflight(app: &axum::Router, uri: &str, origin: &str) -> Option<String> {
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri(uri)
+        .header("origin", origin)
+        .header("access-control-request-method", "POST")
+        .header("access-control-request-headers", "authorization,content-type")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap().to_owned())
+}
+
+#[tokio::test]
+async fn the_site_may_call_sharing_from_a_browser_and_nothing_else() {
+    let app = third_party_app(Default::default());
+    assert_eq!(preflight(&app, "/api/wh/groups", THIRD_PARTY_SITE).await.as_deref(), Some(THIRD_PARTY_SITE));
+    assert_eq!(preflight(&app, "/api/session", THIRD_PARTY_SITE).await.as_deref(), Some(THIRD_PARTY_SITE));
+    assert_eq!(preflight(&app, "/api/wh/groups", "https://evil.example").await, None, "another site");
+    assert_eq!(preflight(&app, "/api/br", THIRD_PARTY_SITE).await, None, "battle reports stay closed");
+    // Without origins configured, as today, no CORS at all.
+    assert_eq!(preflight(&lazy_app(), "/api/wh/groups", THIRD_PARTY_SITE).await, None);
+}
+
+#[tokio::test]
+async fn sharing_requests_are_held_to_a_budget() {
+    use eve_spai_br::config::WhRate;
+    let app = third_party_app(WhRate { read_burst: 3.0, read_per_sec: 0.001, write_burst: 3.0, write_per_sec: 0.001 });
+    let s = third_party_session(90000034);
+    let mut codes = Vec::new();
+    for _ in 0..4 {
+        codes.push(send(&app, "GET", "/api/wh/groups/g/keys", Some(&s), None).await.0);
+    }
+    assert!(codes[..3].iter().all(|c| *c != StatusCode::TOO_MANY_REQUESTS), "{codes:?}");
+    assert_eq!(codes[3], StatusCode::TOO_MANY_REQUESTS);
+    // Someone else's budget is their own.
+    let (status, _) = send(&app, "GET", "/api/wh/groups/g/keys", Some(&third_party_session(90000035)), None).await;
+    assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
 }

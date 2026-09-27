@@ -40,6 +40,10 @@ services:
       RUST_LOG: "info,eve_spai_br=info"
       # EVE_CLIENT_ID / EVE_JWKS_URL fall back to the in-binary defaults; override
       # here only if they ever change.
+      # Other SSO applications allowed to share wormholes (scope-less logins only).
+      EVE_EXTRA_CLIENT_IDS: "6951c713dc604df9a17d2bb28b2fc194"
+      # Browser origins allowed on /api/session and /api/wh/* (comma list; empty = no CORS).
+      WH_CORS_ORIGINS: ""
 
     networks:
       - frontend

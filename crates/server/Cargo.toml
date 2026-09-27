@@ -26,7 +26,7 @@ br-core = { path = "../br-core" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["limit", "trace"] }
+tower-http = { version = "0.6", features = ["limit", "trace", "cors"] }
 
 # Runtime-checked sqlx only (no query!/query_as! macros), so the build needs no
 # DATABASE_URL and no offline cache.

@@ -133,7 +133,26 @@ struct InviteInfo {
 #[derive(Serialize, Deserialize)]
 struct JoinBody {
     keys: PublicKeys,
+    /// Over the keys' JSON text. Every version checks this one, so joiners keep sending it.
+    #[serde(default)]
     mac: String,
+    /// Over the raw key bytes, which another client can reproduce without matching our JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mac2: Option<String>,
+}
+
+fn join_msg2(char_id: i64, group: &str, keys: &PublicKeys) -> Vec<u8> {
+    let mut m = format!("{char_id}|{group}|").into_bytes();
+    m.extend_from_slice(&keys.sign);
+    m.extend_from_slice(&keys.enc);
+    m
+}
+
+/// Whether `body` proves the invite `secret` for `char_id`, by either MAC.
+fn join_proven(secret: &Key, char_id: i64, group: &str, body: &JoinBody) -> bool {
+    let ok = |mac: &str, msg: Vec<u8>| crypto::unb64(mac).is_ok_and(|m| crypto::invite_mac_ok(secret, &msg, &m));
+    body.mac2.as_deref().is_some_and(|m| ok(m, join_msg2(char_id, group, &body.keys)))
+        || (!body.mac.is_empty() && ok(&body.mac, join_msg(char_id, group, &body.keys)))
 }
 
 fn wrap_ctx(epoch: u32) -> Vec<u8> {
@@ -242,8 +261,9 @@ impl Engine<'_> {
                     bail!("this invite is for {}; join as that character", info.for_name);
                 }
                 let keys = self.device.public();
-                let mac = crypto::invite_mac(&secret, &join_msg(char_id, &group_id, &keys));
-                c.join(&id, &serde_json::to_string(&JoinBody { keys, mac: crypto::b64(&mac) })?)?;
+                let mac = crypto::b64(&crypto::invite_mac(&secret, &join_msg(char_id, &group_id, &keys)));
+                let mac2 = Some(crypto::b64(&crypto::invite_mac(&secret, &join_msg2(char_id, &group_id, &keys))));
+                c.join(&id, &serde_json::to_string(&JoinBody { keys, mac, mac2 })?)?;
                 // Until an admin approves there is no key; the members the invite named are who
                 // this install trusts to sign the group's entries.
                 self.store.share_group_save(&ShareGroup { id: group_id.clone(), name: info.name, char_id, role: Role::Member, epoch: 0, cursor: 0 });
@@ -343,8 +363,7 @@ impl Engine<'_> {
                 // request off as another's; checking it against the invite's character closes a
                 // leaked link.
                 let proven = match (&body, &invite) {
-                    (Some(b), Some((s, _, _))) => crypto::unb64(&b.mac)
-                        .is_ok_and(|mac| crypto::invite_mac_ok(s, &join_msg(row.char_id, &g.id, &b.keys), &mac)),
+                    (Some(b), Some((s, _, _))) => join_proven(s, row.char_id, &g.id, b),
                     _ => false,
                 };
                 let meant_for = invite.filter(|(_, c, _)| *c != row.char_id).map(|(_, _, n)| n);
@@ -464,6 +483,9 @@ impl Engine<'_> {
             Op::Genesis { owner, .. } if roster.members.get(&owner.char_id) == Some(owner) => {}
             Op::Genesis { .. } | Op::MemberAdded { .. } | Op::MemberRemoved { .. } | Op::RoleSet { .. } => roster.apply(env.author, &op)?,
             Op::Hole { hole } => return Ok(self.store.share_apply_hole(hole, &g.id, &who)),
+            Op::HoleDead { at, .. } | Op::Sigs { at, .. } if *at > super::hole::latest_believable() => {
+                bail!("dated {at}, too far ahead of this clock")
+            }
             Op::HoleDead { uid, .. } => self.store.share_apply_dead(uid),
             Op::Sigs { system_id, rows, drop_missing, at } => self.store.share_apply_sigs(*system_id, rows, *drop_missing, *at, &who),
             Op::SigDelete { system_id, sig } => self.store.share_apply_sig_delete(*system_id, sig),
@@ -532,6 +554,27 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_join_request_proves_the_invite_by_either_mac() {
+        let (secret, keys) = (crypto::random32(), DeviceKeys::generate().public());
+        let mac = crypto::b64(&crypto::invite_mac(&secret, &join_msg(7, "g", &keys)));
+        let mac2 = crypto::b64(&crypto::invite_mac(&secret, &join_msg2(7, "g", &keys)));
+        let body = |mac: &str, mac2: Option<&str>| JoinBody { keys, mac: mac.into(), mac2: mac2.map(Into::into) };
+        assert!(join_proven(&secret, 7, "g", &body(&mac, None)), "as every released version sends it");
+        assert!(join_proven(&secret, 7, "g", &body("", Some(&mac2))), "raw bytes only");
+        assert!(join_proven(&secret, 7, "g", &body(&mac, Some(&mac2))));
+        assert!(!join_proven(&secret, 8, "g", &body(&mac, Some(&mac2))), "another character");
+        assert!(!join_proven(&crypto::random32(), 7, "g", &body(&mac, Some(&mac2))), "without the link");
+        assert!(!join_proven(&secret, 7, "g", &body("", None)));
+        // An old admin reads the new body: `mac2` is a field it does not know, and ignores.
+        #[derive(Deserialize)]
+        struct Old {
+            mac: String,
+        }
+        let old: Old = serde_json::from_str(&serde_json::to_string(&body(&mac, Some(&mac2))).unwrap()).unwrap();
+        assert_eq!(old.mac, mac);
+    }
 
     #[test]
     fn an_invite_link_round_trips_and_tolerates_what_chat_adds() {
@@ -653,7 +696,7 @@ mod end_to_end {
         let (inv_id, s) = parse_link(&stolen).unwrap();
         let keys = thief.device.public();
         let mac = crypto::invite_mac(&s, &join_msg(joiner_id + 1, &g, &keys));
-        (thief.clients)(joiner_id + 1).unwrap().join(&inv_id, &serde_json::to_string(&JoinBody { keys, mac: crypto::b64(&mac) }).unwrap()).unwrap();
+        (thief.clients)(joiner_id + 1).unwrap().join(&inv_id, &serde_json::to_string(&JoinBody { keys, mac: crypto::b64(&mac), mac2: None }).unwrap()).unwrap();
         a.sync();
         let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
         let bad = reqs.iter().find(|r| r.row.char_id == joiner_id + 1).expect("the thief's request");

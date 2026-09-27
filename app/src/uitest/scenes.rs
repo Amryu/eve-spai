@@ -1862,6 +1862,34 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
+    // A probe scan that no longer lists two holes' signatures, asking before they go.
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ctx("dialog_wh_gone", [620.0, 300.0], move |ctx| {
+            let app = app.get_or_insert_with(|| {
+                use crate::wormholes::{DestClass, Source, Wormhole};
+                harness::render_dialogs_on_the_root(ctx);
+                let mut a = crate::app::SpaiApp::build(ctx, true);
+                a.systems = Some(fixtures::systems());
+                let now = fixtures::now();
+                let hole = |sig: &str, ty: &str, to: i64| Wormhole {
+                    system_id: 30_004_759,
+                    signature: Some(sig.into()),
+                    wh_type: Some(ty.into()),
+                    dest: DestClass::Nullsec,
+                    dest_system_id: Some(to),
+                    reported_at: now - 600,
+                    updated_at: now - 600,
+                    source: Source::Manual,
+                    ..Default::default()
+                };
+                a.seed_gone(30_004_759, vec![hole("GON-101", "K162", 30_003_704), hole("OLD-202", "N432", 30_000_142)]);
+                a
+            });
+            app.wh_gone_window(ctx);
+        })
+    });
     // The popup after a jump, in a system with a busy probe scan: the signatures fold into a list.
     v.push(Scene::ui("wh_prompt_many_sigs", [400.0, 460.0], {
         use crate::whdata::Candidate;
@@ -6799,6 +6827,18 @@ fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
     harness.run();
     harness.run();
     assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");
+}
+
+/// The gone-from-the-scan prompt acts once and closes, rather than asking again every frame.
+#[test]
+fn uitest_gone_holes_prompt_closes_after_marking_dead() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = all().into_iter().find(|s| s.name == "dialog_wh_gone").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label_contains("GON-101").is_some());
+    harness.get_by_label("Mark dead").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Mark dead").is_none(), "the prompt stayed open");
 }
 
 /// With blues hidden, a pilot whose corporation or alliance is at +5 or better leaves the table

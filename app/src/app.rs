@@ -3871,6 +3871,7 @@ impl eframe::App for SpaiApp {
         self.wh_share_window(&ctx);
         self.wh_detect_poll();
         self.wh_prompt_window(&ctx);
+        self.wh_gone_window(&ctx);
         self.ping_rules_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();

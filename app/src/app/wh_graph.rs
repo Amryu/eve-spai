@@ -107,6 +107,45 @@ fn hole_code(w: &Wormhole) -> Option<String> {
     w.wh_type.clone().or_else(|| w.dest_wh_type.clone()).or_else(drifter)
 }
 
+fn letters(sig: &str) -> String {
+    sig.trim().chars().take(3).collect::<String>().to_uppercase()
+}
+
+/// What a probe scan of `system` says about the saved holes. First, those whose signature there it
+/// no longer lists: only from a paste that replaces the list and has signatures in it. Second, a
+/// signature for the one hole there without one, when exactly one scanned wormhole is nobody's:
+/// the hole's id, the signature, and whether it goes on the hole's own side.
+pub(crate) fn probe_effects(holes: &[Wormhole], system: i64, scan: &[crate::wormholes::ScanSig], full: bool) -> (Vec<i64>, Option<(i64, String, bool)>) {
+    let side = |w: &Wormhole| -> Option<(bool, Option<String>)> {
+        if w.system_id == system {
+            Some((true, w.signature.clone()))
+        } else if w.dest_system_id == Some(system) {
+            Some((false, w.dest_signature.clone()))
+        } else {
+            None
+        }
+    };
+    let here: Vec<(&Wormhole, bool, Option<String>)> = holes.iter().filter_map(|w| side(w).map(|(near, sig)| (w, near, sig.map(|s| letters(&s)).filter(|s| s.len() == 3)))).collect();
+    let scanned: HashSet<String> = scan.iter().map(|s| letters(&s.id)).collect();
+    let lists_sigs = scan.iter().any(|s| s.kind.to_lowercase().contains("signature"));
+    let gone: Vec<i64> = if full && lists_sigs {
+        here.iter().filter(|(_, _, sig)| sig.as_ref().is_some_and(|s| !scanned.contains(s))).map(|(w, _, _)| w.id).collect()
+    } else {
+        Vec::new()
+    };
+    let taken: HashSet<&String> = here.iter().filter_map(|(_, _, sig)| sig.as_ref()).collect();
+    let free: Vec<&crate::wormholes::ScanSig> = scan
+        .iter()
+        .filter(|s| s.group.to_lowercase().contains("wormhole") && !taken.contains(&letters(&s.id)))
+        .collect();
+    let bare: Vec<&(&Wormhole, bool, Option<String>)> = here.iter().filter(|(_, _, sig)| sig.is_none()).collect();
+    let fill = match (bare.as_slice(), free.as_slice()) {
+        ([(w, near, _)], [sig]) => Some((w.id, sig.id.clone(), *near)),
+        _ => None,
+    };
+    (gone, fill)
+}
+
 /// The known hole behind signature `sig` in `system`, matched on its first three letters.
 fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wormhole> {
     holes.iter().find(|w| {
@@ -173,6 +212,9 @@ pub(crate) struct WhGraphView {
     layout_cache: Option<(u64, Vec<(i64, Option<i64>, egui::Pos2)>)>,
     /// The canvas as last drawn, whose shape the chains are packed to.
     canvas: Option<egui::Rect>,
+    /// Holes whose signature a probe scan no longer lists, waiting on the user: the system, and
+    /// each hole with whether it is ticked to go.
+    pub(crate) gone: Option<(i64, Vec<(i64, bool)>)>,
 }
 
 impl WhGraphView {
@@ -2041,10 +2083,12 @@ impl SpaiApp {
             if p.active_name.is_empty() { "me".to_owned() } else { p.active_name.clone() }
         };
         let Some(store) = self.store.as_ref() else { return };
-        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, !self.wh_graph.keep_missing);
+        let full = !self.wh_graph.keep_missing;
+        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, full);
+        let linked = self.wh_probe_followup(system, &scan, full, &who);
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
-        self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed"));
+        self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed{linked}"));
     }
 
     /// A probe scanner copy on the clipboard is saved to where the active character is, wormhole
@@ -2113,9 +2157,107 @@ impl SpaiApp {
         };
         let Some(store) = self.store.as_ref() else { return };
         let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, true);
+        let linked = self.wh_probe_followup(system, &scan, true, &who);
         let name = self.systems.as_ref().and_then(|g| g.info_of(system)).map(|i| i.name.clone()).unwrap_or_default();
         self.wh_graph.sigs = None;
-        self.wh_graph.sig_note = Some(format!("Probe scan of {name} saved: {added} new, {updated} updated, {removed} removed"));
+        self.wh_graph.sig_note = Some(format!("Probe scan of {name} saved: {added} new, {updated} updated, {removed} removed{linked}"));
+    }
+
+    /// Carries a saved probe scan over to the holes: a lone unclaimed wormhole signature goes on
+    /// the lone hole there without one, and holes whose signature is gone wait on the user.
+    /// Returns what was linked, for the note.
+    fn wh_probe_followup(&mut self, system: i64, scan: &[crate::wormholes::ScanSig], full: bool, who: &str) -> String {
+        let Some(store) = self.store.as_ref() else { return String::new() };
+        let now = chrono::Utc::now().timestamp();
+        let holes: Vec<Wormhole> = store.wormholes().into_iter().filter(|w| !w.is_expired(now)).collect();
+        let (gone, fill) = probe_effects(&holes, system, scan, full);
+        let mut note = String::new();
+        if let Some((id, sig, near)) = fill {
+            if let Some(mut w) = store.wormhole_by_id(id) {
+                if near {
+                    w.signature = Some(sig.clone());
+                } else {
+                    w.dest_signature = Some(sig.clone());
+                }
+                w.updated_at = now;
+                store.write_wormhole(&w);
+                store.audit_wormhole(&w.uid, who, crate::wormholes::Source::Manual, &[("signature", sig.clone())]);
+                note = format!(", {sig} put on its hole");
+                self.wh_reloaded = None;
+            }
+        }
+        if !gone.is_empty() {
+            self.wh_graph.gone = Some((system, gone.into_iter().map(|id| (id, true)).collect()));
+        }
+        note
+    }
+
+    /// `holes` saved, and the ones listed after `system` waiting on the gone-from-the-scan prompt.
+    #[cfg(test)]
+    pub(crate) fn seed_gone(&mut self, system: i64, holes: Vec<Wormhole>) {
+        let Some(store) = self.store.as_ref() else { return };
+        let ids: Vec<(i64, bool)> = holes.iter().map(|w| (store.upsert_wormhole(w), true)).collect();
+        self.wh_graph.gone = Some((system, ids));
+    }
+
+    /// Asks before marking dead the holes a probe scan no longer lists.
+    pub(crate) fn wh_gone_window(&mut self, ctx: &egui::Context) {
+        let Some((system, mut list)) = self.wh_graph.gone.take() else { return };
+        let geo = self.systems.clone();
+        let name = |id: i64| geo.as_ref().and_then(|g| g.info_of(id)).map_or(format!("#{id}"), |i| display_name(id, &i.name));
+        let holes: HashMap<i64, Wormhole> = self.store.as_ref().map(|s| list.iter().filter_map(|(id, _)| Some((*id, s.wormhole_by_id(*id)?))).collect()).unwrap_or_default();
+        list.retain(|(id, _)| holes.contains_key(id));
+        if list.is_empty() {
+            return;
+        }
+        let mut act: Option<bool> = None;
+        egui::Window::new("Holes gone from the scan")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The probe scan of {} no longer lists the signature of {}. A hole's signature goes when it collapses.",
+                    name(system),
+                    if list.len() == 1 { "this hole" } else { "these holes" }
+                ));
+                ui.add_space(4.0);
+                for (id, keep) in list.iter_mut() {
+                    let w = &holes[id];
+                    let (sig, far) = if w.system_id == system { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
+                    let far = far.map_or_else(|| w.dest.label().to_owned(), name);
+                    let ty = hole_code(w).map(|t| format!(" ({t})")).unwrap_or_default();
+                    ui.checkbox(keep, format!("{} \u{2192} {far}{ty}", sig.as_deref().unwrap_or("?")));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Mark dead").clicked() {
+                        act = Some(true);
+                    }
+                    if ui.button("Keep them").clicked() {
+                        act = Some(false);
+                    }
+                });
+            });
+        match act {
+            Some(true) => {
+                let who = {
+                    let p = self.player.lock().unwrap();
+                    if p.active_name.is_empty() { "me".to_owned() } else { p.active_name.clone() }
+                };
+                if let Some(store) = self.store.as_ref() {
+                    for (id, _) in list.iter().filter(|(_, go)| *go) {
+                        if let Some(w) = holes.get(id) {
+                            store.kill_wormhole(*id);
+                            store.audit_wormhole(&w.uid, &who, crate::wormholes::Source::Manual, &[("dead", "signature gone from a probe scan".to_owned())]);
+                        }
+                    }
+                }
+                self.wh_reloaded = None;
+            }
+            Some(false) => {}
+            None => self.wh_graph.gone = Some((system, list)),
+        }
     }
 
     fn wh_layout_opts(&self) -> super::wh_layout::Opts {
@@ -2319,6 +2461,39 @@ mod tests {
         });
         assert!(!clash, "the new one found its own room: {:?}", now[&4]);
         assert_eq!(now[&4].x, COL, "beside its parent's other holes");
+    }
+
+    #[test]
+    fn a_probe_scan_finds_gone_holes_and_names_a_lone_bare_one() {
+        use crate::wormholes::ScanSig;
+        let sig = |id: &str, group: &str| ScanSig { id: id.into(), kind: "Cosmic Signature".into(), group: group.into(), name: String::new() };
+        let hole = |id: i64, from: i64, sig: Option<&str>, to: i64, far: Option<&str>| Wormhole {
+            id,
+            system_id: from,
+            signature: sig.map(Into::into),
+            dest_system_id: Some(to),
+            dest_signature: far.map(Into::into),
+            ..Default::default()
+        };
+        let here = 31_000_004;
+        let holes = [
+            hole(1, here, Some("ABC-123"), 30_000_142, None),
+            hole(2, 30_004_759, Some("QQQ"), here, Some("XYZ-999")),
+            hole(3, here, None, 30_003_704, None),
+            hole(4, 30_000_001, Some("NOT"), 30_000_002, None),
+        ];
+        let scan = [sig("ABC-123", "Wormhole"), sig("NEW-001", "Wormhole"), sig("DAT-555", "Data Site")];
+        let (gone, fill) = probe_effects(&holes, here, &scan, true);
+        assert_eq!(gone, vec![2], "XYZ is gone from here; a hole elsewhere is not this scan's business");
+        assert_eq!(fill, Some((3, "NEW-001".into(), true)));
+        // A paste that keeps what it does not list says nothing about what is gone.
+        assert!(probe_effects(&holes, here, &scan, false).0.is_empty());
+        // Two unclaimed wormholes: which one is the hole's is a guess, so neither.
+        let two = [sig("ABC-123", "Wormhole"), sig("NEW-001", "Wormhole"), sig("NEW-002", "Wormhole")];
+        assert_eq!(probe_effects(&holes, here, &two, true).1, None);
+        // Anomalies only: nothing about signatures, so nothing gone.
+        let anoms = [ScanSig { id: "ANO-100".into(), kind: "Cosmic Anomaly".into(), group: "Combat Site".into(), name: String::new() }];
+        assert!(probe_effects(&holes, here, &anoms, true).0.is_empty());
     }
 
     #[test]

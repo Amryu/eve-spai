@@ -97,11 +97,36 @@ pub fn state(w: &Wormhole, clocks: &HashMap<String, Clock>, me: i64) -> HoleStat
     HoleState { uid: w.uid.clone(), system_id: w.system_id, source: w.source.code().to_owned(), reported_at: w.reported_at, fields }
 }
 
+/// The latest change time taken from another member: an hour ahead of this clock. A change
+/// dated further out would win every later edit of its field until then.
+pub fn latest_believable() -> i64 {
+    chrono::Utc::now().timestamp() + 3600
+}
+
+/// Whether another member's value for `field` is one an honest client could send.
+fn sane(field: &str, v: &Value) -> bool {
+    let len_ok = |max: usize| v.as_str().is_none_or(|s| s.chars().count() <= max);
+    match field {
+        "signature" | "dest_signature" => len_ok(16),
+        "wh_type" | "dest_wh_type" => len_ok(8),
+        "note" => len_ok(1000),
+        "detected_by" => len_ok(100),
+        "dest_system_id" => v.is_null() || v.as_i64().is_some_and(system_id_ok),
+        _ => true,
+    }
+}
+
+/// EVE's k-space and w-space systems.
+pub fn system_id_ok(id: i64) -> bool {
+    (30_000_000..32_000_000).contains(&id)
+}
+
 /// Folds `remote` into `local`, field by field. Returns the fields taken, with their clocks.
 pub fn merge(local: &mut Wormhole, clocks: &mut HashMap<String, Clock>, remote: &HoleState) -> Vec<(String, Clock)> {
     let mut taken = Vec::new();
+    let latest = latest_believable();
     for (name, f) in &remote.fields {
-        if !FIELDS.contains(&name.as_str()) {
+        if !FIELDS.contains(&name.as_str()) || f.at > latest || !sane(name, &f.v) {
             continue;
         }
         let mine = clocks.get(name).copied().unwrap_or((i64::MIN, 0));
@@ -125,7 +150,8 @@ pub fn fresh(remote: &HoleState) -> Wormhole {
         updated_at: remote.fields.values().map(|f| f.at).max().unwrap_or(remote.reported_at),
         ..Default::default()
     };
-    for (name, f) in &remote.fields {
+    let latest = latest_believable();
+    for (name, f) in remote.fields.iter().filter(|(n, f)| f.at <= latest && sane(n, &f.v)) {
         set(&mut w, name, &f.v);
     }
     w
@@ -164,6 +190,21 @@ mod tests {
             .collect();
         assert!(results.windows(2).all(|p| p[0] == p[1]), "{results:?}");
         assert_eq!(results[0], (Some(Mass::Critical), Some(Life::Under1h), Some("ABC".into())));
+    }
+
+    #[test]
+    fn a_change_dated_far_ahead_or_out_of_bounds_is_not_taken() {
+        let ahead = chrono::Utc::now().timestamp() + 2 * 3600;
+        let a = hole(&[("mass", "critical".into(), ahead, 1), ("life", "lt4h".into(), 20, 1)]);
+        let mut w = Wormhole::default();
+        let mut clocks = HashMap::new();
+        merge(&mut w, &mut clocks, &a);
+        assert_eq!((w.mass, w.life), (None, Some(Life::Under4h)), "the future one would pin mass forever");
+        let bad = hole(&[("note", Value::String("x".repeat(5000)), 5, 1), ("dest_system_id", Value::from(42), 5, 1), ("signature", "ABC-123".into(), 5, 1)]);
+        let mut w = Wormhole::default();
+        merge(&mut w, &mut HashMap::new(), &bad);
+        assert_eq!((w.note, w.dest_system_id, w.signature.as_deref()), (None, None, Some("ABC-123")));
+        assert_eq!(fresh(&bad).note, None);
     }
 
     #[test]

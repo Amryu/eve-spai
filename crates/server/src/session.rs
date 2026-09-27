@@ -26,6 +26,9 @@ pub struct SessionClaims {
     pub name: String,
     pub exp: i64,
     pub iat: i64,
+    /// Set only for another client's session. EVE Spai's tokens stay exactly as before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
 }
 
 #[derive(Clone)]
@@ -49,6 +52,7 @@ impl SessionIssuer {
             name: id.name.clone(),
             exp,
             iat: now,
+            cid: id.client.clone(),
         };
         let token = encode(&Header::new(Algorithm::HS256), &claims, &self.key)?;
         Ok((token, exp))
@@ -58,6 +62,8 @@ impl SessionIssuer {
 pub struct SessionVerifier {
     key: DecodingKey,
     validation: Validation,
+    /// Other clients still allowed: taking one out ends its sessions at once.
+    extras: Vec<String>,
 }
 
 impl SessionVerifier {
@@ -66,7 +72,12 @@ impl SessionVerifier {
         validation.set_issuer(&[SESSION_ISS]);
         validation.set_audience(&[SESSION_AUD]);
         // `exp` is in the default required-claims set and is validated automatically.
-        Self { key: DecodingKey::from_secret(secret), validation }
+        Self { key: DecodingKey::from_secret(secret), validation, extras: Vec::new() }
+    }
+
+    pub fn with_extras(mut self, extras: Vec<String>) -> Self {
+        self.extras = extras;
+        self
     }
 
     pub fn verify(&self, token: &str) -> Result<Identity, AppError> {
@@ -77,7 +88,12 @@ impl SessionVerifier {
             .sub
             .parse::<i64>()
             .map_err(|_| AppError::Unauthorized("malformed sub claim".into()))?;
-        Ok(Identity { char_id, name: data.claims.name })
+        if let Some(cid) = &data.claims.cid {
+            if !self.extras.contains(cid) {
+                return Err(AppError::Unauthorized("this client is no longer allowed".into()));
+            }
+        }
+        Ok(Identity { char_id, name: data.claims.name, client: data.claims.cid })
     }
 }
 
@@ -115,7 +131,7 @@ mod tests {
     const SECRET: &[u8] = b"unit-test-session-secret";
 
     fn id() -> Identity {
-        Identity { char_id: 2112000001, name: "Spai Pilot".into() }
+        Identity { char_id: 2112000001, name: "Spai Pilot".into(), client: None }
     }
 
     fn issuer(ttl: i64) -> SessionIssuer {
@@ -174,6 +190,22 @@ mod tests {
             "exp": chrono::Utc::now().timestamp() + 3600, "iat": 0,
         }));
         assert!(verifier().verify(&tok).is_err());
+    }
+
+    #[test]
+    fn an_eve_spai_session_looks_as_it_did_before_other_clients() {
+        let (tok, _) = issuer(3600).issue(&id()).unwrap();
+        let v = verifier();
+        let claims = decode::<serde_json::Value>(&tok, &v.key, &v.validation).unwrap().claims;
+        assert!(claims.get("cid").is_none(), "{claims}");
+    }
+
+    #[test]
+    fn another_clients_session_ends_when_the_client_is_taken_out() {
+        let other = Identity { client: Some("third-party".into()), ..id() };
+        let (tok, _) = issuer(3600).issue(&other).unwrap();
+        assert_eq!(verifier().with_extras(vec!["third-party".into()]).verify(&tok).unwrap().client.as_deref(), Some("third-party"));
+        assert!(verifier().verify(&tok).is_err(), "no longer allowed");
     }
 
     #[test]

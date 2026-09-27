@@ -73,7 +73,7 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::error!(error = %e, "search_names backfill failed (continuing)");
     }
 
-    let verifier = Verifier::live(cfg.jwks_url.clone(), cfg.client_id.clone());
+    let verifier = Verifier::live(cfg.jwks_url.clone(), cfg.client_id.clone()).with_extras(cfg.extra_client_ids.clone());
     let state = AppState::new(pool, verifier, cfg.clone());
     let sweep_db = state.db.clone();
     tokio::spawn(async move {
