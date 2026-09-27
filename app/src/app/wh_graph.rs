@@ -686,8 +686,11 @@ fn effect_color(effect: &str) -> egui::Color32 {
 
 /// How long a hole has left, as its line shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PartialOrd, Ord)]
 enum TimeLeft {
     Plenty,
+    /// Under 12 hours: for a hole read as "less than a day", as likely gone as not.
+    Under12h,
     Under4h,
     Under1h,
     /// Past its time: it can close at any moment.
@@ -696,25 +699,42 @@ enum TimeLeft {
 
 /// A scout's reading of the hole wins; otherwise its expiry says.
 fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
-    match w.life {
-        Some(Life::Expired) => return TimeLeft::Expiring,
-        Some(Life::Under1h) => return TimeLeft::Under1h,
-        Some(Life::Under4h) => return TimeLeft::Under4h,
-        _ => {}
-    }
-    match w.expiry() - now {
+    // The worse of the last reading and what the clock has done to it since.
+    let read = match w.life {
+        Some(Life::Expired) => TimeLeft::Expiring,
+        Some(Life::Under1h) => TimeLeft::Under1h,
+        Some(Life::Under4h) => TimeLeft::Under4h,
+        _ => TimeLeft::Plenty,
+    };
+    let clock = match w.expiry() - now {
         s if s <= 0 => TimeLeft::Expiring,
         s if s < 3600 => TimeLeft::Under1h,
         s if s < 4 * 3600 => TimeLeft::Under4h,
+        s if s < 12 * 3600 => TimeLeft::Under12h,
         _ => TimeLeft::Plenty,
-    }
+    };
+    read.max(clock)
+}
+
+/// What is left of a hole, short, in its warning colour: the reading while it holds, then the
+/// clock's worse figure. `None` when nothing is known and nothing is near.
+fn life_badge(w: &Wormhole, now: i64, visuals: &egui::Visuals) -> Option<(String, egui::Color32)> {
+    let yellow = egui::Color32::from_rgb(0xF2, 0xD0, 0x4A);
+    let orange = egui::Color32::from_rgb(0xFF, 0x8F, 0x2A);
+    Some(match time_left(w, now) {
+        TimeLeft::Plenty => (w.life?.short().to_owned(), visuals.text_color()),
+        TimeLeft::Under12h => ("<12h".to_owned(), yellow),
+        TimeLeft::Under4h => ("<4h".to_owned(), orange),
+        TimeLeft::Under1h => ("<1h".to_owned(), visuals.error_fg_color),
+        TimeLeft::Expiring => ("Expired".to_owned(), visuals.error_fg_color),
+    })
 }
 
 /// A line that breaks up as the hole does: solid, long dashes, dash-dot, then a jagged line for a
 /// hole that can close at any moment.
 fn stroke_hole(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::Stroke, t: TimeLeft) {
     match t {
-        TimeLeft::Plenty => {
+        TimeLeft::Plenty | TimeLeft::Under12h => {
             painter.add(egui::Shape::line(line.to_vec(), stroke));
         }
         TimeLeft::Under4h => painter.extend(egui::Shape::dashed_line(line, stroke, 12.0, 6.0)),
@@ -782,6 +802,16 @@ fn drifter_fill(base: egui::Color32) -> egui::Color32 {
     let d = drifter_color();
     let mix = |a: u8, b: u8| (a as f32 * 0.78 + b as f32 * 0.22).round() as u8;
     egui::Color32::from_rgb(mix(base.r(), d.r()), mix(base.g(), d.g()), mix(base.b(), d.b()))
+}
+
+/// A pinned system this few gate jumps from a chain is close enough to stand out: green under
+/// five, yellow under ten.
+fn close_color(jumps: u32) -> Option<egui::Color32> {
+    match jumps {
+        0..5 => Some(egui::Color32::from_rgb(0x5F, 0xD0, 0x6E)),
+        5..10 => Some(egui::Color32::from_rgb(0xF2, 0xD0, 0x4A)),
+        _ => None,
+    }
 }
 
 fn mass_color(m: Option<Mass>) -> egui::Color32 {
@@ -1184,7 +1214,11 @@ impl SpaiApp {
             let Some(path) = &link_paths[li] else { continue };
             let line = screen(path);
             let hot = hovered_edge.is_none() && hovered_link.is_none() && hit(&line);
-            painter.extend(egui::Shape::dotted_line(&line, link_color, 6.0, if hot { 2.0 } else { 1.3 }));
+            let (color, radius) = match close_color(n) {
+                Some(c) => (c, 1.8),
+                None => (link_color, 1.3),
+            };
+            painter.extend(egui::Shape::dotted_line(&line, color, 6.0, if hot { radius + 0.7 } else { radius }));
             if hot {
                 hovered_link = Some((exit, pin, n));
             }
@@ -1226,7 +1260,10 @@ impl SpaiApp {
         }
         for (li, &(_, _, n)) in gate_links.iter().enumerate() {
             let Some(path) = &link_paths[li] else { continue };
-            let g = painter.layout_no_wrap(format!("{n}j"), font.clone(), visuals.text_color());
+            let close = close_color(n);
+            let text = egui::RichText::new(format!("{n}j"));
+            let text = if close.is_some() { text.strong() } else { text };
+            let g = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font.clone());
             let size = (g.size() + pad) / zoom;
             // Anywhere along its own route, the legs nearest the pinned system first; a label with
             // nowhere free is left off (hovering the line still says it) rather than drawn over another.
@@ -1234,7 +1271,15 @@ impl SpaiApp {
             spots.extend(walk(path, true, size));
             let Some(r) = first_free(spots, size, &taken, &boxes, &others(holes.len() + li)) else { continue };
             taken.push(r);
-            draw_label(r, g, Some(link_color));
+            match close {
+                Some(c) => {
+                    let sr = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+                    painter.rect(sr, 3.0, visuals.extreme_bg_color, egui::Stroke::new(1.5, c), egui::StrokeKind::Outside);
+                    painter.rect_filled(sr, 3.0, c.gamma_multiply(0.2));
+                    painter.galley(sr.center() - g.size() / 2.0, g, c);
+                }
+                None => draw_label(r, g, Some(link_color)),
+            }
         }
 
         let mut clicked: Option<i64> = None;
@@ -1386,11 +1431,12 @@ impl SpaiApp {
                 tip.push_str(&format!("\nSize: {}", s.label()));
             }
             if let Some(m) = w.mass {
-                tip.push_str(&format!("\nMass: {}", m.label()));
+                tip.push_str(&format!("\nMass: {}", m.short()));
             }
-            if let Some(l) = w.life {
-                tip.push_str(&format!("\nLife: {}", l.label()));
+            if let Some((life, _)) = life_badge(w, now, ui.visuals()) {
+                tip.push_str(&format!("\nLife: {life}"));
             }
+            tip.push_str(&format!("\nAdded {} ago", super::human_ago(now - w.reported_at)));
             tip.push_str(&format!("\nSource: {}", w.source.label()));
             if let Some(name) = self.wh_group_of.get(&w.uid).and_then(|g| self.share_group_name(g)) {
                 tip.push_str(&format!("\nShared in {name}"));
@@ -1630,16 +1676,19 @@ impl SpaiApp {
                                 ui.label(format!("{} {}", icon::ARROW_RIGHT, w.dest.label()));
                             }
                         }
-                        let state = [w.life.map(|l| l.label()), w.mass.map(|m| m.label())]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        ui.label(if state.is_empty() {
-                            format!("{} ago", super::human_ago(now - w.reported_at))
-                        } else {
-                            state
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if let Some((text, color)) = life_badge(w, now, ui.visuals()) {
+                                let read = w.observed_at.map(|t| format!(", read {} ago", super::human_ago(now - t))).unwrap_or_default();
+                                ui.label(egui::RichText::new(text).color(color))
+                                    .on_hover_text(format!("Time left{read}"));
+                            }
+                            if let Some(m) = w.mass {
+                                ui.label(egui::RichText::new(m.short()).color(mass_color(Some(m)))).on_hover_text(format!("Mass: {}", m.label()));
+                            }
                         });
+                        ui.label(egui::RichText::new(format!("{} ago", super::human_ago(now - w.reported_at))).weak())
+                            .on_hover_text(format!("Added {} ago, from {}", super::human_ago(now - w.reported_at), w.source.label()));
                         ui.horizontal(|ui| {
                             if ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
                                 edit = Some(w.id);
@@ -2276,12 +2325,22 @@ mod tests {
     fn a_holes_line_pattern_follows_its_time_left() {
         let now = 1_000_000;
         let hole = |life: Option<Life>, expiry: i64| Wormhole { life, explicit_expiry: Some(now + expiry), ..Default::default() };
-        assert_eq!(time_left(&hole(None, 10 * 3600), now), TimeLeft::Plenty);
+        assert_eq!(time_left(&hole(None, 13 * 3600), now), TimeLeft::Plenty);
+        assert_eq!(time_left(&hole(None, 10 * 3600), now), TimeLeft::Under12h);
         assert_eq!(time_left(&hole(None, 3 * 3600), now), TimeLeft::Under4h);
         assert_eq!(time_left(&hole(None, 1800), now), TimeLeft::Under1h);
         assert_eq!(time_left(&hole(None, -60), now), TimeLeft::Expiring);
         assert_eq!(time_left(&hole(Some(Life::Expired), 10 * 3600), now), TimeLeft::Expiring, "the scout's word wins");
         assert_eq!(time_left(&hole(Some(Life::Under1h), 10 * 3600), now), TimeLeft::Under1h);
+        // Read as less than a day: half of that gone, as likely closed as not, then on down.
+        let day = |ago: i64| Wormhole { life: Some(Life::UnderDay), explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
+        assert_eq!(time_left(&day(6 * 3600), now), TimeLeft::Plenty);
+        assert_eq!(time_left(&day(13 * 3600), now), TimeLeft::Under12h);
+        assert_eq!(time_left(&day(21 * 3600), now), TimeLeft::Under4h);
+        assert_eq!(time_left(&day(25 * 3600), now), TimeLeft::Expiring);
+        // A reading of under four hours runs out too.
+        let four = Wormhole { life: Some(Life::Under4h), explicit_expiry: Some(now - 60), ..Default::default() };
+        assert_eq!(time_left(&four, now), TimeLeft::Expiring);
     }
 
     #[test]
@@ -2412,19 +2471,32 @@ fn legend(ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             chip(ui, "ABC", None, "signature, on its own system's side");
         });
-        ui.horizontal_wrapped(|ui| {
-            let what = "gate and bridge jumps to a pinned system";
+        let gate = |ui: &mut egui::Ui, jumps: u32, what: &str| {
             room_for(ui, 80.0, what);
             ui.horizontal(|ui| {
+                let (color, text, radius) = match close_color(jumps) {
+                    Some(c) => (c, c, 1.8),
+                    None => (v.weak_text_color(), v.text_color(), 1.3),
+                };
                 let (r, p) = ui.allocate_painter(egui::vec2(80.0, row_h), egui::Sense::hover());
                 let (a, b) = (r.rect.left_center() + egui::vec2(2.0, 0.0), r.rect.right_center() - egui::vec2(2.0, 0.0));
-                p.extend(egui::Shape::dotted_line(&[a, b], v.weak_text_color(), 6.0, 1.3));
-                let g = p.layout_no_wrap("12j".to_owned(), font.clone(), v.text_color());
+                p.extend(egui::Shape::dotted_line(&[a, b], color, 6.0, radius));
+                let g = p.layout_no_wrap(format!("{jumps}j"), font.clone(), text);
                 let chip = egui::Rect::from_center_size(r.rect.center(), g.size() + egui::vec2(10.0, 4.0));
-                p.rect(chip, 3.0, v.extreme_bg_color, egui::Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Inside);
-                p.galley(chip.center() - g.size() / 2.0, g, v.text_color());
+                p.rect(chip, 3.0, v.extreme_bg_color, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                if color != v.weak_text_color() {
+                    p.rect_filled(chip, 3.0, color.gamma_multiply(0.2));
+                }
+                p.galley(chip.center() - g.size() / 2.0, g, text);
                 ui.label(what);
             });
+        };
+        ui.horizontal_wrapped(|ui| {
+            gate(ui, 12, "gate and bridge jumps to a pinned system");
+        });
+        ui.horizontal_wrapped(|ui| {
+            gate(ui, 7, "under 10 jumps");
+            gate(ui, 3, "under 5");
         });
         ui.add_space(4.0);
         heading(ui, "Systems");
