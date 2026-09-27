@@ -137,7 +137,8 @@ pub struct JSystem {
 
 impl JSystem {
     pub fn shattered(&self) -> bool {
-        self.planets.iter().any(|p| p == "Shattered")
+        // Every planet shattered: Thera has some shattered ones among whole ones, and is not.
+        !self.planets.is_empty() && self.planets.iter().all(|p| p == "Shattered")
     }
 }
 

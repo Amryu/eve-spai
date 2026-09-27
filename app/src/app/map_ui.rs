@@ -2084,7 +2084,8 @@ impl SpaiApp {
             let sig = if here_is_near { w.signature.as_deref() } else { w.dest_signature.as_deref() }
                 .unwrap_or("?");
             let mut parts: Vec<String> = Vec::new();
-            if let Some(t) = &w.wh_type {
+            // One type per hole, whichever side it was read on.
+            if let Some(t) = w.wh_type.as_ref().or(w.dest_wh_type.as_ref()) {
                 parts.push(t.clone());
             }
             if let Some(s) = w.effective_size() {
@@ -2094,7 +2095,7 @@ impl SpaiApp {
                 Some(h) => format!("< {h}h"),
                 None => "expiring".to_owned(),
             });
-            ui.label(egui::RichText::new(format!("{sig} → {other}  ({})", parts.join(", "))));
+            ui.label(egui::RichText::new(format!("{sig} {} {other}  ({})", egui_phosphor::regular::ARROW_RIGHT, parts.join(", "))));
         }
     }
 

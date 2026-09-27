@@ -414,7 +414,7 @@ impl SpaiApp {
             .wh_cache
             .iter()
             .filter(|w| {
-                fd.map_or(true, |d| w.dest == d)
+                fd.map_or(true, |d| self.wh_touches(w, d))
                     && fs.map_or(true, |s| w.source == s)
                     && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
             })

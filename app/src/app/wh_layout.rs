@@ -5,11 +5,9 @@
 use super::wh_graph::node_size;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub(crate) const COL: f32 = 360.0;
-const GAP: f32 = 20.0;
-/// Room for the routes' bends between two rows of boxes.
-const LEVEL: f32 = 130.0;
-pub(crate) const CHAIN_GAP: f32 = 50.0;
+pub(crate) const COL: f32 = 330.0;
+const GAP: f32 = 10.0;
+pub(crate) const CHAIN_GAP: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum Style {
@@ -37,8 +35,6 @@ impl Style {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Opts {
     pub style: Style,
-    /// Chains grow downwards instead of to the right.
-    pub down: bool,
     /// Chains packed in rows to this width:height, instead of one after another.
     pub aspect: Option<f32>,
 }
@@ -46,11 +42,7 @@ pub(crate) struct Opts {
 impl Opts {
     /// A step to the next level, and a step to the next box beside one.
     pub(crate) fn steps(&self) -> (egui::Vec2, egui::Vec2) {
-        if self.down {
-            (egui::vec2(0.0, LEVEL), egui::vec2(super::wh_graph::NODE.x + GAP, 0.0))
-        } else {
-            (egui::vec2(COL, 0.0), egui::vec2(0.0, super::wh_graph::NODE.y + GAP))
-        }
+        (egui::vec2(COL, 0.0), egui::vec2(0.0, super::wh_graph::NODE.y + GAP))
     }
 }
 
@@ -106,8 +98,9 @@ struct Chain {
     size: egui::Vec2,
 }
 
-fn breadth(n: i64, down: bool) -> f32 {
-    if down { node_size(n).x } else { node_size(n).y }
+/// A box's size across the direction the chain grows.
+fn breadth(n: i64) -> f32 {
+    node_size(n).y
 }
 
 fn chain(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, score: &impl Fn(i64) -> i64, opts: Opts) -> Chain {
@@ -129,16 +122,16 @@ fn chain(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, score: &impl Fn(i64) -> i64
         }
     }
     let (across, depth): (HashMap<i64, f32>, HashMap<i64, usize>) = match opts.style {
-        Style::Layered => layered(comp, adj, &depth, opts.down),
+        Style::Layered => layered(comp, adj, &depth),
         Style::Tree => None,
     }
-    .unwrap_or_else(|| (tidy(root, &children, opts.down).0.into_iter().collect(), depth));
+    .unwrap_or_else(|| (tidy(root, &children).0.into_iter().collect(), depth));
     let lo = across.values().copied().fold(f32::INFINITY, f32::min);
     let (level, _) = opts.steps();
     let at = |n: i64| {
         let b = across[&n] - lo;
         let d = depth[&n] as f32;
-        if opts.down { egui::pos2(b, d * level.y) } else { egui::pos2(d * level.x, b) }
+        egui::pos2(d * level.x, b)
     };
     let nodes: Vec<(i64, Option<i64>, egui::Pos2)> = order.iter().map(|&n| (n, parent[&n], at(n))).collect();
     let size = nodes
@@ -149,8 +142,8 @@ fn chain(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, score: &impl Fn(i64) -> i64
 
 /// The tidy tree under `n`: each box's near edge along the breadth, and the subtree's outline as
 /// the extent it takes at each level down from `n`.
-fn tidy(n: i64, children: &HashMap<i64, Vec<i64>>, down: bool) -> (Vec<(i64, f32)>, Vec<(f32, f32)>) {
-    let size = breadth(n, down);
+fn tidy(n: i64, children: &HashMap<i64, Vec<i64>>) -> (Vec<(i64, f32)>, Vec<(f32, f32)>) {
+    let size = breadth(n);
     let kids = children.get(&n).map(Vec::as_slice).unwrap_or_default();
     if kids.is_empty() {
         return (vec![(n, 0.0)], vec![(0.0, size)]);
@@ -159,7 +152,7 @@ fn tidy(n: i64, children: &HashMap<i64, Vec<i64>>, down: bool) -> (Vec<(i64, f32
     let mut outline: Vec<(f32, f32)> = Vec::new();
     let mut kid_mid: Vec<f32> = Vec::new();
     for &k in kids {
-        let (sub, line) = tidy(k, children, down);
+        let (sub, line) = tidy(k, children);
         // As close to the siblings before it as their outlines allow, at every level they share.
         let shift = outline
             .iter()
@@ -167,7 +160,7 @@ fn tidy(n: i64, children: &HashMap<i64, Vec<i64>>, down: bool) -> (Vec<(i64, f32
             .map(|(have, next)| have.1 + GAP - next.0)
             .fold(f32::NEG_INFINITY, f32::max);
         let shift = if shift.is_finite() { shift } else { 0.0 };
-        kid_mid.push(sub[0].1 + shift + breadth(k, down) / 2.0);
+        kid_mid.push(sub[0].1 + shift + breadth(k) / 2.0);
         at.extend(sub.into_iter().map(|(id, b)| (id, b + shift)));
         for (i, (lo, hi)) in line.into_iter().enumerate() {
             let (lo, hi) = (lo + shift, hi + shift);
@@ -186,13 +179,13 @@ fn tidy(n: i64, children: &HashMap<i64, Vec<i64>>, down: bool) -> (Vec<(i64, f32
 
 /// Sugiyama's layered layout of one chain: each box's near edge along the breadth, and its level.
 /// `None` for a chain of one, which it has nothing to say about.
-fn layered(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, depth: &HashMap<i64, usize>, down: bool) -> Option<(HashMap<i64, f32>, HashMap<i64, usize>)> {
+fn layered(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, depth: &HashMap<i64, usize>) -> Option<(HashMap<i64, f32>, HashMap<i64, usize>)> {
     if comp.len() < 2 {
         return None;
     }
     let index: HashMap<i64, u32> = comp.iter().enumerate().map(|(i, n)| (*n, i as u32)).collect();
     // The levels are spaced here, not by the library.
-    let vertices: Vec<(u32, (f64, f64))> = comp.iter().map(|n| (index[n], (breadth(*n, down) as f64, 1.0))).collect();
+    let vertices: Vec<(u32, (f64, f64))> = comp.iter().map(|n| (index[n], (breadth(*n) as f64, 1.0))).collect();
     // Pointing away from the root, so the ranks follow the tree's levels.
     let mut edges: Vec<(u32, u32)> = Vec::new();
     for &a in comp {
@@ -209,7 +202,7 @@ fn layered(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, depth: &HashMap<i64, usiz
     for (coords, _, _) in layouts {
         for (i, (x, y)) in coords {
             let n = *comp.get(i)?;
-            out.insert(n, x as f32 - breadth(n, down) / 2.0);
+            out.insert(n, x as f32 - breadth(n) / 2.0);
             ys.push((n, y));
         }
     }
@@ -226,13 +219,8 @@ fn arrange(chains: &[Chain], opts: Opts) -> Vec<egui::Vec2> {
         None => {
             let mut next = 0.0;
             for c in chains {
-                if opts.down {
-                    out.push(egui::vec2(next, 0.0));
-                    next += c.size.x + CHAIN_GAP;
-                } else {
-                    out.push(egui::vec2(0.0, next));
-                    next += c.size.y + CHAIN_GAP;
-                }
+                out.push(egui::vec2(0.0, next));
+                next += c.size.y + CHAIN_GAP;
             }
         }
         Some(aspect) => {
@@ -305,12 +293,12 @@ mod tests {
     }
 
     #[test]
-    fn every_style_and_direction_keeps_boxes_apart_and_parents_before_children() {
+    fn every_style_keeps_boxes_apart_and_parents_before_children() {
         let edges: Vec<(i64, i64)> = TREE.iter().copied().chain([(9, 10), (20, 21), (21, 22)]).collect();
         for style in [Style::Tree, Style::Layered] {
-            for down in [false, true] {
+            {
                 for aspect in [None, Some(1.6)] {
-                    let opts = Opts { style, down, aspect };
+                    let opts = Opts { style, aspect };
                     let auto = layout(&edges, &[30], |n| if n == 1 { 100 } else { 0 }, opts);
                     let r = at(&auto);
                     assert_eq!(r.len(), 14, "{opts:?}");
@@ -318,7 +306,7 @@ mod tests {
                     for (n, p, _) in &auto {
                         if let Some(p) = p {
                             let (a, b) = (r[p].min, r[n].min);
-                            assert!(if down { a.y < b.y } else { a.x < b.x }, "{opts:?}: {p} before {n}");
+                            assert!(a.x < b.x, "{opts:?}: {p} before {n}");
                         }
                     }
                 }

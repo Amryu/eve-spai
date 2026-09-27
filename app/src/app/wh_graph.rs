@@ -12,9 +12,10 @@ use crate::wormholes::{Life, Mass, Wormhole};
 
 /// Wide enough that at [`MIN_ZOOM`] a name still fits its scaled box, so no box grows past its
 /// place when zoomed out.
-pub(crate) const NODE: egui::Vec2 = egui::vec2(240.0, 50.0);
+pub(crate) const NODE: egui::Vec2 = egui::vec2(260.0, 56.0);
 /// Drifter systems: their name, J-code and badge need more room.
-const WIDE_NODE: egui::Vec2 = egui::vec2(300.0, 50.0);
+/// A pinned system's copy beside a cluster.
+const PILL: egui::Vec2 = egui::vec2(230.0, 40.0);
 
 // Where each hole's line was drawn in the last frame, by hole id, for tests that hover one.
 #[cfg(test)]
@@ -64,7 +65,10 @@ fn unidentified_type(system: i64, name: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn node_size(id: i64) -> egui::Vec2 {
-    if whdata::DRIFTERS.iter().any(|d| d.2 == id) { WIDE_NODE } else { NODE }
+    if id < 0 {
+        return PILL;
+    }
+    NODE
 }
 
 /// A system's name as people say it: the drifter systems by their own names, not J-codes.
@@ -142,6 +146,50 @@ pub(crate) fn probe_effects(holes: &[Wormhole], system: i64, scan: &[crate::worm
     };
     (gone, fill)
 }
+
+const SHATTERED_COLOR: egui::Color32 = egui::Color32::from_rgb(0x9A, 0xD8, 0xF0);
+
+/// Drops from `holes` those whose k-space end is not in `keep`, unless both ends are k-space (so
+/// k-space to Pochven, which is k-space too). Returns how many were dropped at each end kept.
+fn overview(holes: &mut Vec<Wormhole>, kspace: impl Fn(i64) -> bool, keep: &HashSet<i64>) -> HashMap<i64, usize> {
+    // A k-space system on the map anyway, as one end of a k-space to k-space hole, keeps its
+    // other holes too.
+    let mut keep = keep.clone();
+    for w in holes.iter() {
+        if let Some(b) = w.dest_system_id.filter(|b| kspace(w.system_id) && kspace(*b)) {
+            keep.extend([w.system_id, b]);
+        }
+    }
+    let mut hidden: HashMap<i64, usize> = HashMap::new();
+    holes.retain(|w| {
+        let Some(b) = w.dest_system_id else { return true };
+        let a = w.system_id;
+        let (ka, kb) = (kspace(a), kspace(b));
+        if ka && kb {
+            return true;
+        }
+        let (gone_a, gone_b) = (ka && !keep.contains(&a), kb && !keep.contains(&b));
+        if !gone_a && !gone_b {
+            return true;
+        }
+        for (end, gone) in [(a, gone_a), (b, gone_b)] {
+            if !gone {
+                *hidden.entry(end).or_default() += 1;
+            }
+        }
+        false
+    });
+    hidden
+}
+
+/// The map id of a pinned system's copy beside a cluster's exit: negative, so no system has it,
+/// and the same for as long as the exit is.
+fn pill_id(pin: i64, exit: i64) -> i64 {
+    -(pin * 100_000 + exit.rem_euclid(100_000))
+}
+
+/// Gate jumps under which a pinned system counts as near a chain: the yellow highlight's bound.
+const NEAR_JUMPS: u32 = 10;
 
 /// The known hole behind signature `sig` in `system`, matched on its first three letters.
 fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wormhole> {
@@ -538,14 +586,16 @@ fn candidates(a: egui::Rect, b: egui::Rect, a_hub: bool) -> Vec<Vec<egui::Pos2>>
                 let x = a.left().min(b.left()) - STUB * k as f32;
                 out.push(vec![pos2(a.left(), pa), pos2(x, pa), pos2(x, pb), pos2(b.left(), pb)]);
             }
-            // Down, across and down.
+            // Down, across and down, for boxes one above the other. Side by side, a line leaves
+            // from the side facing the other box, never from the top or bottom.
             let (qa, qb) = (xa + oa, xb + ob);
-            if b.top() - a.bottom() >= 2.0 * STUB {
+            let beside = b.left() - a.right() >= 2.0 * STUB || a.left() - b.right() >= 2.0 * STUB;
+            if !beside && b.top() - a.bottom() >= 2.0 * STUB {
                 for y in [a.bottom() + STUB, b.top() - STUB, (a.bottom() + b.top()) / 2.0] {
                     out.push(vec![pos2(qa, a.bottom()), pos2(qa, y), pos2(qb, y), pos2(qb, b.top())]);
                 }
             }
-            if a.top() - b.bottom() >= 2.0 * STUB {
+            if !beside && a.top() - b.bottom() >= 2.0 * STUB {
                 for y in [a.top() - STUB, b.bottom() + STUB, (a.top() + b.bottom()) / 2.0] {
                     out.push(vec![pos2(qa, a.top()), pos2(qa, y), pos2(qb, y), pos2(qb, b.bottom())]);
                 }
@@ -661,24 +711,6 @@ fn first_free_strict(
         .find(|r| !taken.iter().any(|t| t.expand(2.0).intersects(*r)) && !boxes.iter().any(|b| b.expand(4.0).intersects(*r)) && !on_other(r))
 }
 
-/// Label centres along `path` from one end towards its middle, keeping the label on a leg.
-fn walk(path: &[egui::Pos2], from_start: bool, size: egui::Vec2) -> Vec<egui::Pos2> {
-    let pts: Vec<egui::Pos2> = if from_start { path.to_vec() } else { path.iter().rev().copied().collect() };
-    let total: f32 = pts.windows(2).map(|s| (s[1] - s[0]).length()).sum();
-    let mut out = Vec::new();
-    let mut gone = 0.0;
-    for s in pts.windows(2) {
-        let len = (s[1] - s[0]).length();
-        for c in along(s[0], s[1], size) {
-            if gone + (c - s[0]).length() <= total / 2.0 {
-                out.push(c);
-            }
-        }
-        gone += len;
-    }
-    out
-}
-
 /// Drops points that do not turn the path.
 fn simplify(path: Vec<egui::Pos2>) -> Vec<egui::Pos2> {
     let mut out: Vec<egui::Pos2> = Vec::with_capacity(path.len());
@@ -735,12 +767,21 @@ pub(crate) fn place(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &HashMap<i
 /// then a level further out.
 pub(crate) fn place_with(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &HashMap<i64, egui::Pos2>, opts: super::wh_layout::Opts) -> HashMap<i64, egui::Pos2> {
     let (level, beside) = opts.steps();
+    // Clusters, by their root, that already have a system where it was left.
+    let mut root_of: HashMap<i64, i64> = HashMap::new();
+    for (n, parent, _) in auto {
+        let r = parent.and_then(|p| root_of.get(&p).copied()).unwrap_or(*n);
+        root_of.insert(*n, r);
+    }
+    let settled: HashSet<i64> = auto.iter().filter(|(n, _, _)| dragged.contains_key(n)).map(|(n, _, _)| root_of[n]).collect();
     let auto_at: HashMap<i64, egui::Pos2> = auto.iter().map(|(n, _, p)| (*n, *p)).collect();
     let mut at: HashMap<i64, egui::Pos2> = HashMap::new();
     // Boxes differ in width, so each pair is checked with its own.
     let clear = |at: &HashMap<i64, egui::Pos2>, n: i64, p: egui::Pos2| {
-        let me = egui::Rect::from_min_size(p, node_size(n)).expand(5.0);
-        at.iter().all(|(id, q)| !me.intersects(egui::Rect::from_min_size(*q, node_size(*id)).expand(5.0)))
+        // Under the layout's own gap between neighbours, or every packed sibling would count as
+        // in the way.
+        let me = egui::Rect::from_min_size(p, node_size(n)).expand(2.0);
+        at.iter().all(|(id, q)| !me.intersects(egui::Rect::from_min_size(*q, node_size(*id)).expand(2.0)))
     };
     // A remembered spot another system has since taken (this one was gone a while, say) counts
     // as no spot: it is placed afresh rather than on top of the other.
@@ -757,6 +798,12 @@ pub(crate) fn place_with(auto: &[(i64, Option<i64>, egui::Pos2)], dragged: &Hash
         }
         let want = match parent {
             Some(par) => at[par] + (*p - auto_at[par]),
+            // A cluster turning up on a map already laid out goes below all of it: its spot in a
+            // fresh layout would sit among clusters that have since stayed where they were.
+            None if !dragged.is_empty() && !at.is_empty() && !settled.contains(n) => {
+                let bottom = at.iter().map(|(id, q)| q.y + node_size(*id).y).fold(f32::MIN, f32::max);
+                egui::pos2(0.0, bottom + super::wh_layout::CHAIN_GAP)
+            }
             None => *p,
         };
         let spot = (0..4)
@@ -838,31 +885,49 @@ fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
 /// What is left of a hole, short, in its warning colour: the reading while it holds, then the
 /// clock's worse figure. `None` when nothing is known and nothing is near.
 fn life_badge(w: &Wormhole, now: i64, visuals: &egui::Visuals) -> Option<(String, egui::Color32)> {
-    let yellow = egui::Color32::from_rgb(0xF2, 0xD0, 0x4A);
-    let orange = egui::Color32::from_rgb(0xFF, 0x8F, 0x2A);
-    Some(match time_left(w, now) {
+    let t = time_left(w, now);
+    Some(match t {
         TimeLeft::Plenty => (w.life?.short().to_owned(), visuals.text_color()),
-        TimeLeft::Under12h => ("<12h".to_owned(), yellow),
-        TimeLeft::Under4h => ("<4h".to_owned(), orange),
-        TimeLeft::Under1h => ("<1h".to_owned(), visuals.error_fg_color),
-        TimeLeft::Expiring => ("Expired".to_owned(), visuals.error_fg_color),
+        TimeLeft::Under12h => ("<12h".to_owned(), time_color(t)),
+        TimeLeft::Under4h => ("<4h".to_owned(), time_color(t)),
+        TimeLeft::Under1h => ("<1h".to_owned(), time_color(t)),
+        TimeLeft::Expiring => ("Expired".to_owned(), time_color(t)),
     })
 }
 
-/// A line that breaks up as the hole does: solid, long dashes, dash-dot, then a jagged line for a
-/// hole that can close at any moment.
-fn stroke_hole(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::Stroke, t: TimeLeft) {
+/// A hole's line colour: how long it has left, from green to red, and purple once it could close
+/// at any moment.
+fn time_color(t: TimeLeft) -> egui::Color32 {
+    use egui::Color32 as C;
     match t {
-        TimeLeft::Plenty | TimeLeft::Under12h => {
+        TimeLeft::Plenty => C::from_rgb(0x6f, 0xc2, 0x76),
+        TimeLeft::Under12h => C::from_rgb(0xF2, 0xD0, 0x4A),
+        TimeLeft::Under4h => C::from_rgb(0xFF, 0x8F, 0x2A),
+        TimeLeft::Under1h => C::from_rgb(0xff, 0x4a, 0x4a),
+        TimeLeft::Expiring => C::from_rgb(0xC0, 0x5C, 0xE0),
+    }
+}
+
+/// A line that breaks up as the hole's mass goes: solid, long dashes under half, a jagged line
+/// under a tenth.
+fn stroke_hole(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::Stroke, mass: Option<Mass>) {
+    match mass {
+        None | Some(Mass::Fresh) => {
             painter.add(egui::Shape::line(line.to_vec(), stroke));
         }
-        TimeLeft::Under4h => painter.extend(egui::Shape::dashed_line(line, stroke, 12.0, 6.0)),
-        TimeLeft::Under1h => {
-            painter.extend(egui::Shape::dashed_line_with_offset(line, stroke, &[12.0, 2.0], &[4.0, 4.0], 0.0))
-        }
-        TimeLeft::Expiring => {
+        Some(Mass::Reduced) => painter.extend(egui::Shape::dashed_line(line, stroke, 12.0, 6.0)),
+        Some(Mass::Critical) => {
             painter.add(egui::Shape::line(zigzag(line, 5.0, 3.0), egui::Stroke::new(stroke.width * 0.8, stroke.color)));
         }
+    }
+}
+
+/// Drawing order: solid first, so a broken line on a shared stretch is not hidden beneath one.
+fn mass_rank(m: Option<Mass>) -> u8 {
+    match m {
+        None | Some(Mass::Fresh) => 0,
+        Some(Mass::Reduced) => 1,
+        Some(Mass::Critical) => 2,
     }
 }
 
@@ -955,11 +1020,17 @@ impl SpaiApp {
         self.wh_cache
             .iter()
             .filter(|w| {
-                fd.is_none_or(|d| w.dest == d)
+                fd.is_none_or(|d| self.wh_touches(w, d))
                     && fs.is_none_or(|s| w.source == s)
                     && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
             })
             .collect()
+    }
+
+    /// Whether a hole joins a kind of space at either end: it goes both ways, so a hole found
+    /// in highsec leads to highsec as much as one leading there.
+    pub(crate) fn wh_touches(&self, w: &Wormhole, d: crate::wormholes::DestClass) -> bool {
+        w.dest == d || self.systems.as_ref().is_some_and(|g| crate::app::wormholes_ui::dest_class(g, w.system_id) == d)
     }
 
     pub(crate) fn wh_graph_view(&mut self, ui: &mut egui::Ui) {
@@ -969,6 +1040,8 @@ impl SpaiApp {
         };
         let now = chrono::Utc::now().timestamp();
         let mut holes: Vec<Wormhole> = self.wh_graph_visible(now).into_iter().cloned().collect();
+        // The side panel lists every hole of the selected system, drawn on the map or not.
+        let all_holes = holes.clone();
         self.wh_graph_list(ui, &geo, &holes);
         let focus = self.wh_graph.focus;
         if let Some(f) = focus {
@@ -977,18 +1050,15 @@ impl SpaiApp {
         }
         let mut edges: Vec<(i64, i64)> = holes.iter().filter_map(|w| Some((w.system_id, w.dest_system_id?))).collect();
         // Pinned systems join the holes by gates, so they tie the chains together.
-        let mut gate_links: Vec<(i64, i64, u32)> = Vec::new();
+        // (exit, where the pin is met by gates, jumps, the pin)
+        let mut gate_links: Vec<(i64, i64, u32, i64)> = Vec::new();
         // The drifter systems are hubs of their own: on the map and joined to the chains like
         // pinned systems, though the Routes panel lists only what the user pins.
         let drifters: Vec<i64> = whdata::DRIFTERS.iter().map(|d| d.2).filter(|id| geo.info_of(*id).is_some()).collect();
         let chars: HashMap<String, (i64, bool)> = self.player.lock().unwrap().locations.clone();
-        // Where our online characters are is always on the map, with or without a known hole, and
-        // joined to the chains like a pinned system.
-        let mut char_systems: Vec<i64> = chars.values().map(|(s, _)| *s).filter(|id| geo.info_of(*id).is_some()).collect();
-        char_systems.sort_unstable();
-        char_systems.dedup();
         let mut pins: Vec<i64> = self.settings.wh_route_pins.iter().filter_map(|p| geo.lookup(p).map(|i| i.id)).collect();
-        for d in drifters.iter().chain(&char_systems) {
+        let user_pins = pins.clone();
+        for d in &drifters {
             if !pins.contains(d) {
                 pins.push(*d);
             }
@@ -1029,13 +1099,58 @@ impl SpaiApp {
                     .flat_map(|a| chain.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, *a, dist(*a, *e)?))))
                     .min_by_key(|(_, _, n)| *n);
                 if let Some((exit, anchor, n)) = best {
-                    if !gate_links.iter().any(|(x, y, _)| (*x, *y) == (exit, anchor) || (*x, *y) == (anchor, exit)) {
-                        gate_links.push((exit, anchor, n));
+                    if !gate_links.iter().any(|(x, y, _, _)| (*x, *y) == (exit, anchor) || (*x, *y) == (anchor, exit)) {
+                        gate_links.push((exit, anchor, n, *pid));
                     }
                 }
             }
         }
-        edges.extend(gate_links.iter().map(|(e, p, _)| (*e, *p)));
+        // A gate link is a way somewhere only when it is short: further out it says nothing.
+        gate_links.retain(|(_, _, n, _)| *n < NEAR_JUMPS);
+        // The overview keeps every wormhole system but only the k-space exits that lead somewhere:
+        // a pinned system, a character, or the short way to either. The rest are counted on the
+        // box they hang from. k-space to k-space and k-space to Pochven holes always stay.
+        let mut hidden: HashMap<i64, usize> = HashMap::new();
+        let mut only_counted: Vec<i64> = Vec::new();
+        if focus.is_none() {
+            let keep: HashSet<i64> = pins.iter().copied().chain(gate_links.iter().flat_map(|(e, a, _, _)| [*e, *a])).collect();
+            hidden = overview(&mut holes, |id| kspace(&id), &keep);
+            // A wormhole system whose every hole went into the count still shows, with its count.
+            let drawn: HashSet<i64> = holes.iter().flat_map(|w| [Some(w.system_id), w.dest_system_id]).flatten().collect();
+            only_counted = hidden.keys().copied().filter(|id| !drawn.contains(id)).collect();
+            edges = holes.iter().filter_map(|w| Some((w.system_id, w.dest_system_id?))).collect();
+        }
+        // A pinned system joins every cluster near it as a rounded element beside the cluster's
+        // nearest exit, so the way to it reads at a glance without lines across the map. A pin
+        // near nothing still shows, once, on its own.
+        let mut pills: HashMap<i64, (i64, u32)> = HashMap::new();
+        let mut pill_alone: Vec<i64> = Vec::new();
+        let clusters = components(&edges);
+        for pid in user_pins.iter().filter(|p| !drifters.contains(p)) {
+            let mut shown = false;
+            for cl in &clusters {
+                if cl.contains(pid) {
+                    shown = true;
+                    continue;
+                }
+                let best = anchors[pid]
+                    .iter()
+                    .flat_map(|a| cl.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, dist(*a, *e)?))))
+                    .min_by_key(|(_, n)| *n)
+                    .filter(|(_, n)| *n < NEAR_JUMPS);
+                if let Some((exit, n)) = best {
+                    let id = pill_id(*pid, exit);
+                    pills.insert(id, (*pid, n));
+                    edges.push((exit, id));
+                    shown = true;
+                }
+            }
+            if !shown {
+                let id = pill_id(*pid, 0);
+                pills.insert(id, (*pid, u32::MAX));
+                pill_alone.push(id);
+            }
+        }
         let mut here: HashMap<i64, Vec<String>> = HashMap::new();
         for (name, (sys, _)) in &chars {
             here.entry(*sys).or_default().push(name.clone());
@@ -1049,7 +1164,8 @@ impl SpaiApp {
             here.get(&id).map_or(pinned, |v| 100 + v.len() as i64)
         };
         let mut alone: Vec<i64> = if focus.is_none() { drifters.clone() } else { Vec::new() };
-        alone.extend(char_systems.iter().copied());
+        alone.extend(pill_alone);
+        alone.extend(only_counted);
         alone.sort_unstable();
         alone.dedup();
         let opts = self.wh_layout_opts();
@@ -1060,7 +1176,7 @@ impl SpaiApp {
             ids.sort_unstable();
             ids.dedup();
             let scored: Vec<(i64, i64)> = ids.iter().map(|id| (*id, score(*id))).collect();
-            (&edges, &alone, &scored, opts.style, opts.down, opts.aspect.map(f32::to_bits)).hash(&mut h);
+            (&edges, &alone, &scored, opts.style, opts.aspect.map(f32::to_bits)).hash(&mut h);
             let key = h.finish();
             match &self.wh_graph.layout_cache {
                 Some((k, a)) if *k == key => a.clone(),
@@ -1111,7 +1227,7 @@ impl SpaiApp {
             *open.entry(w.system_id).or_default() += 1;
         }
 
-        self.wh_graph_side(ui, &geo, &holes, &chars, now);
+        self.wh_graph_side(ui, &geo, &all_holes, &chars, now);
 
         let mut focus_on: Option<Option<i64>> = None;
         // The view's own controls, a row above the canvas.
@@ -1151,16 +1267,6 @@ impl SpaiApp {
                             }
                             if pick(ui, style == Style::Layered, "Layered", "Fewer crossing lines where holes close loops") {
                                 self.settings.wh_layout_style = Style::Layered.code().to_owned();
-                                tidy = true;
-                            }
-                            ui.separator();
-                            ui.label(egui::RichText::new("Chains grow").weak());
-                            if pick(ui, !self.settings.wh_layout_down, "To the right", "Deeper systems further right") {
-                                self.settings.wh_layout_down = false;
-                                tidy = true;
-                            }
-                            if pick(ui, self.settings.wh_layout_down, "Downwards", "Deeper systems further down") {
-                                self.settings.wh_layout_down = true;
                                 tidy = true;
                             }
                             ui.separator();
@@ -1272,10 +1378,48 @@ impl SpaiApp {
         } else {
             font.clone()
         };
-        let line1_of = |id: i64| {
+        // Never below readable when the boxes are small; growing with them once they are big.
+        let chip_font = egui::FontId::proportional(if detail { (12.0 * zoom).clamp(12.0, 22.0) } else { 11.0 });
+        let chip_pad = if detail { egui::vec2(8.0, 2.0) * zoom.max(1.0) } else { egui::vec2(4.0, 1.0) };
+        let chip_gap = if detail { 3.0 } else { 2.0 };
+        // What must be seen at any zoom sits in chips on the box's right: shattered, our
+        // characters, holes not drawn, far sides unknown.
+        let chips_of = |id: i64| -> Vec<(String, egui::Color32)> {
+            let mut chips = Vec::new();
+            let Some(info) = geo.info_of(id) else { return chips };
+            if matches!(whdata::class_of(id, info.security, &info.region), Class::Drifter(_)) {
+                chips.push((icon::SKULL.to_owned(), drifter_color()));
+            } else if whdata::jsystem(id).is_some_and(|j| j.shattered()) {
+                chips.push((icon::DIAMONDS_FOUR.to_owned(), SHATTERED_COLOR));
+            }
+            if let Some(who) = here.get(&id) {
+                chips.push((format!("{} {}", icon::USER, who.len()), visuals.hyperlink_color));
+            }
+            if let Some(n) = hidden.get(&id) {
+                chips.push((format!("+{n}"), visuals.text_color()));
+            }
+            if let Some(n) = open.get(&id) {
+                chips.push((format!("{n} ?"), visuals.warn_fg_color));
+            }
+            chips
+        };
+        let chips_width = |chips: &[(String, egui::Color32)]| -> f32 {
+            chips
+                .iter()
+                .map(|(t, c)| painter.layout_no_wrap(t.clone(), chip_font.clone(), *c).size().x + chip_pad.x + chip_gap)
+                .sum()
+        };
+        // The name gets what the chips leave, and ends in an ellipsis when that is not enough.
+        let line1_of = |id: i64, room: f32| {
             let info = geo.info_of(id)?;
             let c = whdata::class_of(id, info.security, &info.region);
             let mut job = egui::text::LayoutJob::default();
+            job.wrap = egui::text::TextWrapping {
+                max_width: room.max(1.0),
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('\u{2026}'),
+            };
             if !tiny {
                 job.append(&system_tag(c, info.security), 0.0, egui::TextFormat::simple(font.clone(), class_color(c, info.security)));
             }
@@ -1283,12 +1427,15 @@ impl SpaiApp {
             job.append(&display_name(id, &info.name), lead, egui::TextFormat::simple(name_font.clone(), visuals.strong_text_color()));
             Some(painter.layout_job(job))
         };
-        let rects: HashMap<i64, (egui::Rect, Option<std::sync::Arc<egui::Galley>>)> = pos
+        #[allow(clippy::type_complexity)]
+        let rects: HashMap<i64, (egui::Rect, Option<std::sync::Arc<egui::Galley>>, Vec<(String, egui::Color32)>)> = pos
             .iter()
             .map(|(id, p)| {
-                let g = line1_of(*id);
                 let r = egui::Rect::from_min_size(to_screen(*p), node_size(*id) * zoom);
-                (*id, (r, g))
+                let chips = chips_of(*id);
+                let lead = if detail { 8.0 * zoom } else { 6.0 };
+                let room = r.width() - lead - 4.0 - chips_width(&chips) - 4.0;
+                (*id, (r, line1_of(*id, room), chips))
             })
             .collect();
 
@@ -1307,15 +1454,15 @@ impl SpaiApp {
         // Routes and label spots are worked out on the map's own boxes, in map units, and only
         // then scaled: neither how an edge runs nor where its labels sit depends on the zoom.
         let world: HashMap<i64, egui::Rect> = pos.iter().map(|(id, p)| (*id, egui::Rect::from_min_size(*p, node_size(*id)))).collect();
+        let pill_links: Vec<(i64, i64)> = edges.iter().copied().filter(|(_, b)| pills.contains_key(b)).collect();
         let links: Vec<(i64, i64, bool)> = holes
             .iter()
             .map(|w| (w.system_id, w.dest_system_id.unwrap_or(0), true))
-            .chain(gate_links.iter().map(|(e, p, _)| (*e, *p, false)))
+            .chain(pill_links.iter().map(|(a, b)| (*a, *b, false)))
             .collect();
         let parent: HashMap<i64, i64> = auto.iter().filter_map(|(n, p, _)| Some((*n, (*p)?))).collect();
         let routes = self.wh_graph.routes(&world, &links, &parent);
         let hole_paths: Vec<Option<Vec<egui::Pos2>>> = routes[..holes.len()].to_vec();
-        let link_paths: Vec<Option<Vec<egui::Pos2>>> = routes[holes.len()..].to_vec();
         let screen = |path: &[egui::Pos2]| rounded(&path.iter().map(|p| to_screen(*p)).collect::<Vec<_>>(), 10.0 * zoom);
         let hit = |line: &[egui::Pos2]| pointer.is_some_and(|p| line.windows(2).any(|s| dist_to_segment(p, s[0], s[1]) < 6.0));
 
@@ -1325,44 +1472,34 @@ impl SpaiApp {
         // each line on a thin band of the background: where lines share a stretch, a dashed one on
         // top keeps its gaps instead of a solid one beneath showing through them.
         let mut order: Vec<usize> = (0..holes.len()).collect();
-        order.sort_by_key(|&i| time_left(&holes[i], now));
+        order.sort_by_key(|&i| mass_rank(holes[i].mass));
         for wi in order {
             let w = &holes[wi];
             let Some(path) = &hole_paths[wi] else { continue };
             let line = screen(path);
             #[cfg(test)]
             EDGE_PROBE.with(|p| p.borrow_mut().push((w.id, line.clone())));
-            // Colour is mass alone; how much time is left is the line's pattern.
+            // Colour is how long it has left; the pattern is how much mass.
             let hot = hovered_edge.is_none() && hit(&line);
             let width = if hot { 4.0 } else { 2.5 };
-            let t = time_left(w, now);
-            if t != TimeLeft::Plenty && t != TimeLeft::Under12h {
+            if mass_rank(w.mass) > 0 {
                 painter.add(egui::Shape::line(line.clone(), egui::Stroke::new(width + 3.0, visuals.panel_fill)));
             }
-            stroke_hole(&painter, &line, egui::Stroke::new(width, mass_color(w.mass)), t);
+            stroke_hole(&painter, &line, egui::Stroke::new(width, time_color(time_left(w, now))), w.mass);
             if hot {
                 hovered_edge = Some(w);
             }
         }
-        let mut hovered_link: Option<(i64, i64, u32)> = None;
-        let link_color = visuals.weak_text_color();
-        for (li, &(exit, pin, n)) in gate_links.iter().enumerate() {
-            let Some(path) = &link_paths[li] else { continue };
-            let line = screen(path);
-            let hot = hovered_edge.is_none() && hovered_link.is_none() && hit(&line);
-            let (color, radius) = match close_color(n) {
-                Some(c) => (c, 1.8),
-                None => (link_color, 1.3),
-            };
-            painter.extend(egui::Shape::dotted_line(&line, color, 6.0, if hot { radius + 0.7 } else { radius }));
-            if hot {
-                hovered_link = Some((exit, pin, n));
-            }
+        // A pinned system's copy hangs off its exit by a short dotted line, in its distance colour.
+        for (li, &(_, pill)) in pill_links.iter().enumerate() {
+            let Some(path) = &routes[holes.len() + li] else { continue };
+            let n = pills.get(&pill).map_or(u32::MAX, |(_, n)| *n);
+            painter.extend(egui::Shape::dotted_line(&screen(path), close_color(n).unwrap_or(visuals.weak_text_color()), 6.0, 1.8));
         }
 
         // Then the labels, in map units, each off every other label, every box and, where it can
         // be, every line that is not its own: a label on a shared stretch could belong to either.
-        let lines: Vec<&[egui::Pos2]> = hole_paths.iter().chain(link_paths.iter()).map(|p| p.as_deref().unwrap_or(&[])).collect();
+        let lines: Vec<&[egui::Pos2]> = hole_paths.iter().map(|p| p.as_deref().unwrap_or(&[])).collect();
         let others = |own: usize| lines.iter().enumerate().filter(move |(i, _)| *i != own).map(|(_, l)| *l).collect::<Vec<_>>();
         let boxes: Vec<egui::Rect> = pos.iter().map(|(id, p)| egui::Rect::from_min_size(*p, node_size(*id))).collect();
         let mut taken: Vec<egui::Rect> = Vec::new();
@@ -1394,29 +1531,6 @@ impl SpaiApp {
                 }
             }
         }
-        for (li, &(_, _, n)) in gate_links.iter().enumerate() {
-            let Some(path) = &link_paths[li] else { continue };
-            let close = close_color(n);
-            let text = egui::RichText::new(format!("{n}j"));
-            let text = if close.is_some() { text.strong() } else { text };
-            let g = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font.clone());
-            let size = (g.size() + pad) / zoom;
-            // Anywhere along its own route, the legs nearest the pinned system first; a label with
-            // nowhere free is left off (hovering the line still says it) rather than drawn over another.
-            let mut spots = walk(path, false, size);
-            spots.extend(walk(path, true, size));
-            let Some(r) = first_free(spots, size, &taken, &boxes, &others(holes.len() + li)) else { continue };
-            taken.push(r);
-            match close {
-                Some(c) => {
-                    let sr = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
-                    painter.rect(sr, 3.0, visuals.extreme_bg_color, egui::Stroke::new(1.5, c), egui::StrokeKind::Outside);
-                    painter.rect_filled(sr, 3.0, c.gamma_multiply(0.2));
-                    painter.galley(sr.center() - g.size() / 2.0, g, c);
-                }
-                None => draw_label(r, g, Some(link_color)),
-            }
-        }
 
         let mut clicked: Option<i64> = None;
         let mut opened: Option<i64> = None;
@@ -1424,10 +1538,50 @@ impl SpaiApp {
         let mut drop: Option<(i64, egui::Pos2)> = None;
         let mut ids: Vec<i64> = pos.keys().copied().collect();
         ids.sort_unstable();
+        let mut chip_rows: Vec<(egui::Rect, Vec<(String, egui::Color32)>)> = Vec::new();
         for id in ids {
             let p = pos[&id];
-            let (r, line1) = rects[&id].clone();
+            let (r, line1, chips) = rects[&id].clone();
             if !rect.intersects(r) {
+                continue;
+            }
+            if let Some(&(pin, n)) = pills.get(&id) {
+                let Some(info) = geo.info_of(pin) else { continue };
+                let resp = ui.interact(r, ui.id().with(("wh_pill", id)), egui::Sense::click_and_drag());
+                if resp.drag_started() {
+                    self.wh_graph.drag = Some((id, p));
+                }
+                if resp.dragged() {
+                    if let Some((_, at)) = &mut self.wh_graph.drag {
+                        *at += resp.drag_delta() / zoom;
+                    }
+                }
+                if resp.drag_stopped() {
+                    if let Some((did, at)) = self.wh_graph.drag.take() {
+                        drop = Some((did, snap(at)));
+                    }
+                }
+                if resp.clicked() {
+                    clicked = Some(pin);
+                }
+                let color = close_color(n).unwrap_or(visuals.widgets.noninteractive.bg_stroke.color);
+                painter.rect(r, r.height() / 2.0, visuals.panel_fill, egui::Stroke::new(2.0, color), egui::StrokeKind::Inside);
+                let text = if n == u32::MAX { display_name(pin, &info.name) } else { format!("{}  {n}j", display_name(pin, &info.name)) };
+                let pill_font = egui::FontId::proportional((13.0 * zoom).clamp(10.0, 22.0));
+                let mut job = egui::text::LayoutJob::simple_singleline(format!("{} {text}", icon::PUSH_PIN), pill_font, visuals.text_color());
+                job.wrap = egui::text::TextWrapping {
+                    max_width: (r.width() - r.height()).max(1.0),
+                    max_rows: 1,
+                    break_anywhere: true,
+                    overflow_character: Some('\u{2026}'),
+                };
+                let g = painter.layout_job(job);
+                painter.with_clip_rect(r.shrink(2.0).intersect(rect)).galley(r.center() - g.size() / 2.0, g, visuals.text_color());
+                resp.on_hover_text(if n == u32::MAX {
+                    format!("{}: pinned, no cluster within {NEAR_JUMPS} jumps", info.name)
+                } else {
+                    format!("{}: pinned, {n} jumps by gate and bridge from this cluster's nearest exit", info.name)
+                });
                 continue;
             }
             let Some(info) = geo.info_of(id) else { continue };
@@ -1481,6 +1635,9 @@ impl SpaiApp {
             // A drifter system is washed in the drifter colour; its border still shows its effect.
             let fill = if matches!(c, Class::Drifter(_)) { drifter_fill(visuals.panel_fill) } else { visuals.panel_fill };
             painter.rect(r, 5.0 * zoom, fill, border, egui::StrokeKind::Inside);
+            if !chips.is_empty() {
+                chip_rows.push((r, chips));
+            }
             let Some(line1) = line1 else { continue };
             let line1_h = line1.size().y;
             if !detail {
@@ -1520,24 +1677,6 @@ impl SpaiApp {
             };
             let g2 = painter.layout(line2, font.clone(), visuals.weak_text_color(), (node_size(id).x - 16.0) * zoom);
             painter.galley(r.min + egui::vec2(8.0 * zoom, (27.0 * zoom).max(5.0 * zoom + line1_h + 1.0)), g2, visuals.weak_text_color());
-            // Our characters here, and holes out of here that lead somewhere unknown.
-            let mut badges: Vec<(String, egui::Color32)> = Vec::new();
-            if matches!(c, Class::Drifter(_)) {
-                badges.push((icon::SKULL.to_owned(), drifter_color()));
-            }
-            if let Some(who) = here.get(&id) {
-                badges.push((format!("{} {}", icon::USER, who.len()), visuals.hyperlink_color));
-            }
-            if let Some(n) = open.get(&id) {
-                badges.push((format!("{n} ?"), visuals.warn_fg_color));
-            }
-            let mut x = r.right() - 6.0 * zoom;
-            for (text, color) in badges {
-                let g = painter.layout_no_wrap(text, font.clone(), color);
-                x -= g.size().x;
-                painter.galley(egui::pos2(x, r.top() + 5.0 * zoom), g, color);
-                x -= 8.0 * zoom;
-            }
             if resp.hovered() && !resp.dragged() {
                 let mut tip = format!("{} ({})", info.name, c.label());
                 if let Some(e) = effect {
@@ -1546,8 +1685,31 @@ impl SpaiApp {
                 if let Some(who) = here.get(&id) {
                     tip.push_str(&format!("\nHere: {}", who.join(", ")));
                 }
+                if jsys.is_some_and(|j| j.shattered()) {
+                    tip.push_str("\nShattered");
+                }
+                if let Some(n) = hidden.get(&id) {
+                    tip.push_str(&format!("\n{n} more hole{} to k-space leading nowhere pinned: double-click to see them", if *n == 1 { "" } else { "s" }));
+                }
                 tip.push_str("\nClick to select, double-click to focus, drag to move");
                 resp.on_hover_text(tip);
+            }
+        }
+        // Over every box, so a neighbour drawn later never covers them.
+        let chip_h = painter.layout_no_wrap("+0".into(), chip_font.clone(), visuals.text_color()).size().y + 2.0;
+        for (r, chips) in &chip_rows {
+            // Inside the box on its right: centred when the box is small, else on its first line.
+            let y = if detail { r.top() + 4.0 * zoom.max(1.0) + chip_h / 2.0 } else { r.center().y };
+            {
+                let mut x = r.right() - 4.0;
+                for (text, color) in chips {
+                    let g = painter.layout_no_wrap(text.clone(), chip_font.clone(), *color);
+                    let size = g.size() + chip_pad;
+                    let cr = egui::Rect::from_min_size(egui::pos2(x - size.x, y - size.y / 2.0), size);
+                    painter.rect(cr, 4.0, visuals.extreme_bg_color, egui::Stroke::new(1.0, *color), egui::StrokeKind::Inside);
+                    painter.galley(cr.center() - g.size() / 2.0, g, *color);
+                    x = cr.left() - chip_gap;
+                }
             }
         }
         if let Some(w) = hovered_edge {
@@ -1578,9 +1740,6 @@ impl SpaiApp {
                 tip.push_str(&format!("\nShared in {name}"));
             }
             line_tip(ui, pointer, tip);
-        } else if let Some((exit, pin, n)) = hovered_link {
-            let name = |id: i64| geo.info_of(id).map_or(format!("#{id}"), |i| i.name.clone());
-            line_tip(ui, pointer, format!("{} to {}: {n} jumps by gate and bridge", name(exit), name(pin)));
         }
 
         if let Some((id, at)) = drop {
@@ -1679,7 +1838,29 @@ impl SpaiApp {
         };
         rows.sort_by(|a, b| order(a.0).cmp(&order(b.0)).then(a.1.name.cmp(&b.1.name)));
         let mut focus: Option<i64> = None;
+        let mut open_sys: Option<i64> = None;
+        // Where our online characters are, to open their system and fill in its holes and
+        // signatures, whether the map draws it or not.
+        let mut chars: Vec<(String, i64)> = self.player.lock().unwrap().locations.iter().map(|(n, (s, _))| (n.clone(), *s)).collect();
+        chars.sort();
         egui::Panel::left("wh_graph_list").resizable(true).default_size(150.0).show_inside(ui, |ui| {
+            if !chars.is_empty() {
+                ui.label(egui::RichText::new("Characters").weak());
+                egui::Grid::new("wh_graph_chars_grid").spacing([6.0, 2.0]).show(ui, |ui| {
+                    for (name, sys) in &chars {
+                        let Some(i) = geo.info_of(*sys) else { continue };
+                        let c = whdata::class_of(*sys, i.security, &i.region);
+                        ui.label(egui::RichText::new(system_tag(c, i.security)).color(class_color(c, i.security)));
+                        let on = self.wh_graph.selected == Some(*sys);
+                        if ui.menu_label(on, display_name(*sys, &i.name)).on_hover_text(format!("{name} is here: open its holes and signatures")).clicked() {
+                            open_sys = Some(*sys);
+                        }
+                        ui.label(egui::RichText::new(name).weak());
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+            }
             ui.label(egui::RichText::new(format!("{} system{}", rows.len(), if rows.len() == 1 { "" } else { "s" })).weak());
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("wh_graph_list_grid").spacing([6.0, 2.0]).show(ui, |ui| {
@@ -1711,6 +1892,9 @@ impl SpaiApp {
         });
         if let Some(id) = focus {
             self.wh_graph.set_focus(Some(id));
+            self.wh_graph.selected = Some(id);
+        }
+        if let Some(id) = open_sys {
             self.wh_graph.selected = Some(id);
         }
     }
@@ -2183,7 +2367,6 @@ impl SpaiApp {
         let aspect = self.wh_graph.canvas.map(|r| (r.aspect_ratio() * 10.0).round() / 10.0).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.6);
         super::wh_layout::Opts {
             style: super::wh_layout::Style::from_code(&self.settings.wh_layout_style),
-            down: self.settings.wh_layout_down,
             aspect: self.settings.wh_layout_pack.then_some(aspect),
         }
     }
@@ -2233,6 +2416,17 @@ mod tests {
     }
 
     #[test]
+    fn a_cluster_that_turns_up_later_goes_below_the_map_not_into_it() {
+        let first = auto_layout(&[(1, 2), (1, 3)], |n| if n == 1 { 100 } else { 0 });
+        let placed = place(&first, &HashMap::new());
+        let later = auto_layout(&[(1, 2), (1, 3), (7, 8)], |n| if n == 1 { 100 } else { 0 });
+        let now = place(&later, &placed);
+        let bottom = [1, 2, 3].iter().map(|n| placed[n].y + NODE.y).fold(f32::MIN, f32::max);
+        assert!(now[&7].y >= bottom && now[&8].y >= bottom, "{:?} {:?} above {bottom}", now[&7], now[&8]);
+        assert_eq!(now[&8] - now[&7], later.iter().find(|x| x.0 == 8).unwrap().2 - later.iter().find(|x| x.0 == 7).unwrap().2, "its own shape kept");
+    }
+
+    #[test]
     fn a_dragged_system_takes_its_subtree_along() {
         let auto = auto_layout(&[(1, 2), (2, 3)], |n| if n == 1 { 100 } else { 0 });
         let dragged = HashMap::from([(2, egui::pos2(500.0, 400.0))]);
@@ -2261,7 +2455,7 @@ mod tests {
         let r = route_all(&boxes, &[(1, 2, true), (1, 3, true)], &HashMap::new());
         for p in r.iter().flatten() {
             assert!(p.windows(2).all(|s| (s[0].x - s[1].x).abs() < 0.5 || (s[0].y - s[1].y).abs() < 0.5), "{p:?}");
-            assert_eq!(p[0], egui::pos2(NODE.x, 125.0), "out of the parent's side");
+            assert_eq!(p[0], egui::pos2(NODE.x, 100.0 + NODE.y / 2.0), "out of the parent's side");
         }
     }
 
@@ -2432,6 +2626,34 @@ mod tests {
     }
 
     #[test]
+    fn the_overview_counts_exits_that_lead_nowhere_instead_of_drawing_them() {
+        let hole = |a: i64, b: i64| Wormhole { system_id: a, dest_system_id: Some(b), ..Default::default() };
+        let (thera, j, jita, amamake, pochven) = (31_000_005, 31_000_100, 30_000_142, 30_002_537, 30_000_021);
+        let kspace = |id: i64| (30_000_000..31_000_000).contains(&id);
+        let mut holes = vec![
+            hole(thera, jita),
+            hole(thera, amamake),
+            hole(j, jita),
+            hole(jita, amamake),
+            hole(pochven, jita),
+            Wormhole { system_id: j, dest_system_id: None, ..Default::default() },
+        ];
+        let keep = HashSet::from([amamake]);
+        let hidden = overview(&mut holes, kspace, &keep);
+        let left: Vec<(i64, Option<i64>)> = holes.iter().map(|w| (w.system_id, w.dest_system_id)).collect();
+        // Jita is drawn anyway, for its k-space holes, so its holes into wormhole space stay too.
+        assert_eq!(left.len(), 6, "{left:?}");
+        assert!(hidden.is_empty());
+        // Without those, Jita leads nowhere pinned: counted on the wormhole side instead.
+        let mut holes = vec![hole(thera, jita), hole(thera, amamake), hole(j, jita)];
+        let hidden = overview(&mut holes, kspace, &keep);
+        let left: Vec<(i64, Option<i64>)> = holes.iter().map(|w| (w.system_id, w.dest_system_id)).collect();
+        assert_eq!(left, vec![(thera, Some(amamake))]);
+        assert_eq!(hidden, HashMap::from([(thera, 1), (j, 1)]));
+        let _ = pochven;
+    }
+
+    #[test]
     fn the_dialogs_offer_only_free_wormhole_signatures() {
         use crate::app::wormholes_ui::offerable;
         let sig = |id: &str, kind: &str, group: &str| crate::store::SystemSig {
@@ -2566,7 +2788,7 @@ fn legend(ui: &mut egui::Ui) {
     let row_h = ui.spacing().interact_size.y;
     enum Line {
         Solid(C),
-        Time(TimeLeft),
+        Mass(Option<Mass>),
     }
     // A wrapping row decides where to break before it knows how wide a grouped item is, so each
     // item measures itself first and starts a new row when it would not fit.
@@ -2587,7 +2809,7 @@ fn legend(ui: &mut egui::Ui) {
                 Line::Solid(c) => {
                     p.line_segment([a, b], egui::Stroke::new(2.5, c));
                 }
-                Line::Time(t) => stroke_hole(&p, &[a, b], egui::Stroke::new(2.5, mass_color(None)), t),
+                Line::Mass(m) => stroke_hole(&p, &[a, b], egui::Stroke::new(2.5, v.weak_text_color()), m),
             }
             ui.label(text);
         });
@@ -2627,46 +2849,37 @@ fn legend(ui: &mut egui::Ui) {
         ui.set_width(ui.available_width());
         heading(ui, "Holes");
         ui.horizontal_wrapped(|ui| {
-            line(ui, Line::Solid(mass_color(None)), "mass unknown");
-            line(ui, Line::Solid(mass_color(Some(Mass::Fresh))), "over 50% mass");
-            line(ui, Line::Solid(mass_color(Some(Mass::Reduced))), "under 50%");
-            line(ui, Line::Solid(mass_color(Some(Mass::Critical))), "under 10%");
+            line(ui, Line::Solid(time_color(TimeLeft::Plenty)), "over 12 hours left");
+            line(ui, Line::Solid(time_color(TimeLeft::Under12h)), "under 12 hours");
+            line(ui, Line::Solid(time_color(TimeLeft::Under4h)), "under 4 hours");
+            line(ui, Line::Solid(time_color(TimeLeft::Under1h)), "under 1 hour");
+            line(ui, Line::Solid(time_color(TimeLeft::Expiring)), "could close any moment");
         });
         ui.horizontal_wrapped(|ui| {
-            line(ui, Line::Time(TimeLeft::Plenty), "over 4 hours left");
-            line(ui, Line::Time(TimeLeft::Under4h), "under 4 hours");
-            line(ui, Line::Time(TimeLeft::Under1h), "under 1 hour");
-            line(ui, Line::Time(TimeLeft::Expiring), "expiring, could close any moment");
+            line(ui, Line::Mass(Some(Mass::Fresh)), "over 50% mass, or unknown");
+            line(ui, Line::Mass(Some(Mass::Reduced)), "under 50%");
+            line(ui, Line::Mass(Some(Mass::Critical)), "under 10%");
         });
         ui.horizontal_wrapped(|ui| {
             chip(ui, "ABC", None, "signature, on its own system's side");
         });
-        let gate = |ui: &mut egui::Ui, jumps: u32, what: &str| {
-            room_for(ui, 80.0, what);
+        // The chips on a box, drawn as the map draws them.
+        let mark = |ui: &mut egui::Ui, text: &str, color: C, what: &str| {
+            let g = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), color);
+            room_for(ui, g.size().x + 10.0, what);
             ui.horizontal(|ui| {
-                let (color, text, radius) = match close_color(jumps) {
-                    Some(c) => (c, c, 1.8),
-                    None => (v.weak_text_color(), v.text_color(), 1.3),
-                };
-                let (r, p) = ui.allocate_painter(egui::vec2(80.0, row_h), egui::Sense::hover());
-                let (a, b) = (r.rect.left_center() + egui::vec2(2.0, 0.0), r.rect.right_center() - egui::vec2(2.0, 0.0));
-                p.extend(egui::Shape::dotted_line(&[a, b], color, 6.0, radius));
-                let g = p.layout_no_wrap(format!("{jumps}j"), font.clone(), text);
-                let chip = egui::Rect::from_center_size(r.rect.center(), g.size() + egui::vec2(10.0, 4.0));
-                p.rect(chip, 3.0, v.extreme_bg_color, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
-                if color != v.weak_text_color() {
-                    p.rect_filled(chip, 3.0, color.gamma_multiply(0.2));
-                }
-                p.galley(chip.center() - g.size() / 2.0, g, text);
+                let (r, p) = ui.allocate_painter(g.size() + egui::vec2(8.0, 2.0), egui::Sense::hover());
+                p.rect(r.rect, 4.0, v.extreme_bg_color, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                p.galley(r.rect.center() - g.size() / 2.0, g, color);
                 ui.label(what);
             });
         };
         ui.horizontal_wrapped(|ui| {
-            gate(ui, 12, "gate and bridge jumps to a pinned system");
+            mark(ui, "Amamake 7j", close_color(7).unwrap_or(v.text_color()), "a pinned system this many gate jumps away (green under 5)");
         });
         ui.horizontal_wrapped(|ui| {
-            gate(ui, 7, "under 10 jumps");
-            gate(ui, 3, "under 5");
+            mark(ui, "+8", v.text_color(), "holes to k-space leading to nothing pinned, not drawn");
+            mark(ui, icon::DIAMONDS_FOUR, SHATTERED_COLOR, "shattered");
         });
         ui.add_space(4.0);
         heading(ui, "Systems");

@@ -275,9 +275,6 @@ pub struct Settings {
     /// The wormhole map's layout: "tree" or "layered".
     #[serde(default)]
     pub wh_layout_style: String,
-    /// Chains grow downwards instead of to the right.
-    #[serde(default)]
-    pub wh_layout_down: bool,
     /// Chains packed in rows to the window's shape instead of one below the other.
     #[serde(default = "default_true")]
     pub wh_layout_pack: bool,
@@ -1413,7 +1410,6 @@ impl Default for Settings {
             wh_share_target: None,
             wh_legend_open: false,
             wh_layout_style: String::new(),
-            wh_layout_down: false,
             wh_layout_pack: true,
             wh_minimap: true,
             fleet_unlock: None,

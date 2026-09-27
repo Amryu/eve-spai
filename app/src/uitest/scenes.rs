@@ -683,7 +683,6 @@ fn wormholes_layout_scene(name: &'static str) -> Scene {
             a.systems = Some(fixtures::systems_wh_busy());
             a.wh_cache = holes.clone();
             a.settings.wh_layout_style = if name.ends_with("_layered") { "layered".into() } else { "tree".into() };
-            a.settings.wh_layout_down = name.ends_with("_down");
             a.settings.wh_layout_pack = !name.ends_with("_stacked");
             a.wh_graph_tidy();
             if name.ends_with("_zoomed_in") {
@@ -1906,7 +1905,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_narrow", [720.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_zoomed_out", [1280.0, 800.0], false, None));
-    for name in ["view_wormholes_layout_tree", "view_wormholes_layout_stacked", "view_wormholes_layout_layered", "view_wormholes_layout_down", "view_wormholes_layout_tree_zoomed_in", "view_wormholes_layout_tree_lost", "view_wormholes_layout_tree_timed"] {
+    for name in ["view_wormholes_layout_tree", "view_wormholes_layout_stacked", "view_wormholes_layout_layered", "view_wormholes_layout_tree_zoomed_in", "view_wormholes_layout_tree_lost", "view_wormholes_layout_tree_timed"] {
         v.push(wormholes_layout_scene(name));
     }
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
@@ -6908,6 +6907,18 @@ fn uitest_gone_holes_prompt_closes_after_marking_dead() {
     assert!(harness.query_by_label("Mark dead").is_none(), "the prompt stayed open");
 }
 
+/// A system's connections list every hole it has, both ways, even the ones a focused map leaves
+/// off: 1DQ1-A's hole from 7-K5EL is three holes from Thera, past the focus.
+#[test]
+fn uitest_connections_list_every_hole_of_the_system() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = wormholes_focus_scene("wh_connections_both_ways", [1280.0, 800.0], false, Some(30_004_759), Some(31_000_005));
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(4);
+    assert!(harness.query_by_label_contains("7-K5EL").is_some(), "the hole to 7-K5EL is missing from 1DQ1-A's connections");
+    assert!(harness.query_by_label_contains("Jita").is_some());
+}
+
 /// With blues hidden, a pilot whose corporation or alliance is at +5 or better leaves the table
 /// and is counted instead; switched back, it returns.
 #[test]
@@ -6943,6 +6954,64 @@ fn uitest_lookup_fc_cell_explains_itself() {
         harness.query_by_label_contains("Monitor appearances").is_some(),
         "hovering the FC cell at {at:?} showed no breakdown"
     );
+}
+
+/// The wormhole map from a copy of a real profile, for reviewing a layout change against real
+/// data. Never part of a run: it reads `SPAI_REAL_DIR` (a directory holding a copy of
+/// `eve-spai.db`, never the live one) and writes PNGs to `SPAI_REAL_OUT`, outside the repo.
+/// `SPAI_REAL_CHARS` places characters: `Name=system_id,Other=system_id`.
+#[test]
+#[ignore]
+fn uitest_real_wormhole_map() {
+    let (Ok(dir), Ok(out)) = (std::env::var("SPAI_REAL_DIR"), std::env::var("SPAI_REAL_OUT")) else { return };
+    let live = crate::store::data_dir().ok();
+    std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
+    let copy = crate::store::Store::open().expect("the copy opens");
+    assert_ne!(Some(copy.path().to_path_buf()), live.map(|d| d.join("eve-spai.db")), "that is the live profile");
+    let now = chrono::Utc::now().timestamp();
+    let holes: Vec<crate::wormholes::Wormhole> = copy.wormholes().into_iter().filter(|w| !w.is_expired(now)).collect();
+    let systems = std::sync::Arc::new(copy.load_systems());
+    let settings = copy.load_settings().unwrap_or_default();
+    drop(copy);
+    harness::scratch_profile();
+    let chars: Vec<(String, i64)> = std::env::var("SPAI_REAL_CHARS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|p| p.split_once('=').and_then(|(n, id)| Some((n.to_owned(), id.trim().parse().ok()?))))
+        .collect();
+    for (label, zoom) in [("fit", None), ("full", Some(1.0)), ("far", Some(0.3))] {
+        let count = holes.len();
+        let (holes, systems, settings, chars) = (holes.clone(), systems.clone(), settings.clone(), chars.clone());
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut scene = Scene::ui("real_wormhole_map", [1600.0, 1000.0], move |ui| {
+            let app = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.view = View::Wormholes;
+                a.systems = Some(systems.clone());
+                a.wh_cache = holes.clone();
+                a.settings.wh_route_pins = settings.wh_route_pins.clone();
+                a.settings.wh_route_kinds = settings.wh_route_kinds.clone();
+                a.settings.wh_layout_style = std::env::var("SPAI_REAL_STYLE").unwrap_or_else(|_| settings.wh_layout_style.clone());
+                a.settings.wh_layout_pack = settings.wh_layout_pack;
+                for (n, id) in &chars {
+                    a.player.lock().unwrap().locations.insert(n.clone(), (*id, false));
+                }
+                a.wh_graph_tidy();
+                if let Some(z) = zoom {
+                    a.wh_graph.hold_view(z);
+                }
+                a
+            });
+            app.root_chrome(ui);
+            app.root_central(ui, None);
+        });
+        let mut h = harness::build(&mut scene, true);
+        h.run_steps(6);
+        let img = h.render().expect("render");
+        let path = std::path::Path::new(&out).join(format!("real_{label}.png"));
+        img.save(&path).expect("write png");
+        println!("real map: {count} holes -> {}", path.display());
+    }
 }
 
 /// Frame cost of a busy wormhole map: still, panning, and dragging a system.
