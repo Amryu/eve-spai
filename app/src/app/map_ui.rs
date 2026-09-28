@@ -555,6 +555,7 @@ impl SpaiApp {
                 self.right_dock_tab = RightDockTab::System;
                 ui.close();
             }
+            self.wh_disable_menu(ui, sid);
             ui.separator();
             let view = self.notes_view.clone();
             let label = notes_folder_label(&view);
@@ -605,10 +606,11 @@ impl SpaiApp {
         if ov.wormholes {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             for sid in &self.wh_overlay.jspace_holes {
+                let col = if self.wh_overlay.jspace_blocked.contains(sid) { super::wh_graph::desaturate(wh_col) } else { wh_col };
                 lead_icons
                     .entry(*sid)
                     .or_default()
-                    .push((egui_phosphor::regular::SPIRAL, wh_col));
+                    .push((egui_phosphor::regular::SPIRAL, col));
             }
         }
         if ov.jove {
@@ -893,12 +895,20 @@ impl SpaiApp {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
             const TURNUR: i64 = 30_002_086;
+            let off = |a: i64, b: i64| self.wh_overlay.blocked.contains(&(a.min(b), a.max(b)));
             for &(a, b) in &self.wh_overlay.direct {
                 if !ov.turnur && (a == TURNUR || b == TURNUR) {
                     continue;
                 }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
-                    painter.line_segment([*p1, *p2], egui::Stroke::new(1.6, wh_col));
+                    let stroke = egui::Stroke::new(1.6, wh_col);
+                    if off(a, b) {
+                        super::wh_graph::slashed(&painter, &[*p1, *p2], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
+                            p.add(egui::Shape::line(l.to_vec(), s));
+                        });
+                    } else {
+                        painter.line_segment([*p1, *p2], stroke);
+                    }
                 }
             }
             for &(a, b, hops) in &self.wh_overlay.chains {
@@ -906,12 +916,14 @@ impl SpaiApp {
                     continue;
                 }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
-                    painter.extend(egui::Shape::dashed_line(
-                        &[*p1, *p2],
-                        egui::Stroke::new(1.8, chain_col),
-                        6.0,
-                        4.0,
-                    ));
+                    let stroke = egui::Stroke::new(1.8, chain_col);
+                    if off(a, b) {
+                        super::wh_graph::slashed(&painter, &[*p1, *p2], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
+                            p.extend(egui::Shape::dashed_line(l, s, 6.0, 4.0));
+                        });
+                    } else {
+                        painter.extend(egui::Shape::dashed_line(&[*p1, *p2], stroke, 6.0, 4.0));
+                    }
                     let mid = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
                     let txt = format!("{hops}J");
                     let r = painter.text(
@@ -966,8 +978,15 @@ impl SpaiApp {
                     let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
                     let line_col = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
                     let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0);
-                    for p in &conn_screen {
-                        painter.line_segment([tp, *p], egui::Stroke::new(1.6, line_col));
+                    for (s, p) in conns.iter().filter_map(|s| Some((s, pos.get(&s.id)?))) {
+                        let stroke = egui::Stroke::new(1.6, line_col);
+                        if self.wh_overlay.blocked.contains(&(s.id, 31_000_005)) {
+                            super::wh_graph::slashed(&painter, &[tp, *p], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
+                                p.add(egui::Shape::line(l.to_vec(), s));
+                            });
+                        } else {
+                            painter.line_segment([tp, *p], stroke);
+                        }
                     }
                     painter.circle_filled(tp, dot + 3.0, tcol);
                     painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, tcol));
@@ -2011,6 +2030,12 @@ impl SpaiApp {
             self.needs_save = true;
             // Toggling this changes what the current destination should be, so re-send it.
             self.replan_routes();
+        }
+        if self.settings.route_via_wormholes {
+            let changed = ui.indent("wh_route_opts", |ui| self.wh_route_options_ui(ui)).inner;
+            if changed {
+                self.wh_routing_changed();
+            }
         }
         if self.map_overlays.upgrades {
             ui.separator();

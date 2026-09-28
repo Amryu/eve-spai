@@ -245,6 +245,27 @@ pub struct Settings {
     /// Systems the wormhole map's Routes panel measures from the selected system.
     #[serde(default)]
     pub wh_route_pins: Vec<String>,
+    /// The least mass a hole on a route may have left: a `Mass` code, empty for any.
+    #[serde(default)]
+    pub wh_route_min_mass: String,
+    /// Holes this close to closing or closer stay off routes: a `TimeLeft` code, empty for none.
+    #[serde(default)]
+    pub wh_route_min_time: String,
+    /// The smallest hole a route may use: a `ShipSize` code, empty for any.
+    #[serde(default)]
+    pub wh_route_min_size: String,
+    /// Holes routes never use, by uid. Local only, never shared.
+    #[serde(default)]
+    pub wh_disabled_holes: Vec<String>,
+    /// Systems whose holes routes never use, such as Thera. Local only, never shared.
+    #[serde(default)]
+    pub wh_disabled_systems: Vec<i64>,
+    /// The wormhole tab's filter.
+    #[serde(default)]
+    pub wh_filter: crate::wormholes::WhFilter,
+    /// Routes use only the holes the wormhole tab's filter shows.
+    #[serde(default)]
+    pub wh_route_filtered: bool,
     /// Every sound the app plays is scaled by this, and none plays while muted.
     #[serde(default = "default_volume")]
     pub sound_master_volume: f32,
@@ -1407,6 +1428,13 @@ impl Default for Settings {
             wh_ask: true,
             wh_route_kinds: default_wh_route_kinds(),
             wh_route_pins: Vec::new(),
+            wh_route_min_mass: String::new(),
+            wh_route_min_time: String::new(),
+            wh_route_min_size: String::new(),
+            wh_disabled_holes: Vec::new(),
+            wh_disabled_systems: Vec::new(),
+            wh_filter: Default::default(),
+            wh_route_filtered: false,
             wh_share_target: None,
             wh_legend_open: false,
             wh_layout_style: String::new(),

@@ -132,7 +132,7 @@ impl SpaiApp {
             self.needs_save = true;
             replan = true;
         }
-        if self.map_route_kind != "jump" && self.settings.route_via_wormholes && self.wh_route_kinds_ui(ui) {
+        if self.map_route_kind != "jump" && self.settings.route_via_wormholes && self.wh_route_options_ui(ui) {
             self.needs_save = true;
             replan = true;
         }
@@ -789,70 +789,6 @@ impl SpaiApp {
 
 
     pub(crate) fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
-        fn travel_field(
-            ui: &mut egui::Ui,
-            q: &mut String,
-            sel: &mut usize,
-            hint: &str,
-            suggestions: &[SysHit],
-        ) -> Option<i64> {
-            let mut pick = None;
-            let resp = ui.add(
-                egui::TextEdit::singleline(q).hint_text(hint).desired_width(ui.available_width()),
-            );
-            if resp.changed() {
-                *sel = 0;
-            }
-            // A singleline TextEdit surrenders focus the instant Enter is pressed, so by now
-            // `has_focus` is already false. The key itself is still in the queue, so the accept has
-            // to hang off `lost_focus` or Enter would never pick the highlighted suggestion.
-            let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if !suggestions.is_empty() && (resp.has_focus() || entered) {
-                let n = suggestions.len();
-                if resp.has_focus() {
-                    let (down, up) = ui.input(|i| {
-                        (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
-                    });
-                    if down {
-                        *sel = (*sel + 1).min(n - 1);
-                    }
-                    if up {
-                        *sel = sel.saturating_sub(1);
-                    }
-                    let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                    let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
-                    let width = resp.rect.width();
-                    egui::Area::new(ui.id().with(("travel_sugg", hint)))
-                        .order(egui::Order::Foreground)
-                        .fixed_pos(below)
-                        .constrain(true)
-                        .show(ui.ctx(), |ui| {
-                            ui.set_min_width(width);
-                            ui.set_max_width(width);
-                            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
-                                    let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                                    let rr = ui.menu_label(i == *sel, row);
-                                    if rr.hovered() && moving {
-                                        *sel = i;
-                                    }
-                                    if rr.clicked() {
-                                        pick = Some(*id);
-                                    }
-                                }
-                            });
-                        });
-                }
-                if entered && pick.is_none() {
-                    pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
-                }
-            }
-            if pick.is_some() {
-                resp.surrender_focus();
-            }
-            pick
-        }
-
         let name_of = |id: Option<i64>| -> Option<String> {
             id.and_then(|i| self.systems.as_ref().and_then(|g| g.info_of(i)).map(|s| s.name.clone()))
         };
@@ -932,22 +868,24 @@ impl SpaiApp {
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.label("From");
-            if let Some(id) = travel_field(
+            if let Some(id) = system_field(
                 ui,
                 &mut self.travel_start_q,
                 &mut self.travel_start_sel,
                 start_name.as_deref().unwrap_or("system"),
+                ui.available_width(),
                 &start_suggestions,
             ) {
                 start_pick = Some(id);
             }
             ui.add_space(2.0);
             ui.label("To");
-            if let Some(id) = travel_field(
+            if let Some(id) = system_field(
                 ui,
                 &mut self.travel_end_q,
                 &mut self.travel_end_sel,
                 end_name.as_deref().unwrap_or("system"),
+                ui.available_width(),
                 &end_suggestions,
             ) {
                 end_pick = Some(id);
@@ -963,11 +901,12 @@ impl SpaiApp {
                     ui.label(name);
                 });
             }
-            if let Some(id) = travel_field(
+            if let Some(id) = system_field(
                 ui,
                 &mut self.travel_wp_q,
                 &mut self.travel_wp_sel,
                 "+ add waypoint",
+                ui.available_width(),
                 &wp_suggestions,
             ) {
                 wp_pick = Some(id);
@@ -2184,3 +2123,71 @@ impl SpaiApp {
         }
     }
 }
+
+/// A system name field with matching systems listed under it while it has focus: arrows move
+/// through them, Enter or a click takes one. Returns the system picked.
+pub(crate) fn system_field(
+    ui: &mut egui::Ui,
+    q: &mut String,
+    sel: &mut usize,
+    hint: &str,
+    width: f32,
+    suggestions: &[SysHit],
+) -> Option<i64> {
+    let mut pick = None;
+    let resp = ui.add(
+        egui::TextEdit::singleline(q).hint_text(hint).desired_width(width),
+    );
+    if resp.changed() {
+        *sel = 0;
+    }
+    // A singleline TextEdit surrenders focus the instant Enter is pressed, so by now
+    // `has_focus` is already false. The key itself is still in the queue, so the accept has
+    // to hang off `lost_focus` or Enter would never pick the highlighted suggestion.
+    let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if !suggestions.is_empty() && (resp.has_focus() || entered) {
+        let n = suggestions.len();
+        if resp.has_focus() {
+            let (down, up) = ui.input(|i| {
+                (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
+            });
+            if down {
+                *sel = (*sel + 1).min(n - 1);
+            }
+            if up {
+                *sel = sel.saturating_sub(1);
+            }
+            let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+            let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
+            let width = resp.rect.width();
+            egui::Area::new(ui.id().with(("travel_sugg", hint)))
+                .order(egui::Order::Foreground)
+                .fixed_pos(below)
+                .constrain(true)
+                .show(ui.ctx(), |ui| {
+                    ui.set_min_width(width);
+                    ui.set_max_width(width);
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
+                            let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
+                            let rr = ui.menu_label(i == *sel, row);
+                            if rr.hovered() && moving {
+                                *sel = i;
+                            }
+                            if rr.clicked() {
+                                pick = Some(*id);
+                            }
+                        }
+                    });
+                });
+        }
+        if entered && pick.is_none() {
+            pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
+        }
+    }
+    if pick.is_some() {
+        resp.surrender_focus();
+    }
+    pick
+}
+

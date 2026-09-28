@@ -73,6 +73,8 @@ pub enum ShipSize {
 }
 
 impl ShipSize {
+    pub const ALL: [ShipSize; 4] = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge];
+
     pub fn code(self) -> &'static str {
         match self {
             ShipSize::Frigate => "frigate",
@@ -221,6 +223,61 @@ impl Life {
             Life::Under1h | Life::Expired => Some(at + 3600),
         }
     }
+}
+
+/// How long a hole has left, as its line shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TimeLeft {
+    Plenty,
+    /// Under 12 hours: for a hole read as "less than a day", as likely gone as not.
+    Under12h,
+    Under4h,
+    Under1h,
+    /// Past its time: it can close at any moment.
+    Expiring,
+}
+
+impl TimeLeft {
+    pub const ALL: [TimeLeft; 5] = [TimeLeft::Plenty, TimeLeft::Under12h, TimeLeft::Under4h, TimeLeft::Under1h, TimeLeft::Expiring];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            TimeLeft::Plenty => "plenty",
+            TimeLeft::Under12h => "lt12h",
+            TimeLeft::Under4h => "lt4h",
+            TimeLeft::Under1h => "lt1h",
+            TimeLeft::Expiring => "expiring",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            TimeLeft::Plenty => ">12h",
+            TimeLeft::Under12h => "<12h",
+            TimeLeft::Under4h => "<4h",
+            TimeLeft::Under1h => "<1h",
+            TimeLeft::Expiring => "Expired",
+        }
+    }
+}
+
+/// A scout's reading of the hole wins; otherwise its expiry says.
+pub fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
+    // The worse of the last reading and what the clock has done to it since.
+    let read = match w.life {
+        Some(Life::Expired) => TimeLeft::Expiring,
+        Some(Life::Under1h) => TimeLeft::Under1h,
+        Some(Life::Under4h) => TimeLeft::Under4h,
+        _ => TimeLeft::Plenty,
+    };
+    let clock = match w.expiry() - now {
+        s if s <= 0 => TimeLeft::Expiring,
+        s if s < 3600 => TimeLeft::Under1h,
+        s if s < 4 * 3600 => TimeLeft::Under4h,
+        s if s < 12 * 3600 => TimeLeft::Under12h,
+        _ => TimeLeft::Plenty,
+    };
+    read.max(clock)
 }
 
 /// How much of a hole's mass is left, as its info window reads it.
@@ -580,6 +637,28 @@ impl Wormhole {
         self.explicit_expiry.unwrap_or(self.reported_at + self.max_life_secs())
     }
 
+    /// The expiry after `life` is read off this hole at `now`. The same stage again keeps the old
+    /// end, which was counted from when that stage was first seen.
+    pub fn expiry_after_reading(&self, life: Option<Life>, now: i64) -> Option<i64> {
+        match life {
+            Some(l) if Some(l) == self.life && self.explicit_expiry.is_some() => self.explicit_expiry,
+            Some(l) => l.closes_by(now).or(self.explicit_expiry),
+            None => self.explicit_expiry,
+        }
+    }
+
+    /// The size it was read as, else what its type allows.
+    pub fn known_size(&self) -> Option<ShipSize> {
+        self.effective_size().or_else(|| {
+            [&self.wh_type, &self.dest_wh_type]
+                .into_iter()
+                .flatten()
+                .filter_map(|t| crate::whdata::hole_type(t))
+                .find(|t| t.jump_mass > 0)
+                .map(|t| size_for_jump_mass(t.jump_mass))
+        })
+    }
+
     pub fn is_expired(&self, now: i64) -> bool {
         now >= self.expiry()
     }
@@ -676,6 +755,82 @@ impl Wormhole {
             self.dest_wh_type = far.wh_type.clone();
         }
         self.merge_shared(far);
+    }
+}
+
+/// Stands for "not known" in a filter's size and mass choices.
+pub const UNKNOWN: &str = "unknown";
+
+/// Which holes the wormhole tab shows, and routes use when told to. Each list is a set of codes
+/// and an empty one lets everything through.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WhFilter {
+    /// `DestClass` codes, matched at either end.
+    pub dest: Vec<String>,
+    pub source: Vec<String>,
+    /// Hole type codes, separated by spaces or commas, matched on either side.
+    pub types: String,
+    /// `ShipSize` codes, or [`UNKNOWN`].
+    pub size: Vec<String>,
+    /// `Mass` codes, or [`UNKNOWN`].
+    pub mass: Vec<String>,
+    /// `TimeLeft` codes.
+    pub time: Vec<String>,
+}
+
+impl WhFilter {
+    fn type_codes(&self) -> Vec<String> {
+        self.types.split([' ', ',']).map(|t| t.trim().to_uppercase()).filter(|t| !t.is_empty()).collect()
+    }
+
+    /// How many of the filter's parts narrow the list.
+    pub fn active(&self) -> usize {
+        [self.dest.is_empty(), self.source.is_empty(), self.type_codes().is_empty(), self.size.is_empty(), self.mass.is_empty(), self.time.is_empty()]
+            .iter()
+            .filter(|empty| !**empty)
+            .count()
+    }
+
+    /// `touches` says whether the hole joins a kind of space at either end.
+    pub fn matches(&self, w: &Wormhole, now: i64, touches: impl Fn(DestClass) -> bool) -> bool {
+        let has = |set: &[String], code: &str| set.is_empty() || set.iter().any(|c| c == code);
+        let types = self.type_codes();
+        let type_ok = types.is_empty()
+            || [&w.wh_type, &w.dest_wh_type].into_iter().flatten().any(|t| types.iter().any(|c| c.eq_ignore_ascii_case(t)));
+        (self.dest.is_empty() || self.dest.iter().any(|c| touches(DestClass::from_code(c))))
+            && has(&self.source, w.source.code())
+            && type_ok
+            && has(&self.size, w.known_size().map_or(UNKNOWN, |s| s.code()))
+            && has(&self.mass, w.mass.map_or(UNKNOWN, |m| m.code()))
+            && has(&self.time, time_left(w, now).code())
+    }
+}
+
+/// What a route asks of a hole it goes through. A hole with its mass or size not known passes:
+/// most holes are never read that closely.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RouteLimits {
+    pub min_mass: Option<Mass>,
+    /// Holes this close to closing or closer are left out.
+    pub time_below: Option<TimeLeft>,
+    pub min_size: Option<ShipSize>,
+}
+
+impl RouteLimits {
+    pub fn allows(&self, w: &Wormhole, now: i64) -> bool {
+        let mass_rank = |m: Mass| Mass::ALL.iter().position(|x| *x == m);
+        let size_rank = |s: ShipSize| ShipSize::ALL.iter().position(|x| *x == s);
+        let mass_ok = match (self.min_mass, w.mass) {
+            (Some(min), Some(m)) => mass_rank(m) <= mass_rank(min),
+            _ => true,
+        };
+        let time_ok = self.time_below.is_none_or(|t| time_left(w, now) < t);
+        let size_ok = match (self.min_size, w.known_size()) {
+            (Some(min), Some(s)) => size_rank(s) >= size_rank(min),
+            _ => true,
+        };
+        mass_ok && time_ok && size_ok
     }
 }
 
@@ -827,6 +982,38 @@ mod tests {
         assert_eq!(w.expiry(), 1000 + 3600);
         assert_eq!(w.hours_left(1000), Some(1));
         assert_eq!(w.hours_left(1000 + 3600), None);
+    }
+
+    #[test]
+    fn a_filter_matches_every_part_it_sets() {
+        let now = 1_000_000;
+        let mut w = wh(false, now);
+        w.explicit_expiry = Some(now + 2 * 3600);
+        w.wh_type = Some("C247".into());
+        w.mass = Some(Mass::Reduced);
+        let any = |_| false;
+        assert!(WhFilter::default().matches(&w, now, any));
+        let f = WhFilter { time: vec![TimeLeft::Under4h.code().into()], types: "k162, c247".into(), ..Default::default() };
+        assert!(f.matches(&w, now, any));
+        assert_eq!(f.active(), 2);
+        let f = WhFilter { mass: vec![UNKNOWN.into()], ..Default::default() };
+        assert!(!f.matches(&w, now, any));
+        let f = WhFilter { size: vec![ShipSize::Large.code().into()], ..Default::default() };
+        assert!(f.matches(&w, now, any), "C247 passes battleships");
+        let f = WhFilter { dest: vec![DestClass::Thera.code().into()], ..Default::default() };
+        assert!(f.matches(&w, now, |d| d == DestClass::Thera));
+        assert!(!f.matches(&w, now, any));
+    }
+
+    #[test]
+    fn same_life_keeps_the_timer() {
+        let mut w = wh(false, 1000);
+        w.life = Some(Life::Under4h);
+        w.explicit_expiry = Life::Under4h.closes_by(1000);
+        let later = 1000 + 3 * 3600;
+        assert_eq!(w.expiry_after_reading(Some(Life::Under4h), later), w.explicit_expiry);
+        assert_eq!(w.expiry_after_reading(None, later), w.explicit_expiry);
+        assert_eq!(w.expiry_after_reading(Some(Life::Under1h), later), Some(later + 3600));
     }
 
     #[test]

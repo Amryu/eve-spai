@@ -668,9 +668,6 @@ pub struct SpaiApp {
     pub(crate) wh_cache: Vec<crate::wormholes::Wormhole>,
     wh_reloaded: Option<std::time::Instant>,
     wh_overlay: WhOverlay,
-    wh_filter_dest: Option<crate::wormholes::DestClass>,
-    wh_filter_source: Option<crate::wormholes::Source>,
-    wh_filter_expiring: bool,
     /// The add/edit form, while it is open.
     wh_form: Option<crate::app::wormholes_ui::WhForm>,
     /// The system whose wormhole facts the side panel shows, and the box that looks one up.
@@ -845,6 +842,9 @@ pub struct SpaiApp {
     /// reader thread woke via `request_repaint`) panics egui with "the user callback was never
     /// called"; processing them at the top of a normally-scheduled frame avoids that.
     pending_overlay_clicks: Vec<IntelClick>,
+    /// System name fields' suggestions, by field: the text they were for, the matches, the
+    /// highlighted one.
+    sys_sugg: std::collections::HashMap<&'static str, (String, Vec<SysHit>, usize)>,
     ship_window: Option<i64>,
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
@@ -1592,9 +1592,6 @@ impl SpaiApp {
             wh_cache: Vec::new(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
-            wh_filter_dest: None,
-            wh_filter_source: None,
-            wh_filter_expiring: false,
             wh_form: None,
             wh_info: None,
             wh_info_query: String::new(),
@@ -1736,6 +1733,7 @@ impl SpaiApp {
             focus_window: None,
             ship_window: None,
             pending_overlay_clicks: Vec::new(),
+            sys_sugg: Default::default(),
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
             pilot_window_open: false,
@@ -4252,13 +4250,32 @@ struct WhOverlay {
     chains: Vec<(i64, i64, usize)>,
     jspace_holes: std::collections::HashSet<i64>,
     thera_conns: Vec<i64>,
+    /// Links drawn above that no hole routes may use still makes: a pair from `direct` or
+    /// `chains`, smaller id first, or a system of `thera_conns` paired with Thera.
+    blocked: std::collections::HashSet<(i64, i64)>,
+    /// Systems of `jspace_holes` whose every hole into J-space is switched off.
+    jspace_blocked: std::collections::HashSet<i64>,
 }
 
 impl WhOverlay {
-    fn build(whs: &[crate::wormholes::Wormhole]) -> WhOverlay {
+    /// `usable` says which holes routes may go through; the rest are drawn as switched off.
+    fn build(whs: &[crate::wormholes::Wormhole], usable: impl Fn(&crate::wormholes::Wormhole) -> bool) -> WhOverlay {
+        const THERA: i64 = 31_000_005;
+        const MAX_CHAINS: usize = 60;
+        let mut all = Self::links(whs);
+        let open: Vec<crate::wormholes::Wormhole> = whs.iter().filter(|w| usable(w)).cloned().collect();
+        let open = Self::links(&open);
+        let reach: std::collections::HashSet<(i64, i64)> = open.direct.iter().copied().chain(open.chains.iter().map(|c| (c.0, c.1))).collect();
+        all.blocked = all.direct.iter().copied().chain(all.chains.iter().map(|c| (c.0, c.1))).filter(|k| !reach.contains(k)).collect();
+        all.blocked.extend(all.thera_conns.iter().filter(|id| !open.thera_conns.contains(id)).map(|id| (*id, THERA)));
+        all.jspace_blocked = all.jspace_holes.difference(&open.jspace_holes).copied().collect();
+        all.chains.truncate(MAX_CHAINS);
+        all
+    }
+
+    fn links(whs: &[crate::wormholes::Wormhole]) -> WhOverlay {
         use std::collections::{HashMap, HashSet, VecDeque};
         const MAX_J_HOPS: usize = 4;
-        const MAX_CHAINS: usize = 60;
         const MAX_HUB_DEGREE: usize = 6;
 
         use crate::wormholes::DestClass;
@@ -4320,7 +4337,6 @@ impl WhOverlay {
             }
         }
         chains.sort_by_key(|c| c.2);
-        chains.truncate(MAX_CHAINS);
         const THERA: i64 = 31_000_005;
         let thera_conns: Vec<i64> = adj
             .get(&THERA)
@@ -4329,7 +4345,7 @@ impl WhOverlay {
             .copied()
             .filter(|id| is_kspace(*id))
             .collect();
-        WhOverlay { direct, chains, jspace_holes, thera_conns }
+        WhOverlay { direct, chains, jspace_holes, thera_conns, ..Default::default() }
     }
 }
 

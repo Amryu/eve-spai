@@ -440,10 +440,10 @@ impl SpaiApp {
                 row.dest_wh_type = entry.dest_wh_type.or(row.dest_wh_type);
                 row.size = entry.size.or(row.size);
                 if entry.observed_at.is_some() {
+                    row.explicit_expiry = row.expiry_after_reading(entry.life, entry.updated_at);
                     row.mass = entry.mass.or(row.mass);
                     row.life = entry.life.or(row.life);
                     row.observed_at = entry.observed_at;
-                    row.explicit_expiry = entry.explicit_expiry.or(row.explicit_expiry);
                 }
                 row.note = entry.note.or(row.note);
                 row.updated_at = entry.updated_at;

@@ -8,11 +8,11 @@ use egui_phosphor::regular as icon;
 
 use super::SpaiApp;
 use crate::whdata::{self, Class};
-use crate::wormholes::{Life, Mass, Wormhole};
+use crate::wormholes::{time_left, Mass, TimeLeft, Wormhole};
 
 /// Wide enough that at [`MIN_ZOOM`] a name still fits its scaled box, so no box grows past its
 /// place when zoomed out.
-pub(crate) const NODE: egui::Vec2 = egui::vec2(260.0, 56.0);
+pub(crate) const NODE: egui::Vec2 = egui::vec2(290.0, 56.0);
 /// Drifter systems: their name, J-code and badge need more room.
 /// A pinned system's copy beside a cluster.
 const PILL: egui::Vec2 = egui::vec2(230.0, 40.0);
@@ -84,7 +84,7 @@ fn display_name(id: i64, name: &str) -> String {
 use super::wh_layout::COL;
 const GRID: f32 = 10.0;
 /// How far out of a box an edge runs before it turns.
-const STUB: f32 = 20.0;
+pub(crate) const STUB: f32 = 20.0;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 2.0;
 
@@ -188,8 +188,9 @@ fn pill_id(pin: i64, exit: i64) -> i64 {
     -(pin * 100_000 + exit.rem_euclid(100_000))
 }
 
-/// Gate jumps under which a pinned system counts as near a chain: the yellow highlight's bound.
-const NEAR_JUMPS: u32 = 10;
+/// Gate jumps under which a pinned system counts as near a cluster and joins it. The colours
+/// ([`close_color`]) still only mark the nearest, under 10.
+const NEAR_JUMPS: u32 = 30;
 
 /// The known hole behind signature `sig` in `system`, matched on its first three letters.
 fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wormhole> {
@@ -523,12 +524,18 @@ pub(crate) fn route_some(
         }
     };
     order.sort_by_key(|&i| (!links[i].2, rise(i), i));
+    let fanned = fanned_paths(boxes, links);
     for i in order {
         if keep[i].is_some() {
             continue;
         }
         let (a, b, hole) = links[i];
         let (Some(ra), Some(rb)) = (boxes.get(&a), boxes.get(&b)) else { continue };
+        if let Some(p) = fanned.get(&i).filter(|p| route_cost(p, a, b, hole, boxes, &box_list, &[], f32::INFINITY) < 1_000_000.0) {
+            done.push(Routed { path: p.clone(), a, b, hole, bbox: bbox_of(p) });
+            out[i] = Some(p.clone());
+            continue;
+        }
         // On a tie the bend sits by the system the branch grows from (else the busier one), so
         // its links fan out from one trunk there.
         let a_hub = match (parent.get(&b) == Some(&a), parent.get(&a) == Some(&b)) {
@@ -551,6 +558,220 @@ pub(crate) fn route_some(
             done.push(Routed { path: p.clone(), a, b, hole, bbox: bbox_of(p) });
         }
         out[i] = best;
+    }
+    nudge(&mut out, boxes);
+    out
+}
+
+/// Space between two lines that would otherwise share a stretch, in map units.
+pub(crate) const LANE: f32 = 7.0;
+
+/// One straight piece of a routed line: path `path`, points `at` and `at + 1`.
+struct Piece {
+    path: usize,
+    at: usize,
+    upright: bool,
+    /// x for an upright piece, y for a flat one.
+    coord: f32,
+    lo: f32,
+    hi: f32,
+}
+
+/// Spreads lines that run on top of each other into parallel lanes. Where they part, the order of
+/// the lanes follows where each turns, so they part without crossing.
+fn nudge(paths: &mut [Option<Vec<egui::Pos2>>], boxes: &HashMap<i64, egui::Rect>) {
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (pi, p) in paths.iter().enumerate() {
+        let Some(p) = p else { continue };
+        for (k, s) in p.windows(2).enumerate() {
+            let upright = (s[0].x - s[1].x).abs() < 0.5;
+            let flat = (s[0].y - s[1].y).abs() < 0.5;
+            if upright == flat {
+                continue;
+            }
+            let (coord, a, b) = if upright { (s[0].x, s[0].y, s[1].y) } else { (s[0].y, s[0].x, s[1].x) };
+            pieces.push(Piece { path: pi, at: k, upright, coord, lo: a.min(b), hi: a.max(b) });
+        }
+    }
+    // Pieces of different lines on one line and overlapping, joined transitively.
+    let mut group: Vec<usize> = (0..pieces.len()).collect();
+    fn root(g: &mut [usize], mut i: usize) -> usize {
+        while g[i] != i {
+            g[i] = g[g[i]];
+            i = g[i];
+        }
+        i
+    }
+    for i in 0..pieces.len() {
+        for j in i + 1..pieces.len() {
+            let (a, b) = (&pieces[i], &pieces[j]);
+            if a.path != b.path && a.upright == b.upright && (a.coord - b.coord).abs() < 1.0 && a.hi.min(b.hi) - a.lo.max(b.lo) > 1.0 {
+                let (ra, rb) = (root(&mut group, i), root(&mut group, j));
+                group[ra] = rb;
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..pieces.len() {
+        let r = root(&mut group, i);
+        groups.entry(r).or_default().push(i);
+    }
+    let orig: Vec<Option<Vec<egui::Pos2>>> = paths.to_vec();
+    let mut moves: Vec<(usize, usize, bool, f32)> = Vec::new();
+    for members in groups.values().filter(|m| m.len() > 1) {
+        let upright = pieces[members[0]].upright;
+        // Along the lanes' axis `u`, across them `v`: an upright piece is flat with the axes swapped.
+        let (u, v): (fn(egui::Pos2) -> f32, fn(egui::Pos2) -> f32) = if upright { (|p: egui::Pos2| p.y, |p: egui::Pos2| p.x) } else { (|p: egui::Pos2| p.x, |p: egui::Pos2| p.y) };
+        let key = |pc: &Piece| -> (f32, f32, f32, f32) {
+            let p = orig[pc.path].as_ref().unwrap();
+            let (s0, s1) = (p[pc.at], p[pc.at + 1]);
+            let (low_end, low_next, high_end, high_next) = if u(s0) <= u(s1) {
+                (s0, pc.at.checked_sub(1).map(|i| p[i]), s1, p.get(pc.at + 2).copied())
+            } else {
+                (s1, p.get(pc.at + 2).copied(), s0, pc.at.checked_sub(1).map(|i| p[i]))
+            };
+            // Turning off towards lower `v` at the low end: the later it turns, the lower its lane.
+            let low = match low_next {
+                Some(n) if v(n) < v(low_end) => (0.0, -u(low_end)),
+                Some(_) => (2.0, u(low_end)),
+                None => (1.0, 0.0),
+            };
+            let high = match high_next {
+                Some(n) if v(n) < v(high_end) => (0.0, u(high_end)),
+                Some(_) => (2.0, -u(high_end)),
+                None => (1.0, 0.0),
+            };
+            let far = high_next.or(low_next).map_or(0.0, v);
+            (low.0 * 1e7 + low.1, high.0 * 1e7 + high.1, far, pc.path as f32)
+        };
+        let mut order: Vec<usize> = members.clone();
+        order.sort_by(|a, b| key(&pieces[*a]).partial_cmp(&key(&pieces[*b])).unwrap_or(std::cmp::Ordering::Equal));
+        // One lane per line, even where a line has two pieces in the group.
+        let mut lanes: Vec<usize> = Vec::new();
+        for i in &order {
+            if !lanes.iter().any(|l| pieces[*l].path == pieces[*i].path) {
+                lanes.push(*i);
+            }
+        }
+        if lanes.len() < 2 {
+            continue;
+        }
+        let coord = pieces[lanes[0]].coord;
+        let lo = members.iter().map(|i| pieces[*i].lo).fold(f32::INFINITY, f32::min);
+        let hi = members.iter().map(|i| pieces[*i].hi).fold(f32::NEG_INFINITY, f32::max);
+        // Room across: off the boxes beside the stretch, and on the box a line ends at.
+        let (mut min, mut max) = (f32::NEG_INFINITY, f32::INFINITY);
+        for r in boxes.values() {
+            let (ulo, uhi, vlo, vhi) = if upright { (r.top(), r.bottom(), r.left(), r.right()) } else { (r.left(), r.right(), r.top(), r.bottom()) };
+            let touches = (ulo - hi).abs() < 0.5 || (uhi - lo).abs() < 0.5;
+            if touches && coord > vlo && coord < vhi {
+                min = min.max(vlo + 4.0);
+                max = max.min(vhi - 4.0);
+            } else if uhi > lo + 0.5 && ulo < hi - 0.5 {
+                if vhi <= coord {
+                    min = min.max(vhi + 4.0);
+                } else if vlo >= coord {
+                    max = max.min(vlo - 4.0);
+                }
+            }
+        }
+        let n = lanes.len() as f32;
+        let room = (max - min).max(0.0);
+        let step = if room.is_finite() { LANE.min(room / (n - 1.0)) } else { LANE };
+        let half = step * (n - 1.0) / 2.0;
+        let centre = if min.is_finite() && max.is_finite() && max - min >= 2.0 * half {
+            coord.clamp(min + half, max - half)
+        } else if min.is_finite() && max.is_finite() {
+            (min + max) / 2.0
+        } else {
+            coord
+        };
+        for (k, first) in lanes.iter().enumerate() {
+            let at = centre - half + k as f32 * step;
+            let line = pieces[*first].path;
+            for i in members.iter().filter(|i| pieces[**i].path == line) {
+                moves.push((line, pieces[*i].at, upright, at));
+            }
+        }
+    }
+    for (line, at, upright, to) in moves {
+        let Some(p) = paths[line].as_mut() else { continue };
+        for q in [at, at + 1] {
+            if upright {
+                p[q].x = to;
+            } else {
+                p[q].y = to;
+            }
+        }
+    }
+}
+
+/// Lines out of one side of a box that has pinned systems hanging off it, laid out together: each
+/// leaves at its own port, in the top-to-bottom order of the boxes they go to, and those going the
+/// same way turn in nested order, so none crosses or runs along another. By link index.
+fn fanned_paths(boxes: &HashMap<i64, egui::Rect>, links: &[(i64, i64, bool)]) -> HashMap<usize, Vec<egui::Pos2>> {
+    use egui::pos2;
+    let mut out = HashMap::new();
+    let with_pills: HashSet<i64> = links.iter().filter(|l| !l.2).map(|l| l.0).collect();
+    for a in with_pills {
+        let Some(ra) = boxes.get(&a) else { continue };
+        for right in [true, false] {
+            // A hole stored from its far end still leaves this box; its path is turned round after.
+            let mut side: Vec<(usize, egui::Rect, bool)> = links
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| match (l.0 == a, l.1 == a) {
+                    (true, _) => Some((i, *boxes.get(&l.1)?, false)),
+                    (_, true) => Some((i, *boxes.get(&l.0)?, true)),
+                    _ => None,
+                })
+                .filter(|(_, rb, _)| if right { rb.left() - ra.right() >= 2.0 * STUB } else { ra.left() - rb.right() >= 2.0 * STUB })
+                .collect();
+            if side.len() < 2 {
+                continue;
+            }
+            side.sort_by(|x, y| x.1.center().y.total_cmp(&y.1.center().y));
+            let n = side.len();
+            let gap = ((ra.height() - 6.0) / (n - 1) as f32).min(10.0);
+            let port = |k: usize| ra.center().y + (k as f32 - (n - 1) as f32 / 2.0) * gap;
+            let (edge, dir) = if right { (ra.right(), 1.0) } else { (ra.left(), -1.0) };
+            let far = side.iter().map(|(_, rb, _)| if right { rb.left() } else { -rb.right() }).fold(f32::INFINITY, f32::min);
+            let room = (far * dir - STUB) - (edge + dir * STUB);
+            let step = if n > 1 { (room.abs() / (n - 1) as f32).min(8.0) } else { 0.0 };
+            // Going up, the topmost turns first; going down, the bottommost.
+            let (mut up, mut down): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+            for (k, (_, rb, _)) in side.iter().enumerate() {
+                if rb.center().y < port(k) - 0.5 {
+                    up.push(k);
+                } else if rb.center().y > port(k) + 0.5 {
+                    down.push(k);
+                }
+            }
+            down.reverse();
+            let mut turn: HashMap<usize, usize> = HashMap::new();
+            for (rank, k) in up.iter().enumerate() {
+                turn.insert(*k, rank);
+            }
+            for (rank, k) in down.iter().enumerate() {
+                turn.insert(*k, rank);
+            }
+            for (k, (i, rb, turned)) in side.iter().enumerate() {
+                let (pa, pb) = (port(k), rb.center().y);
+                let end = if right { rb.left() } else { rb.right() };
+                let path = match turn.get(&k) {
+                    None => vec![pos2(edge, pa), pos2(end, pa)],
+                    Some(rank) => {
+                        let x = edge + dir * (STUB + *rank as f32 * step);
+                        vec![pos2(edge, pa), pos2(x, pa), pos2(x, pb), pos2(end, pb)]
+                    }
+                };
+                let mut path = simplify(path);
+                if *turned {
+                    path.reverse();
+                }
+                out.insert(*i, path);
+            }
+        }
     }
     out
 }
@@ -850,38 +1071,6 @@ fn effect_color(effect: &str) -> egui::Color32 {
     }
 }
 
-/// How long a hole has left, as its line shows it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(PartialOrd, Ord)]
-enum TimeLeft {
-    Plenty,
-    /// Under 12 hours: for a hole read as "less than a day", as likely gone as not.
-    Under12h,
-    Under4h,
-    Under1h,
-    /// Past its time: it can close at any moment.
-    Expiring,
-}
-
-/// A scout's reading of the hole wins; otherwise its expiry says.
-fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
-    // The worse of the last reading and what the clock has done to it since.
-    let read = match w.life {
-        Some(Life::Expired) => TimeLeft::Expiring,
-        Some(Life::Under1h) => TimeLeft::Under1h,
-        Some(Life::Under4h) => TimeLeft::Under4h,
-        _ => TimeLeft::Plenty,
-    };
-    let clock = match w.expiry() - now {
-        s if s <= 0 => TimeLeft::Expiring,
-        s if s < 3600 => TimeLeft::Under1h,
-        s if s < 4 * 3600 => TimeLeft::Under4h,
-        s if s < 12 * 3600 => TimeLeft::Under12h,
-        _ => TimeLeft::Plenty,
-    };
-    read.max(clock)
-}
-
 /// What is left of a hole, short, in its warning colour: the reading while it holds, then the
 /// clock's worse figure. `None` when nothing is known and nothing is near.
 fn life_badge(w: &Wormhole, now: i64, visuals: &egui::Visuals) -> Option<(String, egui::Color32)> {
@@ -917,9 +1106,80 @@ fn stroke_hole(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::Strok
         }
         Some(Mass::Reduced) => painter.extend(egui::Shape::dashed_line(line, stroke, 12.0, 6.0)),
         Some(Mass::Critical) => {
-            painter.add(egui::Shape::line(zigzag(line, 5.0, 3.0), egui::Stroke::new(stroke.width * 0.8, stroke.color)));
+            painter.add(egui::Shape::line(zigzag(line, 7.0, 1.6), egui::Stroke::new(stroke.width * 0.85, stroke.color)));
         }
     }
+}
+
+/// A hole's switch for routes, lit while it is off. Returns whether it was clicked.
+pub(crate) fn wh_route_toggle(ui: &mut egui::Ui, off: bool) -> bool {
+    let text = if off { egui::RichText::new(icon::PROHIBIT).color(crate::theme::standing::HOSTILE) } else { egui::RichText::new(icon::PROHIBIT) };
+    ui.small_button(text)
+        .on_hover_text(if off { "Switched off for routes: click to let routes use it" } else { "Do not use this hole in routes" })
+        .clicked()
+}
+
+/// `c` with most of its colour taken out, for what routes may not use.
+pub(crate) fn desaturate(c: egui::Color32) -> egui::Color32 {
+    let grey = 0.3 * c.r() as f32 + 0.59 * c.g() as f32 + 0.11 * c.b() as f32;
+    let mix = |v: u8| (v as f32 * 0.15 + grey * 0.85 * 0.8).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(mix(c.r()), mix(c.g()), mix(c.b()), c.a())
+}
+
+pub(crate) fn desaturate_stroke(s: egui::Stroke) -> egui::Stroke {
+    egui::Stroke::new(s.width, desaturate(s.color))
+}
+
+/// Gap in a switched-off line, in screen pixels, that its slash stands in.
+const SLASH_GAP: f32 = 10.0;
+
+/// `line` cut with a gap for its slash, and the cut's centre and direction. The cut goes in the
+/// middle of the last leg, which a line fanning out of a shared trunk has to itself, or in the
+/// middle of the whole line when that leg is short. `None` for a line too short to cut.
+fn split_middle(line: &[egui::Pos2], gap: f32) -> Option<(Vec<egui::Pos2>, Vec<egui::Pos2>, egui::Pos2, egui::Vec2)> {
+    let total: f32 = line.windows(2).map(|s| (s[1] - s[0]).length()).sum();
+    if line.len() < 2 || total < gap * 3.0 {
+        return None;
+    }
+    let last = (line[line.len() - 1] - line[line.len() - 2]).length();
+    let half = if last >= gap * 3.0 { total - last / 2.0 } else { total / 2.0 };
+    let (cut_a, cut_b) = (half - gap / 2.0, half + gap / 2.0);
+    let (mut first, mut second) = (vec![line[0]], Vec::new());
+    let (mut mid, mut dir) = (line[0], egui::Vec2::X);
+    let mut walked = 0.0;
+    for s in line.windows(2) {
+        let len = (s[1] - s[0]).length();
+        let d = if len > 0.0 { (s[1] - s[0]) / len } else { egui::Vec2::X };
+        let at = |t: f32| s[0] + d * (t - walked);
+        if walked + len <= cut_a {
+            first.push(s[1]);
+        } else if walked < cut_a {
+            first.push(at(cut_a));
+        }
+        if walked <= half && half < walked + len {
+            (mid, dir) = (at(half), d);
+        }
+        if walked <= cut_b && cut_b < walked + len {
+            second.push(at(cut_b));
+            second.push(s[1]);
+        } else if walked > cut_b {
+            second.push(s[1]);
+        }
+        walked += len;
+    }
+    Some((first, second, mid, dir))
+}
+
+/// A switched-off line: drawn by `draw` as usual but broken at the middle, a slash across the break.
+pub(crate) fn slashed(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::Stroke, draw: impl Fn(&egui::Painter, &[egui::Pos2], egui::Stroke)) {
+    let Some((a, b, mid, dir)) = split_middle(line, SLASH_GAP) else {
+        draw(painter, line, stroke);
+        return;
+    };
+    draw(painter, &a, stroke);
+    draw(painter, &b, stroke);
+    let across = egui::vec2(-dir.y, dir.x) * 7.0 + dir * 4.0;
+    painter.line_segment([mid - across, mid + across], egui::Stroke::new(stroke.width.max(1.5), stroke.color));
 }
 
 /// Drawing order: solid first, so a broken line on a shared stretch is not hidden beneath one.
@@ -1016,15 +1276,7 @@ fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
 
 impl SpaiApp {
     fn wh_graph_visible(&self, now: i64) -> Vec<&Wormhole> {
-        let (fd, fs, fe) = (self.wh_filter_dest, self.wh_filter_source, self.wh_filter_expiring);
-        self.wh_cache
-            .iter()
-            .filter(|w| {
-                fd.is_none_or(|d| self.wh_touches(w, d))
-                    && fs.is_none_or(|s| w.source == s)
-                    && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
-            })
-            .collect()
+        self.wh_cache.iter().filter(|w| self.wh_shown(w, now)).collect()
     }
 
     /// Whether a hole joins a kind of space at either end: it goes both ways, so a hole found
@@ -1384,9 +1636,13 @@ impl SpaiApp {
         let chip_gap = if detail { 3.0 } else { 2.0 };
         // What must be seen at any zoom sits in chips on the box's right: shattered, our
         // characters, holes not drawn, far sides unknown.
+        let off_systems: HashSet<i64> = self.settings.wh_disabled_systems.iter().copied().collect();
         let chips_of = |id: i64| -> Vec<(String, egui::Color32)> {
             let mut chips = Vec::new();
             let Some(info) = geo.info_of(id) else { return chips };
+            if off_systems.contains(&id) {
+                chips.push((icon::PROHIBIT.to_owned(), visuals.weak_text_color()));
+            }
             if matches!(whdata::class_of(id, info.security, &info.region), Class::Drifter(_)) {
                 chips.push((icon::SKULL.to_owned(), drifter_color()));
             } else if whdata::jsystem(id).is_some_and(|j| j.shattered()) {
@@ -1420,10 +1676,8 @@ impl SpaiApp {
                 break_anywhere: true,
                 overflow_character: Some('\u{2026}'),
             };
-            if !tiny {
-                job.append(&system_tag(c, info.security), 0.0, egui::TextFormat::simple(font.clone(), class_color(c, info.security)));
-            }
-            let lead = if tiny { 0.0 } else { 6.0 };
+            job.append(&system_tag(c, info.security), 0.0, egui::TextFormat::simple(name_font.clone(), class_color(c, info.security)));
+            let lead = if tiny { 4.0 } else { 6.0 };
             job.append(&display_name(id, &info.name), lead, egui::TextFormat::simple(name_font.clone(), visuals.strong_text_color()));
             Some(painter.layout_job(job))
         };
@@ -1471,6 +1725,7 @@ impl SpaiApp {
         // Every line first, so no line is ever drawn over a label. Solid ones go down first and
         // each line on a thin band of the background: where lines share a stretch, a dashed one on
         // top keeps its gaps instead of a solid one beneath showing through them.
+        let blocked: HashSet<i64> = holes.iter().filter(|w| self.wh_blocked(w, now)).map(|w| w.id).collect();
         let mut order: Vec<usize> = (0..holes.len()).collect();
         order.sort_by_key(|&i| mass_rank(holes[i].mass));
         for wi in order {
@@ -1485,7 +1740,12 @@ impl SpaiApp {
             if mass_rank(w.mass) > 0 {
                 painter.add(egui::Shape::line(line.clone(), egui::Stroke::new(width + 3.0, visuals.panel_fill)));
             }
-            stroke_hole(&painter, &line, egui::Stroke::new(width, time_color(time_left(w, now))), w.mass);
+            let stroke = egui::Stroke::new(width, time_color(time_left(w, now)));
+            if blocked.contains(&w.id) {
+                slashed(&painter, &line, desaturate_stroke(stroke), |p, l, s| stroke_hole(p, l, s, w.mass));
+            } else {
+                stroke_hole(&painter, &line, stroke, w.mass);
+            }
             if hot {
                 hovered_edge = Some(w);
             }
@@ -1620,6 +1880,7 @@ impl SpaiApp {
                     pin = Some(info.name.clone());
                     ui.close();
                 }
+                self.wh_disable_menu(ui, id);
             });
 
             let jsys = whdata::jsystem(id);
@@ -1691,6 +1952,9 @@ impl SpaiApp {
                 if let Some(n) = hidden.get(&id) {
                     tip.push_str(&format!("\n{n} more hole{} to k-space leading nowhere pinned: double-click to see them", if *n == 1 { "" } else { "s" }));
                 }
+                if off_systems.contains(&id) {
+                    tip.push_str("\nIts holes are switched off for routes");
+                }
                 tip.push_str("\nClick to select, double-click to focus, drag to move");
                 resp.on_hover_text(tip);
             }
@@ -1738,6 +2002,11 @@ impl SpaiApp {
             tip.push_str(&format!("\nSource: {}", w.source.label()));
             if let Some(name) = self.wh_group_of.get(&w.uid).and_then(|g| self.share_group_name(g)) {
                 tip.push_str(&format!("\nShared in {name}"));
+            }
+            if self.wh_disabled(w) {
+                tip.push_str("\nSwitched off for routes");
+            } else if blocked.contains(&w.id) {
+                tip.push_str("\nOff routes: the filter hides it");
             }
             line_tip(ui, pointer, tip);
         }
@@ -1843,7 +2112,16 @@ impl SpaiApp {
         // signatures, whether the map draws it or not.
         let mut chars: Vec<(String, i64)> = self.player.lock().unwrap().locations.iter().map(|(n, (s, _))| (n.clone(), *s)).collect();
         chars.sort();
+        let disabled = self.wh_disabled_count();
+        let mut clear = false;
         egui::Panel::left("wh_graph_list").resizable(true).default_size(150.0).show_inside(ui, |ui| {
+            if disabled > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{} {disabled} off for routes", icon::PROHIBIT)).weak());
+                    clear = ui.button("Allow all").on_hover_text("Let routes use every hole and system switched off").clicked();
+                });
+                ui.separator();
+            }
             if !chars.is_empty() {
                 ui.label(egui::RichText::new("Characters").weak());
                 egui::Grid::new("wh_graph_chars_grid").spacing([6.0, 2.0]).show(ui, |ui| {
@@ -1897,6 +2175,9 @@ impl SpaiApp {
         if let Some(id) = open_sys {
             self.wh_graph.selected = Some(id);
         }
+        if clear {
+            self.clear_wh_disabled();
+        }
     }
 
     fn toggle_wh_pin(&mut self, name: &str) {
@@ -1928,6 +2209,7 @@ impl SpaiApp {
         let mut paste: Option<Option<String>> = None;
         let mut drop_sig: Option<String> = None;
         let mut new_hole: Option<String> = None;
+        let mut toggle: Option<String> = None;
         egui::Panel::right("wh_graph_side").resizable(true).default_size(260.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2014,6 +2296,9 @@ impl SpaiApp {
                             if ui.small_button(icon::X).on_hover_text("Mark this hole dead").clicked() {
                                 kill = Some(w.id);
                             }
+                            if wh_route_toggle(ui, self.settings.wh_disabled_holes.contains(&w.uid)) {
+                                toggle = Some(w.uid.clone());
+                            }
                         });
                         ui.end_row();
                     }
@@ -2087,11 +2372,10 @@ impl SpaiApp {
                     ui.add_space(4.0);
                 }
                 ui.horizontal(|ui| {
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.wh_graph.pin_query).hint_text("Add a system").desired_width(160.0),
-                    );
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let add = enter || ui.button(icon::PLUS).on_hover_text("Measure routes to this system").clicked();
+                    let mut q = std::mem::take(&mut self.wh_graph.pin_query);
+                    let picked = self.system_input(ui, "wh_route_pin", &mut q, "Add a system", 160.0);
+                    self.wh_graph.pin_query = q;
+                    let add = picked.is_some() || ui.button(icon::PLUS).on_hover_text("Measure routes to this system").clicked();
                     if let Some(i) = geo.lookup(self.wh_graph.pin_query.trim()).filter(|_| add) {
                         if !self.settings.wh_route_pins.iter().any(|n| n.eq_ignore_ascii_case(&i.name)) {
                             self.settings.wh_route_pins.push(i.name.clone());
@@ -2217,6 +2501,9 @@ impl SpaiApp {
         }
         if let Some(id) = edit {
             self.wh_edit(id);
+        }
+        if let Some(uid) = toggle {
+            self.toggle_wh_hole(&uid);
         }
     }
 
@@ -2391,6 +2678,7 @@ impl SpaiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wormholes::Life;
 
     #[test]
     fn a_chain_grows_rightwards_from_the_highest_score() {
@@ -2447,7 +2735,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_run_at_right_angles_and_fan_out_on_one_trunk() {
+    fn routes_run_at_right_angles_and_fan_out_side_by_side() {
         let parent = egui::Rect::from_min_size(egui::pos2(0.0, 100.0), NODE);
         let up = egui::Rect::from_min_size(egui::pos2(COL, 0.0), NODE);
         let down = egui::Rect::from_min_size(egui::pos2(COL, 200.0), NODE);
@@ -2455,7 +2743,32 @@ mod tests {
         let r = route_all(&boxes, &[(1, 2, true), (1, 3, true)], &HashMap::new());
         for p in r.iter().flatten() {
             assert!(p.windows(2).all(|s| (s[0].x - s[1].x).abs() < 0.5 || (s[0].y - s[1].y).abs() < 0.5), "{p:?}");
-            assert_eq!(p[0], egui::pos2(NODE.x, 100.0 + NODE.y / 2.0), "out of the parent's side");
+            assert_eq!(p[0].x, NODE.x, "out of the parent's side");
+        }
+        let (a, b) = (r[0].clone().unwrap(), r[1].clone().unwrap());
+        let mid = 100.0 + NODE.y / 2.0;
+        assert_eq!((a[0].y, b[0].y), (mid - LANE / 2.0, mid + LANE / 2.0), "a lane each, the one going up on top");
+        let shared: f32 = a.windows(2).flat_map(|s| b.windows(2).map(move |t| overlap(s[0], s[1], t[0], t[1]))).sum();
+        assert!(shared < 1.0, "{a:?} {b:?}");
+        assert!(!a.windows(2).any(|s| b.windows(2).any(|t| crosses(s[0], s[1], t[0], t[1]))), "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn many_holes_out_of_one_system_keep_apart_and_never_cross() {
+        let parent = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), NODE);
+        let mut boxes = HashMap::from([(0, parent)]);
+        let mut links = Vec::new();
+        for k in 1..=6i64 {
+            boxes.insert(k, egui::Rect::from_min_size(egui::pos2(COL, (k - 1) as f32 * 120.0), NODE));
+            links.push((0, k, true));
+        }
+        let r: Vec<Vec<egui::Pos2>> = route_all(&boxes, &links, &HashMap::new()).into_iter().map(Option::unwrap).collect();
+        for (i, a) in r.iter().enumerate() {
+            for b in &r[i + 1..] {
+                let shared: f32 = a.windows(2).flat_map(|s| b.windows(2).map(move |t| overlap(s[0], s[1], t[0], t[1]))).sum();
+                assert!(shared < 1.0, "{a:?} {b:?}");
+                assert!(!a.windows(2).any(|s| b.windows(2).any(|t| crosses(s[0], s[1], t[0], t[1]))), "{a:?} {b:?}");
+            }
         }
     }
 
@@ -2756,6 +3069,18 @@ mod tests {
     }
 
     #[test]
+    fn a_switched_off_line_breaks_on_its_own_last_leg() {
+        let line = [egui::pos2(0.0, 0.0), egui::pos2(40.0, 0.0), egui::pos2(40.0, 60.0)];
+        let (a, b, mid, dir) = split_middle(&line, 10.0).unwrap();
+        assert_eq!(a, vec![egui::pos2(0.0, 0.0), egui::pos2(40.0, 0.0), egui::pos2(40.0, 25.0)]);
+        assert_eq!(b, vec![egui::pos2(40.0, 35.0), egui::pos2(40.0, 60.0)]);
+        assert_eq!((mid, dir), (egui::pos2(40.0, 30.0), egui::Vec2::Y));
+        let short_end = [egui::pos2(0.0, 0.0), egui::pos2(60.0, 0.0), egui::pos2(60.0, 10.0)];
+        assert_eq!(split_middle(&short_end, 10.0).unwrap().2, egui::pos2(35.0, 0.0), "the middle of the whole line");
+        assert!(split_middle(&[egui::pos2(0.0, 0.0), egui::pos2(20.0, 0.0)], 10.0).is_none());
+    }
+
+    #[test]
     fn a_zigzag_keeps_its_ends_and_swings_to_both_sides() {
         let line = [egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0)];
         let z = zigzag(&line, 5.0, 3.0);
@@ -2789,6 +3114,7 @@ fn legend(ui: &mut egui::Ui) {
     enum Line {
         Solid(C),
         Mass(Option<Mass>),
+        Off(C),
     }
     // A wrapping row decides where to break before it knows how wide a grouped item is, so each
     // item measures itself first and starts a new row when it would not fit.
@@ -2810,6 +3136,7 @@ fn legend(ui: &mut egui::Ui) {
                     p.line_segment([a, b], egui::Stroke::new(2.5, c));
                 }
                 Line::Mass(m) => stroke_hole(&p, &[a, b], egui::Stroke::new(2.5, v.weak_text_color()), m),
+                Line::Off(c) => slashed(&p, &[a, b], desaturate_stroke(egui::Stroke::new(2.5, c)), |p, l, s| stroke_hole(p, l, s, None)),
             }
             ui.label(text);
         });
@@ -2861,6 +3188,7 @@ fn legend(ui: &mut egui::Ui) {
             line(ui, Line::Mass(Some(Mass::Critical)), "under 10%");
         });
         ui.horizontal_wrapped(|ui| {
+            line(ui, Line::Off(time_color(TimeLeft::Plenty)), "off for routes (right-click a system)");
             chip(ui, "ABC", None, "signature, on its own system's side");
         });
         // The chips on a box, drawn as the map draws them.
@@ -2880,6 +3208,7 @@ fn legend(ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             mark(ui, "+8", v.text_color(), "holes to k-space leading to nothing pinned, not drawn");
             mark(ui, icon::DIAMONDS_FOUR, SHATTERED_COLOR, "shattered");
+            mark(ui, icon::PROHIBIT, v.weak_text_color(), "every hole here off for routes");
         });
         ui.add_space(4.0);
         heading(ui, "Systems");

@@ -40,6 +40,16 @@ pub(crate) fn systems_wh_busy() -> Arc<Systems> {
     Arc::new(build_systems_with(&extra))
 }
 
+/// [`systems_wh_busy`] with FAKE-1 to FAKE-3 and 1DQ1-A strung together by bridges, so pinned
+/// systems sit one to four jumps from a hole's exit in FAKE-1.
+pub(crate) fn systems_wh_pins() -> Arc<Systems> {
+    let mut extra: Vec<(i64, String, f64, String)> = (1..=130).map(|n| (31_000_100 + n, format!("J1{n:05}"), -1.0, "C-R00012".to_owned())).collect();
+    extra.extend((1..=3).map(|n| (30_009_000 + n, format!("FAKE-{n}"), -0.4, "Delve".to_owned())));
+    let mut s = build_systems_with(&extra);
+    s.add_bridges(&[(30_009_001, 30_009_002), (30_009_002, 30_009_003), (30_009_003, 30_004_759)]);
+    Arc::new(s)
+}
+
 fn build_systems() -> Systems {
     build_systems_with(&[])
 }

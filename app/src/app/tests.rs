@@ -95,7 +95,7 @@ mod wh_overlay_tests {
             conn(31_000_001, 30_000_002),
             conn(30_000_001, 30_000_003),
         ];
-        let o = WhOverlay::build(&whs);
+        let o = WhOverlay::build(&whs, |_| true);
         assert!(o.direct.contains(&(30_000_001, 30_000_003)), "direct: {:?}", o.direct);
         assert!(
             o.chains.iter().any(|&(a, b, h)| (a, b) == (30_000_001, 30_000_002) && h == 1),
@@ -104,6 +104,23 @@ mod wh_overlay_tests {
         );
         assert!(o.jspace_holes.contains(&30_000_001));
         assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
+    }
+
+    #[test]
+    fn switched_off_holes_mark_what_they_carried() {
+        let whs = vec![
+            conn(30_000_001, 31_000_001),
+            conn(31_000_001, 30_000_002),
+            conn(30_000_001, 30_000_003),
+        ];
+        let o = WhOverlay::build(&whs, |w| w.system_id != 31_000_001 && w.dest_system_id != Some(30_000_003));
+        assert!(o.blocked.contains(&(30_000_001, 30_000_003)));
+        assert!(o.blocked.contains(&(30_000_001, 30_000_002)), "the chain lost its second hole");
+        assert!(!o.jspace_blocked.contains(&30_000_001), "30_000_001 still has its hole into J-space");
+        assert!(o.jspace_blocked.contains(&30_000_002), "30_000_002 lost its only one");
+        let o = WhOverlay::build(&whs, |w| w.dest_system_id != Some(31_000_001));
+        assert!(o.jspace_blocked.contains(&30_000_001));
+        assert!(!o.blocked.contains(&(30_000_001, 30_000_003)));
     }
 }
 
@@ -2859,5 +2876,71 @@ mod parse_bridges_tests {
     fn the_bundled_data_parses() {
         assert_eq!(super::BAKED_BRIDGES.lines().filter(|l| l.contains("::")).count(), 54);
         assert!(super::BAKED_UPGRADES.lines().all(|l| l.contains(" <- ")));
+    }
+}
+
+#[cfg(test)]
+mod wh_routing_tests {
+    use super::*;
+    use crate::wormholes::{HoleKind, Life, Mass, ShipSize, Wormhole};
+
+    const THERA: i64 = 31_000_005;
+
+    fn hole(uid: &str, a: i64, b: i64) -> Wormhole {
+        let now = chrono::Utc::now().timestamp();
+        Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: now, explicit_expiry: Some(now + 20 * 3600), ..Default::default() }
+    }
+
+    fn app() -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.systems = Some(crate::uitest::fixtures::systems());
+        a.settings.wh_route_kinds = HoleKind::ALL.iter().map(|k| k.code().to_owned()).collect();
+        let now = chrono::Utc::now().timestamp();
+        a.wh_cache = vec![
+            Wormhole { life: Some(Life::Under1h), explicit_expiry: Some(now + 1800), ..hole("a", 30_004_759, THERA) },
+            Wormhole { mass: Some(Mass::Critical), ..hole("b", 30_003_704, 31_000_002) },
+            Wormhole { size: Some(ShipSize::Frigate), ..hole("c", 30_000_142, THERA) },
+        ];
+        (ctx, a)
+    }
+
+    fn reached(a: &SpaiApp) -> Vec<i64> {
+        let mut v: Vec<i64> = a.wh_adjacency().keys().copied().filter(|id| *id < 31_000_000).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn switched_off_holes_and_systems_stay_off_routes() {
+        let (_ctx, mut a) = app();
+        assert_eq!(reached(&a), vec![30_000_142, 30_003_704, 30_004_759]);
+        a.settings.wh_disabled_holes = vec!["a".into()];
+        assert_eq!(reached(&a), vec![30_000_142, 30_003_704]);
+        a.settings.wh_disabled_holes.clear();
+        a.settings.wh_disabled_systems = vec![THERA];
+        assert_eq!(reached(&a), vec![30_003_704], "every hole into Thera is off");
+    }
+
+    #[test]
+    fn route_limits_leave_out_short_lived_light_and_small_holes() {
+        let (_ctx, mut a) = app();
+        a.settings.wh_route_min_time = crate::wormholes::TimeLeft::Under4h.code().into();
+        assert_eq!(reached(&a), vec![30_000_142, 30_003_704]);
+        a.settings.wh_route_min_time.clear();
+        a.settings.wh_route_min_mass = Mass::Reduced.code().into();
+        assert_eq!(reached(&a), vec![30_000_142, 30_004_759]);
+        a.settings.wh_route_min_mass.clear();
+        a.settings.wh_route_min_size = ShipSize::Large.code().into();
+        assert_eq!(reached(&a), vec![30_003_704, 30_004_759], "a size not read passes");
+    }
+
+    #[test]
+    fn routes_can_follow_the_filter() {
+        let (_ctx, mut a) = app();
+        a.settings.wh_filter.mass = vec![Mass::Critical.code().into()];
+        assert_eq!(reached(&a).len(), 3, "the filter alone only changes what is shown");
+        a.settings.wh_route_filtered = true;
+        assert_eq!(reached(&a), vec![30_003_704]);
     }
 }

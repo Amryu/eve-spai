@@ -5,7 +5,7 @@
 use super::wh_graph::node_size;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub(crate) const COL: f32 = 330.0;
+pub(crate) const COL: f32 = 360.0;
 const GAP: f32 = 10.0;
 pub(crate) const CHAIN_GAP: f32 = 40.0;
 
@@ -128,16 +128,40 @@ fn chain(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, score: &impl Fn(i64) -> i64
     .unwrap_or_else(|| (tidy(root, &children).0.into_iter().collect(), depth));
     let lo = across.values().copied().fold(f32::INFINITY, f32::min);
     let (level, _) = opts.steps();
+    let column_x = column_offsets(comp, adj, &depth, level.x);
     let at = |n: i64| {
         let b = across[&n] - lo;
-        let d = depth[&n] as f32;
-        egui::pos2(d * level.x, b)
+        egui::pos2(column_x[depth[&n]], b)
     };
     let nodes: Vec<(i64, Option<i64>, egui::Pos2)> = order.iter().map(|&n| (n, parent[&n], at(n))).collect();
     let size = nodes
         .iter()
         .fold(egui::Vec2::ZERO, |s, (n, _, p)| s.max(p.to_vec2() + node_size(*n)));
     Chain { nodes, size }
+}
+
+/// Where each level's column starts. A gap is widened where one box has more lines to the next
+/// level, or from the one before, than fit side by side in it.
+fn column_offsets(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, depth: &HashMap<i64, usize>, pitch: f32) -> Vec<f32> {
+    use super::wh_graph::{LANE, NODE, STUB};
+    let deepest = comp.iter().filter_map(|n| depth.get(n)).copied().max().unwrap_or(0);
+    let mut lines = vec![0usize; deepest + 1];
+    for n in comp {
+        let Some(&d) = depth.get(n) else { continue };
+        let next = adj[n].iter().filter(|m| depth.get(*m) == Some(&(d + 1))).count();
+        let prev = adj[n].iter().filter(|m| d > 0 && depth.get(*m) == Some(&(d - 1))).count();
+        lines[d] = lines[d].max(next);
+        if d > 0 {
+            lines[d - 1] = lines[d - 1].max(prev);
+        }
+    }
+    let base = pitch - NODE.x;
+    let mut x = vec![0.0; deepest + 1];
+    for d in 1..=deepest {
+        let need = 2.0 * STUB + lines[d - 1].saturating_sub(1) as f32 * LANE;
+        x[d] = x[d - 1] + pitch + (need - base).max(0.0);
+    }
+    x
 }
 
 /// The tidy tree under `n`: each box's near edge along the breadth, and the subtree's outline as
@@ -312,6 +336,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_gap_widens_for_the_lines_it_carries() {
+        let few: Vec<(i64, i64)> = (1..=3).map(|k| (0, k)).collect();
+        let many: Vec<(i64, i64)> = (1..=12).map(|k| (0, k)).chain([(1, 100)]).collect();
+        let x = |edges: &[(i64, i64)], n: i64| at(&layout(edges, &[], |id| if id == 0 { 1 } else { 0 }, Opts::default()))[&n].min.x;
+        assert_eq!(x(&few, 1) - x(&few, 0), COL);
+        let wide = x(&many, 1) - x(&many, 0);
+        assert!(wide > COL, "{wide}");
+        assert_eq!(x(&many, 100) - x(&many, 1), COL, "the next gap carries one line");
     }
 
     #[test]

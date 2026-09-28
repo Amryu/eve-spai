@@ -91,8 +91,12 @@ impl SpaiApp {
             // Saved before these were refused, or by an older version.
             whs.retain(|w| !w.is_expired(now) && crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_none());
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-            self.wh_overlay = WhOverlay::build(&whs);
+            // A hole switched off that has since closed is forgotten with it.
+            let before = self.settings.wh_disabled_holes.len();
+            self.settings.wh_disabled_holes.retain(|u| whs.iter().any(|w| &w.uid == u));
+            self.needs_save |= self.settings.wh_disabled_holes.len() != before;
             self.wh_cache = whs;
+            self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
             self.wh_group_of = store.wormhole_groups();
         }
     }
@@ -102,11 +106,14 @@ impl SpaiApp {
     /// The holes routes may use: known far side, and a kind the routing settings allow.
     pub(crate) fn wh_adjacency(&self) -> std::collections::HashMap<i64, Vec<i64>> {
         let mut adj: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+        let now = chrono::Utc::now().timestamp();
+        let limits = self.wh_route_limits();
         let allowed = |w: &crate::wormholes::Wormhole, b: i64| {
-            self.systems.as_ref().is_none_or(|g| {
+            let kind_ok = self.systems.as_ref().is_none_or(|g| {
                 let kind = crate::wormholes::HoleKind::of(g, w.system_id, b, w.is_drifter);
                 self.settings.wh_route_kinds.iter().any(|k| k == kind.code())
-            })
+            });
+            kind_ok && limits.allows(w, now) && !self.wh_blocked(w, now)
         };
         for w in &self.wh_cache {
             if let Some(b) = w.dest_system_id.filter(|b| allowed(w, *b)) {
@@ -115,6 +122,121 @@ impl SpaiApp {
             }
         }
         adj
+    }
+
+    pub(crate) fn wh_route_limits(&self) -> crate::wormholes::RouteLimits {
+        use crate::wormholes::{Mass, ShipSize, TimeLeft};
+        crate::wormholes::RouteLimits {
+            min_mass: Mass::from_code(&self.settings.wh_route_min_mass),
+            time_below: TimeLeft::ALL.into_iter().find(|t| t.code() == self.settings.wh_route_min_time),
+            min_size: ShipSize::from_code(&self.settings.wh_route_min_size),
+        }
+    }
+
+    /// Whether the wormhole tab's filter lets the hole through.
+    pub(crate) fn wh_shown(&self, w: &crate::wormholes::Wormhole, now: i64) -> bool {
+        self.settings.wh_filter.matches(w, now, |d| self.wh_touches(w, d))
+    }
+
+    /// Switched off for routes by hand, on its own or through a system at either end.
+    pub(crate) fn wh_disabled(&self, w: &crate::wormholes::Wormhole) -> bool {
+        self.settings.wh_disabled_holes.contains(&w.uid) || self.wh_system_disabled(w.system_id) || w.dest_system_id.is_some_and(|b| self.wh_system_disabled(b))
+    }
+
+    pub(crate) fn wh_system_disabled(&self, id: i64) -> bool {
+        self.settings.wh_disabled_systems.contains(&id)
+    }
+
+    /// Kept off routes by the user: switched off, or hidden by the filter while routes follow it.
+    /// The route limits are not counted, they belong to the route being planned.
+    pub(crate) fn wh_blocked(&self, w: &crate::wormholes::Wormhole, now: i64) -> bool {
+        self.wh_disabled(w) || (self.settings.wh_route_filtered && !self.wh_shown(w, now))
+    }
+
+    pub(crate) fn toggle_wh_hole(&mut self, uid: &str) {
+        let list = &mut self.settings.wh_disabled_holes;
+        match list.iter().position(|u| u == uid) {
+            Some(i) => {
+                list.remove(i);
+            }
+            None => list.push(uid.to_owned()),
+        }
+        self.wh_routing_changed();
+    }
+
+    pub(crate) fn toggle_wh_system(&mut self, id: i64) {
+        let list = &mut self.settings.wh_disabled_systems;
+        match list.iter().position(|s| *s == id) {
+            Some(i) => {
+                list.remove(i);
+            }
+            None => list.push(id),
+        }
+        self.wh_routing_changed();
+    }
+
+    /// A system's holes as right-click menu entries, each to switch on or off for routes, and the
+    /// whole system at once. Shows nothing for a system without a known hole.
+    pub(crate) fn wh_disable_menu(&mut self, ui: &mut egui::Ui, sid: i64) {
+        const LISTED: usize = 8;
+        let holes: Vec<(String, String)> = self
+            .wh_cache
+            .iter()
+            .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
+            .map(|w| {
+                let (sig, far) = if w.system_id == sid { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
+                let far = far.and_then(|f| self.systems.as_ref()?.info_of(f)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
+                let sig = sig.as_deref().map(|s| format!("{} ", s.chars().take(3).collect::<String>())).unwrap_or_default();
+                (w.uid.clone(), format!("{sig}to {far}"))
+            })
+            .collect();
+        let hub = sid == 31_000_005 || self.wh_system_disabled(sid);
+        if holes.is_empty() && !hub {
+            return;
+        }
+        let name = self.systems.as_ref().and_then(|g| g.info_of(sid)).map_or_else(|| format!("#{sid}"), |i| i.name.clone());
+        ui.separator();
+        ui.label(egui::RichText::new("Wormholes routes may use").weak());
+        let mut all = !self.wh_system_disabled(sid);
+        if ui
+            .checkbox(&mut all, format!("Any hole in {name}"))
+            .on_hover_text("Off keeps every hole here off routes, those found later too")
+            .changed()
+        {
+            self.toggle_wh_system(sid);
+        }
+        ui.add_enabled_ui(all, |ui| {
+            for (uid, label) in holes.iter().take(LISTED) {
+                let mut on = !self.settings.wh_disabled_holes.contains(uid);
+                if ui.checkbox(&mut on, label).on_hover_text("Both sides of this hole").changed() {
+                    self.toggle_wh_hole(uid);
+                }
+            }
+        });
+        if holes.len() > LISTED {
+            ui.label(egui::RichText::new(format!("{} more in the wormhole tab", holes.len() - LISTED)).weak());
+        }
+    }
+
+    pub(crate) fn clear_wh_disabled(&mut self) {
+        self.settings.wh_disabled_holes.clear();
+        self.settings.wh_disabled_systems.clear();
+        self.wh_routing_changed();
+    }
+
+    /// Holes and systems switched off that are still on the map.
+    pub(crate) fn wh_disabled_count(&self) -> usize {
+        self.wh_cache.iter().filter(|w| self.settings.wh_disabled_holes.contains(&w.uid)).count() + self.settings.wh_disabled_systems.len()
+    }
+
+    /// Which holes routes may use changed: the plan in hand may go through one no longer allowed.
+    pub(crate) fn wh_routing_changed(&mut self) {
+        self.needs_save = true;
+        self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, chrono::Utc::now().timestamp()));
+        self.replan_routes();
+        if !self.map_route_anchors.is_empty() {
+            self.map_replan_route();
+        }
     }
 
     /// Toggles for the kinds of hole routes may use. Returns whether any changed.
@@ -135,6 +257,59 @@ impl SpaiApp {
                 }
             }
         });
+        changed
+    }
+
+    /// The kinds of hole routes may use and what each hole must still have. Returns whether any
+    /// changed.
+    pub(crate) fn wh_route_options_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::app::SteadySelect as _;
+        use crate::wormholes::{Mass, ShipSize, TimeLeft};
+        let mut changed = self.wh_route_kinds_ui(ui);
+        let mut row = |ui: &mut egui::Ui, title: &str, value: &mut String, items: &[(&str, &str, &str)]| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(title).weak());
+                for (code, label, hint) in items {
+                    if ui.menu_label(value == code, *label).on_hover_text(*hint).clicked() && value != code {
+                        *value = (*code).to_owned();
+                        changed = true;
+                    }
+                }
+            });
+        };
+        row(
+            ui,
+            "Mass:",
+            &mut self.settings.wh_route_min_mass,
+            &[
+                ("", "Any", "Any mass left"),
+                (Mass::Reduced.code(), "Not critical", "Skip holes with under 10% mass left. Holes with their mass not read pass."),
+                (Mass::Fresh.code(), "Over 50%", "Only holes with over half their mass left. Holes with their mass not read pass."),
+            ],
+        );
+        row(
+            ui,
+            "Time:",
+            &mut self.settings.wh_route_min_time,
+            &[
+                ("", "Any", "Any time left, even holes that could close any moment"),
+                (TimeLeft::Expiring.code(), "Not expired", "Skip holes past their time"),
+                (TimeLeft::Under1h.code(), "1h+", "Skip holes with under an hour left"),
+                (TimeLeft::Under4h.code(), "4h+", "Skip holes with under 4 hours left"),
+                (TimeLeft::Under12h.code(), "12h+", "Skip holes with under 12 hours left"),
+            ],
+        );
+        row(
+            ui,
+            "Size:",
+            &mut self.settings.wh_route_min_size,
+            &[
+                ("", "Any", "Any hole size"),
+                (ShipSize::Medium.code(), "Medium+", "Holes a cruiser fits through. Holes of unknown size and type pass."),
+                (ShipSize::Large.code(), "Large+", "Holes a battleship fits through. Holes of unknown size and type pass."),
+                (ShipSize::XLarge.code(), "XL", "Holes a capital fits through. Holes of unknown size and type pass."),
+            ],
+        );
         changed
     }
 
@@ -265,7 +440,6 @@ impl SpaiApp {
         let missing = (self.settings.wh_detect && !missing.is_empty()).then(|| missing.join(", "));
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            use crate::wormholes::{DestClass, Source};
             ui.heading(format!("{}  Wormholes", icon::SPIRAL));
             ui.label(egui::RichText::new(format!("{} known", self.wh_cache.len())).weak());
             ui.add_space(8.0);
@@ -280,41 +454,33 @@ impl SpaiApp {
                 self.wh_form = Some(WhForm::fresh());
             }
             ui.add_space(8.0);
-            // A combo box does not wrap on its own.
-            if ui.max_rect().right() - ui.cursor().min.x < 130.0 + 8.0 {
-                ui.end_row();
-            }
-            egui::ComboBox::from_id_salt("wh_dest_filter")
-                .width(130.0)
-                .selected_text(format!("Dest: {}", self.wh_filter_dest.map_or("Any", |d| d.label())))
-                .show_ui(ui, |ui| {
-                    ui.menu_value(&mut self.wh_filter_dest, None, "Any");
-                    for d in [
-                        DestClass::Highsec,
-                        DestClass::Lowsec,
-                        DestClass::Nullsec,
-                        DestClass::Wspace,
-                        DestClass::Thera,
-                        DestClass::Turnur,
-                        DestClass::Unknown,
-                    ] {
-                        ui.menu_value(&mut self.wh_filter_dest, Some(d), d.label());
-                    }
+            let active = self.settings.wh_filter.active();
+            let label = if active == 0 { format!("{}  Filter", icon::FUNNEL) } else { format!("{}  Filter ({active})", icon::FUNNEL) };
+            let filter_btn = ui.button(label).on_hover_text("Which holes the map and the table show");
+            let mut filter_changed = false;
+            egui::Popup::from_toggle_button_response(&filter_btn)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    filter_changed |= wh_filter_ui(ui, &mut self.settings.wh_filter);
                 });
-            // A combo box does not wrap on its own.
-            if ui.max_rect().right() - ui.cursor().min.x < 150.0 + 8.0 {
-                ui.end_row();
+            if ui
+                .add_enabled(active > 0, egui::Button::new(icon::FUNNEL_X))
+                .on_hover_text("Clear the filter")
+                .on_disabled_hover_text("No filter set")
+                .clicked()
+            {
+                self.settings.wh_filter = Default::default();
+                filter_changed = true;
             }
-            egui::ComboBox::from_id_salt("wh_src_filter")
-                .width(150.0)
-                .selected_text(format!("Source: {}", self.wh_filter_source.map_or("Any", |s| s.label())))
-                .show_ui(ui, |ui| {
-                    ui.menu_value(&mut self.wh_filter_source, None, "Any");
-                    for s in Source::ALL {
-                        ui.menu_value(&mut self.wh_filter_source, Some(s), s.label());
-                    }
-                });
-            ui.checkbox(&mut self.wh_filter_expiring, "Expiring <4h");
+            let routes_changed = ui
+                .checkbox(&mut self.settings.wh_route_filtered, "Only filtered WH for routes")
+                .on_hover_text("Routes use only the holes the filter shows. The holes switched off by hand stay off either way.")
+                .changed();
+            if routes_changed || (filter_changed && self.settings.wh_route_filtered) {
+                self.wh_routing_changed();
+            } else if filter_changed {
+                self.needs_save = true;
+            }
             ui.add_space(8.0);
             let look = ui.add(
                 egui::TextEdit::singleline(&mut self.wh_info_query).hint_text("System facts: J-name or system").desired_width(200.0),
@@ -407,17 +573,14 @@ impl SpaiApp {
             size: String,
             life: String,
             source: String,
+            uid: String,
+            off: bool,
         }
         let info_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).cloned();
-        let (fd, fs, fe) = (self.wh_filter_dest, self.wh_filter_source, self.wh_filter_expiring);
         let rows: Vec<Row> = self
             .wh_cache
             .iter()
-            .filter(|w| {
-                fd.map_or(true, |d| self.wh_touches(w, d))
-                    && fs.map_or(true, |s| w.source == s)
-                    && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
-            })
+            .filter(|w| self.wh_shown(w, now))
             .map(|w| {
                 let mut sys = info_of(w.system_id)
                     .map(|i| i.name)
@@ -475,6 +638,8 @@ impl SpaiApp {
                     },
                     life,
                     source,
+                    uid: w.uid.clone(),
+                    off: self.settings.wh_disabled_holes.contains(&w.uid),
                 }
             })
             .collect();
@@ -482,6 +647,7 @@ impl SpaiApp {
         let mut kill: Option<i64> = None;
         let mut edit: Option<i64> = None;
         let mut info: Option<i64> = None;
+        let mut toggle: Option<String> = None;
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("wh_grid").striped(true).num_columns(8).spacing([16.0, 6.0]).show(
                 ui,
@@ -509,6 +675,9 @@ impl SpaiApp {
                             }
                             if ui.small_button(icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
                                 info = Some(r.sys_id);
+                            }
+                            if super::wh_graph::wh_route_toggle(ui, r.off) {
+                                toggle = Some(r.uid.clone());
                             }
                             if ui.link(&r.sys).clicked() {
                                 self.open_system(r.sys_id);
@@ -551,6 +720,9 @@ impl SpaiApp {
         }
         if info.is_some() {
             self.wh_info = info;
+        }
+        if let Some(uid) = toggle {
+            self.toggle_wh_hole(&uid);
         }
     }
 
@@ -608,7 +780,7 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 egui::Grid::new("wh_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("System");
-                    ui.add(egui::TextEdit::singleline(&mut form.system).desired_width(200.0));
+                    self.system_input(ui, "wh_form_system", &mut form.system, "", 200.0);
                     ui.end_row();
                     ui.label("Signature");
                     sig_field(ui, "wh_form_sig", &mut form.sig, "ABC-123", &here_sigs);
@@ -624,7 +796,7 @@ impl SpaiApp {
                     }
                     ui.end_row();
                     ui.label("Leads to");
-                    ui.add(egui::TextEdit::singleline(&mut form.dest).hint_text("system or Highsec, C5...").desired_width(200.0));
+                    self.system_input(ui, "wh_form_dest", &mut form.dest, "system or Highsec, C5...", 200.0);
                     ui.end_row();
                     ui.label("Its signature");
                     sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "ABC-123", &there_sigs);
@@ -754,6 +926,7 @@ impl SpaiApp {
                 let id = match form.id.and_then(|id| store.wormhole_by_id(id)) {
                     Some(was) => {
                         let id = was.id;
+                        let expiry = was.expiry_after_reading(fresh.life, now);
                         store.write_wormhole(&Wormhole {
                         id: was.id,
                         source: was.source,
@@ -762,7 +935,7 @@ impl SpaiApp {
                         detected_by: was.detected_by,
                         jumped_at: was.jumped_at,
                         uid: was.uid,
-                        explicit_expiry: fresh.explicit_expiry.or(was.explicit_expiry),
+                        explicit_expiry: expiry,
                         mass: fresh.mass.or(was.mass),
                         life: fresh.life.or(was.life),
                         observed_at: fresh.observed_at.or(was.observed_at),
@@ -1065,6 +1238,68 @@ pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::Sy
 }
 
 /// One button per choice in a row; clicking the chosen one again clears it back to unknown.
+/// Toggles that add and remove codes from `set`; an empty set means any. Returns whether it changed.
+fn code_toggles(ui: &mut egui::Ui, set: &mut Vec<String>, items: &[(&str, &str)]) -> bool {
+    use crate::app::SteadySelect as _;
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        for (code, label) in items {
+            let on = set.iter().any(|c| c == code);
+            if ui.menu_label(on, *label).clicked() {
+                if on {
+                    set.retain(|c| c != code);
+                } else {
+                    set.push((*code).to_owned());
+                }
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// The wormhole tab's filter popup. Returns whether anything changed.
+pub(crate) fn wh_filter_ui(ui: &mut egui::Ui, f: &mut crate::wormholes::WhFilter) -> bool {
+    use crate::wormholes::{DestClass, Mass, ShipSize, Source, TimeLeft, UNKNOWN};
+    let mut changed = false;
+    ui.set_min_width(540.0);
+    ui.label(egui::RichText::new("Nothing picked in a row lets everything through").weak());
+    egui::Grid::new("wh_filter_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Leads to");
+        let dests: Vec<(&str, &str)> = [DestClass::Highsec, DestClass::Lowsec, DestClass::Nullsec, DestClass::Wspace, DestClass::Thera, DestClass::Turnur, DestClass::Unknown]
+            .into_iter()
+            .map(|d| (d.code(), d.label()))
+            .collect();
+        changed |= code_toggles(ui, &mut f.dest, &dests);
+        ui.end_row();
+        ui.label("Type");
+        changed |= ui
+            .add(egui::TextEdit::singleline(&mut f.types).hint_text("C247 K162").desired_width(160.0))
+            .on_hover_text("Hole types, either side")
+            .changed();
+        ui.end_row();
+        ui.label("Size");
+        let mut sizes: Vec<(&str, &str)> = ShipSize::ALL.into_iter().map(|s| (s.code(), s.short())).collect();
+        sizes.push((UNKNOWN, "Unknown"));
+        changed |= code_toggles(ui, &mut f.size, &sizes);
+        ui.end_row();
+        ui.label("Mass left");
+        let mut masses: Vec<(&str, &str)> = Mass::ALL.into_iter().map(|m| (m.code(), m.short())).collect();
+        masses.push((UNKNOWN, "Unknown"));
+        changed |= code_toggles(ui, &mut f.mass, &masses);
+        ui.end_row();
+        ui.label("Time left");
+        let times: Vec<(&str, &str)> = TimeLeft::ALL.into_iter().map(|t| (t.code(), t.short())).collect();
+        changed |= code_toggles(ui, &mut f.time, &times);
+        ui.end_row();
+        ui.label("Source");
+        let sources: Vec<(&str, &str)> = Source::ALL.into_iter().map(|s| (s.code(), s.label())).collect();
+        changed |= code_toggles(ui, &mut f.source, &sources);
+        ui.end_row();
+    });
+    changed
+}
+
 pub(crate) fn choice_row<T: Copy + PartialEq>(ui: &mut egui::Ui, value: &mut Option<T>, items: &[(T, &str, &str)]) {
     use crate::app::SteadySelect as _;
     ui.horizontal(|ui| {

@@ -514,6 +514,22 @@ impl SpaiApp {
         self.travel_dirty_at = None;
     }
 
+    /// A system name field `key` that completes from the map; picking a system writes its own
+    /// name into `q`. Returns the system picked this frame.
+    pub(crate) fn system_input(&mut self, ui: &mut egui::Ui, key: &'static str, q: &mut String, hint: &str, width: f32) -> Option<i64> {
+        if self.sys_sugg.get(key).is_none_or(|(last, _, _)| last != q) {
+            let hits = self.travel_suggestions(q);
+            self.sys_sugg.insert(key, (q.clone(), hits, 0));
+        }
+        let (_, hits, sel) = self.sys_sugg.get_mut(key)?;
+        let hits = hits.clone();
+        let pick = super::map_panels::system_field(ui, q, sel, hint, width, &hits);
+        if let Some(name) = pick.and_then(|id| self.systems.as_ref()?.info_of(id).map(|i| i.name.clone())) {
+            *q = name;
+        }
+        pick
+    }
+
     pub(crate) fn travel_suggestions(&self, q: &str) -> Vec<SysHit> {
         let q = q.trim();
         if q.is_empty() {

@@ -624,6 +624,52 @@ fn wormholes_big_scene(name: &'static str) -> Scene {
     })
 }
 
+/// A chain with one exit into FAKE-1 and five pinned systems one to five jumps from it, each hung
+/// off that exit by its own dotted line. Switched-off holes and systems when the name says so.
+fn wormholes_pins_scene(name: &'static str) -> Scene {
+    use crate::wormholes::{DestClass, Mass, Source, Wormhole};
+    harness::scratch_profile();
+    let now = fixtures::now();
+    let j = |n: i64| 31_000_100 + n;
+    let links = [(30_009_001, j(1)), (j(1), j(2)), (j(1), j(3)), (j(2), j(4))];
+    let holes: Vec<Wormhole> = links
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| Wormhole {
+            id: i as i64 + 1,
+            uid: format!("pin-hole-{i}"),
+            system_id: *a,
+            dest: DestClass::Wspace,
+            dest_system_id: Some(*b),
+            mass: (i == 2).then_some(Mass::Critical),
+            explicit_expiry: Some(now + 20 * 3600),
+            reported_at: now - 600,
+            source: Source::Manual,
+            updated_at: now - 60,
+            ..Default::default()
+        })
+        .collect();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems_wh_pins());
+            a.wh_cache = holes.clone();
+            a.settings.wh_route_pins = vec!["FAKE-2".into(), "FAKE-3".into(), "1DQ1-A".into(), "319-3D".into(), "7-K5EL".into()];
+            if name.ends_with("_off") {
+                a.settings.wh_disabled_holes = vec!["pin-hole-1".into()];
+                a.settings.wh_disabled_systems = vec![j(3)];
+            }
+            a.wh_graph_reset_layout();
+            a.wh_graph.hold_view(1.0);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// A map of several chains, one with a loop, laid out afresh in the style its name ends with.
 fn wormholes_layout_scene(name: &'static str) -> Scene {
     use crate::wormholes::{DestClass, Source, Wormhole};
@@ -1912,6 +1958,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
+    v.push(wormholes_pins_scene("view_wormholes_map_many_pins"));
+    v.push(wormholes_pins_scene("view_wormholes_map_many_pins_off"));
     v.push(wormholes_scene("view_wormholes_map_char", [1280.0, 800.0], false, None));
     // Adding a hole: the same dialog the signatures tab and the table open.
     v.push({
@@ -7424,4 +7472,38 @@ fn uitest_wormhole_type_picker_is_searchable() {
     harness.key_press(egui::Key::Enter);
     harness.run();
     assert_eq!(*picked.lock().unwrap(), "H296");
+}
+
+/// The Filter button opens its popup; picking a mass narrows the map to the holes that have it,
+/// and the button beside it clears the filter again.
+#[test]
+fn uitest_the_wormhole_filter_narrows_the_map_and_clears() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = wormholes_pins_scene("wh_filter_popup");
+    let mut h = harness::build(&mut scene, false);
+    assert!(h.query_by_label_contains("4 systems").is_some());
+    h.get_by_label_contains("Filter").click();
+    h.run();
+    assert!(h.query_by_label("Leads to").is_some(), "the popup did not open");
+    h.get_by_label("<10%").click();
+    h.run();
+    // Only J100001 to J100003 is under 10%.
+    assert!(h.query_by_label_contains("2 systems").is_some(), "the map was not filtered");
+    assert!(h.query_by_label_contains("Filter (1)").is_some());
+    h.get_by_label(egui_phosphor::regular::FUNNEL_X).click();
+    h.run();
+    assert!(h.query_by_label_contains("4 systems").is_some(), "the filter was not cleared");
+}
+
+#[test]
+#[ignore]
+fn uitest_screenshots_wh_filter_popup() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = wormholes_pins_scene("wh_filter_popup");
+    let mut h = harness::build(&mut scene, true);
+    h.get_by_label_contains("Filter").click();
+    h.run();
+    h.get_by_label("<10%").click();
+    h.run();
+    harness::shot(&mut h, "wh_filter_popup");
 }
