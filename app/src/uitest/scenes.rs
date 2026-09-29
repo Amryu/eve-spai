@@ -719,6 +719,47 @@ fn route_gate_options_scene(name: &'static str) -> Scene {
     })
 }
 
+/// The signature browser with a few systems' pastes in it.
+fn sig_browser_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    use crate::store::SystemSig;
+    harness::scratch_profile();
+    let now = fixtures::now();
+    let sig = |id: &str, kind: &str, group: &str, name: &str, ago: i64, who: &str| SystemSig {
+        sig: id.into(),
+        kind: kind.into(),
+        group: group.into(),
+        name: name.into(),
+        added_at: now - ago - 600,
+        updated_at: now - ago,
+        who: who.into(),
+        origin: None,
+    };
+    let rows = vec![
+        (30_004_759, sig("ABC-123", "Cosmic Signature", "Wormhole", "Unstable Wormhole", 60, "Scout Alpha")),
+        (30_004_759, sig("GIN-924", "Cosmic Signature", "Data Site", "Unsecured Frontier Server", 3_700, "Scout Alpha")),
+        (30_004_759, sig("WKR-862", "Cosmic Anomaly", "Combat Site", "Angel Haven", 20, "Scout Alpha")),
+        (30_004_608, sig("QRS-777", "Cosmic Signature", "", "", 900, "Scout Beta")),
+        (30_004_608, sig("LMN-456", "Cosmic Signature", "Relic Site", "Crumbling Angel Antiquated Outpost", 7_200, "Scout Beta")),
+        (30_003_704, sig("TUV-888", "Cosmic Signature", "Gas Site", "Barren Perimeter Reservoir", 86_000, "Scout Beta")),
+        (30_003_704, sig("OLD-111", "Cosmic Anomaly", "Ore Site", "Average Frontier Deposit", 2 * 86_400, "Scout Beta")),
+        (30_003_704, sig("OLD-222", "Cosmic Signature", "Data Site", "Local Angel Data Processing Center", 4 * 86_400, "Scout Gamma")),
+    ];
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems());
+            a.wh_graph.sig_browser = true;
+            a.sig_browser_seed(rows.clone());
+            a.sig_browser_set_tree(name.ends_with("_tree"));
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// A map of several chains, one with a loop, laid out afresh in the style its name ends with.
 fn wormholes_layout_scene(name: &'static str) -> Scene {
     use crate::wormholes::{DestClass, Source, Wormhole};
@@ -872,6 +913,20 @@ fn wormholes_focus_scene(
         updated_at: now - 120,
         ..Default::default()
     });
+    if name.ends_with("_sigs") {
+        // A hole into nullsec, no system known on the far side.
+        holes.push(Wormhole {
+            id: 9,
+            system_id: 30_004_759,
+            signature: Some("XYZ-999".into()),
+            wh_type: Some("K162".into()),
+            dest: DestClass::Nullsec,
+            reported_at: now - 60,
+            source: Source::Manual,
+            updated_at: now - 60,
+            ..Default::default()
+        });
+    }
     holes.push(Wormhole {
         id: 4,
         system_id: 31_000_005,
@@ -896,15 +951,17 @@ fn wormholes_focus_scene(
             a.wh_graph_reset_layout();
             a.wh_graph.table = table;
             a.wh_graph.selected = selected;
-            if name.ends_with("_sigs") {
+            if name.ends_with("_sigs") || name == "wh_sigs_width" {
                 let sig = |sig: &str, kind: &str, group: &str, name: &str, ago: i64| crate::store::SystemSig {
                     sig: sig.into(),
                     kind: kind.into(),
                     group: group.into(),
                     name: name.into(),
                     added_at: now - ago,
-                    updated_at: now - 20,
+                    // A day old and more shows its age in yellow.
+                    updated_at: if ago > 86_400 { now - ago } else { now - 20 },
                     who: "Kasper Stad".into(),
+                    origin: None,
                 };
                 a.wh_graph.show_sigs(
                     30_004_759,
@@ -928,6 +985,13 @@ fn wormholes_focus_scene(
                 a.settings.wh_route_pins = vec!["319-3D".into()];
             }
             if name.ends_with("_sharing") {
+                use crate::share::ops::Role;
+                use crate::store::{ShareGroup, SharePrefs};
+                let group = |id: &str, name: &str, role, prefs| ShareGroup { id: id.into(), name: name.into(), char_id: 1, role, epoch: 0, cursor: 0, prefs };
+                a.wh_share_seed(vec![
+                    group("g1", "Home chain", Role::Owner, SharePrefs::default()),
+                    group("g2", "Scout pool", Role::Member, SharePrefs { send_holes: false, recv_holes: false, hidden: true, ..Default::default() }),
+                ]);
                 a.wh_share.open = true;
             }
             if name.contains("_zoomed_out") {
@@ -2013,6 +2077,32 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
     v.push(route_scan_scene("view_route_scan"));
+    v.extend(super::showcase::scenes());
+    // Existing scenes again, sharper and sized for the website. Built under their own names, which
+    // some of them read to pick their contents, then renamed.
+    let show = |mut s: Scene, name: &'static str, size: Option<[f32; 2]>| {
+        s.name = name;
+        if let Some(z) = size {
+            s.size = z.into();
+        }
+        super::showcase::with_images(s.sharp(1.5))
+    };
+    let full = Some([1280.0, 800.0]);
+    v.push(show(wormholes_layout_scene("view_wormholes_layout_tree_timed"), "showcase_wormholes", full));
+    v.push(show(sig_browser_scene("view_wormholes_signatures", [1280.0, 800.0]), "showcase_signatures", None));
+    v.push(show(route_scan_scene("view_route_scan"), "showcase_scan_route", None));
+
+    // Two home reports without named pilots: a name the scene never resolved would not render.
+    let home = super::showcase::home_intel(&fixtures::insmother().systems);
+    let alerts: Vec<_> = home.into_iter().filter(|r| r.pilots.is_empty() && !r.clear).take(2).collect();
+    v.push(show(alert_window_scene("alert_window_typical", alerts), "showcase_alert", Some([560.0, 150.0])));
+    v.push(show(ping_window_scene("ping_window_fleet", vec![super::showcase::home_defence_ping()]), "showcase_ping", Some([560.0, 190.0])));
+    v.push(show(alert_rules_scene("showcase_alert_rules", [1280.0, 800.0], None), "showcase_alert_rules", None));
+    v.push(show(map_layers_scene("map_layers", [320.0, 800.0]), "showcase_layers", None));
+    v.push(sig_browser_scene("view_wormholes_signatures", [1280.0, 800.0]));
+    v.push(sig_browser_scene("view_wormholes_signatures_narrow", [720.0, 800.0]));
+    v.push(sig_browser_scene("view_wormholes_signatures_tree", [1280.0, 800.0]));
+    v.push(sig_browser_scene("view_wormholes_signatures_narrow_tree", [720.0, 800.0]));
     v.push(route_gate_options_scene("view_route_gate_options"));
     v.push(wormholes_pins_scene("view_wormholes_map_many_pins"));
     v.push(wormholes_pins_scene("view_wormholes_map_many_pins_off"));
@@ -2360,6 +2450,9 @@ fn uitest_census() {
     for mut scene in all() {
         let size = scene.size;
         let name = scene.name;
+        // The checks compare widget rects in points with the size in points; a sharper render
+        // lays out the same, and would only mix the two up.
+        scene.density = 1.0;
         let mut harness = harness::build(&mut scene, false);
         let report = super::checks::inspect(&mut harness, size);
         let tightest = report
@@ -2380,6 +2473,9 @@ fn uitest_layout() {
     for mut scene in all() {
         let size = scene.size;
         let name = scene.name;
+        // The checks compare widget rects in points with the size in points; a sharper render
+        // lays out the same, and would only mix the two up.
+        scene.density = 1.0;
         let mut harness = harness::build(&mut scene, false);
         let report = super::checks::inspect(&mut harness, size);
         if !report.is_empty() {
@@ -5517,7 +5613,12 @@ fn alert_rules_scene(name: &'static str, size: [f32; 2], panel_w: Option<f32>) -
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Alerts;
             a.alert_rules_open = true;
-            a.settings.alerts.rules = ["Hostiles near home", "Cyno in Delve", "Quiet hours"]
+            let names = if name.starts_with("showcase") {
+                ["Hostiles near home", "Cyno in Insmother", "Quiet hours"]
+            } else {
+                ["Hostiles near home", "Cyno in Delve", "Quiet hours"]
+            };
+            a.settings.alerts.rules = names
                 .into_iter()
                 .map(|name| crate::settings::AlertRule {
                     name: name.to_owned(),
@@ -7580,3 +7681,22 @@ fn uitest_a_click_on_the_side_panel_never_reaches_the_map_behind_it() {
     }
     assert!(h.query_by_label("1DQ1-A").is_some(), "a click on the panel selected a system behind it");
 }
+
+/// A pasted list with long site names never widens the side panel: the Info column cuts them
+/// short instead.
+#[test]
+fn uitest_signatures_never_widen_the_side_panel() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = wormholes_scene("wh_sigs_width", [1280.0, 800.0], false, Some(30_004_759));
+    let mut h = harness::build(&mut scene, false);
+    let before = h.get_by_label("Routes").rect().left();
+    // The side panel's tab, not the view switch above the map.
+    h.get_by_label_contains("Signatures (").click();
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains("Paste probe scan").is_some(), "the Signatures tab did not open");
+    let after = h.get_by_label("Routes").rect().left();
+    assert!((after - before).abs() < 1.0, "the panel moved from {before} to {after}");
+}
+
+

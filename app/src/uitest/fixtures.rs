@@ -1415,3 +1415,69 @@ pub(crate) fn lookup_orgs() -> Vec<(i64, crate::localscan::Org)> {
         (99_000_002, org("Other Alliance", "OTHA")),
     ]
 }
+
+
+/// Insmother from CCP's static data export: every system with its position and every stargate
+/// link inside the region, plus the Ansiblex links with both ends in it.
+pub(crate) struct Region {
+    pub systems: Arc<Systems>,
+    pub regions: Vec<(i64, String)>,
+    pub drawn: Vec<crate::store::MapSystem>,
+    pub bridges: Vec<crate::settings::JumpBridge>,
+}
+
+pub(crate) const INSMOTHER: i64 = 10_000_009;
+
+pub(crate) fn insmother() -> Region {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        regions: Vec<(i64, String)>,
+        systems: Vec<(i64, String, f64, i64, String, f64, f64, f64, f64, f64)>,
+        jumps: Vec<(i64, i64)>,
+        bridges: Vec<(String, String)>,
+    }
+    let raw: Raw = serde_json::from_str(include_str!("data/insmother.json")).expect("insmother fixture");
+    let mut by_name = HashMap::new();
+    let mut positions = HashMap::new();
+    let mut drawn = Vec::new();
+    for (id, name, security, region_id, constellation, x, y, z, x2d, z2d) in &raw.systems {
+        by_name.insert(
+            name.to_lowercase(),
+            SystemInfo { id: *id, name: name.clone(), security: *security, constellation: constellation.clone(), region: "Insmother".into(), faction: String::new() },
+        );
+        positions.insert(*id, [*x, *y, *z]);
+        drawn.push(crate::store::MapSystem { id: *id, name: name.clone(), security: *security, region_id: *region_id, x: *x, y: *y, z: *z, x2d: *x2d, z2d: *z2d });
+    }
+    let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (a, b) in &raw.jumps {
+        adjacency.entry(*a).or_default().push(*b);
+    }
+    let mut s = Systems::new(by_name, adjacency);
+    s.set_positions(positions);
+    let id = |n: &str| s.lookup(n).map(|i| i.id);
+    let pairs: Vec<(i64, i64)> = raw.bridges.iter().filter_map(|(a, b)| Some((id(a)?, id(b)?))).flat_map(|(a, b)| [(a, b), (b, a)]).collect();
+    s.add_directed_bridges(&pairs);
+    let bridges = raw.bridges.iter().map(|(a, b)| crate::settings::JumpBridge { from: a.clone(), to: b.clone() }).collect();
+    Region { systems: Arc::new(s), regions: raw.regions, drawn, bridges }
+}
+
+
+/// A real fight in F-5WYK, from public killmails as the app stores them, clustered
+/// the way the kill worker does; the largest battle in it, with its hull names.
+pub(crate) fn real_battle() -> (br_core::battle::Battle, HashMap<i64, String>) {
+    use br_core::battle;
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        engagements: Vec<battle::Engagement>,
+        names: HashMap<String, String>,
+    }
+    let mut json = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&include_bytes!("data/battle.json.gz")[..]), &mut json).expect("battle fixture");
+    let raw: Raw = serde_json::from_str(&json).expect("battle fixture");
+    let one_system = |a: i64, b: i64| (a == b).then_some(0);
+    let biggest = battle::cluster(&raw.engagements, battle::BATTLE_WINDOW_SECS, battle::BATTLE_MAX_JUMPS, battle::BATTLE_BREAK_SECS, &Default::default(), one_system)
+        .into_iter()
+        .max_by_key(|b| b.engagements.len())
+        .expect("a battle");
+    (biggest, raw.names.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect())
+}

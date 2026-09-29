@@ -283,6 +283,8 @@ mod travel_ui;
 mod map_ui;
 mod map_route;
 mod scan_ui;
+mod sig_browser;
+mod scanner;
 mod battles_ui;
 pub(crate) mod fleet_ui;
 #[cfg(feature = "fleet")]
@@ -412,7 +414,7 @@ pub struct SpaiApp {
     pub(crate) severity_open: bool,
     pub(crate) coal_edit: Vec<(String, String)>,
     alliance_add: String,
-    active_character: String,
+    pub(crate) active_character: String,
     needs_save: bool,
     sde_status: SharedStatus,
     auth_status: SharedAuth,
@@ -778,6 +780,8 @@ pub struct SpaiApp {
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
     scan_route: scan_ui::ScanState,
+    sig_browser: sig_browser::SigBrowser,
+    scanner_track: scanner::ScannerTrack,
     /// The graph for `map_route_zone`, keyed by the base graph it was built from and the zone.
     map_route_graph: Option<(usize, u8, std::sync::Arc<crate::geo::Systems>)>,
     /// The ways of flying each leg, and which one is picked.
@@ -858,7 +862,7 @@ pub struct SpaiApp {
     fit_loss: Option<crate::lookup::Loss>,
     ping_shared: SharedPingWindow,
     ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
-    pilots: crate::pilot::SharedPilots,
+    pub(crate) pilots: crate::pilot::SharedPilots,
     affiliations: crate::affiliation::SharedAffil,
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
@@ -1685,6 +1689,8 @@ impl SpaiApp {
             map_titan_self_jump: false,
             map_route_zone: None,
             scan_route: Default::default(),
+            sig_browser: Default::default(),
+            scanner_track: Default::default(),
             map_route_graph: None,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
@@ -3108,6 +3114,39 @@ impl SpaiApp {
         t.orgs.extend(orgs);
         drop(t);
         self.standings.lock().unwrap().extend([(99_000_002, -5.0), (90_000_003, 10.0), (90_000_004, 0.0), (98_000_003, -10.0)]);
+    }
+
+    /// A map without the SDE: the graph, the region list and one region's systems as the map would
+    /// have loaded them, opened on that region.
+    #[cfg(test)]
+    pub(crate) fn seed_map(&mut self, systems: std::sync::Arc<crate::geo::Systems>, regions: Vec<(i64, String)>, region: i64, drawn: Vec<crate::store::MapSystem>) {
+        *self.sde_status.lock().unwrap() = SdeStatus::Ready;
+        self.systems = Some(systems);
+        self.map_regions = regions;
+        self.map_view = crate::map::MapView::Region(region);
+        self.map_initialized = true;
+        self.map_systems = drawn;
+        self.map_loaded = Some(self.map_view);
+        self.map_overlays.bridges = true;
+    }
+
+    /// One battle open in the Battles view, its detail worked out the way the brview worker does.
+    #[cfg(test)]
+    pub(crate) fn seed_battle(&mut self, b: br_core::battle::Battle, names: std::collections::HashMap<i64, String>) {
+        let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
+        let ship_ids: Vec<i64> = b
+            .engagements
+            .iter()
+            .flat_map(|e| std::iter::once(e.victim_ship).chain(e.attackers.iter().map(|a| a.ship)))
+            .filter(|&id| id != 0)
+            .collect();
+        let inv = b.involvement();
+        let rosters: Vec<Vec<br_core::battle::Participant>> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
+        let (rosters, condensed) = crate::brview::sorted_detail(&rosters, Default::default(), &self.ship_sizes, &names);
+        *self.type_names.lock().unwrap() = names;
+        *self.battles.lock().unwrap() = vec![b.clone()];
+        self.battle_selected = Some(kid);
+        self.battle_detail_cache = Some(std::sync::Arc::new(crate::brview::BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids }));
     }
 
     #[cfg(test)]

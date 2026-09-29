@@ -266,6 +266,12 @@ pub struct Settings {
     /// Routes use only the holes the wormhole tab's filter shows.
     #[serde(default)]
     pub wh_route_filtered: bool,
+    /// Gate jumps under which a pinned system joins a wormhole cluster on the map.
+    #[serde(default = "default_wh_pin_jumps")]
+    pub wh_pin_jumps: u32,
+    /// The wormhole map's selected system follows the active scanner from system to system.
+    #[serde(default)]
+    pub wh_track_scanner: bool,
     /// The scan route planner's choices.
     #[serde(default)]
     pub scan: ScanSettings,
@@ -305,7 +311,8 @@ pub struct Settings {
     /// The small overview of the whole wormhole map in the canvas corner.
     #[serde(default = "default_true")]
     pub wh_minimap: bool,
-    /// The sharing group local wormhole changes are sent to; `None` keeps them local.
+    /// Where changes went before each group had its own choices. Read only to carry that over
+    /// (`Store::share_prefs_migrate`).
     #[serde(default)]
     pub wh_share_target: Option<String>,
     #[serde(default = "default_true")]
@@ -628,6 +635,13 @@ pub struct AlertSettings {
 pub struct FleetUnlock {
     pub verified_at: i64,
     pub command_group: String,
+}
+
+/// The map measures gate distances this far out, so no setting reaches further.
+pub(crate) const WH_PIN_JUMPS_MAX: u32 = 100;
+
+fn default_wh_pin_jumps() -> u32 {
+    30
 }
 
 fn default_wh_route_kinds() -> Vec<String> {
@@ -1462,6 +1476,8 @@ impl Default for Settings {
             wh_disabled_systems: Vec::new(),
             wh_filter: Default::default(),
             wh_route_filtered: false,
+            wh_pin_jumps: default_wh_pin_jumps(),
+            wh_track_scanner: false,
             scan: ScanSettings::default(),
             wh_share_target: None,
             wh_legend_open: false,

@@ -951,15 +951,19 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
             let mut members: Vec<usize> = agg.members.into_iter().collect();
             members.sort_by_key(|i| std::cmp::Reverse(agg.involve.get(i).copied().unwrap_or(0)));
             let parties: Vec<Party> = members.iter().map(|&i| party_by_key[&keys[i]].clone()).collect();
+            // Weighed by how much each group took part: one coalition alliance tagging along does
+            // not make a side that coalition. It names the side only when it is most of it.
+            let weight = |i: usize| agg.involve.get(&i).copied().unwrap_or(0).max(1);
+            let total: u32 = members.iter().map(|&i| weight(i)).sum();
             let mut votes: HashMap<&str, u32> = HashMap::new();
-            for p in &parties {
+            for (&i, p) in members.iter().zip(&parties) {
                 if matches!(p.kind, PartyKind::Alliance) {
                     if let Some(c) = crate::packs::coalition_of(p.id) {
-                        *votes.entry(c).or_default() += 1;
+                        *votes.entry(c).or_default() += weight(i);
                     }
                 }
             }
-            let coalition = votes.into_iter().max_by_key(|(_, c)| *c).map(|(c, _)| c.to_owned());
+            let coalition = votes.into_iter().filter(|(_, w)| w * 2 > total).max_by_key(|(_, w)| *w).map(|(c, _)| c.to_owned());
             Side {
                 parties,
                 coalition,
@@ -1419,6 +1423,38 @@ mod tests {
         let imp = b.sides.iter().find(|s| s.parties.iter().any(|p| p.id == 1354830081)).unwrap();
         assert_eq!(imp.coalition.as_deref(), Some("The Imperium"));
         assert!(imp.parties.iter().any(|p| p.id == 99010079));
+    }
+
+    #[test]
+    fn a_side_takes_a_coalition_name_only_when_the_coalition_is_most_of_it() {
+        let goon = party(1354830081, "Goonswarm Federation");
+        let (a, b, c) = (party(99999991, "Local A"), party(99999992, "Local B"), party(99999993, "Local C"));
+        let enemy = party(99999999, "Enemy");
+        let kill = |id: i64, attackers: Vec<Party>| Engagement {
+            kill_id: id,
+            time: id,
+            system_id: 1,
+            system_name: "S1".into(),
+            security: 0.0,
+            victim_char: 0,
+            victim_pilot: enemy.name.clone(),
+            victim: enemy.clone(),
+            victim_ship: 587,
+            attackers: attackers.into_iter().map(atk).collect(),
+            isk: 1.0,
+            anchored: true,
+        };
+        // One Imperium alliance tagging along on one kill of four with three local groups.
+        let engs = vec![
+            kill(1, vec![a.clone(), b.clone(), goon.clone()]),
+            kill(2, vec![a.clone(), b.clone(), c.clone()]),
+            kill(3, vec![a.clone(), c.clone()]),
+            kill(4, vec![b.clone(), c.clone()]),
+        ];
+        let bt = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
+        let side = bt.sides.iter().find(|s| s.parties.iter().any(|p| p.id == 99999991)).unwrap();
+        assert!(side.parties.iter().any(|p| p.id == 1354830081), "the Imperium alliance is on this side");
+        assert_eq!(side.coalition, None, "a small Imperium share does not make the side the Imperium");
     }
 
     fn cluster_def(engs: &[Engagement]) -> Vec<Battle> {

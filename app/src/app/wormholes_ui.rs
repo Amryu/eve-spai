@@ -92,6 +92,11 @@ impl SpaiApp {
             let mut whs = store.wormholes();
             // Saved before these were refused, or by an older version.
             whs.retain(|w| !w.is_expired(now) && crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_none());
+            let groups = store.wormhole_groups();
+            let hidden = store.share_hidden_groups();
+            if !hidden.is_empty() {
+                whs.retain(|w| groups.get(&w.uid).is_none_or(|g| !hidden.contains(g)));
+            }
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             // A hole switched off that has since closed is forgotten with it.
             let before = self.settings.wh_disabled_holes.len();
@@ -99,7 +104,7 @@ impl SpaiApp {
             self.needs_save |= self.settings.wh_disabled_holes.len() != before;
             self.wh_cache = whs;
             self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
-            self.wh_group_of = store.wormhole_groups();
+            self.wh_group_of = groups;
         }
         // Synced, expired, edited or found: a route through a hole that changed is out of date.
         if self.wh_usable() != usable {
@@ -494,6 +499,7 @@ impl SpaiApp {
     pub(crate) fn wormholes_view(&mut self, ui: &mut egui::Ui) {
         use crate::app::SteadySelect as _;
         use egui_phosphor::regular as icon;
+        self.track_scanner();
         // Without clone locations a death or a clone jump cannot be told from a hole.
         let missing: Vec<&str> = self
             .characters
@@ -510,15 +516,20 @@ impl SpaiApp {
             ui.heading(format!("{}  Wormholes", icon::SPIRAL));
             ui.label(egui::RichText::new(format!("{} known", self.wh_cache.len())).weak());
             ui.add_space(8.0);
-            if ui.menu_label(!self.wh_graph.table, format!("{}  Map", icon::GRAPH)).clicked() {
-                self.wh_graph.table = false;
+            let (table, sigs) = (self.wh_graph.table, self.wh_graph.sig_browser);
+            if ui.menu_label(!table && !sigs, format!("{}  Map", icon::GRAPH)).clicked() {
+                (self.wh_graph.table, self.wh_graph.sig_browser) = (false, false);
             }
-            if ui.menu_label(self.wh_graph.table, format!("{}  Table", icon::TABLE)).clicked() {
-                self.wh_graph.table = true;
+            if ui.menu_label(table && !sigs, format!("{}  Table", icon::TABLE)).clicked() {
+                (self.wh_graph.table, self.wh_graph.sig_browser) = (true, false);
+            }
+            if ui.menu_label(sigs, format!("{}  Signatures", icon::LIST_MAGNIFYING_GLASS)).on_hover_text("Every probe scan signature pasted, to search and clean up").clicked() {
+                self.wh_graph.sig_browser = true;
             }
             ui.add_space(8.0);
             if ui.button(format!("{}  Add", icon::PLUS)).on_hover_text("Enter a hole by hand").clicked() {
-                self.wh_form = Some(WhForm::fresh());
+                let form = self.wh_form_here();
+                self.wh_form = Some(form);
             }
             ui.add_space(8.0);
             let active = self.settings.wh_filter.active();
@@ -565,6 +576,14 @@ impl SpaiApp {
                     .checkbox(&mut self.settings.wh_ask, "Ask for the signature")
                     .on_hover_text("A small window beside the EVE client asks for the signature, type and state of each hole")
                     .changed();
+                ui.horizontal(|ui| {
+                    ui.label("Pinned systems join clusters within");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut self.settings.wh_pin_jumps).range(1..=crate::settings::WH_PIN_JUMPS_MAX))
+                        .on_hover_text("Gate jumps from a cluster's nearest exit. Further out, a pinned system shows on its own.")
+                        .changed();
+                    ui.label("jumps");
+                });
                 ui.separator();
                 if ui.button(format!("{}  Sharing…", icon::USERS_THREE)).on_hover_text("Share wormholes with others, end-to-end encrypted").clicked() {
                     self.wh_share.open = true;
@@ -608,6 +627,10 @@ impl SpaiApp {
             }
         }
         ui.separator();
+        if self.wh_graph.sig_browser {
+            self.sig_browser_view(ui);
+            return;
+        }
         if self.wh_cache.is_empty() {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
@@ -981,6 +1004,7 @@ impl SpaiApp {
                 ..Default::default()
             };
             let who = if self.settings.active_character.is_empty() { "me".to_owned() } else { self.settings.active_character.clone() };
+            self.scanner_track.last_manual = Some((who.clone(), now));
             let changes: Vec<(&str, String)> = [
                 ("signature", fresh.signature.clone()),
                 ("type", fresh.wh_type.clone()),
@@ -1075,7 +1099,7 @@ pub(crate) fn offerable(s: &crate::store::SystemSig, system: i64, holes: &[crate
 #[derive(Default)]
 pub(crate) struct WhForm {
     id: Option<i64>,
-    system: String,
+    pub(crate) system: String,
     sig: String,
     wh_type: String,
     dest: String,

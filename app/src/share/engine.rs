@@ -13,21 +13,23 @@ use std::time::Duration;
 use super::client::{Client, RequestRow};
 use super::crypto::{self, DeviceKeys, Key, PublicKeys, Wrapped};
 use super::ops::{self, Envelope, Member, Op, Role, Roster};
-use crate::store::{Outgoing, ShareGroup, Store};
+use crate::store::{Outgoing, ShareGroup, SharePrefs, Store};
 
 const POLL: Duration = Duration::from_secs(15);
 const INVITE_TTL_SECS: i64 = 2 * 86_400;
 
 pub enum Cmd {
-    Create { name: String, char_id: i64, char_name: String },
+    Create { name: String, char_id: i64, char_name: String, prefs: SharePrefs },
     /// An invite only `for_name` can use.
     Invite { group: String, for_name: String },
-    Join { link: String, char_id: i64 },
+    Join { link: String, char_id: i64, prefs: SharePrefs },
     Approve { group: String, char_id: i64 },
     Reject { group: String, char_id: i64 },
     Remove { group: String, char_id: i64 },
     Leave { group: String },
     SetRole { group: String, char_id: i64, role: Role },
+    /// Reads the group's whole log again, for what was passed over while it was not taken.
+    Rescan { group: String },
     SyncNow,
 }
 
@@ -59,23 +61,17 @@ pub struct Status {
 pub struct Handle {
     pub tx: Sender<Cmd>,
     pub status: Arc<Mutex<Status>>,
-    /// The group local changes go to; `None` keeps them local.
-    pub target: Arc<Mutex<Option<String>>>,
 }
 
-pub fn spawn(ctx: egui::Context, target: Option<String>) -> Handle {
+pub fn spawn(ctx: egui::Context) -> Handle {
     let (tx, rx) = std::sync::mpsc::channel();
     let status = Arc::new(Mutex::new(Status::default()));
-    let target = Arc::new(Mutex::new(target));
-    let (st, tg) = (status.clone(), target.clone());
-    std::thread::Builder::new()
-        .name("wh-share".into())
-        .spawn(move || run(rx, st, tg, ctx))
-        .expect("spawning the share thread");
-    Handle { tx, status, target }
+    let st = status.clone();
+    std::thread::Builder::new().name("wh-share".into()).spawn(move || run(rx, st, ctx)).expect("spawning the share thread");
+    Handle { tx, status }
 }
 
-fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, target: Arc<Mutex<Option<String>>>, ctx: egui::Context) {
+fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, ctx: egui::Context) {
     let store = match Store::open() {
         Ok(s) => s,
         Err(e) => {
@@ -102,15 +98,14 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, target: Arc<Mutex<Option<S
         let path = store.path().to_path_buf();
         let clients = move |char_id: i64| Client::for_character(&path, char_id);
         status.lock().unwrap().fingerprint = Some(device.public().fingerprint());
-        let e = Engine { store: &store, device, status: &status, target: &target, clients: &clients };
+        let e = Engine { store: &store, device, status: &status, clients: &clients };
         status.lock().unwrap().busy = true;
         ctx.request_repaint();
         let result = match cmd {
             Some(c) => e.command(c),
             None => Ok(()),
         };
-        let target = target.lock().unwrap().clone();
-        let sync = e.sync_all(target.as_deref());
+        let sync = e.sync_all();
         {
             let mut s = status.lock().unwrap();
             s.busy = false;
@@ -179,19 +174,10 @@ struct Engine<'a> {
     store: &'a Store,
     device: &'static DeviceKeys,
     status: &'a Arc<Mutex<Status>>,
-    target: &'a Arc<Mutex<Option<String>>>,
     clients: &'a dyn Fn(i64) -> Result<Client>,
 }
 
 impl Engine<'_> {
-    /// A first group becomes where local changes go, so what is already known gets shared.
-    fn default_target(&self, group: &str) {
-        let mut t = self.target.lock().unwrap();
-        if t.is_none() {
-            *t = Some(group.to_owned());
-        }
-    }
-
     fn client(&self, char_id: i64) -> Result<Client> {
         (self.clients)(char_id)
     }
@@ -216,19 +202,18 @@ impl Engine<'_> {
 
     fn command(&self, cmd: Cmd) -> Result<()> {
         match cmd {
-            Cmd::Create { name, char_id, char_name } => {
+            Cmd::Create { name, char_id, char_name, prefs } => {
                 let c = self.client(char_id)?;
                 let key = crypto::random32();
                 let wrapped = crypto::wrap_key(&self.device.public().enc, &key, &wrap_ctx(0));
                 let id = c.create_group(&serde_json::to_string(&wrapped)?)?;
-                let g = ShareGroup { id: id.clone(), name: name.clone(), char_id, role: Role::Owner, epoch: 0, cursor: 0 };
+                let g = ShareGroup { id: id.clone(), name: name.clone(), char_id, role: Role::Owner, epoch: 0, cursor: 0, prefs };
                 self.store.share_group_save(&g);
                 self.store.share_key_save(&id, 0, &key);
                 let owner = Member { char_id, name: char_name, keys: self.device.public(), role: Role::Owner };
                 self.store.share_members_save(&id, std::slice::from_ref(&owner));
                 self.post(&c, &g, &Op::Genesis { name, owner })?;
-                self.default_target(&id);
-                self.store.share_queue_all();
+                self.store.share_queue_group(&id, true, true);
             }
             Cmd::Invite { group, for_name } => {
                 let g = self.group(&group)?;
@@ -247,7 +232,7 @@ impl Engine<'_> {
                 self.store.share_invite_save(&id, &g.id, &secret, for_char, &for_name);
                 self.status.lock().unwrap().invite = Some((g.id, make_link(&id, &secret), for_name));
             }
-            Cmd::Join { link, char_id } => {
+            Cmd::Join { link, char_id, prefs } => {
                 let (id, secret) = parse_link(&link).ok_or_else(|| anyhow!("that is not an invite link"))?;
                 let c = self.client(char_id)?;
                 let (group_id, blob) = c.fetch_invite(&id).context("the invite is unknown, used or expired")?;
@@ -266,7 +251,7 @@ impl Engine<'_> {
                 c.join(&id, &serde_json::to_string(&JoinBody { keys, mac, mac2 })?)?;
                 // Until an admin approves there is no key; the members the invite named are who
                 // this install trusts to sign the group's entries.
-                self.store.share_group_save(&ShareGroup { id: group_id.clone(), name: info.name, char_id, role: Role::Member, epoch: 0, cursor: 0 });
+                self.store.share_group_save(&ShareGroup { id: group_id.clone(), name: info.name, char_id, role: Role::Member, epoch: 0, cursor: 0, prefs });
                 self.store.share_members_save(&group_id, &info.members);
             }
             Cmd::Approve { group, char_id } => {
@@ -292,7 +277,7 @@ impl Engine<'_> {
                 let mut roster = self.roster(&g.id);
                 roster.members.insert(char_id, member);
                 self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
-                let (holes, dead, sigs) = self.store.share_snapshot(g.char_id);
+                let (holes, dead, sigs) = self.store.share_snapshot(&g);
                 self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() })?;
             }
             Cmd::Reject { group, char_id } => {
@@ -321,6 +306,7 @@ impl Engine<'_> {
                 }
                 self.store.share_members_save(&g.id, &roster.members.into_values().collect::<Vec<_>>());
             }
+            Cmd::Rescan { group } => self.store.share_cursor_save(&group, 0),
             Cmd::SyncNow => {}
         }
         Ok(())
@@ -372,14 +358,14 @@ impl Engine<'_> {
             .collect())
     }
 
-    fn sync_all(&self, target: Option<&str>) -> Result<()> {
+    fn sync_all(&self) -> Result<()> {
         let mut first_err = None;
         for g in self.store.share_groups() {
             if let Err(e) = self.sync_group(&g) {
                 first_err.get_or_insert(e.context(format!("group {}", g.name)));
             }
         }
-        if let Err(e) = self.send_outbox(target) {
+        if let Err(e) = self.send_outbox() {
             first_err.get_or_insert(e);
         }
         first_err.map_or(Ok(()), Err)
@@ -406,8 +392,7 @@ impl Engine<'_> {
         }
         self.store.share_group_save(&g);
         if !had_key && self.store.share_key(&g.id, g.epoch).is_some() {
-            self.default_target(&g.id);
-            self.store.share_queue_all();
+            self.store.share_queue_group(&g.id, true, true);
         }
         if g.role.can_manage() {
             let reqs = self.fetch_requests(&c, &g)?;
@@ -479,15 +464,23 @@ impl Engine<'_> {
         let keys = roster.members.get(&env.author).map(|m| m.keys).ok_or_else(|| anyhow!("author {} is not a member", env.author))?;
         let op = ops::open_op(env, &key, &keys)?;
         let who = roster.members.get(&env.author).map(|m| m.name.clone()).unwrap_or_default();
+        let (holes_in, sigs_in) = (g.prefs.recv_holes, g.prefs.recv_sigs);
+        // Not taken now, so left unapplied: a Rescan after taking it again picks it up.
+        let pass = || {
+            let _ = self.store.share_unmark_applied(&env.op_id);
+            Ok(false)
+        };
         match &op {
             Op::Genesis { owner, .. } if roster.members.get(&owner.char_id) == Some(owner) => {}
             Op::Genesis { .. } | Op::MemberAdded { .. } | Op::MemberRemoved { .. } | Op::RoleSet { .. } => roster.apply(env.author, &op)?,
+            Op::Hole { .. } | Op::HoleDead { .. } if !holes_in => return pass(),
+            Op::Sigs { .. } | Op::SigDelete { .. } if !sigs_in => return pass(),
             Op::Hole { hole } => return Ok(self.store.share_apply_hole(hole, &g.id, &who)),
             Op::HoleDead { at, .. } | Op::Sigs { at, .. } if *at > super::hole::latest_believable() => {
                 bail!("dated {at}, too far ahead of this clock")
             }
             Op::HoleDead { uid, .. } => self.store.share_apply_dead(uid),
-            Op::Sigs { system_id, rows, drop_missing, at } => self.store.share_apply_sigs(*system_id, rows, *drop_missing, *at, &who),
+            Op::Sigs { system_id, rows, drop_missing, at } => self.store.share_apply_sigs(*system_id, rows, *drop_missing, *at, &who, &g.id),
             Op::SigDelete { system_id, sig } => self.store.share_apply_sig_delete(*system_id, sig),
             Op::Snapshot { holes, dead, sigs, members } => {
                 if !roster.role(env.author).is_some_and(Role::can_manage) {
@@ -496,55 +489,60 @@ impl Engine<'_> {
                 for m in members {
                     roster.members.entry(m.char_id).or_insert_with(|| m.clone());
                 }
-                for h in holes {
-                    self.store.share_apply_hole(h, &g.id, &who);
+                if holes_in {
+                    for h in holes {
+                        self.store.share_apply_hole(h, &g.id, &who);
+                    }
+                    for uid in dead {
+                        self.store.share_apply_dead(uid);
+                    }
                 }
-                for uid in dead {
-                    self.store.share_apply_dead(uid);
+                if sigs_in {
+                    for (sys, rows) in sigs {
+                        let at = rows.iter().map(|r| r.added_at).max().unwrap_or(0);
+                        self.store.share_apply_sigs(*sys, rows, false, at, &who, &g.id);
+                    }
                 }
-                for (sys, rows) in sigs {
-                    let at = rows.iter().map(|r| r.added_at).max().unwrap_or(0);
-                    self.store.share_apply_sigs(*sys, rows, false, at, &who);
+                if !(holes_in && sigs_in) {
+                    // Applied in part; the rest waits for a Rescan. Applying it twice is harmless.
+                    let _ = self.store.share_unmark_applied(&env.op_id);
                 }
             }
         }
         Ok(!matches!(op, Op::Genesis { .. } | Op::MemberAdded { .. } | Op::MemberRemoved { .. } | Op::RoleSet { .. }))
     }
 
-    fn send_outbox(&self, target: Option<&str>) -> Result<()> {
-        let groups = self.store.share_groups();
-        let find = |id: &str| groups.iter().find(|g| g.id == id && self.store.share_key(&g.id, g.epoch).is_some());
-        let default = target.and_then(find);
-        for (id, out) in self.store.share_outbox(200) {
-            let uid_group = match &out {
-                Outgoing::Hole(uid) | Outgoing::Dead(uid) => self.store.wormhole_group(uid),
-                _ => None,
+    fn send_outbox(&self) -> Result<()> {
+        let groups: Vec<ShareGroup> =
+            self.store.share_groups().into_iter().filter(|g| self.store.share_key(&g.id, g.epoch).is_some()).collect();
+        for (id, group, out) in self.store.share_outbox(200) {
+            let (kind, origin) = match &out {
+                Outgoing::Hole(uid) => ("hole", self.store.wormhole_group(uid)),
+                Outgoing::Dead(uid) => ("dead", self.store.wormhole_group(uid)),
+                Outgoing::Sigs { .. } => ("sigs", None),
+                Outgoing::SigDelete { .. } => ("sigdel", None),
             };
-            let Some(g) = uid_group.as_deref().and_then(find).or(default) else {
-                // Nowhere to send it: local only.
-                self.store.share_outbox_done(id);
-                continue;
-            };
-            let c = self.client(g.char_id)?;
-            let op = match &out {
-                Outgoing::Hole(uid) => match self.store.share_hole_state(uid, g.char_id) {
-                    Some(hole) => Op::Hole { hole },
-                    None => {
-                        self.store.share_outbox_done(id);
-                        continue;
+            // Addressed rows go to their group; older ones to every group that takes them.
+            let to = groups.iter().filter(|g| group.as_ref().is_none_or(|t| *t == g.id) && g.takes(kind, origin.as_deref()));
+            for g in to {
+                let c = self.client(g.char_id)?;
+                let op = match &out {
+                    Outgoing::Hole(uid) => match self.store.share_hole_state(uid, g.char_id) {
+                        Some(hole) => Op::Hole { hole },
+                        None => continue,
+                    },
+                    Outgoing::Dead(uid) => Op::HoleDead { uid: uid.clone(), at: chrono::Utc::now().timestamp() },
+                    Outgoing::Sigs { system_id, rows, drop_missing, at } => {
+                        Op::Sigs { system_id: *system_id, rows: rows.clone(), drop_missing: *drop_missing, at: *at }
                     }
-                },
-                Outgoing::Dead(uid) => Op::HoleDead { uid: uid.clone(), at: chrono::Utc::now().timestamp() },
-                Outgoing::Sigs { system_id, rows, drop_missing, at } => {
-                    Op::Sigs { system_id: *system_id, rows: rows.clone(), drop_missing: *drop_missing, at: *at }
+                    Outgoing::SigDelete { system_id, sig } => Op::SigDelete { system_id: *system_id, sig: sig.clone() },
+                };
+                self.post(&c, g, &op)?;
+                if let Outgoing::Hole(uid) = &out {
+                    self.store.share_settle(uid, g.char_id);
                 }
-                Outgoing::SigDelete { system_id, sig } => Op::SigDelete { system_id: *system_id, sig: sig.clone() },
-            };
-            self.post(&c, g, &op)?;
-            if let Outgoing::Hole(uid) = &out {
-                self.store.share_settle(uid, g.char_id);
-                self.store.share_set_group(uid, &g.id);
             }
+            // Sent, or nowhere to send it: done either way.
             self.store.share_outbox_done(id);
         }
         Ok(())
@@ -610,7 +608,6 @@ mod end_to_end {
         store: Store,
         device: &'static DeviceKeys,
         status: Arc<Mutex<Status>>,
-        target: Arc<Mutex<Option<String>>>,
         clients: Box<dyn Fn(i64) -> Result<Client>>,
     }
 
@@ -621,13 +618,12 @@ mod end_to_end {
                 store: Store::mem(),
                 device: Box::leak(Box::new(DeviceKeys::generate())),
                 status: Default::default(),
-                target: Default::default(),
                 clients: Box::new(move |c| Ok(Client::with_token(&base, &session(&secret, c, &format!("Pilot {c}"))))),
             }
         }
 
         fn engine(&self) -> Engine<'_> {
-            Engine { store: &self.store, device: self.device, status: &self.status, target: &self.target, clients: &*self.clients }
+            Engine { store: &self.store, device: self.device, status: &self.status, clients: &*self.clients }
         }
 
         fn run(&self, cmd: Cmd) {
@@ -637,8 +633,7 @@ mod end_to_end {
         }
 
         fn sync(&self) {
-            let target = self.target.lock().unwrap().clone();
-            self.engine().sync_all(target.as_deref()).unwrap();
+            self.engine().sync_all().unwrap();
         }
 
         /// An invite for `char_id`, made without the ESI name lookup `Cmd::Invite` does.
@@ -684,12 +679,12 @@ mod end_to_end {
         };
         a.store.upsert_wormhole(&hole("ABC"));
 
-        a.run(Cmd::Create { name: "Chain".into(), char_id: owner_id, char_name: "Owner".into() });
+        a.run(Cmd::Create { name: "Chain".into(), char_id: owner_id, char_name: "Owner".into(), prefs: SharePrefs::default() });
         let g = a.store.share_groups()[0].id.clone();
         let link = a.invite_for(&g, joiner_id, "Pilot J");
         let stolen = a.invite_for(&g, joiner_id, "Pilot J");
         let thief = Install::new(&base, &secret);
-        let err = thief.engine().command(Cmd::Join { link: stolen.clone(), char_id: joiner_id + 1 }).unwrap_err();
+        let err = thief.engine().command(Cmd::Join { link: stolen.clone(), char_id: joiner_id + 1, prefs: SharePrefs::default() }).unwrap_err();
         assert!(err.to_string().contains("is for Pilot J"), "{err}");
         // A modified app skips that check and asks anyway, with a MAC that is valid for its own
         // character: the owner must still see it is not who the invite was for.
@@ -703,7 +698,7 @@ mod end_to_end {
         assert!(!bad.verified && bad.meant_for.as_deref() == Some("Pilot J"), "{bad:?}");
         assert!(a.engine().command(Cmd::Approve { group: g.clone(), char_id: joiner_id + 1 }).is_err());
 
-        b.run(Cmd::Join { link: link.clone(), char_id: joiner_id });
+        b.run(Cmd::Join { link: link.clone(), char_id: joiner_id, prefs: SharePrefs::default() });
         assert!(b.hole("ABC").is_none(), "nothing readable before approval");
         a.sync();
         let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
@@ -726,12 +721,23 @@ mod end_to_end {
         b.sync();
         assert!(b.store.share_outbox(10).is_empty());
 
+        // B stops taking holes: A's next one waits in the log until B takes them again.
+        let off = SharePrefs { recv_holes: false, ..SharePrefs::default() };
+        b.store.share_prefs_save(&g, off);
+        a.store.upsert_wormhole(&hole("RCV"));
+        a.sync();
+        b.sync();
+        assert!(b.hole("RCV").is_none(), "not taken while switched off");
+        b.store.share_prefs_save(&g, SharePrefs::default());
+        b.run(Cmd::Rescan { group: g.clone() });
+        assert!(b.hole("RCV").is_some(), "read again once taken");
+
         // Removed, B gets nothing new, and A carries on under a new key.
         a.run(Cmd::Remove { group: g.clone(), char_id: joiner_id });
         assert_eq!(a.store.share_groups()[0].epoch, 1);
         a.store.upsert_wormhole(&hole("XYZ"));
         a.sync();
-        let _ = b.engine().sync_all(None);
+        let _ = b.engine().sync_all();
         assert!(b.hole("XYZ").is_none(), "a removed member reads nothing new");
     }
 }

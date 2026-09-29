@@ -4,7 +4,7 @@
 use super::*;
 use crate::share::engine::{self, Cmd};
 use crate::share::ops::Role;
-use crate::store::ShareGroup;
+use crate::store::{ShareGroup, SharePrefs};
 
 #[derive(Default)]
 pub(crate) struct ShareUi {
@@ -15,6 +15,9 @@ pub(crate) struct ShareUi {
     join_link: String,
     invite_for: String,
     char_id: Option<i64>,
+    /// What a group created or joined from the window gets sent.
+    new_prefs: Option<SharePrefs>,
+    migrated: bool,
     generation: u64,
     groups: Vec<ShareGroup>,
     refreshed: Option<std::time::Instant>,
@@ -32,11 +35,16 @@ impl SpaiApp {
         let now = std::time::Instant::now();
         if self.wh_share.refreshed.is_none_or(|t| now - t > std::time::Duration::from_secs(2)) {
             self.wh_share.refreshed = Some(now);
+            if !std::mem::replace(&mut self.wh_share.migrated, true) {
+                if let Some(s) = &self.store {
+                    s.share_prefs_migrate(self.settings.wh_share_target.as_deref());
+                }
+            }
             self.wh_share.groups = self.store.as_ref().map(|s| s.share_groups()).unwrap_or_default();
         }
         if self.wh_share.handle.is_none() && !self.wh_share.started && (!self.wh_share.groups.is_empty() || self.wh_share.open) {
             self.wh_share.started = true;
-            self.wh_share.handle = Some(engine::spawn(ctx.clone(), self.settings.wh_share_target.clone()));
+            self.wh_share.handle = Some(engine::spawn(ctx.clone()));
         }
         let Some(h) = &self.wh_share.handle else { return };
         let generation = h.status.lock().unwrap().generation;
@@ -44,12 +52,6 @@ impl SpaiApp {
             self.wh_share.generation = generation;
             self.wh_reloaded = None;
             self.wh_graph.forget_sigs();
-        }
-        // The thread may pick a first group as the target itself.
-        let target = h.target.lock().unwrap().clone();
-        if target != self.settings.wh_share_target {
-            self.settings.wh_share_target = target;
-            self.needs_save = true;
         }
         if self.wh_share.kicked.is_none_or(|t| now - t > std::time::Duration::from_secs(3)) {
             self.wh_share.kicked = Some(now);
@@ -59,11 +61,16 @@ impl SpaiApp {
         }
     }
 
-    fn share_send(&mut self, cmd: Cmd) {
+    #[cfg(test)]
+    pub(crate) fn wh_share_seed(&mut self, groups: Vec<ShareGroup>) {
+        self.wh_share.groups = groups;
+    }
+
+        fn share_send(&mut self, cmd: Cmd) {
         if self.wh_share.handle.is_none() {
             let Some(ctx) = self.wh_share.ctx.clone() else { return };
             self.wh_share.started = true;
-            self.wh_share.handle = Some(engine::spawn(ctx, self.settings.wh_share_target.clone()));
+            self.wh_share.handle = Some(engine::spawn(ctx));
         }
         if let Some(h) = &self.wh_share.handle {
             let _ = h.tx.send(cmd);
@@ -71,11 +78,25 @@ impl SpaiApp {
         self.wh_share.refreshed = None;
     }
 
-    fn set_share_target(&mut self, target: Option<String>) {
-        self.settings.wh_share_target = target.clone();
-        self.needs_save = true;
-        if let Some(h) = &self.wh_share.handle {
-            *h.target.lock().unwrap() = target;
+    /// Saves a group's choices and acts on what changed: what is now sent goes out, what is now
+    /// taken is read again from the group's log, and hiding shows or drops its data here.
+    fn set_share_prefs(&mut self, group: &str, was: SharePrefs, now: SharePrefs) {
+        let Some(store) = self.store.as_ref() else { return };
+        store.share_prefs_save(group, now);
+        let (holes_on, sigs_on) = (now.send_holes && !was.send_holes, now.send_sigs && !was.send_sigs);
+        if holes_on || sigs_on {
+            store.share_queue_group(group, holes_on, sigs_on);
+        }
+        if (now.recv_holes && !was.recv_holes) || (now.recv_sigs && !was.recv_sigs) {
+            self.share_send(Cmd::Rescan { group: group.to_owned() });
+        }
+        if now.hidden != was.hidden {
+            self.wh_reloaded = None;
+            self.wh_graph.forget_sigs();
+            self.sig_browser_refresh();
+        }
+        if let Some(g) = self.wh_share.groups.iter_mut().find(|g| g.id == group) {
+            g.prefs = now;
         }
     }
 
@@ -121,7 +142,8 @@ impl SpaiApp {
             self.wh_share.char_id = chars.first().map(|c| c.0);
         }
         let mut cmd: Option<Cmd> = None;
-        let mut target: Option<Option<String>> = None;
+        let mut prefs: Option<(String, SharePrefs, SharePrefs)> = None;
+        let counts: Vec<(i64, i64)> = groups.iter().map(|g| self.store.as_ref().map_or((0, 0), |s| s.share_group_counts(&g.id))).collect();
         let mut copy: Option<String> = None;
         egui::Window::new(format!("{}  Wormhole sharing", icon::USERS_THREE))
             .open(&mut open)
@@ -163,22 +185,43 @@ impl SpaiApp {
                     .on_hover_text("When you ask to join, read this to whoever approves you so they can check it is really you");
                 }
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Send my changes to");
-                    let current = groups.iter().find(|g| Some(&g.id) == self.settings.wh_share_target.as_ref());
-                    egui::ComboBox::from_id_salt("wh_share_target")
-                        .selected_text(current.map_or("Nobody (local only)", |g| g.name.as_str()))
-                        .show_ui(ui, |ui| {
-                            if ui.menu_label(current.is_none(), "Nobody (local only)").clicked() {
-                                target = Some(None);
+                if !groups.is_empty() {
+                    ui.label(egui::RichText::new("What each group gets and gives").strong());
+                    egui::Grid::new("wh_share_prefs").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                        ui.label("");
+                        ui.label(format!("{}  Send", icon::UPLOAD_SIMPLE)).on_hover_text("What of yours goes to the group. What came from another group never does.");
+                        ui.label("");
+                        ui.label(format!("{}  Receive", icon::DOWNLOAD_SIMPLE)).on_hover_text("What the group's members share that is taken in here");
+                        ui.label("");
+                        ui.label("");
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Group").weak());
+                        for _ in 0..2 {
+                            ui.label(egui::RichText::new("Wormholes").weak());
+                            ui.label(egui::RichText::new("Probe scans").weak());
+                        }
+                        ui.label(egui::RichText::new("Hide").weak());
+                        ui.end_row();
+                        for (g, (holes, sigs)) in groups.iter().zip(&counts) {
+                            let was = g.prefs;
+                            let mut p = was;
+                            ui.label(&g.name);
+                            ui.checkbox(&mut p.send_holes, "").on_hover_text(format!("Send your wormholes to {}", g.name));
+                            ui.checkbox(&mut p.send_sigs, "").on_hover_text(format!("Send your probe scans to {}", g.name));
+                            ui.checkbox(&mut p.recv_holes, "").on_hover_text(format!("Take in the wormholes {} shares", g.name));
+                            ui.checkbox(&mut p.recv_sigs, "").on_hover_text(format!("Take in the probe scans {} shares", g.name));
+                            let eye = if p.hidden { icon::EYE_SLASH } else { icon::EYE };
+                            ui.checkbox(&mut p.hidden, eye).on_hover_text(format!(
+                                "Hide the {holes} wormholes and {sigs} signatures that came from {} from the map, table and lists, until you switch it off. They stay stored and keep syncing.",
+                                g.name
+                            ));
+                            ui.end_row();
+                            if p != was {
+                                prefs = Some((g.id.clone(), was, p));
                             }
-                            for g in &groups {
-                                if ui.menu_label(current.is_some_and(|c| c.id == g.id), g.name.as_str()).clicked() {
-                                    target = Some(Some(g.id.clone()));
-                                }
-                            }
-                        });
-                });
+                        }
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     if groups.is_empty() {
@@ -298,12 +341,26 @@ impl SpaiApp {
                     });
                 });
                 let char_id = self.wh_share.char_id;
+                let new_prefs = self.wh_share.new_prefs.get_or_insert_with(SharePrefs::default);
+                ui.horizontal(|ui| {
+                    ui.label("A new group gets");
+                    ui.checkbox(&mut new_prefs.send_holes, "my wormholes");
+                    ui.checkbox(&mut new_prefs.send_sigs, "my probe scans");
+                })
+                .response
+                .on_hover_text("What of yours goes to a group you create or join here. Change it for each group above later.");
+                let new_prefs = *new_prefs;
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.new_name).hint_text("Group name").desired_width(200.0));
                     let ok = char_id.is_some() && !self.wh_share.new_name.trim().is_empty();
                     if ui.add_enabled(ok, egui::Button::new(format!("{}  Create group", icon::PLUS))).clicked() {
                         let char_name = chars.iter().find(|c| Some(c.0) == char_id).map(|c| c.1.clone()).unwrap_or_default();
-                        cmd = Some(Cmd::Create { name: self.wh_share.new_name.trim().to_owned(), char_id: char_id.unwrap_or_default(), char_name });
+                        cmd = Some(Cmd::Create {
+                            name: self.wh_share.new_name.trim().to_owned(),
+                            char_id: char_id.unwrap_or_default(),
+                            char_name,
+                            prefs: new_prefs,
+                        });
                         self.wh_share.new_name.clear();
                     }
                 });
@@ -311,13 +368,13 @@ impl SpaiApp {
                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.join_link).hint_text("eve-spai://join/…").desired_width(200.0));
                     let ok = char_id.is_some() && engine::parse_link(&self.wh_share.join_link).is_some();
                     if ui.add_enabled(ok, egui::Button::new(format!("{}  Join", icon::SIGN_IN))).clicked() {
-                        cmd = Some(Cmd::Join { link: self.wh_share.join_link.trim().to_owned(), char_id: char_id.unwrap_or_default() });
+                        cmd = Some(Cmd::Join { link: self.wh_share.join_link.trim().to_owned(), char_id: char_id.unwrap_or_default(), prefs: new_prefs });
                         self.wh_share.join_link.clear();
                     }
                 });
             });
-        if let Some(t) = target {
-            self.set_share_target(t);
+        if let Some((group, was, now)) = prefs {
+            self.set_share_prefs(&group, was, now);
         }
         if let Some(c) = cmd {
             self.share_send(c);

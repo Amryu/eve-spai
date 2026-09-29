@@ -132,6 +132,8 @@ pub(crate) struct Scene {
     /// Pointer to hold over the scene once it has settled, for anything that only exists under a
     /// cursor. It stays there: egui carries pointer position across passes.
     pub(crate) pointer: Option<egui::Pos2>,
+    /// Pixels per point: above 1 renders the same layout at a higher resolution.
+    pub(crate) density: f32,
 }
 
 impl Scene {
@@ -140,7 +142,12 @@ impl Scene {
         size: impl Into<egui::Vec2>,
         f: impl FnMut(&mut egui::Ui) + 'static,
     ) -> Self {
-        Self { name, size: size.into(), draw: Draw::Ui(Box::new(f)), pointer: None }
+        Self { name, size: size.into(), draw: Draw::Ui(Box::new(f)), pointer: None, density: 1.0 }
+    }
+
+    pub(crate) fn sharp(mut self, density: f32) -> Self {
+        self.density = density;
+        self
     }
 
     pub(crate) fn hovered_at(mut self, pos: impl Into<egui::Pos2>) -> Self {
@@ -153,7 +160,7 @@ impl Scene {
         size: impl Into<egui::Vec2>,
         f: impl FnMut(&egui::Context) + 'static,
     ) -> Self {
-        Self { name, size: size.into(), draw: Draw::Ctx(Box::new(f)), pointer: None }
+        Self { name, size: size.into(), draw: Draw::Ctx(Box::new(f)), pointer: None, density: 1.0 }
     }
 }
 
@@ -218,7 +225,7 @@ pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
     assert_no_live_profile();
     let pointer = scene.pointer;
-    let mut builder = Harness::builder().with_size(scene.size).with_max_steps(8);
+    let mut builder = Harness::builder().with_size(scene.size).with_pixels_per_point(scene.density).with_max_steps(8);
     if gpu {
         software_gpu_only();
         builder = builder.wgpu();

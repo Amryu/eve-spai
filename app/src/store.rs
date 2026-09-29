@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS system_sigs (
     added_at   INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     who        TEXT NOT NULL,
+    -- The sharing group it came from; NULL when pasted here.
+    origin     TEXT,
     PRIMARY KEY (system_id, sig)
 );
 -- Wormhole sharing groups this install is in, and what it needs to read and write their logs.
@@ -144,7 +146,13 @@ CREATE TABLE IF NOT EXISTS share_groups (
     role      TEXT NOT NULL,
     epoch     INTEGER NOT NULL DEFAULT 0,
     cursor    INTEGER NOT NULL DEFAULT 0,
-    joined_at INTEGER NOT NULL
+    joined_at INTEGER NOT NULL,
+    -- What goes to and comes from the group. NULL sends predate the choice (see migrate_share).
+    send_holes INTEGER,
+    send_sigs  INTEGER,
+    recv_holes INTEGER NOT NULL DEFAULT 1,
+    recv_sigs  INTEGER NOT NULL DEFAULT 1,
+    hidden     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS share_keys (
     group_id TEXT NOT NULL,
@@ -169,9 +177,10 @@ CREATE TABLE IF NOT EXISTS share_outbox (
     kind       TEXT NOT NULL,
     uid        TEXT,
     payload    TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- The one group it goes to; NULL rows were queued before sends were per group.
+    group_id   TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_share_outbox_uid ON share_outbox(kind, uid);
 -- When and by whom each field of a hole was last set; author 0 is a local change not yet sent.
 CREATE TABLE IF NOT EXISTS wh_field_clock (
     uid   TEXT NOT NULL,
@@ -479,7 +488,7 @@ mod fleet_moves;
 
 mod fleet_kills;
 pub use fleet_kills::FleetKill;
-pub use share::{Outgoing, ShareGroup};
+pub use share::{Outgoing, ShareGroup, SharePrefs};
 pub use wormholes::SystemSig;
 impl Store {
     /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than
@@ -516,6 +525,7 @@ impl Store {
     pub(crate) fn mem() -> Self {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        migrate_share(&conn);
         Store {
             conn,
             path: std::path::PathBuf::new(),
@@ -567,6 +577,7 @@ impl Store {
             );
         }
         migrate_plaintext_tokens(&conn);
+        migrate_share(&conn);
         Ok(Self {
             conn,
             path,
@@ -1216,6 +1227,23 @@ pub(crate) fn apply_pragmas(conn: &Connection) {
 
 /// One-time migration: if an older DB stored tokens in plaintext columns, move them
 /// into the keychain and drop the columns (scrubbing the DB file with VACUUM).
+/// Per-group sharing choices, outbox rows addressed to one group, and where a signature came from.
+fn migrate_share(conn: &Connection) {
+    for sql in [
+        "ALTER TABLE share_groups ADD COLUMN send_holes INTEGER",
+        "ALTER TABLE share_groups ADD COLUMN send_sigs INTEGER",
+        "ALTER TABLE share_groups ADD COLUMN recv_holes INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE share_groups ADD COLUMN recv_sigs INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE share_groups ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE share_outbox ADD COLUMN group_id TEXT",
+        "ALTER TABLE system_sigs ADD COLUMN origin TEXT",
+        "DROP INDEX IF EXISTS idx_share_outbox_uid",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_outbox_group ON share_outbox(kind, uid, group_id)",
+    ] {
+        let _ = conn.execute(sql, []);
+    }
+}
+
 fn migrate_plaintext_tokens(conn: &Connection) {
     let has_legacy = conn
         .prepare("PRAGMA table_info(characters)")
@@ -1413,14 +1441,14 @@ mod tests {
              ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU\n\
              XYZ-999\tCosmic Signature\t\t\t12,0%\t20 AU",
         );
-        assert_eq!(s.merge_system_sigs(7, &first, "Pilot", 100, false), (3, 0, 0));
+        assert_eq!(s.merge_system_sigs(7, &first, "Pilot", 100, false, None), (3, 0, 0));
         // Rescanned without the wormhole's details, the site gone, the unknown one now scanned.
         let second = probe_scan(
             "ABC-123\tCosmic Signature\t\t\t40,0%\t8 AU\n\
              XYZ-999\tCosmic Signature\tData Site\tUnsecured Frontier Server\t100,0%\t20 AU",
         );
         // No anomalies in this paste, so the anomaly stays: nothing is removed.
-        assert_eq!(s.merge_system_sigs(7, &second, "Other", 200, true), (0, 1, 0));
+        assert_eq!(s.merge_system_sigs(7, &second, "Other", 200, true, None), (0, 1, 0));
         let sigs = s.system_sigs(7);
         let abc = sigs.iter().find(|x| x.sig == "ABC-123").unwrap();
         assert_eq!((abc.group.as_str(), abc.added_at, abc.updated_at), ("Wormhole", 100, 200));
@@ -1433,10 +1461,12 @@ mod tests {
         let _guard = crate::disk::test_guard();
         let s = mem_store();
         let scan = crate::wormholes::probe_scan("ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU");
-        s.merge_system_sigs(7, &scan, "Pilot", 100, false);
-        s.merge_system_sigs(8, &scan, "Pilot", 500, false);
+        s.merge_system_sigs(7, &scan, "Pilot", 100, false, None);
+        s.merge_system_sigs(8, &scan, "Pilot", 500, false, None);
         assert_eq!(s.scanned_since(200), [8].into());
         assert_eq!(s.scanned_since(0), [7, 8].into());
+        let all: Vec<(i64, String)> = s.all_system_sigs().into_iter().map(|(id, g)| (id, g.sig)).collect();
+        assert_eq!(all, vec![(8, "ABC-123".to_owned()), (7, "ABC-123".to_owned())], "latest seen first");
     }
 
     #[test]
@@ -1448,9 +1478,9 @@ mod tests {
             "WKR-862\tCosmic Anomaly\tCombat Site\tAngel Haven\t100,0%\t2,37 AU\n\
              ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU",
         );
-        s.merge_system_sigs(7, &both, "Pilot", 100, true);
+        s.merge_system_sigs(7, &both, "Pilot", 100, true, None);
         let sigs_only = probe_scan("XYZ-999\tCosmic Signature\t\t\t12,0%\t20 AU");
-        assert_eq!(s.merge_system_sigs(7, &sigs_only, "Pilot", 200, true), (1, 0, 1), "ABC-123 gone, the anomaly kept");
+        assert_eq!(s.merge_system_sigs(7, &sigs_only, "Pilot", 200, true, None), (1, 0, 1), "ABC-123 gone, the anomaly kept");
         let left: Vec<String> = s.system_sigs(7).into_iter().map(|x| x.sig).collect();
         assert!(left.contains(&"WKR-862".to_owned()) && left.contains(&"XYZ-999".to_owned()), "{left:?}");
     }

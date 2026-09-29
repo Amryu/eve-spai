@@ -89,7 +89,7 @@ const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum SideTab {
+pub(crate) enum SideTab {
     #[default]
     Info,
     Routes,
@@ -188,12 +188,9 @@ fn pill_id(pin: i64, exit: i64) -> i64 {
     -(pin * 100_000 + exit.rem_euclid(100_000))
 }
 
-/// Gate jumps under which a pinned system counts as near a cluster and joins it. The colours
-/// ([`close_color`]) still only mark the nearest, under 10.
-const NEAR_JUMPS: u32 = 30;
 
 /// The known hole behind signature `sig` in `system`, matched on its first three letters.
-fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wormhole> {
+pub(crate) fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wormhole> {
     holes.iter().find(|w| {
         let here = if w.system_id == system {
             w.signature.as_deref()
@@ -207,7 +204,7 @@ fn sig_hole<'a>(holes: &'a [Wormhole], system: i64, sig: &str) -> Option<&'a Wor
 }
 
 /// The probe scanner's group, short enough for a narrow column.
-fn short_group(group: &str) -> &str {
+pub(crate) fn short_group(group: &str) -> &str {
     match group {
         "" => "?",
         "Combat Site" => "Combat",
@@ -232,6 +229,8 @@ struct RouteCache {
 #[derive(Default)]
 pub(crate) struct WhGraphView {
     pub(crate) table: bool,
+    /// The signature browser instead of the map or the table.
+    pub(crate) sig_browser: bool,
     pan: egui::Vec2,
     pub(crate) selected: Option<i64>,
     /// Loaded once; written through on each drop.
@@ -244,8 +243,8 @@ pub(crate) struct WhGraphView {
     pub(crate) focus: Option<i64>,
     focus_depth: u8,
     focus_dragged: HashMap<i64, egui::Pos2>,
-    side_tab: SideTab,
-    sigs: Option<(i64, Vec<crate::store::SystemSig>)>,
+    pub(crate) side_tab: SideTab,
+    pub(crate) sigs: Option<(i64, Vec<crate::store::SystemSig>)>,
     sigs_pruned: bool,
     sig_note: Option<String>,
     keep_missing: bool,
@@ -1316,6 +1315,9 @@ impl SpaiApp {
             }
         }
         let kspace = |id: &i64| geo.info_of(*id).is_some_and(|i| whdata::class_of(*id, i.security, &i.region).is_kspace());
+        // Gate jumps under which a pinned system counts as near a cluster and joins it. The
+        // colours ([`close_color`]) still only mark the nearest, under 10.
+        let near_jumps = self.settings.wh_pin_jumps.clamp(1, crate::settings::WH_PIN_JUMPS_MAX);
         let chains: Vec<Vec<i64>> = match focus {
             Some(f) => {
                 let mut all: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).chain([f]).collect();
@@ -1339,7 +1341,7 @@ impl SpaiApp {
             })
             .collect();
         for a in anchors.values().flatten() {
-            self.wh_graph.gate_dist.entry(*a).or_insert_with(|| geo.distances_from(*a, 100));
+            self.wh_graph.gate_dist.entry(*a).or_insert_with(|| geo.distances_from(*a, crate::settings::WH_PIN_JUMPS_MAX));
         }
         let dist = |from: i64, exit: i64| self.wh_graph.gate_dist.get(&from).and_then(|d| d.get(&exit).copied());
         // Every chain reaches every pinned system through its own closest exit; a pinned system is
@@ -1358,7 +1360,7 @@ impl SpaiApp {
             }
         }
         // A gate link is a way somewhere only when it is short: further out it says nothing.
-        gate_links.retain(|(_, _, n, _)| *n < NEAR_JUMPS);
+        gate_links.retain(|(_, _, n, _)| *n < near_jumps);
         // The overview keeps every wormhole system but only the k-space exits that lead somewhere:
         // a pinned system, a character, or the short way to either. The rest are counted on the
         // box they hang from. k-space to k-space and k-space to Pochven holes always stay.
@@ -1389,7 +1391,7 @@ impl SpaiApp {
                     .iter()
                     .flat_map(|a| cl.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, dist(*a, *e)?))))
                     .min_by_key(|(_, n)| *n)
-                    .filter(|(_, n)| *n < NEAR_JUMPS);
+                    .filter(|(_, n)| *n < near_jumps);
                 if let Some((exit, n)) = best {
                     let id = pill_id(*pid, exit);
                     pills.insert(id, (*pid, n));
@@ -1543,6 +1545,7 @@ impl SpaiApp {
                             self.settings.wh_legend_open = !self.settings.wh_legend_open;
                             self.needs_save = true;
                         }
+                        self.track_scanner_toggle(ui);
                         if let Some(name) = &focus_name {
                             ui.separator();
                             ui.label(format!("{}  {name}", icon::CROSSHAIR));
@@ -1840,7 +1843,7 @@ impl SpaiApp {
                 let g = painter.layout_job(job);
                 painter.with_clip_rect(r.shrink(2.0).intersect(rect)).galley(r.center() - g.size() / 2.0, g, visuals.text_color());
                 resp.on_hover_text(if n == u32::MAX {
-                    format!("{}: pinned, no cluster within {NEAR_JUMPS} jumps", info.name)
+                    format!("{}: pinned, no cluster within {} jumps", info.name, self.settings.wh_pin_jumps)
                 } else {
                     format!("{}: pinned, {n} jumps by gate and bridge from this cluster's nearest exit", info.name)
                 });
@@ -2209,10 +2212,10 @@ impl SpaiApp {
         let mut focus = false;
         let mut unpin: Option<String> = None;
         let mut paste: Option<Option<String>> = None;
-        let mut drop_sig: Option<String> = None;
+        let mut drop_sig: Option<crate::store::SystemSig> = None;
         let mut new_hole: Option<String> = None;
         let mut toggle: Option<String> = None;
-        egui::Panel::right("wh_graph_side").resizable(true).default_size(260.0).show_inside(ui, |ui| {
+        egui::Panel::right("wh_graph_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(&info.name);
@@ -2238,11 +2241,18 @@ impl SpaiApp {
                     (SideTab::Routes, "Routes".to_owned()),
                     (SideTab::Sigs, if n_sigs == 0 { "Signatures".to_owned() } else { format!("Signatures ({n_sigs})") }),
                 ];
+                // Equal thirds while every label fits in one; a label wider than its third would
+                // widen the panel, which widens the thirds, frame after frame.
                 let w = (ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0;
+                let font = egui::TextStyle::Button.resolve(ui.style());
+                let pad = 2.0 * ui.spacing().button_padding.x;
+                let fits = tabs.iter().all(|(_, l)| ui.painter().layout_no_wrap(l.clone(), font.clone(), egui::Color32::WHITE).size().x + pad <= w);
                 ui.horizontal(|ui| {
                     use crate::app::SteadySelect as _;
                     for (t, label) in tabs {
-                        if ui.menu_label_sized([w, 24.0], self.wh_graph.side_tab == t, label).clicked() {
+                        let on = self.wh_graph.side_tab == t;
+                        let r = if fits { ui.menu_label_sized([w, 24.0], on, label) } else { ui.menu_label(on, label) };
+                        if r.clicked() {
                             self.wh_graph.side_tab = t;
                         }
                     }
@@ -2403,6 +2413,7 @@ impl SpaiApp {
                     }
                     ui.checkbox(&mut self.wh_graph.keep_missing, "Keep missing")
                         .on_hover_text("Keep signatures the paste does not list. Off, a full paste replaces the list: what is missing is gone from space.");
+                    self.sig_undo_button(ui, icon::ARROW_COUNTER_CLOCKWISE);
                 });
                 if let Some(t) = ui.input(|i| {
                     i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None })
@@ -2411,27 +2422,38 @@ impl SpaiApp {
                         paste = Some(Some(t));
                     }
                 }
-                if let Some(note) = &self.wh_graph.sig_note {
-                    ui.label(egui::RichText::new(note).weak());
-                }
-                if sigs.is_empty() {
-                    ui.label(egui::RichText::new("No signatures pasted for this system").weak());
-                }
+                // Always one line, so a paste never pushes the list down: the count, then what the
+                // last paste did.
+                let summary = match (&self.wh_graph.sig_note, sigs.len()) {
+                    (_, 0) => "No signatures pasted for this system".to_owned(),
+                    (Some(note), n) => format!("{n} signatures \u{b7} {note}"),
+                    (None, n) => format!("{n} signatures"),
+                };
+                ui.add(egui::Label::new(egui::RichText::new(summary).weak()).truncate());
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
                 // A table, not a grid: the Info column takes whatever width the panel has left.
                 let row_h = ui.spacing().interact_size.y + 4.0;
+                let text_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x;
+                let id_w = text_w("MMM-888");
+                // The table takes one column gap more than it is given; in a resizable panel that
+                // grows the panel a little every frame until it settles. Give it one gap less.
+                let room = egui::vec2(ui.available_width() - ui.spacing().item_spacing.x, 0.0);
+                let gutter = super::sig_browser::scrollbar_gutter(ui);
+                let visuals = ui.visuals().clone();
+                ui.allocate_ui(room, |ui| {
                 egui_extras::TableBuilder::new(ui)
                     .id_salt("wh_graph_scan")
                     .striped(true)
                     .vscroll(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(egui_extras::Column::auto())
-                    .column(egui_extras::Column::auto())
-                    .column(egui_extras::Column::remainder().clip(true))
-                    .column(egui_extras::Column::auto())
-                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::exact(id_w))
+                    // Narrow enough for the panel as it is: pasting must never widen it.
+                    .column(egui_extras::Column::remainder().at_least(40.0).clip(true))
+                    // Room for remove and edit, whichever rows have them: measured, it drifts. Past
+                    // them, room for the panel's scrollbar.
+                    .column(egui_extras::Column::exact(76.0 + gutter))
                     .header(row_h, |mut header| {
-                        for h in ["Id", "Group", "Info", "Added", ""] {
+                        for h in ["Id", "Info", ""] {
                             header.col(|ui| {
                                 ui.label(egui::RichText::new(h).strong());
                             });
@@ -2440,23 +2462,40 @@ impl SpaiApp {
                     .body(|mut body| {
                     for sg in &sigs {
                         body.row(row_h, |mut row| {
-                        let anomaly = sg.kind.to_lowercase().contains("anomal");
+                        let anomaly = super::sig_browser::is_anomaly(sg);
+                        let aged = super::sig_browser::age_color(&visuals, now, sg.updated_at);
                         row.col(|ui| {
-                            let id = ui.label(if anomaly { egui::RichText::new(&sg.sig).weak() } else { egui::RichText::new(&sg.sig) });
-                            id.on_hover_text(&sg.kind);
-                        });
-                        row.col(|ui| {
-                            ui.label(short_group(&sg.group));
+                            let id = ui.label(match aged {
+                                Some(c) => egui::RichText::new(&sg.sig).color(c),
+                                None if anomaly => egui::RichText::new(&sg.sig).weak(),
+                                None => egui::RichText::new(&sg.sig),
+                            });
+                            id.on_hover_text(format!(
+                                "{}\nAdded {} ago by {}, last seen in a paste {} ago",
+                                sg.kind,
+                                super::human_ago(now - sg.added_at),
+                                sg.who,
+                                super::human_ago(now - sg.updated_at)
+                            ));
                         });
                         // A wormhole signature we know the far side of says where it goes.
                         let hole = sig_hole(holes, sel, &sg.sig);
                         row.col(|ui| {
+                        // The group in front, short and grey, so the site's name gets the room.
+                        ui.label(egui::RichText::new(short_group(&sg.group)).weak());
                         match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
                             Some(Some(f)) => {
                                 let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
-                                if ui.link(format!("{code}{} {}", icon::ARROW_RIGHT, name(f))).clicked() {
+                                let text = egui::RichText::new(format!("{code}{} {}", icon::ARROW_RIGHT, name(f))).color(ui.visuals().hyperlink_color);
+                                if ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     select = Some(f);
                                 }
+                            }
+                            // Known to be a hole, its far side only a kind of space so far.
+                            Some(None) => {
+                                let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
+                                let dest = hole.map_or("?", |w| w.dest.label());
+                                ui.add(egui::Label::new(format!("{code}{} {dest}", icon::ARROW_RIGHT)).truncate());
                             }
                             _ => {
                                 let text = match unidentified_type(sel, &sg.name) {
@@ -2464,21 +2503,15 @@ impl SpaiApp {
                                     None if sg.name.is_empty() => "\u{2014}".to_owned(),
                                     None => sg.name.clone(),
                                 };
-                                ui.add(egui::Label::new(&text).truncate());
+                                let text = egui::RichText::new(text);
+                                ui.add(egui::Label::new(if let Some(c) = aged { text.color(c) } else { text }).truncate());
                             }
                         }
                         });
                         row.col(|ui| {
-                            ui.label(super::human_ago(now - sg.added_at)).on_hover_text(format!(
-                                "Added by {}, last seen in a paste {} ago",
-                                sg.who,
-                                super::human_ago(now - sg.updated_at)
-                            ));
-                        });
-                        row.col(|ui| {
                             // Remove first, so those line up whether or not an edit button follows.
                             if ui.small_button(icon::X).on_hover_text("Remove").clicked() {
-                                drop_sig = Some(sg.sig.clone());
+                                drop_sig = Some(sg.clone());
                             }
                             let is_hole = hole.is_some() || sg.group == "Wormhole";
                             if is_hole && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this wormhole").clicked() {
@@ -2490,6 +2523,7 @@ impl SpaiApp {
                         });
                         });
                     }
+                });
                 });
                     }
                 }
@@ -2508,10 +2542,7 @@ impl SpaiApp {
             self.wh_form = Some(crate::app::wormholes_ui::WhForm::at(info.name.clone(), sig, wh_type));
         }
         if let Some(sig) = drop_sig {
-            if let Some(s) = self.store.as_ref() {
-                s.delete_system_sig(sel, &sig);
-            }
-            self.wh_graph.sigs = None;
+            self.sig_delete(vec![(sel, sig)]);
         }
         if let Some(id) = select {
             self.wh_graph.selected = (id != 0).then_some(id);
@@ -2574,7 +2605,7 @@ impl SpaiApp {
         };
         let Some(store) = self.store.as_ref() else { return };
         let full = !self.wh_graph.keep_missing;
-        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, full);
+        let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, full, None);
         let linked = self.wh_probe_followup(system, &scan, full, &who);
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
@@ -3006,6 +3037,7 @@ mod tests {
             added_at: 0,
             updated_at: 0,
             who: String::new(),
+            origin: None,
         };
         let here = 31_000_004;
         let holes = [

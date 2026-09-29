@@ -2,7 +2,7 @@
 
 use super::*;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemSig {
     pub sig: String,
     pub kind: String,
@@ -11,6 +11,24 @@ pub struct SystemSig {
     pub added_at: i64,
     pub updated_at: i64,
     pub who: String,
+    /// The sharing group it came from; `None` when pasted here.
+    pub origin: Option<String>,
+}
+
+/// Leaves out signatures from groups hidden in the sharing window.
+const NOT_HIDDEN: &str = "(origin IS NULL OR origin NOT IN (SELECT id FROM share_groups WHERE hidden = 1))";
+
+fn sig_row(r: &rusqlite::Row, at: usize) -> rusqlite::Result<SystemSig> {
+    Ok(SystemSig {
+        sig: r.get(at)?,
+        kind: r.get(at + 1)?,
+        group: r.get(at + 2)?,
+        name: r.get(at + 3)?,
+        added_at: r.get(at + 4)?,
+        updated_at: r.get(at + 5)?,
+        who: r.get(at + 6)?,
+        origin: r.get(at + 7)?,
+    })
 }
 
 /// A random id for a new entry, stable wherever it is later synced to.
@@ -172,30 +190,43 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// A system's signatures, less those from hidden groups.
     pub fn system_sigs(&self, system_id: i64) -> Vec<SystemSig> {
-        let Ok(mut st) = self.conn.prepare(
-            "SELECT sig, kind, grp, name, added_at, updated_at, who FROM system_sigs WHERE system_id = ?1 ORDER BY added_at DESC, sig",
-        ) else {
+        self.sigs_in(system_id, true)
+    }
+
+    pub(crate) fn sigs_in(&self, system_id: i64, visible_only: bool) -> Vec<SystemSig> {
+        let filter = if visible_only { format!("AND {NOT_HIDDEN}") } else { String::new() };
+        let Ok(mut st) = self.conn.prepare(&format!(
+            "SELECT sig, kind, grp, name, added_at, updated_at, who, origin FROM system_sigs WHERE system_id = ?1 {filter} ORDER BY added_at DESC, sig"
+        )) else {
             return Vec::new();
         };
-        st.query_map(params![system_id], |r| {
-            Ok(SystemSig {
-                sig: r.get(0)?,
-                kind: r.get(1)?,
-                group: r.get(2)?,
-                name: r.get(3)?,
-                added_at: r.get(4)?,
-                updated_at: r.get(5)?,
-                who: r.get(6)?,
-            })
-        })
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default()
+        st.query_map(params![system_id], |r| sig_row(r, 0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Who pasted probe scans, each with the time of their latest paste.
+    pub fn sig_pasters(&self) -> Vec<(String, i64)> {
+        let Ok(mut st) = self.conn.prepare(&format!("SELECT who, MAX(updated_at) FROM system_sigs WHERE {NOT_HIDDEN} GROUP BY who")) else {
+            return Vec::new();
+        };
+        st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Every signature pasted, in every system, the latest seen first.
+    pub fn all_system_sigs(&self) -> Vec<(i64, SystemSig)> {
+        let Ok(mut st) = self.conn.prepare(&format!(
+            "SELECT system_id, sig, kind, grp, name, added_at, updated_at, who, origin FROM system_sigs WHERE {NOT_HIDDEN} ORDER BY updated_at DESC, system_id, sig"
+        )) else {
+            return Vec::new();
+        };
+        st.query_map([], |r| Ok((r.get(0)?, sig_row(r, 1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
     /// Folds a probe scanner paste into a system's list. A group or name already known is not
     /// blanked by a paste that has not scanned it yet. With `drop_missing`, whatever the paste
-    /// lacks is gone from space. Returns (new, updated, removed).
+    /// lacks is gone from space. `origin` is the sharing group it came from, `None` for a paste
+    /// here. Returns (new, updated, removed).
     pub fn merge_system_sigs(
         &self,
         system_id: i64,
@@ -203,8 +234,9 @@ impl Store {
         who: &str,
         now: i64,
         drop_missing: bool,
+        origin: Option<&str>,
     ) -> (usize, usize, usize) {
-        let old: std::collections::HashMap<String, SystemSig> = self.system_sigs(system_id).into_iter().map(|s| (s.sig.clone(), s)).collect();
+        let old: std::collections::HashMap<String, SystemSig> = self.sigs_in(system_id, false).into_iter().map(|s| (s.sig.clone(), s)).collect();
         let (mut added, mut updated) = (0, 0);
         for s in scan {
             match old.get(&s.id) {
@@ -215,15 +247,15 @@ impl Store {
                         updated += 1;
                     }
                     self.exec_historic(
-                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7 WHERE system_id=?1 AND sig=?2",
-                        params![system_id, s.id, s.kind, group, name, now, who],
+                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7, origin=?8 WHERE system_id=?1 AND sig=?2",
+                        params![system_id, s.id, s.kind, group, name, now, who, origin],
                     );
                 }
                 None => {
                     added += 1;
                     self.exec_historic(
-                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
-                        params![system_id, s.id, s.kind, s.group, s.name, now, who],
+                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)",
+                        params![system_id, s.id, s.kind, s.group, s.name, now, who, origin],
                     );
                 }
             }
@@ -244,14 +276,30 @@ impl Store {
     }
 
     pub fn delete_system_sig(&self, system_id: i64, sig: &str) {
+        let origin: Option<String> = self
+            .conn
+            .query_row("SELECT origin FROM system_sigs WHERE system_id=?1 AND sig=?2", params![system_id, sig], |r| r.get(0))
+            .ok()
+            .flatten();
         self.exec_historic("DELETE FROM system_sigs WHERE system_id=?1 AND sig=?2", params![system_id, sig]);
-        self.share_track_sig_delete(system_id, sig);
+        self.share_track_sig_delete(system_id, sig, origin.as_deref());
+    }
+
+    /// Puts deleted signatures back as they were, and shares them again.
+    pub fn restore_system_sigs(&self, system_id: i64, sigs: &[SystemSig]) {
+        for s in sigs {
+            self.exec_historic(
+                "INSERT OR REPLACE INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![system_id, s.sig, s.kind, s.group, s.name, s.added_at, s.updated_at, s.who, s.origin],
+            );
+        }
+        self.share_track_sig_restore(system_id, sigs);
     }
 
     /// Signatures unseen for days are long gone from space.
     /// Systems with a probe scan pasted at or after `since`, by anyone sharing with us too.
     pub fn scanned_since(&self, since: i64) -> std::collections::HashSet<i64> {
-        let Ok(mut st) = self.conn.prepare("SELECT DISTINCT system_id FROM system_sigs WHERE updated_at >= ?1") else {
+        let Ok(mut st) = self.conn.prepare(&format!("SELECT DISTINCT system_id FROM system_sigs WHERE updated_at >= ?1 AND {NOT_HIDDEN}")) else {
             return Default::default();
         };
         st.query_map(params![since], |r| r.get::<_, i64>(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()

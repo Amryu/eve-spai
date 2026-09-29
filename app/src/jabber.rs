@@ -163,6 +163,43 @@ const PROBE_IDLE: Duration = Duration::from_secs(25);
 /// Silence after which the session counts as dead, probe answered or not.
 const DEAD_AFTER: Duration = Duration::from_secs(60);
 
+/// How often each room is asked whether we still hold our seat in it (XEP-0410). A room service
+/// restarted behind a live connection drops everyone without a word, and nothing else notices.
+const SEAT_CHECK: Duration = Duration::from_secs(180);
+/// How soon a room whose service could not be reached is asked again.
+const SEAT_RETRY: Duration = Duration::from_secs(30);
+/// No answer to a seat check within this long counts as the seat being gone.
+const SEAT_WAIT: Duration = Duration::from_secs(45);
+const SEAT_ID: &str = "spai-seat:";
+
+/// What an answer to a seat check says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Seat {
+    Held,
+    /// The room no longer has us: rejoin.
+    Lost,
+    /// The room service itself is down: ask again soon.
+    Unreachable,
+}
+
+/// The seat check an IQ answers, by its id, and what it says. `None` for any other IQ.
+pub(crate) fn seat_answer(iq: &xmpp::parsers::iq::Iq) -> Option<(String, Seat)> {
+    use xmpp::parsers::{iq::IqPayload, stanza_error::DefinedCondition as C};
+    let room = iq.id().strip_prefix(SEAT_ID)?.to_owned();
+    let seat = match iq.clone().split().1 {
+        // An occupant that does not do pings answers with one of these, relayed by the room: the
+        // room still knows us.
+        IqPayload::Result(_) => Seat::Held,
+        IqPayload::Error(e) => match e.defined_condition {
+            C::ServiceUnavailable | C::FeatureNotImplemented => Seat::Held,
+            C::RemoteServerNotFound | C::RemoteServerTimeout => Seat::Unreachable,
+            _ => Seat::Lost,
+        },
+        _ => return None,
+    };
+    Some((room, seat))
+}
+
 /// Why a connected session ended.
 enum SessionEnd {
     /// The user turned Jabber off.
@@ -401,6 +438,24 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
     // Wake the root so `fleet_ping_window_ui` runs and forwards the new ping over IPC. (Harmless
     // when running the in-process fallback.)
     ctx.request_repaint();
+}
+
+/// Joins `room` again after a seat check found us gone from it.
+async fn rejoin(agent: &mut xmpp::Agent, state: &SharedJabber, room: &str) {
+    if state.lock().unwrap().rooms_left.contains(room) {
+        return;
+    }
+    if let Ok(jid) = room.parse::<xmpp::jid::BareJid>() {
+        agent.join_room(xmpp::muc::room::JoinRoomSettings::new(jid)).await;
+    }
+}
+
+/// A room whose service is down shows struck through until it answers and we are back in.
+pub(crate) fn seat_unreachable(state: &SharedJabber, room: &str) {
+    let mut s = state.lock().unwrap();
+    if s.rooms.remove(room) {
+        s.rooms_inaccessible.insert(room.to_owned());
+    }
 }
 
 /// Self-presence from the MUC proves we are in the room. A room the user left only gets here when
@@ -756,6 +811,10 @@ async fn session(
     let mut probe_sent = false;
     let mut online_once = false;
     let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+    // Seat checks sent and not yet answered, and rooms whose service was down at the last one.
+    let mut seat_pending: std::collections::HashMap<String, Instant> = Default::default();
+    let mut unreachable: std::collections::BTreeSet<String> = Default::default();
+    let mut next_seat_check = Instant::now() + SEAT_CHECK;
 
     loop {
         if !state.lock().unwrap().enabled {
@@ -770,7 +829,14 @@ async fn session(
                 let mut urgent = false;
                 let mut background = false;
                 let mut came_online = false;
+                let mut seats: Vec<(String, Seat)> = Vec::new();
                 for event in events {
+                    if let xmpp::Event::Iq(iq) = &event {
+                        if let Some(answer) = seat_answer(iq) {
+                            seats.push(answer);
+                            continue;
+                        }
+                    }
                     if handle_event(event, state, resolve, ping_shared, cmds, ctx, store, my_nick, &mut came_online) {
                         urgent = true;
                     } else {
@@ -784,6 +850,27 @@ async fn session(
                             // Asked for by the app, so its RoomJoined is not a bookmark rejoin.
                             state.lock().unwrap().rooms_left.remove(r.as_str());
                             agent.join_room(JoinRoomSettings::new(room)).await;
+                        }
+                    }
+                }
+                for (room, seat) in seats {
+                    seat_pending.remove(&room);
+                    match seat {
+                        Seat::Held => {
+                            if unreachable.remove(&room) {
+                                eprintln!("[jabber] {room} answers again");
+                            }
+                        }
+                        Seat::Lost => {
+                            eprintln!("[jabber] no longer in {room}, rejoining");
+                            rejoin(agent, state, &room).await;
+                        }
+                        Seat::Unreachable => {
+                            if unreachable.insert(room.clone()) {
+                                eprintln!("[jabber] {room}: room service unreachable, retrying");
+                                seat_unreachable(state, &room);
+                            }
+                            next_seat_check = next_seat_check.min(Instant::now() + SEAT_RETRY);
                         }
                     }
                 }
@@ -802,6 +889,34 @@ async fn session(
                 let idle = last_inbound.elapsed();
                 if idle >= DEAD_AFTER {
                     return SessionEnd::Dropped("Connection lost.".to_owned());
+                }
+                if online_once {
+                    let now = Instant::now();
+                    // Unanswered: whatever happened, being in the room again is the fix.
+                    let silent: Vec<String> = seat_pending.iter().filter(|(_, at)| now - **at >= SEAT_WAIT).map(|(r, _)| r.clone()).collect();
+                    for room in silent {
+                        seat_pending.remove(&room);
+                        eprintln!("[jabber] {room} did not answer a seat check, rejoining");
+                        rejoin(agent, state, &room).await;
+                    }
+                    if now >= next_seat_check {
+                        next_seat_check = now + if unreachable.is_empty() { SEAT_CHECK } else { SEAT_RETRY };
+                        let rooms: std::collections::BTreeSet<String> = {
+                            let s = state.lock().unwrap();
+                            s.rooms.iter().chain(&unreachable).filter(|r| !s.rooms_left.contains(*r)).cloned().collect()
+                        };
+                        for room in rooms {
+                            if seat_pending.contains_key(&room) {
+                                continue;
+                            }
+                            use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
+                            if let Ok(to) = format!("{room}/{my_nick}").parse::<xmpp::jid::Jid>() {
+                                let iq = Iq::from_get(format!("{SEAT_ID}{room}"), XmppPing).with_to(to);
+                                let _ = agent.send_stanza(iq).await;
+                                seat_pending.insert(room, now);
+                            }
+                        }
+                    }
                 }
                 if idle >= PROBE_IDLE && !probe_sent {
                     use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
@@ -909,6 +1024,7 @@ fn handle_event(
             | Event::ContactChanged(_)
             | Event::ContactRemoved(_)
             | Event::Message(_)
+            | Event::Iq(_)
     );
     let now = chrono::Utc::now().timestamp();
     match event {
@@ -1093,6 +1209,24 @@ fn handle_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_seat_check_answer_says_whether_we_are_still_in_the_room() {
+        use super::{seat_answer, Seat};
+        use xmpp::parsers::iq::Iq;
+        use xmpp::parsers::stanza_error::{DefinedCondition as C, ErrorType, StanzaError};
+        let room = "scouts@conference.example.com";
+        let id = format!("spai-seat:{room}");
+        let err = |c: C| Iq::from_error(id.clone(), StanzaError::new(ErrorType::Cancel, c, "en", ""));
+        let answer = |iq: Iq| seat_answer(&iq).map(|(r, s)| (r == room).then_some(s)).flatten();
+        assert_eq!(answer(Iq::from_result(id.clone(), None::<xmpp::parsers::disco::DiscoInfoResult>)), Some(Seat::Held));
+        assert_eq!(answer(err(C::ServiceUnavailable)), Some(Seat::Held), "our client answers pings like this, relayed");
+        assert_eq!(answer(err(C::NotAcceptable)), Some(Seat::Lost), "the room forgot us");
+        assert_eq!(answer(err(C::ItemNotFound)), Some(Seat::Lost));
+        assert_eq!(answer(err(C::RemoteServerNotFound)), Some(Seat::Unreachable), "the room service is down");
+        assert_eq!(answer(err(C::RemoteServerTimeout)), Some(Seat::Unreachable));
+        assert_eq!(seat_answer(&Iq::from_error("spai-keepalive", StanzaError::new(ErrorType::Cancel, C::NotAcceptable, "en", ""))), None, "not a seat check");
+    }
+
     use super::{invited_room, jid_format_error, mention_hit};
 
     fn joined(state: &super::SharedJabber, room: &str) -> Vec<super::Cmd> {
