@@ -2403,7 +2403,7 @@ mod jabber_force_join_tests {
 
 #[cfg(test)]
 mod active_character_tests {
-    use super::{CharacterRow, motd_one_line, motd_preview, resolve_active_character, shows_in_dm_list};
+    use super::{CharacterRow, motd_one_line, motd_preview, resolve_active_character, is_direct_message};
 
     fn rows(names: &[&str]) -> Vec<CharacterRow> {
         names
@@ -2481,61 +2481,26 @@ mod active_character_tests {
         assert_eq!(short, "one\ntwo");
     }
 
-    /// A room is never a direct message, however it got into the sticky set. Listed under both
-    /// headings, one row is dead: two rows sharing a jid share an egui id and only one wins the hit
-    /// test.
+    /// A room is never a direct message, however loud it gets. Listed under both headings, one row
+    /// is dead: two rows sharing a jid share an egui id and only one wins the hit test.
     #[test]
     fn a_room_is_never_listed_as_a_direct_message() {
-        use std::collections::{BTreeSet, HashSet};
+        use std::collections::HashSet;
         let dm = "wingmate@goonfleet.com".to_owned();
         let room = "delve.imperium@conference.goonfleet.com".to_owned();
         let dm_keys: HashSet<&String> = HashSet::from([&dm]);
         let contacts: HashSet<&String> = HashSet::new();
-        let closed: HashSet<&String> = HashSet::new();
-
-        // The room went unread, so it is sticky.
-        let sticky = BTreeSet::from([dm.clone(), room.clone()]);
-        assert!(shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &sticky));
-        assert!(
-            !shows_in_dm_list(&room, &dm_keys, &contacts, &closed, &sticky),
-            "a room stays out of the DM list even while it is sticky"
-        );
-    }
-
-    /// The sticky rule exists so closing a DM is curation and not a way to lose mail. Keeping rooms
-    /// out of the DM list must not narrow it for DMs.
-    #[test]
-    fn a_closed_dm_comes_back_when_it_goes_unread() {
-        use std::collections::{BTreeSet, HashSet};
-        let dm = "wingmate@goonfleet.com".to_owned();
-        let dm_keys: HashSet<&String> = HashSet::from([&dm]);
-        let contacts: HashSet<&String> = HashSet::new();
-        let closed: HashSet<&String> = HashSet::from([&dm]);
-
-        assert!(
-            !shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &BTreeSet::new()),
-            "closed and quiet stays closed"
-        );
-        assert!(
-            shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &BTreeSet::from([dm.clone()])),
-            "closed but unread comes back"
-        );
+        assert!(is_direct_message(&dm, &dm_keys, &contacts));
+        assert!(!is_direct_message(&room, &dm_keys, &contacts));
     }
 
     /// A contact with no history is a person you have not spoken to yet, and the list is how you
     /// start. `dm_keys` only covers conversations that already exist.
     #[test]
     fn a_contact_is_a_direct_message_without_any_history() {
-        use std::collections::{BTreeSet, HashSet};
         let friend = "logilead@goonfleet.com".to_owned();
-        let contacts: HashSet<&String> = HashSet::from([&friend]);
-        assert!(shows_in_dm_list(
-            &friend,
-            &HashSet::new(),
-            &contacts,
-            &HashSet::new(),
-            &BTreeSet::new()
-        ));
+        let contacts: std::collections::HashSet<&String> = std::collections::HashSet::from([&friend]);
+        assert!(is_direct_message(&friend, &std::collections::HashSet::new(), &contacts));
     }
 
     /// A room with no subject must not draw an empty separator and a dead button.
@@ -3140,5 +3105,35 @@ mod drifter_autofill_tests {
         let (mut ty, mut dest) = ("H296".to_owned(), "Jita".to_owned());
         drifter_autofill(&geo, &mut ty, &mut dest, true, false);
         assert_eq!(dest, "Jita");
+    }
+}
+
+#[cfg(test)]
+mod dm_arrival_tests {
+    use crate::app::SpaiApp;
+
+    /// A DM always opens its conversation, even one closed or forgotten and whatever view is up,
+    /// without taking the window from the tab it shows. Someone writing through a room is a DM too.
+    #[test]
+    fn a_dm_always_opens_its_conversation() {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        let dm = "wingmate@goonfleet.com";
+        let via_room = "delve.imperium@conference.goonfleet.com/Scout Alpha";
+        a.settings.jabber_closed_dms.push(dm.into());
+        a.settings.jabber_forgotten.push(dm.into());
+        a.jabber_tabs = vec!["corp.chat@conference.goonfleet.com".into()];
+        a.jabber_chat = Some("corp.chat@conference.goonfleet.com".into());
+        a.view = crate::nav::View::Map;
+        crate::jabber::receive_direct(&a.jabber, dm, "you flying tonight?".into(), 100, false, None);
+        crate::jabber::receive_direct(&a.jabber, via_room, "psst".into(), 101, false, None);
+        a.poll_jabber_notify(&ctx);
+        assert!(a.settings.jabber_closed_dms.is_empty() && a.settings.jabber_forgotten.is_empty());
+        assert!(a.jabber_tabs.iter().any(|t| t == dm) && a.jabber_tabs.iter().any(|t| t == via_room), "{:?}", a.jabber_tabs);
+        assert_eq!(a.jabber_chat.as_deref(), Some("corp.chat@conference.goonfleet.com"), "the shown tab stays");
+        assert!(a.jabber.lock().unwrap().unread.contains(dm));
+        assert_eq!(crate::jabber::convo_name(via_room), "Scout Alpha (via delve.imperium)");
+        assert!(crate::app::valid_convo_key(via_room) && crate::app::valid_convo_key(dm));
+        assert!(!crate::app::valid_convo_key("room@conference.goonfleet.com/"));
     }
 }

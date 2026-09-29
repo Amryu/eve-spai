@@ -1212,7 +1212,7 @@ impl SpaiApp {
         if let Some(s) = &store {
             let mut purge: std::collections::HashSet<String> = std::collections::HashSet::new();
             for (jid, sender, body, time, outgoing) in s.load_chats(5000) {
-                if !valid_bare_jid(&jid) {
+                if !valid_convo_key(&jid) {
                     purge.insert(jid);
                     continue;
                 }
@@ -4565,6 +4565,14 @@ fn wh_route_waypoints(
     Some(waypoints)
 }
 
+/// A conversation's key: a bare JID, or a room's with the nick of someone written to through it.
+pub(crate) fn valid_convo_key(s: &str) -> bool {
+    match s.split_once('/') {
+        Some((room, nick)) => valid_bare_jid(room) && !nick.trim().is_empty(),
+        None => valid_bare_jid(s),
+    }
+}
+
 fn valid_bare_jid(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() || s.contains(char::is_whitespace) {
@@ -4600,21 +4608,6 @@ fn is_direct_message(
     contacts: &std::collections::HashSet<&String>,
 ) -> bool {
     dm_keys.contains(jid) || contacts.contains(jid)
-}
-
-/// Whether a conversation belongs in the Direct messages list.
-///
-/// Being a DM is the gate, and being sticky only overrides having been closed. Otherwise a room that
-/// went unread would be listed twice, and the duplicate row is dead: two rows with the same jid ask
-/// egui to interact with one id twice, and only one of them can win the hit test.
-fn shows_in_dm_list(
-    jid: &String,
-    dm_keys: &std::collections::HashSet<&String>,
-    contacts: &std::collections::HashSet<&String>,
-    closed: &std::collections::HashSet<&String>,
-    sticky: &std::collections::BTreeSet<String>,
-) -> bool {
-    is_direct_message(jid, dm_keys, contacts) && (sticky.contains(jid) || !closed.contains(jid))
 }
 
 /// A room's MOTD as one line, for a title bar that has one line to give it.
@@ -6696,6 +6689,10 @@ fn ontop_pin_ui(ui: &mut egui::Ui, id: &str) {
 }
 
 pub(crate) fn notify_os(summary: &str, body: &str) {
+    // Tests exercise the paths that notify; the desktop must not get their fixtures.
+    if cfg!(test) {
+        return;
+    }
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new().summary(&summary).body(&body).show();

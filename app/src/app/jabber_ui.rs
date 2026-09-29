@@ -288,7 +288,10 @@ impl SpaiApp {
             st.notify_cfg.muted = self.settings.jabber_muted.clone();
             st.notify_cfg.room_notify = self.settings.jabber_room_notify.clone();
             st.notify_cfg.push = crate::push::Targets::of(&self.settings.alerts);
-            std::mem::take(&mut st.notify)
+            let arrived = std::mem::take(&mut st.dm_arrived);
+            drop(st);
+            self.jabber_open_arrived(arrived);
+            std::mem::take(&mut self.jabber.lock().unwrap().notify)
         };
         if events.is_empty() {
             return;
@@ -319,6 +322,22 @@ impl SpaiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                 egui::UserAttentionType::Informational,
             ));
+        }
+    }
+
+    /// Every DM opens its conversation, whatever view is up: back from closed or forgotten, and
+    /// as a tab, without taking the window from what it shows.
+    fn jabber_open_arrived(&mut self, keys: Vec<String>) {
+        for key in keys {
+            let was = (self.settings.jabber_closed_dms.len(), self.settings.jabber_forgotten.len());
+            self.settings.jabber_closed_dms.retain(|j| j != &key);
+            self.settings.jabber_forgotten.retain(|j| j != &key);
+            let mut t = self.tab_set();
+            if t.owner(&key).is_none() {
+                t.attach(&key, ChatWinKey::Main, None);
+                self.needs_save = true;
+            }
+            self.needs_save |= was != (self.settings.jabber_closed_dms.len(), self.settings.jabber_forgotten.len());
         }
     }
 
@@ -1200,12 +1219,12 @@ impl SpaiApp {
             self.jabber_sticky.insert(c.jid.clone());
         }
 
-        let closed: std::collections::HashSet<&String> =
-            self.settings.jabber_closed_dms.iter().collect();
+        // Every recent partner, whether or not its tab is open: closing a tab is not leaving the
+        // conversation. "Remove from list" is what takes a row out.
         let mut dms: Vec<&Convo> = f
             .convos
             .iter()
-            .filter(|c| shows_in_dm_list(&c.jid, &dm_keys, &contacts, &closed, &self.jabber_sticky))
+            .filter(|c| is_dm(&c.jid))
             .filter(|c| matches(&c.name, &c.jid))
             .collect();
         // Unread first, then most recent. An unread conversation with no history yet would sort to
@@ -1232,20 +1251,27 @@ impl SpaiApp {
         // Collected rather than applied inside the closure: the row renderer borrows `self`.
         let mut motd: Option<String> = None;
         let mut leave: Option<String> = None;
+        let mut forget: Option<String> = None;
         let pinned: std::collections::HashSet<String> = self.jabber_rescue_rooms().into_iter().collect();
-        egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
+        {
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.bg_stroke = egui::Stroke::NONE;
             w.hovered.bg_stroke = egui::Stroke::NONE;
             w.active.bg_stroke = egui::Stroke::NONE;
 
             // Both sections and their start rows whether or not anything is open: right after the
-            // first sign-in both lists are empty, and the start rows are the way in.
+            // first sign-in both lists are empty, and the start rows are the way in. Each list gets
+            // half the height and scrolls on its own, so both start rows stay in sight.
             let section = |ui: &mut egui::Ui, title: &str| {
                 ui.add_space(7.0);
                 ui.label(egui::RichText::new(title).strong().size(15.0).color(accent));
             };
+            let gap = ui.spacing().item_spacing.y;
+            let title_h = 7.0 + ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(15.0))) + gap;
+            let start_h = ui.spacing().interact_size.y + 2.0 * gap;
+            let list_h = ((ui.available_height() - 2.0 * (title_h + start_h)) / 2.0).max(48.0);
             section(ui, "Direct messages");
+            egui::ScrollArea::vertical().id_salt("dm_scroll").max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.push_id("dmlist", |ui| {
             for c in &dms {
                 let (r, g, b) = c.presence.color();
@@ -1260,16 +1286,25 @@ impl SpaiApp {
                     false,
                     false,
                 );
-                row.context_menu(|ui| self.jabber_notify_menu(ui, &c.jid));
+                row.context_menu(|ui| {
+                    self.jabber_notify_menu(ui, &c.jid);
+                    ui.separator();
+                    if ui.button(format!("{}  Remove from list", egui_phosphor::regular::X)).on_hover_text("A new message brings it back").clicked() {
+                        forget = Some(c.jid.clone());
+                        ui.close();
+                    }
+                });
                 if row.clicked() {
                     open = Some(c.jid.clone());
                 }
             }
             });
+            });
             if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, "Start a DM") {
                 start = Some(false);
             }
             section(ui, "Rooms");
+            egui::ScrollArea::vertical().id_salt("room_scroll").max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.push_id("roomlist", |ui| {
             for c in &rooms {
                 let row = self.jabber_convo_row(
@@ -1320,12 +1355,16 @@ impl SpaiApp {
                 }
             }
             });
+            });
             if self.jabber_start_row(ui, egui_phosphor::regular::USERS_THREE, "Join a room") {
                 start = Some(true);
             }
-        });
+        }
         if let Some(jid) = leave {
             self.jabber_forget(&jid, true);
+        }
+        if let Some(jid) = forget {
+            self.jabber_forget(&jid, false);
         }
         if let Some(jid) = motd {
             self.jabber_motd_window = Some(jid);
@@ -1586,7 +1625,7 @@ impl SpaiApp {
             let pres = st.presences.get(jid).map(|(p, _)| *p).unwrap_or_default();
             set.entry(jid.clone()).or_insert_with(|| Convo {
                 jid: jid.clone(),
-                name: jid.split('@').next().unwrap_or(jid).to_owned(),
+                name: crate::jabber::convo_name(jid),
                 unread: false,
                 unread_count: 0,
                 mention: false,
@@ -1619,7 +1658,7 @@ impl SpaiApp {
                     && !st.rooms_left.contains(*k)
                     && !forgotten.contains(*k)
                     && k.as_str() != crate::jabber::PING_FEED_KEY
-                    && valid_bare_jid(k)
+                    && valid_convo_key(k)
             })
             .cloned()
             .collect();
@@ -2718,7 +2757,7 @@ impl SpaiApp {
             .filter(|m| !m.trim().is_empty());
         let mut show_motd = false;
         ui.horizontal(|ui| {
-            let name = jid.split('@').next().unwrap_or(&jid);
+            let name = crate::jabber::convo_name(&jid);
             let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
             ui.label(egui::RichText::new(format!("{glyph}  {name}")).strong());
             if let Some((glyph, hover)) = mark.glyph() {

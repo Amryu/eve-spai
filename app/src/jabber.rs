@@ -8,6 +8,20 @@ pub const PING_FEED_KEY: &str = "__pings__";
 
 /// The ping bot's own conversation. Its messages are the ping feed, which has its own row and its
 /// own badge, so the conversation itself never badges and never reopens a tab the user closed.
+/// A room occupant written to privately: `room@service/nick`. Everything else is a bare JID.
+pub fn is_room_private(key: &str) -> bool {
+    key.contains('/')
+}
+
+/// How a conversation is named: the account's local part, or "nick (via room)" for someone written
+/// to through a room.
+pub fn convo_name(key: &str) -> String {
+    match key.split_once('/') {
+        Some((room, nick)) => format!("{nick} (via {})", room.split('@').next().unwrap_or(room)),
+        None => key.split('@').next().unwrap_or(key).to_owned(),
+    }
+}
+
 pub fn is_ping_sender(jid: &str) -> bool {
     jid.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(PING_SENDER))
 }
@@ -285,6 +299,8 @@ pub struct JabberState {
     /// Conversations carrying an unread message that named us.
     pub mentions: std::collections::BTreeSet<String>,
     pub pings: Vec<Ping>,
+    /// Conversations a DM just came in on, drained by the UI to open them.
+    pub dm_arrived: Vec<String>,
     pub notify_cfg: JabberNotifyCfg,
 }
 
@@ -299,6 +315,7 @@ fn fire_arrival_notification(
     key: &str,
     ping: Option<&Ping>,
     mention: Option<&ChatMsg>,
+    direct: Option<&ChatMsg>,
 ) {
     let fleet_call = ping.is_some_and(|p| p.is_fleet_call());
     if is_muted(&cfg.muted, key) && !(mention.is_some() && cfg.mention_ignores_mute) {
@@ -329,6 +346,8 @@ fn fire_arrival_notification(
         None if mention.is_some() => {
             (false, true, cfg.mention_sound.clone(), 1u8, cfg.mention_volume)
         }
+        // Someone writing to us alone: never lost behind the cooldown of room chatter.
+        None if direct.is_some() => (false, true, cfg.msg_sound.clone(), 1u8, cfg.msg_volume),
         None => (false, true, cfg.msg_sound.clone(), 0u8, cfg.msg_volume),
     };
     if push {
@@ -353,6 +372,9 @@ fn fire_arrival_notification(
     if let Some(m) = mention {
         let room = key.split('@').next().unwrap_or(key);
         crate::app::notify_os(&format!("Mentioned in {room}"), &format!("{}: {}", m.from, m.body));
+    }
+    if let Some(m) = direct {
+        crate::app::notify_os(&format!("Message from {}", convo_name(key)), &m.body);
     }
     if let Some(Ping::Fleet { fc, doctrine, .. }) = ping.filter(|p| p.is_fleet_call()) {
         let body = match doctrine {
@@ -513,6 +535,10 @@ pub(crate) fn receive_direct(
         false,
         store,
     );
+    if !bot {
+        // Every DM opens its conversation, the delayed ones from while we were away too.
+        state.lock().unwrap().dm_arrived.push(key.to_owned());
+    }
     if delayed && !bot {
         let mut s = state.lock().unwrap();
         s.unread.insert(key.to_owned());
@@ -535,6 +561,8 @@ fn push_msg(
         let mut s = state.lock().unwrap();
         let mention = check_mention && mention_hit(&msg.body, &s.notify_cfg.mention_names);
         let mentioned = mention.then(|| msg.clone());
+        // A DM: not ours, not the ping bot's, and not in a room.
+        let direct = (!check_mention && !msg.outgoing && !is_ping_sender(key) && !s.rooms.contains(key)).then(|| msg.clone());
         let conv = s.chats.entry(key.to_owned()).or_default();
         conv.push(msg);
         let n = conv.len();
@@ -548,13 +576,13 @@ fn push_msg(
                 s.mentions.insert(key.to_owned());
             }
             s.notify.push((key.to_owned(), false));
-            Some((s.notify_cfg.clone(), mentioned))
+            Some((s.notify_cfg.clone(), mentioned, direct))
         } else {
             None
         }
     };
-    if let Some((cfg, mentioned)) = fire {
-        fire_arrival_notification(&cfg, key, None, mentioned.as_ref());
+    if let Some((cfg, mentioned, direct)) = fire {
+        fire_arrival_notification(&cfg, key, None, mentioned.as_ref(), direct.as_ref());
     }
 }
 
@@ -934,10 +962,26 @@ async fn session(
             Some(cmd) = rx.recv() => match cmd {
 
                 Cmd::Send { to, body } => {
-                    if let Ok(recipient) = to.parse::<BareJid>() {
-                        agent
-                            .send_message(MessageSettings { recipient, message: &body, lang: None })
-                            .await;
+                    let sent = match to.split_once('/') {
+                        // Back through the room it came from.
+                        Some((room, nick)) => match (room.parse::<BareJid>(), nick.parse::<xmpp::RoomNick>()) {
+                            (Ok(room), Ok(nick)) => {
+                                agent
+                                    .send_room_private_message(xmpp::muc::private_message::RoomPrivateMessageSettings::new(room, nick, &body))
+                                    .await;
+                                true
+                            }
+                            _ => false,
+                        },
+                        None => match to.parse::<BareJid>() {
+                            Ok(recipient) => {
+                                agent.send_message(MessageSettings { recipient, message: &body, lang: None }).await;
+                                true
+                            }
+                            Err(_) => false,
+                        },
+                    };
+                    if sent {
                         let now = chrono::Utc::now().timestamp();
                         push_msg(
                             &state,
@@ -1117,7 +1161,7 @@ fn handle_event(
                         }
                     };
                     if let Some((cfg, ping)) = fire {
-                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping), None);
+                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping), None, None);
                         if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
                             push_ping_window(ping_shared, ctx, &ping);
                         }
@@ -1125,6 +1169,20 @@ fn handle_event(
                 }
             }
             receive_direct(state, &key, body, stamp, delayed, store);
+        }
+        // An edit arrives as a message of its own; losing it would lose what was said.
+        Event::ChatMessageCorrection(_, from, body, time_info) => {
+            let stamp = time_info.delays.first().map(|d| d.stamp.0.timestamp()).unwrap_or(now);
+            receive_direct(state, &from.to_string(), format!("{body} (edited)"), stamp, !time_info.delays.is_empty(), store);
+        }
+        // Someone in a room writing to us alone, through the room: a DM like any other.
+        Event::RoomPrivateMessage(_, room, nick, body, time_info) => {
+            let stamp = time_info.delays.first().map(|d| d.stamp.0.timestamp()).unwrap_or(now);
+            receive_direct(state, &format!("{room}/{nick}"), body, stamp, !time_info.delays.is_empty(), store);
+        }
+        Event::RoomPrivateMessageCorrection(_, room, nick, body, time_info) => {
+            let stamp = time_info.delays.first().map(|d| d.stamp.0.timestamp()).unwrap_or(now);
+            receive_direct(state, &format!("{room}/{nick}"), format!("{body} (edited)"), stamp, !time_info.delays.is_empty(), store);
         }
         // The library handles bookmarks but not invites, so an invite is joined by hand. Both flavours
         // are idempotent on the agent side (a redundant join is warned about and dropped).

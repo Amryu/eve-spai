@@ -115,32 +115,21 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
             let mut got = false;
             for id in batch {
                 let now_dt = chrono::Utc::now();
-                let resp = client
-                    .get(format!("https://zkillboard.com/api/stats/characterID/{id}/"))
-                    .send();
-                let active_recent = match resp {
-                    Err(_) => {
+                let url = format!("https://zkillboard.com/api/stats/characterID/{id}/");
+                let active_recent = match crate::zkapi::fetch(&client, &url) {
+                    // Rate limited or unreachable: asked again later, never taken as inactive.
+                    crate::zkapi::Fetch::Limited | crate::zkapi::Fetch::Unreachable(_) => {
                         cache.lock().unwrap().pending.insert(id);
-                        std::thread::sleep(Duration::from_millis(300));
                         continue;
                     }
-                    // Got a response (any status). Non-200 / garbage body → not active, but
-                    // still set the entry so we don't infinite-retry.
-                    Ok(r) => {
-                        if r.status().is_success() {
-                            r.json::<serde_json::Value>()
-                                .ok()
-                                .map(|v| {
-                                    months_active_recent(
-                                        v.get("months").unwrap_or(&serde_json::Value::Null),
-                                        now_dt,
-                                    )
-                                })
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    }
+                    // Any other status or a garbage body: not active, but still set the entry so
+                    // we don't infinite-retry.
+                    crate::zkapi::Fetch::Failed(_) => false,
+                    crate::zkapi::Fetch::Ok(r) => r
+                        .json::<serde_json::Value>()
+                        .ok()
+                        .map(|v| months_active_recent(v.get("months").unwrap_or(&serde_json::Value::Null), now_dt))
+                        .unwrap_or(false),
                 };
 
                 // Birthday and last corp change rarely change, so reuse any already-known value.
@@ -163,7 +152,6 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
                     s.save_pilot_activity(id, active_recent, birthday, last_corp_change, now);
                 }
                 got = true;
-                std::thread::sleep(Duration::from_millis(300)); // be gentle on zKill
             }
             if got {
                 ctx.request_repaint();

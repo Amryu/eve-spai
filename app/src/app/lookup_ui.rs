@@ -554,7 +554,12 @@ impl SpaiApp {
         self.ensure_type_names(&ship_ids, ui.ctx());
         let pending: Vec<&(String, Row)> = rows.iter().filter(|(_, r)| !matches!(r, Row::Done(_))).collect();
 
-        self.lookup_summary_header(ui, &done, &orgs, rows.len(), pending.iter().filter(|(_, r)| *r == Row::Pending).count());
+        let loading = pending.iter().filter(|(_, r)| *r == Row::Pending).count();
+        let failed = pending.iter().filter(|(_, r)| matches!(r, Row::Failed(_))).count();
+        if self.lookup_summary_header(ui, &done, &orgs, rows.len(), loading, failed) {
+            // Failed rows count as not looked up yet, so asking again takes exactly them.
+            crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), ui.ctx());
+        }
 
         let cols: Vec<Col> = Col::ALL.into_iter().filter(|c| self.lookup_column_shown(*c)).collect();
         let total_w = CHARACTER_W + cols.iter().map(|c| c.width()).sum::<f32>();
@@ -630,7 +635,9 @@ impl SpaiApp {
         orgs: &std::collections::HashMap<i64, crate::localscan::Org>,
         total: usize,
         loading: usize,
-    ) {
+        failed: usize,
+    ) -> bool {
+        let mut retry = false;
         let mut factions: Vec<(i64, usize)> = Vec::new();
         let mut alliances: Vec<(i64, usize)> = Vec::new();
         for s in done {
@@ -653,6 +660,22 @@ impl SpaiApp {
             if loading > 0 {
                 ui.spinner();
                 ui.label(egui::RichText::new(format!("{loading} loading")).weak());
+                if let Some(wait) = crate::zkapi::paused_for() {
+                    ui.label(
+                        egui::RichText::new(format!("{}  zKillboard rate limit, resuming in {}s", egui_phosphor::regular::HOURGLASS_MEDIUM, wait.as_secs() + 1))
+                            .color(crate::theme::standing::WARNING),
+                    )
+                    .on_hover_text("zKillboard asked for fewer requests. Every lookup waits and carries on by itself; nothing is lost.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                }
+            }
+            if failed > 0
+                && ui
+                    .button(format!("{}  Retry {failed} failed", egui_phosphor::regular::ARROW_CLOCKWISE))
+                    .on_hover_text("Look them up again")
+                    .clicked()
+            {
+                retry = true;
             }
             let group = |ui: &mut egui::Ui, title: &str, items: &[(i64, usize)], url: &dyn Fn(i64) -> Option<String>, name: &dyn Fn(i64) -> String| {
                 if items.is_empty() {
@@ -682,6 +705,7 @@ impl SpaiApp {
             );
         });
         ui.add_space(2.0);
+        retry
     }
 
     fn lookup_placeholder_row(&self, ui: &mut egui::Ui, name: &str, row: &Row, width: f32) -> Option<String> {

@@ -69,8 +69,7 @@ fn fetch_kill(client: &reqwest::blocking::Client, id: i64) -> Option<KillInfo> {
         zkb: Zkb,
     }
     let zurl = format!("https://zkillboard.com/api/killID/{id}/");
-    let zk: Vec<ZkEntry> =
-        client.get(zurl).send().ok()?.error_for_status().ok()?.json().ok()?;
+    let zk: Vec<ZkEntry> = crate::zkapi::fetch_waiting(client, &zurl).ok()?.json().ok()?;
     let first = zk.into_iter().next()?;
     let (hash, value) = (first.zkb.hash, first.zkb.total_value);
 

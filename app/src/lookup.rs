@@ -287,12 +287,7 @@ fn fetch_category(
     let mut reached_cache = cached.is_empty();
     'pages: while new.len() < MAX_KILLS && page <= MAX_PAGES {
         let url = format!("{ZKILL}/{category}/characterID/{character_id}/page/{page}/");
-        let zk: serde_json::Value = match client
-            .get(&url)
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.json())
-        {
+        let zk: serde_json::Value = match crate::zkapi::fetch_waiting(client, &url).and_then(|r| r.json().map_err(|e| e.to_string())) {
             Ok(v) => v,
             Err(_) => break,
         };
@@ -326,7 +321,6 @@ fn fetch_category(
             }
         }
         page += 1;
-        std::thread::sleep(std::time::Duration::from_millis(1100));
     }
     // Stopping short of the cached kills leaves a gap between them and the new ones; a list with a
     // hole in it reads as complete, so the stale part goes.
@@ -387,11 +381,8 @@ pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStat
         #[serde(rename = "topLists", default)]
         top_lists: Vec<TopList>,
     }
-    let s = client
-        .get(format!("https://zkillboard.com/api/stats/characterID/{id}/"))
-        .send()
+    let s = crate::zkapi::fetch_waiting(client, &format!("https://zkillboard.com/api/stats/characterID/{id}/"))
         .ok()
-        .and_then(|r| r.error_for_status().ok())
         .and_then(|r| r.json::<Stats>().ok())?;
     let mut out = ZkStats {
         ships_destroyed: s.ships_destroyed,
@@ -479,7 +470,7 @@ pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Contex
         };
         let url = format!("{ZKILL}/solarSystemID/{system_id}/");
         let zk: serde_json::Value =
-            match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()) {
+            match crate::zkapi::fetch_waiting(&client, &url).and_then(|r| r.json().map_err(|e| e.to_string())) {
                 Ok(v) => v,
                 Err(e) => {
                     *state.lock().unwrap() = LookupState::Failed(format!("zKill: {e}"));

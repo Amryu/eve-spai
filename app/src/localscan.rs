@@ -495,7 +495,7 @@ fn worker(table: SharedTable, client: reqwest::blocking::Client, ctx: egui::Cont
         let result = fetch_summary(&client, job.id, &job.name);
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         match result {
-            Ok(s) => {
+            Fetched::Done(s) => {
                 let orgs = [(s.corp_id, false), (s.alliance_id, true)]
                     .into_iter()
                     .chain(s.affiliates.iter().take(6).map(|(a, _)| (*a, true)));
@@ -504,12 +504,14 @@ fn worker(table: SharedTable, client: reqwest::blocking::Client, ctx: egui::Cont
                 t.org_queue.extend(wanted);
                 t.rows.insert(job.name.to_lowercase(), Row::Done(Box::new(s)));
             }
+            // Next in line again once the pause is over: a rate limit is no fault of this pilot's.
+            Fetched::Limited => t.queue.push_front(job),
             // To the back: whatever made zKillboard slow for this one should not stall the rest.
-            Err(_) if job.tries + 1 < ZKILL_TRIES => {
+            Fetched::Failed(_) if job.tries + 1 < ZKILL_TRIES => {
                 job.tries += 1;
                 t.queue.push_back(job);
             }
-            Err(e) => {
+            Fetched::Failed(e) => {
                 t.rows.insert(job.name.to_lowercase(), Row::Failed(e));
             }
         }
@@ -542,18 +544,29 @@ fn org_worker(table: SharedTable, client: reqwest::blocking::Client, ctx: egui::
     }
 }
 
-fn fetch_summary(client: &reqwest::blocking::Client, id: i64, name: &str) -> Result<Summary, String> {
+enum Fetched {
+    Done(Summary),
+    /// zKillboard asked to slow down: the pilot waits its turn again, no try spent.
+    Limited,
+    Failed(String),
+}
+
+fn fetch_summary(client: &reqwest::blocking::Client, id: i64, name: &str) -> Fetched {
     let url = format!("https://zkillboard.com/api/stats/characterID/{id}/");
-    let r = client.get(&url).send().map_err(|e| format!("zKillboard: {e}"))?;
-    if !r.status().is_success() {
-        return Err(format!("zKillboard {}", r.status()));
-    }
-    let v: serde_json::Value = r.json().map_err(|e| format!("zKillboard: {e}"))?;
+    let r = match crate::zkapi::fetch(client, &url) {
+        crate::zkapi::Fetch::Ok(r) => r,
+        crate::zkapi::Fetch::Limited => return Fetched::Limited,
+        crate::zkapi::Fetch::Unreachable(e) | crate::zkapi::Fetch::Failed(e) => return Fetched::Failed(e),
+    };
+    let v: serde_json::Value = match r.json() {
+        Ok(v) => v,
+        Err(e) => return Fetched::Failed(format!("zKillboard: {e}")),
+    };
     let mut s = parse_stats(id, name, &v);
     if s.birthday.is_none() || s.corp_id == 0 {
         fill_from_esi(client, &mut s);
     }
-    Ok(s)
+    Fetched::Done(s)
 }
 
 /// zKillboard knows nothing of a pilot it has never seen on a killmail, so ESI fills the sheet in.

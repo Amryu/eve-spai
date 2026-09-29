@@ -96,7 +96,15 @@ fn lookup_tab_scene(name: &'static str) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.seed_notes(fixtures::notebook());
-            a.seed_lookup(fixtures::lookup_rows(), fixtures::lookup_orgs());
+            let mut rows = fixtures::lookup_rows();
+            if name.ends_with("_limited") {
+                // A big local part way through while zKillboard asks for fewer requests.
+                use crate::localscan::Row;
+                rows.extend((1..=3).map(|i| (format!("Waiting Pilot {i}"), Row::Pending)));
+                rows.push(("Unlucky Pilot".into(), Row::Failed("zKillboard 502 Bad Gateway".into())));
+                crate::zkapi::pause_for_test(30);
+            }
+            a.seed_lookup(rows, fixtures::lookup_orgs());
             a.view = View::Lookup;
             a
         });
@@ -1920,6 +1928,7 @@ pub(crate) fn all() -> Vec<Scene> {
             a.open_system(30_004_759);
         }),
         lookup_tab_scene("view_lookup_tab"),
+        lookup_tab_scene("view_lookup_tab_limited"),
         notes_dialog_scene("dialog_pilot_window", [440.0, 580.0], |a| {
             a.seed_pilot_report(fixtures::pilot_report());
         }),
