@@ -80,7 +80,7 @@ impl ActivityMode {
     }
 }
 
-type SysHit = (i64, String, f64, String, String);
+pub(crate) type SysHit = (i64, String, f64, String, String);
 
 const JOVE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB8, 0x8C, 0xF0);
 
@@ -278,11 +278,12 @@ mod lookup_ui;
 mod web_glue;
 mod settings_ui;
 mod info_windows;
-mod map_panels;
+pub(crate) mod map_panels;
 mod travel_ui;
 mod map_ui;
 mod map_route;
 mod scan_ui;
+pub(crate) mod notify_box;
 mod sig_browser;
 mod scanner;
 mod battles_ui;
@@ -780,6 +781,7 @@ pub struct SpaiApp {
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
     scan_route: scan_ui::ScanState,
+    pub(crate) notify_box: notify_box::NotifyBox,
     sig_browser: sig_browser::SigBrowser,
     scanner_track: scanner::ScannerTrack,
     /// The graph for `map_route_zone`, keyed by the base graph it was built from and the zone.
@@ -1689,6 +1691,7 @@ impl SpaiApp {
             map_titan_self_jump: false,
             map_route_zone: None,
             scan_route: Default::default(),
+            notify_box: Default::default(),
             sig_browser: Default::default(),
             scanner_track: Default::default(),
             map_route_graph: None,
@@ -3421,6 +3424,8 @@ impl SpaiApp {
                             (egui_phosphor::regular::PLUGS, "ESI offline", ui.visuals().weak_text_color())
                         };
                         ui.label(egui::RichText::new(format!("{icon}  {text}")).color(col));
+                        ui.separator();
+                        self.notify_button(ui);
                     });
                 });
             });
@@ -6507,7 +6512,7 @@ fn op_comms_url(ch: u8) -> String {
 /// Cosmetic: the ping bot replies "… requests the attention of: a, b, c, …" with huge name lists.
 /// Collapse the trailing comma-separated list to "[n users]" for DISPLAY only. Mention detection
 /// runs on the raw body elsewhere, so a mention still highlights/counts.
-fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
     const MARKER: &str = "requests the attention of:";
     let lower = body.to_ascii_lowercase();
     if let Some(pos) = lower.find(MARKER) {

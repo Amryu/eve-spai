@@ -216,6 +216,10 @@ fn systems() -> Systems {
         ("amarr", "Amarr", 8, 1.0),
         ("sv5-8n", "SV5-8N", 9, -0.4),
         ("eimj-m", "EIMJ-M", 30004946, -0.4),
+        // Real systems the tests name: a code-shaped token is a system only when one exists.
+        ("q-k2t7", "Q-K2T7", 30000682, -0.5),
+        ("duo-51", "DUO-51", 30000595, -0.5),
+        ("88a-ra", "88A-RA", 30000770, -0.3),
         ("uitra", "Uitra", 30000148, 0.9),
         ("n3-jbx", "N3-JBX", 30000669, -0.3),
         ("384-in", "384-IN", 30000535, -0.5),
@@ -3139,6 +3143,23 @@ fn code_pattern_name_without_real_system_is_a_pilot() {
     assert!(r.systems.iter().any(|d| d.name == "MSKR-1"), "MSKR-1 not the system: {:?}", r.systems);
 }
 
+/// A code-shaped name no system starts with is a pilot, in capitals as much as in lower case: the
+/// token is only a system when one exists. A real system's shortening stays a system.
+#[test]
+fn a_new_code_shaped_pilot_in_capitals_is_kept() {
+    let s = systems_with(&[("1dq1-a", "1DQ1-A", 1, -0.4), ("zxc8-1", "ZXC8-1", 2, -0.3), ("c-j6mt", "C-J6MT", 3, -0.2), ("c-j7cr", "C-J7CR", 4, -0.2)]);
+    let r = analyze("ZXC-M 1DQ1-A", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(proposed(&r.pilots, "ZXC-M"), "ZXC-M dropped: {:?}", r.pilots);
+    assert!(r.systems.iter().any(|d| d.name == "1DQ1-A"), "pilots={:?} systems={:?}", r.pilots, r.systems);
+    let r = analyze("C-J 1DQ1-A", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(!has_pilot_token(&r.pilots, "C-J"), "two systems start with C-J, so it is no pilot: {:?}", r.pilots);
+    for t in ["ZXC-M  1DQ1-A", "1DQ1-A ZXC-M", "ZXC-M in 1DQ1-A"] {
+        let r = analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["ZXC-M".to_owned()], "{t}");
+        assert!(r.systems.iter().any(|d| d.name == "1DQ1-A"), "{t}: {:?}", r.systems);
+    }
+}
+
 #[test]
 fn pilot_word_that_is_a_hull_is_not_also_a_ship() {
     let s = systems();
@@ -3670,3 +3691,4 @@ fn wormhole_mass_is_not_a_hostile_count() {
     let r = analyze(">10 reds Rancer", &s, &sh, &noknown(), 1, "ch", "x");
     assert_eq!(r.count, Some(10), "outside a wormhole report '>' still reads as a count");
 }
+

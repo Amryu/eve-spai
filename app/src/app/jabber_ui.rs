@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// How long a conversation can be muted for; `None` is until turned back on.
+const MUTE_FOR: [(&str, Option<i64>); 6] = [
+    ("For 30 minutes", Some(1800)),
+    ("For 4 hours", Some(4 * 3600)),
+    ("For 24 hours", Some(86_400)),
+    ("For 1 week", Some(7 * 86_400)),
+    ("For 1 month", Some(30 * 86_400)),
+    ("Until turned back on", None),
+];
+
+/// How a conversation notifies, as its rows and title bar show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotifyMark {
+    Normal,
+    /// Only mentions make a sound.
+    Mentions,
+    Muted,
+}
+
+impl NotifyMark {
+    pub(crate) fn glyph(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            NotifyMark::Normal => None,
+            NotifyMark::Mentions => Some(("@", "Sounds for mentions only")),
+            NotifyMark::Muted => Some((egui_phosphor::regular::BELL_SLASH, "Muted")),
+        }
+    }
+}
+
 impl SpaiApp {
     pub(crate) fn maybe_start_jabber(&mut self, ctx: &egui::Context) {
         // A terminal failure (bad credentials, unreachable) drops back to the login form and stops
@@ -117,6 +146,67 @@ impl SpaiApp {
             .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
     }
 
+    /// What a conversation's rows and title bar mark it with.
+    pub(crate) fn jabber_notify_mark(&self, key: &str) -> NotifyMark {
+        let r = self.settings.jabber_room_notify.get(key).copied().unwrap_or_default();
+        if self.jabber_is_muted(key) || !r.sound || !(r.messages || r.mentions) {
+            NotifyMark::Muted
+        } else if !r.messages {
+            NotifyMark::Mentions
+        } else {
+            NotifyMark::Normal
+        }
+    }
+
+    /// Mute for a while or for good, and which sounds the conversation makes. The contents of a
+    /// menu: the title bar's bell and the sidebar's right-click menu both show it.
+    pub(crate) fn jabber_notify_menu(&mut self, ui: &mut egui::Ui, key: &str) {
+        let now = chrono::Utc::now().timestamp();
+        match self.settings.jabber_muted.get(key).copied().filter(|_| self.jabber_is_muted(key)) {
+            Some(until) => {
+                let text = if until == i64::MAX {
+                    "Muted until turned back on".to_owned()
+                } else {
+                    format!("Muted for {} more", human_ago(until - now))
+                };
+                ui.label(egui::RichText::new(text).weak());
+                if ui.button("Unmute").clicked() {
+                    self.settings.jabber_muted.remove(key);
+                    self.needs_save = true;
+                    ui.close();
+                }
+            }
+            None => {
+                ui.menu_button("Mute", |ui| {
+                    for (label, secs) in MUTE_FOR {
+                        if ui.button(label).clicked() {
+                            let until = secs.map_or(i64::MAX, |s| now + s);
+                            self.settings.jabber_muted.insert(key.to_owned(), until);
+                            self.needs_save = true;
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        }
+        ui.separator();
+        let mut r = self.settings.jabber_room_notify.get(key).copied().unwrap_or_default();
+        let was = r;
+        ui.checkbox(&mut r.sound, "Sounds from here");
+        ui.add_enabled_ui(r.sound, |ui| {
+            ui.checkbox(&mut r.messages, "For messages");
+            ui.checkbox(&mut r.mentions, "For mentions");
+        });
+        if r != was {
+            if r == crate::settings::RoomNotify::default() {
+                self.settings.jabber_room_notify.remove(key);
+            } else {
+                self.settings.jabber_room_notify.insert(key.to_owned(), r);
+            }
+            self.needs_save = true;
+        }
+    }
+
     pub(crate) fn jabber_has_unread(&self) -> bool {
         self.jabber_unread_total() > 0
     }
@@ -196,6 +286,7 @@ impl SpaiApp {
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
             st.notify_cfg.muted = self.settings.jabber_muted.clone();
+            st.notify_cfg.room_notify = self.settings.jabber_room_notify.clone();
             st.notify_cfg.push = crate::push::Targets::of(&self.settings.alerts);
             std::mem::take(&mut st.notify)
         };
@@ -1158,20 +1249,19 @@ impl SpaiApp {
             ui.push_id("dmlist", |ui| {
             for c in &dms {
                 let (r, g, b) = c.presence.color();
-                if self
-                    .jabber_convo_row(
-                        ui,
-                        &c.jid,
-                        &c.name,
-                        c.unread_count,
-                        c.mention,
-                        Some(egui::Color32::from_rgb(r, g, b)),
-                        "",
-                        false,
-                        false,
-                    )
-                    .clicked()
-                {
+                let row = self.jabber_convo_row(
+                    ui,
+                    &c.jid,
+                    &c.name,
+                    c.unread_count,
+                    c.mention,
+                    Some(egui::Color32::from_rgb(r, g, b)),
+                    "",
+                    false,
+                    false,
+                );
+                row.context_menu(|ui| self.jabber_notify_menu(ui, &c.jid));
+                if row.clicked() {
                     open = Some(c.jid.clone());
                 }
             }
@@ -1193,14 +1283,20 @@ impl SpaiApp {
                     c.inaccessible,
                     !pinned.contains(&c.jid),
                 );
-                if !c.motd.trim().is_empty() {
-                    row.context_menu(|ui| {
-                        if ui.button("Show MOTD").clicked() {
-                            motd = Some(c.jid.clone());
+                row.context_menu(|ui| {
+                    if !c.motd.trim().is_empty() && ui.button("Show MOTD").clicked() {
+                        motd = Some(c.jid.clone());
+                        ui.close();
+                    }
+                    self.jabber_notify_menu(ui, &c.jid);
+                    if !pinned.contains(&c.jid) {
+                        ui.separator();
+                        if ui.button(format!("{}  Leave", egui_phosphor::regular::SIGN_OUT)).clicked() {
+                            leave = Some(c.jid.clone());
                             ui.close();
                         }
-                    });
-                }
+                    }
+                });
                 // Closing a tab only hides the room; this is the way out of it. On the row itself,
                 // because the sidebar is where a room the user is done with is still listed. The
                 // rescue rooms are pinned open, so they have no button to offer.
@@ -1377,11 +1473,19 @@ impl SpaiApp {
                     text = text.strikethrough().weak();
                 }
                 ui.add(egui::Label::new(text).truncate().selectable(false));
-                if unread > 0 {
+                let mark = self.jabber_notify_mark(jid).glyph();
+                if unread > 0 || mark.is_some() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Room rows carry a leave button on the right; the badge sits left of it.
+                        // Room rows carry a leave button on the right; the mark and then the
+                        // badge sit left of it.
                         if action_space {
-                            ui.add_space(18.0);
+                            ui.add_space(if mark.is_some() { 24.0 } else { 18.0 });
+                        }
+                        if let Some((glyph, hover)) = mark {
+                            ui.label(egui::RichText::new(glyph).weak()).on_hover_text(hover);
+                        }
+                        if unread == 0 {
+                            return;
                         }
                         let (fg, bg) = if mention {
                             (egui::Color32::WHITE, ui.visuals().hyperlink_color)
@@ -2605,7 +2709,7 @@ impl SpaiApp {
         let is_room = f.channels.iter().any(|c| c.jid == jid);
         // A kicked room is history only: its composer is disabled.
         let sel_accessible = f.accessible(&jid);
-        let muted = self.jabber_is_muted(&jid);
+        let mark = self.jabber_notify_mark(&jid);
         let motd = f
             .channels
             .iter()
@@ -2617,9 +2721,8 @@ impl SpaiApp {
             let name = jid.split('@').next().unwrap_or(&jid);
             let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
             ui.label(egui::RichText::new(format!("{glyph}  {name}")).strong());
-            if muted {
-                ui.label(egui::RichText::new(icon::BELL_SLASH).weak())
-                    .on_hover_text("Muted");
+            if let Some((glyph, hover)) = mark.glyph() {
+                ui.label(egui::RichText::new(glyph).weak()).on_hover_text(hover);
             }
             // The room's topic, on the bar the room's name is on. Width-bounded and truncated
             // rather than allowed to take what it likes: a MOTD is a paragraph, and a label that
@@ -2673,33 +2776,10 @@ impl SpaiApp {
                             self.needs_save = true;
                         }
                     }
-                    let bell = if muted { icon::BELL_SLASH } else { icon::BELL };
-                    ui.menu_button(bell, |ui| {
-                        let now = chrono::Utc::now().timestamp();
-                        let set = |app: &mut Self, until: i64| {
-                            app.settings.jabber_muted.insert(jid.clone(), until);
-                            app.needs_save = true;
-                        };
-                        if ui.button("Mute 1 hour").clicked() {
-                            set(self, now + 3600);
-                            ui.close();
-                        }
-                        if ui.button("Mute 8 hours").clicked() {
-                            set(self, now + 8 * 3600);
-                            ui.close();
-                        }
-                        if ui.button("Mute until I unmute").clicked() {
-                            set(self, i64::MAX);
-                            ui.close();
-                        }
-                        if muted && ui.button("Unmute").clicked() {
-                            self.settings.jabber_muted.remove(&jid);
-                            self.needs_save = true;
-                            ui.close();
-                        }
-                    })
+                    let bell = if mark == NotifyMark::Muted { icon::BELL_SLASH } else { icon::BELL };
+                    ui.menu_button(bell, |ui| self.jabber_notify_menu(ui, &jid))
                     .response
-                    .on_hover_text("Mute notifications");
+                    .on_hover_text("Notifications");
                 },
             );
         });
@@ -2932,24 +3012,8 @@ impl SpaiApp {
             && ui.input(|i| {
                 i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
             });
-        let draft_empty = self
-            .jabber_drafts
-            .get(&jid)
-            .map_or(true, |d| d.trim().is_empty());
-        if send && !draft_empty {
-            let body = self
-                .jabber_drafts
-                .get_mut(&jid)
-                .map(std::mem::take)
-                .unwrap_or_default();
-            if let Some(tx) = &self.jabber_tx {
-                let cmd = if is_room {
-                    crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
-                } else {
-                    crate::jabber::Cmd::Send { to: jid.clone(), body }
-                };
-                let _ = tx.send(cmd);
-            }
+        if send {
+            self.jabber_send_draft(&jid, is_room);
         }
         }
         if let Some(nick) = dm_click.or(msg_dm) {
@@ -2957,7 +3021,24 @@ impl SpaiApp {
         }
     }
 
-    pub(crate) fn apply_tab_actions(&mut self, actions: Vec<TabAction>) {
+    /// Sends the conversation's draft and empties it. False when there was nothing to send.
+    pub(crate) fn jabber_send_draft(&mut self, jid: &str, is_room: bool) -> bool {
+        if self.jabber_drafts.get(jid).is_none_or(|d| d.trim().is_empty()) {
+            return false;
+        }
+        let body = self.jabber_drafts.get_mut(jid).map(std::mem::take).unwrap_or_default();
+        if let Some(tx) = &self.jabber_tx {
+            let cmd = if is_room {
+                crate::jabber::Cmd::SendRoom { room: jid.to_owned(), body }
+            } else {
+                crate::jabber::Cmd::Send { to: jid.to_owned(), body }
+            };
+            let _ = tx.send(cmd);
+        }
+        true
+    }
+
+        pub(crate) fn apply_tab_actions(&mut self, actions: Vec<TabAction>) {
         for a in actions {
             match a {
                 TabAction::Select { win, jid } => {

@@ -21,8 +21,21 @@ const MAX_WAYPOINTS: usize = 50;
 const MAX_RADIUS: u32 = 10;
 const MAX_DETOUR: u32 = 5;
 const MAX_TARGETS: usize = 400;
+const MAX_AVOID_EXPLO: u32 = 5;
 /// Stands in for the scout when nobody picked has a known location.
 pub(crate) const NO_SCOUT: &str = "Route";
+/// Where the last scan route is kept, to pick up after a restart or another route.
+const SAVED_KEY: &str = "scan_route_last";
+
+/// The last scan route as planned: its centre, every scout's route and what was ticked off.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SavedScan {
+    pub centre: i64,
+    pub plan: Plan,
+    pub done: Vec<i64>,
+    pub targets: usize,
+    pub at: i64,
+}
 
 #[derive(Default)]
 pub(crate) struct ScanState {
@@ -32,15 +45,39 @@ pub(crate) struct ScanState {
     pub done: HashSet<i64>,
     /// Targets the plan was made for, for the summary.
     pub targets: usize,
+    /// The last route planned, kept through clearing and restarts; read from the store once.
+    saved: Option<SavedScan>,
+    saved_read: bool,
 }
 
 impl ScanState {
+    /// Drops the route on screen. The saved one stays, to be resumed.
     pub(crate) fn clear(&mut self) {
-        *self = ScanState::default();
+        let (saved, saved_read) = (self.saved.take(), self.saved_read);
+        *self = ScanState { saved, saved_read, ..Default::default() };
     }
 }
 
 impl SpaiApp {
+    /// Systems with a known exploration upgrade (from the sov hub pastes).
+    fn explo_upgrades(&self, graph: &crate::geo::Systems) -> HashSet<i64> {
+        self.settings
+            .sov_upgrades
+            .iter()
+            .filter(|u| split_upgrade_label(&u.upgrade).iter().any(|l| matches!(upgrade_kind(l), UpgradeKind::Exploration)))
+            .filter_map(|u| graph.lookup(&u.system).map(|i| i.id))
+            .collect()
+    }
+
+    /// Everything within the setting's reach of an exploration upgrade.
+    pub(crate) fn scan_explo_area(&self, graph: &crate::geo::Systems) -> HashSet<i64> {
+        let reach = self.settings.scan.avoid_explo.min(MAX_AVOID_EXPLO);
+        if reach == 0 {
+            return HashSet::new();
+        }
+        self.explo_upgrades(graph).into_iter().flat_map(|id| graph.distances_from(id, reach).into_keys()).collect()
+    }
+
     /// The systems within `radius` of `centre` the scan settings pick.
     pub(crate) fn scan_targets(&self, graph: &crate::geo::Systems, centre: i64, radius: u32) -> HashSet<i64> {
         use crate::whdata::{self, Class};
@@ -50,11 +87,12 @@ impl SpaiApp {
             (0, _) | (_, None) => HashSet::new(),
             (h, Some(store)) => store.scanned_since(chrono::Utc::now().timestamp() - h as i64 * 3600),
         };
+        let explo = self.scan_explo_area(graph);
         let mut out: Vec<(u32, i64)> = graph
             .distances_from(centre, radius)
             .into_iter()
             .filter(|(id, _)| {
-                if crate::geo::is_wormhole_system(*id) || crate::geo::is_no_transit(*id) || avoid.blocked(*id) || scanned.contains(id) || self.scan_route.done.contains(id) {
+                if crate::geo::is_wormhole_system(*id) || crate::geo::is_no_transit(*id) || avoid.blocked(*id) || scanned.contains(id) || self.scan_route.done.contains(id) || explo.contains(id) {
                     return false;
                 }
                 let Some(info) = graph.info_of(*id) else { return false };
@@ -96,6 +134,48 @@ impl SpaiApp {
         scouts
     }
 
+    /// The last route saved, from this run or an earlier one.
+    pub(crate) fn scan_saved(&mut self) -> Option<&SavedScan> {
+        if !std::mem::replace(&mut self.scan_route.saved_read, true) {
+            let json = self.store.as_ref().and_then(|s| s.kv_get(SAVED_KEY));
+            self.scan_route.saved = json.and_then(|j| serde_json::from_str(&j).ok());
+        }
+        self.scan_route.saved.as_ref()
+    }
+
+    /// Keeps the route on screen as the one to resume.
+    fn scan_save(&mut self) {
+        let (Some(&centre), Some(plan)) = (self.map_route_anchors.first(), self.scan_route.plan.clone()) else { return };
+        let mut done: Vec<i64> = self.scan_route.done.iter().copied().collect();
+        done.sort_unstable();
+        let saved = SavedScan { centre, plan, done, targets: self.scan_route.targets, at: chrono::Utc::now().timestamp() };
+        if let (Some(store), Ok(json)) = (self.store.as_ref(), serde_json::to_string(&saved)) {
+            store.kv_set(SAVED_KEY, &json);
+        }
+        self.scan_route.saved = Some(saved);
+        self.scan_route.saved_read = true;
+    }
+
+    /// Brings the saved route back as it was, ticks and all. "Replan from here" moves it on
+    /// from where the scouts are now.
+    pub(crate) fn scan_resume(&mut self) {
+        let Some(saved) = self.scan_saved().cloned() else { return };
+        // Started by hand: map_route_start would plan afresh over the saved one.
+        self.map_route_clear();
+        self.map_route_kind = "scan";
+        self.map_route_anchors = vec![saved.centre];
+        self.right_dock_open = true;
+        self.right_dock_tab = RightDockTab::Route;
+        self.scan_route.done = saved.done.iter().copied().collect();
+        self.scan_route.targets = saved.targets;
+        self.scan_route.plan = Some(saved.plan);
+    }
+
+    fn scan_set_plan(&mut self, plan: Plan) {
+        self.scan_route.plan = Some(plan);
+        self.scan_save();
+    }
+
     /// Plans again from where everyone is now, off the UI thread; the result turns up in
     /// [`Self::scan_poll`].
     pub(crate) fn scan_replan(&mut self) {
@@ -116,7 +196,7 @@ impl SpaiApp {
         self.scan_route.targets = targets.len();
         let run = move || crate::scanroute::plan(&graph, centre, &targets, &extras, detour, &scouts, depth, |id| !avoid.blocked(id));
         if cfg!(test) {
-            self.scan_route.plan = Some(run());
+            self.scan_set_plan(run());
             return;
         }
         let slot = Arc::new(Mutex::new(None));
@@ -132,8 +212,8 @@ impl SpaiApp {
         let done = slot.lock().unwrap().take();
         match done {
             Some(p) => {
-                self.scan_route.plan = Some(p);
                 self.scan_route.working = None;
+                self.scan_set_plan(p);
             }
             None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
         }
@@ -177,6 +257,23 @@ impl SpaiApp {
         let Some(&centre) = self.map_route_anchors.first() else {
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Right-click a system on the map and pick Start Scan Route: it becomes the centre.").weak());
+            let geo = self.systems.clone();
+            if let Some(saved) = self.scan_saved() {
+                let around = geo.as_ref().and_then(|g| g.info_of(saved.centre)).map_or_else(|| format!("#{}", saved.centre), |i| i.name.clone());
+                let left: usize = saved.plan.scouts.iter().map(|s| s.stops.len()).sum();
+                let scouts: Vec<&str> = saved.plan.scouts.iter().map(|s| s.name.as_str()).collect();
+                let hover = format!(
+                    "{} systems left for {}, {} ticked off, planned {} ago",
+                    left,
+                    scouts.join(", "),
+                    saved.done.len(),
+                    human_ago(chrono::Utc::now().timestamp() - saved.at)
+                );
+                ui.add_space(4.0);
+                if ui.button(format!("{}  Resume the scan around {around}", icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text(hover).clicked() {
+                    self.scan_resume();
+                }
+            }
             return;
         };
         let geo = self.systems.clone();
@@ -234,6 +331,18 @@ impl SpaiApp {
                 .on_hover_text("A system outside the radius joins a route that passes this close to it, when going there and back is worth it. 0 keeps strictly to the radius.")
                 .changed();
         });
+        let upgrades = self.systems.as_ref().map_or(0, |g| self.explo_upgrades(g).len());
+        if upgrades > 0 {
+            ui.horizontal(|ui| {
+                ui.label("Avoid exploration upgrades by");
+                replan |= ui
+                    .add(egui::DragValue::new(&mut self.settings.scan.avoid_explo).range(0..=MAX_AVOID_EXPLO).suffix(" jumps"))
+                    .on_hover_text(format!(
+                        "Leaves out the systems this close to one of the {upgrades} known Exploration Detectors: their sites fill the area with signatures that are slow to scan. 0 leaves none out."
+                    ))
+                    .changed();
+            });
+        }
         ui.horizontal(|ui| {
             ui.label("Skip scanned in the last");
             replan |= ui.add(egui::DragValue::new(&mut self.settings.scan.skip_hours).range(0..=168).suffix(" h")).on_hover_text("0 plans every system, scanned or not").changed();

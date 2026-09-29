@@ -138,6 +138,12 @@ impl Systems {
         self.by_name.get(&token.to_lowercase())
     }
 
+    /// Whether any system's name starts with `token`, however many do.
+    pub fn any_prefix(&self, token: &str) -> bool {
+        let t = token.to_lowercase();
+        self.by_name.keys().any(|name| name.starts_with(&t))
+    }
+
     pub fn lookup_prefix(&self, token: &str) -> Option<&SystemInfo> {
         let t = token.to_lowercase();
         let mut found: Option<&SystemInfo> = None;

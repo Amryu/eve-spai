@@ -105,6 +105,26 @@ fn lookup_tab_scene(name: &'static str) -> Scene {
     })
 }
 
+/// The top bar's notification box, open on `tab`, over a Jabber state with new messages in a room
+/// (more than it shows at once), a DM, pings and a mention.
+fn notify_box_scene(name: &'static str, tab: crate::app::notify_box::NotifyTab) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state_notify();
+            a.settings.jabber_mention_keywords = vec!["Kasper".into()];
+            a.notify_box.tab = tab;
+            a.notify_box.open_now = true;
+            a.view = View::Intel;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 fn notes_dialog_scene(name: &'static str, size: [f32; 2], open: fn(&mut crate::app::SpaiApp)) -> Scene {
     dialog_scene(name, size, move |a| {
         a.seed_notes(fixtures::notebook());
@@ -951,7 +971,12 @@ fn wormholes_focus_scene(
             a.wh_graph_reset_layout();
             a.wh_graph.table = table;
             a.wh_graph.selected = selected;
-            if name.ends_with("_sigs") || name == "wh_sigs_width" {
+            if name.ends_with("_sigs") || name.ends_with("_sigs_filtered") || name.ends_with("_info_filtered") || name == "wh_sigs_width" {
+                if name.ends_with("_filtered") {
+                    // A filter that no hole passes: the Info list empties, the signature keeps its hole.
+                    a.settings.wh_filter.types = "ZZZZ".into();
+                }
+
                 let sig = |sig: &str, kind: &str, group: &str, name: &str, ago: i64| crate::store::SystemSig {
                     sig: sig.into(),
                     kind: kind.into(),
@@ -972,6 +997,9 @@ fn wormholes_focus_scene(
                         sig("XYZ-999", "Cosmic Signature", "", "", 90_000),
                     ],
                 );
+                if name.ends_with("_info_filtered") {
+                    a.wh_graph.side_tab = crate::app::wh_graph::SideTab::Info;
+                }
             }
             if name.contains("_legend") {
                 a.settings.wh_legend_open = true;
@@ -1207,6 +1235,13 @@ fn jabber_sidebar_scene_cfg(
             a.settings.fc_rescue_enabled = rescue;
             a.settings.fleet_enabled = true;
             a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+            if name.ends_with("_marks") {
+                // One room only rings for mentions, the other and the DM are muted.
+                let mentions_only = crate::settings::RoomNotify { messages: false, ..Default::default() };
+                a.settings.jabber_room_notify.insert(fixtures::JABBER_ROOM.into(), mentions_only);
+                a.settings.jabber_muted.insert(fixtures::JABBER_ROOM_QUIET.into(), i64::MAX);
+                a.settings.jabber_muted.insert(fixtures::JABBER_DM.into(), chrono::Utc::now().timestamp() + 1800);
+            }
             a
         });
         app.jabber_sidebar_for_test(ui, &f, convos);
@@ -1867,6 +1902,7 @@ pub(crate) fn all() -> Vec<Scene> {
         jabber_popout_scene("jabber_popout_stamps", [520.0, 480.0], fixtures::JABBER_ROOM, ""),
         // Both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
+        jabber_sidebar_scene("jabber_sidebar_convos_marks", [900.0, 560.0], true),
         jabber_empty_convos_scene("jabber_sidebar_convos_empty", [420.0, 400.0]),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
         // One dialog per kind, and neither offering the other kind's conversations.
@@ -2073,6 +2109,8 @@ pub(crate) fn all() -> Vec<Scene> {
         v.push(wormholes_layout_scene(name));
     }
     v.push(wormholes_scene("view_wormholes_map_sigs", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_sigs_filtered", [1280.0, 800.0], false, Some(30_004_759)));
+    v.push(wormholes_scene("view_wormholes_map_info_filtered", [1280.0, 800.0], false, Some(30_004_759)));
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
@@ -2099,6 +2137,9 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(show(ping_window_scene("ping_window_fleet", vec![super::showcase::home_defence_ping()]), "showcase_ping", Some([560.0, 190.0])));
     v.push(show(alert_rules_scene("showcase_alert_rules", [1280.0, 800.0], None), "showcase_alert_rules", None));
     v.push(show(map_layers_scene("map_layers", [320.0, 800.0]), "showcase_layers", None));
+    v.push(notify_box_scene("notify_box_messages", crate::app::notify_box::NotifyTab::Messages));
+    v.push(notify_box_scene("notify_box_pings", crate::app::notify_box::NotifyTab::Pings));
+    v.push(notify_box_scene("notify_box_mentions", crate::app::notify_box::NotifyTab::Mentions));
     v.push(sig_browser_scene("view_wormholes_signatures", [1280.0, 800.0]));
     v.push(sig_browser_scene("view_wormholes_signatures_narrow", [720.0, 800.0]));
     v.push(sig_browser_scene("view_wormholes_signatures_tree", [1280.0, 800.0]));
@@ -7606,6 +7647,80 @@ fn picker_holds(name: &str) {
     let (left, right) = tabs(&harness);
     assert!((later.x0 - left).abs() < 2.0, "{name}: the picker does not start at the sidebar's edge: {later:?} vs {left}");
     assert!(right - later.x1 < 60.0 && later.x1 <= right + 0.5, "{name}: the picker does not reach across: {later:?} vs {right}");
+}
+
+/// The notification box marks a conversation read once all its new messages were on screen; one
+/// behind "+N more" stays unread until that is clicked. A quick reply empties the draft the Jabber
+/// tab shares.
+#[test]
+fn uitest_the_notification_box_marks_what_was_seen_read() {
+    use egui_kittest::kittest::Queryable as _;
+    use std::{cell::RefCell, rc::Rc};
+    harness::scratch_profile();
+    let app: Rc<RefCell<Option<crate::app::SpaiApp>>> = Rc::default();
+    let shared = app.clone();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
+        let mut slot = shared.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state_notify();
+            a.notify_box.open_now = true;
+            a
+        });
+        a.root_chrome(ui);
+    });
+    h.run();
+    let unread = |app: &Rc<RefCell<Option<crate::app::SpaiApp>>>| {
+        let b = app.borrow();
+        let st = b.as_ref().unwrap().jabber.lock().unwrap();
+        st.unread_counts.keys().cloned().collect::<Vec<String>>()
+    };
+    assert_eq!(unread(&app), vec![fixtures::JABBER_ROOM.to_owned()], "the DM was seen whole, the room was not");
+    h.get_by_label_contains("+2 more").click();
+    h.run();
+    assert!(unread(&app).is_empty(), "+N more read the rest");
+    assert!(h.query_by_label_contains("stand down").is_some(), "read ones stay listed while the box is open");
+
+    let reply = h.get_all_by_role(egui::accesskit::Role::TextInput).last().unwrap();
+    reply.focus();
+    h.run();
+    h.get_all_by_role(egui::accesskit::Role::TextInput).last().unwrap().type_text("on my way");
+    h.run();
+    assert!(app.borrow().as_ref().unwrap().jabber_drafts.values().any(|d| d == "on my way"), "typed into the shared draft");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let b = app.borrow();
+    let drafts = &b.as_ref().unwrap().jabber_drafts;
+    assert!(drafts.values().all(|d| d.is_empty()), "sent: {drafts:?}");
+}
+
+/// A system suggestion is taken by a click as well as by Enter, with the press and release in
+/// separate frames as a real click has them.
+#[test]
+fn uitest_a_system_suggestion_is_taken_by_a_click() {
+    use egui_kittest::kittest::Queryable as _;
+    let picked = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let out = picked.clone();
+    let hits: Vec<crate::app::SysHit> = vec![
+        (30_000_142, "Jita".into(), 0.9, "Kimotoro".into(), "The Forge".into()),
+        (30_000_144, "Perimeter".into(), 1.0, "Kimotoro".into(), "The Forge".into()),
+    ];
+    let (mut q, mut sel) = (String::from("J"), 0usize);
+    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(400.0, 300.0)).build_ui(move |ui| {
+        if let Some(id) = crate::app::map_panels::system_field(ui, &mut q, &mut sel, "System", 200.0, &hits) {
+            *out.lock().unwrap() = Some(id);
+        }
+    });
+    harness.get_by_role(egui::accesskit::Role::TextInput).focus();
+    harness.run();
+    let row = harness.get_by_label_contains("Perimeter").rect().center();
+    harness.hover_at(row);
+    harness.run();
+    harness.event(egui::Event::PointerButton { pos: row, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    harness.run();
+    harness.event(egui::Event::PointerButton { pos: row, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    harness.run();
+    assert_eq!(*picked.lock().unwrap(), Some(30_000_144));
 }
 
 /// The hole type list is long, so its combo box filters as you type and Enter takes the match.

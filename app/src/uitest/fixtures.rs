@@ -653,6 +653,33 @@ pub(crate) fn jabber_state() -> crate::jabber::JabberState {
     st
 }
 
+/// New messages for the notification box: seven in the busy room, more than it shows at once, one
+/// of them naming Kasper; one in a DM; two pings not seen yet.
+pub(crate) fn jabber_state_notify() -> crate::jabber::JabberState {
+    let mut st = jabber_state();
+    let room = st.chats.get_mut(JABBER_ROOM).unwrap();
+    room.extend([
+        chat_msg("Scout Alpha", "neut Sabre landed in 1DQ1-A", 300, false),
+        chat_msg("Fleet Commander", "Kasper can you bring the cyno alt?", 280, false),
+        chat_msg("Logi Lead", "logi anchor on the FC", 250, false),
+        chat_msg("Scout Bravo", "second Sabre on the Keepstar undock", 200, false),
+        chat_msg("Fleet Commander", "hold cloaked, align to the sun", 150, false),
+        chat_msg("Scout Alpha", "they are leaving towards 319-3D", 90, false),
+        chat_msg("Fleet Commander", "stand down, thanks all", 30, false),
+    ]);
+    // A ping bot's reply naming everyone it pinged: the box shows the count, not the list.
+    let quiet = st.chats.get_mut(JABBER_ROOM_QUIET).unwrap();
+    let names: Vec<String> = (1..=40).map(|i| format!("Pilot {i}")).collect();
+    quiet.push(chat_msg("DelveBot", &format!("Fleet Commander requests the attention of: Kasper, {}", names.join(", ")), 45, false));
+    st.unread = [JABBER_ROOM.to_owned(), JABBER_DM.to_owned(), JABBER_ROOM_QUIET.to_owned()].into();
+    st.unread_counts = [(JABBER_ROOM.to_owned(), 7), (JABBER_DM.to_owned(), 1), (JABBER_ROOM_QUIET.to_owned(), 1)].into();
+    st.mentions = [JABBER_ROOM.to_owned(), JABBER_ROOM_QUIET.to_owned()].into();
+    st.chats.get_mut(JABBER_DM).unwrap().push(chat_msg("Wingmate Alpha", "undocking in 5", 60, false));
+    st.pings = vec![ping_plain(), ping_fleet()];
+    st.pings_unread = true;
+    st
+}
+
 const MOTD: &str = "Delve intel. Report hostiles with system first.\n\
          ------------------------------\n\
          Ping format: [FLEET] FC / staging / doctrine\n\

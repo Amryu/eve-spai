@@ -226,6 +226,7 @@ pub struct JabberNotifyCfg {
     pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
     pub muted: std::collections::BTreeMap<String, i64>,
+    pub room_notify: std::collections::BTreeMap<String, crate::settings::RoomNotify>,
     pub push: crate::push::Targets,
 }
 
@@ -339,7 +340,8 @@ fn fire_arrival_notification(
     if suppress || !notify {
         return;
     }
-    if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
+    let room_allows = ping.is_some() || cfg.room_notify.get(key).is_none_or(|r| r.plays(mention.is_some()));
+    if cfg.sound_enabled && room_allows && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
         if fleet_call {
             // Settings already allowed this fleet ping (not muted, not suppressed, sound on). Play it
             // directly, bypassing the 2s burst cooldown so a preceding sound can never swallow it.

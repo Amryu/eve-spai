@@ -850,11 +850,9 @@ fn is_short_code_token(t: &str) -> bool {
         && t.chars().any(|c| c.is_ascii_alphabetic())
 }
 
+/// Shaped like a system code, but no system is it or starts with it: a name, whatever its case.
 fn is_code_lookalike_name(t: &str, systems: &Systems) -> bool {
-    looks_like_system_code(t)
-        && t.chars().any(|c| c.is_ascii_lowercase())
-        && resolve(systems, t).is_none()
-        && systems.lookup_prefix(t).is_none()
+    looks_like_system_code(t) && resolve(systems, t).is_none() && !systems.any_prefix(t)
 }
 
 fn looks_like_anom_code(t: &str) -> bool {
@@ -1321,7 +1319,10 @@ fn is_system_token(core: &str, systems: &Systems) -> bool {
 }
 
 fn is_name_anchor(core: &str, ship_index: &HashMap<String, (i64, String)>, systems: &Systems) -> bool {
+    // A code-shaped name ("ZXC-M") is a whole name on its own, not the start of one that runs on
+    // into the system beside it.
     !hard_name_breaker(core, ship_index)
+        && !looks_like_system_code(core)
         && !is_system_token(core, systems)
         && !is_pilot_stopword(core)
         && core.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3

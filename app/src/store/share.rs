@@ -679,6 +679,7 @@ mod tests {
 
     #[test]
     fn an_undone_sig_delete_is_shared_back_as_it_was() {
+        let _guard = crate::disk::test_guard();
         let a = Store::mem();
         joined(&a);
         let scan = crate::wormholes::probe_scan("ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU");
@@ -701,6 +702,7 @@ mod tests {
 
         #[test]
     fn each_group_is_sent_what_it_was_set_to_get() {
+        let _guard = crate::disk::test_guard();
         let a = Store::mem();
         join(&a, "holes", SharePrefs { send_sigs: false, ..Default::default() });
         join(&a, "scans", SharePrefs { send_holes: false, ..Default::default() });
@@ -720,6 +722,7 @@ mod tests {
 
     #[test]
     fn what_came_from_one_group_goes_back_to_it_alone() {
+        let _guard = crate::disk::test_guard();
         let a = Store::mem();
         join(&a, "g1", SharePrefs::default());
         join(&a, "g2", SharePrefs::default());
@@ -768,6 +771,7 @@ mod tests {
 
     #[test]
     fn a_hidden_groups_signatures_are_left_out_until_shown_again() {
+        let _guard = crate::disk::test_guard();
         let a = Store::mem();
         join(&a, "g1", SharePrefs::default());
         sigs_from(&a, "g1", "GIN-924");

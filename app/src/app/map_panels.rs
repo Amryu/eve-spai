@@ -2165,9 +2165,18 @@ pub(crate) fn system_field(
     // `has_focus` is already false. The key itself is still in the queue, so the accept has
     // to hang off `lost_focus` or Enter would never pick the highlighted suggestion.
     let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if !suggestions.is_empty() && (resp.has_focus() || entered) {
+    // Pressing on a suggestion takes the focus from the field before the release makes it a
+    // click, so the list stays up while the pointer is over where it was last drawn.
+    let area_id = ui.id().with(("travel_sugg", hint));
+    let last: Option<egui::Rect> = ui.data(|d| d.get_temp(area_id));
+    let over = last.is_some_and(|r| ui.input(|i| i.pointer.hover_pos().is_some_and(|p| r.contains(p))));
+    let open = resp.has_focus() || over;
+    if !open {
+        ui.data_mut(|d| d.remove::<egui::Rect>(area_id));
+    }
+    if !suggestions.is_empty() && (open || entered) {
         let n = suggestions.len();
-        if resp.has_focus() {
+        if open {
             let (down, up) = ui.input(|i| {
                 (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
             });
@@ -2180,7 +2189,7 @@ pub(crate) fn system_field(
             let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
             let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
             let width = resp.rect.width();
-            egui::Area::new(ui.id().with(("travel_sugg", hint)))
+            let shown = egui::Area::new(area_id)
                 .order(egui::Order::Foreground)
                 .fixed_pos(below)
                 .constrain(true)
@@ -2200,6 +2209,7 @@ pub(crate) fn system_field(
                         }
                     });
                 });
+            ui.data_mut(|d| d.insert_temp(area_id, shown.response.rect));
         }
         if entered && pick.is_none() {
             pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
@@ -2207,6 +2217,7 @@ pub(crate) fn system_field(
     }
     if pick.is_some() {
         resp.surrender_focus();
+        ui.data_mut(|d| d.remove::<egui::Rect>(area_id));
     }
     pick
 }

@@ -161,6 +161,9 @@ pub struct Settings {
     /// time (i64::MAX = muted until manually unmuted). Muted = no sound, no badge.
     #[serde(default)]
     pub jabber_muted: std::collections::BTreeMap<String, i64>,
+    /// Which sounds a conversation (room or DM JID) may make; one not listed makes them all.
+    #[serde(default)]
+    pub jabber_room_notify: std::collections::BTreeMap<String, RoomNotify>,
     #[serde(default = "default_msg_sound")]
     pub jabber_msg_sound: String,
     #[serde(default = "default_ping_sound")]
@@ -1054,6 +1057,28 @@ fn default_kill_jumps() -> u32 {
     0
 }
 
+/// The sounds one Jabber conversation may make.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomNotify {
+    /// Any sound at all.
+    pub sound: bool,
+    pub messages: bool,
+    pub mentions: bool,
+}
+
+impl Default for RoomNotify {
+    fn default() -> Self {
+        RoomNotify { sound: true, messages: true, mentions: true }
+    }
+}
+
+impl RoomNotify {
+    pub fn plays(&self, mention: bool) -> bool {
+        self.sound && if mention { self.mentions } else { self.messages }
+    }
+}
+
 /// What a scan route looks for and who flies it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1070,11 +1095,14 @@ pub struct ScanSettings {
     pub scouts: Vec<String>,
     /// How many jumps off its route a scout goes for a target outside the radius; 0 goes for none.
     pub detour: u32,
+    /// Systems this close to a known exploration upgrade are left out: its sites fill them with
+    /// signatures that are slow to scan. 0 leaves none out.
+    pub avoid_explo: u32,
 }
 
 impl Default for ScanSettings {
     fn default() -> Self {
-        Self { radius: 5, look_for: "any".into(), security: Vec::new(), skip_hours: 24, scouts: Vec::new(), detour: 2 }
+        Self { radius: 5, look_for: "any".into(), security: Vec::new(), skip_hours: 24, scouts: Vec::new(), detour: 2, avoid_explo: 2 }
     }
 }
 
@@ -1435,6 +1463,7 @@ impl Default for Settings {
             jabber_rooms: Vec::new(),
             jabber_muc_domain: String::new(),
             jabber_muted: std::collections::BTreeMap::new(),
+            jabber_room_notify: std::collections::BTreeMap::new(),
             jabber_msg_sound: default_msg_sound(),
             jabber_ping_sound: default_ping_sound(),
             jabber_mention_sound: default_mention_sound(),
@@ -1886,6 +1915,20 @@ pub fn battle_decision(rules: &[BattleRule], d: &MatchData) -> Option<RuleAction
 
 #[cfg(test)]
 mod window_geometry_tests {
+
+    #[test]
+    fn a_room_plays_what_it_is_set_to() {
+        use super::{RoomNotify, Settings};
+        let all = RoomNotify::default();
+        assert!(all.plays(false) && all.plays(true));
+        let mentions = RoomNotify { messages: false, ..all };
+        assert!(!mentions.plays(false) && mentions.plays(true));
+        let silent = RoomNotify { sound: false, ..all };
+        assert!(!silent.plays(false) && !silent.plays(true));
+        // An older config has no such field and every room keeps its sounds.
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.jabber_room_notify.is_empty());
+    }
     use super::*;
 
     #[test]

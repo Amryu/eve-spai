@@ -2215,6 +2215,10 @@ impl SpaiApp {
         let mut drop_sig: Option<crate::store::SystemSig> = None;
         let mut new_hole: Option<String> = None;
         let mut toggle: Option<String> = None;
+        let mut clear_filter = false;
+        // The filter narrows the map and the Info list, never what a signature is known to lead to.
+        let every: Vec<Wormhole> = self.wh_cache.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).cloned().collect();
+        let hidden = every.len().saturating_sub(holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).count());
         egui::Panel::right("wh_graph_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2316,7 +2320,16 @@ impl SpaiApp {
                     }
                 });
                 if !any {
-                    ui.label(egui::RichText::new("None known").weak());
+                    ui.label(egui::RichText::new(if hidden > 0 { "None shown" } else { "None known" }).weak());
+                }
+                if hidden > 0 {
+                    ui.horizontal(|ui| {
+                        let text = if hidden == 1 { "1 connection hidden by the filter".to_owned() } else { format!("{hidden} connections hidden by the filter") };
+                        ui.label(egui::RichText::new(text).color(crate::theme::standing::WARNING));
+                        if ui.button(format!("{}  Clear filter", icon::FUNNEL_X)).clicked() {
+                            clear_filter = true;
+                        }
+                    });
                 }
                 if !c.is_kspace() {
                     ui.add_space(10.0);
@@ -2479,7 +2492,7 @@ impl SpaiApp {
                             ));
                         });
                         // A wormhole signature we know the far side of says where it goes.
-                        let hole = sig_hole(holes, sel, &sg.sig);
+                        let hole = sig_hole(&every, sel, &sg.sig);
                         row.col(|ui| {
                         // The group in front, short and grey, so the site's name gets the room.
                         ui.label(egui::RichText::new(short_group(&sg.group)).weak());
@@ -2564,6 +2577,14 @@ impl SpaiApp {
         }
         if let Some(uid) = toggle {
             self.toggle_wh_hole(&uid);
+        }
+        if clear_filter {
+            self.settings.wh_filter = Default::default();
+            if self.settings.wh_route_filtered {
+                self.wh_routing_changed();
+            } else {
+                self.needs_save = true;
+            }
         }
     }
 

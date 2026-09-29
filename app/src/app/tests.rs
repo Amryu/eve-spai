@@ -3035,6 +3035,18 @@ mod scan_route_tests {
     }
 
     #[test]
+    fn the_area_around_an_exploration_upgrade_is_left_out() {
+        let (_ctx, mut a) = app();
+        a.settings.sov_upgrades = vec![crate::settings::SovUpgrade { system: "Plain".into(), upgrade: "<- Major Threat Detection Array 3, Exploration Detector 3".into() }];
+        a.settings.scan.avoid_explo = 0;
+        assert_eq!(targets(&a), [30_000_001, 30_000_005, 30_000_002, 30_000_003].into());
+        a.settings.scan.avoid_explo = 1;
+        assert_eq!(targets(&a), [30_000_001, 30_000_005].into(), "Plain and the system next to it");
+        a.settings.sov_upgrades[0].upgrade = "Major Threat Detection Array 3".into();
+        assert_eq!(targets(&a).len(), 4, "ratting upgrades are no reason to stay away");
+    }
+
+    #[test]
     fn starting_a_scan_route_plans_it_and_ticks_come_off() {
         let (_ctx, mut a) = app();
         let plan = a.scan_route.plan.clone().expect("planned on start");
@@ -3044,6 +3056,39 @@ mod scan_route_tests {
         a.scan_route.done.insert(30_000_003);
         a.scan_replan();
         assert_eq!(a.scan_route.plan.as_ref().unwrap().scouts[0].stops, vec![30_000_001, 30_000_005, 30_000_002]);
+    }
+
+    #[test]
+    fn the_last_scan_route_is_resumed_as_it_was() {
+        let (_ctx, mut a) = app();
+        a.scan_route.done.insert(30_000_003);
+        a.scan_replan();
+        let plan = a.scan_route.plan.clone().unwrap();
+        a.map_route_clear();
+        assert!(a.scan_route.plan.is_none() && a.map_route_anchors.is_empty());
+        a.map_route_start("gate", 30_000_002);
+        a.map_route_clear();
+        a.scan_resume();
+        assert_eq!(a.map_route_kind, "scan");
+        assert_eq!(a.map_route_anchors, vec![30_000_001]);
+        assert_eq!(a.scan_route.plan.as_ref(), Some(&plan), "every scout's route as it was");
+        assert!(a.scan_route.done.contains(&30_000_003), "ticks kept");
+    }
+
+    #[test]
+    fn a_saved_scan_route_survives_a_restart() {
+        let saved = super::scan_ui::SavedScan {
+            centre: 30_000_001,
+            plan: crate::scanroute::Plan {
+                scouts: vec![crate::scanroute::ScoutPlan { name: "Scout One".into(), stops: vec![30_000_005], path: vec![30_000_001, 30_000_005], jumps: 1, detours: vec![] }],
+                unreached: vec![],
+            },
+            done: vec![30_000_003],
+            targets: 2,
+            at: 100,
+        };
+        let json = serde_json::to_string(&saved).unwrap();
+        assert_eq!(serde_json::from_str::<super::scan_ui::SavedScan>(&json).unwrap(), saved);
     }
 
     #[test]

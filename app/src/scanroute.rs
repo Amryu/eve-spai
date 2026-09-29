@@ -10,7 +10,7 @@ pub struct Scout {
     pub start: i64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScoutPlan {
     pub name: String,
     /// The systems to scan, in order. One the scout starts in comes first.
@@ -22,7 +22,7 @@ pub struct ScoutPlan {
     pub detours: Vec<i64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Plan {
     pub scouts: Vec<ScoutPlan>,
     /// Targets no scout can reach within the search depth.
