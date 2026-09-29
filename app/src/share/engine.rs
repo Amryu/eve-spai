@@ -394,10 +394,6 @@ impl Engine<'_> {
         if !had_key && self.store.share_key(&g.id, g.epoch).is_some() {
             self.store.share_queue_group(&g.id, true, true);
         }
-        if g.role.can_manage() {
-            let reqs = self.fetch_requests(&c, &g)?;
-            self.status.lock().unwrap().requests.insert(g.id.clone(), reqs);
-        }
         let mut roster = self.roster(&g.id);
         let mut changed = false;
         loop {
@@ -411,7 +407,7 @@ impl Engine<'_> {
                     // A key for a later epoch is on its way: stop and pick this entry up next round.
                     // One for an epoch before ours will never come, so that entry is passed over.
                     Err(e) if e.to_string().starts_with("no key") && !self.epoch_passed(&g, &row.blob) => {
-                        self.finish(&g, &roster, changed);
+                        self.finish(&c, &g, &roster, changed);
                         return Ok(());
                     }
                     Err(e) => eprintln!("[share] skipped an entry in {}: {e:#}", g.name),
@@ -420,7 +416,7 @@ impl Engine<'_> {
                 self.store.share_cursor_save(&g.id, g.cursor);
             }
         }
-        self.finish(&g, &roster, changed);
+        self.finish(&c, &g, &roster, changed);
         Ok(())
     }
 
@@ -428,14 +424,29 @@ impl Engine<'_> {
         serde_json::from_str::<Envelope>(blob).is_ok_and(|e| e.epoch < g.epoch)
     }
 
-    fn finish(&self, g: &ShareGroup, roster: &Roster, changed: bool) {
+    fn finish(&self, c: &Client, g: &ShareGroup, roster: &Roster, changed: bool) {
         self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
-        if let Some(me) = roster.members.get(&g.char_id) {
-            if me.role != g.role {
-                self.store.share_group_save(&ShareGroup { role: me.role, ..g.clone() });
+        let role = roster.members.get(&g.char_id).map_or(g.role, |me| me.role);
+        if role != g.role {
+            self.store.share_group_save(&ShareGroup { role, ..g.clone() });
+        }
+        // After the log, whose role changes may have just demoted us, and never fatal: a member
+        // who still took itself for an admin was refused here every round and so never read the
+        // entry that says otherwise.
+        let reqs = if role.can_manage() {
+            self.fetch_requests(c, g).inspect_err(|e| eprintln!("[share] join requests for {}: {e:#}", g.name)).ok()
+        } else {
+            None
+        };
+        let mut s = self.status.lock().unwrap();
+        match reqs {
+            Some(r) => {
+                s.requests.insert(g.id.clone(), r);
+            }
+            None => {
+                s.requests.remove(&g.id);
             }
         }
-        let mut s = self.status.lock().unwrap();
         s.synced_at.insert(g.id.clone(), chrono::Utc::now().timestamp());
         if changed {
             s.generation += 1;
@@ -720,6 +731,15 @@ mod end_to_end {
         assert!(a.store.share_outbox(10).is_empty(), "applied changes are not re-sent");
         b.sync();
         assert!(b.store.share_outbox(10).is_empty());
+
+        // Made admin and back: B took itself for an admin, was refused the join requests, and must
+        // still read the entry that demoted it.
+        a.run(Cmd::SetRole { group: g.clone(), char_id: joiner_id, role: Role::Admin });
+        b.sync();
+        assert_eq!(b.store.share_groups()[0].role, Role::Admin);
+        a.run(Cmd::SetRole { group: g.clone(), char_id: joiner_id, role: Role::Member });
+        b.engine().sync_all().expect("a demoted member still syncs");
+        assert_eq!(b.store.share_groups()[0].role, Role::Member);
 
         // B stops taking holes: A's next one waits in the log until B takes them again.
         let off = SharePrefs { recv_holes: false, ..SharePrefs::default() };
