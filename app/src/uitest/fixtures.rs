@@ -50,6 +50,29 @@ pub(crate) fn systems_wh_pins() -> Arc<Systems> {
     Arc::new(s)
 }
 
+/// A 6 by 4 grid of gate-linked nullsec systems, "SCAN-00" to "SCAN-53", id `30_009_100 + 10x + y`,
+/// for scan routes that have somewhere to go.
+pub(crate) fn systems_scan() -> Arc<Systems> {
+    let id = |x: i64, y: i64| 30_009_100 + 10 * x + y;
+    let mut by_name = HashMap::new();
+    let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+    for x in 0..6 {
+        for y in 0..4 {
+            let name = format!("SCAN-{x}{y}");
+            by_name.insert(
+                name.to_lowercase(),
+                SystemInfo { id: id(x, y), name, security: -0.4, constellation: "Grid".into(), region: "Delve".into(), faction: String::new() },
+            );
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                if (0..6).contains(&(x + dx)) && (0..4).contains(&(y + dy)) {
+                    adjacency.entry(id(x, y)).or_default().push(id(x + dx, y + dy));
+                }
+            }
+        }
+    }
+    Arc::new(Systems::new(by_name, adjacency))
+}
+
 fn build_systems() -> Systems {
     build_systems_with(&[])
 }

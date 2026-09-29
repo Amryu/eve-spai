@@ -249,6 +249,14 @@ impl Store {
     }
 
     /// Signatures unseen for days are long gone from space.
+    /// Systems with a probe scan pasted at or after `since`, by anyone sharing with us too.
+    pub fn scanned_since(&self, since: i64) -> std::collections::HashSet<i64> {
+        let Ok(mut st) = self.conn.prepare("SELECT DISTINCT system_id FROM system_sigs WHERE updated_at >= ?1") else {
+            return Default::default();
+        };
+        st.query_map(params![since], |r| r.get::<_, i64>(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
     pub fn prune_system_sigs(&self, older_than: i64) {
         self.exec_historic("DELETE FROM system_sigs WHERE updated_at < ?1", params![older_than]);
     }

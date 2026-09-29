@@ -105,6 +105,7 @@ impl SpaiApp {
         self.map_route_kind = match kind {
             "jump" => "jump",
             "titan" => "titan",
+            "scan" => "scan",
             _ => "gate",
         };
         self.map_replan_route();
@@ -127,6 +128,7 @@ impl SpaiApp {
         self.map_route_kind = match kind {
             "jump" => "jump",
             "titan" => "titan",
+            "scan" => "scan",
             _ => "gate",
         };
         self.map_route_anchors = vec![sid];
@@ -134,6 +136,11 @@ impl SpaiApp {
         self.map_titans.clear();
         self.map_route_opts.clear();
         self.map_route_legs.clear();
+        self.scan_route.clear();
+        // A scan route needs nothing more than its centre.
+        if self.map_route_kind == "scan" {
+            self.map_replan_route();
+        }
     }
 
     /// One anchor becomes the destination. With only a start that completes it; with a route it
@@ -166,18 +173,28 @@ impl SpaiApp {
         self.map_leg_pick.clear();
         self.map_forks.clear();
         self.map_avoid_once.clear();
+        self.scan_route.clear();
     }
 
     /// Recompute the route from the anchors as they stand. Split out so a control in the window can
     /// change one input without the anchors being rebuilt around it.
     pub(crate) fn map_replan_route(&mut self) {
-        self.map_route_opts.clear();
-        self.map_route_at = 0;
         // The route goes where the system goes: the dock, on its own tab. Otherwise a route planned
         // from the map has nowhere to be read without hunting for it.
         if !self.map_route_anchors.is_empty() {
             self.right_dock_open = true;
             self.right_dock_tab = RightDockTab::Route;
+        }
+        self.map_recompute_route();
+    }
+
+    /// [`Self::map_replan_route`] without bringing the dock up, for a change made elsewhere.
+    pub(crate) fn map_recompute_route(&mut self) {
+        self.map_route_opts.clear();
+        self.map_route_at = 0;
+        if self.map_route_kind == "scan" {
+            self.scan_replan();
+            return;
         }
         self.ensure_jump_systems();
         let Some(graph) = self.route_graph() else { return };
@@ -220,7 +237,7 @@ impl SpaiApp {
 
     /// The graph the route planner walks: the shared one, or one re-laid for the route's own
     /// Ansiblex zone limit.
-    fn route_graph(&mut self) -> Option<std::sync::Arc<crate::geo::Systems>> {
+    pub(crate) fn route_graph(&mut self) -> Option<std::sync::Arc<crate::geo::Systems>> {
         let base = self.systems.clone()?;
         let Some(zone) = self.map_route_zone.filter(|z| *z != self.settings.ansiblex_max_zone) else {
             return Some(base);
@@ -231,7 +248,7 @@ impl SpaiApp {
                 return Some(g.clone());
             }
         }
-        let g = std::sync::Arc::new(crate::ansiblex::with_max_zone(&base, &self.settings, zone));
+        let g = std::sync::Arc::new(if zone == 0 { base.gates_only() } else { crate::ansiblex::with_max_zone(&base, &self.settings, zone) });
         self.map_route_graph = Some((key, zone, g.clone()));
         Some(g)
     }

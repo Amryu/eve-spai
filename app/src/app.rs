@@ -282,6 +282,7 @@ mod map_panels;
 mod travel_ui;
 mod map_ui;
 mod map_route;
+mod scan_ui;
 mod battles_ui;
 pub(crate) mod fleet_ui;
 #[cfg(feature = "fleet")]
@@ -775,6 +776,8 @@ pub struct SpaiApp {
     map_titan_self_jump: bool,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
+    /// The scan route planner's current plan and what it is working on.
+    scan_route: scan_ui::ScanState,
     /// The graph for `map_route_zone`, keyed by the base graph it was built from and the zone.
     map_route_graph: Option<(usize, u8, std::sync::Arc<crate::geo::Systems>)>,
     /// The ways of flying each leg, and which one is picked.
@@ -1681,6 +1684,7 @@ impl SpaiApp {
             map_titan_at_start: true,
             map_titan_self_jump: false,
             map_route_zone: None,
+            scan_route: Default::default(),
             map_route_graph: None,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),

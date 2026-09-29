@@ -542,7 +542,7 @@ impl SpaiApp {
                 ui.separator();
             }
             let verb = if planning && !anchors.is_empty() { "Restart as" } else { "Start" };
-            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("titan", "Titan Route")] {
+            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("titan", "Titan Route"), ("scan", "Scan Route")] {
                 if ui.button(format!("{verb} {name}")).clicked() {
                     self.map_route_start(kind, sid);
                     ui.close();
@@ -1306,6 +1306,10 @@ impl SpaiApp {
             }
         }
 
+        if self.map_route_kind == "scan" {
+            self.scan_poll(ui.ctx());
+            self.scan_draw(&painter, &pos, dot);
+        }
         // The route the drag settled on, in its own colours so it does not read as the travel route.
         if let Some(o) = self.map_route_opts.get(self.map_route_at) {
             let phase = (ui.input(|i| i.time) * 28.0) as f32;

@@ -57,6 +57,7 @@ mod rats;
 #[cfg(feature = "fleet")]
 mod rescue;
 mod routeforce;
+mod scanroute;
 mod sde;
 mod sealed;
 mod share;

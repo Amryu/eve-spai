@@ -7,6 +7,40 @@ impl SpaiApp {
     ///
     /// The route is the subject. Everything about the ship is one collapsed header away, and only
     /// for the kind of route that has a ship.
+    /// The route's own Ansiblex limit, over the setting's. Returns whether it changed.
+    pub(crate) fn route_zone_combo(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.settings.jump_bridges.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        let setting = self.settings.ansiblex_max_zone;
+        let current = self.map_route_zone.unwrap_or(setting);
+        // Zone 0 is no Ansiblex at all: gates only.
+        let zone_text = |z: u8| if z == 0 { "None".to_owned() } else { format!("Up to {}", crate::ansiblex::zone_label(z)) };
+        ui.horizontal(|ui| {
+            ui.label("Ansiblexes");
+            egui::ComboBox::from_id_salt(ui.id().with("route_zone"))
+                .selected_text(zone_text(current))
+                .show_ui(ui, |ui| {
+                    for z in 0..=crate::ansiblex::MAX_ZONE {
+                        let mut label = zone_text(z);
+                        if z == setting {
+                            label.push_str(" (setting)");
+                        }
+                        if ui.menu_value(&mut self.map_route_zone, Some(z), label).clicked() {
+                            if z == setting {
+                                self.map_route_zone = None;
+                            }
+                            changed = true;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("For this route only. The jump bridge settings keep their own limit.");
+        });
+        changed
+    }
+
     pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
@@ -23,19 +57,27 @@ impl SpaiApp {
         ui.add_space(4.0);
         let mut replan = false;
         ui.horizontal(|ui| {
-            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("titan", "Titan")] {
+            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("titan", "Titan"), ("scan", "Scan")] {
                 if ui.menu_label(self.map_route_kind == kind, label).clicked()
                     && self.map_route_kind != kind
                 {
                     self.map_route_kind = match kind {
                         "jump" => "jump",
                         "titan" => "titan",
+                        "scan" => "scan",
                         _ => "gate",
                     };
                     replan = true;
                 }
             }
         });
+        if self.map_route_kind == "scan" {
+            if replan {
+                self.scan_replan();
+            }
+            self.scan_panel(ui);
+            return;
+        }
 
         if self.map_route_anchors.len() < 2 {
             ui.add_space(6.0);
@@ -99,30 +141,8 @@ impl SpaiApp {
                 replan = true;
             }
         }
-        if self.map_route_kind != "jump" && !self.settings.jump_bridges.is_empty() {
-            let setting = self.settings.ansiblex_max_zone;
-            let current = self.map_route_zone.unwrap_or(setting);
-            ui.horizontal(|ui| {
-                ui.label("Ansiblexes up to");
-                egui::ComboBox::from_id_salt(ui.id().with("route_zone"))
-                    .selected_text(crate::ansiblex::zone_label(current))
-                    .show_ui(ui, |ui| {
-                        for z in 1..=crate::ansiblex::MAX_ZONE {
-                            let mut label = crate::ansiblex::zone_label(z);
-                            if z == setting {
-                                label.push_str(" (setting)");
-                            }
-                            if ui.menu_value(&mut self.map_route_zone, Some(z), label).clicked() {
-                                if z == setting {
-                                    self.map_route_zone = None;
-                                }
-                                replan = true;
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("For this route only. The jump bridge settings keep their own limit.");
-            });
+        if self.map_route_kind != "jump" && self.route_zone_combo(ui) {
+            replan = true;
         }
         if self.map_route_kind != "jump"
             && ui

@@ -2936,11 +2936,164 @@ mod wh_routing_tests {
     }
 
     #[test]
+    fn switching_a_hole_off_redoes_the_routes_through_it() {
+        let (_ctx, mut a) = app();
+        a.settings.route_via_wormholes = true;
+        a.wh_cache = vec![hole("j", 30_004_759, 30_000_142)];
+        (a.travel_start, a.travel_end) = (Some(30_004_759), Some(30_000_142));
+        a.plan_route();
+        assert!(a.travel_route.is_some(), "Jita is reached only through the hole");
+        a.toggle_wh_hole("j");
+        assert!(a.travel_route.is_none(), "the route still runs through a hole switched off");
+        a.toggle_wh_hole("j");
+        assert!(a.travel_route.is_some());
+    }
+
+    #[test]
     fn routes_can_follow_the_filter() {
         let (_ctx, mut a) = app();
         a.settings.wh_filter.mass = vec![Mass::Critical.code().into()];
         assert_eq!(reached(&a).len(), 3, "the filter alone only changes what is shown");
         a.settings.wh_route_filtered = true;
         assert_eq!(reached(&a), vec![30_003_704]);
+    }
+}
+
+#[cfg(test)]
+mod route_zone_tests {
+    use super::*;
+
+    #[test]
+    fn no_ansiblexes_plans_by_gates_alone() {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.systems = Some(crate::uitest::fixtures::systems_bridged());
+        a.settings.jump_bridges = vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }];
+        let g = a.route_graph().unwrap();
+        assert!(g.is_bridge(30_004_759, 30_003_704), "the planner's own limit keeps the bridge");
+        a.map_route_zone = Some(0);
+        let g = a.route_graph().unwrap();
+        assert!(!g.is_bridge(30_004_759, 30_003_704));
+        assert_eq!(g.route_with(30_004_759, 30_003_704, true, true, &Default::default(), |_| true).map(|r| r.len()), Some(3), "two gates");
+    }
+}
+
+#[cfg(test)]
+mod scan_route_tests {
+    use super::*;
+    use crate::geo::{SystemInfo, Systems};
+    use std::collections::{HashMap, HashSet};
+
+    /// A line of four: a highsec start, a Jove Observatory system, one a C729 can open in, and a
+    /// plain nullsec one.
+    fn line() -> std::sync::Arc<Systems> {
+        let sys = |id: i64, name: &str, security: f64| {
+            (name.to_lowercase(), SystemInfo { id, name: name.into(), security, constellation: String::new(), region: "Test".into(), faction: String::new() })
+        };
+        let by_name = HashMap::from([
+            sys(30_000_001, "Start", 0.8),
+            sys(30_000_005, "Sasta", 0.4),
+            sys(30_000_002, "Adirain", 0.3),
+            sys(30_000_003, "Plain", -0.3),
+        ]);
+        let adj = HashMap::from([
+            (30_000_001, vec![30_000_005]),
+            (30_000_005, vec![30_000_001, 30_000_002]),
+            (30_000_002, vec![30_000_005, 30_000_003]),
+            (30_000_003, vec![30_000_002]),
+        ]);
+        std::sync::Arc::new(Systems::new(by_name, adj))
+    }
+
+    fn app() -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.systems = Some(line());
+        a.settings.scan.skip_hours = 0;
+        a.map_route_start("scan", 30_000_001);
+        (ctx, a)
+    }
+
+    fn targets(a: &SpaiApp) -> HashSet<i64> {
+        a.scan_targets(&line(), 30_000_001, a.settings.scan.radius)
+    }
+
+    #[test]
+    fn what_is_looked_for_decides_the_systems() {
+        let (_ctx, mut a) = app();
+        assert_eq!(targets(&a), [30_000_001, 30_000_005, 30_000_002, 30_000_003].into());
+        a.settings.scan.look_for = "drifter".into();
+        assert_eq!(targets(&a), [30_000_005].into(), "drifter holes open only beside a Jove Observatory");
+        a.settings.scan.look_for = "pochven".into();
+        assert_eq!(targets(&a), [30_000_002].into(), "a C729 opens only in its listed systems");
+        a.settings.scan.look_for = "any".into();
+        a.settings.scan.security = vec!["ns".into()];
+        assert_eq!(targets(&a), [30_000_003].into());
+        a.settings.scan.security.clear();
+        a.settings.scan.radius = 1;
+        assert_eq!(targets(&a), [30_000_001, 30_000_005].into());
+    }
+
+    #[test]
+    fn starting_a_scan_route_plans_it_and_ticks_come_off() {
+        let (_ctx, mut a) = app();
+        let plan = a.scan_route.plan.clone().expect("planned on start");
+        assert_eq!(plan.scouts.len(), 1);
+        assert_eq!(plan.scouts[0].stops, vec![30_000_001, 30_000_005, 30_000_002, 30_000_003]);
+        assert_eq!(plan.scouts[0].jumps, 3);
+        a.scan_route.done.insert(30_000_003);
+        a.scan_replan();
+        assert_eq!(a.scan_route.plan.as_ref().unwrap().scouts[0].stops, vec![30_000_001, 30_000_005, 30_000_002]);
+    }
+
+    #[test]
+    fn a_scan_takes_in_systems_just_past_its_radius() {
+        let (_ctx, mut a) = app();
+        a.settings.scan.radius = 1;
+        a.settings.scan.detour = 0;
+        a.scan_replan();
+        assert_eq!(a.scan_route.plan.as_ref().unwrap().scouts[0].stops, vec![30_000_001, 30_000_005]);
+        a.settings.scan.detour = 1;
+        a.scan_replan();
+        let r = a.scan_route.plan.clone().unwrap().scouts[0].clone();
+        assert_eq!(r.stops, vec![30_000_001, 30_000_005, 30_000_002], "one past the radius, the next one further not");
+        assert_eq!(r.detours, vec![30_000_002]);
+    }
+
+    #[test]
+    fn each_scout_flies_from_where_it_is() {
+        let (_ctx, mut a) = app();
+        a.player.lock().unwrap().locations.insert("Scout One".into(), (30_000_001, false));
+        a.player.lock().unwrap().locations.insert("Scout Two".into(), (30_000_003, false));
+        a.settings.scan.scouts = vec!["Scout One".into(), "Scout Two".into()];
+        a.scan_replan();
+        let plan = a.scan_route.plan.clone().unwrap();
+        let starts: Vec<i64> = plan.scouts.iter().map(|s| s.path[0]).collect();
+        assert_eq!(starts, vec![30_000_001, 30_000_003]);
+        let total: usize = plan.scouts.iter().map(|s| s.stops.len()).sum();
+        assert_eq!(total, 4, "{plan:?}");
+        assert!(plan.scouts.iter().all(|s| s.jumps <= 1), "each takes its own end: {plan:?}");
+    }
+}
+
+#[cfg(test)]
+mod drifter_autofill_tests {
+    use crate::app::wormholes_ui::drifter_autofill;
+
+    #[test]
+    fn a_drifter_type_names_its_system_and_the_system_its_type() {
+        let geo = crate::uitest::fixtures::systems();
+        let (mut ty, mut dest) = ("B735".to_owned(), String::new());
+        drifter_autofill(&geo, &mut ty, &mut dest, true, false);
+        assert_eq!(dest, "J110145", "B735 leads to Barbican");
+        let (mut ty, mut dest) = (String::new(), "Barbican".to_owned());
+        drifter_autofill(&geo, &mut ty, &mut dest, false, true);
+        assert_eq!((ty.as_str(), dest.as_str()), ("B735", "J110145"), "the name becomes the J-code saving looks up");
+        let (mut ty, mut dest) = ("K162".to_owned(), "Jita".to_owned());
+        drifter_autofill(&geo, &mut ty, &mut dest, false, true);
+        assert_eq!((ty.as_str(), dest.as_str()), ("K162", "Jita"), "not a drifter: left alone");
+        let (mut ty, mut dest) = ("H296".to_owned(), "Jita".to_owned());
+        drifter_autofill(&geo, &mut ty, &mut dest, true, false);
+        assert_eq!(dest, "Jita");
     }
 }

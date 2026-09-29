@@ -1429,6 +1429,17 @@ mod tests {
     }
 
     #[test]
+    fn scanned_since_names_the_systems_pasted_lately() {
+        let _guard = crate::disk::test_guard();
+        let s = mem_store();
+        let scan = crate::wormholes::probe_scan("ABC-123\tCosmic Signature\tWormhole\tUnstable Wormhole\t100,0%\t8 AU");
+        s.merge_system_sigs(7, &scan, "Pilot", 100, false);
+        s.merge_system_sigs(8, &scan, "Pilot", 500, false);
+        assert_eq!(s.scanned_since(200), [8].into());
+        assert_eq!(s.scanned_since(0), [7, 8].into());
+    }
+
+    #[test]
     fn a_paste_without_anomalies_leaves_the_anomalies() {
         let _guard = crate::disk::test_guard();
         use crate::wormholes::probe_scan;

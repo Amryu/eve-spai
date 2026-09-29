@@ -638,6 +638,8 @@ fn wormholes_pins_scene(name: &'static str) -> Scene {
         .map(|(i, (a, b))| Wormhole {
             id: i as i64 + 1,
             uid: format!("pin-hole-{i}"),
+            signature: [Some("ABC-123"), Some("KLM-555"), None, Some("QRS-777")][i].map(Into::into),
+            dest_signature: [Some("XYZ-987"), None, None, Some("TUV-888")][i].map(Into::into),
             system_id: *a,
             dest: DestClass::Wspace,
             dest_system_id: Some(*b),
@@ -667,6 +669,53 @@ fn wormholes_pins_scene(name: &'static str) -> Scene {
         });
         app.root_chrome(ui);
         app.root_central(ui, None);
+    })
+}
+
+/// The Route dock planning a scan route around SCAN-22 for two scouts at opposite corners.
+fn route_scan_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [380.0, 760.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.systems = Some(fixtures::systems_scan());
+            let scope = "esi-ui.write_waypoint.v1".to_owned();
+            a.characters = vec![
+                crate::store::CharacterRow { id: 1, name: "Scout Alpha".into(), expires_at: 0, scopes: scope.clone() },
+                crate::store::CharacterRow { id: 2, name: "Scout Beta".into(), expires_at: 0, scopes: scope },
+                crate::store::CharacterRow { id: 3, name: "Docked Alt".into(), expires_at: 0, scopes: String::new() },
+            ];
+            {
+                let mut p = a.player.lock().unwrap();
+                p.locations.insert("Scout Alpha".into(), (30_009_100, false));
+                p.locations.insert("Scout Beta".into(), (30_009_153, false));
+            }
+            a.settings.scan.scouts = vec!["Scout Alpha".into(), "Scout Beta".into()];
+            a.settings.scan.skip_hours = 0;
+            a.map_route_start("scan", 30_009_122);
+            a
+        });
+        egui::ScrollArea::vertical().show(ui, |ui| app.jump_plan_content(ui));
+    })
+}
+
+/// The Route dock on a gate route with Ansiblexes and wormholes to choose from, at the dock's
+/// width, where every option has to fit.
+fn route_gate_options_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [380.0, 520.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.systems = Some(fixtures::systems_bridged());
+            a.settings.jump_bridges = vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }];
+            a.settings.route_via_wormholes = true;
+            a.map_route_start("gate", 30_004_759);
+            a.map_route_set_dest(30_003_704);
+            a
+        });
+        egui::ScrollArea::vertical().show(ui, |ui| app.jump_plan_content(ui));
     })
 }
 
@@ -869,6 +918,11 @@ fn wormholes_focus_scene(
             }
             if name.contains("_legend") {
                 a.settings.wh_legend_open = true;
+            }
+            if name.ends_with("_under_panel") {
+                // Shifted so 7-K5EL, not the selected system, runs on under the side panel.
+                a.wh_graph.hold_view(1.0);
+                a.wh_graph.pan_to(egui::vec2(60.0, 24.0));
             }
             if name.ends_with("_pins") {
                 a.settings.wh_route_pins = vec!["319-3D".into()];
@@ -1958,6 +2012,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_legend", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_legend_narrow", [720.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_pins", [1280.0, 800.0], false, None));
+    v.push(route_scan_scene("view_route_scan"));
+    v.push(route_gate_options_scene("view_route_gate_options"));
     v.push(wormholes_pins_scene("view_wormholes_map_many_pins"));
     v.push(wormholes_pins_scene("view_wormholes_map_many_pins_off"));
     v.push(wormholes_scene("view_wormholes_map_char", [1280.0, 800.0], false, None));
@@ -7506,4 +7562,21 @@ fn uitest_screenshots_wh_filter_popup() {
     h.get_by_label("<10%").click();
     h.run();
     harness::shot(&mut h, "wh_filter_popup");
+}
+
+/// A box running on under the side panel takes no clicks there: the panel is on top of it.
+#[test]
+fn uitest_a_click_on_the_side_panel_never_reaches_the_map_behind_it() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = wormholes_scene("wh_under_panel", [1280.0, 800.0], false, Some(30_004_759));
+    let mut h = harness::build(&mut scene, false);
+    assert!(h.query_by_label("1DQ1-A").is_some(), "1DQ1-A is selected");
+    // Just inside the panel's left edge, below its contents, down the row of boxes the view keeps
+    // in the middle.
+    let left = h.get_by_label("Info").rect().left();
+    for y in (320..700).step_by(15) {
+        harness::click_at(&h, egui::pos2(left + 20.0, y as f32));
+        h.run();
+    }
+    assert!(h.query_by_label("1DQ1-A").is_some(), "a click on the panel selected a system behind it");
 }

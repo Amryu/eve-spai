@@ -84,6 +84,8 @@ impl SpaiApp {
             return;
         }
         self.wh_reloaded = Some(std::time::Instant::now());
+        let usable = self.wh_usable();
+        let was = self.route_destination.and_then(|d| self.ingame_hole_waypoints(d));
         if let Some(store) = &self.store {
             let now = chrono::Utc::now().timestamp();
             store.prune_wormholes(now);
@@ -98,6 +100,10 @@ impl SpaiApp {
             self.wh_cache = whs;
             self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
             self.wh_group_of = store.wormhole_groups();
+        }
+        // Synced, expired, edited or found: a route through a hole that changed is out of date.
+        if self.wh_usable() != usable {
+            self.wh_routes_refresh(Some(was));
         }
     }
 
@@ -233,22 +239,38 @@ impl SpaiApp {
     pub(crate) fn wh_routing_changed(&mut self) {
         self.needs_save = true;
         self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, chrono::Utc::now().timestamp()));
-        self.replan_routes();
-        if !self.map_route_anchors.is_empty() {
-            self.map_replan_route();
-        }
+        self.wh_routes_refresh(None);
     }
 
     /// Toggles for the kinds of hole routes may use. Returns whether any changed.
     pub(crate) fn wh_route_kinds_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.horizontal(|ui| {
+            ui.label("Through");
+            self.wh_route_kinds_button(ui)
+        })
+        .inner
+    }
+
+    /// A button naming how many kinds of hole routes may use, opening a list to pick them.
+    fn wh_route_kinds_button(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::app::SteadySelect as _;
+        use crate::wormholes::HoleKind;
         let mut changed = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Through:").weak());
-            for k in crate::wormholes::HoleKind::ALL {
-                let on = self.settings.wh_route_kinds.iter().any(|c| c == k.code());
-                if ui.menu_label(on, k.label()).clicked() {
-                    if on {
+        let on = |k: HoleKind, s: &crate::settings::Settings| s.wh_route_kinds.iter().any(|c| c == k.code());
+        let n = HoleKind::ALL.iter().filter(|k| on(**k, &self.settings)).count();
+        let text = match n {
+            0 => "No holes".to_owned(),
+            n if n == HoleKind::ALL.len() => "All kinds".to_owned(),
+            1 => HoleKind::ALL.iter().find(|k| on(**k, &self.settings)).map_or_else(String::new, |k| k.label().to_owned()),
+            n => format!("{n} of {} kinds", HoleKind::ALL.len()),
+        };
+        let button = ui.button(format!("{text}  {}", egui_phosphor::regular::CARET_DOWN));
+        // Stays open while kinds are picked: each click is one of several choices.
+        egui::Popup::from_toggle_button_response(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            for k in HoleKind::ALL {
+                let was = on(k, &self.settings);
+                if ui.menu_label(was, k.label()).clicked() {
+                    if was {
                         self.settings.wh_route_kinds.retain(|c| c != k.code());
                     } else {
                         self.settings.wh_route_kinds.push(k.code().to_owned());
@@ -260,15 +282,16 @@ impl SpaiApp {
         changed
     }
 
-    /// The kinds of hole routes may use and what each hole must still have. Returns whether any
-    /// changed.
+    /// The kinds of hole routes may use and what each hole must still have, one dropdown each.
+    /// Returns whether any changed.
     pub(crate) fn wh_route_options_ui(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::app::SteadySelect as _;
         use crate::wormholes::{Mass, ShipSize, TimeLeft};
-        let mut changed = self.wh_route_kinds_ui(ui);
-        let mut row = |ui: &mut egui::Ui, title: &str, value: &mut String, items: &[(&str, &str, &str)]| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(title).weak());
+        let mut changed = false;
+        let combo = |ui: &mut egui::Ui, id: &str, value: &mut String, items: &[(&str, &str, &str)]| -> bool {
+            let mut changed = false;
+            let current = items.iter().find(|i| i.0 == value.as_str()).unwrap_or(&items[0]).1;
+            egui::ComboBox::from_id_salt(("wh_route_opt", id)).selected_text(current).show_ui(ui, |ui| {
                 for (code, label, hint) in items {
                     if ui.menu_label(value == code, *label).on_hover_text(*hint).clicked() && value != code {
                         *value = (*code).to_owned();
@@ -276,40 +299,52 @@ impl SpaiApp {
                     }
                 }
             });
+            changed
         };
-        row(
-            ui,
-            "Mass:",
-            &mut self.settings.wh_route_min_mass,
-            &[
-                ("", "Any", "Any mass left"),
-                (Mass::Reduced.code(), "Not critical", "Skip holes with under 10% mass left. Holes with their mass not read pass."),
-                (Mass::Fresh.code(), "Over 50%", "Only holes with over half their mass left. Holes with their mass not read pass."),
-            ],
-        );
-        row(
-            ui,
-            "Time:",
-            &mut self.settings.wh_route_min_time,
-            &[
-                ("", "Any", "Any time left, even holes that could close any moment"),
-                (TimeLeft::Expiring.code(), "Not expired", "Skip holes past their time"),
-                (TimeLeft::Under1h.code(), "1h+", "Skip holes with under an hour left"),
-                (TimeLeft::Under4h.code(), "4h+", "Skip holes with under 4 hours left"),
-                (TimeLeft::Under12h.code(), "12h+", "Skip holes with under 12 hours left"),
-            ],
-        );
-        row(
-            ui,
-            "Size:",
-            &mut self.settings.wh_route_min_size,
-            &[
-                ("", "Any", "Any hole size"),
-                (ShipSize::Medium.code(), "Medium+", "Holes a cruiser fits through. Holes of unknown size and type pass."),
-                (ShipSize::Large.code(), "Large+", "Holes a battleship fits through. Holes of unknown size and type pass."),
-                (ShipSize::XLarge.code(), "XL", "Holes a capital fits through. Holes of unknown size and type pass."),
-            ],
-        );
+        egui::Grid::new(ui.id().with("wh_route_opts")).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Through");
+            changed |= self.wh_route_kinds_button(ui);
+            ui.end_row();
+            ui.label("Mass");
+            changed |= combo(
+                ui,
+                "mass",
+                &mut self.settings.wh_route_min_mass,
+                &[
+                    ("", "Any", "Any mass left"),
+                    (Mass::Reduced.code(), "Not critical", "Skip holes with under 10% mass left. Holes with their mass not read pass."),
+                    (Mass::Fresh.code(), "Over 50%", "Only holes with over half their mass left. Holes with their mass not read pass."),
+                ],
+            );
+            ui.end_row();
+            ui.label("Time left");
+            changed |= combo(
+                ui,
+                "time",
+                &mut self.settings.wh_route_min_time,
+                &[
+                    ("", "Any", "Any time left, even holes that could close any moment"),
+                    (TimeLeft::Expiring.code(), "Not expired", "Skip holes past their time"),
+                    (TimeLeft::Under1h.code(), "1h or more", "Skip holes with under an hour left"),
+                    (TimeLeft::Under4h.code(), "4h or more", "Skip holes with under 4 hours left"),
+                    (TimeLeft::Under12h.code(), "12h or more", "Skip holes with under 12 hours left"),
+                ],
+            );
+            ui.end_row();
+            ui.label("Size");
+            changed |= combo(
+                ui,
+                "size",
+                &mut self.settings.wh_route_min_size,
+                &[
+                    ("", "Any", "Any hole size"),
+                    (ShipSize::Medium.code(), "Medium or bigger", "Holes a cruiser fits through. Holes of unknown size and type pass."),
+                    (ShipSize::Large.code(), "Large or bigger", "Holes a battleship fits through. Holes of unknown size and type pass."),
+                    (ShipSize::XLarge.code(), "XL", "Holes a capital fits through. Holes of unknown size and type pass."),
+                ],
+            );
+            ui.end_row();
+        });
         changed
     }
 
@@ -325,7 +360,39 @@ impl SpaiApp {
         }
         self.wh_reloaded = None; // bypass the reload debounce, the map must not show it again
         self.reload_wormholes();
-        self.replan_routes();
+    }
+
+    /// Redoes every route after the holes they may use changed: the travel route, the map's
+    /// planned route and the one in the game. `was` is the game route's hole waypoints from before;
+    /// the game is only sent the route again when they differ. `None` sends it anyway.
+    pub(crate) fn wh_routes_refresh(&mut self, was: Option<Option<Vec<i64>>>) {
+        self.plan_route();
+        if !self.map_route_anchors.is_empty() {
+            self.map_recompute_route();
+        }
+        let Some(dest) = self.route_destination else { return };
+        if self.active_character == "No character" || was.is_some_and(|w| w == self.ingame_hole_waypoints(dest)) {
+            return;
+        }
+        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        self.set_destination_esi(cid, self.active_character.clone(), dest);
+    }
+
+    fn ingame_hole_waypoints(&self, dest: i64) -> Option<Vec<i64>> {
+        if !self.settings.route_via_wormholes {
+            return None;
+        }
+        self.wh_route_waypoints(self.player_system()?, dest)
+    }
+
+    /// Holes routes may use, as a stable value to compare.
+    fn wh_usable(&self) -> Vec<(i64, Vec<i64>)> {
+        let mut v: Vec<(i64, Vec<i64>)> = self.wh_adjacency().into_iter().map(|(k, mut n)| {
+            n.sort_unstable();
+            (k, n)
+        }).collect();
+        v.sort_unstable();
+        v
     }
 
     /// `crossed_jspace` covers the case where the step passed through systems the k-space map cannot
@@ -773,6 +840,7 @@ impl SpaiApp {
                 .collect()
         };
         let (here_sigs, there_sigs) = (sigs_of(&form.system), sigs_of(&form.dest));
+        let (type_was, dest_was) = (form.wh_type.clone(), form.dest.clone());
         egui::Window::new(if form.id.is_some() { "Edit wormhole" } else { "Add wormhole" })
             .open(&mut open)
             .collapsible(false)
@@ -858,6 +926,10 @@ impl SpaiApp {
                     save = true;
                 }
             });
+        if let Some(g) = self.systems.clone() {
+            let (t, d) = (form.wh_type != type_was, form.dest != dest_was);
+            drifter_autofill(&g, &mut form.wh_type, &mut form.dest, t, d);
+        }
         if save {
             let geo = self.systems.clone();
             let lookup = |name: &str| geo.as_ref().and_then(|g| g.lookup(name.trim())).map(|i| i.id);
@@ -1152,14 +1224,12 @@ pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::Sy
             Dest::AnyKspace => "k-space".into(),
             Dest::Unknown => "the other side".into(),
         };
-        ui.label(format!(
-            "{}{} \u{2192} {dest}: {}, {} t per jump, {} t total, {}h",
-            t.code,
-            if t.is_static { " (static)" } else { "" },
-            t.size_label(),
+        ui.label(format!("{} \u{2192} {dest}, {}", t.code, t.size_label())).on_hover_text(format!(
+            "{} t per jump\n{} t in all\nLasts {}h{}",
             tonnes(t.jump_mass),
             tonnes(t.total_mass),
-            t.lifetime_h
+            t.lifetime_h,
+            if t.is_static { "\nA static somewhere" } else { "" }
         ));
     };
     if let Some(j) = whdata::jsystem(sys) {
@@ -1237,7 +1307,29 @@ pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::Sy
     }
 }
 
-/// One button per choice in a row; clicking the chosen one again clears it back to unknown.
+/// Keeps a drifter hole's type and far side in step: whichever was just changed fills in the
+/// other. A drifter named in words ("Barbican") becomes its J-code, which is what saving looks up.
+pub(crate) fn drifter_autofill(geo: &crate::geo::Systems, wh_type: &mut String, dest: &mut String, type_changed: bool, dest_changed: bool) {
+    use crate::whdata;
+    let dest_id = |d: &str| geo.lookup(d.trim()).map(|i| i.id).or_else(|| whdata::drifter_in_text(d));
+    if type_changed {
+        if let Some(id) = whdata::drifter_for_code(wh_type.trim()).filter(|id| dest_id(dest) != Some(*id)) {
+            if let Some(i) = geo.info_of(id) {
+                *dest = i.name.clone();
+            }
+        }
+    } else if dest_changed {
+        let Some(id) = dest_id(dest) else { return };
+        let Some(code) = whdata::drifter_code(id) else { return };
+        if let Some(i) = geo.info_of(id).filter(|i| !dest.trim().eq_ignore_ascii_case(&i.name)) {
+            *dest = i.name.clone();
+        }
+        if !wh_type.trim().eq_ignore_ascii_case(code) {
+            *wh_type = code.to_owned();
+        }
+    }
+}
+
 /// Toggles that add and remove codes from `set`; an empty set means any. Returns whether it changed.
 fn code_toggles(ui: &mut egui::Ui, set: &mut Vec<String>, items: &[(&str, &str)]) -> bool {
     use crate::app::SteadySelect as _;
@@ -1300,6 +1392,7 @@ pub(crate) fn wh_filter_ui(ui: &mut egui::Ui, f: &mut crate::wormholes::WhFilter
     changed
 }
 
+/// One button per choice in a row; clicking the chosen one again clears it back to unknown.
 pub(crate) fn choice_row<T: Copy + PartialEq>(ui: &mut egui::Ui, value: &mut Option<T>, items: &[(T, &str, &str)]) {
     use crate::app::SteadySelect as _;
     ui.horizontal(|ui| {

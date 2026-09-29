@@ -1759,7 +1759,8 @@ impl SpaiApp {
 
         // Then the labels, in map units, each off every other label, every box and, where it can
         // be, every line that is not its own: a label on a shared stretch could belong to either.
-        let lines: Vec<&[egui::Pos2]> = hole_paths.iter().map(|p| p.as_deref().unwrap_or(&[])).collect();
+        // The pinned systems' lines follow the holes', so a hole's index is its own here too.
+        let lines: Vec<&[egui::Pos2]> = routes.iter().map(|p| p.as_deref().unwrap_or(&[])).collect();
         let others = |own: usize| lines.iter().enumerate().filter(move |(i, _)| *i != own).map(|(_, l)| *l).collect::<Vec<_>>();
         let boxes: Vec<egui::Rect> = pos.iter().map(|(id, p)| egui::Rect::from_min_size(*p, node_size(*id))).collect();
         let mut taken: Vec<egui::Rect> = Vec::new();
@@ -1771,24 +1772,24 @@ impl SpaiApp {
             };
             painter.galley(sr.center() - g.size() / 2.0, g, visuals.text_color());
         };
-        let pad = egui::vec2(8.0, 2.0);
+        let pad = egui::vec2(6.0, 1.0);
+        let sig_font = egui::FontId::new(font.size * 0.8, font.family.clone());
         if detail {
             for (wi, w) in holes.iter().enumerate() {
                 let Some(path) = &hole_paths[wi] else { continue };
-                // Routes run from the hole's own system to the far one; each side's tag stays on
-                // its own half, as near its own box as it can be off the other lines.
-                // Only on a stretch this hole has to itself: on a shared trunk a tag could belong
-                // to any of the holes on it. No such spot, no tag (hovering the line says it).
-                let own = others(wi);
-                for (sig, near) in [(&w.dest_signature, false), (&w.signature, true)] {
-                    let Some(sig) = sig else { continue };
-                    let g = painter.layout_no_wrap(sig.chars().take(3).collect(), font.clone(), visuals.text_color());
-                    let size = (g.size() + pad) / zoom;
-                    let spots = walk_all(path, near, size);
-                    let Some(r) = first_free_strict(spots, size, &taken, &boxes, &own) else { continue };
-                    taken.push(r);
-                    draw_label(r, g, None);
-                }
+                // One tag per hole, both signatures in the line's own direction. Only on a stretch
+                // this hole has to itself: on a shared one it could belong to any of the holes on
+                // it. No such spot, no tag (hovering the line says it).
+                let short = |s: &Option<String>| s.as_deref().map(|s| s.chars().take(3).collect::<String>());
+                let text = match (short(&w.signature), short(&w.dest_signature)) {
+                    (None, None) => continue,
+                    (a, b) => format!("{}>{}", a.as_deref().unwrap_or("?"), b.as_deref().unwrap_or("?")),
+                };
+                let g = painter.layout_no_wrap(text, sig_font.clone(), visuals.text_color());
+                let size = (g.size() + pad) / zoom;
+                let Some(r) = first_free_strict(walk_all(path, true, size), size, &taken, &boxes, &others(wi)) else { continue };
+                taken.push(r);
+                draw_label(r, g, None);
             }
         }
 
@@ -1807,7 +1808,8 @@ impl SpaiApp {
             }
             if let Some(&(pin, n)) = pills.get(&id) {
                 let Some(info) = geo.info_of(pin) else { continue };
-                let resp = ui.interact(r, ui.id().with(("wh_pill", id)), egui::Sense::click_and_drag());
+                // Only the part on the canvas: the rest is under a side panel, whose clicks are its own.
+                let resp = ui.interact(r.intersect(rect), ui.id().with(("wh_pill", id)), egui::Sense::click_and_drag());
                 if resp.drag_started() {
                     self.wh_graph.drag = Some((id, p));
                 }
@@ -1846,7 +1848,7 @@ impl SpaiApp {
             }
             let Some(info) = geo.info_of(id) else { continue };
             let c = whdata::class_of(id, info.security, &info.region);
-            let resp = ui.interact(r, ui.id().with(("wh_node", id)), egui::Sense::click_and_drag());
+            let resp = ui.interact(r.intersect(rect), ui.id().with(("wh_node", id)), egui::Sense::click_and_drag());
             if resp.drag_started() {
                 self.wh_graph.drag = Some((id, p));
             }
@@ -2416,18 +2418,39 @@ impl SpaiApp {
                     ui.label(egui::RichText::new("No signatures pasted for this system").weak());
                 }
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-                egui::Grid::new("wh_graph_scan").striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
-                    for h in ["Id", "Group", "Info", "Added"] {
-                        ui.label(egui::RichText::new(h).strong());
-                    }
-                    ui.end_row();
+                // A table, not a grid: the Info column takes whatever width the panel has left.
+                let row_h = ui.spacing().interact_size.y + 4.0;
+                egui_extras::TableBuilder::new(ui)
+                    .id_salt("wh_graph_scan")
+                    .striped(true)
+                    .vscroll(false)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::remainder().clip(true))
+                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::auto())
+                    .header(row_h, |mut header| {
+                        for h in ["Id", "Group", "Info", "Added", ""] {
+                            header.col(|ui| {
+                                ui.label(egui::RichText::new(h).strong());
+                            });
+                        }
+                    })
+                    .body(|mut body| {
                     for sg in &sigs {
+                        body.row(row_h, |mut row| {
                         let anomaly = sg.kind.to_lowercase().contains("anomal");
-                        let id = ui.label(if anomaly { egui::RichText::new(&sg.sig).weak() } else { egui::RichText::new(&sg.sig) });
-                        id.on_hover_text(&sg.kind);
-                        ui.label(short_group(&sg.group));
+                        row.col(|ui| {
+                            let id = ui.label(if anomaly { egui::RichText::new(&sg.sig).weak() } else { egui::RichText::new(&sg.sig) });
+                            id.on_hover_text(&sg.kind);
+                        });
+                        row.col(|ui| {
+                            ui.label(short_group(&sg.group));
+                        });
                         // A wormhole signature we know the far side of says where it goes.
                         let hole = sig_hole(holes, sel, &sg.sig);
+                        row.col(|ui| {
                         match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
                             Some(Some(f)) => {
                                 let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
@@ -2436,18 +2459,27 @@ impl SpaiApp {
                                 }
                             }
                             _ => {
-                                match unidentified_type(sel, &sg.name) {
-                                    Some(code) => ui.label(format!("{code} \u{b7} {}", sg.name)),
-                                    None => ui.label(if sg.name.is_empty() { "—" } else { sg.name.as_str() }),
+                                let text = match unidentified_type(sel, &sg.name) {
+                                    Some(code) => format!("{code} \u{b7} {}", sg.name),
+                                    None if sg.name.is_empty() => "\u{2014}".to_owned(),
+                                    None => sg.name.clone(),
                                 };
+                                ui.add(egui::Label::new(&text).truncate());
                             }
                         }
-                        ui.horizontal(|ui| {
+                        });
+                        row.col(|ui| {
                             ui.label(super::human_ago(now - sg.added_at)).on_hover_text(format!(
                                 "Added by {}, last seen in a paste {} ago",
                                 sg.who,
                                 super::human_ago(now - sg.updated_at)
                             ));
+                        });
+                        row.col(|ui| {
+                            // Remove first, so those line up whether or not an edit button follows.
+                            if ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                                drop_sig = Some(sg.sig.clone());
+                            }
                             let is_hole = hole.is_some() || sg.group == "Wormhole";
                             if is_hole && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this wormhole").clicked() {
                                 match hole {
@@ -2455,11 +2487,8 @@ impl SpaiApp {
                                     None => new_hole = Some(sg.sig.clone()),
                                 }
                             }
-                            if ui.small_button(icon::X).on_hover_text("Remove").clicked() {
-                                drop_sig = Some(sg.sig.clone());
-                            }
                         });
-                        ui.end_row();
+                        });
                     }
                 });
                     }
@@ -3189,7 +3218,7 @@ fn legend(ui: &mut egui::Ui) {
         });
         ui.horizontal_wrapped(|ui| {
             line(ui, Line::Off(time_color(TimeLeft::Plenty)), "off for routes (right-click a system)");
-            chip(ui, "ABC", None, "signature, on its own system's side");
+            chip(ui, "ABC>XYZ", None, "signatures, from the hole's own system to the far one");
         });
         // The chips on a box, drawn as the map draws them.
         let mark = |ui: &mut egui::Ui, text: &str, color: C, what: &str| {

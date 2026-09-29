@@ -38,6 +38,42 @@ fn distance_is_not_a_hostile_count() {
     assert_eq!(r.count, Some(5), "a ship count must survive");
 }
 
+/// Several numbers in one message are views of one fleet, not parts to add up: the highest wins.
+#[test]
+fn numbers_in_one_message_take_the_highest_not_the_sum() {
+    let s = systems();
+    let sh = ships_with(&[("Eni", 1), ("Deacon", 2)]);
+    let r = analyze("12 hostile 7 ENI 5 Deacon Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(12));
+    let r = analyze("5 reds x8 Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(8));
+}
+
+/// "+N" is that many beyond the pilots named, and a number in a pilot's name is never a count.
+#[test]
+fn a_plus_adds_to_the_pilots_named_and_their_numbers_stay_names() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990)]);
+    let known: std::collections::HashMap<String, i64> = [("pilot 1".to_owned(), 1), ("pilot 2".to_owned(), 2), ("red 5".to_owned(), 5)].into();
+    let r = analyze("Pilot 1  Pilot 2 +12 Rancer", &s, &sh, &known, 1, "ch", "x");
+    assert_eq!(r.count, Some(14), "{:?}", r.pilots);
+    let r = analyze("Red 5 +3 Rancer", &s, &sh, &known, 1, "ch", "x");
+    assert_eq!(r.count, Some(4), "Red 5 is one pilot, not five reds: {:?}", r.pilots);
+}
+
+/// A wormhole type such as X702 or X877 reads like an x-multiplied count, but it is a hole.
+#[test]
+fn a_wormhole_type_is_not_a_hostile_count() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990)]);
+    for text in ["X702 in Rancer", "Rancer x702 wh", "X877 to Rancer"] {
+        let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, None, "{text} gave {:?}", r.count);
+    }
+    let r = analyze("x7 Loki Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(7), "a real x count must survive");
+}
+
 /// A number the name parser swallowed belongs to the name. The guard keys on the pair actually
 /// appearing in a detected pilot, which is what keeps "ESS 5 reds" counting 5: no pilot "ESS 5"
 /// is ever detected there, even though "ESS" is capitalised like a name.
@@ -2310,7 +2346,7 @@ fn detects_systems_count_and_flags() {
     let r = analyze("hostile in Rancer, 3 Drake +2", &s, &drake, &noknown(), 100, "ch", "Scout");
     assert_eq!(r.systems.len(), 1);
     assert_eq!(r.systems[0].name, "Rancer");
-    assert_eq!(r.count, Some(5));
+    assert_eq!(r.count, Some(3), "the highest number, not the numbers added up");
     assert!(!r.clear);
 
     assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
@@ -3001,10 +3037,10 @@ fn ess_time_ignores_isk_amount() {
 }
 
 #[test]
-fn sums_separate_hostile_groups() {
+fn separate_hostile_groups_take_the_highest() {
     let s = systems();
     let r = analyze("PDF-3Z 7 red; 1 neut", &s, &noships(), &noknown(), 1, "ch", "x");
-    assert_eq!(r.count, Some(8));
+    assert_eq!(r.count, Some(7));
 }
 
 #[test]

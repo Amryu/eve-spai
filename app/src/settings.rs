@@ -266,6 +266,9 @@ pub struct Settings {
     /// Routes use only the holes the wormhole tab's filter shows.
     #[serde(default)]
     pub wh_route_filtered: bool,
+    /// The scan route planner's choices.
+    #[serde(default)]
+    pub scan: ScanSettings,
     /// Every sound the app plays is scaled by this, and none plays while muted.
     #[serde(default = "default_volume")]
     pub sound_master_volume: f32,
@@ -1037,6 +1040,30 @@ fn default_kill_jumps() -> u32 {
     0
 }
 
+/// What a scan route looks for and who flies it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScanSettings {
+    /// Gate jumps out from the centre.
+    pub radius: u32,
+    /// "any", "drifter" or "pochven": the holes being looked for, which decides the systems.
+    pub look_for: String,
+    /// Security bands to scan: "hs", "ls", "ns". Empty is all of them.
+    pub security: Vec<String>,
+    /// Systems with a probe scan pasted this many hours ago or less are skipped; 0 skips none.
+    pub skip_hours: u32,
+    /// The characters flying it, by name.
+    pub scouts: Vec<String>,
+    /// How many jumps off its route a scout goes for a target outside the radius; 0 goes for none.
+    pub detour: u32,
+}
+
+impl Default for ScanSettings {
+    fn default() -> Self {
+        Self { radius: 5, look_for: "any".into(), security: Vec::new(), skip_hours: 24, scouts: Vec::new(), detour: 2 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JumpBridge {
     pub from: String,
@@ -1435,6 +1462,7 @@ impl Default for Settings {
             wh_disabled_systems: Vec::new(),
             wh_filter: Default::default(),
             wh_route_filtered: false,
+            scan: ScanSettings::default(),
             wh_share_target: None,
             wh_legend_open: false,
             wh_layout_style: String::new(),

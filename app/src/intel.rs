@@ -3417,8 +3417,9 @@ pub fn derive_count(
     named: u32,
     solo: bool,
 ) -> Option<u32> {
+    // A stated number is the whole fleet, unless the pilots named and a "+N" beyond them make more.
     let base = if let Some(t) = extra {
-        t + plus
+        if plus > 0 { t.max(named + plus) } else { t }
     } else if plus > 0 {
         named + plus
     } else if named >= 3 {
@@ -3501,8 +3502,24 @@ fn parse_count(
     let mut best: Option<u32> = None;
     let mut plus: u32 = 0;
     let words: Vec<&str> = text.split_whitespace().collect();
+    // Words inside a confirmed pilot's name: a number there is part of the name, however it is
+    // marked. Only confirmed ones: an unresolved candidate may have swallowed a real count.
+    let bare = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-').to_lowercase();
+    let lw: Vec<String> = words.iter().map(|w| bare(w)).collect();
+    let mut in_name = vec![false; words.len()];
+    for p in pilots.iter().filter(|p| known_pilots.contains_key(&p.to_lowercase())) {
+        let pw: Vec<String> = p.split_whitespace().map(bare).collect();
+        if pw.is_empty() || pw.len() > lw.len() {
+            continue;
+        }
+        for at in 0..=lw.len() - pw.len() {
+            if lw[at..at + pw.len()] == pw[..] {
+                in_name[at..at + pw.len()].iter_mut().for_each(|m| *m = true);
+            }
+        }
+    }
     for (i, raw) in words.iter().enumerate() {
-        if raw.contains('-') {
+        if raw.contains('-') || in_name[i] {
             continue;
         }
         let t = raw
@@ -3511,6 +3528,10 @@ fn parse_count(
         let t = t.as_str();
         let digits = t.trim_start_matches(['+', 'x']).trim_end_matches(['x', '+']);
         if digits.is_empty() || digits.len() > 3 {
+            continue;
+        }
+        // X702, X877 and the like are wormhole types.
+        if crate::whdata::hole_type(t).is_some() {
             continue;
         }
         let attached_plus = t.starts_with('+') || t.ends_with('+');
@@ -3588,10 +3609,12 @@ fn parse_count(
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {
+                // Numbers in one message are views of one fleet ("12 hostile 7 ENI 5 Deacon"), not
+                // parts of it: the highest stands for all of them.
                 if attached_plus || plus_neighbour {
-                    plus = (plus + n).min(999);
+                    plus = plus.max(n);
                 } else if attached_x || kw_neighbour || ship_neighbour || loc_neighbour {
-                    best = Some(best.map_or(n, |b| (b + n).min(999)));
+                    best = Some(best.map_or(n, |b| b.max(n)));
                 } else {
                     continue;
                 }
