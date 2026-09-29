@@ -122,6 +122,12 @@ impl SpaiApp {
         !self.map_route_anchors.is_empty()
     }
 
+    /// Whether the map's menu offers the plain in-game "Set Destination". Not while a gate route is
+    /// planned: that has its own "Set as Destination", and the plain one would throw the plan away.
+    pub(crate) fn plain_destination_offered(&self) -> bool {
+        !(self.map_route_kind_active() && self.map_route_kind == "gate")
+    }
+
     /// Start a route here: this system, nowhere to go yet, and a kind chosen once for the whole
     /// route rather than once per leg.
     pub(crate) fn map_route_start(&mut self, kind: &str, sid: i64) {

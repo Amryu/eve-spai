@@ -88,6 +88,47 @@ fn docked_system_scene(name: &'static str) -> Scene {
     })
 }
 
+/// A region map whose systems have each kind of hole: regular, Thera, one drifter, and regular
+/// with two drifters, each drawn with its own composed icon.
+fn map_hole_icons_scene(name: &'static str) -> Scene {
+    use crate::wormholes::{DestClass, Source, Wormhole};
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let region = fixtures::insmother();
+            let mut ids: Vec<i64> = region.drawn.iter().map(|s| s.id).collect();
+            ids.sort_unstable();
+            let pick = |i: usize| ids[i * ids.len() / 5];
+            let hole = |id: i64, from: i64, dest: DestClass, to: Option<i64>, drifter: bool| Wormhole {
+                id,
+                system_id: from,
+                dest,
+                dest_system_id: to,
+                is_drifter: drifter,
+                reported_at: fixtures::now() - 600,
+                updated_at: fixtures::now() - 600,
+                source: Source::Manual,
+                ..Default::default()
+            };
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Map;
+            a.seed_map(region.systems, region.regions, fixtures::INSMOTHER, region.drawn);
+            a.seed_holes(vec![
+                hole(1, pick(0), DestClass::Wspace, Some(31_000_150), false),
+                hole(2, pick(1), DestClass::Thera, Some(31_000_005), false),
+                hole(3, pick(2), DestClass::Wspace, Some(31_000_002), true),
+                hole(4, pick(3), DestClass::Wspace, Some(31_000_151), false),
+                hole(5, pick(3), DestClass::Wspace, Some(31_000_001), true),
+                hole(6, pick(3), DestClass::Wspace, Some(31_000_004), true),
+            ]);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// The Lookup view with a pasted local loaded: finished rows, one still loading, one unknown name.
 fn lookup_tab_scene(name: &'static str) -> Scene {
     harness::scratch_profile();
@@ -1924,6 +1965,7 @@ pub(crate) fn all() -> Vec<Scene> {
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         docked_system_scene("map_dock_system_notes"),
+        map_hole_icons_scene("map_hole_icons"),
         notes_dialog_scene("dialog_system_window_notes", [470.0, 620.0], |a| {
             a.open_system(30_004_759);
         }),

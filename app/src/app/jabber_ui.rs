@@ -132,6 +132,13 @@ impl SpaiApp {
             .collect()
     }
 
+    /// The ping feed seen: no longer unread, none new.
+    pub(crate) fn jabber_pings_read(&self) {
+        let mut st = self.jabber.lock().unwrap();
+        st.pings_unread = false;
+        st.pings_new = 0;
+    }
+
     pub(crate) fn jabber_mark_read(&self, jid: &str) {
         let mut st = self.jabber.lock().unwrap();
         st.unread.remove(jid);
@@ -3082,7 +3089,7 @@ impl SpaiApp {
             match a {
                 TabAction::Select { win, jid } => {
                     match &jid {
-                        None => self.jabber.lock().unwrap().pings_unread = false,
+                        None => self.jabber_pings_read(),
                         Some(j) => self.jabber_mark_read(j),
                     }
                     self.win_set_active(win, jid);

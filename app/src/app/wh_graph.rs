@@ -1236,7 +1236,7 @@ fn system_tag(c: Class, security: f64) -> String {
     }
 }
 
-fn drifter_color() -> egui::Color32 {
+pub(crate) fn drifter_color() -> egui::Color32 {
     class_color(Class::Drifter(14), -1.0)
 }
 

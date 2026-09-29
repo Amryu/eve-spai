@@ -677,6 +677,7 @@ pub(crate) fn jabber_state_notify() -> crate::jabber::JabberState {
     st.chats.get_mut(JABBER_DM).unwrap().push(chat_msg("Wingmate Alpha", "undocking in 5", 60, false));
     st.pings = vec![ping_plain(), ping_fleet()];
     st.pings_unread = true;
+    st.pings_new = 2;
     st
 }
 

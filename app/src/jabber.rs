@@ -292,6 +292,8 @@ pub struct JabberState {
     pub room_subjects: std::collections::BTreeMap<String, String>,
     pub notify: Vec<(String, bool)>,
     pub pings_unread: bool,
+    /// Pings come in since the feed was last read, for the notification box's count.
+    pub pings_new: u32,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     pub unread: std::collections::BTreeSet<String>,
     /// How many unread messages each conversation is carrying.
@@ -1154,6 +1156,7 @@ fn handle_event(
                         }
                         if !delayed {
                             s.pings_unread = true;
+                            s.pings_new = s.pings_new.saturating_add(1);
                             s.notify.push((PING_FEED_KEY.to_owned(), true));
                             s.pings.last().cloned().map(|p| (s.notify_cfg.clone(), p))
                         } else {

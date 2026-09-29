@@ -438,7 +438,8 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
             let has_char = self.active_character != "No character";
-            if ui
+            if self.plain_destination_offered()
+                && ui
                 .add_enabled(has_char, egui::Button::new("Set Destination"))
                 .on_disabled_hover_text("Log a character in to route in the game")
                 .clicked()
@@ -603,16 +604,13 @@ impl SpaiApp {
 
         let mut lead_icons: std::collections::HashMap<i64, Vec<(&str, egui::Color32)>> =
             std::collections::HashMap::new();
-        if ov.wormholes {
-            let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
-            for sid in &self.wh_overlay.jspace_holes {
-                let col = if self.wh_overlay.jspace_blocked.contains(sid) { super::wh_graph::desaturate(wh_col) } else { wh_col };
-                lead_icons
-                    .entry(*sid)
-                    .or_default()
-                    .push((egui_phosphor::regular::SPIRAL, col));
-            }
-        }
+        // Drawn ahead of the other icons, composed from the kinds of hole the system has.
+        let hole_marks: std::collections::HashMap<i64, (super::HoleMark, bool)> = if ov.wormholes {
+            self.wh_overlay.marks.iter().map(|(id, m)| (*id, (m.clone(), self.wh_overlay.jspace_blocked.contains(id)))).collect()
+        } else {
+            Default::default()
+        };
+        let hole_slots = |id: i64| hole_marks.get(&id).map_or(0.0, |(m, _)| hole_mark_slots(m));
         if ov.jove {
             for s in &self.map_draw {
                 if crate::jove::has(s.id) {
@@ -685,7 +683,7 @@ impl SpaiApp {
                 if !cull.contains(p) {
                     continue;
                 }
-                let lead = lead_icons.get(&s.id).map_or(0, Vec::len) as f32;
+                let lead = lead_icons.get(&s.id).map_or(0, Vec::len) as f32 + hole_slots(s.id);
                 let right = upgrade_icons.get(&s.id).map_or(0, Vec::len) as f32;
                 if lead == 0.0 && right == 0.0 && !show_sys_labels {
                     continue;
@@ -1555,10 +1553,15 @@ impl SpaiApp {
             if let Some(row) = label_at.get(&s.id).filter(|_| rect.contains(p)) {
                 // The icons always draw: dropping one would silently hide a camp or a hole. Only the
                 // name is culled, and when it is, the row re-centres without it.
+                let mut lead_x = row.lead_x;
+                if let Some((m, blocked)) = hole_marks.get(&s.id) {
+                    paint_hole_mark(&painter, egui::pos2(lead_x, row.mid_y), icon_h, icon_w, m, *blocked);
+                    lead_x += hole_mark_slots(m) * icon_w;
+                }
                 if let Some(icons) = lead_icons.get(&s.id) {
                     for (k, (glyph, col)) in icons.iter().enumerate() {
                         painter.text(
-                            egui::pos2(row.lead_x + k as f32 * icon_w, row.mid_y),
+                            egui::pos2(lead_x + k as f32 * icon_w, row.mid_y),
                             egui::Align2::LEFT_CENTER,
                             *glyph,
                             icon_font.clone(),
@@ -2348,4 +2351,50 @@ fn wh_tip_line(id: i64, info: &crate::geo::SystemInfo) -> Option<String> {
         parts.push(format!("statics {}", j.statics.join(" ")));
     }
     Some(parts.join(" \u{b7} "))
+}
+
+/// Room a system's hole icon takes, in icon widths: one, and a half more when blue and pink both
+/// show.
+fn hole_mark_slots(m: &super::HoleMark) -> f32 {
+    let blue = m.regular || m.thera;
+    if blue && !m.drifters.is_empty() { 2.0 } else { 1.35 }
+}
+
+/// A system's hole icon, left edge at `at.x`, centred on `at.y`: blue for regular holes with a T
+/// for Thera, pink for drifter holes with each drifter's letter, the two offset when both apply.
+fn paint_hole_mark(painter: &egui::Painter, at: egui::Pos2, icon_h: f32, icon_w: f32, m: &super::HoleMark, blocked: bool) {
+    let tint = |c: egui::Color32| if blocked { super::wh_graph::desaturate(c) } else { c };
+    let blue = tint(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4));
+    let pink = tint(super::wh_graph::drifter_color());
+    // A size up from the other icons, so the letters on it stay readable at a small dot.
+    let icon_h = icon_h * 1.2;
+    let font = egui::FontId::proportional(icon_h);
+    let letter_font = |n: usize| egui::FontId::new(icon_h * if n > 2 { 0.5 } else if n == 2 { 0.58 } else { 0.72 }, egui::FontFamily::Proportional);
+    let glyph = |x: f32, col: egui::Color32| {
+        painter.text(egui::pos2(x, at.y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::SPIRAL, font.clone(), col);
+    };
+    // Letters sit on the spiral's middle, outlined so they read over its lines.
+    let letters = |x: f32, text: &str| {
+        let c = egui::pos2(x + icon_h / 2.0, at.y);
+        let f = letter_font(text.chars().count());
+        for off in [egui::vec2(-1.0, 0.0), egui::vec2(1.0, 0.0), egui::vec2(0.0, -1.0), egui::vec2(0.0, 1.0)] {
+            painter.text(c + off, egui::Align2::CENTER_CENTER, text, f.clone(), egui::Color32::BLACK);
+        }
+        painter.text(c, egui::Align2::CENTER_CENTER, text, f, egui::Color32::WHITE);
+    };
+    let has_blue = m.regular || m.thera;
+    let mut x = at.x;
+    if has_blue {
+        glyph(x, blue);
+        if !m.drifters.is_empty() {
+            x += icon_w * 0.55;
+        }
+    }
+    if !m.drifters.is_empty() {
+        glyph(x, pink);
+        letters(x, &m.drifters.iter().collect::<String>());
+    }
+    if m.thera {
+        letters(at.x, "T");
+    }
 }

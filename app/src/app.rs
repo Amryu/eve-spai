@@ -3133,6 +3133,14 @@ impl SpaiApp {
         self.map_overlays.bridges = true;
     }
 
+    /// Known holes, drawn on the map with the wormhole layer on.
+    #[cfg(test)]
+    pub(crate) fn seed_holes(&mut self, holes: Vec<crate::wormholes::Wormhole>) {
+        self.wh_cache = holes;
+        self.map_overlays.wormholes = true;
+        self.wh_overlay = WhOverlay::build(&self.wh_cache, |_| true);
+    }
+
     /// One battle open in the Battles view, its detail worked out the way the brview worker does.
     #[cfg(test)]
     pub(crate) fn seed_battle(&mut self, b: br_core::battle::Battle, names: std::collections::HashMap<i64, String>) {
@@ -4292,11 +4300,49 @@ fn is_jspace(id: i64) -> bool {
     (31_000_000..32_000_000).contains(&id)
 }
 
+/// What kinds of hole a k-space system has, for its icon on the map.
+#[derive(Default, Clone, Debug, PartialEq)]
+pub(crate) struct HoleMark {
+    pub regular: bool,
+    pub thera: bool,
+    /// The drifter systems its drifter holes lead to, by letter; '?' for one not known yet.
+    pub drifters: std::collections::BTreeSet<char>,
+}
+
+impl HoleMark {
+    /// The kind of `w`, seen from its k-space end.
+    fn add(&mut self, w: &crate::wormholes::Wormhole) {
+        const THERA: i64 = 31_000_005;
+        let ends = [Some(w.system_id), w.dest_system_id];
+        let drifter = crate::whdata::DRIFTERS
+            .iter()
+            .find(|d| ends.contains(&Some(d.2)))
+            .map(|d| d.2)
+            .or_else(|| [&w.wh_type, &w.dest_wh_type].into_iter().flatten().find_map(|t| crate::whdata::drifter_for_code(t)));
+        if let Some(id) = drifter {
+            self.drifters.insert(drifter_letter(id));
+        } else if w.is_drifter {
+            self.drifters.insert('?');
+        } else if w.dest == crate::wormholes::DestClass::Thera || ends.contains(&Some(THERA)) {
+            self.thera = true;
+        } else {
+            self.regular = true;
+        }
+    }
+}
+
+/// A drifter system's letter: S, B, V, C, R.
+pub(crate) fn drifter_letter(id: i64) -> char {
+    crate::whdata::DRIFTERS.iter().find(|d| d.2 == id).and_then(|d| d.1.chars().next()).map_or('?', |c| c.to_ascii_uppercase())
+}
+
 #[derive(Default, Clone)]
 struct WhOverlay {
     direct: Vec<(i64, i64)>,
     chains: Vec<(i64, i64, usize)>,
     jspace_holes: std::collections::HashSet<i64>,
+    /// The kinds of hole behind each of `jspace_holes`.
+    marks: std::collections::HashMap<i64, HoleMark>,
     thera_conns: Vec<i64>,
     /// Links drawn above that no hole routes may use still makes: a pair from `direct` or
     /// `chains`, smaller id first, or a system of `thera_conns` paired with Thera.
@@ -4332,19 +4378,22 @@ impl WhOverlay {
             |d: DestClass| matches!(d, DestClass::Wspace | DestClass::Thera | DestClass::Turnur);
         let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut jspace_holes: HashSet<i64> = HashSet::new();
+        let mut marks: HashMap<i64, HoleMark> = HashMap::new();
+        let mut mark = |k: i64, w: &crate::wormholes::Wormhole| {
+            jspace_holes.insert(k);
+            marks.entry(k).or_default().add(w);
+        };
         for w in whs {
             let a = w.system_id;
-            if is_kspace(a) && notable_dest(w.dest) {
-                jspace_holes.insert(a);
+            let b = w.dest_system_id;
+            if is_kspace(a) && (notable_dest(w.dest) || b.is_some_and(is_jspace)) {
+                mark(a, w);
             }
-            if let Some(b) = w.dest_system_id {
+            if let Some(b) = b {
                 adj.entry(a).or_default().push(b);
                 adj.entry(b).or_default().push(a);
-                if is_kspace(a) && is_jspace(b) {
-                    jspace_holes.insert(a);
-                }
                 if is_kspace(b) && is_jspace(a) {
-                    jspace_holes.insert(b);
+                    mark(b, w);
                 }
             }
         }
@@ -4393,7 +4442,7 @@ impl WhOverlay {
             .copied()
             .filter(|id| is_kspace(*id))
             .collect();
-        WhOverlay { direct, chains, jspace_holes, thera_conns, ..Default::default() }
+        WhOverlay { direct, chains, jspace_holes, marks, thera_conns, ..Default::default() }
     }
 }
 

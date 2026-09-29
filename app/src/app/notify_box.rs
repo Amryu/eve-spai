@@ -30,10 +30,8 @@ pub(crate) struct NotifyBox {
     since: HashMap<String, Anchor>,
     /// Conversations, and "pings", whose "+N more" was clicked.
     expanded: HashSet<String>,
-    /// The newest ping seen in the box.
-    pings_seen_at: i64,
-    /// `pings_seen_at` when the box opened, so what was new stays marked while it is open.
-    pings_seen_before: Option<i64>,
+    /// How many pings were new when the box opened, so they stay marked while it is open.
+    pings_new_at_open: Option<usize>,
     focus_reply: Option<String>,
     /// Opened by a test scene, which has no pointer to click the bell with.
     #[cfg(test)]
@@ -73,14 +71,14 @@ struct Group {
 }
 
 impl SpaiApp {
-    /// Unread pings: those newer than the last one seen here, while the feed is unread at all.
+    /// Pings come in since the feed was last read. Counted as they arrive: the pings stored from
+    /// before a restart are history, not news.
     fn notify_new_pings(&self) -> usize {
         let st = self.jabber.lock().unwrap();
         if !st.pings_unread || self.jabber_is_muted(crate::jabber::PING_FEED_KEY) {
             return 0;
         }
-        let seen = self.notify_box.pings_seen_at;
-        st.pings.iter().filter(|p| p.timestamp() > seen).count().max(1)
+        (st.pings_new as usize).max(1)
     }
 
     /// New messages in conversations that are not muted, plus new pings: the box's number.
@@ -132,7 +130,7 @@ impl SpaiApp {
             self.notify_box.since.clear();
             self.notify_box.expanded.clear();
             self.notify_box.focus_reply = None;
-            self.notify_box.pings_seen_before = None;
+            self.notify_box.pings_new_at_open = None;
         }
     }
 
@@ -259,8 +257,7 @@ impl SpaiApp {
         let expanded = self.notify_box.expanded.contains("pings");
         let show = if expanded { total } else { SHOWN.min(total) };
         let pings: Vec<crate::pings::Ping> = self.jabber.lock().unwrap().pings.iter().rev().take(show.max(new)).cloned().collect();
-        let newest = pings.iter().map(|p| p.timestamp()).max().unwrap_or(0);
-        let seen_before = *self.notify_box.pings_seen_before.get_or_insert(self.notify_box.pings_seen_at);
+        let fresh_n = *self.notify_box.pings_new_at_open.get_or_insert(new);
         let mut open = false;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{}  Fleet pings", icon::MEGAPHONE)).strong());
@@ -272,8 +269,9 @@ impl SpaiApp {
             });
         });
         let draw = |app: &Self, ui: &mut egui::Ui, list: &[crate::pings::Ping]| {
-            for p in list {
-                let fresh = new > 0 && p.timestamp() > seen_before;
+            // Newest first, so the new ones are the first `fresh_n`.
+            for (i, p) in list.iter().enumerate() {
+                let fresh = i < fresh_n;
                 render_ping(ui, p, &app.systems, fresh, &app.settings.doctrine_url, &app.settings.op_channel_links);
                 ui.separator();
             }
@@ -289,11 +287,10 @@ impl SpaiApp {
         }
         // Everything new was on screen, or "+N more" was clicked: read.
         if new <= SHOWN || expanded {
-            self.jabber.lock().unwrap().pings_unread = false;
-            self.notify_box.pings_seen_at = self.notify_box.pings_seen_at.max(newest);
+            self.jabber_pings_read();
         }
         if open {
-            self.jabber.lock().unwrap().pings_unread = false;
+            self.jabber_pings_read();
             self.view = nav::View::Jabber;
             self.jabber_chat = None;
             egui::Popup::close_all(ui.ctx());

@@ -133,6 +133,7 @@ impl SpaiApp {
             }
             if arrived {
                 j.pings_unread = true;
+                j.pings_new = j.pings_new.saturating_add(1);
                 j.notify.push((crate::jabber::PING_FEED_KEY.to_owned(), true));
             }
         }

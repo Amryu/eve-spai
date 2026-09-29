@@ -107,6 +107,25 @@ mod wh_overlay_tests {
     }
 
     #[test]
+    fn each_system_knows_the_kinds_of_hole_it_has() {
+        use crate::wormholes::{DestClass, Wormhole};
+        let hole = |from: i64, dest: DestClass, to: Option<i64>, drifter: bool| Wormhole { system_id: from, dest, dest_system_id: to, is_drifter: drifter, ..Default::default() };
+        let whs = [
+            hole(30_000_001, DestClass::Wspace, Some(31_000_150), false),
+            hole(30_000_002, DestClass::Thera, None, false),
+            hole(30_000_003, DestClass::Wspace, Some(31_000_002), true),
+            hole(30_000_003, DestClass::Wspace, Some(31_000_001), true),
+            hole(30_000_004, DestClass::Wspace, None, true),
+        ];
+        let o = WhOverlay::build(&whs, |_| true);
+        let m = |id: i64| o.marks.get(&id).cloned().unwrap_or_default();
+        assert!(m(30_000_001).regular && !m(30_000_001).thera && m(30_000_001).drifters.is_empty());
+        assert!(m(30_000_002).thera && !m(30_000_002).regular);
+        assert_eq!(m(30_000_003).drifters.iter().collect::<String>(), "BS", "Barbican and Sentinel");
+        assert_eq!(m(30_000_004).drifters.iter().collect::<String>(), "?", "a drifter hole not placed yet");
+    }
+
+    #[test]
     fn switched_off_holes_mark_what_they_carried() {
         let whs = vec![
             conn(30_000_001, 31_000_001),
@@ -3000,6 +3019,17 @@ mod scan_route_tests {
     }
 
     #[test]
+    fn the_plain_set_destination_is_gone_while_a_gate_route_is_planned() {
+        let (_ctx, mut a) = app();
+        a.map_route_clear();
+        assert!(a.plain_destination_offered(), "no route: offered");
+        a.map_route_start("gate", 30_000_001);
+        assert!(!a.plain_destination_offered(), "a gate route has its own");
+        a.map_route_start("jump", 30_000_001);
+        assert!(a.plain_destination_offered());
+    }
+
+    #[test]
     fn the_area_around_an_exploration_upgrade_is_left_out() {
         let (_ctx, mut a) = app();
         a.settings.sov_upgrades = vec![crate::settings::SovUpgrade { system: "Plain".into(), upgrade: "<- Major Threat Detection Array 3, Exploration Detector 3".into() }];
@@ -3135,5 +3165,26 @@ mod dm_arrival_tests {
         assert_eq!(crate::jabber::convo_name(via_room), "Scout Alpha (via delve.imperium)");
         assert!(crate::app::valid_convo_key(via_room) && crate::app::valid_convo_key(dm));
         assert!(!crate::app::valid_convo_key("room@conference.goonfleet.com/"));
+    }
+}
+
+#[cfg(test)]
+mod notify_count_tests {
+    use crate::app::SpaiApp;
+
+    /// The pings stored from before a restart are history: one new ping on top of them is one.
+    #[test]
+    fn stored_pings_are_not_new_after_a_restart() {
+        let ctx = egui::Context::default();
+        let a = SpaiApp::build(&ctx, true);
+        {
+            let mut st = a.jabber.lock().unwrap();
+            st.pings = (0..2000).map(|i| crate::pings::Ping::Plain { timestamp: i, text: "old".into(), sender: None, target: None, raw: String::new() }).collect();
+            st.pings_unread = true;
+            st.pings_new = 1;
+        }
+        assert_eq!(a.notify_count(), 1);
+        a.jabber_pings_read();
+        assert_eq!(a.notify_count(), 0);
     }
 }
