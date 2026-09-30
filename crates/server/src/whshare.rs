@@ -161,6 +161,21 @@ async fn member_device(st: &AppState, group: &str, char_id: i64, h: &HeaderMap) 
     Ok((r, d))
 }
 
+/// Whether the request came through an invite `by` made.
+async fn own_invite(st: &AppState, group: &str, char_id: i64, device: &str, by: i64) -> Result<bool, AppError> {
+    let hit: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM wh_join_requests r JOIN wh_invites i ON i.id = r.invite_id
+         WHERE r.group_id = $1 AND r.char_id = $2 AND r.device_id = $3 AND i.created_by = $4",
+    )
+    .bind(group)
+    .bind(char_id)
+    .bind(device)
+    .bind(by)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(hit.is_some())
+}
+
 async fn manager(st: &AppState, group: &str, char_id: i64) -> Result<String, AppError> {
     let r = member(st, group, char_id).await?;
     if r == "owner" || r == "admin" {
@@ -450,7 +465,11 @@ async fn create_invite(
     Path(g): Path<String>,
     Json(inv): Json<NewInvite>,
 ) -> Result<Json<Created>, AppError> {
-    manager(&st, &g, me.char_id).await?;
+    // Members invite too, for viewers only: they approve their own invites, and the roster and
+    // `approve` hold them to that.
+    if member(&st, &g, me.char_id).await? == "viewer" {
+        return Err(AppError::Forbidden);
+    }
     check_blob(&inv.blob)?;
     let ttl = inv.ttl_secs.clamp(300, 7 * 86_400);
     let id = new_id();
@@ -581,11 +600,19 @@ async fn requests(
     SessionIdentity(me): SessionIdentity,
     Path(g): Path<String>,
 ) -> Result<Json<Vec<RequestRow>>, AppError> {
-    manager(&st, &g, me.char_id).await?;
+    // A member sees the answers to their own invites only.
+    let only = match member(&st, &g, me.char_id).await?.as_str() {
+        "owner" | "admin" => None,
+        "member" => Some(me.char_id),
+        _ => return Err(AppError::Forbidden),
+    };
     let rows = sqlx::query(
-        "SELECT char_id, device_id, name, label, invite_id, body FROM wh_join_requests WHERE group_id = $1 ORDER BY created_at",
+        "SELECT r.char_id, r.device_id, r.name, r.label, r.invite_id, r.body FROM wh_join_requests r
+         LEFT JOIN wh_invites i ON i.id = r.invite_id
+         WHERE r.group_id = $1 AND ($2::bigint IS NULL OR i.created_by = $2) ORDER BY r.created_at",
     )
     .bind(&g)
+    .bind(only)
     .fetch_all(&st.db)
     .await?;
     Ok(Json(
@@ -614,16 +641,22 @@ async fn approve(
     Path((g, c, d)): Path<(String, i64, String)>,
     Json(a): Json<Approve>,
 ) -> Result<StatusCode, AppError> {
-    let mine = manager(&st, &g, me.char_id).await?;
+    let mine = member(&st, &g, me.char_id).await?;
     // Another device of a member keeps the member's role, so what it asks for does not matter
     // (the 0.13.0 app sends the member's own role, `owner` for the owner's second device).
     let already = role(&st, &g, c).await?.is_some();
-    let allowed = already
-        || match a.role.as_str() {
-            "member" | "viewer" => true,
-            "admin" => mine == "owner",
-            _ => false,
-        };
+    let allowed = match mine.as_str() {
+        "owner" | "admin" => {
+            already
+                || match a.role.as_str() {
+                    "member" | "viewer" => true,
+                    "admin" => mine == "owner",
+                    _ => false,
+                }
+        }
+        "member" => !already && a.role == "viewer" && own_invite(&st, &g, c, &d, me.char_id).await?,
+        _ => false,
+    };
     if !allowed {
         return Err(AppError::Forbidden);
     }
@@ -678,7 +711,10 @@ async fn reject(
     SessionIdentity(me): SessionIdentity,
     Path((g, c, d)): Path<(String, i64, String)>,
 ) -> Result<StatusCode, AppError> {
-    manager(&st, &g, me.char_id).await?;
+    let mine = member(&st, &g, me.char_id).await?;
+    if !(mine == "owner" || mine == "admin" || (mine == "member" && own_invite(&st, &g, c, &d, me.char_id).await?)) {
+        return Err(AppError::Forbidden);
+    }
     sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
         .bind(&g)
         .bind(c)

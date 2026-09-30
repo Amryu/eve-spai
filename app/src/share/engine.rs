@@ -265,6 +265,23 @@ mod end_to_end {
         b.try_sync().expect("a demoted member still syncs");
         assert_eq!(b.store.share_groups()[0].role, Role::Member);
 
+        // B, a member, invites a guest and lets them in: as a viewer, whatever B asks for, and the
+        // owner's install takes B's entry for them.
+        let guest_id = joiner_id + 400_000;
+        let w = Install::new(&base, &secret);
+        let link_w = b.invite_for(&g, guest_id, "Pilot W");
+        w.run(Cmd::Join { link: link_w, char_id: guest_id, prefs: SharePrefs::default() });
+        b.sync();
+        let reqs = b.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
+        assert!(reqs.iter().any(|r| r.row.char_id == guest_id && r.verified), "the member sees the answer to their invite: {reqs:?}");
+        b.run(Cmd::Approve { group: g.clone(), char_id: guest_id, device_id: w.device.public().device_id(), role: Role::Member });
+        w.sync();
+        assert!(w.hole("ABC").is_some(), "the guest reads the group");
+        assert_eq!(w.store.share_groups()[0].role, Role::Viewer);
+        a.sync();
+        let guest = a.store.share_members(&g).into_iter().find(|m| m.char_id == guest_id).expect("the owner takes the member's entry");
+        assert_eq!(guest.role, Role::Viewer);
+
         // B stops taking holes: A's next one waits in the log until B takes them again.
         let off = SharePrefs { recv_holes: false, ..SharePrefs::default() };
         b.store.share_prefs_save(&g, off);

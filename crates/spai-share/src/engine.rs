@@ -241,6 +241,10 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 let device = Device::of(keys, &req.row.label);
                 // A character already in has its role; only a new one gets `role`, and only the
                 // owner makes admins.
+                if !g.role.can_manage() && roster.members.contains_key(&char_id) {
+                    bail!("{} is already in; an admin adds their devices", req.row.name);
+                }
+                let role = if g.role.can_manage() { role } else { Role::Viewer };
                 let op = if roster.members.contains_key(&char_id) {
                     Op::DeviceAdded { char_id, device }
                 } else {
@@ -457,7 +461,8 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         // After the log, whose role changes may have just demoted us, and never fatal: a member
         // who still took itself for an admin was refused here every round and so never read the
         // entry that says otherwise.
-        let reqs = if role.can_manage() {
+        // Members too: the answers to their own invites, which they let in as viewers.
+        let reqs = if role.can_write() {
             self.fetch_requests(c, g).await.inspect_err(|e| eprintln!("[share] join requests for {}: {e:#}", g.name)).ok()
         } else {
             None
