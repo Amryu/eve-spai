@@ -1387,7 +1387,7 @@ impl SpaiApp {
             for jid in requests {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(egui_phosphor::regular::USER_PLUS).color(accent));
-                    ui.add(egui::Label::new(crate::jabber::convo_name(&jid)).truncate())
+                    ui.add(egui::Label::new(crate::jabber::convo_name(&jid)).truncate().show_tooltip_when_elided(false))
                         .on_hover_text(format!("{jid} wants to see your online status"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button(egui_phosphor::regular::X).on_hover_text("Decline").clicked() {
@@ -1545,7 +1545,7 @@ impl SpaiApp {
                         .horizontal(|ui| {
                             ui.add_space(4.0);
                             ui.label(egui::RichText::new(icon).weak());
-                            ui.add(egui::Label::new(name).truncate()).on_hover_text(jid);
+                            ui.add(egui::Label::new(name).truncate().show_tooltip_when_elided(false)).on_hover_text(jid);
                         })
                         .response;
                     let row = egui::Rect::from_min_max(
@@ -2900,6 +2900,7 @@ impl SpaiApp {
                     ui.add(
                         egui::Label::new(egui::RichText::new(motd_one_line(m)).weak())
                             .truncate()
+                            .show_tooltip_when_elided(false)
                             .selectable(false),
                     )
                     .on_hover_text(motd_preview(m, 6));
