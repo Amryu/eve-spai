@@ -29,6 +29,8 @@ pub struct WebApp {
     /// The store's generation the map last took its holes at.
     shown: u64,
     joined: bool,
+    /// "Open in EVE Spai" was pressed, so say what to do if nothing opened.
+    tried_app: bool,
     tab: Tab,
     map: StarMap,
     map_data: Option<MapData>,
@@ -66,6 +68,7 @@ impl WebApp {
         WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, sync: None,
             shown: u64::MAX,
             joined: false,
+            tried_app: false,
             tab: Tab::default(),
             map: StarMap::default(),
             map_data: None,
@@ -78,10 +81,12 @@ impl WebApp {
     /// Signed in: keeps the group in step, and uses an invite link opened earlier.
     fn run_sync(&mut self, session: &crate::sso::Session, ctx: &egui::Context) {
         let sync = self.sync.get_or_insert_with(Sync::new);
-        if !self.joined {
+        // An invite the user chose to use here, before or after signing in.
+        if !self.joined && page::load::<bool>(auth::INVITE_HERE) == Some(true) {
             self.joined = true;
             if let Some((id, secret)) = page::load::<(String, String)>(auth::INVITE) {
                 page::forget(auth::INVITE);
+                page::forget(auth::INVITE_HERE);
                 sync.send(Cmd::Join { link: invite_link(&id, &secret), char_id: session.character_id, prefs: SharePrefs::default() });
             }
         }
@@ -134,6 +139,44 @@ impl WebApp {
     }
 
     /// Nothing to show on the map yet: why, and what to do.
+    /// An invite opened here and not yet used: in EVE Spai, or in the browser.
+    fn invite_choice(&mut self, ui: &mut egui::Ui, state: &Auth) -> bool {
+        let Some((id, secret)) = page::load::<(String, String)>(auth::INVITE) else { return false };
+        if page::load::<bool>(auth::INVITE_HERE) == Some(true) || matches!(state, Auth::Working(_)) {
+            return false;
+        }
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.25);
+            ui.heading("You were invited to a wormhole group");
+            ui.label("Open the invite in EVE Spai if you use it, or use the wormhole map here in the browser.");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                // Centred: the two buttons as one row in the middle.
+                let w = 2.0 * 190.0 + ui.spacing().item_spacing.x;
+                ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                if ui.add_sized([190.0, 32.0], egui::Button::new("Open in EVE Spai")).clicked() {
+                    self.tried_app = true;
+                    page::go(&invite_link(&id, &secret));
+                }
+                if ui.add_sized([190.0, 32.0], egui::Button::new("Use it here")).clicked() {
+                    page::save(auth::INVITE_HERE, &true);
+                    self.joined = false;
+                    if !matches!(state, Auth::SignedIn(_)) {
+                        auth::sign_in();
+                    }
+                }
+            });
+            if self.tried_app {
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("Nothing opened? EVE Spai 0.13.1 or later opens these links. In an older one, paste the link into the Join field of Wormhole sharing:").weak());
+                let link = format!("{}{}join/{id}#{secret}", page::origin(), page::base());
+                ui.add(egui::TextEdit::singleline(&mut link.clone()).desired_width(560.0));
+                ui.label(egui::RichText::new("Sign in as the character the invite is for.").weak());
+            }
+        });
+        true
+    }
+
     fn waiting(&self, ui: &mut egui::Ui, state: &Auth) -> bool {
         let say = |ui: &mut egui::Ui, lines: &[String]| {
             ui.vertical_centered(|ui| {
@@ -265,7 +308,7 @@ impl eframe::App for WebApp {
             });
         });
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            if self.waiting(ui, &state) {
+            if self.invite_choice(ui, &state) || self.waiting(ui, &state) {
                 return;
             }
             if let (Tab::Group, Some(sync), Auth::SignedIn(session)) = (self.tab, &mut self.sync, &state) {

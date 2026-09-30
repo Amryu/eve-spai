@@ -119,6 +119,12 @@ impl SpaiApp {
         self.wh_share.refreshed = None;
     }
 
+    /// Opens the sharing window with an invite link ready to join.
+    pub(crate) fn wh_share_open_join(&mut self, link: &str) {
+        self.wh_share.join_link = link.to_owned();
+        self.wh_share.open = true;
+    }
+
     /// Saves a group's choices and acts on what changed: what is now sent goes out, what is now
     /// taken is read again from the group's log, and hiding shows or drops its data here.
     fn set_share_prefs(&mut self, group: &str, was: SharePrefs, now: SharePrefs) {
@@ -377,21 +383,16 @@ impl SpaiApp {
                                 });
                                 if let Some((gid, link, for_name)) = &status.invite {
                                     if *gid == g.id {
-                                        // The same invite opens in the app or, for someone without it, in a browser.
-                                        let web = link.split_once("join/").map(|(_, rest)| format!("{}/wh/join/{rest}", crate::brshare::api_base()));
-                                        let label_w = ["App", "Browser"].iter().map(|t| ui.painter().layout_no_wrap((*t).to_owned(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x).fold(0.0, f32::max);
-                                        for (label, l, hint) in [("App", Some(link.clone()), "Copy the link for EVE Spai"), ("Browser", web, "Copy the link for the web map, no app needed")] {
-                                            let Some(l) = l else { continue };
-                                            ui.horizontal(|ui| {
-                                                ui.add_sized([label_w, ui.spacing().interact_size.y], egui::Label::new(label));
-                                                let copy_w = ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 2.0 + 8.0;
-                                                ui.add(egui::TextEdit::singleline(&mut l.clone()).desired_width((ui.available_width() - copy_w).max(80.0)));
-                                                if ui.button(icon::COPY).on_hover_text(hint).clicked() {
-                                                    copy = Some(l);
-                                                }
-                                            });
-                                        }
-                                        ui.label(egui::RichText::new(format!("For {for_name} only. Send one of them to them privately.")).weak());
+                                        // One link for everyone: it opens a page that offers EVE Spai or the browser.
+                                        let web = link.split_once("join/").map_or_else(|| link.clone(), |(_, rest)| format!("{}/wh/join/{rest}", crate::brshare::api_base()));
+                                        ui.horizontal(|ui| {
+                                            let copy_w = ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 2.0 + 8.0;
+                                            ui.add(egui::TextEdit::singleline(&mut web.clone()).desired_width((ui.available_width() - copy_w).max(80.0)));
+                                            if ui.button(icon::COPY).on_hover_text("Copy the link").clicked() {
+                                                copy = Some(web.clone());
+                                            }
+                                        });
+                                        ui.label(egui::RichText::new(format!("For {for_name} only. Send it to them privately: it opens in EVE Spai or in a browser.")).weak());
                                     }
                                 }
                             }
@@ -439,7 +440,7 @@ impl SpaiApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.join_link).hint_text("eve-spai://join/…").desired_width(200.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.join_link).hint_text("https://eve-spai.com/wh/join/…").desired_width(200.0));
                     let ok = char_id.is_some() && engine::parse_link(&self.wh_share.join_link).is_some();
                     if ui.add_enabled(ok, egui::Button::new(format!("{}  Join", icon::SIGN_IN))).clicked() {
                         cmd = Some(Cmd::Join { link: self.wh_share.join_link.trim().to_owned(), char_id: char_id.unwrap_or_default(), prefs: new_prefs });

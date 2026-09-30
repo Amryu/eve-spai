@@ -13,7 +13,7 @@ const ready = () => page.waitForFunction(() => !document.getElementById('loading
 
 // Signed in without EVE: the test minted the session.
 await page.goto(site + '/wh/');
-await page.evaluate(s => localStorage.setItem('spai.session', s), session);
+await page.evaluate(s => { localStorage.setItem('spai.session', s); localStorage.setItem('spai.invite.here', 'true'); }, session);
 await page.goto(site + invite);
 await ready();
 // Poll until the join is in the saved store: the group appears there once the engine sent it.

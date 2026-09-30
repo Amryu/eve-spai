@@ -33,6 +33,7 @@ mod http;
 mod image_cache;
 mod instance;
 mod launcher;
+mod linkscheme;
 mod jabber;
 mod jove;
 mod jumproute;
@@ -209,13 +210,28 @@ fn main() -> eframe::Result<()> {
 
     // A relaunch after an update races the old process, which holds the lock until it exits.
     let restarted = std::env::args().any(|a| a == update::RESTART_FLAG);
+    let link = instance::link_arg();
     if !acquire_single_instance_lock_waiting(restarted) {
+        if let Some(l) = &link {
+            if instance::signal_link(l) {
+                eprintln!("another instance is running; handed it the link");
+                return Ok(());
+            }
+        }
         if instance::signal_raise() {
             eprintln!("another instance is running; asked it to raise its window");
         } else {
             eprintln!("another instance is running");
         }
         return Ok(());
+    }
+
+    if let Some(l) = link {
+        instance::set_link(l);
+    }
+    // Clicked `eve-spai://` links open this app, for the systems that let an app say so.
+    if !restarted {
+        std::thread::spawn(linkscheme::register);
     }
 
     // rustls 0.23 needs a process-wide default crypto provider; with both reqwest

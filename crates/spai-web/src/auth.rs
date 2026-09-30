@@ -9,6 +9,8 @@ const SESSION: &str = "spai.session";
 const PENDING: &str = "spai.sso";
 /// An invite link opened before signing in, kept until it can be used.
 pub const INVITE: &str = "spai.invite";
+/// Set once the invite is to be used here in the browser rather than opened in EVE Spai.
+pub const INVITE_HERE: &str = "spai.invite.here";
 
 #[derive(Clone, Debug)]
 pub enum Auth {
