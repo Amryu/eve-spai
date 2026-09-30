@@ -76,13 +76,29 @@ impl WebStore {
 
     /// The live holes, for the map.
     pub fn wormholes(&self) -> Vec<Wormhole> {
+        let now = spai_core::clock::utc().timestamp();
         self.data
             .borrow()
             .holes
             .values()
             .filter(|h| !h.dead)
             .map(|h| Wormhole { id: Self::id_of(&h.state.uid), ..hole::fresh(&h.state) })
+            .filter(|w| !w.is_expired(now))
             .collect()
+    }
+
+    /// Forgets holes past their lifetime, dead or not, as the desktop's `prune_wormholes` does. A
+    /// share of one arriving later is filtered out again by `wormholes`.
+    pub fn prune(&self, now: i64) {
+        let gone = {
+            let mut d = self.data.borrow_mut();
+            let before = d.holes.len();
+            d.holes.retain(|_, h| !hole::fresh(&h.state).is_expired(now));
+            before - d.holes.len()
+        };
+        if gone > 0 {
+            self.touch(true);
+        }
     }
 
     pub fn all_sigs(&self) -> HashMap<i64, Vec<SystemSig>> {
@@ -384,7 +400,7 @@ mod tests {
             uid: uid.into(),
             system_id: 31_000_200,
             source: "manual".into(),
-            reported_at: 100,
+            reported_at: spai_core::clock::utc().timestamp(),
             fields: HashMap::from([
                 ("signature".to_owned(), Field { v: serde_json::json!(sig), at, by }),
                 ("dest_system_id".to_owned(), Field { v: serde_json::json!(30_000_142), at, by }),
@@ -404,6 +420,19 @@ mod tests {
         assert_eq!(back.wormhole_group("u1").as_deref(), Some("g"));
         back.share_apply_dead("u1");
         assert!(back.wormholes().is_empty());
+    }
+
+    #[test]
+    fn expired_holes_leave_the_map_and_the_store() {
+        let s = WebStore::default();
+        let mut old = remote("old", "OLD-111", 1_000, 7);
+        old.reported_at -= 3 * 86_400;
+        s.share_apply_hole(&old, "g", "Pilot");
+        s.share_apply_hole(&remote("new", "NEW-222", 1_000, 7), "g", "Pilot");
+        let sigs: Vec<_> = s.wormholes().into_iter().filter_map(|w| w.signature).collect();
+        assert_eq!(sigs, vec!["NEW-222".to_owned()], "past its two days, off the map");
+        s.prune(spai_core::clock::utc().timestamp());
+        assert_eq!(s.data.borrow().holes.len(), 1, "and out of the saved store");
     }
 
     #[test]
