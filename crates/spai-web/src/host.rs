@@ -104,6 +104,8 @@ pub struct WebHost {
     pub edits: Vec<Edit>,
     side: Side,
     pin_input: String,
+    /// The added characters where ESI says they are: name to (system, online).
+    pub chars: HashMap<String, (i64, bool)>,
 }
 
 /// The side panel's tabs.
@@ -118,7 +120,7 @@ enum Side {
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: 10, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new() }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new(), chars: HashMap::new() }
     }
 }
 
@@ -191,7 +193,7 @@ impl WhHost for WebHost {
     }
 
     fn characters(&self) -> HashMap<String, (i64, bool)> {
-        HashMap::new()
+        self.chars.clone()
     }
 
     fn prefs(&self) -> WhPrefs {

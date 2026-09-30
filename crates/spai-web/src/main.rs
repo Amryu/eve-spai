@@ -1,5 +1,7 @@
 //! EVE Spai's wormhole map in the browser. Built with trunk (`trunk serve` in this directory).
 
+#[allow(dead_code)]
+mod accounts;
 #[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]

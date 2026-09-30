@@ -5937,6 +5937,7 @@ name = "spai-web"
 version = "0.13.2"
 dependencies = [
  "anyhow",
+ "base64",
  "eframe",
  "egui",
  "egui-phosphor",

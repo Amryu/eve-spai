@@ -23,7 +23,10 @@ pub enum Auth {
 pub type Shared = Arc<Mutex<Auth>>;
 
 /// Where the app starts: back from EVE, opened from an invite link, or with a session kept here.
-pub fn start(ctx: &egui::Context) -> Shared {
+/// What happened to the last character added: its name, or why not.
+pub type Added = std::rc::Rc<std::cell::RefCell<Option<Result<String, String>>>>;
+
+pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added: &Added) -> Shared {
     let path = page::path();
     let base = page::base();
     let now = spai_core::clock::utc().timestamp();
@@ -40,6 +43,24 @@ pub fn start(ctx: &egui::Context) -> Shared {
         let query = page::query();
         page::replace_path(&base);
         match pending.ok_or_else(|| "this sign-in was not started here; try again".to_owned()).and_then(|p| Ok((callback_code(&query, &p)?, p))) {
+            // A character added with scopes: kept in the browser, and the session stays as it was.
+            Ok((code, p)) if !p.scopes.is_empty() => {
+                let (accounts, added, ctx) = (accounts.clone(), added.clone(), ctx.clone());
+                wasm_bindgen_futures::spawn_local(async move {
+                    let r = token(&p, &code).await.and_then(|t| crate::accounts::web::add(&accounts, t));
+                    *added.borrow_mut() = Some(r);
+                    ctx.request_repaint();
+                });
+                if let Some(s) = page::load::<Session>(SESSION).filter(|s| s.usable(now)) {
+                    *auth.lock().unwrap() = Auth::SignedIn(s);
+                }
+            }
+            Err(e) if page::load::<Session>(SESSION).is_some() && e.contains("access_denied") => {
+                // Adding a character was cancelled at EVE: nothing changes.
+                if let Some(s) = page::load::<Session>(SESSION).filter(|s| s.usable(now)) {
+                    *auth.lock().unwrap() = Auth::SignedIn(s);
+                }
+            }
             Ok((code, p)) => {
                 *auth.lock().unwrap() = Auth::Working("Signing in\u{2026}".into());
                 let (auth, ctx) = (auth.clone(), ctx.clone());
@@ -65,6 +86,13 @@ pub fn start(ctx: &egui::Context) -> Shared {
     auth
 }
 
+/// Off to EVE to add a character with `scopes`; the page comes back to `callback`.
+pub fn add_character(scopes: Vec<String>) {
+    let p = Pending { scopes, ..Pending::new() };
+    page::save(PENDING, &p);
+    page::go(&p.authorize_url(&format!("{}{}callback", page::origin(), page::base())));
+}
+
 /// Off to EVE; the page comes back to `callback`.
 pub fn sign_in() {
     let p = Pending::new();
@@ -75,6 +103,17 @@ pub fn sign_in() {
 pub fn sign_out(auth: &Shared) {
     page::forget(SESSION);
     *auth.lock().unwrap() = Auth::SignedOut;
+}
+
+/// Trades the code for EVE's tokens.
+async fn token(p: &Pending, code: &str) -> Result<TokenReply, String> {
+    let mut req = ehttp::Request::post(TOKEN, p.token_form(code).into_bytes());
+    req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
+    let r = ehttp::fetch_async(req).await?;
+    if !r.ok {
+        return Err(format!("EVE refused the sign-in ({} {})", r.status, r.status_text));
+    }
+    serde_json::from_slice(&r.bytes).map_err(|e| format!("EVE's answer: {e}"))
 }
 
 async fn exchange(p: &Pending, code: &str) -> Result<Session, String> {

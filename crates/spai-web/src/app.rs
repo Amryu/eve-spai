@@ -38,6 +38,12 @@ pub struct WebApp {
     network: Arc<Mutex<Option<Network>>>,
     asked_network: bool,
     group: crate::group::GroupTab,
+    accounts: crate::accounts::web::Shared,
+    added: auth::Added,
+    /// What to ask for when adding a character: location, waypoints, skills.
+    add_scopes: (bool, bool, bool),
+    route_note: std::rc::Rc<std::cell::RefCell<Option<Result<String, String>>>>,
+    skills: std::rc::Rc<std::cell::RefCell<Option<Result<(u32, u32), String>>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -65,7 +71,9 @@ impl WebApp {
             *slot.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
-        let auth = auth::start(&cc.egui_ctx);
+        let accounts = crate::accounts::web::load();
+        let added: auth::Added = Default::default();
+        let auth = auth::start(&cc.egui_ctx, &accounts, &added);
         WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, sync: None,
             shown: u64::MAX,
             joined: false,
@@ -76,7 +84,143 @@ impl WebApp {
             network: Default::default(),
             asked_network: false,
             group: Default::default(),
+            accounts,
+            added,
+            add_scopes: (true, true, true),
+            route_note: Default::default(),
+            skills: Default::default(),
         }
+    }
+
+    /// The added characters: where they are, into both maps and the route planner, and what the
+    /// planner asked of ESI.
+    fn run_accounts(&mut self, ctx: &egui::Context) {
+        use crate::accounts::{web, SKILLS, WAYPOINT};
+        if !self.accounts.borrow().list.is_empty() {
+            web::poll(&self.accounts, ctx);
+        }
+        let (chars, pilots, here) = {
+            let a = self.accounts.borrow();
+            let chars: std::collections::HashMap<String, (i64, bool)> =
+                a.list.iter().filter_map(|x| a.live.get(&x.char_id).map(|l| (x.name.clone(), *l))).collect();
+            let pilots: Vec<crate::planner::Pilot> = a
+                .list
+                .iter()
+                .map(|x| crate::planner::Pilot {
+                    char_id: x.char_id,
+                    name: x.name.clone(),
+                    system: a.live.get(&x.char_id).map(|l| l.0),
+                    waypoints: x.can(WAYPOINT),
+                    skills: x.can(SKILLS),
+                })
+                .collect();
+            let mut here: std::collections::HashMap<i64, (usize, bool)> = std::collections::HashMap::new();
+            for (sys, online) in a.live.values() {
+                let e = here.entry(*sys).or_default();
+                e.0 += 1;
+                e.1 |= *online;
+            }
+            (chars, pilots, here)
+        };
+        if let Some(h) = &mut self.host {
+            h.chars = chars;
+        }
+        self.map.here = here;
+        self.map.plan.pilots = pilots;
+        match self.map.plan.request.take() {
+            Some(crate::planner::PlanRequest::SetRoute(id, path)) => {
+                let (slot, ctx2, n) = (self.route_note.clone(), ctx.clone(), path.len());
+                web::set_route(&self.accounts, id, path, move |r| {
+                    *slot.borrow_mut() = Some(r.map(|()| format!("Set in game: {n} waypoint{}", if n == 1 { "" } else { "s" })));
+                    ctx2.request_repaint();
+                });
+            }
+            Some(crate::planner::PlanRequest::Skills(id)) => {
+                let (slot, ctx2) = (self.skills.clone(), ctx.clone());
+                web::fetch_skills(&self.accounts, id, move |r| {
+                    *slot.borrow_mut() = Some(r);
+                    ctx2.request_repaint();
+                });
+            }
+            None => {}
+        }
+        if let Some(r) = self.route_note.borrow_mut().take() {
+            self.map.plan.note = Some(r);
+        }
+        if let Some(r) = self.skills.borrow_mut().take() {
+            match r {
+                Ok((jdc, jfc)) => self.map.plan.set_skills(jdc, jfc),
+                Err(e) => self.map.plan.note = Some(Err(e)),
+            }
+        }
+    }
+
+    /// The Characters menu: who is added, where they are, and adding another.
+    fn characters_menu(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let n = self.accounts.borrow().list.len();
+        let note = self.added.borrow().clone();
+        ui.menu_button(format!("{}  Characters{}", icon::USERS, if n > 0 { format!(" ({n})") } else { String::new() }), |ui| {
+            ui.set_min_width(320.0);
+            if let Some(r) = &note {
+                match r {
+                    Ok(name) => ui.label(egui::RichText::new(format!("{name} added.")).color(spai_ui::theme::standing::FRIENDLY)),
+                    Err(e) => ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color)),
+                };
+            }
+            let (list, live, errors) = {
+                let a = self.accounts.borrow();
+                (a.list.clone(), a.live.clone(), a.errors.clone())
+            };
+            let geo = self.host.as_ref().map(|h| h.geo.clone());
+            let mut remove = None;
+            for acc in &list {
+                ui.horizontal(|ui| {
+                    let where_ = live.get(&acc.char_id).and_then(|(sys, _)| geo.as_ref()?.info_of(*sys)).map(|i| i.name.clone());
+                    let online = live.get(&acc.char_id).is_some_and(|l| l.1);
+                    let dot = if online { icon::CIRCLE } else { icon::CIRCLE_DASHED };
+                    ui.label(egui::RichText::new(dot).color(if online { spai_ui::theme::standing::FRIENDLY } else { ui.visuals().weak_text_color() }));
+                    ui.label(egui::RichText::new(&acc.name).strong());
+                    if let Some(w) = where_ {
+                        ui.label(egui::RichText::new(w).weak());
+                    } else if let Some(e) = errors.get(&acc.char_id) {
+                        ui.label(egui::RichText::new(icon::WARNING).color(spai_ui::theme::standing::WARNING)).on_hover_text(e);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(icon::X).on_hover_text("Remove from this browser").clicked() {
+                            remove = Some(acc.char_id);
+                        }
+                        let grants: Vec<&str> = [
+                            (crate::accounts::LOCATION, "location"),
+                            (crate::accounts::WAYPOINT, "waypoints"),
+                            (crate::accounts::SKILLS, "skills"),
+                        ]
+                        .into_iter()
+                        .filter(|(s, _)| acc.can(s))
+                        .map(|(_, l)| l)
+                        .collect();
+                        ui.label(egui::RichText::new(grants.join(", ")).weak());
+                    });
+                });
+            }
+            if let Some(id) = remove {
+                crate::accounts::web::remove(&self.accounts, id);
+            }
+            if !list.is_empty() {
+                ui.separator();
+            }
+            ui.label(egui::RichText::new("Add a character").strong());
+            ui.label(egui::RichText::new("Its EVE login stays in this browser and is used with ESI only, never sent to EVE Spai's server.").weak());
+            ui.checkbox(&mut self.add_scopes.0, "Location and online status").on_hover_text("Shows where it is on both maps, and starts routes there");
+            ui.checkbox(&mut self.add_scopes.1, "Set waypoints").on_hover_text("Set in game from the route planner");
+            ui.checkbox(&mut self.add_scopes.2, "Jump skills").on_hover_text("JDC and JFC for jump routes");
+            let (l, w, k) = self.add_scopes;
+            let scopes = crate::accounts::scopes(l, w, k);
+            if ui.add_enabled(!scopes.is_empty(), egui::Button::new("Sign in with EVE")).clicked() {
+                *self.added.borrow_mut() = None;
+                auth::add_character(scopes);
+            }
+        });
     }
 
     /// Signed in: keeps the group in step, and uses an invite link opened earlier.
@@ -276,7 +420,10 @@ impl eframe::App for WebApp {
         }
         let state = self.auth.lock().unwrap().clone();
         match &state {
-            Auth::SignedIn(s) => self.run_sync(s, ui.ctx()),
+            Auth::SignedIn(s) => {
+                self.run_sync(s, ui.ctx());
+                self.run_accounts(ui.ctx());
+            }
             _ => self.sync = None,
         }
         egui::Panel::top("web_top").show_inside(ui, |ui| {
@@ -303,6 +450,8 @@ impl eframe::App for WebApp {
                             auth::sign_out(&self.auth);
                         }
                         ui.label(&s.character_name);
+                        ui.separator();
+                        self.characters_menu(ui);
                     }
                     Auth::Working(what) => {
                         ui.label(egui::RichText::new(what).weak());

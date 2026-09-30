@@ -78,6 +78,8 @@ pub struct StarMap {
     /// The system a right-click opened the menu on.
     menu_sys: Option<i64>,
     pub layers: Layers,
+    /// Systems with added characters in them: how many, and whether any is online.
+    pub here: HashMap<i64, (usize, bool)>,
 }
 
 /// What the map draws over New Eden, as the desktop's layer toggles.
@@ -185,6 +187,14 @@ impl StarMap {
                 continue;
             }
             painter.circle_filled(p, dot, spai_ui::colors::security_color(s.security));
+            // The added characters, as the desktop rings its own.
+            if let Some((count, online)) = self.here.get(&s.id) {
+                let blue = if *online { egui::Color32::from_rgb(0x4F, 0xC3, 0xF7) } else { egui::Color32::from_rgb(0xA8, 0xDE, 0xF7) };
+                painter.circle_stroke(p, dot + 8.0, egui::Stroke::new(2.5, blue));
+                if *count > 1 {
+                    painter.text(p + egui::vec2(dot + 9.0, -(dot + 9.0)), egui::Align2::LEFT_BOTTOM, count.to_string(), egui::FontId::proportional(11.0), blue);
+                }
+            }
             if anchors.contains(&s.id) {
                 painter.circle_stroke(p, dot + 7.0, egui::Stroke::new(2.0, visuals.hyperlink_color));
             }
@@ -248,7 +258,8 @@ impl StarMap {
         });
         if self.plan.link.is_none() && self.plan.link_menu.is_none() {
             // Beside the pointer: a tooltip of the whole map would sit at the map's corner.
-            if let (Some(h), Some(p), None) = (hovered, pointer, ui.ctx().dragged_id()) {
+            let menu_open = egui::Popup::is_any_open(ui.ctx());
+            if let (Some(h), Some(p), None, false) = (hovered, pointer, ui.ctx().dragged_id(), menu_open) {
                 egui::Area::new(egui::Id::new("web_system_tip")).order(egui::Order::Tooltip).fixed_pos(p + egui::vec2(16.0, 16.0)).show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| system_tip(ui, geo, d, h));
                 });
