@@ -20,6 +20,8 @@ pub struct AppState {
     views: Arc<Mutex<HashMap<(String, String), Instant>>>,
     /// Sharing request budgets by (character, write): tokens left and when last topped up.
     buckets: Arc<Mutex<HashMap<(i64, bool), (f64, Instant)>>>,
+    /// Invite budgets by client address, the same way.
+    ip_buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             cfg: Arc::new(cfg),
             views: Arc::new(Mutex::new(HashMap::new())),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            ip_buckets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -51,6 +54,26 @@ impl AppState {
         }
         let (left, at) = map.entry((char_id, write)).or_insert((burst, now));
         *left = (*left + now.duration_since(*at).as_secs_f64() * per_sec).min(burst);
+        *at = now;
+        if *left < 1.0 {
+            return false;
+        }
+        *left -= 1.0;
+        true
+    }
+
+    /// Takes one invite request from `ip`'s budget: someone trying invite ids gets nowhere fast,
+    /// whichever characters they sign in as.
+    pub fn take_invite(&self, ip: &str) -> bool {
+        const BURST: f64 = 20.0;
+        const PER_SEC: f64 = 0.2;
+        let now = Instant::now();
+        let mut map = self.ip_buckets.lock().unwrap();
+        if map.len() > 10_000 {
+            map.retain(|_, (_, at)| now.duration_since(*at).as_secs_f64() < BURST / PER_SEC);
+        }
+        let (left, at) = map.entry(ip.to_owned()).or_insert((BURST, now));
+        *left = (*left + now.duration_since(*at).as_secs_f64() * PER_SEC).min(BURST);
         *at = now;
         if *left < 1.0 {
             return false;

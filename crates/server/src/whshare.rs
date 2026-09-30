@@ -58,6 +58,14 @@ async fn rate_limit(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, AppError> {
+    if req.uri().path().contains("/invites/") {
+        // nginx sets X-Real-IP from the address it saw; X-Forwarded-For starts with whatever the
+        // client wrote.
+        let ip = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_owned();
+        if !st.take_invite(&ip) {
+            return Err(AppError::TooManyRequests);
+        }
+    }
     let who = crate::session::bearer(req.headers()).ok().and_then(|t| st.session_verifier.verify(t).ok());
     if let Some(me) = who {
         let write = req.method() != axum::http::Method::GET;
@@ -811,5 +819,14 @@ pub async fn sweep(db: &sqlx::PgPool) -> anyhow::Result<()> {
         .await?;
     sqlx::query("DELETE FROM wh_invites WHERE expires_at < now() - interval '1 day'").execute(db).await?;
     sqlx::query("DELETE FROM wh_join_requests WHERE created_at < now() - interval '7 days'").execute(db).await?;
+    // Keys from before devices that no app of the member claimed in 90 days: that member never
+    // updated. Nothing current can use them; a re-invite brings them back.
+    sqlx::query(
+        "DELETE FROM wh_keys k USING wh_devices d WHERE d.device_id = 'legacy' AND d.added_at < now() - interval '90 days'
+         AND k.group_id = d.group_id AND k.char_id = d.char_id AND k.device_id = 'legacy'",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query("DELETE FROM wh_devices WHERE device_id = 'legacy' AND added_at < now() - interval '90 days'").execute(db).await?;
     Ok(())
 }

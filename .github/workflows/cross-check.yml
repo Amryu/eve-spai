@@ -68,3 +68,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (wasm32)
         run: cargo check -p spai-core -p spai-share -p spai-ui -p spai-web --target wasm32-unknown-unknown
+
+  # The web map as it is deployed: a trunk release build, wasm-opt included.
+  web:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        run: |
+          curl -sSfL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin trunk
+      - name: trunk build
+        working-directory: crates/spai-web
+        run: trunk build --release --public-url /wh/

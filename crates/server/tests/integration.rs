@@ -595,9 +595,15 @@ async fn wormhole_group_membership_and_log() {
     sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days'").execute(&pool).await.unwrap();
     wh(&app, "POST", &format!("/groups/{g}/ops"), &owner, &od, Some(json!({ "op_id": "data", "epoch": 2, "keep": false, "blob": "hole" }))).await;
     sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days' WHERE op_id = 'data'").execute(&pool).await.unwrap();
+    // Old keys nobody claimed in 90 days go; a fresh unclaimed one stays.
+    sqlx::query("INSERT INTO wh_members (group_id, char_id, name, role) VALUES ($1, 90000005, 'Gone quiet', 'member'), ($1, 90000006, 'Just migrated', 'member')").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_devices (group_id, char_id, device_id, added_at) VALUES ($1, 90000005, 'legacy', now() - interval '91 days'), ($1, 90000006, 'legacy', now())").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, 2, 90000005, 'legacy', 'stale'), ($1, 2, 90000006, 'legacy', 'fresh')").bind(&g).execute(&pool).await.unwrap();
     eve_spai_br::whshare::sweep(&pool).await.unwrap();
     let left: Vec<String> = sqlx::query_scalar("SELECT op_id FROM wh_ops ORDER BY seq").fetch_all(&pool).await.unwrap();
     assert_eq!(left, vec!["genesis".to_string()]);
+    let legacy: Vec<String> = sqlx::query_scalar("SELECT wrapped FROM wh_keys WHERE device_id = 'legacy' ORDER BY wrapped").fetch_all(&pool).await.unwrap();
+    assert_eq!(legacy, vec!["fresh".to_string()]);
 }
 
 const THIRD_PARTY: &str = "third-party-client";
@@ -698,4 +704,35 @@ async fn sharing_requests_are_held_to_a_budget() {
     // Someone else's budget is their own.
     let (status, _) = send(&app, "GET", "/api/wh/v2/groups/g/keys", Some(&third_party_session(90000035)), None).await;
     assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Invite ids are guessable only by trying them, so each address gets a small budget of tries,
+/// whichever characters it signs in as.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn invite_tries_are_limited_per_address() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool.clone(), base_config(url));
+    let a = mint(&app, 90_000_021, "Prober A").await;
+    let b = mint(&app, 90_000_022, "Prober B").await;
+    let fetch = |token: String, ip: &'static str| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/api/wh/v2/invites/0123456789abcdef0123456789abcdef")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-real-ip", ip)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    for i in 0..20 {
+        let who = if i % 2 == 0 { a.clone() } else { b.clone() };
+        assert_eq!(fetch(who, "203.0.113.7").await, StatusCode::NOT_FOUND, "try {i}");
+    }
+    assert_eq!(fetch(a.clone(), "203.0.113.7").await, StatusCode::TOO_MANY_REQUESTS, "a new character does not reset it");
+    assert_eq!(fetch(a, "203.0.113.8").await, StatusCode::NOT_FOUND, "another address has its own");
 }
