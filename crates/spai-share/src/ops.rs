@@ -284,8 +284,10 @@ impl Roster {
                 self.members.insert(owner.char_id, owner.clone());
             }
             Op::MemberAdded { member } => {
-                if !manager {
-                    bail!("only an admin adds members");
+                // A member may let in viewers, through invites of their own.
+                let member_adds_viewer = self.role(author) == Some(Role::Member) && member.role == Role::Viewer;
+                if !manager && !member_adds_viewer {
+                    bail!("only an admin adds members, and a member only viewers");
                 }
                 if member.role == Role::Owner || (member.role == Role::Admin && self.role(author) != Some(Role::Owner)) {
                     bail!("role above what the author may give");
@@ -413,7 +415,9 @@ mod tests {
         r.apply(1, &Op::Genesis { name: "Chain".into(), owner: member(1, &o, Role::Owner) }).unwrap();
         r.apply(1, &Op::MemberAdded { member: member(2, &a, Role::Admin) }).unwrap();
         r.apply(2, &Op::MemberAdded { member: member(3, &m, Role::Member) }).unwrap();
-        assert!(r.apply(3, &Op::MemberAdded { member: member(4, &m, Role::Member) }).is_err(), "a member invites");
+        assert!(r.apply(3, &Op::MemberAdded { member: member(4, &m, Role::Member) }).is_err(), "a member invites a member");
+        r.apply(3, &Op::MemberAdded { member: member(6, &m, Role::Viewer) }).unwrap();
+        assert!(r.apply(6, &Op::MemberAdded { member: member(7, &m, Role::Viewer) }).is_err(), "a viewer invites");
         assert!(r.apply(2, &Op::MemberAdded { member: member(5, &m, Role::Admin) }).is_err(), "an admin makes admins");
         assert!(r.apply(2, &Op::MemberRemoved { char_id: 1 }).is_err(), "the owner removed");
         assert!(r.apply(3, &Op::RoleSet { char_id: 3, role: Role::Admin }).is_err(), "self-promotion");

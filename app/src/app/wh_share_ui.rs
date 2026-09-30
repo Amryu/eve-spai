@@ -316,7 +316,9 @@ impl SpaiApp {
                                     self.wh_share.delete = Some((g.id.clone(), g.name.clone(), String::new()));
                                 }
                             });
-                            if g.role.can_manage() && has_key {
+                            // Members invite too, and let their own invitees in as viewers only.
+                            if g.role.can_write() && has_key {
+                                let admin = g.role.can_manage();
                                 let reqs = status.requests.get(&g.id).cloned().unwrap_or_default();
                                 if !reqs.is_empty() {
                                     ui.add_space(4.0);
@@ -353,7 +355,13 @@ impl SpaiApp {
                                             device_id: r.row.device_id.clone(),
                                             role,
                                         };
-                                        if existing.is_some() {
+                                        if !admin {
+                                            if existing.is_none()
+                                                && ui.add_enabled(r.verified, egui::Button::new("Approve as viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked()
+                                            {
+                                                cmd = Some(approve(Role::Viewer));
+                                            }
+                                        } else if existing.is_some() {
                                             if ui.add_enabled(r.verified, egui::Button::new("Approve device")).clicked() {
                                                 cmd = Some(approve(Role::Member));
                                             }
@@ -375,7 +383,11 @@ impl SpaiApp {
                                     let ok = !self.wh_share.invite_for.trim().is_empty();
                                     if ui
                                         .add_enabled(ok, egui::Button::new(format!("{}  New invite link", icon::LINK)))
-                                        .on_hover_text("Only that character can use it, once, within two days; you still approve them")
+                                        .on_hover_text(if admin {
+                                            "Only that character can use it, once, within two days; you still approve them"
+                                        } else {
+                                            "Only that character can use it, once, within two days; you still approve them, as a viewer: members invite viewers only"
+                                        })
                                         .clicked()
                                     {
                                         cmd = Some(Cmd::Invite { group: g.id.clone(), for_name: self.wh_share.invite_for.trim().to_owned() });

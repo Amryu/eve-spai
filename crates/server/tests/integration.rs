@@ -757,3 +757,58 @@ async fn invite_tries_are_limited_per_address() {
     assert_eq!(fetch(a.clone(), "203.0.113.7").await, StatusCode::TOO_MANY_REQUESTS, "a new character does not reset it");
     assert_eq!(fetch(a, "203.0.113.8").await, StatusCode::NOT_FOUND, "another address has its own");
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn members_invite_viewers_only() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    sqlx::query("TRUNCATE wh_groups CASCADE").execute(&pool).await.unwrap();
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool.clone(), base_config(url));
+    let owner = mint(&app, 91_000_001, "Owner").await;
+    let member = mint(&app, 91_000_002, "Member").await;
+    let guest = mint(&app, 91_000_003, "Guest").await;
+    let other = mint(&app, 91_000_004, "Other").await;
+    let (od, md, gd, xd) = ("a".repeat(32), "b".repeat(32), "c".repeat(32), "d".repeat(32));
+    let (_, v) = wh(&app, "POST", "/groups", &owner, &od, Some(json!({ "wrapped": "k0", "device_id": od }))).await;
+    let g = v["id"].as_str().unwrap().to_string();
+    let invite = |who: String, dev: String| {
+        let (app, g) = (app.clone(), g.clone());
+        async move {
+            let (s, v) = wh(&app, "POST", &format!("/groups/{g}/invites"), &who, &dev, Some(json!({ "blob": "invite", "ttl_secs": 3600 }))).await;
+            (s, v["id"].as_str().map(str::to_owned))
+        }
+    };
+    let (_, inv) = invite(owner.clone(), od.clone()).await;
+    wh(&app, "POST", &format!("/invites/{}/join", inv.unwrap()), &member, &md, Some(json!({ "body": "k", "device_id": md }))).await;
+    wh(&app, "POST", &format!("/groups/{g}/requests/91000002/{md}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0m" }], "role": "member" }))).await;
+
+    // The owner's invite, answered: not the member's to see or decide.
+    let (_, inv) = invite(owner.clone(), od.clone()).await;
+    wh(&app, "POST", &format!("/invites/{}/join", inv.unwrap()), &other, &xd, Some(json!({ "body": "k", "device_id": xd }))).await;
+    // The member's own invite.
+    let (s, inv) = invite(member.clone(), md.clone()).await;
+    assert_eq!(s, StatusCode::OK, "members invite");
+    wh(&app, "POST", &format!("/invites/{}/join", inv.unwrap()), &guest, &gd, Some(json!({ "body": "kg", "device_id": gd }))).await;
+    let (_, reqs) = wh(&app, "GET", &format!("/groups/{g}/requests"), &member, &md, None).await;
+    let seen: Vec<i64> = reqs.as_array().unwrap().iter().map(|r| r["char_id"].as_i64().unwrap()).collect();
+    assert_eq!(seen, vec![91_000_003], "only the answers to the member's own invites");
+    let (_, reqs) = wh(&app, "GET", &format!("/groups/{g}/requests"), &owner, &od, None).await;
+    assert_eq!(reqs.as_array().unwrap().len(), 2, "admins see every request");
+
+    let approve = |who: String, dev: String, c: i64, d: String, role: &'static str| {
+        let (app, g) = (app.clone(), g.clone());
+        async move { wh(&app, "POST", &format!("/groups/{g}/requests/{c}/{d}/approve"), &who, &dev, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k" }], "role": role }))).await.0 }
+    };
+    assert_eq!(approve(member.clone(), md.clone(), 91_000_003, gd.clone(), "member").await, StatusCode::FORBIDDEN, "a member lets in viewers only");
+    assert_eq!(approve(member.clone(), md.clone(), 91_000_004, xd.clone(), "viewer").await, StatusCode::FORBIDDEN, "not through someone else's invite");
+    assert_eq!(approve(member.clone(), md.clone(), 91_000_003, gd.clone(), "viewer").await, StatusCode::NO_CONTENT);
+    let (_, members) = wh(&app, "GET", &format!("/groups/{g}/members"), &owner, &od, None).await;
+    let guest_row = members.as_array().unwrap().iter().find(|m| m["char_id"] == 91_000_003).unwrap();
+    assert_eq!(guest_row["role"].as_str(), Some("viewer"));
+
+    // The viewer invites nobody.
+    let (s, _) = invite(guest.clone(), gd.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "viewers do not invite");
+}

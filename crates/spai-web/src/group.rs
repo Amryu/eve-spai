@@ -43,7 +43,8 @@ impl GroupTab {
                     continue;
                 }
                 let members = store.share_members(&g.id);
-                if g.role.can_manage() {
+                // Members invite too, and let their own invitees in as viewers only.
+                if g.role.can_write() {
                     self.invites(ui, g, status, origin, &mut out);
                     requests(ui, g, status, &members, &mut out);
                 }
@@ -100,7 +101,8 @@ impl GroupTab {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.invite_for).hint_text("Character it is for").desired_width(200.0));
             let ok = !self.invite_for.trim().is_empty();
-            if ui.add_enabled(ok, egui::Button::new("New invite link")).on_hover_text("For that character only, valid two days").clicked() {
+            let tip = if g.role.can_manage() { "For that character only, valid two days" } else { "For that character only, valid two days; members invite viewers only" };
+            if ui.add_enabled(ok, egui::Button::new("New invite link")).on_hover_text(tip).clicked() {
                 out.push(Cmd::Invite { group: g.id.clone(), for_name: self.invite_for.trim().to_owned() });
             }
         });
@@ -190,7 +192,11 @@ fn requests(ui: &mut egui::Ui, g: &ShareGroup, status: &Status, members: &[Membe
             ui.label(egui::RichText::new(r.keys.map(|k| k.fingerprint()).unwrap_or_default()).monospace());
             ui.horizontal(|ui| {
                 let approve = |role: Role| Cmd::Approve { group: g.id.clone(), char_id: r.row.char_id, device_id: r.row.device_id.clone(), role };
-                if existing.is_some() {
+                if !g.role.can_manage() {
+                    if existing.is_none() && ui.add_enabled(r.verified, egui::Button::new("Approve as viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked() {
+                        out.push(approve(Role::Viewer));
+                    }
+                } else if existing.is_some() {
                     if ui.add_enabled(r.verified, egui::Button::new("Approve device")).clicked() {
                         out.push(approve(Role::Member));
                     }
