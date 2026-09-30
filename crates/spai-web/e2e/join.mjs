@@ -39,7 +39,11 @@ for (let i = 0; i < 40; i++) {
 }
 await page.waitForTimeout(1500);
 await page.screenshot({ path: shot });
+// Where the lone J-space system lands in this layout: selected, for a look at the side panel.
+await page.mouse.click(905, 527);
+await page.waitForTimeout(800);
+await page.screenshot({ path: shot.replace('.png', '-selected.png') });
 const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
-console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v) }));
+console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v), sigs: Object.values(s.sigs || {}).flat().map(x => x.sig) }));
 await browser.close();
 process.exit(0);

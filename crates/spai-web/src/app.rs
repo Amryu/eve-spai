@@ -15,6 +15,9 @@ use crate::sync::{invite_link, Sync};
 
 type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
 
+const PREFS: &str = "spai.wh.prefs";
+const LAYOUT: &str = "spai.wh.layout";
+
 pub struct WebApp {
     loading: Loading,
     host: Option<WebHost>,
@@ -62,6 +65,7 @@ impl WebApp {
         let generation = sync.store.generation.get();
         if let (Some(host), true) = (&mut self.host, generation != self.shown) {
             host.holes = sync.store.wormholes();
+            host.sigs = sync.store.all_sigs();
             self.shown = generation;
         }
     }
@@ -81,11 +85,22 @@ impl WebApp {
             });
         };
         let Auth::SignedIn(session) = state else {
+            if matches!(state, Auth::Working(_)) {
+                return false;
+            }
             if page::load::<(String, String)>(auth::INVITE).is_some() {
                 say(ui, &["You were invited to a wormhole group".into(), "Sign in with EVE, as the character the invite is for, to ask to join.".into()]);
-                return true;
+            } else {
+                say(
+                    ui,
+                    &[
+                        "EVE Spai wormhole map".into(),
+                        "The wormholes a group shares in EVE Spai, for its members without the app.".into(),
+                        "Open the invite link an admin of your group sent you, or sign in if this browser has joined before.".into(),
+                    ],
+                );
             }
-            return false;
+            return true;
         };
         let Some(sync) = &self.sync else { return false };
         let status = sync.status.lock().unwrap().clone();
@@ -121,7 +136,15 @@ impl eframe::App for WebApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.host.is_none() {
             match self.loading.lock().unwrap().take() {
-                Some(Ok(u)) => self.host = Some(WebHost::new(Arc::new(u.systems()))),
+                Some(Ok(u)) => {
+                    let mut host = WebHost::new(Arc::new(u.systems()));
+                    if let Some(p) = page::load(PREFS) {
+                        host.prefs = p;
+                    }
+                    let layout: Vec<(i64, f32, f32)> = page::load(LAYOUT).unwrap_or_default();
+                    host.layout = layout.into_iter().map(|(id, x, y)| (id, egui::pos2(x, y))).collect();
+                    self.host = Some(host);
+                }
                 Some(Err(e)) => self.error = Some(e),
                 None => {}
             }
@@ -163,7 +186,14 @@ impl eframe::App for WebApp {
                 return;
             }
             match (&mut self.host, &self.error) {
-                (Some(host), _) => spai_ui::wh_tab::show(&mut self.view, host, ui),
+                (Some(host), _) => {
+                    spai_ui::wh_tab::show(&mut self.view, host, ui);
+                    if std::mem::take(&mut host.dirty) {
+                        page::save(PREFS, &host.prefs);
+                        let layout: Vec<(i64, f32, f32)> = host.layout.iter().map(|(id, p)| (*id, p.x, p.y)).collect();
+                        page::save(LAYOUT, &layout);
+                    }
+                }
                 (None, Some(e)) => {
                     ui.label(egui::RichText::new(format!("New Eden did not load: {e}")).color(ui.visuals().error_fg_color));
                 }

@@ -355,6 +355,8 @@ mod end_to_end {
             updated_at: now,
             ..Default::default()
         });
+        let scan = [crate::wormholes::ScanSig { id: "WEB-123".into(), kind: "Cosmic Signature".into(), group: "Wormhole".into(), name: "Unstable Wormhole".into() }];
+        a.store.merge_system_sigs(31_000_200, &scan, "Owner", now - 3600, false, None);
         a.run(Cmd::Create { name: "Web chain".into(), char_id: owner_id, char_name: "Owner".into(), prefs: SharePrefs::default() });
         let g = a.store.share_groups()[0].id.clone();
         let link = a.invite_for(&g, web_id, "Pilot W");
@@ -392,7 +394,8 @@ mod end_to_end {
         let rest: Vec<String> = out.map_while(Result::ok).collect();
         let _ = node.wait();
         let holds = rest.iter().find(|l| l.starts_with("holds ")).unwrap_or_else(|| panic!("{rest:?}"));
-        assert!(holds.contains("WEB-123") && holds.contains("viewer"), "{holds}");
+        assert!(holds.contains("\"holes\":[\"WEB-123\"]") && holds.contains("viewer"), "{holds}");
+        assert!(holds.contains("\"sigs\":[\"WEB-123\"]"), "the probe scan came with the snapshot: {holds}");
     }
 
 }
