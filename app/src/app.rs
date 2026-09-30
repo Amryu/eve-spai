@@ -3840,6 +3840,12 @@ impl eframe::App for SpaiApp {
             self.apply_overlay_message(m, &ctx);
         }
 
+        // A clicked invite link: the sharing window with it filled in, for the user to pick the
+        // character and join.
+        if let Some(link) = crate::instance::take_link() {
+            self.view = View::Wormholes;
+            self.wh_share_open_join(&link);
+        }
         // `|`, not `||`: short-circuiting would leave `raise_main` set whenever a second-instance
         // request fired first, raising the window again on a later frame.
         if crate::instance::take_raise_request() | std::mem::take(&mut self.raise_main) {

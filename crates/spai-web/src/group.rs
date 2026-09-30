@@ -107,16 +107,13 @@ impl GroupTab {
         if let Some((gid, link, for_name)) = &status.invite {
             if *gid == g.id {
                 let web = web_link(origin, link);
-                for (label, l) in [("Browser", web), ("App", link.clone())] {
-                    ui.horizontal(|ui| {
-                        ui.label(label);
-                        ui.add(egui::TextEdit::singleline(&mut l.clone()).desired_width(520.0));
-                        if ui.button(egui_phosphor::regular::COPY).on_hover_text("Copy the link").clicked() {
-                            ui.ctx().copy_text(l.clone());
-                        }
-                    });
-                }
-                ui.label(egui::RichText::new(format!("For {for_name} only. Send one of them to them privately.")).weak());
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut web.clone()).desired_width(560.0));
+                    if ui.button(egui_phosphor::regular::COPY).on_hover_text("Copy the link").clicked() {
+                        ui.ctx().copy_text(web.clone());
+                    }
+                });
+                ui.label(egui::RichText::new(format!("For {for_name} only. Send it to them privately: it opens in EVE Spai or in a browser.")).weak());
             }
         }
     }
