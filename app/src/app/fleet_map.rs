@@ -1275,7 +1275,7 @@ impl SpaiApp {
         from: i64,
         to: i64,
     ) -> Option<crate::web::route::RouteOption> {
-        let key = (from, to, crate::ansiblex::BridgeKey::of(&self.settings));
+        let key = (from, to, crate::ansiblex::key_of(&self.settings));
         if let Some((k, r)) = &self.fleet_map.route {
             if *k == key {
                 return r.clone();

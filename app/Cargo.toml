@@ -40,6 +40,7 @@ winresource = "0.1"
 
 [dependencies]
 br-core = { path = "../crates/br-core" }
+spai-core = { path = "../crates/spai-core" }
 eframe = "0.34"
 egui = "0.34"
 egui_extras = { version = "0.34", default-features = false, features = ["http", "image"] }
@@ -90,6 +91,7 @@ rust-sugiyama = "0.4"
 qrcode = { version = "0.14.1", default-features = false }
 
 [dev-dependencies]
+spai-core = { path = "../crates/spai-core", features = ["test-support"] }
 # Headless UI harness: renders any egui surface to a PNG and drives hover/click through the
 # AccessKit tree. Version-locked to egui/eframe 0.34. No `snapshot` feature (we inspect the
 # PNGs rather than diff goldens) and no `eframe` feature, which would flip `eframe/wgpu` and

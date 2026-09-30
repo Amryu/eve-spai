@@ -1106,11 +1106,7 @@ impl Default for ScanSettings {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct JumpBridge {
-    pub from: String,
-    pub to: String,
-}
+pub use spai_core::ansiblex::JumpBridge;
 
 /// One persisted pop-out chat window: which conversations it holds and where it sat.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

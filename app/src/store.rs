@@ -426,18 +426,7 @@ pub struct ShipDetails {
     pub warp_speed: f64,
 }
 
-#[derive(Clone, Debug)]
-pub struct MapSystem {
-    pub id: i64,
-    pub name: String,
-    pub security: f64,
-    pub region_id: i64,
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub x2d: f64,
-    pub z2d: f64,
-}
+pub use spai_core::map::MapSystem;
 
 #[derive(Clone, Debug)]
 pub struct CharacterRow {

@@ -56,3 +56,15 @@ jobs:
       # The battle report server is its own workspace, so nothing above builds it.
       - name: Server crate
         run: cargo test --manifest-path crates/server/Cargo.toml
+
+  # The web app builds on these crates, so they must keep compiling for the browser.
+  wasm:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (wasm32)
+        run: cargo check -p spai-core --target wasm32-unknown-unknown

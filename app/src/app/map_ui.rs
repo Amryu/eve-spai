@@ -75,7 +75,7 @@ impl SpaiApp {
     }
 
     pub(crate) fn maybe_rebuild_graph(&mut self, ctx: &egui::Context) {
-        if self.systems.is_none() || crate::ansiblex::BridgeKey::of(&self.settings) == self.bridges_applied {
+        if self.systems.is_none() || crate::ansiblex::key_of(&self.settings) == self.bridges_applied {
             return;
         }
         let Some(store) = &self.store else { return };
