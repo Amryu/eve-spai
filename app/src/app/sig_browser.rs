@@ -82,35 +82,7 @@ pub(crate) fn is_anomaly(s: &SystemSig) -> bool {
     s.kind.to_lowercase().contains("anomal")
 }
 
-/// When a signature was first seen, as a clock time, with the weekday when not today: how long a
-/// hole has been open starts there.
-pub(crate) fn found_at(at: i64, now: i64, eve: bool) -> String {
-    let (Some(t), Some(n)) = (chrono::DateTime::from_timestamp(at, 0), chrono::DateTime::from_timestamp(now, 0)) else { return String::new() };
-    let fmt = |t: chrono::NaiveDateTime, n: chrono::NaiveDateTime| {
-        if t.date() == n.date() { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
-    };
-    if eve {
-        fmt(t.naive_utc(), n.naive_utc())
-    } else {
-        fmt(t.with_timezone(&chrono::Local).naive_local(), n.with_timezone(&chrono::Local).naive_local())
-    }
-}
-
-/// [`found_at`] for a hover: the date too, and how long ago.
-pub(crate) fn found_hover(at: i64, now: i64, eve: bool) -> String {
-    let Some(t) = chrono::DateTime::from_timestamp(at, 0) else { return String::new() };
-    let when = if eve { format!("{} EVE", t.format("%Y-%m-%d %H:%M")) } else { t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string() };
-    format!("First seen {when}, {} ago", super::human_ago(now - at))
-}
-
-/// Unseen in a paste for over a day: yellow; over three: grey.
-pub(crate) fn age_color(visuals: &egui::Visuals, now: i64, seen: i64) -> Option<egui::Color32> {
-    match now - seen {
-        a if a > 3 * 86_400 => Some(visuals.weak_text_color()),
-        a if a > 86_400 => Some(crate::theme::standing::WARNING),
-        _ => None,
-    }
-}
+pub(crate) use spai_ui::widgets::{age_color, found_at, found_hover};
 
 /// Room kept free at a table's right edge, so a scrollbar drawn over it covers no button.
 pub(crate) fn scrollbar_gutter(ui: &egui::Ui) -> f32 {

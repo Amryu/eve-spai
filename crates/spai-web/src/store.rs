@@ -85,6 +85,10 @@ impl WebStore {
             .collect()
     }
 
+    pub fn all_sigs(&self) -> HashMap<i64, Vec<SystemSig>> {
+        self.data.borrow().sigs.clone()
+    }
+
     pub fn system_sigs(&self, system: i64) -> Vec<SystemSig> {
         self.data.borrow().sigs.get(&system).cloned().unwrap_or_default()
     }

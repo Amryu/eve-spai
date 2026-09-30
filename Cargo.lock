@@ -5924,6 +5924,7 @@ dependencies = [
 name = "spai-ui"
 version = "0.13.1"
 dependencies = [
+ "chrono",
  "egui",
  "egui-phosphor",
  "rust-sugiyama",
@@ -5938,6 +5939,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "egui-phosphor",
  "ehttp",
  "log",
  "serde",

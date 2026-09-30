@@ -12,7 +12,7 @@ use spai_core::wormholes::{time_left, Mass, TimeLeft, Wormhole};
 use crate::wh_graph::*;
 
 /// The map's settings, as the host keeps them.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WhPrefs {
     /// Systems joined to the chains by gates, by name.
     pub route_pins: Vec<String>,
