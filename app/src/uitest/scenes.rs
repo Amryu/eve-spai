@@ -3322,7 +3322,7 @@ fn uitest_a_holes_tooltip_appears_at_the_pointer() {
         .find_map(|n| {
             let a = n.accesskit_node();
             let text = a.label().or_else(|| a.value()).unwrap_or_default();
-            text.contains("\u{2192} 1DQ1-A").then(|| (text, a.bounding_box()))
+            text.contains(&format!("{} 1DQ1-A", egui_phosphor::regular::ARROW_RIGHT)).then(|| (text, a.bounding_box()))
         })
         .and_then(|(t, b)| Some((t, b?)))
         .expect("a tooltip about the hole");

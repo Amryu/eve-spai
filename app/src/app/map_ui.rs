@@ -2100,46 +2100,4 @@ fn wh_tip_line(id: i64, info: &crate::geo::SystemInfo) -> Option<String> {
 
 /// Room a system's hole icon takes, in icon widths: one, and a half more when blue and pink both
 /// show.
-fn hole_mark_slots(m: &super::HoleMark) -> f32 {
-    let blue = m.regular || m.thera;
-    if blue && !m.drifters.is_empty() { 2.0 } else { 1.35 }
-}
-
-/// A system's hole icon, left edge at `at.x`, centred on `at.y`: blue for regular holes with a T
-/// for Thera, pink for drifter holes with each drifter's letter, the two offset when both apply.
-fn paint_hole_mark(painter: &egui::Painter, at: egui::Pos2, icon_h: f32, icon_w: f32, m: &super::HoleMark, blocked: bool) {
-    let tint = |c: egui::Color32| if blocked { super::wh_graph::desaturate(c) } else { c };
-    let blue = tint(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4));
-    let pink = tint(super::wh_graph::drifter_color());
-    // A size up from the other icons, so the letters on it stay readable at a small dot.
-    let icon_h = icon_h * 1.2;
-    let font = egui::FontId::proportional(icon_h);
-    let letter_font = |n: usize| egui::FontId::new(icon_h * if n > 2 { 0.5 } else if n == 2 { 0.58 } else { 0.72 }, egui::FontFamily::Proportional);
-    let glyph = |x: f32, col: egui::Color32| {
-        painter.text(egui::pos2(x, at.y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::SPIRAL, font.clone(), col);
-    };
-    // Letters sit on the spiral's middle, outlined so they read over its lines.
-    let letters = |x: f32, text: &str| {
-        let c = egui::pos2(x + icon_h / 2.0, at.y);
-        let f = letter_font(text.chars().count());
-        for off in [egui::vec2(-1.0, 0.0), egui::vec2(1.0, 0.0), egui::vec2(0.0, -1.0), egui::vec2(0.0, 1.0)] {
-            painter.text(c + off, egui::Align2::CENTER_CENTER, text, f.clone(), egui::Color32::BLACK);
-        }
-        painter.text(c, egui::Align2::CENTER_CENTER, text, f, egui::Color32::WHITE);
-    };
-    let has_blue = m.regular || m.thera;
-    let mut x = at.x;
-    if has_blue {
-        glyph(x, blue);
-        if !m.drifters.is_empty() {
-            x += icon_w * 0.55;
-        }
-    }
-    if !m.drifters.is_empty() {
-        glyph(x, pink);
-        letters(x, &m.drifters.iter().collect::<String>());
-    }
-    if m.thera {
-        letters(at.x, "T");
-    }
-}
+use spai_ui::star_map::{hole_mark_slots, paint_hole_mark};

@@ -82,7 +82,7 @@ impl ActivityMode {
 
 pub(crate) type SysHit = (i64, String, f64, String, String);
 
-const JOVE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB8, 0x8C, 0xF0);
+use spai_ui::star_map::JOVE_COLOR;
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

@@ -15,6 +15,8 @@ mod host;
 #[allow(dead_code)]
 mod sso;
 #[allow(dead_code)]
+mod planner;
+#[allow(dead_code)]
 mod starmap;
 #[allow(dead_code)]
 mod store;
