@@ -58,6 +58,17 @@ pub fn save<T: Serialize>(key: &str, value: &T) {
     }
 }
 
+/// A string kept as it is, for text that is already JSON.
+pub fn load_raw(key: &str) -> Option<String> {
+    storage()?.get_item(key).ok()?
+}
+
+pub fn save_raw(key: &str, value: &str) {
+    if let Some(s) = storage() {
+        let _ = s.set_item(key, value);
+    }
+}
+
 pub fn forget(key: &str) {
     if let Some(s) = storage() {
         let _ = s.remove_item(key);

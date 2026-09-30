@@ -1,0 +1,7 @@
+{
+  "name": "spai-web-e2e",
+  "private": true,
+  "description": "Browser tests for the EVE Spai web app: npm install here, then npx playwright install chromium-headless-shell",
+  "type": "module",
+  "dependencies": { "playwright": "^1" }
+}

@@ -8,7 +8,7 @@ use crate::ops::{HoleState, Member, Role, SigRow};
 pub type Snapshot = (Vec<HoleState>, Vec<String>, Vec<(i64, Vec<SigRow>)>);
 
 /// What this install sends a group and takes from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SharePrefs {
     pub send_holes: bool,
     pub send_sigs: bool,
@@ -30,7 +30,7 @@ impl SharePrefs {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShareGroup {
     pub id: String,
     pub name: String,
@@ -50,7 +50,7 @@ impl ShareGroup {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Outgoing {
     Hole(String),
     Dead(String),

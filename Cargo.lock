@@ -5935,6 +5935,7 @@ dependencies = [
 name = "spai-web"
 version = "0.13.1"
 dependencies = [
+ "anyhow",
  "eframe",
  "egui",
  "ehttp",

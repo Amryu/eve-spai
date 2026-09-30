@@ -325,4 +325,74 @@ mod end_to_end {
         let _ = b.try_sync();
         assert!(b.hole("XYZ").is_none(), "a removed member reads nothing new");
     }
+
+    /// The web app joins through an invite, is approved by the owner here, and syncs the owner's
+    /// hole. Needs the server as for `share_end_to_end`, a trunk build served with the API by
+    /// `crates/spai-web/e2e/serve.mjs` at SPAI_WEB_SITE, and Playwright where node finds it
+    /// (NODE_PATH):
+    ///
+    ///   SPAI_WEB_SITE=http://127.0.0.1:8188 ... cargo test ... -- --ignored web_joins_through_an_invite
+    #[test]
+    #[ignore = "needs a running server, a served web build and Playwright"]
+    fn web_joins_through_an_invite() {
+        use std::io::{BufRead as _, Write as _};
+        let (Ok(base), Ok(secret), Ok(site)) =
+            (std::env::var("SPAI_SHARE_TEST_BASE"), std::env::var("SPAI_SHARE_TEST_SECRET"), std::env::var("SPAI_WEB_SITE"))
+        else {
+            return;
+        };
+        let now = crate::clock::utc().timestamp();
+        let owner_id = 92_000_000 + (now % 100_000) * 2;
+        let web_id = owner_id + 1;
+        let a = Install::new(&base, &secret);
+        a.store.upsert_wormhole(&Wormhole {
+            system_id: 31_000_200,
+            signature: Some("WEB-123".into()),
+            dest: DestClass::Highsec,
+            dest_system_id: Some(30_000_142),
+            source: Source::Manual,
+            reported_at: now,
+            updated_at: now,
+            ..Default::default()
+        });
+        a.run(Cmd::Create { name: "Web chain".into(), char_id: owner_id, char_name: "Owner".into(), prefs: SharePrefs::default() });
+        let g = a.store.share_groups()[0].id.clone();
+        let link = a.invite_for(&g, web_id, "Pilot W");
+        let invite = format!("/wh/{}", &link[link.find("join/").unwrap()..]);
+        let web_session = serde_json::json!({
+            "token": session(&secret, web_id, "Pilot W"), "expires_at": now + 3600, "character_id": web_id, "character_name": "Pilot W",
+        });
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../crates/spai-web/e2e/join.mjs");
+        let shot = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/webshots/web-joined.png");
+        let _ = std::fs::create_dir_all(std::path::Path::new(shot).parent().unwrap());
+        let mut node = std::process::Command::new("node")
+            .args([script, &site, &invite, &web_session.to_string(), shot])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node runs");
+        let mut out = std::io::BufReader::new(node.stdout.take().unwrap()).lines();
+        let mut seen = Vec::new();
+        for line in out.by_ref() {
+            let line = line.unwrap();
+            seen.push(line.clone());
+            if line == "requested" {
+                break;
+            }
+        }
+        assert_eq!(seen.last().map(String::as_str), Some("requested"), "{seen:?}");
+        a.sync();
+        let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
+        let req = reqs.iter().find(|r| r.row.char_id == web_id).unwrap_or_else(|| panic!("the browser's request: {reqs:?}"));
+        assert!(req.verified, "the browser proves the invite: {req:?}");
+        assert_eq!(req.row.label, "EVE Spai web");
+        a.run(Cmd::Approve { group: g.clone(), char_id: web_id, device_id: req.row.device_id.clone(), role: Role::Viewer });
+        writeln!(node.stdin.as_mut().unwrap(), "approved").unwrap();
+        drop(node.stdin.take());
+        let rest: Vec<String> = out.map_while(Result::ok).collect();
+        let _ = node.wait();
+        let holds = rest.iter().find(|l| l.starts_with("holds ")).unwrap_or_else(|| panic!("{rest:?}"));
+        assert!(holds.contains("WEB-123") && holds.contains("viewer"), "{holds}");
+    }
+
 }

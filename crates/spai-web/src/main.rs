@@ -5,11 +5,15 @@ mod app;
 #[cfg(target_arch = "wasm32")]
 mod auth;
 #[cfg(target_arch = "wasm32")]
+mod sync;
+#[cfg(target_arch = "wasm32")]
 mod page;
 #[allow(dead_code)]
 mod host;
 #[allow(dead_code)]
 mod sso;
+#[allow(dead_code)]
+mod store;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

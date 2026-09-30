@@ -1,0 +1,45 @@
+// The web app joining a group, driven by the desktop engine's `web_joins_through_an_invite` test.
+//   node join.mjs <site> <invite path> <session json> <shot.png>
+// Prints `requested` once the join is sent, then waits for `approved` on stdin, then prints what
+// the browser holds. WebGL is software only (SwiftShader), never the desktop GPU.
+import { chromium } from 'playwright';
+import readline from 'node:readline';
+
+const [site, invite, session, shot] = process.argv.slice(2);
+const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle'] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+page.on('pageerror', e => console.log('pageerror', e.message));
+const ready = () => page.waitForFunction(() => !document.getElementById('loading'), null, { timeout: 30000 });
+
+// Signed in without EVE: the test minted the session.
+await page.goto(site + '/wh/');
+await page.evaluate(s => localStorage.setItem('spai.session', s), session);
+await page.goto(site + invite);
+await ready();
+// Poll until the join is in the saved store: the group appears there once the engine sent it.
+for (let i = 0; i < 60; i++) {
+  const s = await page.evaluate(() => localStorage.getItem('spai.store'));
+  if (s && JSON.parse(s).groups.length) break;
+  await page.waitForTimeout(1000);
+}
+await page.screenshot({ path: shot.replace('.png', '-waiting.png') });
+console.log('requested');
+
+const rl = readline.createInterface({ input: process.stdin });
+for await (const line of rl) if (line.trim() === 'approved') break;
+// An open stdin would keep node running, and the test waits for it to end.
+rl.close();
+process.stdin.destroy();
+
+// A round is due every 15 s; give it two.
+for (let i = 0; i < 40; i++) {
+  const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
+  if (s.holes && Object.keys(s.holes).length) break;
+  await page.waitForTimeout(1000);
+}
+await page.waitForTimeout(1500);
+await page.screenshot({ path: shot });
+const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
+console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v) }));
+await browser.close();
+process.exit(0);

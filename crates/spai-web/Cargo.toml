@@ -12,6 +12,7 @@ spai-ui = { path = "../spai-ui" }
 spai-share = { path = "../spai-share" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+anyhow = "1"
 sha2 = "0.10"
 egui = "0.34"
 log = "0.4"

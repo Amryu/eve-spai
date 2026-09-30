@@ -408,7 +408,7 @@ pub fn sizes_for(codes: &[&str]) -> Vec<ShipSize> {
 }
 
 /// A signature as kept for a system: what the last paste said of it, and since when it is known.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SystemSig {
     pub sig: String,
     pub kind: String,
