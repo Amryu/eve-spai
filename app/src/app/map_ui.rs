@@ -441,23 +441,39 @@ impl SpaiApp {
             let at = anchors.iter().position(|&a| a == sid);
             let planning = self.map_route_kind_active();
             if planning && !anchors.is_empty() {
+                // A mixed route asks how to fly there; a plain one flies it its own way.
+                let ways: &[(Option<&'static str>, &str)] = if self.map_route_kind == "mixed" {
+                    &[(Some("jump"), " (Jump)"), (Some("gate"), " (Gate)")]
+                } else {
+                    &[(None, "")]
+                };
                 match at {
                     None => {
-                        if ui.button("Set as Destination").clicked() {
-                            self.map_route_set_dest(sid);
-                            ui.close();
+                        for (leg, tag) in ways {
+                            if ui.button(format!("Set as Destination{tag}")).clicked() {
+                                self.map_route_set_dest(sid, *leg);
+                                ui.close();
+                            }
                         }
-                        if anchors.len() > 1 && ui.button("Add Waypoint").clicked() {
-                            self.map_route_add_waypoint(sid);
-                            ui.close();
+                        if anchors.len() > 1 {
+                            for (leg, tag) in ways {
+                                if ui.button(format!("Add Waypoint{tag}")).clicked() {
+                                    self.map_route_add_waypoint(sid, *leg);
+                                    ui.close();
+                                }
+                            }
                         }
                     }
                     Some(i) if i > 0 => {
                         let last = i == anchors.len() - 1;
                         let label = if last { "Remove Destination" } else { "Remove Waypoint" };
                         if ui.button(label).clicked() {
-                            self.map_route_anchors.remove(i);
-                            self.map_replan_route();
+                            self.map_route_remove_anchor(i);
+                            ui.close();
+                        }
+                        let (other, label) = if self.map_leg_kind(i - 1) == "jump" { ("gate", "Reach by Gate") } else { ("jump", "Reach by Jump") };
+                        if ui.button(label).on_hover_text("Fly the leg into here the other way; the route becomes a mixed one").clicked() {
+                            self.map_set_leg_kind(i - 1, other);
                             ui.close();
                         }
                     }
@@ -469,22 +485,6 @@ impl SpaiApp {
                 {
                     self.clear_route();
                     ui.close();
-                }
-                if self.map_route_kind == "titan" {
-                    // Any system, not only ones on the route: where the ships are is the question
-                    // the titan route is asking, and the answer is often nowhere near the path.
-                    let t = self.map_titans.contains(&sid);
-                    if ui
-                        .button(if t { "Not a titan system" } else { "Set as titan system" })
-                        .clicked()
-                    {
-                        self.map_titans.retain(|&x| x != sid);
-                        if !t {
-                            self.map_titans.push(sid);
-                        }
-                        self.map_replan_route();
-                        ui.close();
-                    }
                 }
                 ui.separator();
                 let once = self.map_avoid_once.contains(&sid);
@@ -498,24 +498,25 @@ impl SpaiApp {
                     self.map_replan_route();
                     ui.close();
                 }
-                let jump = self.map_route_kind == "jump";
-                let always = if jump {
-                    self.settings.route_avoid_jump.contains(&sid)
-                } else {
-                    self.settings.route_avoid_gate.contains(&sid)
-                };
+                // Each list the route's legs are planned against: both, for a mixed route.
+                let lists = self.map_route_avoid_lists();
+                let always = lists.iter().any(|&jump| {
+                    if jump { self.settings.route_avoid_jump.contains(&sid) } else { self.settings.route_avoid_gate.contains(&sid) }
+                });
                 if ui.button(if always { "Stop avoiding always" } else { "Avoid always" }).clicked() {
-                    self.apply_overlay_message(
-                        crate::ipc::OverlayToMain::AvoidSystem { id: sid, jump, on: !always },
-                        ui.ctx(),
-                    );
+                    for jump in lists {
+                        self.apply_overlay_message(
+                            crate::ipc::OverlayToMain::AvoidSystem { id: sid, jump, on: !always },
+                            ui.ctx(),
+                        );
+                    }
                     self.map_replan_route();
                     ui.close();
                 }
                 ui.separator();
             }
             let verb = if planning && !anchors.is_empty() { "Restart as" } else { "Start" };
-            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("titan", "Titan Route"), ("scan", "Scan Route")] {
+            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("mixed", "Mixed Route"), ("scan", "Scan Route")] {
                 if ui.button(format!("{verb} {name}")).clicked() {
                     self.map_route_start(kind, sid);
                     ui.close();
@@ -1018,7 +1019,7 @@ impl SpaiApp {
 
 
         // Where a capital can sit, while a capital route is being planned.
-        if !self.map_route_anchors.is_empty() && self.map_route_kind != "gate" {
+        if !self.map_route_anchors.is_empty() && self.map_route_kind != "scan" && self.map_route_has("jump") {
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
             for d in self.jump_dockable_ids() {
                 if let Some(p) = pos.get(&d) {
@@ -1030,12 +1031,11 @@ impl SpaiApp {
         // Everything the route is being planned around, while it is being planned. A cross, not a
         // ring: a ring is what this map uses for "look here", and this is the opposite.
         if !self.map_route_anchors.is_empty() {
-            let jumping = self.map_route_kind == "jump";
-            let always: Vec<i64> = if jumping {
-                self.settings.route_avoid_jump.clone()
-            } else {
-                self.settings.route_avoid_gate.clone()
-            };
+            let always: Vec<i64> = self
+                .map_route_avoid_lists()
+                .into_iter()
+                .flat_map(|jump| if jump { self.settings.route_avoid_jump.clone() } else { self.settings.route_avoid_gate.clone() })
+                .collect();
             for id in always.iter().chain(self.map_avoid_once.iter()) {
                 if let Some(&p) = pos.get(id) {
                     let d = (dot * 2.2).max(4.0);
@@ -1055,23 +1055,6 @@ impl SpaiApp {
                     (dot * 3.8).max(7.0),
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(0xF2, 0xB1, 0x34)),
                 );
-            }
-        }
-
-        // Where the ships are, whether or not the route currently goes near them.
-        if self.map_route_kind == "titan" {
-            const TITAN_COL: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x7A, 0x3D);
-            for t in &self.map_titans {
-                if let Some(&p) = pos.get(t) {
-                    painter.circle_filled(p, 11.0, TITAN_COL.gamma_multiply(0.22));
-                    painter.text(
-                        p - egui::vec2(0.0, 14.0),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::STAR_FOUR,
-                        egui::FontId::proportional(14.0),
-                        TITAN_COL,
-                    );
-                }
             }
         }
 
@@ -1151,7 +1134,7 @@ impl SpaiApp {
                 if resp.drag_stopped() {
                     self.map_link = None;
                     if let Some(to) = over {
-                        self.map_link_menu = Some((from, to, b));
+                        self.map_link_menu = Some((from, to, b, false));
                     }
                 }
             }

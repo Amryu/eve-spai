@@ -1,5 +1,5 @@
-//! Routes for the map's drag gesture: by gates, by capital jumps, and by titan bridge plus gates.
-//! All three share one shape so the page draws them with one piece of code.
+//! Routes for the map's drag gesture: by gates, by capital jumps, or legs of both, and the titan
+//! bridge the rescue planner uses. All share one shape so the page draws them with one piece of code.
 
 use serde::Serialize;
 
@@ -52,9 +52,6 @@ pub struct LegChoice {
     pub from_name: String,
     pub to_name: String,
     pub options: Vec<RouteOption>,
-    /// Set on a titan route's last leg, whose options are the whole route's options, so the window
-    /// must not also show them as a per-leg switcher.
-    pub whole_route: bool,
 }
 
 #[derive(Default, Clone)]
@@ -775,23 +772,27 @@ fn leg_options(
     out
 }
 
-/// A route through waypoints. `pick` selects each leg's alternative, and the assembled route comes
-/// back with the choices so the client never joins legs itself.
+/// The kind of leg `i` of a route whose legs are `kinds`: "gate" or "jump". Legs past the end of
+/// the list take the last one's kind, so one entry describes a whole plain route.
+pub fn leg_kind<'a>(kinds: &[&'a str], i: usize) -> &'a str {
+    kinds.get(i).or(kinds.last()).copied().unwrap_or("gate")
+}
+
+/// A route through waypoints, each leg flown by gate or by jump as `kinds` says (a mixed route has
+/// both). `pick` selects each leg's alternative, and the assembled route comes back with the choices
+/// so the client never joins legs itself. Gate legs avoid `avoid_gate`, jump legs `avoid_jump`.
 #[allow(clippy::too_many_arguments)]
 pub fn chain(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
     anchors: &[i64],
-    kind: &str,
+    kinds: &[&str],
     class: &crate::jumproute::ShipClass,
     jdc: u32,
     jfc: u32,
-    titan_ly: f64,
-    titan_at_start: bool,
-    titans: &[i64],
-    titan_self_jump: bool,
     bridges: bool,
-    avoid: &Avoid,
+    avoid_gate: &Avoid,
+    avoid_jump: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
     pick: &[usize],
     picks: &Picks,
@@ -802,59 +803,28 @@ pub fn chain(
     let name = |id: i64| {
         graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string())
     };
-    let last = anchors.len() - 2;
-    // The titan bridges out of the system it sits in, so with waypoints the bridge belongs to the
-    // first leg when the titan is at the start and to the last leg when it waits at the far end.
-    let titan_leg = if titan_at_start { 0 } else { last };
     let mut legs: Vec<LegChoice> = Vec::new();
     for (i, w) in anchors.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
-        let options = if i == titan_leg && kind == "titan" {
-            titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes, titans, titan_self_jump)
-        } else {
-            leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes, picks)
-        };
-        legs.push(LegChoice {
-            from: a,
-            to: b,
-            from_name: name(a),
-            to_name: name(b),
-            options,
-            whole_route: false,
-        });
+        let kind = leg_kind(kinds, i);
+        let avoid = if kind == "jump" { avoid_jump } else { avoid_gate };
+        let options = leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes, picks);
+        legs.push(LegChoice { from: a, to: b, from_name: name(a), to_name: name(b), options });
     }
     if legs.iter().any(|l| l.options.is_empty()) {
         return (legs, Vec::new());
     }
-    let assemble = |choice: &dyn Fn(usize) -> usize| -> RouteOption {
-        let mut acc: Option<RouteOption> = None;
-        for (i, l) in legs.iter().enumerate() {
-            let o = clone_option(&l.options[choice(i).min(l.options.len() - 1)]);
-            acc = Some(match acc {
-                Some(h) => join(h, o),
-                None => o,
-            });
-        }
-        acc.expect("at least one leg")
-    };
-    let mut chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
-    recost_fatigue(&mut chosen, class);
-    let mut out = vec![chosen];
-    // Titan alternatives cover the whole route, so they become the route's options.
-    if kind == "titan" && legs[titan_leg].options.len() > 1 {
-        out = (0..legs[titan_leg].options.len())
-            .map(|k| {
-                let mut o = assemble(&move |i: usize| {
-                    if i == titan_leg { k } else { pick.get(i).copied().unwrap_or(0) }
-                });
-                recost_fatigue(&mut o, class);
-                o
-            })
-            .collect();
-        // The option tabs choose this leg and `pick` does not reach it, so a switcher would do nothing.
-        legs[titan_leg].whole_route = true;
+    let mut chosen: Option<RouteOption> = None;
+    for (i, l) in legs.iter().enumerate() {
+        let o = clone_option(&l.options[pick.get(i).copied().unwrap_or(0).min(l.options.len() - 1)]);
+        chosen = Some(match chosen {
+            Some(h) => join(h, o),
+            None => o,
+        });
     }
-    (legs, out)
+    let mut chosen = chosen.expect("at least one leg");
+    recost_fatigue(&mut chosen, class);
+    (legs, vec![chosen])
 }
 
 /// The titan jumps itself, the fleet gates out to it, and it bridges them from there.
@@ -1408,15 +1378,12 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             &g,
             &[],
             &anchors,
-            "gate",
+            &["gate"],
             &crate::jumproute::SHIP_CLASSES[0],
             5,
             5,
-            6.0,
             true,
-            &[],
-            false,
-            true,
+            &Avoid::default(),
             &Avoid::default(),
             &Default::default(),
             &[],
@@ -1533,15 +1500,12 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
                 &g,
                 &coords,
                 anchors,
-                "jump",
+                &["jump"],
                 class,
                 5,
                 5,
-                6.5,
                 false,
-                &[],
-                false,
-                false,
+                &Avoid::default(),
                 &Avoid::default(),
                 &Default::default(),
                 &[],
@@ -1561,54 +1525,6 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             note.contains(&format!("{last:.0} min fatigue at the end")),
             "the note quotes a leg's fatigue, not the route's: {note}"
         );
-    }
-
-    /// A titan leg's options belong to the whole route, and `pick` does not reach that leg, so a
-    /// per-leg switcher for it would do nothing.
-    #[test]
-    fn a_titan_leg_is_marked_so_its_options_are_not_offered_twice() {
-        let (g, coords, ids) = line_of_seven();
-        let (legs, out) = chain(
-            &g,
-            &coords,
-            &[ids[0], ids[6]],
-            "titan",
-            &crate::jumproute::SHIP_CLASSES[1],
-            5,
-            5,
-            6.5,
-            true,
-            &[ids[0], ids[1]],
-            false,
-            false,
-            &Avoid::default(),
-            &Default::default(),
-            &[],
-            &Picks::new(),
-        );
-        assert_eq!(out.len(), 2, "both titans beat the plain gate route, so there are two options");
-        assert!(legs.last().expect("a leg").whole_route, "the titan leg is the route's own choice");
-
-        // A gate route's legs are per-leg choices and stay switchable.
-        let (gates, _) = chain(
-            &g,
-            &coords,
-            &[ids[0], ids[3], ids[6]],
-            "gate",
-            &crate::jumproute::SHIP_CLASSES[1],
-            5,
-            5,
-            6.5,
-            true,
-            &[],
-            false,
-            false,
-            &Avoid::default(),
-            &Default::default(),
-            &[],
-            &Picks::new(),
-        );
-        assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
     }
 
     /// A target in range is one jump, not a bridge to its neighbour and a gate.
@@ -1637,45 +1553,33 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         assert!(out.iter().all(|o| o.titan_jump.is_none()), "no move offered at all");
     }
 
-    /// With waypoints the titan leg used to be the last one regardless, so a titan in the start
-    /// system was drawn bridging out of the last waypoint instead.
+    /// A mixed route flies each leg its own way: jumps out to the waypoint, gates on from it, and the
+    /// hops say which is which.
     #[test]
-    fn a_titan_in_the_start_system_bridges_from_the_start() {
+    fn a_mixed_route_jumps_one_leg_and_gates_the_next() {
         let (g, coords, ids) = line_of_seven();
-        let plan = |at_start: bool| {
-            let (legs, out) = chain(
-                &g,
-                &coords,
-                &[ids[0], ids[2], ids[6]],
-                "titan",
-                &crate::jumproute::SHIP_CLASSES[1],
-                5,
-                5,
-                6.5,
-                at_start,
-                &[],
-                false,
-                false,
-                &Avoid::default(),
-                &Default::default(),
-                &[],
-                &Picks::new(),
-            );
-            let bridge = out
-                .first()
-                .and_then(|o| o.hops.iter().position(|h| h.kind == 2).map(|i| (o.hops[i - 1].id, o.hops[i].id)));
-            (legs.iter().position(|l| l.whole_route), bridge)
-        };
-        // S2 is in range of S0, so the titan leg is one direct jump and has no alternatives.
-        let (leg, bridge) = plan(true);
-        assert_eq!(leg, None, "a single direct jump offers no titan options");
-        assert_eq!(bridge, Some((ids[0], ids[2])), "it jumps straight out of the start");
-
-        let (_, bridge) = plan(false);
-        assert!(
-            bridge.is_some_and(|(from, _)| from != ids[0]),
-            "waiting at the far end, the titan bridges on the last leg, not out of the start"
+        let (legs, out) = chain(
+            &g,
+            &coords,
+            &[ids[0], ids[4], ids[6]],
+            &["jump", "gate"],
+            &crate::jumproute::SHIP_CLASSES[1],
+            5,
+            5,
+            false,
+            &Avoid::default(),
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+            &Picks::new(),
         );
+        assert_eq!(legs.len(), 2);
+        let o = out.first().expect("a route");
+        let at = |id: i64| o.hops.iter().find(|h| h.id == id).map(|h| h.kind);
+        assert_eq!(at(ids[4]), Some(2), "the first leg ends in a jump");
+        assert_eq!((at(ids[5]), at(ids[6])), (Some(0), Some(0)), "the second leg is gates");
+        assert_eq!(leg_kind(&["jump"], 3), "jump", "one kind covers every leg");
+        assert_eq!(leg_kind(&[], 0), "gate");
     }
 
     /// Repeating the waypoint would draw a doubled system and count an extra jump.
@@ -1688,15 +1592,12 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             &g,
             &[],
             &[a, b, c],
-            "gate",
+            &["gate"],
             &crate::jumproute::SHIP_CLASSES[1],
             5,
             5,
-            6.0,
-            true,
-            &[],
             false,
-            false,
+            &Avoid::default(),
             &Avoid::default(),
             &Default::default(),
             &[],

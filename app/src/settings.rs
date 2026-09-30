@@ -756,6 +756,7 @@ mod saved_routes {
             titans: Vec::new(),
             titan_at_start: true,
             titan_self_jump: false,
+            legs: Vec::new(),
             hull: 0,
             jdc: 5,
             jfc: 5,
@@ -928,12 +929,16 @@ pub struct SavedMapRoute {
     pub anchors: Vec<i64>,
     #[serde(default)]
     pub avoid: Vec<i64>,
+    /// Left from titan routes, which the planner no longer makes; read and written unchanged.
     #[serde(default)]
     pub titans: Vec<i64>,
     #[serde(default)]
     pub titan_at_start: bool,
     #[serde(default)]
     pub titan_self_jump: bool,
+    /// How each leg is flown, "gate" or "jump", for a mixed route. Empty for older saves.
+    #[serde(default)]
+    pub legs: Vec<String>,
     #[serde(default)]
     pub hull: usize,
     #[serde(default)]

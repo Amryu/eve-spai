@@ -40,13 +40,16 @@ pub struct MapData {
     pub overlay: WhOverlay,
     /// Holes with both ends known, both ways, for routes.
     pub holes: HashMap<i64, Vec<i64>>,
-    /// Every live hole, for the systems' tooltips.
+    /// Every live hole, for the systems' tooltips and for routes to pick from.
     pub hole_list: Vec<Wormhole>,
+    /// Where each system sits in `real`.
+    real_at: HashMap<i64, usize>,
 }
 
 impl MapData {
     pub fn new(all: Vec<MapSystem>, real: Vec<MapSystem>, regions: Vec<(i64, String)>) -> Self {
-        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new() }
+        let real_at = real.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new(), real_at }
     }
 
     pub fn set_holes(&mut self, holes: &[Wormhole]) {
@@ -59,6 +62,10 @@ impl MapData {
                 self.holes.entry(b).or_default().push(w.system_id);
             }
         }
+    }
+
+    fn real(&self, id: i64) -> Option<&MapSystem> {
+        self.real_at.get(&id).map(|&i| &self.real[i])
     }
 
     pub fn set_network(&mut self, network: Network, geo: &Systems) {
@@ -84,17 +91,33 @@ pub struct StarMap {
 
 /// What the map draws over New Eden, as the desktop's layer toggles.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Layers {
     pub wormholes: bool,
     pub jove: bool,
     pub bridges: bool,
+    /// Systems tinted by the capital jump range they are in from the system under the pointer.
+    pub jump_range: bool,
+    /// Systems tinted by the Ansiblex zone they are in around the capital.
+    pub zones: bool,
 }
 
 impl Default for Layers {
     fn default() -> Self {
-        Layers { wormholes: true, jove: true, bridges: true }
+        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false }
     }
 }
+
+/// The jump range bands, as the desktop colours them: titan, capital, black ops, jump freighter.
+const BAND: [egui::Color32; 4] = [
+    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+    egui::Color32::from_rgb(0xE0, 0xA4, 0x3A),
+    egui::Color32::from_rgb(0x4F, 0x9B, 0xD8),
+    egui::Color32::from_rgb(0xD8, 0x4C, 0x4C),
+];
+
+/// Where zones are measured from when the server names no capital.
+const CAPITAL: &str = "A24L-V";
 
 const GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
 const HOLE: egui::Color32 = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
@@ -105,7 +128,7 @@ impl StarMap {
         if self.zoom <= 0.0 {
             self.zoom = 1.0;
         }
-        self.plan.update(&PlanInput { geo, coords: &d.real, holes: &d.holes });
+        self.plan.update(&PlanInput { geo, coords: &d.real, holes: &d.hole_list });
         self.panel(ui, geo, d);
         let draw: Vec<MapSystem> = d.all.iter().filter(|s| self.region.is_none_or(|r| s.region_id == r)).cloned().collect();
         let Some(bounds) = Bounds::of(&draw) else { return };
@@ -126,7 +149,7 @@ impl StarMap {
         if resp.drag_stopped() {
             if let (Some(from), Some(to), Some(at)) = (self.plan.link.take(), hovered, pointer) {
                 if from != to {
-                    self.plan.link_menu = Some((from, to, at));
+                    self.plan.link_menu = Some((from, to, at, false));
                 }
             }
         }
@@ -180,7 +203,37 @@ impl StarMap {
 
         let names = self.region.is_some() || self.zoom >= 6.0;
         let font = egui::FontId::proportional(12.0);
-        let (anchors, titans) = self.plan.marks();
+        // Zoomed out the dots touch, and a full halo each would bury them.
+        let halo = if dot < 3.0 { dot + 1.5 } else { dot + 4.0 };
+        // Under the dots: the zone or jump range band each system is in. The map is flat, so the
+        // bands are the dots' colour, not rings, as on the desktop's schematic map.
+        if self.layers.zones {
+            let cap = if d.network.capital.is_empty() { CAPITAL } else { d.network.capital.as_str() };
+            if let Some(c) = geo.lookup(cap).and_then(|i| d.real(i.id)) {
+                for s in &draw {
+                    let (Some(p), Some(r)) = (pos.get(&s.id), d.real(s.id)) else { continue };
+                    if !cull.contains(*p) {
+                        continue;
+                    }
+                    let zone = spai_core::ansiblex::zone_for_ly(spai_core::map::ly_distance(c, r));
+                    painter.circle_filled(*p, halo, spai_core::ansiblex::zone_color(zone.clamp(1, 5)).gamma_multiply(0.55));
+                }
+            }
+        } else if self.layers.jump_range {
+            if let Some(c) = hovered.or(self.selected).and_then(|h| d.real(h)) {
+                for s in &draw {
+                    let (Some(p), Some(r)) = (pos.get(&s.id), d.real(s.id)) else { continue };
+                    if s.id == c.id || !cull.contains(*p) {
+                        continue;
+                    }
+                    let ly = spai_core::map::ly_distance(c, r);
+                    if let Some(b) = spai_core::map::JUMP_RANGES.iter().position(|(_, max)| ly <= *max) {
+                        painter.circle_filled(*p, halo, BAND[b.min(3)].gamma_multiply(0.70));
+                    }
+                }
+            }
+        }
+        let anchors = self.plan.anchors.clone();
         for s in &draw {
             let p = pos[&s.id];
             if !cull.contains(p) {
@@ -197,9 +250,6 @@ impl StarMap {
             }
             if anchors.contains(&s.id) {
                 painter.circle_stroke(p, dot + 7.0, egui::Stroke::new(2.0, visuals.hyperlink_color));
-            }
-            if titans.contains(&s.id) {
-                painter.circle_filled(p, dot + 9.0, egui::Color32::from_rgb(0xFF, 0x7A, 0x3D).gamma_multiply(0.25));
             }
             if self.selected == Some(s.id) {
                 painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
@@ -246,6 +296,9 @@ impl StarMap {
         let menu_sys = self.menu_sys;
         let plan = &mut self.plan;
         resp.context_menu(|ui| {
+            // Menus open where the click was; near the right edge egui would wrap every item.
+            ui.set_min_width(230.0);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let Some(sid) = menu_sys else {
                 ui.label(egui::RichText::new("Right-click a system").weak());
                 return;
@@ -254,15 +307,13 @@ impl StarMap {
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", i.name, i.security)).strong());
                 ui.separator();
             }
-            plan.system_menu(ui, sid);
+            plan.system_menu(ui, sid, geo, &d.hole_list);
         });
         if self.plan.link.is_none() && self.plan.link_menu.is_none() {
             // Beside the pointer: a tooltip of the whole map would sit at the map's corner.
             let menu_open = egui::Popup::is_any_open(ui.ctx());
             if let (Some(h), Some(p), None, false) = (hovered, pointer, ui.ctx().dragged_id(), menu_open) {
-                egui::Area::new(egui::Id::new("web_system_tip")).order(egui::Order::Tooltip).fixed_pos(p + egui::vec2(16.0, 16.0)).show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| system_tip(ui, geo, d, h));
-                });
+                tip_area(ui.ctx(), "web_system_tip", p, |ui| system_tip(ui, geo, d, h));
             }
         }
         self.plan.link_menu(ui);
@@ -289,10 +340,53 @@ impl StarMap {
                 ui.checkbox(&mut self.layers.bridges, "Ansiblex");
                 ui.checkbox(&mut self.layers.jove, "Jove Observatories").on_hover_text("Where drifter holes can lead to; shown once system names show");
             });
+            // One tint at a time: both colour the same dots.
+            ui.horizontal_wrapped(|ui| {
+                if ui.checkbox(&mut self.layers.jump_range, format!("{}  Jump range", egui_phosphor::regular::CROSSHAIR_SIMPLE)).on_hover_text("Systems in capital jump range of the one under the pointer, or the selected one").changed() && self.layers.jump_range {
+                    self.layers.zones = false;
+                }
+                if ui.checkbox(&mut self.layers.zones, format!("{}  Ansiblex zones", egui_phosphor::regular::CIRCLES_THREE)).on_hover_text("The zone a bridge landing in each system is priced at, around the capital").changed() && self.layers.zones {
+                    self.layers.jump_range = false;
+                }
+            });
+            if self.layers.jump_range {
+                legend(ui, spai_core::map::JUMP_RANGES.iter().enumerate().map(|(i, (name, ly))| (BAND[i.min(3)], format!("{name} {ly:.0} ly"))).collect());
+            } else if self.layers.zones {
+                let cap = if d.network.capital.is_empty() { CAPITAL.to_owned() } else { d.network.capital.clone() };
+                let mut rows: Vec<(egui::Color32, String)> =
+                    (1..=4u8).map(|z| (spai_core::ansiblex::zone_color(z), format!("Zone {z}: {}\u{2013}{} ly", (z - 1) * 5, z * 5))).collect();
+                rows.push((spai_core::ansiblex::zone_color(5), "Zone 5: 20 ly and on".to_owned()));
+                ui.label(egui::RichText::new(format!("Around {cap}")).weak());
+                legend(ui, rows);
+            }
             ui.separator();
             self.plan.panel(ui, geo);
         });
     }
+}
+
+/// Colour swatches with what each means.
+fn legend(ui: &mut egui::Ui, rows: Vec<(egui::Color32, String)>) {
+    for (col, text) in rows {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(r.center(), 5.0, col);
+            ui.label(text);
+        });
+    }
+}
+
+/// A tooltip beside the pointer that keeps its width: it opens to the left of the pointer when the
+/// right edge is near, rather than squeezing its text into a column.
+pub fn tip_area(ctx: &egui::Context, id: &str, at: egui::Pos2, add: impl FnOnce(&mut egui::Ui)) {
+    const W: f32 = 340.0;
+    let screen = ctx.content_rect();
+    let left = at.x + 16.0 + W > screen.right();
+    let (pos, pivot) = if left { (at + egui::vec2(-16.0, 16.0), egui::Align2::RIGHT_TOP) } else { (at + egui::vec2(16.0, 16.0), egui::Align2::LEFT_TOP) };
+    egui::Area::new(egui::Id::new(id)).order(egui::Order::Tooltip).fixed_pos(pos).pivot(pivot).show(ctx, |ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        egui::Frame::popup(ui.style()).show(ui, add);
+    });
 }
 
 /// The readout beside the system a route drag is aimed at: light years, gates, and gates with
@@ -307,8 +401,8 @@ fn link_tip(ui: &egui::Ui, at: egui::Pos2, geo: &Systems, d: &MapData, from: i64
         Some(n) => format!("{n} jumps"),
         None => "no route".to_owned(),
     };
-    egui::Area::new(egui::Id::new("web_link_tip")).order(egui::Order::Tooltip).fixed_pos(at + egui::vec2(14.0, 14.0)).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
+    tip_area(ui.ctx(), "web_link_tip", at, |ui| {
+        {
             if let Some(i) = geo.info_of(to) {
                 ui.label(egui::RichText::new(&i.name).strong());
             }
@@ -319,7 +413,7 @@ fn link_tip(ui: &egui::Ui, at: egui::Pos2, geo: &Systems, d: &MapData, from: i64
             if bridged.is_some() && bridged != gates {
                 ui.label(egui::RichText::new(format!("{} with bridges", jumps(bridged))).weak());
             }
-        });
+        }
     });
 }
 
