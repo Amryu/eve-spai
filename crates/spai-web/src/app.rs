@@ -232,8 +232,12 @@ impl eframe::App for WebApp {
                     ui.menu_value(&mut self.tab, Tab::Map, "Map");
                     ui.separator();
                 }
-                if let Some(g) = self.sync.as_ref().and_then(|s| s.store.share_groups().into_iter().next()) {
-                    ui.label(egui::RichText::new(g.name).weak());
+                if let Some(sync) = &self.sync {
+                    let groups = sync.store.share_groups();
+                    let names: Vec<String> = groups.iter().map(|g| format!("{} ({})", g.name, g.role.label())).collect();
+                    if !names.is_empty() {
+                        ui.label(egui::RichText::new(names.join(", ")).weak()).on_hover_text("Your groups, and your role in each: a viewer sees the map and shares nothing");
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {
                     Auth::SignedIn(s) => {
