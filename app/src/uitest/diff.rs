@@ -11,6 +11,10 @@
 
 use super::harness::{out_dir, shot_dir};
 
+/// The showcase scenes load images on threads, so how many frames they run varies and a curve's
+/// anti-aliasing shifts by a few pixels. More than this is a real change.
+const SHOWCASE_NOISE: usize = 100;
+
 fn shots(dir: &std::path::Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
@@ -54,7 +58,7 @@ fn uitest_pixel_diff() {
     let (now, base) = (shot_dir(), out_dir("uishots-base"));
     let names = shots(&base);
     assert!(!names.is_empty(), "no baseline: run uitest_pixel_baseline first");
-    let mut bad = Vec::new();
+    let (mut bad, mut noise) = (Vec::new(), Vec::new());
     for n in &names {
         let (a, b) = (base.join(n), now.join(n));
         if !b.exists() {
@@ -63,11 +67,15 @@ fn uitest_pixel_diff() {
         }
         match differ(&a, &b) {
             Ok(0) => {}
+            Ok(px) if n.starts_with("showcase_") && px <= SHOWCASE_NOISE => noise.push(format!("{n}: {px} pixels")),
             Ok(px) => bad.push(format!("{n}: {px} pixels")),
             Err(e) => bad.push(format!("{n}: {e}")),
         }
     }
     let added: Vec<_> = shots(&now).into_iter().filter(|n| !names.contains(n)).collect();
     println!("{} compared, {} differ, {} new: {added:?}", names.len(), bad.len(), added.len());
+    if !noise.is_empty() {
+        println!("within the showcase noise: {}", noise.join(", "));
+    }
     assert!(bad.is_empty(), "screenshots changed:\n{}", bad.join("\n"));
 }

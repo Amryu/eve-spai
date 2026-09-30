@@ -1102,7 +1102,7 @@ impl SpaiApp {
                     .as_ref()
                     .and_then(|g| g.route_with(ps, dest, true, true, &holes, |_| true));
                 if let Some(route) = route {
-                    let phase = (ui.input(|i| i.time) * 28.0) as f32;
+                    let phase = (crate::clock::anim(ui) * 28.0) as f32;
                     // A J-space leg has no place on the map, so the hop is drawn between the k-space
                     // systems on either side of the hole.
                     let mut last: Option<(i64, egui::Pos2)> = None;
@@ -1229,7 +1229,7 @@ impl SpaiApp {
             }
             if let Some(at) = self.travel_changed_at {
                 if crate::clock::utc().timestamp() - at < 6 {
-                    let blink = ((ui.input(|i| i.time) * 5.0).sin() * 0.5 + 0.5) as f32;
+                    let blink = ((crate::clock::anim(ui) * 5.0).sin() * 0.5 + 0.5) as f32;
                     let warn = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
                     for id in &self.travel_changed {
                         if let Some(p) = pos.get(id) {
@@ -1310,7 +1310,7 @@ impl SpaiApp {
         }
         // The route the drag settled on, in its own colours so it does not read as the travel route.
         if let Some(o) = self.map_route_opts.get(self.map_route_at) {
-            let phase = (ui.input(|i| i.time) * 28.0) as f32;
+            let phase = (crate::clock::anim(ui) * 28.0) as f32;
             ui.ctx().request_repaint();
             const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
             self.draw_route_legs(&painter, &pos, o, phase);
@@ -1466,7 +1466,7 @@ impl SpaiApp {
 
         let now_ts = crate::clock::utc().timestamp();
         let intel_map = self.intel_highlights();
-        let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
+        let blink = (crate::clock::anim(ui) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
         // The holder's colour rides the dot at every zoom; the logo only appears once the dots are
         // big enough to hang one on, below which a logo per system is unreadable clutter.
@@ -1778,7 +1778,7 @@ impl SpaiApp {
             m
         };
         let now_ts = crate::clock::utc().timestamp();
-        let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
+        let blink = (crate::clock::anim(ui) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
 
         let edge = visuals.weak_text_color().gamma_multiply(0.5);

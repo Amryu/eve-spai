@@ -132,8 +132,13 @@ One trap that silently guts a fixture, hit once already:
 `pilot::UncertainPilots` lowercases on construction and matches case-insensitively, so a fixture can
 pass display-cased names.
 
-Screenshot renders are deterministic. For a refactor that should not change the UI, render
-`uitest_screenshots` before and after and compare the PNGs pixel for pixel.
+Screenshot renders are deterministic: the harness stops the clock (`crate::clock::freeze`) at a
+fixed moment, and animations read `crate::clock::anim`, which stands still with it. Read the wall
+clock through `crate::clock::utc()` / `system()`, never `chrono::Utc::now()`, or renders drift.
+For a refactor that should not change the UI, `app/src/uitest/diff.rs` is the guard: render,
+`uitest_pixel_baseline`, change the code, render again, `uitest_pixel_diff`. The showcase scenes
+load images on threads and may differ by a few anti-aliased pixels; the diff reports those
+separately.
 
 Add a scene by appending to `scenes::all()`. Check the census afterwards: a scene near the
 ~12-target chrome baseline is not being inspected in any meaningful sense.

@@ -524,7 +524,7 @@ impl SpaiApp {
             }
         }
 
-        let time = ui.input(|i| i.time);
+        let time = crate::clock::anim(ui);
         let phase = (time * 28.0) as f32;
         let mut animate = false;
         for (a, b, via) in &legs {
