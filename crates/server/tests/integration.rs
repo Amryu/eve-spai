@@ -540,6 +540,16 @@ async fn wormhole_group_membership_and_log() {
     let (_, keys2) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd2, None).await;
     assert_eq!(keys2[0]["wrapped"].as_str(), Some("k0-joiner2"));
 
+    // The owner's own second device, a browser say: the 0.13.0 app approves it with the member's
+    // role, `owner`, which a new character could never be given.
+    let od2 = "f".repeat(32);
+    let inv_own = invite(app.clone(), owner.clone(), g.clone()).await;
+    wh(&app, "POST", &format!("/invites/{inv_own}/join"), &owner, &od2, Some(json!({ "body": "keys-web", "device_id": od2, "label": "EVE Spai web" }))).await;
+    let (s, v) = wh(&app, "POST", &format!("/groups/{g}/requests/90000001/{od2}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0-owner-web" }], "role": "owner" }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &owner, &od2, None).await;
+    assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-owner-web"));
+
     // A viewer reads and shares nothing, though they may still leave.
     let inv3 = invite(app.clone(), owner.clone(), g.clone()).await;
     wh(&app, "POST", &format!("/invites/{inv3}/join"), &viewer, &vd, Some(json!({ "body": "keys3", "device_id": vd }))).await;
@@ -553,7 +563,7 @@ async fn wormhole_group_membership_and_log() {
 
     // Removing one of the joiner's devices: the key must reach every other device.
     let every_but = |gone: &str| -> Vec<Value> {
-        [(90_000_001, &od), (90_000_002, &jd), (90_000_002, &jd2), (90_000_004, &vd)]
+        [(90_000_001, &od), (90_000_001, &od2), (90_000_002, &jd), (90_000_002, &jd2), (90_000_004, &vd)]
             .into_iter()
             .filter(|(_, d)| d.as_str() != gone)
             .map(|(c, d)| json!({ "char_id": c, "device_id": d, "wrapped": format!("k1-{c}-{d}") }))

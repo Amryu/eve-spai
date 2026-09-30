@@ -594,11 +594,15 @@ async fn approve(
     Json(a): Json<Approve>,
 ) -> Result<StatusCode, AppError> {
     let mine = manager(&st, &g, me.char_id).await?;
-    let allowed = match a.role.as_str() {
-        "member" | "viewer" => true,
-        "admin" => mine == "owner",
-        _ => false,
-    };
+    // Another device of a member keeps the member's role, so what it asks for does not matter
+    // (the 0.13.0 app sends the member's own role, `owner` for the owner's second device).
+    let already = role(&st, &g, c).await?.is_some();
+    let allowed = already
+        || match a.role.as_str() {
+            "member" | "viewer" => true,
+            "admin" => mine == "owner",
+            _ => false,
+        };
     if !allowed {
         return Err(AppError::Forbidden);
     }
