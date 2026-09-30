@@ -42,6 +42,8 @@ winresource = "0.1"
 br-core = { path = "../crates/br-core" }
 spai-core = { path = "../crates/spai-core" }
 spai-share = { path = "../crates/spai-share" }
+# Drives the sharing engine's async code on the share thread; the network calls under it block.
+pollster = "0.4"
 eframe = "0.34"
 egui = "0.34"
 egui_extras = { version = "0.34", default-features = false, features = ["http", "image"] }

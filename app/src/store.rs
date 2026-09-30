@@ -482,7 +482,7 @@ mod fleet_moves;
 
 mod fleet_kills;
 pub use fleet_kills::FleetKill;
-pub use share::{Outgoing, ShareGroup, SharePrefs};
+pub use share::{ShareGroup, SharePrefs};
 pub use wormholes::SystemSig;
 impl Store {
     /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than

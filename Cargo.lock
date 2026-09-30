@@ -1823,6 +1823,7 @@ dependencies = [
  "ksni",
  "notify-rust",
  "open",
+ "pollster",
  "qrcode",
  "regex",
  "reqwest",

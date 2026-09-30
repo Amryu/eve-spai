@@ -11,63 +11,7 @@ use crate::share::hole::{self, Clock};
 use crate::share::ops::{HoleState, Member, Role, SigRow};
 use crate::wormholes::{ScanSig, Source, Wormhole};
 
-/// Live holes, recently collapsed ones, and the signatures of each system.
-pub type Snapshot = (Vec<HoleState>, Vec<String>, Vec<(i64, Vec<SigRow>)>);
-
-/// What this install sends a group and takes from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SharePrefs {
-    pub send_holes: bool,
-    pub send_sigs: bool,
-    pub recv_holes: bool,
-    pub recv_sigs: bool,
-    /// What the group sent stays stored and keeps syncing, but is left off the map and lists.
-    pub hidden: bool,
-}
-
-impl Default for SharePrefs {
-    fn default() -> Self {
-        SharePrefs { send_holes: true, send_sigs: true, recv_holes: true, recv_sigs: true, hidden: false }
-    }
-}
-
-impl SharePrefs {
-    fn sends(&self, kind: &str) -> bool {
-        if is_hole_kind(kind) { self.send_holes } else { self.send_sigs }
-    }
-}
-
-fn is_hole_kind(kind: &str) -> bool {
-    matches!(kind, "hole" | "dead")
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShareGroup {
-    pub id: String,
-    pub name: String,
-    /// Which of this install's characters is the member.
-    pub char_id: i64,
-    pub role: Role,
-    pub epoch: u32,
-    pub cursor: i64,
-    pub prefs: SharePrefs,
-}
-
-impl ShareGroup {
-    /// Whether a change of `kind` goes to this group. Something that came from one group goes
-    /// back to that group only, never on to the others.
-    pub fn takes(&self, kind: &str, origin: Option<&str>) -> bool {
-        self.role.can_write() && self.prefs.sends(kind) && origin.is_none_or(|o| o == self.id)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Outgoing {
-    Hole(String),
-    Dead(String),
-    Sigs { system_id: i64, rows: Vec<SigRow>, drop_missing: bool, at: i64 },
-    SigDelete { system_id: i64, sig: String },
-}
+pub use spai_share::store::{Outgoing, ShareGroup, SharePrefs, ShareStore, Snapshot};
 
 fn role_code(r: Role) -> &'static str {
     r.code()
@@ -609,6 +553,79 @@ fn sig_rows<'a>(sigs: impl IntoIterator<Item = &'a SystemSig>) -> Vec<SigRow> {
 
 fn remote_source_bit(code: &str) -> u8 {
     Source::from_code(code).bit()
+}
+
+/// The engine's storage is this database: each method is the `Store` one of the same name.
+impl ShareStore for Store {
+    fn share_groups(&self) -> Vec<ShareGroup> {
+        Store::share_groups(self)
+    }
+    fn share_group_save(&self, g: &ShareGroup) {
+        Store::share_group_save(self, g)
+    }
+    fn share_group_forget(&self, id: &str) {
+        Store::share_group_forget(self, id)
+    }
+    fn share_key(&self, group: &str, epoch: u32) -> Option<crate::share::crypto::Key> {
+        Store::share_key(self, group, epoch)
+    }
+    fn share_key_save(&self, group: &str, epoch: u32, key: &crate::share::crypto::Key) {
+        Store::share_key_save(self, group, epoch, key)
+    }
+    fn share_members(&self, group: &str) -> Vec<Member> {
+        Store::share_members(self, group)
+    }
+    fn share_members_save(&self, group: &str, members: &[Member]) {
+        Store::share_members_save(self, group, members)
+    }
+    fn share_cursor_save(&self, group: &str, cursor: i64) {
+        Store::share_cursor_save(self, group, cursor)
+    }
+    fn share_mark_applied(&self, op_id: &str, group: &str) -> bool {
+        Store::share_mark_applied(self, op_id, group)
+    }
+    fn share_unmark_applied(&self, op_id: &str) -> bool {
+        Store::share_unmark_applied(self, op_id)
+    }
+    fn share_invite_save(&self, id: &str, group: &str, secret: &crate::share::crypto::Key, for_char: i64, for_name: &str) {
+        Store::share_invite_save(self, id, group, secret, for_char, for_name)
+    }
+    fn share_invite(&self, id: &str) -> Option<(crate::share::crypto::Key, i64, String)> {
+        Store::share_invite(self, id)
+    }
+    fn share_queue_group(&self, group: &str, holes: bool, sigs: bool) {
+        Store::share_queue_group(self, group, holes, sigs)
+    }
+    fn share_snapshot(&self, g: &ShareGroup) -> Snapshot {
+        Store::share_snapshot(self, g)
+    }
+    fn share_apply_hole(&self, remote: &HoleState, group: &str, who: &str) -> bool {
+        Store::share_apply_hole(self, remote, group, who)
+    }
+    fn share_apply_dead(&self, uid: &str) {
+        Store::share_apply_dead(self, uid)
+    }
+    fn share_apply_sigs(&self, system_id: i64, rows: &[SigRow], drop_missing: bool, at: i64, who: &str, group: &str) {
+        Store::share_apply_sigs(self, system_id, rows, drop_missing, at, who, group)
+    }
+    fn share_apply_sig_delete(&self, system_id: i64, sig: &str) {
+        Store::share_apply_sig_delete(self, system_id, sig)
+    }
+    fn share_outbox(&self, limit: usize) -> Vec<(i64, Option<String>, Outgoing)> {
+        Store::share_outbox(self, limit)
+    }
+    fn share_outbox_done(&self, id: i64) {
+        Store::share_outbox_done(self, id)
+    }
+    fn share_hole_state(&self, uid: &str, me: i64) -> Option<HoleState> {
+        Store::share_hole_state(self, uid, me)
+    }
+    fn share_settle(&self, uid: &str, me: i64) {
+        Store::share_settle(self, uid, me)
+    }
+    fn wormhole_group(&self, uid: &str) -> Option<String> {
+        Store::wormhole_group(self, uid)
+    }
 }
 
 #[cfg(test)]
