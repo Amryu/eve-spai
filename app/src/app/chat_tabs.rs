@@ -62,6 +62,8 @@ pub(crate) struct ChatWindow {
     pub(crate) size: Option<(f32, f32)>,
     /// One-shot: geometry is fed to the viewport builder on the first frame only.
     pub(crate) geom_applied: bool,
+    /// The saved position, sent again once the window is up.
+    pub(crate) pos_fix: Option<super::alert_window::PosFix>,
     /// Screen rects, cached for cross-window drop hit-testing.
     pub(crate) outer: Option<egui::Rect>,
     pub(crate) inner: Option<egui::Rect>,

@@ -55,6 +55,53 @@ pub(crate) fn geometry_update(
     }
 }
 
+/// A saved window position to send again once the window is up.
+///
+/// On X11 a window opened at a position is placed by KWin with its client area there, while
+/// winit reports and we save the frame's corner, so every restart put the window a title bar
+/// lower. A move of a window already shown is taken as the frame's position, so the saved spot is
+/// re-sent then, once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PosFix {
+    want: (f32, f32),
+    frames: u32,
+}
+
+impl PosFix {
+    pub(crate) fn new(want: Option<(f32, f32)>) -> Option<Self> {
+        want.filter(|_| cfg!(target_os = "linux")).map(|want| PosFix { want, frames: 0 })
+    }
+
+    /// One frame of the window, with where it says its frame is: where to move it, if anywhere,
+    /// and whether the fix is done.
+    pub(crate) fn step(&mut self, outer_min: Option<egui::Pos2>) -> (Option<egui::Pos2>, bool) {
+        self.frames += 1;
+        // The first frames can report the window before the window manager framed it.
+        if self.frames < 3 {
+            return (None, false);
+        }
+        let want = egui::pos2(self.want.0, self.want.1);
+        match outer_min {
+            Some(p) => (((p - want).length() > 1.0).then_some(want), true),
+            None => (None, self.frames > 60),
+        }
+    }
+}
+
+/// Runs a [`PosFix`] inside its viewport, clearing it once done.
+pub(crate) fn apply_pos_fix(ctx: &egui::Context, fix: &mut Option<PosFix>) {
+    let Some(f) = fix else { return };
+    let (to, done) = f.step(ctx.input(|i| i.viewport().outer_rect.map(|r| r.min)));
+    if let Some(p) = to {
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+    }
+    if done {
+        *fix = None;
+    } else {
+        ctx.request_repaint();
+    }
+}
+
 /// Seed size (never position) into an overlay viewport's per-frame builder.
 ///
 /// Overlay viewports (alert and fleet ping) share this rule: never feed the live saved position into
@@ -862,3 +909,26 @@ pub(crate) struct AlertWindowState {
 }
 
 pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
+
+#[cfg(test)]
+mod pos_fix_tests {
+    use super::PosFix;
+
+    /// A window a title bar below where it was saved is moved back once, after the first frames.
+    #[test]
+    fn a_window_off_by_the_title_bar_is_moved_back_once() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let mut f = PosFix::new(Some((100.0, 200.0))).expect("a saved position");
+        let off = Some(egui::pos2(100.0, 230.0));
+        assert_eq!(f.step(off), (None, false), "not before the window is framed");
+        assert_eq!(f.step(off), (None, false));
+        assert_eq!(f.step(off), (Some(egui::pos2(100.0, 200.0)), true));
+        let mut right = PosFix::new(Some((100.0, 200.0))).unwrap();
+        right.step(None);
+        right.step(None);
+        assert_eq!(right.step(Some(egui::pos2(100.4, 200.0))), (None, true), "already there: nothing to do");
+        assert!(PosFix::new(None).is_none());
+    }
+}
