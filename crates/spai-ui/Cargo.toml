@@ -1,0 +1,21 @@
+[package]
+name = "spai-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai's wormhole map and star map drawing, egui only, shared by the desktop and web apps"
+
+[lib]
+name = "spai_ui"
+path = "src/lib.rs"
+
+[dependencies]
+spai-core = { path = "../spai-core" }
+egui = "0.34"
+egui-phosphor = "0.12"
+# Sugiyama's layered layout for the wormhole map's "Layered" style. Pure Rust (petgraph).
+rust-sugiyama = "0.4"
+
+[features]
+# Helpers the app's tests set views up with.
+test-support = []

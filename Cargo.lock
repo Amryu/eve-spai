@@ -1830,7 +1830,6 @@ dependencies = [
  "rfd",
  "ring",
  "rusqlite",
- "rust-sugiyama",
  "rustls",
  "sasl",
  "serde",
@@ -1838,6 +1837,7 @@ dependencies = [
  "sha2 0.11.0",
  "spai-core",
  "spai-share",
+ "spai-ui",
  "tao",
  "tiny_http",
  "tokio",
@@ -5908,6 +5908,16 @@ dependencies = [
  "sha2 0.10.9",
  "spai-core",
  "x25519-dalek",
+]
+
+[[package]]
+name = "spai-ui"
+version = "0.13.1"
+dependencies = [
+ "egui",
+ "egui-phosphor",
+ "rust-sugiyama",
+ "spai-core",
 ]
 
 [[package]]

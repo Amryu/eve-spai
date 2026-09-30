@@ -236,7 +236,7 @@ pub mod chip {
 
 pub mod standing {
     use egui::Color32;
-    pub const HOSTILE: Color32 = Color32::from_rgb(0xD8, 0x4C, 0x4C);
+    pub const HOSTILE: Color32 = spai_ui::colors::HOSTILE;
     pub const NEUTRAL: Color32 = Color32::from_rgb(0x9A, 0xA3, 0xA8);
     pub const FRIENDLY: Color32 = Color32::from_rgb(0x5A, 0xC8, 0x6A);
     pub const CORP: Color32 = Color32::from_rgb(0x4F, 0x9B, 0xD8);

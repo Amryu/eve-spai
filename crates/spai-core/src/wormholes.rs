@@ -407,6 +407,20 @@ pub fn sizes_for(codes: &[&str]) -> Vec<ShipSize> {
     out
 }
 
+/// A signature as kept for a system: what the last paste said of it, and since when it is known.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SystemSig {
+    pub sig: String,
+    pub kind: String,
+    pub group: String,
+    pub name: String,
+    pub added_at: i64,
+    pub updated_at: i64,
+    pub who: String,
+    /// The sharing group it came from; `None` when pasted here.
+    pub origin: Option<String>,
+}
+
 /// One row of a probe scanner copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanSig {

@@ -2,18 +2,7 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SystemSig {
-    pub sig: String,
-    pub kind: String,
-    pub group: String,
-    pub name: String,
-    pub added_at: i64,
-    pub updated_at: i64,
-    pub who: String,
-    /// The sharing group it came from; `None` when pasted here.
-    pub origin: Option<String>,
-}
+pub use spai_core::wormholes::SystemSig;
 
 /// Leaves out signatures from groups hidden in the sharing window.
 const NOT_HIDDEN: &str = "(origin IS NULL OR origin NOT IN (SELECT id FROM share_groups WHERE hidden = 1))";

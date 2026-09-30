@@ -2,29 +2,29 @@
 //! against its neighbours by its outline. Layered: Sugiyama's method via `rust-sugiyama`, for
 //! chains whose holes close loops.
 
-use super::wh_graph::node_size;
+use crate::wh_graph::node_size;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub(crate) const COL: f32 = 360.0;
+pub const COL: f32 = 360.0;
 const GAP: f32 = 10.0;
-pub(crate) const CHAIN_GAP: f32 = 40.0;
+pub const CHAIN_GAP: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) enum Style {
+pub enum Style {
     #[default]
     Tree,
     Layered,
 }
 
 impl Style {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Style::Tree => "tree",
             Style::Layered => "layered",
         }
     }
 
-    pub(crate) fn from_code(s: &str) -> Self {
+    pub fn from_code(s: &str) -> Self {
         match s {
             "layered" => Style::Layered,
             _ => Style::Tree,
@@ -33,7 +33,7 @@ impl Style {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Opts {
+pub struct Opts {
     pub style: Style,
     /// Chains packed in rows to this width:height, instead of one after another.
     pub aspect: Option<f32>,
@@ -41,12 +41,12 @@ pub(crate) struct Opts {
 
 impl Opts {
     /// A step to the next level, and a step to the next box beside one.
-    pub(crate) fn steps(&self) -> (egui::Vec2, egui::Vec2) {
-        (egui::vec2(COL, 0.0), egui::vec2(0.0, super::wh_graph::NODE.y + GAP))
+    pub fn steps(&self) -> (egui::Vec2, egui::Vec2) {
+        (egui::vec2(COL, 0.0), egui::vec2(0.0, crate::wh_graph::NODE.y + GAP))
     }
 }
 
-pub(crate) fn layout(edges: &[(i64, i64)], alone: &[i64], score: impl Fn(i64) -> i64, opts: Opts) -> Vec<(i64, Option<i64>, egui::Pos2)> {
+pub fn layout(edges: &[(i64, i64)], alone: &[i64], score: impl Fn(i64) -> i64, opts: Opts) -> Vec<(i64, Option<i64>, egui::Pos2)> {
     let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
     for n in alone {
         adj.entry(*n).or_default();
@@ -143,7 +143,7 @@ fn chain(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, score: &impl Fn(i64) -> i64
 /// Where each level's column starts. A gap is widened where one box has more lines to the next
 /// level, or from the one before, than fit side by side in it.
 fn column_offsets(comp: &[i64], adj: &HashMap<i64, Vec<i64>>, depth: &HashMap<i64, usize>, pitch: f32) -> Vec<f32> {
-    use super::wh_graph::{LANE, NODE, STUB};
+    use crate::wh_graph::{LANE, NODE, STUB};
     let deepest = comp.iter().filter_map(|n| depth.get(n)).copied().max().unwrap_or(0);
     let mut lines = vec![0usize; deepest + 1];
     for n in comp {

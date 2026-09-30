@@ -42,6 +42,7 @@ winresource = "0.1"
 br-core = { path = "../crates/br-core" }
 spai-core = { path = "../crates/spai-core" }
 spai-share = { path = "../crates/spai-share" }
+spai-ui = { path = "../crates/spai-ui" }
 # Drives the sharing engine's async code on the share thread; the network calls under it block.
 pollster = "0.4"
 eframe = "0.34"
@@ -86,15 +87,13 @@ rfd = "0.15"
 # Cross-platform advisory file locks for the single-instance guard (main.rs). Default
 # `sync` feature only — operates on std::fs::File, no extra runtime deps.
 fs4 = "1.1.0"
-# Sugiyama's layered layout for the wormhole map's "Layered" style: ranks, crossing reduction and
-# Brandes-Köpf placement, which a loop of holes needs and a tree cannot give. Pure Rust (petgraph).
-rust-sugiyama = "0.4"
 # Pairing QR for the web view. Default features off: `image` would pull an encoder this never needs,
 # since the code is rasterised straight into an egui texture.
 qrcode = { version = "0.14.1", default-features = false }
 
 [dev-dependencies]
 spai-core = { path = "../crates/spai-core", features = ["test-support"] }
+spai-ui = { path = "../crates/spai-ui", features = ["test-support"] }
 # Headless UI harness: renders any egui surface to a PNG and drives hover/click through the
 # AccessKit tree. Version-locked to egui/eframe 0.34. No `snapshot` feature (we inspect the
 # PNGs rather than diff goldens) and no `eframe` feature, which would flip `eframe/wgpu` and

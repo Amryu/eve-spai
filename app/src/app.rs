@@ -308,7 +308,7 @@ pub(crate) use char_rings::*;
 mod alert_engine;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
-pub(crate) mod wh_layout;
+pub(crate) use spai_ui::wh_layout;
 pub(crate) mod wh_share_ui;
 pub(crate) use alert_engine::*;
 #[cfg(test)]
@@ -7972,24 +7972,7 @@ fn activity_color(v: u32, scale: f32) -> egui::Color32 {
     egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30)
 }
 
-pub(crate) fn security_color(security: f64) -> egui::Color32 {
-    const COLORS: [(u8, u8, u8); 11] = [
-        (0xB0, 0x3A, 0x9A),
-        (0xD7, 0x30, 0x00),
-        (0xF0, 0x48, 0x00),
-        (0xF0, 0x60, 0x00),
-        (0xD7, 0x77, 0x00),
-        (0xEF, 0xEF, 0x00),
-        (0x8F, 0xEF, 0x2F),
-        (0x00, 0xF0, 0x00),
-        (0x00, 0xEF, 0x47),
-        (0x48, 0xF0, 0xC0),
-        (0x2F, 0xEF, 0xEF),
-    ];
-    let idx = (security * 10.0).round().clamp(0.0, 10.0) as usize;
-    let (r, g, b) = COLORS[idx];
-    egui::Color32::from_rgb(r, g, b)
-}
+pub(crate) use spai_ui::colors::security_color;
 
 fn security_badge(security: f64) -> egui::RichText {
     let sec = (security * 10.0).round() / 10.0;
