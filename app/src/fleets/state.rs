@@ -109,6 +109,19 @@ pub struct Draft {
     pub configured: Configured,
 }
 
+/// Who is named in which role, whatever the order and whether the server has stored them yet.
+fn same_snowflakes(a: &[crate::fleets::model::Snowflake], b: &[crate::fleets::model::Snowflake]) -> bool {
+    let key = |s: &crate::fleets::model::Snowflake| {
+        let who = if s.character_id != 0 { s.character_id.to_string() } else { s.character_name.to_lowercase() };
+        (who, u8::from(s.kind))
+    };
+    let mut a: Vec<_> = a.iter().map(key).collect();
+    let mut b: Vec<_> = b.iter().map(key).collect();
+    a.sort();
+    b.sort();
+    a == b
+}
+
 /// What the tracking sidebar has changed but not yet sent.
 ///
 /// Seeded from the fleet each time a different one opens, and left alone after that: a poll landing
@@ -153,7 +166,16 @@ impl FleetEdit {
             || self.logi != f.logi_channel_id
             || self.boost != f.boost_channel_id
             || self.tags != f.tag_ids.iter().copied().collect()
-            || self.snowflakes != f.snowflakes
+            || !same_snowflakes(&self.snowflakes, &f.snowflakes)
+    }
+
+    /// After a save the server hands the snowflakes back with ids of its own, maybe in another
+    /// order: the same people in the same roles are no change, and the edit takes the stored ones
+    /// so the next save refers to them.
+    pub fn settle(&mut self, f: &Fleet) {
+        if self.of.as_ref() == Some(&f.id) && self.snowflakes != f.snowflakes && same_snowflakes(&self.snowflakes, &f.snowflakes) {
+            self.snowflakes = f.snowflakes.clone();
+        }
     }
 
     /// Whether every pending change is one a closed fleet still takes.
@@ -171,7 +193,7 @@ impl FleetEdit {
 
     /// Which halves of the record an edit touches, for the permission each needs.
     pub fn record_changes(&self, f: &Fleet) -> (bool, bool) {
-        (self.tags != f.tag_ids.iter().copied().collect(), self.snowflakes != f.snowflakes)
+        (self.tags != f.tag_ids.iter().copied().collect(), !same_snowflakes(&self.snowflakes, &f.snowflakes))
     }
 
     /// The fleet as the edit would leave it.
@@ -995,7 +1017,15 @@ mod tests {
         };
         e.snowflakes.push(added.clone());
         assert!(e.differs(&fleet));
-        assert_eq!(e.applied(&fleet).snowflakes, vec![was, added]);
+        assert_eq!(e.applied(&fleet).snowflakes, vec![was.clone(), added.clone()]);
+
+        // Saved: the server stored the backseat under an id of its own and lists it first.
+        let stored = Snowflake { id: 9, ..added };
+        let saved = Fleet { snowflakes: vec![stored.clone(), was.clone()], ..fleet };
+        assert!(!e.differs(&saved), "the same people in the same roles are no change");
+        assert_eq!(e.record_changes(&saved), (false, false));
+        e.settle(&saved);
+        assert_eq!(e.snowflakes, vec![stored, was], "the next save refers to what the server stored");
     }
 
     /// A closed fleet takes corrections to its record, its tags and snowflakes, and nothing that
