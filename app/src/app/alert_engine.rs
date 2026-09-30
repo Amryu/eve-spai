@@ -373,7 +373,7 @@ impl AlertEngine {
         let sev_rules = &cfg.severity;
         let only_undocked = cfg.only_undocked;
         let disabled = &cfg.disabled;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let locations: std::collections::HashMap<String, (i64, bool)> =
             player.lock().unwrap().locations.clone();
 

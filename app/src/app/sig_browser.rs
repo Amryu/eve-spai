@@ -50,6 +50,7 @@ pub(crate) enum SigSort {
     Id,
     Group,
     Info,
+    Found,
     #[default]
     Seen,
     Who,
@@ -79,6 +80,27 @@ pub(crate) struct SigBrowser {
 
 pub(crate) fn is_anomaly(s: &SystemSig) -> bool {
     s.kind.to_lowercase().contains("anomal")
+}
+
+/// When a signature was first seen, as a clock time, with the weekday when not today: how long a
+/// hole has been open starts there.
+pub(crate) fn found_at(at: i64, now: i64, eve: bool) -> String {
+    let (Some(t), Some(n)) = (chrono::DateTime::from_timestamp(at, 0), chrono::DateTime::from_timestamp(now, 0)) else { return String::new() };
+    let fmt = |t: chrono::NaiveDateTime, n: chrono::NaiveDateTime| {
+        if t.date() == n.date() { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
+    };
+    if eve {
+        fmt(t.naive_utc(), n.naive_utc())
+    } else {
+        fmt(t.with_timezone(&chrono::Local).naive_local(), n.with_timezone(&chrono::Local).naive_local())
+    }
+}
+
+/// [`found_at`] for a hover: the date too, and how long ago.
+pub(crate) fn found_hover(at: i64, now: i64, eve: bool) -> String {
+    let Some(t) = chrono::DateTime::from_timestamp(at, 0) else { return String::new() };
+    let when = if eve { format!("{} EVE", t.format("%Y-%m-%d %H:%M")) } else { t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string() };
+    format!("First seen {when}, {} ago", super::human_ago(now - at))
 }
 
 /// Unseen in a paste for over a day: yellow; over three: grey.
@@ -232,7 +254,7 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         self.sig_browser_reload();
         ui.ctx().request_repaint_after(RELOAD);
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let geo = self.systems.clone();
         let name_of = |id: i64| geo.as_ref().and_then(|g| g.info_of(id)).map_or_else(|| format!("#{id}"), |i| i.name.clone());
 
@@ -288,6 +310,7 @@ impl SpaiApp {
                 SigSort::Id => a.2.sig.cmp(&b.2.sig),
                 SigSort::Group => a.2.group.cmp(&b.2.group),
                 SigSort::Info => a.2.name.cmp(&b.2.name),
+                SigSort::Found => a.2.added_at.cmp(&b.2.added_at),
                 SigSort::Seen => a.2.updated_at.cmp(&b.2.updated_at),
                 SigSort::Who => a.2.who.cmp(&b.2.who),
             };
@@ -393,10 +416,17 @@ impl SpaiApp {
         let seen_w = fit("Seen", "88m");
         let by_w = fit("By", "Mmmmmmmm");
         let visuals = ui.visuals().clone();
+        let eve = self.settings.use_eve_time;
         // Delete and edit, as wide as the map's side panel gives them, then the scrollbar's room.
         let actions_w = 76.0 + scrollbar_gutter(ui);
+        // The first sighting's age too, where the window has room for it.
+        let others = 24.0 + sys_w + id_w + group_w + 60.0 + seen_w + actions_w + ui.spacing().item_spacing.x * 8.0;
+        let found_age = ui.available_width() >= others + by_w + fit("Found", "Wed 88:88 (88h)");
+        // Narrower still, who pasted it moves into the Seen column's hover.
+        let show_by = ui.available_width() >= others + by_w + fit("Found", "Wed 88:88");
+        let found_w = fit("Found", if found_age { "Wed 88:88 (88h)" } else { "Wed 88:88" });
         {
-            egui_extras::TableBuilder::new(ui)
+            let mut table = egui_extras::TableBuilder::new(ui)
                 .id_salt("sig_browser_table")
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -405,8 +435,12 @@ impl SpaiApp {
                 .column(egui_extras::Column::exact(id_w))
                 .column(egui_extras::Column::exact(group_w).clip(true))
                 .column(egui_extras::Column::remainder().at_least(60.0).clip(true))
-                .column(egui_extras::Column::exact(seen_w))
-                .column(egui_extras::Column::exact(by_w).clip(true))
+                .column(egui_extras::Column::exact(found_w))
+                .column(egui_extras::Column::exact(seen_w));
+            if show_by {
+                table = table.column(egui_extras::Column::exact(by_w).clip(true));
+            }
+            table
                 .column(egui_extras::Column::exact(actions_w))
                 .header(row_h, |mut h| {
                     h.col(|_| {});
@@ -415,9 +449,13 @@ impl SpaiApp {
                         ("Id", SigSort::Id),
                         ("Group", SigSort::Group),
                         ("Info", SigSort::Info),
+                        ("Found", SigSort::Found),
                         ("Seen", SigSort::Seen),
                         ("By", SigSort::Who),
-                    ] {
+                    ]
+                    .into_iter()
+                    .filter(|(l, _)| show_by || *l != "By")
+                    {
                         h.col(|ui| {
                             let arrow = match (sort == key, self.sig_browser.descending) {
                                 (true, true) => format!(" {}", icon::CARET_DOWN),
@@ -459,17 +497,20 @@ impl SpaiApp {
                                     };
                                     ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate());
                                 });
+                                row.col(|_| {});
                                 row.col(|ui| {
                                     let t = egui::RichText::new(super::human_ago(now - last)).strong();
                                     ui.label(match age_color(&visuals, now, *last) {
                                         Some(c) => t.color(c),
                                         None => t,
                                     })
-                                    .on_hover_text(format!("Latest paste {} ago", super::human_ago(now - last)));
+                                    .on_hover_text(format!("Latest paste {} ago by {who}", super::human_ago(now - last)));
                                 });
-                                row.col(|ui| {
-                                    ui.add(egui::Label::new(egui::RichText::new(who).weak()).truncate());
-                                });
+                                if show_by {
+                                    row.col(|ui| {
+                                        ui.add(egui::Label::new(egui::RichText::new(who).weak()).truncate());
+                                    });
+                                }
                                 row.col(|_| {});
                                 return;
                             }
@@ -519,12 +560,22 @@ impl SpaiApp {
                             ui.add(egui::Label::new(tint(egui::RichText::new(info))).truncate());
                         });
                         row.col(|ui| {
-                            ui.label(tint(egui::RichText::new(super::human_ago(now - s.updated_at))))
-                                .on_hover_text(format!("Last seen in a paste {} ago; first added {} ago", super::human_ago(now - s.updated_at), super::human_ago(now - s.added_at)));
+                            let found = if found_age {
+                                format!("{} ({})", found_at(s.added_at, now, eve), super::human_ago(now - s.added_at))
+                            } else {
+                                found_at(s.added_at, now, eve)
+                            };
+                            ui.label(tint(egui::RichText::new(found))).on_hover_text(found_hover(s.added_at, now, eve));
                         });
                         row.col(|ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(&s.who).weak()).truncate());
+                            ui.label(tint(egui::RichText::new(super::human_ago(now - s.updated_at))))
+                                .on_hover_text(format!("Last seen in a paste {} ago by {}", super::human_ago(now - s.updated_at), s.who));
                         });
+                        if show_by {
+                            row.col(|ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(&s.who).weak()).truncate());
+                            });
+                        }
                         row.col(|ui| {
                             if ui.small_button(icon::X).on_hover_text("Delete").clicked() {
                                 delete = vec![key.clone()];

@@ -988,7 +988,7 @@ impl SpaiApp {
             });
         if send && !t.channel.trim().is_empty() && !t.reporter.trim().is_empty() && !t.text.trim().is_empty() {
             let msg = crate::chatlog::ChatMessage {
-                timestamp: chrono::Utc::now().format("%Y.%m.%d %H:%M:%S").to_string(),
+                timestamp: crate::clock::utc().format("%Y.%m.%d %H:%M:%S").to_string(),
                 author: t.reporter.trim().to_owned(),
                 text: t.text.trim().to_owned(),
             };

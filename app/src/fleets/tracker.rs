@@ -39,7 +39,7 @@ fn run(id: &FleetId, name: &str, t: &Tracking) {
 
 fn record(id: &FleetId, name: &str, t: &Tracking) {
     let Ok(store) = crate::store::Store::open() else { return };
-    let now = || chrono::Utc::now().timestamp();
+    let now = || crate::clock::utc().timestamp();
     store.prune_fleet_moves(now());
     store.fleet_track_seen(&id.0, name, now());
     let prior = store.fleet_moves(&id.0);

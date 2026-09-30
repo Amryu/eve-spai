@@ -430,7 +430,7 @@ impl SpaiApp {
         let avoid_sov: std::collections::HashSet<String> =
             self.travel_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
         let camped: std::collections::HashSet<i64> = if self.travel_avoid_camps {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             self.camps
                 .lock()
                 .unwrap()
@@ -502,7 +502,7 @@ impl SpaiApp {
                     if !newsys.is_empty() {
                         let much_longer = n.len() > p.len() + 4;
                         self.travel_changed = newsys;
-                        self.travel_changed_at = Some(chrono::Utc::now().timestamp());
+                        self.travel_changed_at = Some(crate::clock::utc().timestamp());
                         if much_longer {
                             crate::sound::play_prio(&self.settings.sound_reroute, 2, self.settings.sound_reroute_volume);
                         }

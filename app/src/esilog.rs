@@ -22,7 +22,7 @@ fn record_at(log_path: &Path, context: &str, detail: &str) {
     }
     rotate_if_needed(log_path);
 
-    let ts = chrono::Utc::now().to_rfc3339();
+    let ts = crate::clock::utc().to_rfc3339();
     let mut block = String::with_capacity(DETAIL_CAP + 128);
     block.push_str(&ts);
     block.push(' ');
@@ -73,7 +73,7 @@ mod tests {
         let uniq = format!(
             "eve-spai-esilog-test-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            crate::clock::system().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         );
         p.push(uniq);
         std::fs::create_dir_all(&p).unwrap();

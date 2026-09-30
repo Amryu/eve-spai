@@ -62,7 +62,7 @@ pub fn shared() -> SharedWeb {
 }
 
 fn new_gen() -> u64 {
-    std::time::SystemTime::now()
+    crate::clock::system()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1)

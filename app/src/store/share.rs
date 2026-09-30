@@ -97,7 +97,7 @@ impl Store {
         if fields.is_empty() {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         for f in fields {
             let _ = self.conn.execute(
                 "INSERT INTO wh_field_clock (uid, field, at, by) VALUES (?1, ?2, ?3, 0)
@@ -118,9 +118,10 @@ impl Store {
         if !self.sharing() {
             return;
         }
+        let found: std::collections::HashMap<String, i64> = self.sigs_in(system_id, false).into_iter().map(|s| (s.sig, s.added_at)).collect();
         let rows: Vec<SigRow> = scan
             .iter()
-            .map(|s| SigRow { sig: s.id.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: at })
+            .map(|s| SigRow { sig: s.id.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: found.get(&s.id).copied().unwrap_or(at) })
             .collect();
         let payload = serde_json::json!({ "system_id": system_id, "rows": rows, "drop_missing": drop_missing, "at": at });
         self.queue("sigs", None, Some(&payload.to_string()), None);
@@ -160,7 +161,7 @@ impl Store {
     fn queue_to(&self, kind: &str, uid: Option<&str>, payload: Option<&str>, group: &str) {
         let _ = self.conn.execute(
             "INSERT OR IGNORE INTO share_outbox (kind, uid, payload, created_at, group_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![kind, uid, payload, chrono::Utc::now().timestamp(), group],
+            params![kind, uid, payload, crate::clock::utc().timestamp(), group],
         );
     }
 
@@ -193,7 +194,7 @@ impl Store {
             .prepare("SELECT uid FROM wormholes WHERE dead = 0 AND source != 'eve-scout' AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1)")
             .and_then(|mut st| st.query_map(params![group], |r| r.get(0)).map(|rows| rows.flatten().collect()))
             .unwrap_or_default();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         for uid in uids {
             if let Some(w) = self.wormhole_where("uid=?1", params![uid]) {
                 for f in hole::changed(None, &w) {
@@ -371,7 +372,9 @@ impl Store {
                 .filter(fits)
                 .map(|r| ScanSig { id: r.sig.clone(), kind: r.kind.clone(), group: r.group.clone(), name: r.name.clone() })
                 .collect();
-            self.merge_system_sigs(system_id, &scan, who, at, drop_missing, Some(group));
+            // A member's clock may be off, but not by a month.
+            let found = rows.iter().filter(fits).filter(|r| r.added_at > at - 30 * 86_400).map(|r| (r.sig.clone(), r.added_at)).collect();
+            self.merge_sigs_found(system_id, &scan, who, at, drop_missing, Some(group), &found);
         });
     }
 
@@ -395,7 +398,7 @@ impl Store {
             holes = live.iter().filter_map(|u| self.share_hole_state(u, g.char_id)).collect();
             dead = self.strings(
                 "SELECT uid FROM wormholes WHERE dead = 1 AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1) AND updated_at > ?2",
-                params![g.id, chrono::Utc::now().timestamp() - 3 * 86_400],
+                params![g.id, crate::clock::utc().timestamp() - 3 * 86_400],
             );
         }
         if g.prefs.send_sigs {
@@ -459,7 +462,7 @@ impl Store {
                 role_code(g.role),
                 g.epoch,
                 g.cursor,
-                chrono::Utc::now().timestamp(),
+                crate::clock::utc().timestamp(),
                 p.send_holes,
                 p.send_sigs,
                 p.recv_holes,
@@ -556,7 +559,7 @@ impl Store {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO share_applied (op_id, group_id, at) VALUES (?1, ?2, ?3)",
-                params![op_id, group, chrono::Utc::now().timestamp()],
+                params![op_id, group, crate::clock::utc().timestamp()],
             )
             .is_ok_and(|n| n == 1)
     }
@@ -572,7 +575,7 @@ impl Store {
     pub fn share_invite_save(&self, id: &str, group: &str, secret: &crate::share::crypto::Key, for_char: i64, for_name: &str) {
         let _ = self.conn.execute(
             "INSERT OR REPLACE INTO share_invites (id, group_id, secret, for_char, for_name, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, group, crate::share::crypto::b64(secret), for_char, for_name, chrono::Utc::now().timestamp()],
+            params![id, group, crate::share::crypto::b64(secret), for_char, for_name, crate::clock::utc().timestamp()],
         );
     }
 
@@ -644,6 +647,35 @@ mod tests {
             updated_at: 100,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_signature_keeps_when_it_was_first_seen_across_pastes_and_members() {
+        use crate::wormholes::ScanSig;
+        let sys = 31_000_200;
+        let scan = [ScanSig { id: "ABC-123".into(), kind: "Cosmic Signature".into(), group: "Wormhole".into(), name: String::new() }];
+        let a = Store::mem();
+        joined(&a);
+        a.merge_system_sigs(sys, &scan, "me", 1_000, false, None);
+        a.merge_system_sigs(sys, &scan, "me", 5_000, false, None);
+        assert_eq!(a.system_sigs(sys)[0].added_at, 1_000);
+        let mut sent = outbox(&a).into_iter().filter_map(|(_, o)| match o {
+            Outgoing::Sigs { rows, .. } => Some(rows),
+            _ => None,
+        });
+        let rows = sent.next_back().expect("queued");
+        assert_eq!(rows[0].added_at, 1_000, "a re-paste sends the first sighting, not its own time");
+
+        let b = Store::mem();
+        joined(&b);
+        b.share_apply_sigs(sys, &rows, false, 5_000, "Pilot 1", "g");
+        assert_eq!(b.system_sigs(sys)[0].added_at, 1_000);
+        let later = vec![SigRow { added_at: 3_000, ..rows[0].clone() }];
+        b.share_apply_sigs(sys, &later, false, 6_000, "Pilot 1", "g");
+        assert_eq!(b.system_sigs(sys)[0].added_at, 1_000, "the earliest sighting stays");
+        let bogus = vec![SigRow { added_at: 1, ..rows[0].clone() }];
+        b.share_apply_sigs(sys, &bogus, false, 90 * 86_400, "Pilot 1", "g");
+        assert_eq!(b.system_sigs(sys)[0].added_at, 1_000, "a clock a month off is ignored");
     }
 
     #[test]

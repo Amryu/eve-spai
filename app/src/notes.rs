@@ -1005,7 +1005,7 @@ pub fn new_id() -> String {
     let mut b = [0u8; 16];
     if getrandom::getrandom(&mut b).is_err() {
         // No OS randomness is not worth failing an edit over; the clock is unique enough per machine.
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let t = crate::clock::system().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         b.copy_from_slice(&t.as_nanos().to_le_bytes());
     }
     b[6] = (b[6] & 0x0f) | 0x40;

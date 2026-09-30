@@ -67,7 +67,7 @@ pub fn spawn(
         let mut names: HashMap<i64, String> = HashMap::new();
         let store = crate::store::Store::open().ok();
         let mut buffer: Vec<Engagement> = match &store {
-            Some(s) => s.load_engagements(chrono::Utc::now().timestamp() - ENGAGEMENT_TTL),
+            Some(s) => s.load_engagements(crate::clock::utc().timestamp() - ENGAGEMENT_TTL),
             None => Vec::new(),
         };
         let mut buffer_ids: std::collections::HashSet<i64> =
@@ -133,7 +133,7 @@ pub fn spawn(
                                 changed = true;
                             }
                             if anchored {
-                                let now = chrono::Utc::now().timestamp();
+                                let now = crate::clock::utc().timestamp();
                                 if should_backfill(&mut backfilled, sys_id, now) {
                                     spawn_backfill(
                                         client.clone(),
@@ -232,7 +232,7 @@ pub fn spawn(
 
             let incoming: Vec<Engagement> = std::mem::take(&mut *backfill_out.lock().unwrap());
             if !incoming.is_empty() {
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::clock::utc().timestamp();
                 for eng in incoming {
                     let fresh = now - eng.time <= ENGAGEMENT_TTL && !buffer_ids.contains(&eng.kill_id);
                     if fresh {
@@ -259,7 +259,7 @@ pub fn spawn(
             {
                 dirty = false;
                 last_cluster = std::time::Instant::now();
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::clock::utc().timestamp();
                 let before = buffer.len();
                 buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
                 if buffer.len() != before {
@@ -429,7 +429,7 @@ fn poll(
     {
         let t = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
             .map(|dt| dt.timestamp())
-            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+            .unwrap_or_else(|_| crate::clock::utc().timestamp());
         let on_gate = pkg.killmail.victim.position.as_ref().is_some_and(|p| {
             systems.on_gate(pkg.killmail.solar_system_id, [p.x, p.y, p.z])
         });
@@ -468,7 +468,7 @@ fn poll(
     if let Some(store) = store {
         let at = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
             .map(|dt| dt.timestamp())
-            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+            .unwrap_or_else(|_| crate::clock::utc().timestamp());
         let mut found = {
             let members = fleet_members.lock().unwrap();
             fleet_kills_of(&pkg.killmail, pkg.kill_id, pkg.zkb.total_value, at, &members)
@@ -509,7 +509,7 @@ fn poll(
     };
     let intel_jumps = nearest_intel_jumps(systems, intel, kill_sys, CANDIDATE_JUMPS);
     let wh_recent = crate::geo::is_wormhole_system(kill_sys) && {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         recent_wh.lock().unwrap().get(&kill_sys).is_some_and(|&t| now - t <= RECENT_WH_SECS)
     };
     let anchored = custom_match
@@ -549,7 +549,7 @@ fn build_engagement(
     let sys = systems.info_of(km.solar_system_id)?;
     let time = chrono::DateTime::parse_from_rfc3339(&km.killmail_time)
         .map(|dt| dt.timestamp())
-        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+        .unwrap_or_else(|_| crate::clock::utc().timestamp());
     resolve_names(client, km, names);
     let attackers = attackers_of(km, names, ship_ids);
     if attackers.is_empty() {
@@ -766,7 +766,7 @@ pub fn fleet_history_kills(
 ) -> Vec<crate::store::FleetKill> {
     /// Room either side of the run, for fights that began at formup or ran past the close.
     const PAD: i64 = 600;
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let back = now - (start - PAD);
     if back > ZKILL_LOOKBACK || pilots.is_empty() {
         return Vec::new();

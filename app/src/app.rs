@@ -1267,7 +1267,7 @@ impl SpaiApp {
         }
         let sightings: crate::intel::SharedSightings = Default::default();
         let revivals: crate::watcher::SharedRevivals = {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             let mut map = std::collections::HashMap::new();
             if let Some(s) = &store {
                 for (name, until) in s.load_revivals() {
@@ -1296,7 +1296,7 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
             recent_alerts.clone(),
-            chrono::Utc::now().timestamp(),
+            crate::clock::utc().timestamp(),
             alert_shared.clone(),
             ctx.clone(),
             overlay_stdin.clone(),
@@ -1561,7 +1561,7 @@ impl SpaiApp {
             ping_rules_open: false,
             ping_rule_editing: None,
             mention_input: String::new(),
-            session_start: chrono::Utc::now().timestamp(),
+            session_start: crate::clock::utc().timestamp(),
             eve_focused,
             eve_focus_checked: None,
             ship_index: None,
@@ -1914,7 +1914,7 @@ impl SpaiApp {
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_unlocked(&self) -> bool {
         self.settings.fleet_unlock.as_ref().is_some_and(|u| {
-                chrono::Utc::now().timestamp() - u.verified_at < crate::fleets::unlock::GRACE_SECS
+                crate::clock::utc().timestamp() - u.verified_at < crate::fleets::unlock::GRACE_SECS
             })
     }
 
@@ -2159,7 +2159,7 @@ impl SpaiApp {
         let player_sys = self.player_system();
         let rings = self.char_rings();
         let bridges = self.settings.intel_count_bridges;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let kc = self.kill_cache.clone();
         let affil = self.affiliations.clone();
         let mut click: Option<IntelClick> = None;
@@ -2606,7 +2606,7 @@ impl SpaiApp {
         let remember = matches!(op, crate::notes::NotesOp::SetEntry { .. });
         let systems = self.systems.clone();
         let name = move |id: i64| systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone());
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let mut next = (*self.notes).clone();
         let applied = match next.apply(op, now, &name) {
             Ok(a) => a,
@@ -2755,7 +2755,7 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             crate::ipc::OverlayToMain::SaveRoute { mut route } => {
-                route.saved_at = chrono::Utc::now().timestamp();
+                route.saved_at = crate::clock::utc().timestamp();
                 self.settings.saved_map_routes.retain(|r| r.name != route.name);
                 self.settings.saved_map_routes.push(route);
                 self.needs_save = true;
@@ -3319,7 +3319,7 @@ impl SpaiApp {
             if i % 2 == 1 {
                 h.warn = Some(crate::web::route::HopWarning {
                     sev: 3,
-                    at: chrono::Utc::now().timestamp() - 240,
+                    at: crate::clock::utc().timestamp() - 240,
                     kills: 6,
                     pods: 2,
                 });
@@ -3438,10 +3438,11 @@ impl SpaiApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
+                        let now = crate::clock::utc();
                         let clock = if self.settings.use_eve_time {
-                            format!("{} EVE", chrono::Utc::now().format("%H:%M"))
+                            format!("{} EVE", now.format("%H:%M"))
                         } else {
-                            format!("{} Local", chrono::Local::now().format("%H:%M"))
+                            format!("{} Local", now.with_timezone(&chrono::Local).format("%H:%M"))
                         };
                         ui.label(egui::RichText::new(clock).monospace());
                         ui.separator();
@@ -3490,9 +3491,9 @@ impl SpaiApp {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{:.0} fps   CPU {:.0}%   RAM {}",
-                                self.frame_ms.max(0.1).recip() * 1000.0,
-                                self.proc_monitor.cpu_percent,
-                                self.proc_monitor.rss_human(),
+                                if cfg!(test) { 60.0 } else { self.frame_ms.max(0.1).recip() * 1000.0 },
+                                if cfg!(test) { 0.0 } else { self.proc_monitor.cpu_percent },
+                                if cfg!(test) { "100 MB".to_owned() } else { self.proc_monitor.rss_human() },
                             ))
                             .weak(),
                         )
@@ -3626,7 +3627,7 @@ impl SpaiApp {
                 (Ok(d), Some(at)) => format!(
                     "Measured at {}, {}s ago",
                     d.display(),
-                    (chrono::Utc::now().timestamp() - at).max(0)
+                    (crate::clock::utc().timestamp() - at).max(0)
                 ),
                 (Ok(d), None) => format!("Measured at {}", d.display()),
                 _ => "Could not resolve the data folder".to_owned(),
@@ -3875,7 +3876,7 @@ impl eframe::App for SpaiApp {
         let cur_sys = self.player_system().unwrap_or(0);
         self.player_sys_shared.store(cur_sys, std::sync::atomic::Ordering::Relaxed);
         if crate::geo::is_wormhole_system(cur_sys) {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             let mut wh = self.recent_wh.lock().unwrap();
             wh.insert(cur_sys, now);
             wh.retain(|_, t| now - *t <= 600);
@@ -6187,7 +6188,7 @@ pub(crate) fn battle_detail(
         if span_min > 0 {
             ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let remaining = br_core::battle::BATTLE_WINDOW_SECS - (now - b.end);
         if remaining > 0 {
             let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
@@ -6740,7 +6741,7 @@ pub(crate) fn rescue_chat_feed(
         ui.label(egui::RichText::new("(no messages)").weak());
         return None;
     }
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let mut out = None;
     let mut prev_sender: Option<String> = None;
     let mut prev_time = 0i64;
@@ -7073,7 +7074,7 @@ pub(crate) fn render_ping(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let ago = human_ago(now - p.timestamp());
     let frame = if highlight {
         egui::Frame::group(ui.style())
@@ -7220,7 +7221,7 @@ fn warn_button(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) -> bool {
 fn warn_text(w: &crate::web::route::HopWarning) -> Option<(String, egui::Color32)> {
     let mut bits: Vec<String> = Vec::new();
     if w.sev >= crate::web::route::WARN_SEVERITY {
-        let age = fmt_age((chrono::Utc::now().timestamp() - w.at).max(0));
+        let age = fmt_age((crate::clock::utc().timestamp() - w.at).max(0));
         bits.push(format!("{} intel {age}", if w.sev >= 3 { "Critical" } else { "Danger" }));
     }
     // No "this hour": the figures are hourly and every row saying so is three words of the same

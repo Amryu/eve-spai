@@ -300,7 +300,7 @@ impl SpaiApp {
                             egui::RichText::new(format!(
                                 "{}  {}",
                                 fmt_age(
-                                    (chrono::Utc::now().timestamp() - r.received).max(0)
+                                    (crate::clock::utc().timestamp() - r.received).max(0)
                                 ),
                                 r.text.trim()
                             ))
@@ -348,7 +348,7 @@ impl SpaiApp {
             &st.reports,
             &self.settings.severity,
             self.settings.intel_ttl_secs,
-            chrono::Utc::now().timestamp(),
+            crate::clock::utc().timestamp(),
             &kills,
         )
     }

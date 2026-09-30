@@ -343,7 +343,7 @@ pub(crate) fn build_alert_viewport_cb(
         let mut compact_toggle: Option<bool> = None;
         let mut tip: Option<(egui::Pos2, PendingTip)> = None;
         let mut clicks: Vec<IntelClick> = Vec::new();
-        let now_ts = chrono::Utc::now().timestamp();
+        let now_ts = crate::clock::utc().timestamp();
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()

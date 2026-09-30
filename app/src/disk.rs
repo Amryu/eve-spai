@@ -213,7 +213,7 @@ pub(crate) fn spawn_monitor(ctx: egui::Context) {
                 // A failed syscall must not degrade the app: no reading means no opinion.
                 let Some(free) = probe() else { continue };
                 AVAILABLE.store(free, Ordering::Relaxed);
-                MEASURED_AT.store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
+                MEASURED_AT.store(crate::clock::utc().timestamp() as u64, Ordering::Relaxed);
 
                 let current = level();
                 let want = classify(free, current);

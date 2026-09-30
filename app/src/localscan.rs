@@ -277,7 +277,7 @@ pub fn parse_stats(id: i64, name: &str, v: &serde_json::Value) -> Summary {
     }
     let birthday = info.get("birthday").and_then(|b| b.as_str()).and_then(ts);
     let recent_metrics = v.pointer("/rankings/recent/all/metrics").unwrap_or(&empty_obj);
-    let young = birthday.is_some_and(|b| chrono::Utc::now().timestamp() - b < 180 * 86_400);
+    let young = birthday.is_some_and(|b| crate::clock::utc().timestamp() - b < 180 * 86_400);
     let big_label = tags.iter().any(|(t, _)| matches!(t, Tag::Capital | Tag::Super | Tag::Titan | Tag::Cyno | Tag::Bait));
     if young && int(recent_metrics, "shipsLost") > int(recent_metrics, "shipsDestroyed") && !big_label {
         tags.push((Tag::Rookie, 0));
@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn a_young_losing_pilot_is_a_rookie_unless_a_big_label_applies() {
-        let born = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let born = (crate::clock::utc() - chrono::Duration::days(30)).to_rfc3339();
         let mut v = serde_json::json!({
             "info": {"birthday": born},
             "rankings": {"recent": {"all": {"metrics": {"shipsDestroyed": 1, "shipsLost": 4}}}}

@@ -360,7 +360,7 @@ pub fn detail() -> super::Detail {
         dest_wh_type: None,
         size: Some(crate::wormholes::ShipSize::Large),
         is_drifter: false,
-        reported_at: chrono::Utc::now().timestamp() - 3600,
+        reported_at: crate::clock::utc().timestamp() - 3600,
         explicit_expiry: None,
         source: crate::wormholes::Source::Manual,
         updated_at: 0,

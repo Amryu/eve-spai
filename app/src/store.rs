@@ -1214,7 +1214,7 @@ pub(crate) fn should_vacuum(
 /// window is minimised to tray and the firehose keeps writing.
 pub fn run_maintenance(level: crate::disk::Level) {
     let Ok(store) = Store::open() else { return };
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
 
     let deleted = store.prune_engagements(now - ENGAGEMENT_RETENTION_SECS);
     store.prune_kill_intel(now - 3600);

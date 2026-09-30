@@ -330,7 +330,7 @@ pub struct JabberState {
 fn is_muted(muted: &std::collections::BTreeMap<String, i64>, key: &str) -> bool {
     muted
         .get(key)
-        .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
+        .is_some_and(|&until| until == i64::MAX || crate::clock::utc().timestamp() < until)
 }
 
 fn fire_arrival_notification(
@@ -1005,7 +1005,7 @@ async fn session(
                         },
                     };
                     if sent {
-                        let now = chrono::Utc::now().timestamp();
+                        let now = crate::clock::utc().timestamp();
                         push_msg(
                             &state,
                             &to,
@@ -1140,7 +1140,7 @@ fn handle_event(
             | Event::Message(_)
             | Event::Iq(_)
     );
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     match event {
         Event::Online => {
             eprintln!("[jabber] online");

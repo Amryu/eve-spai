@@ -86,7 +86,7 @@ pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
     let graph = d.graph.as_deref()?;
     let info = graph.info_of(id)?;
     let status = d.status.get(&id);
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
 
     let mut gates: Vec<(i64, String)> = graph
         .neighbors_gates_only(id)

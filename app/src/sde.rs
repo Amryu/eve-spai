@@ -412,7 +412,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
-    let version = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let version = crate::clock::utc().format("%Y-%m-%d").to_string();
     tx.execute(
         "INSERT OR REPLACE INTO sde_meta(key, value) VALUES('version', ?1)",
         params![version],

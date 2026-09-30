@@ -559,7 +559,7 @@ impl SpaiApp {
         // Pruned where they are read rather than on a timer: a route through a scanned hole is wrong
         // long before it is a day old, and a day is the point at which keeping it is worse than
         // losing it.
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         d.saved_routes = self
             .settings
             .saved_map_routes

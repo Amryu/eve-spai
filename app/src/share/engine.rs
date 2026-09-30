@@ -502,7 +502,7 @@ impl Engine<'_> {
                 s.requests.remove(&g.id);
             }
         }
-        s.synced_at.insert(g.id.clone(), chrono::Utc::now().timestamp());
+        s.synced_at.insert(g.id.clone(), crate::clock::utc().timestamp());
         if changed {
             s.generation += 1;
         }
@@ -610,7 +610,7 @@ impl Engine<'_> {
                         Some(hole) => Op::Hole { hole },
                         None => continue,
                     },
-                    Outgoing::Dead(uid) => Op::HoleDead { uid: uid.clone(), at: chrono::Utc::now().timestamp() },
+                    Outgoing::Dead(uid) => Op::HoleDead { uid: uid.clone(), at: crate::clock::utc().timestamp() },
                     Outgoing::Sigs { system_id, rows, drop_missing, at } => {
                         Op::Sigs { system_id: *system_id, rows: rows.clone(), drop_missing: *drop_missing, at: *at }
                     }
@@ -673,7 +673,7 @@ mod end_to_end {
 
     fn session(secret: &str, char_id: i64, name: &str) -> String {
         let enc = |v: serde_json::Value| crypto::b64(v.to_string().as_bytes());
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let head = enc(serde_json::json!({ "alg": "HS256", "typ": "JWT" }));
         let body = enc(serde_json::json!({
             "iss": "eve-spai.com", "aud": "eve-spai.com", "sub": char_id.to_string(), "name": name, "iat": now, "exp": now + 3600,
@@ -744,7 +744,7 @@ mod end_to_end {
     #[ignore = "needs a running server (SPAI_SHARE_TEST_BASE, SPAI_SHARE_TEST_SECRET)"]
     fn share_end_to_end() {
         let (Ok(base), Ok(secret)) = (std::env::var("SPAI_SHARE_TEST_BASE"), std::env::var("SPAI_SHARE_TEST_SECRET")) else { return };
-        let owner_id = 91_000_000 + (chrono::Utc::now().timestamp() % 100_000) * 3;
+        let owner_id = 91_000_000 + (crate::clock::utc().timestamp() % 100_000) * 3;
         let joiner_id = owner_id + 1;
         let a = Install::new(&base, &secret);
         let b = Install::new(&base, &secret);
@@ -754,8 +754,8 @@ mod end_to_end {
             dest: DestClass::Highsec,
             dest_system_id: Some(30_000_142),
             source: Source::Manual,
-            reported_at: chrono::Utc::now().timestamp(),
-            updated_at: chrono::Utc::now().timestamp(),
+            reported_at: crate::clock::utc().timestamp(),
+            updated_at: crate::clock::utc().timestamp(),
             ..Default::default()
         };
         a.store.upsert_wormhole(&hole("ABC"));
@@ -850,7 +850,7 @@ mod end_to_end {
         let vg = v.store.share_groups().into_iter().find(|x| x.id == g).unwrap();
         assert_eq!(vg.role, Role::Viewer);
         let key = v.store.share_key(&g, vg.epoch).unwrap();
-        let op = Op::HoleDead { uid: "nope".into(), at: chrono::Utc::now().timestamp() };
+        let op = Op::HoleDead { uid: "nope".into(), at: crate::clock::utc().timestamp() };
         let env = ops::seal_op(&op, &g, vg.epoch, &key, viewer_id, v.device);
         let refused = (v.clients)(viewer_id).unwrap().post_op(&g, &env.op_id, vg.epoch, false, &serde_json::to_string(&env).unwrap());
         assert!(refused.is_err(), "the server takes no data from a viewer");

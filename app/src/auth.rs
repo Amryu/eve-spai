@@ -114,7 +114,7 @@ fn run(
     let token = exchange_code(client_id, &code, &verifier)?;
     let claims = decode_claims(&token.access_token)?;
     let id = claims.character_id()?;
-    let expires_at = chrono::Utc::now().timestamp() + token.expires_in;
+    let expires_at = crate::clock::utc().timestamp() + token.expires_in;
 
     store_character(
         db_path,

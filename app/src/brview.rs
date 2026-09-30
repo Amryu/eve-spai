@@ -317,7 +317,7 @@ pub fn ui_signature(
 const DEMAND_GRACE_MS: u64 = 2_000;
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
+    crate::clock::system()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)

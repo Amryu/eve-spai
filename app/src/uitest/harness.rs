@@ -5,7 +5,7 @@ pub(crate) fn shot_dir() -> std::path::PathBuf {
     out_dir("uishots")
 }
 
-fn out_dir(name: &str) -> std::path::PathBuf {
+pub(crate) fn out_dir(name: &str) -> std::path::PathBuf {
     let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join(name);
     std::fs::create_dir_all(&d).expect("create output dir");
     d
@@ -221,9 +221,15 @@ fn software_gpu_only() {
 
 /// `gpu` attaches the wgpu test renderer, which is only needed for [`shot`]. It renders on lavapipe
 /// alone (see [`software_gpu_only`]) and never creates a surface, so no display is involved.
+/// Screenshots are taken at this moment (2026-06-01 12:00 UTC), so two renders match.
+pub(crate) const FROZEN_AT: i64 = 1_780_315_200;
+
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
     assert_no_live_profile();
+    if gpu {
+        crate::clock::freeze(Some(FROZEN_AT));
+    }
     let pointer = scene.pointer;
     let mut builder = Harness::builder().with_size(scene.size).with_pixels_per_point(scene.density).with_max_steps(8);
     if gpu {

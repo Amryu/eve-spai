@@ -269,7 +269,7 @@ impl HttpBackend {
     }
 
     fn identity(&self) -> Result<(Session, Vec<AccountCharacter>)> {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         {
             let c = self.cached.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(c) = c.as_ref().filter(|c| now - c.at < SESSION_TTL_SECS) {

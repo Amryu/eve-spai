@@ -12,6 +12,7 @@ mod affiliation;
 mod alliances;
 mod ansiblex;
 mod camp;
+mod clock;
 mod charsettings;
 mod chatlog;
 mod copysettings;

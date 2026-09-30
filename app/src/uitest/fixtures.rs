@@ -8,8 +8,11 @@ use crate::intel::{DetectedShip, DetectedSystem, IntelReport};
 /// but the alert and ping windows read the wall clock themselves, so a fixed epoch would render
 /// every age as several thousand hours. Snapshots are inspected, never diffed, so drift is fine.
 pub(crate) fn now() -> i64 {
+    if let Some(t) = crate::clock::frozen() {
+        return t;
+    }
     static NOW: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
-    *NOW.get_or_init(|| chrono::Utc::now().timestamp())
+    *NOW.get_or_init(|| crate::clock::utc().timestamp())
 }
 
 pub(crate) fn systems() -> Arc<Systems> {

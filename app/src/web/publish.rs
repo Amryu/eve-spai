@@ -296,7 +296,7 @@ fn map_live(
     facts: &super::facts::UiFacts,
 ) -> MapLive {
     let ttl = facts.intel_ttl_secs;
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let mut per_system: HashMap<i64, (u8, i64)> = HashMap::new();
     for c in cards {
         if ttl > 0 && now - c.report.received > ttl {

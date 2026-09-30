@@ -234,7 +234,7 @@ impl SpaiApp {
             self.fleet_map = FleetMapView { fleet: input.fleet_id.clone(), route, ..Default::default() };
         }
         let events = self.fleet_map_events(&input.fleet_id);
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let first = events.first().map(|e| e.at);
         let last = match events.last() {
             Some(e) if input.live => e.at.max(now),
@@ -1008,7 +1008,7 @@ impl SpaiApp {
             match done {
                 Ok((url, key)) => {
                     if let Some(store) = &self.store {
-                        store.set_fleet_br(fleet_id, &url, &key, chrono::Utc::now().timestamp());
+                        store.set_fleet_br(fleet_id, &url, &key, crate::clock::utc().timestamp());
                         store.kv_set(&format!("fleet_br_kills:{fleet_id}"), &b.pending_from.to_string());
                     }
                     b.url = Some(url);
@@ -1199,7 +1199,7 @@ impl SpaiApp {
         if !self.fleet_tracks_resumed {
             self.fleet_tracks_resumed = true;
             if let Some(store) = &self.store {
-                let since = chrono::Utc::now().timestamp() - RESUME_WITHIN;
+                let since = crate::clock::utc().timestamp() - RESUME_WITHIN;
                 want.extend(
                     store
                         .fleet_tracks_open(since)

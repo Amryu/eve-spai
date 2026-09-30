@@ -352,7 +352,7 @@ impl SpaiApp {
     /// was on screen.
     fn notify_group(&mut self, ui: &mut egui::Ui, g: &Group) -> bool {
         use egui_phosphor::regular as icon;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let mut open = false;
         ui.add_space(4.0);
         ui.horizontal(|ui| {

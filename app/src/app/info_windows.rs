@@ -6,7 +6,7 @@ impl SpaiApp {
     pub(crate) fn system_info_body(&mut self, ui: &mut egui::Ui, id: i64, docked: bool) -> SystemInfoOut {
         let mut nav: Option<i64> = None;
         let mut show_on_map = false;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
 
         let ttl = self.settings.intel_ttl_secs;
         let player_sys = self.player_system();

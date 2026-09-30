@@ -767,7 +767,7 @@ mod msg_row_tests {
         let msg = |who: &str, body: &str, out: bool, t: i64| {
             (who.to_owned(), body.to_owned(), out, t)
         };
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let feeds: Vec<Vec<(String, String, bool, i64)>> = vec![
             Vec::new(),
             vec![msg("Ödin", "Ö ドクトリン", false, now)],
@@ -1989,7 +1989,7 @@ mod jabber_rescue_room_tests {
         let mut a = SpaiApp::build(&ctx, true);
         a.settings.fc_rescue_enabled = rescue_on;
         a.settings.fleet_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
         (ctx, a)
     }
 
@@ -2409,7 +2409,7 @@ mod jabber_force_join_tests {
         let (_ctx, mut a) = app();
         a.settings.fc_rescue_enabled = true;
         a.settings.fleet_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
         let rescue = a.jabber_rescue_rooms();
         a.jabber_reconcile(&frame(&[]));
         // Held open by the pin, and already recorded, so a later join is not "first sight".
@@ -2872,7 +2872,7 @@ mod wh_routing_tests {
     const THERA: i64 = 31_000_005;
 
     fn hole(uid: &str, a: i64, b: i64) -> Wormhole {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: now, explicit_expiry: Some(now + 20 * 3600), ..Default::default() }
     }
 
@@ -2881,7 +2881,7 @@ mod wh_routing_tests {
         let mut a = SpaiApp::build(&ctx, true);
         a.systems = Some(crate::uitest::fixtures::systems());
         a.settings.wh_route_kinds = HoleKind::ALL.iter().map(|k| k.code().to_owned()).collect();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         a.wh_cache = vec![
             Wormhole { life: Some(Life::Under1h), explicit_expiry: Some(now + 1800), ..hole("a", 30_004_759, THERA) },
             Wormhole { mass: Some(Mass::Critical), ..hole("b", 30_003_704, 31_000_002) },

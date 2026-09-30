@@ -69,7 +69,7 @@ impl Store {
                  account_id = excluded.account_id,
                  source     = excluded.source,
                  seen_at    = excluded.seen_at",
-            params![character_id, account_id, source.as_str(), chrono::Utc::now().timestamp()],
+            params![character_id, account_id, source.as_str(), crate::clock::utc().timestamp()],
         );
     }
 
@@ -104,7 +104,7 @@ impl Store {
             "INSERT INTO char_names (character_id, name, fetched_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(character_id) DO UPDATE SET name = excluded.name,
                                                      fetched_at = excluded.fetched_at",
-            params![character_id, name, chrono::Utc::now().timestamp()],
+            params![character_id, name, crate::clock::utc().timestamp()],
         );
     }
 

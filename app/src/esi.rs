@@ -77,7 +77,7 @@ pub fn spawn_location_poller(
             std::thread::sleep(POLL);
             let active = player.lock().unwrap().active_name.clone();
             let Ok(store) = Store::open() else { continue };
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             let mut fresh: std::collections::HashMap<String, (i64, bool)> =
                 std::collections::HashMap::new();
             for ch in store.list_characters() {
@@ -670,7 +670,7 @@ pub(crate) fn access_token(
     id: i64,
     expires_hint: Option<i64>,
 ) -> Option<String> {
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let expires_at = expires_hint.or_else(|| store.expiry(id)).unwrap_or(0);
     // 60s margin so a token doesn't expire mid-request.
     if expires_at - 60 > now {
@@ -684,7 +684,7 @@ pub(crate) fn access_token(
     // character, then re-check: another thread may have just refreshed while we waited.
     let lock = refresh_lock(id);
     let _guard = lock.lock().unwrap();
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     if store.expiry(id).is_some_and(|exp| exp - 60 > now) {
         if let Some(access) = store.access(id).filter(|a| !a.is_empty()) {
             return Some(access);
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn fresh_cached_token_is_reused_without_refresh() {
         let conn = scratch();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         conn.put(7, "cached", now + 3600);
         assert_eq!(access_token(&conn, "client", 7, None).as_deref(), Some("cached"));
         assert_eq!(access_token(&conn, "client", 7, Some(0)).as_deref(), Some("cached"));

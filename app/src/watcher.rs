@@ -119,7 +119,7 @@ fn scan(
             .unwrap_or(0);
         if !tails.contains_key(&path)
             && mtime != 0
-            && chrono::Utc::now().timestamp() - mtime > 12 * 3600
+            && crate::clock::utc().timestamp() - mtime > 12 * 3600
         {
             continue;
         }
@@ -171,7 +171,7 @@ fn scan(
             .clone();
 
         if !messages.is_empty() {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             let (known, denied) = {
                 let c = pilots.lock().unwrap();
                 (c.confirmed(), c.denied())
@@ -334,7 +334,7 @@ fn demote_pass(
     db: Option<&crate::store::Store>,
     ctx: &egui::Context,
 ) {
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     let feed_names = {
         let st = state.lock().unwrap();
         feed_pilot_names(&st.reports)
@@ -439,7 +439,7 @@ mod tests {
         let state: Mutex<IntelState> = Default::default();
         let inject: SharedInject = Default::default();
         let msg = |text: &str| crate::chatlog::ChatMessage {
-            timestamp: chrono::Utc::now().format("%Y.%m.%d %H:%M:%S").to_string(),
+            timestamp: crate::clock::utc().format("%Y.%m.%d %H:%M:%S").to_string(),
             author: "Test Scout".into(),
             text: text.into(),
         };

@@ -501,7 +501,7 @@ impl SpaiApp {
     }
 
     fn lookup_table_ui(&mut self, ui: &mut egui::Ui) {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let (mut rows, orgs) = {
             let t = self.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
             let rows: Vec<(String, Row)> = self

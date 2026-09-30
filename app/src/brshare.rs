@@ -112,7 +112,7 @@ pub fn mint_session(eve_bearer: &str) -> Result<Session, ShareError> {
 }
 
 pub fn valid_session(store_path: &Path, char_id: i64) -> Option<String> {
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     if let SessionAction::Reuse(token) =
         session_action(session_cache().lock().unwrap().get(&char_id), now)
     {
@@ -503,7 +503,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "eve-spai-brshare-test-{}-{}",
             std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            crate::clock::utc().timestamp_nanos_opt().unwrap_or(0)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scratch.db");
@@ -515,7 +515,7 @@ mod tests {
                  CREATE TABLE characters (id INTEGER PRIMARY KEY, name TEXT, expires_at INTEGER, scopes TEXT);",
             )
             .unwrap();
-            let future = chrono::Utc::now().timestamp() + 3600;
+            let future = crate::clock::utc().timestamp() + 3600;
             conn.execute(
                 "INSERT INTO characters (id, name, expires_at, scopes) VALUES (?1, 'Scratch', ?2, '')",
                 params![char_id, future],

@@ -150,7 +150,7 @@ impl SpaiApp {
         self.settings
             .jabber_muted
             .get(key)
-            .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
+            .is_some_and(|&until| until == i64::MAX || crate::clock::utc().timestamp() < until)
     }
 
     /// What a conversation's rows and title bar mark it with.
@@ -168,7 +168,7 @@ impl SpaiApp {
     /// Mute for a while or for good, and which sounds the conversation makes. The contents of a
     /// menu: the title bar's bell and the sidebar's right-click menu both show it.
     pub(crate) fn jabber_notify_menu(&mut self, ui: &mut egui::Ui, key: &str) {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         match self.settings.jabber_muted.get(key).copied().filter(|_| self.jabber_is_muted(key)) {
             Some(until) => {
                 let text = if until == i64::MAX {
@@ -2969,7 +2969,7 @@ impl SpaiApp {
             .show_viewport(ui, |ui, viewport| {
 
                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::clock::utc().timestamp();
                 let names = self.mention_names();
                 ui.spacing_mut().item_spacing.y = 1.0;
                 let row_w = ui.available_width();

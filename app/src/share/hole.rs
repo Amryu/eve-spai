@@ -100,7 +100,7 @@ pub fn state(w: &Wormhole, clocks: &HashMap<String, Clock>, me: i64) -> HoleStat
 /// The latest change time taken from another member: an hour ahead of this clock. A change
 /// dated further out would win every later edit of its field until then.
 pub fn latest_believable() -> i64 {
-    chrono::Utc::now().timestamp() + 3600
+    crate::clock::utc().timestamp() + 3600
 }
 
 /// Whether another member's value for `field` is one an honest client could send.
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_change_dated_far_ahead_or_out_of_bounds_is_not_taken() {
-        let ahead = chrono::Utc::now().timestamp() + 2 * 3600;
+        let ahead = crate::clock::utc().timestamp() + 2 * 3600;
         let a = hole(&[("mass", "critical".into(), ahead, 1), ("life", "lt4h".into(), 20, 1)]);
         let mut w = Wormhole::default();
         let mut clocks = HashMap::new();

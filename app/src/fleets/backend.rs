@@ -92,7 +92,7 @@ pub struct CallRecord {
 
 impl CallRecord {
     pub(crate) fn new(method: Method, path: impl Into<String>, body: Option<serde_json::Value>) -> Self {
-        Self { at: chrono::Utc::now().timestamp(), method, path: path.into(), body }
+        Self { at: crate::clock::utc().timestamp(), method, path: path.into(), body }
     }
 
     /// The one-line form the journal shows.

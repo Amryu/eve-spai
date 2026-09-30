@@ -23,7 +23,7 @@ impl SpaiApp {
             return;
         }
         self.kills_loaded = true;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let cutoff = now - 3600;
         let (saved, details) = {
             let Some(store) = &self.store else { return };
@@ -69,7 +69,7 @@ impl SpaiApp {
         };
         // Historical kills, not live events. Pre-mark them alerted so the recency gate in the
         // alert daemon doesn't pop them into the alert window at startup.
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
             for id in ids {
@@ -87,7 +87,7 @@ impl SpaiApp {
         let usable = self.wh_usable();
         let was = self.route_destination.and_then(|d| self.ingame_hole_waypoints(d));
         if let Some(store) = &self.store {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             store.prune_wormholes(now);
             let mut whs = store.wormholes();
             // Saved before these were refused, or by an older version.
@@ -117,7 +117,7 @@ impl SpaiApp {
     /// The holes routes may use: known far side, and a kind the routing settings allow.
     pub(crate) fn wh_adjacency(&self) -> std::collections::HashMap<i64, Vec<i64>> {
         let mut adj: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let limits = self.wh_route_limits();
         let allowed = |w: &crate::wormholes::Wormhole, b: i64| {
             let kind_ok = self.systems.as_ref().is_none_or(|g| {
@@ -243,7 +243,7 @@ impl SpaiApp {
     /// Which holes routes may use changed: the plan in hand may go through one no longer allowed.
     pub(crate) fn wh_routing_changed(&mut self) {
         self.needs_save = true;
-        self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, chrono::Utc::now().timestamp()));
+        self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, crate::clock::utc().timestamp()));
         self.wh_routes_refresh(None);
     }
 
@@ -649,7 +649,7 @@ impl SpaiApp {
             self.wh_graph_view(ui);
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         struct Row {
             id: i64,
             sys_id: i64,
@@ -976,7 +976,18 @@ impl SpaiApp {
                 self.wh_form = Some(form);
                 return;
             }
-            let now = chrono::Utc::now().timestamp();
+            match (self.wh_complete_sig(Some(sys), &form.sig, form.id), self.wh_complete_sig(dest_id, &form.dest_sig, form.id)) {
+                (Err(why), _) | (_, Err(why)) => {
+                    form.error = Some(why);
+                    self.wh_form = Some(form);
+                    return;
+                }
+                (Ok(here), Ok(there)) => {
+                    form.sig = here.unwrap_or(form.sig);
+                    form.dest_sig = there.unwrap_or(form.dest_sig);
+                }
+            }
+            let now = crate::clock::utc().timestamp();
             let hole = crate::whdata::hole_type(&form.wh_type);
             let dest = match (dest_id, hole.map(|h| h.dest)) {
                 (Some(d), _) => geo.as_ref().map_or(crate::wormholes::DestClass::Unknown, |g| dest_class(g, d)),
@@ -1052,6 +1063,32 @@ impl SpaiApp {
         if open {
             self.wh_form = Some(form);
         }
+    }
+
+    /// Full signature ids known in `system`: scanned there, or on another hole's end there.
+    pub(crate) fn wh_known_sigs(&self, system: i64, except: Option<i64>) -> Vec<String> {
+        let Some(store) = &self.store else { return Vec::new() };
+        let now = crate::clock::utc().timestamp();
+        let mut v: Vec<String> = store.sigs_in(system, false).into_iter().map(|s| s.sig).collect();
+        for w in store.wormholes().into_iter().filter(|w| Some(w.id) != except && !w.is_expired(now)) {
+            if w.system_id == system {
+                v.extend(w.signature);
+            }
+            if w.dest_system_id == Some(system) {
+                v.extend(w.dest_signature);
+            }
+        }
+        v
+    }
+
+    /// A typed signature in `system` made whole from what is known there. `Ok(None)` keeps what was
+    /// typed; `Err` says which ids it could be, as a partial code must name one.
+    pub(crate) fn wh_complete_sig(&self, system: Option<i64>, typed: &str, except: Option<i64>) -> Result<Option<String>, String> {
+        let Some(system) = system else { return Ok(None) };
+        crate::wormholes::complete_sig(typed, &self.wh_known_sigs(system, except)).map_err(|ids| {
+            let name = self.systems.as_ref().and_then(|g| g.info_of(system)).map(|i| i.name.clone()).unwrap_or_default();
+            format!("{} in {name} could be {}. Type more of it.", typed.trim().to_uppercase(), ids.join(" or "))
+        })
     }
 
     /// What is known about one system as a place for wormholes. Returns whether it was closed.

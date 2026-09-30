@@ -31,7 +31,7 @@ impl AffilCache {
     }
 
     pub fn insert_resolved(&mut self, id: i64, affil: Affil) {
-        self.fetched_at.insert(id, chrono::Utc::now().timestamp());
+        self.fetched_at.insert(id, crate::clock::utc().timestamp());
         self.map.insert(id, affil);
     }
 
@@ -39,7 +39,7 @@ impl AffilCache {
         if id <= 0 {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let fresh = self.fetched_at.get(&id).is_some_and(|&t| now - t < AFFIL_TTL);
         if !fresh {
             self.pending.insert(id);
@@ -118,7 +118,7 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                     c.pending.extend(retry);
                     // Not asked again until the TTL is up, or every frame that wants it would
                     // queue it once more.
-                    let now = chrono::Utc::now().timestamp();
+                    let now = crate::clock::utc().timestamp();
                     for id in refused {
                         c.fetched_at.insert(id, now);
                     }
@@ -133,7 +133,7 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                         }
                     }
                     let names = crate::universe::lookup_names(&ids);
-                    let now = chrono::Utc::now().timestamp();
+                    let now = crate::clock::utc().timestamp();
                     let mut c = cache.lock().unwrap();
                     for a in list {
                         c.fetched_at.insert(a.character_id, now);

@@ -32,7 +32,7 @@ impl ActivityCache {
         if char_id <= 0 {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let fresh = self.fetched_at.get(&char_id).is_some_and(|&t| now - t < ACTIVITY_TTL);
         if !fresh {
             self.pending.insert(char_id);
@@ -114,7 +114,7 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
             }
             let mut got = false;
             for id in batch {
-                let now_dt = chrono::Utc::now();
+                let now_dt = crate::clock::utc();
                 let url = format!("https://zkillboard.com/api/stats/characterID/{id}/");
                 let active_recent = match crate::zkapi::fetch(&client, &url) {
                     // Rate limited or unreachable: asked again later, never taken as inactive.
@@ -142,7 +142,7 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
                 let last_corp_change =
                     known_corp.or_else(|| fetch_last_corp_change(&client, id));
 
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::clock::utc().timestamp();
                 {
                     let mut c = cache.lock().unwrap();
                     c.map.insert(id, Activity { active_recent, birthday, last_corp_change });

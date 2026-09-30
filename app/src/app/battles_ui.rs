@@ -226,7 +226,7 @@ impl SpaiApp {
                 .map(|s| {
                     // Bounded by the retention window: the whole table can be hundreds of MB of
                     // JSON, and the prune that bounds it runs asynchronously.
-                    let since = chrono::Utc::now().timestamp()
+                    let since = crate::clock::utc().timestamp()
                         - crate::store::ENGAGEMENT_RETENTION_SECS;
                     let engs = s.load_engagements(since);
                     let overrides = s.load_battle_overrides();
@@ -532,7 +532,7 @@ impl SpaiApp {
 
     pub(crate) fn battle_review_panels(&mut self, ctx: &egui::Context) {
         use egui_phosphor::regular as icon;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
 
         if self.battle_excluded_open {
             let list = self.store.as_ref().map(|s| s.list_excluded_engagements()).unwrap_or_default();
@@ -766,7 +766,7 @@ impl SpaiApp {
             return Ok(None);
         };
         let overrides = self.battle_overrides.lock().unwrap().clone();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
         let doc = br_core::battle::BattleReportDoc::new(
@@ -910,7 +910,7 @@ impl SpaiApp {
 
     pub(crate) fn build_share_doc(&self, battle: &br_core::battle::Battle) -> br_core::battle::BattleReportDoc {
         let overrides = self.battle_overrides.lock().unwrap().clone();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
         br_core::battle::BattleReportDoc::new(
@@ -1386,7 +1386,7 @@ impl SpaiApp {
             return;
         }
         ui.add_space(10.0);
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
 
         // A battle asked for from elsewhere (a fleet's report) that is still being fetched and

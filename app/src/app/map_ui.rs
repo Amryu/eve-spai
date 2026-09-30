@@ -51,7 +51,7 @@ impl SpaiApp {
     pub(crate) fn intel_highlights(&self) -> std::collections::HashMap<i64, (crate::settings::Severity, i64)> {
         let sev_rules = self.settings.severity.clone();
         let highlight_for = self.map_highlight_window();
-        let lit_since = chrono::Utc::now().timestamp();
+        let lit_since = crate::clock::utc().timestamp();
         let st = self.intel_state.lock().unwrap();
         let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
             std::collections::HashMap::new();
@@ -636,7 +636,7 @@ impl SpaiApp {
             }
         }
         if ov.camps {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             if now - self.camped_cache_at >= 2 {
                 self.camped_cache = self.camps.lock().unwrap().camped(now);
                 self.camped_cache_at = now;
@@ -1228,7 +1228,7 @@ impl SpaiApp {
                 mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26));
             }
             if let Some(at) = self.travel_changed_at {
-                if chrono::Utc::now().timestamp() - at < 6 {
+                if crate::clock::utc().timestamp() - at < 6 {
                     let blink = ((ui.input(|i| i.time) * 5.0).sin() * 0.5 + 0.5) as f32;
                     let warn = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
                     for id in &self.travel_changed {
@@ -1464,7 +1464,7 @@ impl SpaiApp {
             }
         }
 
-        let now_ts = chrono::Utc::now().timestamp();
+        let now_ts = crate::clock::utc().timestamp();
         let intel_map = self.intel_highlights();
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
@@ -1754,7 +1754,7 @@ impl SpaiApp {
 
         let sev_rules = self.settings.severity.clone();
         let highlight_for = self.map_highlight_window();
-        let lit_since = chrono::Utc::now().timestamp();
+        let lit_since = crate::clock::utc().timestamp();
         let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
             let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
@@ -1777,7 +1777,7 @@ impl SpaiApp {
             }
             m
         };
-        let now_ts = chrono::Utc::now().timestamp();
+        let now_ts = crate::clock::utc().timestamp();
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
 
@@ -2092,7 +2092,7 @@ impl SpaiApp {
     }
 
     pub(crate) fn wormhole_section(&self, ui: &mut egui::Ui, id: i64) {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let holes: Vec<&crate::wormholes::Wormhole> = self
             .wh_cache
             .iter()
@@ -2132,7 +2132,7 @@ impl SpaiApp {
     }
 
     pub(crate) fn camp_line(&self, ui: &mut egui::Ui, id: i64) {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         if let Some(c) = self.camps.lock().unwrap().camp(id, now) {
             let mins = (c.age / 60).max(0);
             let (label, col) = match c.level {
@@ -2199,7 +2199,7 @@ impl SpaiApp {
         drop(status);
         self.camp_line(ui, id);
 
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let state = self.intel_state.lock().unwrap();
         let green = crate::theme::chip::CLEAR;
         let mut shown = 0;

@@ -108,7 +108,7 @@ impl SpaiApp {
         });
         ui.add_space(6.0);
 
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let query = self.intel_query.trim().to_lowercase();
         let type_filter = self.intel_type;
         let max_jumps = self.intel_max_jumps;
@@ -318,7 +318,7 @@ impl SpaiApp {
             ui.label(egui::RichText::new("No intel in range.").weak());
             return None;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let player_sys = self.player_system();
         let rings = self.char_rings();
         let systems = self.systems.clone();
@@ -369,7 +369,7 @@ impl SpaiApp {
 
     pub(crate) fn dashboard_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let player_sys = self.player_system();
         let systems = self.systems.clone();
         let bridges = self.settings.intel_count_bridges;
@@ -575,7 +575,7 @@ impl SpaiApp {
             return;
         }
 
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let mut remove: Option<i64> = None;
         let mut toggle: Option<(String, bool)> = None;
         let mut reauth = false;
@@ -722,7 +722,7 @@ impl SpaiApp {
             ui.label(egui::RichText::new(msg).weak());
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let mut clicked: Option<crate::lookup::Loss> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for l in list {
@@ -789,7 +789,7 @@ impl SpaiApp {
 
     pub(crate) fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
         use egui_phosphor::regular as icon;
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let id = report.character_id;
         let profile = report.profile.as_ref();
 

@@ -132,7 +132,7 @@ impl SpaiApp {
         let last = status.synced_at.values().copied().min();
         let names: Vec<&str> = self.wh_share.groups.iter().map(|g| g.name.as_str()).collect();
         let text = match last {
-            Some(t) => format!("{}  Synced {} ago", icon::CLOUD_CHECK, human_ago(chrono::Utc::now().timestamp() - t)),
+            Some(t) => format!("{}  Synced {} ago", icon::CLOUD_CHECK, human_ago(crate::clock::utc().timestamp() - t)),
             None => format!("{}  Not synced yet", icon::CLOUD_CHECK),
         };
         Some((text, weak, format!("Sharing with {}", names.join(", "))))
@@ -255,7 +255,7 @@ impl SpaiApp {
                     }
                     for g in &groups {
                         let has_key = self.store.as_ref().is_some_and(|s| s.share_key(&g.id, g.epoch).is_some());
-                        let synced = status.synced_at.get(&g.id).map(|t| format!(", synced {} ago", human_ago(chrono::Utc::now().timestamp() - t)));
+                        let synced = status.synced_at.get(&g.id).map(|t| format!(", synced {} ago", human_ago(crate::clock::utc().timestamp() - t)));
                         let title = if has_key {
                             format!("{}  ({}{})", g.name, g.role.label(), synced.unwrap_or_default())
                         } else {

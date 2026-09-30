@@ -45,7 +45,7 @@ impl SpaiApp {
             // First sight: start two minutes back, so restarting replays the ping that just landed
             // without replaying days of loaded history.
             if self.delve911_cursor == 0 {
-                self.delve911_cursor = chrono::Utc::now().timestamp() - 120;
+                self.delve911_cursor = crate::clock::utc().timestamp() - 120;
             }
             msgs.iter()
                 .filter(|m| m.time > self.delve911_cursor && !m.outgoing)
@@ -727,7 +727,7 @@ impl SpaiApp {
                         ui.label(egui::RichText::new("No delve911 pings yet").weak());
                         return;
                     }
-                    let now = chrono::Utc::now().timestamp();
+                    let now = crate::clock::utc().timestamp();
                     // Newest first: in a right-to-left layout the first widget lands furthest right.
                     for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
                         if ui
@@ -1315,7 +1315,7 @@ pub(crate) fn since_ping(secs: i64) -> String {
 /// Whether it drew anything, so a caller does not rule off an empty space.
 fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) -> bool {
     let Some(at) = r.selected_ping.and_then(|seq| r.ping_time(seq)) else { return false };
-    ping_timer_row(ui, chrono::Utc::now().timestamp() - at);
+    ping_timer_row(ui, crate::clock::utc().timestamp() - at);
     // A clock that only moves when something else redraws the window is not a clock.
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     ui.add_space(4.0);

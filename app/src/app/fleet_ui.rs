@@ -1318,7 +1318,7 @@ impl SpaiApp {
             match result {
                 Check::Qualified(group) => {
                     self.settings.fleet_unlock =
-                        Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: group });
+                        Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: group });
                     self.fleet_unlock_note = None;
                 }
                 Check::Unqualified(why) => {
@@ -1663,7 +1663,7 @@ impl SpaiApp {
                                 ui.label(
                                     egui::RichText::new(crate::app::eve_time_label(
                                         l.at,
-                                        chrono::Utc::now().timestamp(),
+                                        crate::clock::utc().timestamp(),
                                     ))
                                     .monospace()
                                     .weak(),
@@ -2542,7 +2542,7 @@ fn rows<T>(
         ui.label(egui::RichText::new("Nothing here.").weak());
         return;
     }
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::clock::utc().timestamp();
     for row in items {
         if fleet_row(ui, row, now) {
             *goto = Some(if row.closed_at.is_some() {
@@ -4805,7 +4805,7 @@ fn tracking_page(
     // arrives, and a pilot first seen in it was stamped with that same time, so measured against
     // it every offender stayed at zero, "just seen", until the dashboard pushed again.
     let off_doctrine_clock =
-        if read_only { None } else { Some(chrono::Utc::now().timestamp()) };
+        if read_only { None } else { Some(crate::clock::utc().timestamp()) };
     let mut off_doctrine = crate::fleets::doctrine::track_off_doctrine(
         &off_doctrine,
         &open.composition,
@@ -4838,7 +4838,7 @@ fn tracking_page(
                     .on_hover_text(format!("Closed {at}"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::clock::utc().timestamp();
                 if let Some(t) = crate::fleets::model::parse_iso(&open.fleet.started_at) {
                     let end = open
                         .fleet

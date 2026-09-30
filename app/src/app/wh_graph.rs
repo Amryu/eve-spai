@@ -1289,7 +1289,7 @@ impl SpaiApp {
             ui.label(egui::RichText::new("The system map is still loading.").weak());
             return;
         };
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let mut holes: Vec<Wormhole> = self.wh_graph_visible(now).into_iter().cloned().collect();
         // The side panel lists every hole of the selected system, drawn on the map or not.
         let all_holes = holes.clone();
@@ -2448,6 +2448,10 @@ impl SpaiApp {
                 let row_h = ui.spacing().interact_size.y + 4.0;
                 let text_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x;
                 let id_w = text_w("MMM-888");
+                let eve = self.settings.use_eve_time;
+                // As wide as the times shown: a weekday only for the ones not from today.
+                let found_head = egui::WidgetText::from(egui::RichText::new("Found").strong()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
+                let found_w = sigs.iter().map(|sg| text_w(&super::sig_browser::found_at(sg.added_at, now, eve))).fold(found_head, f32::max);
                 // The table takes one column gap more than it is given; in a resizable panel that
                 // grows the panel a little every frame until it settles. Give it one gap less.
                 let room = egui::vec2(ui.available_width() - ui.spacing().item_spacing.x, 0.0);
@@ -2460,13 +2464,14 @@ impl SpaiApp {
                     .vscroll(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(egui_extras::Column::exact(id_w))
+                    .column(egui_extras::Column::exact(found_w))
                     // Narrow enough for the panel as it is: pasting must never widen it.
                     .column(egui_extras::Column::remainder().at_least(40.0).clip(true))
                     // Room for remove and edit, whichever rows have them: measured, it drifts. Past
                     // them, room for the panel's scrollbar.
                     .column(egui_extras::Column::exact(76.0 + gutter))
                     .header(row_h, |mut header| {
-                        for h in ["Id", "Info", ""] {
+                        for h in ["Id", "Found", "Info", ""] {
                             header.col(|ui| {
                                 ui.label(egui::RichText::new(h).strong());
                             });
@@ -2490,6 +2495,14 @@ impl SpaiApp {
                                 sg.who,
                                 super::human_ago(now - sg.updated_at)
                             ));
+                        });
+                        row.col(|ui| {
+                            let t = egui::RichText::new(super::sig_browser::found_at(sg.added_at, now, eve));
+                            ui.label(match aged {
+                                Some(c) => t.color(c),
+                                None => t,
+                            })
+                            .on_hover_text(super::sig_browser::found_hover(sg.added_at, now, eve));
                         });
                         // A wormhole signature we know the far side of says where it goes.
                         let hole = sig_hole(&every, sel, &sg.sig);
@@ -2596,7 +2609,7 @@ impl SpaiApp {
                 .as_ref()
                 .map(|s| {
                     if !std::mem::replace(&mut self.wh_graph.sigs_pruned, true) {
-                        s.prune_system_sigs(chrono::Utc::now().timestamp() - 3 * 86_400);
+                        s.prune_system_sigs(crate::clock::utc().timestamp() - 3 * 86_400);
                     }
                     s.system_sigs(system)
                 })
@@ -2638,7 +2651,7 @@ impl SpaiApp {
     /// Returns what was linked, for the note.
     fn wh_probe_followup(&mut self, system: i64, scan: &[crate::wormholes::ScanSig], full: bool, who: &str) -> String {
         let Some(store) = self.store.as_ref() else { return String::new() };
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let holes: Vec<Wormhole> = store.wormholes().into_iter().filter(|w| !w.is_expired(now)).collect();
         let (gone, fill) = probe_effects(&holes, system, scan, full);
         let mut note = String::new();
@@ -2653,6 +2666,37 @@ impl SpaiApp {
                 store.write_wormhole(&w);
                 store.audit_wormhole(&w.uid, who, crate::wormholes::Source::Manual, &[("signature", sig.clone())]);
                 note = format!(", {sig} put on its hole");
+                self.wh_reloaded = None;
+            }
+        }
+        // A partial code typed before this scan: made whole now that one listed id fits it.
+        let claimed = |full: &str, id: i64| {
+            holes.iter().any(|o| {
+                o.id != id
+                    && ((o.system_id == system && o.signature.as_deref() == Some(full))
+                        || (o.dest_system_id == Some(system) && o.dest_signature.as_deref() == Some(full)))
+            })
+        };
+        for w in holes.iter().filter(|w| w.system_id == system || w.dest_system_id == Some(system)) {
+            let near = w.system_id == system;
+            let Some(typed) = (if near { &w.signature } else { &w.dest_signature }) else { continue };
+            if crate::wormholes::is_sig_id(typed) {
+                continue;
+            }
+            let Ok(Some(full)) = self.wh_complete_sig(Some(system), typed, Some(w.id)) else { continue };
+            if claimed(&full, w.id) {
+                continue;
+            }
+            if let Some(mut row) = store.wormhole_by_id(w.id) {
+                if near {
+                    row.signature = Some(full.clone());
+                } else {
+                    row.dest_signature = Some(full.clone());
+                }
+                row.updated_at = now;
+                store.write_wormhole(&row);
+                store.audit_wormhole(&row.uid, who, crate::wormholes::Source::Manual, &[("signature", full.clone())]);
+                note.push_str(&format!(", {typed} is {full}"));
                 self.wh_reloaded = None;
             }
         }

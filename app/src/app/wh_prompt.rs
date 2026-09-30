@@ -131,7 +131,7 @@ impl SpaiApp {
                     .unwrap_or_default(),
             );
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         self.wh_not_holes.retain(|_, t| now - *t < NOT_A_HOLE_FOR);
         for m in moves {
             let hull = |id: Option<i64>| id.and_then(|s| self.wh_hulls.as_ref()?.get(&s).cloned());
@@ -218,7 +218,7 @@ impl SpaiApp {
             geo.info_of(p.to).map(|i| crate::whdata::class_of(p.to, i.security, &i.region)),
             Some(crate::whdata::Class::Drifter(_))
         );
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let observed = (p.life.is_some() || p.mass.is_some()).then_some(now);
         // One type per hole, whichever side it was read on; K162 only means "not known".
         let here_type = known_type(&p.wh_type);
@@ -380,7 +380,7 @@ impl SpaiApp {
             }
             PromptAct::NotAHole => {
                 if let Some(p) = self.wh_pending.pop_front() {
-                    self.wh_not_holes.insert((p.from.min(p.to), p.from.max(p.to)), chrono::Utc::now().timestamp());
+                    self.wh_not_holes.insert((p.from.min(p.to), p.from.max(p.to)), crate::clock::utc().timestamp());
                 }
             }
             PromptAct::None => {}
@@ -395,6 +395,17 @@ impl SpaiApp {
             p.error = Some(why);
             self.wh_pending.push_front(p);
             return;
+        }
+        match (self.wh_complete_sig(Some(p.from), &p.sig_here, p.row), self.wh_complete_sig(Some(p.to), &p.sig_there, p.row)) {
+            (Err(why), _) | (_, Err(why)) => {
+                p.error = Some(why);
+                self.wh_pending.push_front(p);
+                return;
+            }
+            (Ok(here), Ok(there)) => {
+                p.sig_here = here.unwrap_or(p.sig_here);
+                p.sig_there = there.unwrap_or(p.sig_there);
+            }
         }
         let entry = self.wh_entry(geo, &p);
         let Some(store) = &self.store else { return };

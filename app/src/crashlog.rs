@@ -70,7 +70,7 @@ pub(crate) fn install(role: Role) {
             let free = crate::disk::available().map_or_else(|| "?".to_owned(), |b| b.to_string());
             let line = format!(
                 "{} v{} [{thread}] {loc}: {msg} free={free} level={:?}",
-                chrono::Utc::now().to_rfc3339(),
+                crate::clock::utc().to_rfc3339(),
                 env!("CARGO_PKG_VERSION"),
                 crate::disk::level(),
             );

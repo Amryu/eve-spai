@@ -170,7 +170,7 @@ impl Store {
 
     /// Records who said what about hole `uid`, one row per field.
     pub fn audit_wormhole(&self, uid: &str, who: &str, source: crate::wormholes::Source, changes: &[(&str, String)]) {
-        let at = chrono::Utc::now().timestamp();
+        let at = crate::clock::utc().timestamp();
         for (field, value) in changes {
             self.exec_historic(
                 "INSERT INTO wormhole_audit (uid, at, who, source, field, value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -236,6 +236,23 @@ impl Store {
         drop_missing: bool,
         origin: Option<&str>,
     ) -> (usize, usize, usize) {
+        self.merge_sigs_found(system_id, scan, who, now, drop_missing, origin, &Default::default())
+    }
+
+    /// [`Self::merge_system_sigs`] with when each signature was first seen elsewhere, by id: the
+    /// earlier of that and what is known here is kept.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn merge_sigs_found(
+        &self,
+        system_id: i64,
+        scan: &[crate::wormholes::ScanSig],
+        who: &str,
+        now: i64,
+        drop_missing: bool,
+        origin: Option<&str>,
+        found: &std::collections::HashMap<String, i64>,
+    ) -> (usize, usize, usize) {
+        let first = |id: &str| found.get(id).copied().filter(|t| *t > 0).map_or(now, |t| t.min(now));
         let old: std::collections::HashMap<String, SystemSig> = self.sigs_in(system_id, false).into_iter().map(|s| (s.sig.clone(), s)).collect();
         let (mut added, mut updated) = (0, 0);
         for s in scan {
@@ -247,15 +264,15 @@ impl Store {
                         updated += 1;
                     }
                     self.exec_historic(
-                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7, origin=?8 WHERE system_id=?1 AND sig=?2",
-                        params![system_id, s.id, s.kind, group, name, now, who, origin],
+                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7, origin=?8, added_at=MIN(added_at, ?9) WHERE system_id=?1 AND sig=?2",
+                        params![system_id, s.id, s.kind, group, name, now, who, origin, first(&s.id)],
                     );
                 }
                 None => {
                     added += 1;
                     self.exec_historic(
-                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)",
-                        params![system_id, s.id, s.kind, s.group, s.name, now, who, origin],
+                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8)",
+                        params![system_id, s.id, s.kind, s.group, s.name, now, who, origin, first(&s.id)],
                     );
                 }
             }

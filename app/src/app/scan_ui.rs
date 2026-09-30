@@ -85,7 +85,7 @@ impl SpaiApp {
         let avoid = self.route_avoid(false);
         let scanned = match (s.skip_hours, self.store.as_ref()) {
             (0, _) | (_, None) => HashSet::new(),
-            (h, Some(store)) => store.scanned_since(chrono::Utc::now().timestamp() - h as i64 * 3600),
+            (h, Some(store)) => store.scanned_since(crate::clock::utc().timestamp() - h as i64 * 3600),
         };
         let explo = self.scan_explo_area(graph);
         let mut out: Vec<(u32, i64)> = graph
@@ -148,7 +148,7 @@ impl SpaiApp {
         let (Some(&centre), Some(plan)) = (self.map_route_anchors.first(), self.scan_route.plan.clone()) else { return };
         let mut done: Vec<i64> = self.scan_route.done.iter().copied().collect();
         done.sort_unstable();
-        let saved = SavedScan { centre, plan, done, targets: self.scan_route.targets, at: chrono::Utc::now().timestamp() };
+        let saved = SavedScan { centre, plan, done, targets: self.scan_route.targets, at: crate::clock::utc().timestamp() };
         if let (Some(store), Ok(json)) = (self.store.as_ref(), serde_json::to_string(&saved)) {
             store.kv_set(SAVED_KEY, &json);
         }
@@ -267,7 +267,7 @@ impl SpaiApp {
                     left,
                     scouts.join(", "),
                     saved.done.len(),
-                    human_ago(chrono::Utc::now().timestamp() - saved.at)
+                    human_ago(crate::clock::utc().timestamp() - saved.at)
                 );
                 ui.add_space(4.0);
                 if ui.button(format!("{}  Resume the scan around {around}", icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text(hover).clicked() {

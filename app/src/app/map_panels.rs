@@ -693,7 +693,7 @@ impl SpaiApp {
             let mut open = true;
             let mut load: Option<crate::settings::SavedMapRoute> = None;
             let mut forget: Option<String> = None;
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::clock::utc().timestamp();
             let rows: Vec<crate::settings::SavedMapRoute> = self
                 .settings
                 .saved_map_routes

@@ -311,7 +311,7 @@ impl FleetState {
                     .filter(|o| o.fleet.id == id && o.fleet.closed_at.is_none())
                 {
                     open.composition = composition;
-                    open.at = chrono::Utc::now().timestamp();
+                    open.at = crate::clock::utc().timestamp();
                 }
             }
             Outcome::HubFleet(fleet) => {
@@ -922,7 +922,7 @@ fn open(backend: &dyn FleetBackend, id: &FleetId) -> Result<OpenFleet> {
         doctrine,
         fleet: fleet?,
         report: report?,
-        at: chrono::Utc::now().timestamp(),
+        at: crate::clock::utc().timestamp(),
     })
 }
 

@@ -100,7 +100,7 @@ impl SpoofBackend {
 impl SpoofData {
     /// A couple of fleets to look at, one strategic and one peacetime, plus some history.
     fn populate(&mut self) {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::clock::utc().timestamp();
         let strat = self.new_fleet("Home Defence", 46, vec![TagId(1), TagId(28)], now - 1_500);
         let pct = self.new_fleet("Evening roam", 116, vec![TagId(2), TagId(33)], now - 300);
         for id in [strat.clone(), pct.clone()] {
@@ -503,7 +503,7 @@ impl FleetBackend for SpoofBackend {
         self.work();
         let rec = self.write(calls::start(req), Perm::StartFleet)?;
         let mut d = self.lock();
-        let started = chrono::Utc::now().timestamp();
+        let started = crate::clock::utc().timestamp();
         let id = d.new_fleet(&req.form.name, req.form.setup_id, req.tag_ids.clone(), started);
         let formup = req
             .formup_location_id
@@ -536,7 +536,7 @@ impl FleetBackend for SpoofBackend {
             Action::Close => {
                 // Two reads' worth, which is what makes the app's re-read path testable.
                 d.stats_pending.insert(id.0.clone(), 2);
-                let closed = iso_z(chrono::Utc::now().timestamp());
+                let closed = iso_z(crate::clock::utc().timestamp());
                 if let Some(f) = d.fleets.iter_mut().find(|f| f.id == *id) {
                     f.closed_at = Some(closed);
                 }

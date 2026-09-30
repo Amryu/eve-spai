@@ -26,6 +26,7 @@
 //! opens it fills in.
 
 pub(crate) mod checks;
+mod diff;
 pub(crate) mod fixtures;
 pub(crate) mod harness;
 mod scenes;

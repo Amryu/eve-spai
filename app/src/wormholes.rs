@@ -423,6 +423,24 @@ pub(crate) fn is_sig_id(s: &str) -> bool {
     b.len() == 7 && b[..3].iter().all(u8::is_ascii_uppercase) && b[3] == b'-' && b[4..].iter().all(u8::is_ascii_digit)
 }
 
+/// A typed signature completed from those known in its system. `Ok(Some)` is the one full id that
+/// starts with it, `Ok(None)` is no match (keep what was typed), `Err` the several ids it could be.
+pub fn complete_sig(typed: &str, known: &[String]) -> Result<Option<String>, Vec<String>> {
+    let compact = |s: &str| s.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_uppercase();
+    let t = compact(typed);
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let mut hits: Vec<String> = known.iter().filter(|k| is_sig_id(k) && compact(k).starts_with(&t)).cloned().collect();
+    hits.sort();
+    hits.dedup();
+    match hits.len() {
+        0 => Ok(None),
+        1 => Ok(hits.pop()),
+        _ => Err(hits),
+    }
+}
+
 /// Every row of a probe scanner copy (select all, copy): id, kind, group, name, strength, distance.
 pub fn probe_scan(text: &str) -> Vec<ScanSig> {
     text.lines()
@@ -860,7 +878,7 @@ pub fn spawn_scout(ctx: egui::Context) {
         loop {
             if let Some(sigs) = fetch_scout(&client) {
                 if let Ok(store) = crate::store::Store::open() {
-                    let now = chrono::Utc::now().timestamp();
+                    let now = crate::clock::utc().timestamp();
                     let mut keep = std::collections::HashSet::new();
                     for s in &sigs {
                         if let Some(wh) = scout_to_wormhole(s, now) {
@@ -920,6 +938,16 @@ fn parse_rfc3339(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_partial_signature_completes_only_when_one_known_id_fits() {
+        let known: Vec<String> = ["ABC-123", "ABD-456", "XYZ-789", "junk"].map(String::from).to_vec();
+        assert_eq!(complete_sig("xyz", &known), Ok(Some("XYZ-789".into())));
+        assert_eq!(complete_sig("abc1", &known), Ok(Some("ABC-123".into())));
+        assert_eq!(complete_sig(" ABC-12 ", &known), Ok(Some("ABC-123".into())));
+        assert_eq!(complete_sig("AB", &known), Err(vec!["ABC-123".into(), "ABD-456".into()]));
+        assert_eq!(complete_sig("QQQ", &known), Ok(None));
+        assert_eq!(complete_sig("  ", &known), Ok(None));
+    }
 
     #[test]
     fn a_kind_of_space_reads_however_it_is_written() {
