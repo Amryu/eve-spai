@@ -1025,6 +1025,7 @@ impl SpaiApp {
                 }
                 if let Some(w) = self.popout_mut(id) {
                     w.geom_applied = true;
+                    w.pos_fix = super::alert_window::PosFix::new(pos);
                 }
             }
             let win = ChatWinKey::Popout(id);
@@ -1033,10 +1034,12 @@ impl SpaiApp {
             let mut geom: WinGeom = None;
             let mut rects: (Option<egui::Rect>, Option<egui::Rect>) = (None, None);
             let mut focused = false;
+            let mut pos_fix = self.popout(id).and_then(|w| w.pos_fix);
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(&vp_id),
                 builder,
                 |ctx, _class| {
+                    super::alert_window::apply_pos_fix(ctx, &mut pos_fix);
                     let (visible, inner, outer, foc) = ctx.input(|i| {
                         let vp = i.viewport();
                         (vp.visible() != Some(false), vp.inner_rect, vp.outer_rect, i.focused)
@@ -1058,6 +1061,7 @@ impl SpaiApp {
                 },
             );
             if let Some(w) = self.popout_mut(id) {
+                w.pos_fix = pos_fix;
                 w.outer = rects.0;
                 w.inner = rects.1;
                 w.focused = focused;

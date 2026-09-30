@@ -791,6 +791,8 @@ pub struct SpaiApp {
     map_route_anchors: Vec<i64>,
     /// How each leg between two anchors is flown, "gate" or "jump".
     map_leg_kinds: Vec<&'static str>,
+    /// The main window's saved position, sent again once it is up.
+    main_pos_fix: Option<alert_window::PosFix>,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
@@ -1389,6 +1391,7 @@ impl SpaiApp {
         let (main_tabs, main_active) = restored_main_tabs(&settings);
         #[cfg(feature = "fleet")]
         let fleet_backend_at_start = crate::fleets::choose_backend(headless, &settings);
+        let main_pos_fix_at = alert_window::PosFix::new(settings.main_window_pos.filter(|_| !settings.main_window_maximized && !headless));
         let mut app = Self {
             web_facts,
             web,
@@ -1705,6 +1708,7 @@ impl SpaiApp {
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
             map_leg_kinds: Vec::new(),
+            main_pos_fix: main_pos_fix_at,
             map_route_zone: None,
             scan_route: Default::default(),
             br_authed: Default::default(),
@@ -3971,9 +3975,10 @@ impl eframe::App for SpaiApp {
 
         self.root_dialogs(&ctx, jframe.as_ref());
 
+        alert_window::apply_pos_fix(&ctx, &mut self.main_pos_fix);
         // Remember the main window's location + size across restarts. Skip the first passes, where
-        // the window can briefly report a pre-restore rect.
-        if ctx.cumulative_pass_nr() > 30 {
+        // the window can briefly report a pre-restore rect, and the position fix.
+        if ctx.cumulative_pass_nr() > 30 && self.main_pos_fix.is_none() {
             let (pos, maximized, minimized) = ctx.input(|i| {
                 let vp = i.viewport();
                 (

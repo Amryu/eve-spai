@@ -1052,6 +1052,7 @@ mod chat_window_tests {
                 size: Some((640.0, 480.0)),
                 // Runtime-only state must not survive, and must not block the round-trip.
                 geom_applied: true,
+                pos_fix: None,
                 focused: true,
                 outer: Some(egui::Rect::EVERYTHING),
                 inner: Some(egui::Rect::EVERYTHING),
