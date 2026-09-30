@@ -149,6 +149,7 @@ impl Sync {
                 s.busy = false;
                 s.error = result.err().or(sync.err()).map(|e| format!("{e:#}"));
             }
+            store.prune(spai_core::clock::utc().timestamp());
             if store.dirty.replace(false) {
                 page::save_raw(STORE, &store.to_json());
             }
