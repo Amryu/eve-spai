@@ -2,6 +2,7 @@
 //! and holes, and routing. The desktop app and the web app both build on it.
 
 pub mod ansiblex;
+pub mod clock;
 pub mod geo;
 pub mod jove;
 pub mod jumproute;

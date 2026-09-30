@@ -1,0 +1,33 @@
+[package]
+name = "spai-share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai's end-to-end encrypted wormhole sharing: crypto, the signed op log and hole records"
+
+[lib]
+name = "spai_share"
+path = "src/lib.rs"
+
+[dependencies]
+spai-core = { path = "../spai-core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+getrandom = "0.2"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+# pkcs8 so keys stored by the ring-based versions still load.
+ed25519-dalek = { version = "2", features = ["pkcs8", "alloc"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# The implementation before this crate, kept to prove the bytes did not change.
+ring = "0.17"
+spai-core = { path = "../spai-core", features = ["test-support"] }

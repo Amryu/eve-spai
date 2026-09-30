@@ -67,4 +67,4 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (wasm32)
-        run: cargo check -p spai-core --target wasm32-unknown-unknown
+        run: cargo check -p spai-core -p spai-share --target wasm32-unknown-unknown
