@@ -641,7 +641,7 @@ pub struct FleetUnlock {
 }
 
 /// The map measures gate distances this far out, so no setting reaches further.
-pub(crate) const WH_PIN_JUMPS_MAX: u32 = 100;
+pub(crate) use spai_ui::wh_graph::WH_PIN_JUMPS_MAX;
 
 fn default_wh_pin_jumps() -> u32 {
     30

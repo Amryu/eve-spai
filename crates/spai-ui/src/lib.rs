@@ -4,3 +4,5 @@
 pub mod colors;
 pub mod wh_graph;
 pub mod wh_layout;
+pub mod wh_tab;
+pub mod widgets;

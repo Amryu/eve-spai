@@ -7,6 +7,15 @@ use egui_phosphor::regular as icon;
 
 use spai_core::whdata::{self, Class};
 use spai_core::wormholes::{time_left, Mass, TimeLeft, Wormhole};
+// Where each hole's line was drawn in the last frame, by hole id, for tests that hover one.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub static EDGE_PROBE: std::cell::RefCell<Vec<(i64, Vec<egui::Pos2>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Most gate jumps a pinned system may be from a chain and still join it.
+pub const WH_PIN_JUMPS_MAX: u32 = 100;
+
 pub const NODE: egui::Vec2 = egui::vec2(290.0, 56.0);
 /// Drifter systems: their name, J-code and badge need more room.
 /// A pinned system's copy beside a cluster.
