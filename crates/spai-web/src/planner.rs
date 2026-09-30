@@ -55,6 +55,32 @@ pub struct RoutePlan {
     pub link_menu: Option<(i64, i64, egui::Pos2)>,
     /// The anchors changed since the route was worked out.
     stale: bool,
+    /// Characters added with scopes, as the app last listed them.
+    pub pilots: Vec<Pilot>,
+    /// Something to do with ESI that the app carries out.
+    pub request: Option<PlanRequest>,
+    /// How the last request went.
+    pub note: Option<Result<String, String>>,
+    pilot: Option<i64>,
+}
+
+/// A character the route can be set for or whose skills can be read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pilot {
+    pub char_id: i64,
+    pub name: String,
+    /// Where they are, when the location scope says.
+    pub system: Option<i64>,
+    pub waypoints: bool,
+    pub skills: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlanRequest {
+    /// Set these systems as the character's autopilot route.
+    SetRoute(i64, Vec<i64>),
+    /// Read the character's jump skills into the planner.
+    Skills(i64),
 }
 
 /// What a route needs from the map to be worked out.
@@ -80,7 +106,15 @@ impl RoutePlan {
     }
 
     pub fn start(&mut self, kind: &'static str, sid: i64) {
-        *self = RoutePlan { kind, anchors: vec![sid], prefs: std::mem::take(&mut self.prefs), dirty: self.dirty, ..Default::default() };
+        *self = RoutePlan {
+            kind,
+            anchors: vec![sid],
+            prefs: std::mem::take(&mut self.prefs),
+            dirty: self.dirty,
+            pilots: std::mem::take(&mut self.pilots),
+            pilot: self.pilot,
+            ..Default::default()
+        };
     }
 
     pub fn clear(&mut self) {
@@ -106,6 +140,11 @@ impl RoutePlan {
     }
 
     pub fn set_dest(&mut self, sid: i64) {
+        if self.anchors.is_empty() {
+            if let Some(from) = self.here().filter(|h| *h != sid) {
+                self.anchors.push(from);
+            }
+        }
         if self.anchors.len() > 1 {
             self.anchors.pop();
         }
@@ -119,7 +158,14 @@ impl RoutePlan {
         self.replan();
     }
 
+    /// Where the chosen character is, else the first added one ESI has placed.
+    pub fn here(&self) -> Option<i64> {
+        let chosen = self.pilot.and_then(|id| self.pilots.iter().find(|p| p.char_id == id)).and_then(|p| p.system);
+        chosen.or_else(|| self.pilots.iter().find_map(|p| p.system))
+    }
+
     fn replan(&mut self) {
+        self.note = None;
         self.leg_pick.truncate(self.anchors.len().saturating_sub(1));
         self.stale = true;
     }
@@ -174,6 +220,11 @@ impl RoutePlan {
     /// The route part of a system's right-click menu.
     pub fn system_menu(&mut self, ui: &mut egui::Ui, sid: i64) {
         let at = self.anchors.iter().position(|&a| a == sid);
+        if !self.active() && self.here().is_some_and(|h| h != sid) && ui.button("Set as Destination").on_hover_text("A gate route from where your character is").clicked() {
+            self.kind = "gate";
+            self.set_dest(sid);
+            ui.close();
+        }
         if self.active() {
             match at {
                 None => {
@@ -371,6 +422,14 @@ impl RoutePlan {
                         self.replan();
                     }
                 });
+                let skilled: Vec<(i64, String)> = self.pilots.iter().filter(|p| p.skills).map(|p| (p.char_id, p.name.clone())).collect();
+                ui.horizontal_wrapped(|ui| {
+                    for (id, name) in skilled {
+                        if ui.button(format!("{name}'s skills")).on_hover_text("Read JDC and JFC from ESI").clicked() {
+                            self.request = Some(PlanRequest::Skills(id));
+                        }
+                    }
+                });
             });
         }
         let listed = route::avoided(geo, &self.avoid());
@@ -426,6 +485,7 @@ impl RoutePlan {
         if let Some(n) = &o.note {
             ui.label(egui::RichText::new(n).weak());
         }
+        self.set_in_game(ui, &o);
         // Alternatives, per leg that has several equally long ways.
         let mut pick: Option<(usize, usize)> = None;
         for (i, l) in self.legs.iter().enumerate() {
@@ -537,6 +597,54 @@ impl RoutePlan {
         }
     }
 
+    /// "Set in game" for a character that granted the waypoint scope.
+    fn set_in_game(&mut self, ui: &mut egui::Ui, o: &RouteOption) {
+        let able: Vec<&Pilot> = self.pilots.iter().filter(|p| p.waypoints).collect();
+        if able.is_empty() {
+            return;
+        }
+        let pilot = self.pilot.filter(|id| able.iter().any(|p| p.char_id == *id)).unwrap_or(able[0].char_id);
+        let mut chosen = pilot;
+        ui.horizontal(|ui| {
+            if able.len() > 1 {
+                let name = able.iter().find(|p| p.char_id == chosen).map(|p| p.name.clone()).unwrap_or_default();
+                egui::ComboBox::from_id_salt("web_route_pilot").selected_text(name).show_ui(ui, |ui| {
+                    for p in &able {
+                        ui.selectable_value(&mut chosen, p.char_id, &p.name);
+                    }
+                });
+            }
+            let who = able.iter().find(|p| p.char_id == chosen);
+            let label = if able.len() > 1 { "Set in game".to_owned() } else { format!("Set in game for {}", who.map_or("", |p| p.name.as_str())) };
+            if ui
+                .button(format!("{}  {label}", icon::MAP_PIN_LINE))
+                .on_hover_text(if self.kind == "gate" { "One waypoint per system" } else { "Waypoints at both ends of each leg you fly yourself" })
+                .clicked()
+            {
+                let path = route::ingame_waypoints(o, who.and_then(|p| p.system));
+                self.request = Some(PlanRequest::SetRoute(chosen, path));
+            }
+        });
+        self.pilot = Some(chosen);
+        match &self.note {
+            Some(Ok(t)) => {
+                ui.label(egui::RichText::new(t).color(spai_ui::theme::standing::FRIENDLY));
+            }
+            Some(Err(e)) => {
+                ui.label(egui::RichText::new(e).color(spai_ui::theme::standing::WARNING));
+            }
+            None => {}
+        }
+    }
+
+    /// Jump skills read from a character.
+    pub fn set_skills(&mut self, jdc: u32, jfc: u32) {
+        self.prefs.jdc = jdc.min(5);
+        self.prefs.jfc = jfc.min(5);
+        self.dirty = true;
+        self.replan();
+    }
+
     /// Systems the planner marks on the map: anchors and titans.
     pub fn marks(&self) -> (&[i64], &[i64]) {
         (&self.anchors, &self.titans)
@@ -555,6 +663,17 @@ fn minutes(m: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_destination_alone_routes_from_the_added_character() {
+        let mut p = RoutePlan::default();
+        p.pilots = vec![Pilot { char_id: 1, name: "A".into(), system: Some(30000142), waypoints: true, skills: false }];
+        p.set_dest(30002187);
+        assert_eq!(p.anchors, vec![30000142, 30002187]);
+        let mut alone = RoutePlan::default();
+        alone.set_dest(30002187);
+        assert_eq!(alone.anchors, vec![30002187]);
+    }
 
     #[test]
     fn a_drag_plans_and_a_drag_off_the_destination_extends_it() {

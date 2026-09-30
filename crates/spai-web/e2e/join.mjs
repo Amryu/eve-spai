@@ -14,6 +14,22 @@ const ready = () => page.waitForFunction(() => !document.getElementById('loading
 // Signed in without EVE: the test minted the session.
 await page.goto(site + '/wh/');
 await page.evaluate(s => { localStorage.setItem('spai.session', s); localStorage.setItem('spai.invite.here', 'true'); }, session);
+// SPAI_E2E_ESI: a character added with every scope, and ESI answered here: in Jita, JDC 5, JFC 4.
+const waypoints = [];
+if (process.env.SPAI_E2E_ESI) {
+  const acc = [{ char_id: 90000777, name: 'Alt Pilot', scopes: ['esi-location.read_location.v1', 'esi-location.read_online.v1', 'esi-ui.write_waypoint.v1', 'esi-skills.read_skills.v1'],
+    access: 'x', refresh: 'y', expires_at: 4102444800 }];
+  await page.evaluate(a => localStorage.setItem('spai.accounts', a), JSON.stringify(acc));
+  await page.route('https://esi.evetech.net/**', r => {
+    const u = r.request().url();
+    const json = b => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b), headers: { 'access-control-allow-origin': '*' } });
+    if (u.includes('/location/')) return json({ solar_system_id: 30000142 });
+    if (u.includes('/online/')) return json({ online: true });
+    if (u.includes('/skills/')) return json({ skills: [{ skill_id: 21611, trained_skill_level: 5 }, { skill_id: 21610, trained_skill_level: 4 }] });
+    if (u.includes('/waypoint/')) { waypoints.push(new URL(u).searchParams.get('destination_id')); return r.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } }); }
+    return r.fulfill({ status: 404 });
+  });
+}
 await page.goto(site + invite);
 await ready();
 // Poll until the join is in the saved store: the group appears there once the engine sent it.
@@ -99,6 +115,7 @@ for (const step of JSON.parse(process.env.SPAI_E2E_ACTIONS || '[]')) {
   if (what === 'shot') await page.screenshot({ path: shot.replace('.png', `-${a[0]}.png`) });
   await page.waitForTimeout(500);
 }
+if (process.env.SPAI_E2E_ESI) console.log('waypoints', JSON.stringify(waypoints));
 const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
 console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v), sigs: Object.values(s.sigs || {}).flat().map(x => x.sig) }));
 await browser.close();
