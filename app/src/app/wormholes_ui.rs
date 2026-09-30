@@ -1191,23 +1191,7 @@ impl WhForm {
 }
 
 /// The destination class of a hole whose far side is system `id`.
-pub(crate) fn dest_class(geo: &crate::geo::Systems, id: i64) -> crate::wormholes::DestClass {
-    geo.info_of(id).map_or(crate::wormholes::DestClass::Unknown, |i| class_dest(crate::whdata::class_of(id, i.security, &i.region)))
-}
-
-pub(crate) fn class_dest(c: crate::whdata::Class) -> crate::wormholes::DestClass {
-    use crate::whdata::Class;
-    use crate::wormholes::DestClass;
-    match c {
-        Class::Hs => DestClass::Highsec,
-        Class::Ls => DestClass::Lowsec,
-        Class::Ns => DestClass::Nullsec,
-        Class::W(_) | Class::Drifter(_) => DestClass::Wspace,
-        Class::Thera => DestClass::Thera,
-        Class::Turnur => DestClass::Turnur,
-        Class::Pochven | Class::Tabbetzur => DestClass::Unknown,
-    }
-}
+pub(crate) use spai_core::wormholes::{class_dest, dest_class};
 
 
 /// A hole type combo box with a search field: there are close to a hundred codes. Typing filters

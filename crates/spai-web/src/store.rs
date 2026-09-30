@@ -119,6 +119,20 @@ impl WebStore {
     }
 }
 
+impl WebStore {
+    /// A hole collapsed, as someone here saw it: off the map, and out to the groups.
+    pub fn kill_hole(&self, uid: &str) {
+        let group = {
+            let mut d = self.data.borrow_mut();
+            let Some(h) = d.holes.get_mut(uid) else { return };
+            h.dead = true;
+            h.group.clone()
+        };
+        self.queue(group, Outgoing::Dead(uid.to_owned()));
+        self.touch(true);
+    }
+}
+
 impl ShareStore for WebStore {
     fn share_groups(&self) -> Vec<ShareGroup> {
         self.data.borrow().groups.clone()

@@ -62,11 +62,25 @@ impl WebApp {
             }
         }
         sync.tick(session, ctx);
-        let generation = sync.store.generation.get();
-        if let (Some(host), true) = (&mut self.host, generation != self.shown) {
-            host.holes = sync.store.wormholes();
-            host.sigs = sync.store.all_sigs();
-            self.shown = generation;
+        if let Some(host) = &mut self.host {
+            let now = spai_core::clock::utc().timestamp();
+            for e in std::mem::take(&mut host.edits) {
+                match e {
+                    crate::host::Edit::Save(w) => sync.store.edit_hole(&w, now),
+                    crate::host::Edit::Dead(uid) => sync.store.kill_hole(&uid),
+                }
+                sync.poke();
+            }
+            host.can_edit = sync
+                .store
+                .share_groups()
+                .iter()
+                .any(|g| g.char_id == session.character_id && g.role.can_write() && sync.store.share_key(&g.id, g.epoch).is_some());
+            if sync.store.generation.get() != self.shown {
+                host.holes = sync.store.wormholes();
+                host.sigs = sync.store.all_sigs();
+                self.shown = sync.store.generation.get();
+            }
         }
     }
 

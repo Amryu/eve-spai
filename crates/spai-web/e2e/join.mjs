@@ -5,7 +5,7 @@
 import { chromium } from 'playwright';
 import readline from 'node:readline';
 
-const [site, invite, session, shot] = process.argv.slice(2);
+const [site, invite, session, shot, mode] = process.argv.slice(2);
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 page.on('pageerror', e => console.log('pageerror', e.message));
@@ -43,6 +43,22 @@ await page.screenshot({ path: shot });
 await page.mouse.click(905, 527);
 await page.waitForTimeout(800);
 await page.screenshot({ path: shot.replace('.png', '-selected.png') });
+if (mode === 'edit') {
+  // The lone hole's pencil, then Critical in the Mass row, then Save: positions in this layout.
+  const at = JSON.parse(process.env.SPAI_E2E_CLICKS || '[]');
+  for (const [i, [x, y]] of at.entries()) {
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: shot.replace('.png', `-edit${i}.png`) });
+  }
+  // The edit goes out on the round it starts.
+  for (let i = 0; i < 30; i++) {
+    const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
+    if ((s.outbox || []).length === 0 && Object.values(s.holes || {}).some(h => h.state.fields.mass)) break;
+    await page.waitForTimeout(1000);
+  }
+  console.log('edited');
+}
 const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
 console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v), sigs: Object.values(s.sigs || {}).flat().map(x => x.sig) }));
 await browser.close();
