@@ -46,6 +46,11 @@ services:
       # Browser origins allowed on /api/session and /api/wh/* (comma list; empty = no CORS).
       WH_CORS_ORIGINS: ""
 
+    # The web wormhole map (a trunk build of crates/spai-web), served at /wh/. Filled by
+    # deploy/web.sh; the server reads it at start, so a new build takes a restart.
+    volumes:
+      - ./wh-dist:/srv/wh:ro
+
     networks:
       - frontend
       - backend

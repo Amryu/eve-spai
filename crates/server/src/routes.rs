@@ -39,6 +39,19 @@ pub fn router(state: AppState) -> Router {
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_compressed))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
+        .merge(crate::webapp::routes(web_app()))
+}
+
+/// The web wormhole map's build, when this server has one to serve.
+fn web_app() -> Option<std::sync::Arc<crate::webapp::WebApp>> {
+    let dir = std::env::var("WH_WEB_DIR").unwrap_or_else(|_| "/srv/wh".into());
+    match crate::webapp::WebApp::load(std::path::Path::new(&dir)) {
+        Ok(app) => app.map(std::sync::Arc::new),
+        Err(e) => {
+            tracing::warn!("the web app in {dir} did not load: {e:#}");
+            None
+        }
+    }
 }
 
 async fn healthz() -> &'static str {
