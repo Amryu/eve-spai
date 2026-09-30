@@ -245,8 +245,13 @@ impl eframe::App for WebApp {
             match self.loading.lock().unwrap().take() {
                 Some(Ok(u)) => {
                     let mut host = WebHost::new(Arc::new(u.systems()));
-                    if let Some(p) = page::load(PREFS) {
-                        host.prefs = p;
+                    match page::load(PREFS) {
+                        Some(p) => host.prefs = p,
+                        // First visit: the systems most of the group stages in.
+                        None => {
+                            host.prefs.route_pins = crate::host::DEFAULT_PINS.iter().map(|p| p.to_string()).collect();
+                            host.dirty = true;
+                        }
                     }
                     let layout: Vec<(i64, f32, f32)> = page::load(LAYOUT).unwrap_or_default();
                     host.layout = layout.into_iter().map(|(id, x, y)| (id, egui::pos2(x, y))).collect();
