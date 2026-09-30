@@ -11,6 +11,7 @@ pub mod routes;
 pub mod session;
 pub mod state;
 pub mod views;
+pub mod webapp;
 pub mod whshare;
 
 use anyhow::Context;

@@ -371,6 +371,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "br-core",
  "chrono",
  "flate2",
