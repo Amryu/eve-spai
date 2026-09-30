@@ -42,6 +42,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(&r("/invites/{i}"), get(fetch_invite))
         .route(&r("/invites/{i}/join"), post(join))
         .route(&r("/me/requests"), get(my_requests))
+        .route(&r("/bridges"), get(bridges))
         .route("/api/wh/{*rest}", axum::routing::any(gone))
         .layer(axum::middleware::from_fn_with_state(state, rate_limit))
 }
@@ -522,6 +523,18 @@ async fn my_requests(State(st): State<AppState>, SessionIdentity(me): SessionIde
         .fetch_all(&st.db)
         .await?;
     Ok(Json(rows.iter().map(|r| MyRequest { group_id: r.get(0), device_id: r.get(1) }).collect()))
+}
+
+/// The Ansiblex network routes may use, as the operator keeps it in `WH_BRIDGES_FILE`: for
+/// members of a group only, so the alliance's bridges are not public. `null` when there is none.
+async fn bridges(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<serde_json::Value>, AppError> {
+    let member: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_members WHERE char_id = $1 LIMIT 1").bind(me.char_id).fetch_optional(&st.db).await?;
+    if member.is_none() {
+        return Err(AppError::Forbidden);
+    }
+    let path = std::env::var("WH_BRIDGES_FILE").unwrap_or_else(|_| "/srv/wh-bridges.json".into());
+    let v = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
+    Ok(Json(v))
 }
 
 #[derive(Serialize)]

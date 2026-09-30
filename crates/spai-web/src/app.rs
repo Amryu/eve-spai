@@ -11,6 +11,7 @@ use spai_ui::wh_graph::WhGraphView;
 use crate::auth::{self, Auth};
 use crate::host::WebHost;
 use crate::page;
+use crate::starmap::{MapData, Network, StarMap};
 use crate::sync::{invite_link, Sync};
 
 type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
@@ -28,6 +29,18 @@ pub struct WebApp {
     /// The store's generation the map last took its holes at.
     shown: u64,
     joined: bool,
+    tab: Tab,
+    map: StarMap,
+    map_data: Option<MapData>,
+    network: Arc<Mutex<Option<Network>>>,
+    asked_network: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Wormholes,
+    Map,
 }
 
 impl WebApp {
@@ -48,7 +61,15 @@ impl WebApp {
             ctx.request_repaint();
         });
         let auth = auth::start(&cc.egui_ctx);
-        WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, sync: None, shown: u64::MAX, joined: false }
+        WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, sync: None,
+            shown: u64::MAX,
+            joined: false,
+            tab: Tab::default(),
+            map: StarMap::default(),
+            map_data: None,
+            network: Default::default(),
+            asked_network: false,
+        }
     }
 
     /// Signed in: keeps the group in step, and uses an invite link opened earlier.
@@ -79,7 +100,32 @@ impl WebApp {
             if sync.store.generation.get() != self.shown {
                 host.holes = sync.store.wormholes();
                 host.sigs = sync.store.all_sigs();
+                if let Some(d) = &mut self.map_data {
+                    d.set_holes(&host.holes);
+                }
                 self.shown = sync.store.generation.get();
+            }
+            // The group's Ansiblex network, once in the group; routes on both tabs use it.
+            if !self.asked_network && sync.store.share_groups().iter().any(|g| sync.store.share_key(&g.id, g.epoch).is_some()) {
+                self.asked_network = true;
+                let (slot, ctx) = (self.network.clone(), ctx.clone());
+                let mut req = ehttp::Request::get(format!("{}/api/wh/v2/bridges", page::origin()));
+                req.headers.insert("Authorization", format!("Bearer {}", session.token));
+                ehttp::fetch(req, move |r| {
+                    if let Some(n) = r.ok().filter(|r| r.ok).and_then(|r| serde_json::from_slice::<Option<Network>>(&r.bytes).ok()).flatten() {
+                        *slot.lock().unwrap() = Some(n);
+                        ctx.request_repaint();
+                    }
+                });
+            }
+            if let Some(n) = self.network.lock().unwrap().take() {
+                let mut geo = host.geo.gates_only();
+                let key = spai_core::ansiblex::BridgeKey { bridges: n.list(), capital: n.capital.clone(), max_zone: n.max_zone.max(1) };
+                spai_core::ansiblex::feed(key, &mut geo);
+                host.geo = Arc::new(geo);
+                if let Some(d) = &mut self.map_data {
+                    d.set_network(n, &host.geo);
+                }
             }
         }
     }
@@ -158,6 +204,14 @@ impl eframe::App for WebApp {
                     let layout: Vec<(i64, f32, f32)> = page::load(LAYOUT).unwrap_or_default();
                     host.layout = layout.into_iter().map(|(id, x, y)| (id, egui::pos2(x, y))).collect();
                     self.host = Some(host);
+                    // Flat, as the desktop's map lays New Eden out; k-space only.
+                    let flat = u
+                        .map_systems()
+                        .into_iter()
+                        .filter(|s| s.id < 31_000_000)
+                        .map(|s| spai_core::map::MapSystem { x: s.x2d, z: s.z2d, ..s })
+                        .collect();
+                    self.map_data = Some(MapData::new(flat, u.regions.clone()));
                 }
                 Some(Err(e)) => self.error = Some(e),
                 None => {}
@@ -171,6 +225,13 @@ impl eframe::App for WebApp {
         egui::Panel::top("web_top").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("EVE Spai");
+                if self.host.is_some() && matches!(state, Auth::SignedIn(_)) {
+                    use spai_ui::widgets::SteadySelect as _;
+                    ui.separator();
+                    ui.menu_value(&mut self.tab, Tab::Wormholes, "Wormholes");
+                    ui.menu_value(&mut self.tab, Tab::Map, "Map");
+                    ui.separator();
+                }
                 if let Some(g) = self.sync.as_ref().and_then(|s| s.store.share_groups().into_iter().next()) {
                     ui.label(egui::RichText::new(g.name).weak());
                 }
@@ -200,6 +261,11 @@ impl eframe::App for WebApp {
                 return;
             }
             match (&mut self.host, &self.error) {
+                (Some(host), _) if self.tab == Tab::Map => {
+                    if let Some(d) = &self.map_data {
+                        self.map.show(ui, &host.geo, d);
+                    }
+                }
                 (Some(host), _) => {
                     spai_ui::wh_tab::show(&mut self.view, host, ui);
                     if std::mem::take(&mut host.dirty) {
