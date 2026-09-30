@@ -1740,6 +1740,11 @@ impl SpaiApp {
                 }
             }
         }
+        // The ping feed on screen is read the same way.
+        if focused && ever_online && self.view == View::Jabber && self.jabber_chat.is_none() {
+            st.pings_unread = false;
+            st.pings_new = 0;
+        }
         let st = &*st;
         let mut set: std::collections::BTreeMap<String, Convo> =
             std::collections::BTreeMap::new();

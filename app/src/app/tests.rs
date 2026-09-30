@@ -3188,4 +3188,27 @@ mod notify_count_tests {
         a.jabber_pings_read();
         assert_eq!(a.notify_count(), 0);
     }
+
+    /// The Fleet pings feed on screen in a focused window reads new pings as they come.
+    #[test]
+    fn the_ping_feed_on_screen_reads_new_pings() {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        let ping = || {
+            let mut st = a.jabber.lock().unwrap();
+            st.ever_online = true;
+            st.pings_unread = true;
+            st.pings_new += 1;
+        };
+        ping();
+        a.view = crate::nav::View::Jabber;
+        a.jabber_chat = Some("room@conference.x".into());
+        a.jabber_frame(true);
+        assert_eq!(a.notify_count(), 1, "another conversation open");
+        a.jabber_chat = None;
+        a.jabber_frame(false);
+        assert_eq!(a.notify_count(), 1, "window not focused");
+        a.jabber_frame(true);
+        assert_eq!(a.notify_count(), 0);
+    }
 }

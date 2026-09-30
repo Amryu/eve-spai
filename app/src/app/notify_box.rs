@@ -13,6 +13,8 @@ const EXPANDED_ROWS: usize = SHOWN * 2;
 /// How far back each room is searched for mentions.
 const MENTION_SCAN: usize = 300;
 const WIDTH: f32 = 460.0;
+/// One on or off step of the bell's blink; it blinks twice.
+const BLINK_SECS: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum NotifyTab {
@@ -33,6 +35,10 @@ pub(crate) struct NotifyBox {
     /// How many pings were new when the box opened, so they stay marked while it is open.
     pings_new_at_open: Option<usize>,
     focus_reply: Option<String>,
+    /// The bell's count last frame, to blink when it rises. `None` until the first frame, so what
+    /// was unread at start does not blink.
+    last_count: Option<usize>,
+    blink_from: Option<f64>,
     /// Opened by a test scene, which has no pointer to click the bell with.
     #[cfg(test)]
     pub(crate) open_now: bool,
@@ -107,12 +113,31 @@ impl SpaiApp {
     pub(crate) fn notify_button(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
         let n = self.notify_count();
+        let now = ui.input(|i| i.time);
+        if self.notify_box.last_count.is_some_and(|c| n > c) {
+            self.notify_box.blink_from = Some(now);
+        }
+        self.notify_box.last_count = Some(n);
+        let lit = match self.notify_box.blink_from {
+            Some(t) if now - t < BLINK_SECS * 4.0 => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                (((now - t) / BLINK_SECS) as u32).is_multiple_of(2)
+            }
+            _ => {
+                self.notify_box.blink_from = None;
+                false
+            }
+        };
         let text = if n == 0 {
             egui::RichText::new(icon::BELL).color(ui.visuals().weak_text_color())
         } else {
             egui::RichText::new(format!("{}  {}", icon::BELL_RINGING, badge_count(n as u32))).strong().color(ui.visuals().hyperlink_color)
         };
-        let btn = ui.button(text).on_hover_text("New messages, pings and mentions");
+        let mut button = egui::Button::new(text);
+        if lit {
+            button = button.fill(ui.visuals().selection.bg_fill);
+        }
+        let btn = ui.add(button).on_hover_text("New messages, pings and mentions");
         if btn.clicked() {
             // Opened on the first tab with something new, not on whichever was last looked at.
             let (msgs, mentions) = (self.notify_messages_count(), self.jabber.lock().unwrap().mentions.len());
@@ -315,12 +340,8 @@ impl SpaiApp {
         if more > 0 && !expanded && ui.link(format!("+{more} more\u{2026}")).clicked() {
             self.notify_box.expanded.insert("pings".into());
         }
-        // Everything new was on screen, or "+N more" was clicked: read.
-        if new <= SHOWN || expanded {
-            self.jabber_pings_read();
-        }
+        self.jabber_pings_read();
         if open {
-            self.jabber_pings_read();
             self.view = nav::View::Jabber;
             self.jabber_chat = None;
             egui::Popup::close_all(ui.ctx());
