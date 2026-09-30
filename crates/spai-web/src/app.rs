@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use spai_core::universe::Universe;
 use spai_ui::wh_graph::WhGraphView;
 
+use crate::auth::{self, Auth};
 use crate::host::WebHost;
 
 type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
@@ -14,6 +15,7 @@ pub struct WebApp {
     host: Option<WebHost>,
     view: WhGraphView,
     error: Option<String>,
+    auth: auth::Shared,
 }
 
 impl WebApp {
@@ -24,7 +26,7 @@ impl WebApp {
         spai_ui::theme::Theme::default().apply(&cc.egui_ctx);
         let loading: Loading = Default::default();
         let (slot, ctx) = (loading.clone(), cc.egui_ctx.clone());
-        ehttp::fetch(ehttp::Request::get("universe.json.gz"), move |r| {
+        ehttp::fetch(ehttp::Request::get(format!("{}universe.json.gz", crate::page::base())), move |r| {
             let result = match r {
                 Ok(resp) if resp.ok => Universe::from_gz(&resp.bytes),
                 Ok(resp) => Err(format!("the universe file answered {} {}", resp.status, resp.status_text)),
@@ -33,7 +35,8 @@ impl WebApp {
             *slot.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
-        WebApp { loading, host: None, view: WhGraphView::default(), error: None }
+        let auth = auth::start(&cc.egui_ctx);
+        WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth }
     }
 }
 
@@ -46,6 +49,31 @@ impl eframe::App for WebApp {
                 None => {}
             }
         }
+        let state = self.auth.lock().unwrap().clone();
+        egui::Panel::top("web_top").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("EVE Spai");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {
+                    Auth::SignedIn(s) => {
+                        if ui.button("Sign out").clicked() {
+                            auth::sign_out(&self.auth);
+                        }
+                        ui.label(&s.character_name);
+                    }
+                    Auth::Working(what) => {
+                        ui.label(egui::RichText::new(what).weak());
+                    }
+                    Auth::SignedOut | Auth::Failed(_) => {
+                        if ui.button("Sign in with EVE").clicked() {
+                            auth::sign_in();
+                        }
+                        if let Auth::Failed(e) = &state {
+                            ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
+                        }
+                    }
+                });
+            });
+        });
         egui::CentralPanel::default().show_inside(ui, |ui| match (&mut self.host, &self.error) {
             (Some(host), _) => spai_ui::wh_tab::show(&mut self.view, host, ui),
             (None, Some(e)) => {

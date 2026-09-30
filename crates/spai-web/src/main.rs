@@ -2,8 +2,14 @@
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+#[cfg(target_arch = "wasm32")]
+mod auth;
+#[cfg(target_arch = "wasm32")]
+mod page;
 #[allow(dead_code)]
 mod host;
+#[allow(dead_code)]
+mod sso;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

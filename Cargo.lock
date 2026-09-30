@@ -5939,8 +5939,13 @@ dependencies = [
  "egui",
  "ehttp",
  "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "spai-core",
+ "spai-share",
  "spai-ui",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
 ]
