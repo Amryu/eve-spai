@@ -109,6 +109,11 @@ impl Sync {
         Sync { store: Rc::new(store), status: Rc::new(Mutex::new(status)), commands: Default::default(), running: Default::default(), last: 0 }
     }
 
+    /// Something changed here: sync now rather than at the next round.
+    pub fn poke(&mut self) {
+        self.last = 0;
+    }
+
     pub fn send(&mut self, cmd: Cmd) {
         self.commands.borrow_mut().push_back(cmd);
         self.last = 0;

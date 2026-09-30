@@ -866,6 +866,25 @@ impl RouteLimits {
     }
 }
 
+/// What kind of space system `id` is, as a hole's far side.
+pub fn dest_class(geo: &crate::geo::Systems, id: i64) -> crate::wormholes::DestClass {
+    geo.info_of(id).map_or(crate::wormholes::DestClass::Unknown, |i| class_dest(crate::whdata::class_of(id, i.security, &i.region)))
+}
+
+pub fn class_dest(c: crate::whdata::Class) -> crate::wormholes::DestClass {
+    use crate::whdata::Class;
+    use crate::wormholes::DestClass;
+    match c {
+        Class::Hs => DestClass::Highsec,
+        Class::Ls => DestClass::Lowsec,
+        Class::Ns => DestClass::Nullsec,
+        Class::W(_) | Class::Drifter(_) => DestClass::Wspace,
+        Class::Thera => DestClass::Thera,
+        Class::Turnur => DestClass::Turnur,
+        Class::Pochven | Class::Tabbetzur => DestClass::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

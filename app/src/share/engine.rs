@@ -332,6 +332,10 @@ mod end_to_end {
     /// (NODE_PATH):
     ///
     ///   SPAI_WEB_SITE=http://127.0.0.1:8188 ... cargo test ... -- --ignored web_joins_through_an_invite
+    ///
+    /// With `SPAI_E2E_CLICKS='[[1140,135],[1130,296],[1130,429],[993,361]]'` the browser joins as a
+    /// member and marks the hole critical through the side panel (pencil, Mass, Less than 10%,
+    /// Save, at 1280x800), and the owner here must receive it.
     #[test]
     #[ignore = "needs a running server, a served web build and Playwright"]
     fn web_joins_through_an_invite() {
@@ -341,6 +345,8 @@ mod end_to_end {
         else {
             return;
         };
+        // A member edits in the browser (SPAI_E2E_CLICKS: where to click); a viewer only reads.
+        let member = std::env::var("SPAI_E2E_CLICKS").is_ok();
         let now = crate::clock::utc().timestamp();
         let owner_id = 92_000_000 + (now % 100_000) * 2;
         let web_id = owner_id + 1;
@@ -368,7 +374,7 @@ mod end_to_end {
         let shot = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/webshots/web-joined.png");
         let _ = std::fs::create_dir_all(std::path::Path::new(shot).parent().unwrap());
         let mut node = std::process::Command::new("node")
-            .args([script, &site, &invite, &web_session.to_string(), shot])
+            .args([script, &site, &invite, &web_session.to_string(), shot, if member { "edit" } else { "view" }])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -388,13 +394,19 @@ mod end_to_end {
         let req = reqs.iter().find(|r| r.row.char_id == web_id).unwrap_or_else(|| panic!("the browser's request: {reqs:?}"));
         assert!(req.verified, "the browser proves the invite: {req:?}");
         assert_eq!(req.row.label, "EVE Spai web");
-        a.run(Cmd::Approve { group: g.clone(), char_id: web_id, device_id: req.row.device_id.clone(), role: Role::Viewer });
+        let role = if member { Role::Member } else { Role::Viewer };
+        a.run(Cmd::Approve { group: g.clone(), char_id: web_id, device_id: req.row.device_id.clone(), role });
         writeln!(node.stdin.as_mut().unwrap(), "approved").unwrap();
         drop(node.stdin.take());
         let rest: Vec<String> = out.map_while(Result::ok).collect();
         let _ = node.wait();
         let holds = rest.iter().find(|l| l.starts_with("holds ")).unwrap_or_else(|| panic!("{rest:?}"));
-        assert!(holds.contains("\"holes\":[\"WEB-123\"]") && holds.contains("viewer"), "{holds}");
+        assert!(holds.contains("\"holes\":[\"WEB-123\"]") && holds.contains(role.code()), "{holds}");
+        if member {
+            assert!(rest.iter().any(|l| l == "edited"), "{rest:?}");
+            a.sync();
+            assert_eq!(a.hole("WEB-123").map(|w| w.mass), Some(Some(Mass::Critical)), "the owner took the browser's edit");
+        }
         assert!(holds.contains("\"sigs\":[\"WEB-123\"]"), "the probe scan came with the snapshot: {holds}");
     }
 
