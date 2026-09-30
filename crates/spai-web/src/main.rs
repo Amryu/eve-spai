@@ -13,6 +13,8 @@ mod host;
 #[allow(dead_code)]
 mod sso;
 #[allow(dead_code)]
+mod starmap;
+#[allow(dead_code)]
 mod store;
 
 #[cfg(target_arch = "wasm32")]

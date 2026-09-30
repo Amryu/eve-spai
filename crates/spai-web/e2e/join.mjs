@@ -59,6 +59,12 @@ if (mode === 'edit') {
   }
   console.log('edited');
 }
+if (process.env.SPAI_E2E_MAP) {
+  const [x, y] = JSON.parse(process.env.SPAI_E2E_MAP);
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: shot.replace('.png', '-map.png') });
+}
 const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
 console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v), sigs: Object.values(s.sigs || {}).flat().map(x => x.sig) }));
 await browser.close();

@@ -489,6 +489,16 @@ async fn wormhole_group_membership_and_log() {
     assert_eq!(s, StatusCode::OK, "{v:?}");
     let g = v["id"].as_str().unwrap().to_string();
 
+    // The bridge network is for members only.
+    let file = std::env::temp_dir().join(format!("wh-bridges-{}.json", std::process::id()));
+    std::fs::write(&file, r#"{"capital": "A24L-V", "max_zone": 2, "bridges": [["Q-UEN6", "5-2PQU"]]}"#).unwrap();
+    std::env::set_var("WH_BRIDGES_FILE", &file);
+    let (s, _) = wh(&app, "GET", "/bridges", &outsider, &xd, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not in a group, no bridges");
+    let (s, v) = wh(&app, "GET", "/bridges", &owner, &od, None).await;
+    assert_eq!((s, v["bridges"][0][1].as_str()), (StatusCode::OK, Some("5-2PQU")), "{v}");
+    let _ = std::fs::remove_file(&file);
+
     let op = |id: &str, keep: bool| json!({ "op_id": id, "epoch": 0, "keep": keep, "blob": "sealed" });
     let (s, v) = wh(&app, "POST", &format!("/groups/{g}/ops"), &owner, &od, Some(op("genesis", true))).await;
     assert_eq!(s, StatusCode::OK);
