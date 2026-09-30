@@ -444,22 +444,28 @@ async fn expired_session_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-async fn send_json(app: &axum::Router, method: &str, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
+/// A sharing route of this protocol, as `device`.
+async fn wh(app: &axum::Router, method: &str, path: &str, token: &str, device: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let mut b = Request::builder()
         .method(method)
-        .uri(uri)
+        .uri(format!("/api/wh/v2{path}"))
         .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
+        .header("x-spai-device", device);
+    let body = match body {
+        Some(v) => {
+            b = b.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&v).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
 /// Groups hold only what their members encrypted; this checks the server's side of it: who may
-/// read, write and manage, the join handshake, and a removal that rotates the key.
+/// read, write and manage, the join handshake, devices and roles, and removals that rotate the key.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL (run with --ignored)"]
 async fn wormhole_group_membership_and_log() {
@@ -471,58 +477,113 @@ async fn wormhole_group_membership_and_log() {
     let owner = mint(&app, 90_000_001, "Owner").await;
     let joiner = mint(&app, 90_000_002, "Joiner").await;
     let outsider = mint(&app, 90_000_003, "Outsider").await;
+    let viewer = mint(&app, 90_000_004, "Viewer").await;
+    let (od, jd, jd2, vd, xd) = ("a".repeat(32), "b".repeat(32), "c".repeat(32), "d".repeat(32), "e".repeat(32));
 
-    let (s, v) = send_json(&app, "POST", "/api/wh/groups", &owner, json!({ "wrapped": "k0-owner" })).await;
+    // The first protocol's routes send old apps to update.
+    let (s, v) = send(&app, "GET", "/api/wh/groups", Some(&owner), None).await;
+    assert_eq!(s, StatusCode::GONE);
+    assert!(v["error"].as_str().unwrap().contains("Update EVE Spai"), "{v}");
+
+    let (s, v) = wh(&app, "POST", "/groups", &owner, &od, Some(json!({ "wrapped": "k0-owner", "device_id": od, "label": "desk" }))).await;
     assert_eq!(s, StatusCode::OK, "{v:?}");
     let g = v["id"].as_str().unwrap().to_string();
 
-    let (s, v) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "genesis", "epoch": 0, "keep": true, "blob": "sealed-0" })).await;
+    let op = |id: &str, keep: bool| json!({ "op_id": id, "epoch": 0, "keep": keep, "blob": "sealed" });
+    let (s, v) = wh(&app, "POST", &format!("/groups/{g}/ops"), &owner, &od, Some(op("genesis", true))).await;
     assert_eq!(s, StatusCode::OK);
     let first = v["seq"].as_i64().unwrap();
-    let (_, again) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "genesis", "epoch": 0, "keep": true, "blob": "sealed-0" })).await;
+    let (_, again) = wh(&app, "POST", &format!("/groups/{g}/ops"), &owner, &od, Some(op("genesis", true))).await;
     assert_eq!(again["seq"].as_i64(), Some(first), "a retried entry keeps its place");
-
-    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&outsider), None).await;
+    let (s, _) = wh(&app, "GET", &format!("/groups/{g}/ops?after=0"), &owner, &xd, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a member's unknown device reads nothing");
+    let (s, _) = wh(&app, "GET", &format!("/groups/{g}/ops?after=0"), &outsider, &xd, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "outsiders read nothing");
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &outsider, json!({ "op_id": "x", "epoch": 0, "keep": false, "blob": "x" })).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "outsiders write nothing");
 
-    // Invite, join, approve.
-    let (s, v) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/invites"), &owner, json!({ "blob": "invite", "ttl_secs": 3600 })).await;
-    assert_eq!(s, StatusCode::OK);
-    let inv = v["id"].as_str().unwrap().to_string();
-    let (s, v) = send(&app, "GET", &format!("/api/wh/invites/{inv}"), Some(&joiner), None).await;
-    assert_eq!((s, v["blob"].as_str()), (StatusCode::OK, Some("invite")));
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/invites/{inv}/join"), &joiner, json!({ "body": "keys+mac" })).await;
+    // Invite, join, approve as a member.
+    let invite = |app: axum::Router, owner: String, g: String| async move {
+        let (_, v) = wh(&app, "POST", &format!("/groups/{g}/invites"), &owner, &"a".repeat(32), Some(json!({ "blob": "invite", "ttl_secs": 3600 }))).await;
+        v["id"].as_str().unwrap().to_string()
+    };
+    let inv = invite(app.clone(), owner.clone(), g.clone()).await;
+    let (s, _) = wh(&app, "POST", &format!("/invites/{inv}/join"), &joiner, &jd, Some(json!({ "body": "keys+mac", "device_id": jd, "label": "laptop" }))).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/invites/{inv}/join"), &outsider, json!({ "body": "keys+mac" })).await;
+    let (s, _) = wh(&app, "POST", &format!("/invites/{inv}/join"), &outsider, &xd, Some(json!({ "body": "x", "device_id": xd }))).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "an invite works once");
-    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "not in before approval");
-    let (_, reqs) = send(&app, "GET", &format!("/api/wh/groups/{g}/requests"), Some(&owner), None).await;
-    assert_eq!(reqs[0]["body"].as_str(), Some("keys+mac"));
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/requests/90000002/approve"), &owner, json!({ "keys": [{ "epoch": 0, "wrapped": "k0-joiner" }] })).await;
+    let (_, mine) = wh(&app, "GET", "/me/requests", &joiner, &jd, None).await;
+    assert_eq!(mine[0]["device_id"].as_str(), Some(jd.as_str()), "the joiner sees what it waits on");
+    let (_, reqs) = wh(&app, "GET", &format!("/groups/{g}/requests"), &owner, &od, None).await;
+    assert_eq!((reqs[0]["body"].as_str(), reqs[0]["device_id"].as_str(), reqs[0]["label"].as_str()), (Some("keys+mac"), Some(jd.as_str()), Some("laptop")));
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/requests/90000002/{jd}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0-joiner" }], "role": "member" }))).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (_, keys) = send(&app, "GET", &format!("/api/wh/groups/{g}/keys"), Some(&joiner), None).await;
-    assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-joiner"), "each member gets only their own wrapped key");
-    let (_, ops) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
-    assert_eq!(ops[0]["author"].as_i64(), Some(90_000_001));
+    let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd, None).await;
+    assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-joiner"), "each device gets only its own wrapped key");
 
-    // A member cannot manage; the owner removes them, rotating the key for whoever stays.
-    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/requests"), Some(&joiner), None).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000002/remove"), &owner, json!({ "epoch": 1, "keys": [] })).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "the owner would lose the key");
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000002/remove"), &owner, json!({ "epoch": 1, "keys": [{ "char_id": 90000001, "wrapped": "k1-owner" }] })).await;
+    // A second device of the joiner: it keeps the member role whatever the approval asks.
+    let inv2 = invite(app.clone(), owner.clone(), g.clone()).await;
+    wh(&app, "POST", &format!("/invites/{inv2}/join"), &joiner, &jd2, Some(json!({ "body": "keys2", "device_id": jd2 }))).await;
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/requests/90000002/{jd2}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0-joiner2" }], "role": "viewer" }))).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, _) = send(&app, "GET", &format!("/api/wh/groups/{g}/ops?after=0"), Some(&joiner), None).await;
+    let (_, members) = wh(&app, "GET", &format!("/groups/{g}/members"), &owner, &od, None).await;
+    let j = members.as_array().unwrap().iter().find(|m| m["char_id"] == 90_000_002).unwrap();
+    assert_eq!((j["role"].as_str(), j["devices"].as_array().unwrap().len()), (Some("member"), 2));
+    let (_, keys2) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd2, None).await;
+    assert_eq!(keys2[0]["wrapped"].as_str(), Some("k0-joiner2"));
+
+    // A viewer reads and shares nothing, though they may still leave.
+    let inv3 = invite(app.clone(), owner.clone(), g.clone()).await;
+    wh(&app, "POST", &format!("/invites/{inv3}/join"), &viewer, &vd, Some(json!({ "body": "keys3", "device_id": vd }))).await;
+    wh(&app, "POST", &format!("/groups/{g}/requests/90000004/{vd}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0-viewer" }], "role": "viewer" }))).await;
+    let (s, _) = wh(&app, "GET", &format!("/groups/{g}/ops?after=0"), &viewer, &vd, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/ops"), &viewer, &vd, Some(op("hole", false))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "no data from a viewer");
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/requests/90000004/{vd}/approve"), &joiner, &jd, Some(json!({ "keys": [] }))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a member cannot manage");
+
+    // Removing one of the joiner's devices: the key must reach every other device.
+    let every_but = |gone: &str| -> Vec<Value> {
+        [(90_000_001, &od), (90_000_002, &jd), (90_000_002, &jd2), (90_000_004, &vd)]
+            .into_iter()
+            .filter(|(_, d)| d.as_str() != gone)
+            .map(|(c, d)| json!({ "char_id": c, "device_id": d, "wrapped": format!("k1-{c}-{d}") }))
+            .collect()
+    };
+    let mut short = every_but(&jd2);
+    short.pop();
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/members/90000002/devices/{jd2}/remove"), &owner, &od, Some(json!({ "epoch": 1, "keys": short }))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a remaining device would lose the key");
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/members/90000002/devices/{jd2}/remove"), &owner, &od, Some(json!({ "epoch": 1, "keys": every_but(&jd2) }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd2, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the removed device is out");
+    let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd, None).await;
+    assert_eq!(keys.as_array().unwrap().len(), 2, "the other device has both epochs");
+
+    // The owner removes the joiner altogether; the owner cannot be removed.
+    let rest: Vec<Value> = every_but(&jd2).into_iter().filter(|k| k["char_id"] != 90_000_002).map(|mut k| {
+        k["wrapped"] = json!("k2");
+        k
+    }).collect();
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/members/90000002/remove"), &owner, &od, Some(json!({ "epoch": 2, "keys": rest }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = wh(&app, "GET", &format!("/groups/{g}/ops?after=0"), &joiner, &jd, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "removed members read nothing new");
-    let (s, _) = send_json(&app, "POST", &format!("/api/wh/groups/{g}/members/90000001/remove"), &owner, json!({ "epoch": 2, "keys": [] })).await;
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/members/90000001/remove"), &owner, &od, Some(json!({ "epoch": 3, "keys": [] }))).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "the owner cannot be removed");
+
+    // A member from before devices claims their key with their device's id, once.
+    sqlx::query("INSERT INTO wh_members (group_id, char_id, name, role) VALUES ($1, 90000003, 'Outsider', 'member')").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_devices (group_id, char_id, device_id) VALUES ($1, 90000003, 'legacy')").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, 2, 90000003, 'legacy', 'k2-old')").bind(&g).execute(&pool).await.unwrap();
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/devices/claim"), &outsider, &xd, Some(json!({ "device_id": xd }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &outsider, &xd, None).await;
+    assert_eq!(keys[0]["wrapped"].as_str(), Some("k2-old"), "the old key now under the device's id");
 
     // Data expires; membership stays.
     sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days'").execute(&pool).await.unwrap();
-    send_json(&app, "POST", &format!("/api/wh/groups/{g}/ops"), &owner, json!({ "op_id": "data", "epoch": 1, "keep": false, "blob": "hole" })).await;
+    wh(&app, "POST", &format!("/groups/{g}/ops"), &owner, &od, Some(json!({ "op_id": "data", "epoch": 2, "keep": false, "blob": "hole" }))).await;
     sqlx::query("UPDATE wh_ops SET created_at = now() - interval '4 days' WHERE op_id = 'data'").execute(&pool).await.unwrap();
     eve_spai_br::whshare::sweep(&pool).await.unwrap();
     let left: Vec<String> = sqlx::query_scalar("SELECT op_id FROM wh_ops ORDER BY seq").fetch_all(&pool).await.unwrap();
@@ -605,12 +666,12 @@ async fn preflight(app: &axum::Router, uri: &str, origin: &str) -> Option<String
 #[tokio::test]
 async fn the_site_may_call_sharing_from_a_browser_and_nothing_else() {
     let app = third_party_app(Default::default());
-    assert_eq!(preflight(&app, "/api/wh/groups", THIRD_PARTY_SITE).await.as_deref(), Some(THIRD_PARTY_SITE));
+    assert_eq!(preflight(&app, "/api/wh/v2/groups", THIRD_PARTY_SITE).await.as_deref(), Some(THIRD_PARTY_SITE));
     assert_eq!(preflight(&app, "/api/session", THIRD_PARTY_SITE).await.as_deref(), Some(THIRD_PARTY_SITE));
-    assert_eq!(preflight(&app, "/api/wh/groups", "https://evil.example").await, None, "another site");
+    assert_eq!(preflight(&app, "/api/wh/v2/groups", "https://evil.example").await, None, "another site");
     assert_eq!(preflight(&app, "/api/br", THIRD_PARTY_SITE).await, None, "battle reports stay closed");
     // Without origins configured, as today, no CORS at all.
-    assert_eq!(preflight(&lazy_app(), "/api/wh/groups", THIRD_PARTY_SITE).await, None);
+    assert_eq!(preflight(&lazy_app(), "/api/wh/v2/groups", THIRD_PARTY_SITE).await, None);
 }
 
 #[tokio::test]
@@ -620,11 +681,11 @@ async fn sharing_requests_are_held_to_a_budget() {
     let s = third_party_session(90000034);
     let mut codes = Vec::new();
     for _ in 0..4 {
-        codes.push(send(&app, "GET", "/api/wh/groups/g/keys", Some(&s), None).await.0);
+        codes.push(send(&app, "GET", "/api/wh/v2/groups/g/keys", Some(&s), None).await.0);
     }
     assert!(codes[..3].iter().all(|c| *c != StatusCode::TOO_MANY_REQUESTS), "{codes:?}");
     assert_eq!(codes[3], StatusCode::TOO_MANY_REQUESTS);
     // Someone else's budget is their own.
-    let (status, _) = send(&app, "GET", "/api/wh/groups/g/keys", Some(&third_party_session(90000035)), None).await;
+    let (status, _) = send(&app, "GET", "/api/wh/v2/groups/g/keys", Some(&third_party_session(90000035)), None).await;
     assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
 }

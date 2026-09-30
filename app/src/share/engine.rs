@@ -12,10 +12,12 @@ use std::time::Duration;
 
 use super::client::{Client, RequestRow};
 use super::crypto::{self, DeviceKeys, Key, PublicKeys, Wrapped};
-use super::ops::{self, Envelope, Member, Op, Role, Roster};
+use super::ops::{self, Device, Envelope, Member, Op, Role, Roster};
 use crate::store::{Outgoing, ShareGroup, SharePrefs, Store};
 
 const POLL: Duration = Duration::from_secs(15);
+/// What this install calls itself among a character's devices.
+const DEVICE_LABEL: &str = "EVE Spai app";
 const INVITE_TTL_SECS: i64 = 2 * 86_400;
 
 pub enum Cmd {
@@ -23,9 +25,12 @@ pub enum Cmd {
     /// An invite only `for_name` can use.
     Invite { group: String, for_name: String },
     Join { link: String, char_id: i64, prefs: SharePrefs },
-    Approve { group: String, char_id: i64 },
-    Reject { group: String, char_id: i64 },
+    /// Lets a device in: a new character with `role`, or another device of a member, which keeps
+    /// the member's role.
+    Approve { group: String, char_id: i64, device_id: String, role: Role },
+    Reject { group: String, char_id: i64, device_id: String },
     Remove { group: String, char_id: i64 },
+    RemoveDevice { group: String, char_id: i64, device_id: String },
     Leave { group: String },
     SetRole { group: String, char_id: i64, role: Role },
     /// Reads the group's whole log again, for what was passed over while it was not taken.
@@ -56,6 +61,8 @@ pub struct Status {
     pub synced_at: HashMap<String, i64>,
     /// Bumped whenever holes or signatures changed here, so the UI reloads them.
     pub generation: u64,
+    /// Groups whose keys from before devices this device has claimed, this run.
+    pub claimed: std::collections::HashSet<String>,
 }
 
 pub struct Handle {
@@ -96,7 +103,8 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, ctx: egui::Context) {
             }
         };
         let path = store.path().to_path_buf();
-        let clients = move |char_id: i64| Client::for_character(&path, char_id);
+        let device_id = device.public().device_id();
+        let clients = move |char_id: i64| Client::for_character(&path, char_id, &device_id);
         status.lock().unwrap().fingerprint = Some(device.public().fingerprint());
         let e = Engine { store: &store, device, status: &status, clients: &clients };
         status.lock().unwrap().busy = true;
@@ -206,11 +214,11 @@ impl Engine<'_> {
                 let c = self.client(char_id)?;
                 let key = crypto::random32();
                 let wrapped = crypto::wrap_key(&self.device.public().enc, &key, &wrap_ctx(0));
-                let id = c.create_group(&serde_json::to_string(&wrapped)?)?;
+                let id = c.create_group(&serde_json::to_string(&wrapped)?, DEVICE_LABEL)?;
                 let g = ShareGroup { id: id.clone(), name: name.clone(), char_id, role: Role::Owner, epoch: 0, cursor: 0, prefs };
                 self.store.share_group_save(&g);
                 self.store.share_key_save(&id, 0, &key);
-                let owner = Member { char_id, name: char_name, keys: self.device.public(), role: Role::Owner };
+                let owner = Member::new(char_id, &char_name, Role::Owner, Device::of(self.device.public(), DEVICE_LABEL));
                 self.store.share_members_save(&id, std::slice::from_ref(&owner));
                 self.post(&c, &g, &Op::Genesis { name, owner })?;
                 self.store.share_queue_group(&id, true, true);
@@ -248,16 +256,20 @@ impl Engine<'_> {
                 let keys = self.device.public();
                 let mac = crypto::b64(&crypto::invite_mac(&secret, &join_msg(char_id, &group_id, &keys)));
                 let mac2 = Some(crypto::b64(&crypto::invite_mac(&secret, &join_msg2(char_id, &group_id, &keys))));
-                c.join(&id, &serde_json::to_string(&JoinBody { keys, mac, mac2 })?)?;
+                c.join(&id, &serde_json::to_string(&JoinBody { keys, mac, mac2 })?, DEVICE_LABEL)?;
                 // Until an admin approves there is no key; the members the invite named are who
                 // this install trusts to sign the group's entries.
                 self.store.share_group_save(&ShareGroup { id: group_id.clone(), name: info.name, char_id, role: Role::Member, epoch: 0, cursor: 0, prefs });
                 self.store.share_members_save(&group_id, &info.members);
             }
-            Cmd::Approve { group, char_id } => {
+            Cmd::Approve { group, char_id, device_id, role } => {
                 let g = self.group(&group)?;
                 let c = self.client(g.char_id)?;
-                let req = self.fetch_requests(&c, &g)?.into_iter().find(|r| r.row.char_id == char_id).ok_or_else(|| anyhow!("no such request"))?;
+                let req = self
+                    .fetch_requests(&c, &g)?
+                    .into_iter()
+                    .find(|r| r.row.char_id == char_id && r.row.device_id == device_id)
+                    .ok_or_else(|| anyhow!("no such request"))?;
                 let keys = match (req.verified, req.keys) {
                     (true, Some(k)) => k,
                     _ if req.meant_for.is_some() => bail!("this invite was for {}, not {}", req.meant_for.unwrap_or_default(), req.row.name),
@@ -271,34 +283,52 @@ impl Engine<'_> {
                 if !wrapped.iter().any(|(e, _)| *e == g.epoch) {
                     bail!("no key for the group");
                 }
-                c.approve(&g.id, char_id, &wrapped)?;
-                let member = Member { char_id, name: req.row.name.clone(), keys, role: Role::Member };
-                self.post(&c, &g, &Op::MemberAdded { member: member.clone() })?;
                 let mut roster = self.roster(&g.id);
-                roster.members.insert(char_id, member);
+                let device = Device::of(keys, &req.row.label);
+                // A character already in has its role; only a new one gets `role`, and only the
+                // owner makes admins.
+                let op = if roster.members.contains_key(&char_id) {
+                    Op::DeviceAdded { char_id, device }
+                } else {
+                    let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role.min(Role::Admin) };
+                    Op::MemberAdded { member: Member::new(char_id, &req.row.name, role, device) }
+                };
+                let code = roster.role(char_id).unwrap_or(role).code();
+                c.approve(&g.id, char_id, &device_id, code, &wrapped)?;
+                self.post(&c, &g, &op)?;
+                roster.apply(g.char_id, &op)?;
                 self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
                 let (holes, dead, sigs) = self.store.share_snapshot(&g);
                 self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() })?;
             }
-            Cmd::Reject { group, char_id } => {
+            Cmd::Reject { group, char_id, device_id } => {
                 let g = self.group(&group)?;
-                self.client(g.char_id)?.reject(&g.id, char_id)?;
+                self.client(g.char_id)?.reject(&g.id, char_id, &device_id)?;
             }
-            Cmd::Remove { group, char_id } => self.remove(&group, char_id)?,
+            Cmd::Remove { group, char_id } => self.remove(&group, char_id, None)?,
+            Cmd::RemoveDevice { group, char_id, device_id } => self.remove(&group, char_id, Some(&device_id))?,
             Cmd::Leave { group } => {
                 let g = self.group(&group)?;
-                if g.role == Role::Owner {
+                let me = self.device.public().device_id();
+                let others = self
+                    .store
+                    .share_members(&g.id)
+                    .into_iter()
+                    .find(|m| m.char_id == g.char_id)
+                    .is_some_and(|m| m.devices.iter().any(|d| d.id != me));
+                // With other devices, only this one leaves and the character stays in the group.
+                if g.role == Role::Owner && !others {
                     bail!("the owner cannot leave; remove the others or keep the group");
                 }
                 if self.store.share_key(&g.id, g.epoch).is_some() {
-                    self.remove(&group, g.char_id)?;
+                    self.remove(&group, g.char_id, others.then_some(me.as_str()))?;
                 }
                 self.store.share_group_forget(&g.id);
             }
             Cmd::SetRole { group, char_id, role } => {
                 let g = self.group(&group)?;
                 let c = self.client(g.char_id)?;
-                c.set_role(&g.id, char_id, if role == Role::Admin { "admin" } else { "member" })?;
+                c.set_role(&g.id, char_id, role.code())?;
                 self.post(&c, &g, &Op::RoleSet { char_id, role })?;
                 let mut roster = self.roster(&g.id);
                 if let Some(m) = roster.members.get_mut(&char_id) {
@@ -312,26 +342,44 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// Takes `char_id` out and moves everyone who stays to a new key they alone can open.
-    fn remove(&self, group: &str, char_id: i64) -> Result<()> {
+    /// Takes `char_id` out, or only its `device`, and moves every device that stays to a new key
+    /// only they can open.
+    fn remove(&self, group: &str, char_id: i64, device: Option<&str>) -> Result<()> {
         let g = self.group(group)?;
         let c = self.client(g.char_id)?;
         let next = g.epoch + 1;
         let key = crypto::random32();
-        let stay: Vec<Member> = self.store.share_members(&g.id).into_iter().filter(|m| m.char_id != char_id).collect();
-        let wrapped: Vec<(i64, String)> = stay
+        let mut stay: Vec<Member> = self.store.share_members(&g.id);
+        match device {
+            Some(d) => {
+                for m in stay.iter_mut().filter(|m| m.char_id == char_id) {
+                    m.devices.retain(|x| x.id != d);
+                }
+                stay.retain(|m| !m.devices.is_empty());
+            }
+            None => stay.retain(|m| m.char_id != char_id),
+        }
+        let wrapped: Vec<(i64, String, String)> = stay
             .iter()
-            .map(|m| Ok((m.char_id, serde_json::to_string(&crypto::wrap_key(&m.keys.enc, &key, &wrap_ctx(next)))?)))
+            .flat_map(|m| m.devices.iter().map(move |d| (m.char_id, d)))
+            .map(|(c, d)| Ok((c, d.id.clone(), serde_json::to_string(&crypto::wrap_key(&d.keys.enc, &key, &wrap_ctx(next)))?)))
             .collect::<Result<_>>()?;
-        c.remove(&g.id, char_id, next, &wrapped)?;
-        if char_id == g.char_id {
+        match device {
+            Some(d) => c.remove_device(&g.id, char_id, d, next, &wrapped)?,
+            None => c.remove(&g.id, char_id, next, &wrapped)?,
+        }
+        let me = self.device.public().device_id();
+        if char_id == g.char_id && device.is_none_or(|d| d == me) {
             return Ok(());
         }
         let g = ShareGroup { epoch: next, ..g };
         self.store.share_key_save(&g.id, next, &key);
         self.store.share_group_save(&g);
         self.store.share_members_save(&g.id, &stay);
-        self.post(&c, &g, &Op::MemberRemoved { char_id })
+        match device {
+            Some(d) => self.post(&c, &g, &Op::DeviceRemoved { char_id, device_id: d.to_owned() }),
+            None => self.post(&c, &g, &Op::MemberRemoved { char_id }),
+        }
     }
 
     fn character(&self, name: &str) -> Result<(i64, String)> {
@@ -353,7 +401,9 @@ impl Engine<'_> {
                     _ => false,
                 };
                 let meant_for = invite.filter(|(_, c, _)| *c != row.char_id).map(|(_, _, n)| n);
-                Request { keys: body.map(|b| b.keys), verified: proven && meant_for.is_none(), meant_for, row }
+                // The device the server says asked must be the one whose keys came with the proof.
+                let same_device = body.as_ref().is_some_and(|b| b.keys.device_id() == row.device_id);
+                Request { keys: body.map(|b| b.keys), verified: proven && same_device && meant_for.is_none(), meant_for, row }
             })
             .collect())
     }
@@ -374,6 +424,11 @@ impl Engine<'_> {
     fn sync_group(&self, g: &ShareGroup) -> Result<()> {
         let c = self.client(g.char_id)?;
         let mut g = g.clone();
+        // Once a run: the keys the server held for this character from before devices become this
+        // device's. A no-op once done, or for a device that joined as one.
+        if !self.status.lock().unwrap().claimed.contains(&g.id) && c.claim(&g.id).is_ok() {
+            self.status.lock().unwrap().claimed.insert(g.id.clone());
+        }
         // Keys this install was given and does not hold yet.
         let had_key = self.store.share_key(&g.id, g.epoch).is_some();
         let keys = match c.keys(&g.id) {
@@ -472,8 +527,11 @@ impl Engine<'_> {
 
     fn apply_new(&self, g: &ShareGroup, roster: &mut Roster, env: &Envelope) -> Result<bool> {
         let key = self.store.share_key(&g.id, env.epoch).ok_or_else(|| anyhow!("no key for epoch {}", env.epoch))?;
-        let keys = roster.members.get(&env.author).map(|m| m.keys).ok_or_else(|| anyhow!("author {} is not a member", env.author))?;
-        let op = ops::open_op(env, &key, &keys)?;
+        let author = roster.members.get(&env.author).ok_or_else(|| anyhow!("author {} is not a member", env.author))?;
+        let op = ops::open_op(env, &key, author)?;
+        if op.is_data() && !roster.can_write(env.author) {
+            bail!("a viewer shares nothing");
+        }
         let who = roster.members.get(&env.author).map(|m| m.name.clone()).unwrap_or_default();
         let (holes_in, sigs_in) = (g.prefs.recv_holes, g.prefs.recv_sigs);
         // Not taken now, so left unapplied: a Rescan after taking it again picks it up.
@@ -483,7 +541,12 @@ impl Engine<'_> {
         };
         match &op {
             Op::Genesis { owner, .. } if roster.members.get(&owner.char_id) == Some(owner) => {}
-            Op::Genesis { .. } | Op::MemberAdded { .. } | Op::MemberRemoved { .. } | Op::RoleSet { .. } => roster.apply(env.author, &op)?,
+            Op::Genesis { .. }
+            | Op::MemberAdded { .. }
+            | Op::DeviceAdded { .. }
+            | Op::DeviceRemoved { .. }
+            | Op::MemberRemoved { .. }
+            | Op::RoleSet { .. } => roster.apply(env.author, &op)?,
             Op::Hole { .. } | Op::HoleDead { .. } if !holes_in => return pass(),
             Op::Sigs { .. } | Op::SigDelete { .. } if !sigs_in => return pass(),
             Op::Hole { hole } => return Ok(self.store.share_apply_hole(hole, &g.id, &who)),
@@ -498,7 +561,12 @@ impl Engine<'_> {
                     bail!("a snapshot from someone who is not an admin");
                 }
                 for m in members {
-                    roster.members.entry(m.char_id).or_insert_with(|| m.clone());
+                    let known = roster.members.entry(m.char_id).or_insert_with(|| m.clone());
+                    for d in &m.devices {
+                        if known.device(&d.id).is_none() && d.keys.device_id() == d.id && known.devices.len() < ops::MAX_DEVICES {
+                            known.devices.push(d.clone());
+                        }
+                    }
                 }
                 if holes_in {
                     for h in holes {
@@ -625,11 +693,13 @@ mod end_to_end {
     impl Install {
         fn new(base: &str, secret: &str) -> Self {
             let (base, secret) = (base.to_owned(), secret.to_owned());
+            let device: &'static DeviceKeys = Box::leak(Box::new(DeviceKeys::generate()));
+            let id = device.public().device_id();
             Install {
                 store: Store::mem(),
-                device: Box::leak(Box::new(DeviceKeys::generate())),
+                device,
                 status: Default::default(),
-                clients: Box::new(move |c| Ok(Client::with_token(&base, &session(&secret, c, &format!("Pilot {c}"))))),
+                clients: Box::new(move |c| Ok(Client::with_token(&base, &session(&secret, c, &format!("Pilot {c}")), &id))),
             }
         }
 
@@ -702,19 +772,21 @@ mod end_to_end {
         let (inv_id, s) = parse_link(&stolen).unwrap();
         let keys = thief.device.public();
         let mac = crypto::invite_mac(&s, &join_msg(joiner_id + 1, &g, &keys));
-        (thief.clients)(joiner_id + 1).unwrap().join(&inv_id, &serde_json::to_string(&JoinBody { keys, mac: crypto::b64(&mac), mac2: None }).unwrap()).unwrap();
+        (thief.clients)(joiner_id + 1).unwrap().join(&inv_id, &serde_json::to_string(&JoinBody { keys, mac: crypto::b64(&mac), mac2: None }).unwrap(), "thief").unwrap();
         a.sync();
         let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
         let bad = reqs.iter().find(|r| r.row.char_id == joiner_id + 1).expect("the thief's request");
         assert!(!bad.verified && bad.meant_for.as_deref() == Some("Pilot J"), "{bad:?}");
-        assert!(a.engine().command(Cmd::Approve { group: g.clone(), char_id: joiner_id + 1 }).is_err());
+        let thief_dev = thief.device.public().device_id();
+        assert!(a.engine().command(Cmd::Approve { group: g.clone(), char_id: joiner_id + 1, device_id: thief_dev, role: Role::Member }).is_err());
 
         b.run(Cmd::Join { link: link.clone(), char_id: joiner_id, prefs: SharePrefs::default() });
         assert!(b.hole("ABC").is_none(), "nothing readable before approval");
         a.sync();
         let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
         assert!(reqs.iter().any(|r| r.row.char_id == joiner_id && r.verified), "the request proves the invite: {reqs:?}");
-        a.run(Cmd::Approve { group: g.clone(), char_id: joiner_id });
+        let b_dev = b.device.public().device_id();
+        a.run(Cmd::Approve { group: g.clone(), char_id: joiner_id, device_id: b_dev.clone(), role: Role::Member });
 
         b.sync();
         let seen = b.hole("ABC").expect("the snapshot brought the owner's hole");
@@ -752,9 +824,50 @@ mod end_to_end {
         b.run(Cmd::Rescan { group: g.clone() });
         assert!(b.hole("RCV").is_some(), "read again once taken");
 
+        // A second device of B's character: it joins with an invite of its own and takes B's role
+        // whatever the approval says.
+        let b2 = Install::new(&base, &secret);
+        let link2 = a.invite_for(&g, joiner_id, "Pilot J");
+        b2.run(Cmd::Join { link: link2, char_id: joiner_id, prefs: SharePrefs::default() });
+        a.sync();
+        let b2_dev = b2.device.public().device_id();
+        a.run(Cmd::Approve { group: g.clone(), char_id: joiner_id, device_id: b2_dev.clone(), role: Role::Viewer });
+        b2.sync();
+        assert!(b2.hole("ABC").is_some(), "the second device reads the group");
+        let roster = a.store.share_members(&g);
+        let joiner = roster.iter().find(|m| m.char_id == joiner_id).unwrap();
+        assert_eq!((joiner.devices.len(), joiner.role), (2, Role::Member), "one member, two devices, the member's role");
+
+        // A viewer reads but cannot share: the server refuses their data.
+        let viewer_id = owner_id + 2;
+        let v = Install::new(&base, &secret);
+        let link3 = a.invite_for(&g, viewer_id, "Pilot V");
+        v.run(Cmd::Join { link: link3, char_id: viewer_id, prefs: SharePrefs::default() });
+        a.sync();
+        a.run(Cmd::Approve { group: g.clone(), char_id: viewer_id, device_id: v.device.public().device_id(), role: Role::Viewer });
+        v.sync();
+        assert!(v.hole("ABC").is_some(), "a viewer reads");
+        let vg = v.store.share_groups().into_iter().find(|x| x.id == g).unwrap();
+        assert_eq!(vg.role, Role::Viewer);
+        let key = v.store.share_key(&g, vg.epoch).unwrap();
+        let op = Op::HoleDead { uid: "nope".into(), at: chrono::Utc::now().timestamp() };
+        let env = ops::seal_op(&op, &g, vg.epoch, &key, viewer_id, v.device);
+        let refused = (v.clients)(viewer_id).unwrap().post_op(&g, &env.op_id, vg.epoch, false, &serde_json::to_string(&env).unwrap());
+        assert!(refused.is_err(), "the server takes no data from a viewer");
+
+        // B's second device is removed: the new key reaches every other device and not it.
+        a.run(Cmd::RemoveDevice { group: g.clone(), char_id: joiner_id, device_id: b2_dev });
+        a.store.upsert_wormhole(&hole("DEV"));
+        a.sync();
+        b.sync();
+        v.sync();
+        let _ = b2.engine().sync_all();
+        assert!(b.hole("DEV").is_some() && v.hole("DEV").is_some(), "the devices that stay read on");
+        assert!(b2.hole("DEV").is_none(), "the removed device reads nothing new");
+
         // Removed, B gets nothing new, and A carries on under a new key.
         a.run(Cmd::Remove { group: g.clone(), char_id: joiner_id });
-        assert_eq!(a.store.share_groups()[0].epoch, 1);
+        assert_eq!(a.store.share_groups()[0].epoch, 2);
         a.store.upsert_wormhole(&hole("XYZ"));
         a.sync();
         let _ = b.engine().sync_all();

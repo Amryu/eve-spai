@@ -57,7 +57,7 @@ impl ShareGroup {
     /// Whether a change of `kind` goes to this group. Something that came from one group goes
     /// back to that group only, never on to the others.
     pub fn takes(&self, kind: &str, origin: Option<&str>) -> bool {
-        self.prefs.sends(kind) && origin.is_none_or(|o| o == self.id)
+        self.role.can_write() && self.prefs.sends(kind) && origin.is_none_or(|o| o == self.id)
     }
 }
 
@@ -70,17 +70,14 @@ pub enum Outgoing {
 }
 
 fn role_code(r: Role) -> &'static str {
-    match r {
-        Role::Member => "member",
-        Role::Admin => "admin",
-        Role::Owner => "owner",
-    }
+    r.code()
 }
 
 fn role_of(s: &str) -> Role {
     match s {
         "owner" => Role::Owner,
         "admin" => Role::Admin,
+        "viewer" => Role::Viewer,
         _ => Role::Member,
     }
 }

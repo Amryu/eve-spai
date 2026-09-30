@@ -68,7 +68,7 @@ pub fn cors(origins: &[String]) -> Option<tower_http::cors::CorsLayer> {
         tower_http::cors::CorsLayer::new()
             .allow_origin(allowed)
             .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::HeaderName::from_static("x-spai-device")])
             .max_age(std::time::Duration::from_secs(3600)),
     )
 }

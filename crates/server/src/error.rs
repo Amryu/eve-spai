@@ -19,6 +19,9 @@ pub enum AppError {
     BadRequest(String),
     #[error("too many requests")]
     TooManyRequests,
+    /// A route of an earlier protocol, answered with what to do instead.
+    #[error("{0}")]
+    Gone(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -33,6 +36,7 @@ impl IntoResponse for AppError {
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Gone(_) => StatusCode::GONE,
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 StatusCode::INTERNAL_SERVER_ERROR

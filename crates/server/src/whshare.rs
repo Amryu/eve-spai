@@ -3,6 +3,7 @@
 //! manage a group. It holds nothing that decrypts a group's data.
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -18,21 +19,35 @@ const RETENTION_HOURS: i64 = 72;
 const MAX_BLOB: usize = 2 * 1024 * 1024;
 const MAX_PAGE: i64 = 500;
 
+/// This protocol's routes. Those of the first, from before devices, answer 410 with a note to update.
+const V: &str = "/api/wh/v2";
+const MAX_DEVICES: i64 = 16;
+const MAX_PENDING: i64 = 3;
+
 pub fn routes(state: AppState) -> Router<AppState> {
+    let r = |p: &str| format!("{V}{p}");
     Router::new()
-        .route("/api/wh/groups", get(my_groups).post(create_group))
-        .route("/api/wh/groups/{g}/members", get(members))
-        .route("/api/wh/groups/{g}/members/{c}/remove", post(remove_member))
-        .route("/api/wh/groups/{g}/members/{c}/role", post(set_role))
-        .route("/api/wh/groups/{g}/keys", get(my_keys))
-        .route("/api/wh/groups/{g}/ops", get(read_ops).post(write_op))
-        .route("/api/wh/groups/{g}/invites", post(create_invite))
-        .route("/api/wh/groups/{g}/requests", get(requests))
-        .route("/api/wh/groups/{g}/requests/{c}/approve", post(approve))
-        .route("/api/wh/groups/{g}/requests/{c}", delete(reject))
-        .route("/api/wh/invites/{i}", get(fetch_invite))
-        .route("/api/wh/invites/{i}/join", post(join))
+        .route(&r("/groups"), get(my_groups).post(create_group))
+        .route(&r("/groups/{g}/members"), get(members))
+        .route(&r("/groups/{g}/members/{c}/remove"), post(remove_member))
+        .route(&r("/groups/{g}/members/{c}/devices/{d}/remove"), post(remove_device))
+        .route(&r("/groups/{g}/members/{c}/role"), post(set_role))
+        .route(&r("/groups/{g}/devices/claim"), post(claim))
+        .route(&r("/groups/{g}/keys"), get(my_keys))
+        .route(&r("/groups/{g}/ops"), get(read_ops).post(write_op))
+        .route(&r("/groups/{g}/invites"), post(create_invite))
+        .route(&r("/groups/{g}/requests"), get(requests))
+        .route(&r("/groups/{g}/requests/{c}/{d}/approve"), post(approve))
+        .route(&r("/groups/{g}/requests/{c}/{d}"), delete(reject))
+        .route(&r("/invites/{i}"), get(fetch_invite))
+        .route(&r("/invites/{i}/join"), post(join))
+        .route(&r("/me/requests"), get(my_requests))
+        .route("/api/wh/{*rest}", axum::routing::any(gone))
         .layer(axum::middleware::from_fn_with_state(state, rate_limit))
+}
+
+async fn gone() -> AppError {
+    AppError::Gone("Wormhole sharing was upgraded. Update EVE Spai (0.13 or later) to keep syncing; your groups are kept.".into())
 }
 
 /// Holds each character to its request budget. A request without a valid session goes through
@@ -65,6 +80,29 @@ fn check_blob(s: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A device id as clients derive it from their keys: 32 hex digits.
+fn check_device(d: &str) -> Result<(), AppError> {
+    if d.len() == 32 && d.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest("device id".into()))
+    }
+}
+
+fn check_label(l: &str) -> Result<(), AppError> {
+    if l.chars().count() > 64 {
+        return Err(AppError::BadRequest("label too long".into()));
+    }
+    Ok(())
+}
+
+/// The device a request comes from, as the client names it.
+fn device_header(h: &HeaderMap) -> Result<String, AppError> {
+    let d = h.get("x-spai-device").and_then(|v| v.to_str().ok()).ok_or_else(|| AppError::BadRequest("which device".into()))?;
+    check_device(d)?;
+    Ok(d.to_owned())
+}
+
 async fn role(st: &AppState, group: &str, char_id: i64) -> Result<Option<String>, AppError> {
     Ok(sqlx::query_scalar("SELECT role FROM wh_members WHERE group_id = $1 AND char_id = $2")
         .bind(group)
@@ -75,6 +113,22 @@ async fn role(st: &AppState, group: &str, char_id: i64) -> Result<Option<String>
 
 async fn member(st: &AppState, group: &str, char_id: i64) -> Result<String, AppError> {
     role(st, group, char_id).await?.ok_or(AppError::Forbidden)
+}
+
+/// A member's role, when the request comes from one of their devices in the group.
+async fn member_device(st: &AppState, group: &str, char_id: i64, h: &HeaderMap) -> Result<(String, String), AppError> {
+    let r = member(st, group, char_id).await?;
+    let d = device_header(h)?;
+    let known: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_devices WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(group)
+        .bind(char_id)
+        .bind(&d)
+        .fetch_optional(&st.db)
+        .await?;
+    if known.is_none() {
+        return Err(AppError::Forbidden);
+    }
+    Ok((r, d))
 }
 
 async fn manager(st: &AppState, group: &str, char_id: i64) -> Result<String, AppError> {
@@ -105,8 +159,11 @@ async fn my_groups(State(st): State<AppState>, SessionIdentity(me): SessionIdent
 
 #[derive(Deserialize)]
 struct CreateGroup {
-    /// The first group key, wrapped to the creator's own public key.
+    /// The first group key, wrapped to the creating device's public key.
     wrapped: String,
+    device_id: String,
+    #[serde(default)]
+    label: String,
 }
 
 #[derive(Serialize)]
@@ -120,6 +177,8 @@ async fn create_group(
     Json(body): Json<CreateGroup>,
 ) -> Result<Json<Created>, AppError> {
     check_blob(&body.wrapped)?;
+    check_device(&body.device_id)?;
+    check_label(&body.label)?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query("INSERT INTO wh_groups (id, owner) VALUES ($1, $2)").bind(&id).bind(me.char_id).execute(&mut *tx).await?;
@@ -129,9 +188,17 @@ async fn create_group(
         .bind(&me.name)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, wrapped) VALUES ($1, 0, $2, $3)")
+    sqlx::query("INSERT INTO wh_devices (group_id, char_id, device_id, label) VALUES ($1, $2, $3, $4)")
         .bind(&id)
         .bind(me.char_id)
+        .bind(&body.device_id)
+        .bind(&body.label)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, 0, $2, $3, $4)")
+        .bind(&id)
+        .bind(me.char_id)
+        .bind(&body.device_id)
         .bind(&body.wrapped)
         .execute(&mut *tx)
         .await?;
@@ -140,10 +207,17 @@ async fn create_group(
 }
 
 #[derive(Serialize)]
+struct DeviceRow {
+    id: String,
+    label: String,
+}
+
+#[derive(Serialize)]
 struct MemberRow {
     char_id: i64,
     name: String,
     role: String,
+    devices: Vec<DeviceRow>,
 }
 
 async fn members(
@@ -156,7 +230,73 @@ async fn members(
         .bind(&g)
         .fetch_all(&st.db)
         .await?;
-    Ok(Json(rows.iter().map(|r| MemberRow { char_id: r.get(0), name: r.get(1), role: r.get(2) }).collect()))
+    let devices = sqlx::query("SELECT char_id, device_id, label FROM wh_devices WHERE group_id = $1 ORDER BY added_at")
+        .bind(&g)
+        .fetch_all(&st.db)
+        .await?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                let c: i64 = r.get(0);
+                MemberRow {
+                    char_id: c,
+                    name: r.get(1),
+                    role: r.get(2),
+                    devices: devices
+                        .iter()
+                        .filter(|d| d.get::<i64, _>(0) == c)
+                        .map(|d| DeviceRow { id: d.get(1), label: d.get(2) })
+                        .collect(),
+                }
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct Claim {
+    device_id: String,
+}
+
+/// The first protocol kept one key per character. The first device of theirs that comes back
+/// takes those keys over under its own id. Nothing to do once claimed, or for a device that
+/// joined as one.
+async fn claim(
+    State(st): State<AppState>,
+    SessionIdentity(me): SessionIdentity,
+    Path(g): Path<String>,
+    Json(c): Json<Claim>,
+) -> Result<StatusCode, AppError> {
+    check_device(&c.device_id)?;
+    if role(&st, &g, me.char_id).await?.is_none() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let mut tx = st.db.begin().await?;
+    let taken: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_devices WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(me.char_id)
+        .bind(&c.device_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if taken.is_none() {
+        let n = sqlx::query("UPDATE wh_devices SET device_id = $3 WHERE group_id = $1 AND char_id = $2 AND device_id = 'legacy'")
+            .bind(&g)
+            .bind(me.char_id)
+            .bind(&c.device_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n > 0 {
+            sqlx::query("UPDATE wh_keys SET device_id = $3 WHERE group_id = $1 AND char_id = $2 AND device_id = 'legacy'")
+                .bind(&g)
+                .bind(me.char_id)
+                .bind(&c.device_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -168,12 +308,14 @@ struct KeyRow {
 async fn my_keys(
     State(st): State<AppState>,
     SessionIdentity(me): SessionIdentity,
+    headers: HeaderMap,
     Path(g): Path<String>,
 ) -> Result<Json<Vec<KeyRow>>, AppError> {
-    member(&st, &g, me.char_id).await?;
-    let rows = sqlx::query("SELECT epoch, wrapped FROM wh_keys WHERE group_id = $1 AND char_id = $2 ORDER BY epoch")
+    let (_, d) = member_device(&st, &g, me.char_id, &headers).await?;
+    let rows = sqlx::query("SELECT epoch, wrapped FROM wh_keys WHERE group_id = $1 AND char_id = $2 AND device_id = $3 ORDER BY epoch")
         .bind(&g)
         .bind(me.char_id)
+        .bind(&d)
         .fetch_all(&st.db)
         .await?;
     Ok(Json(rows.iter().map(|r| KeyRow { epoch: r.get(0), wrapped: r.get(1) }).collect()))
@@ -195,17 +337,22 @@ struct Seq {
 async fn write_op(
     State(st): State<AppState>,
     SessionIdentity(me): SessionIdentity,
+    headers: HeaderMap,
     Path(g): Path<String>,
     Json(op): Json<NewOp>,
 ) -> Result<Json<Seq>, AppError> {
-    member(&st, &g, me.char_id).await?;
+    let (r, d) = member_device(&st, &g, me.char_id, &headers).await?;
+    // A viewer shares nothing; membership entries (leaving, their own devices) still pass.
+    if r == "viewer" && !op.keep {
+        return Err(AppError::Forbidden);
+    }
     check_blob(&op.blob)?;
     if op.op_id.is_empty() || op.op_id.len() > 64 {
         return Err(AppError::BadRequest("op_id".into()));
     }
     // A retry of an entry already stored gets its sequence number back instead of a duplicate.
     let seq: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO wh_ops (group_id, op_id, epoch, author, keep, blob) VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO wh_ops (group_id, op_id, epoch, author, keep, blob, device_id) VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (group_id, op_id) DO NOTHING RETURNING seq",
     )
     .bind(&g)
@@ -214,6 +361,7 @@ async fn write_op(
     .bind(me.char_id)
     .bind(op.keep)
     .bind(&op.blob)
+    .bind(&d)
     .fetch_optional(&st.db)
     .await?;
     let seq = match seq {
@@ -245,10 +393,11 @@ struct OpRow {
 async fn read_ops(
     State(st): State<AppState>,
     SessionIdentity(me): SessionIdentity,
+    headers: HeaderMap,
     Path(g): Path<String>,
     Query(q): Query<After>,
 ) -> Result<Json<Vec<OpRow>>, AppError> {
-    member(&st, &g, me.char_id).await?;
+    member_device(&st, &g, me.char_id, &headers).await?;
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
     let rows = sqlx::query("SELECT seq, author, blob FROM wh_ops WHERE group_id = $1 AND seq > $2 ORDER BY seq LIMIT $3")
         .bind(&g)
@@ -311,6 +460,9 @@ async fn fetch_invite(
 struct Join {
     /// The joiner's public keys and the proof they hold the invite, for the admins to check.
     body: String,
+    device_id: String,
+    #[serde(default)]
+    label: String,
 }
 
 async fn join(
@@ -320,6 +472,8 @@ async fn join(
     Json(j): Json<Join>,
 ) -> Result<StatusCode, AppError> {
     check_blob(&j.body)?;
+    check_device(&j.device_id)?;
+    check_label(&j.label)?;
     let mut tx = st.db.begin().await?;
     let group: String = sqlx::query_scalar(
         "UPDATE wh_invites SET used_by = $2 WHERE id = $1 AND expires_at > now() AND used_by IS NULL RETURNING group_id",
@@ -329,13 +483,24 @@ async fn join(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id <> $3")
+        .bind(&group)
+        .bind(me.char_id)
+        .bind(&j.device_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if pending >= MAX_PENDING {
+        return Err(AppError::TooManyRequests);
+    }
     sqlx::query(
-        "INSERT INTO wh_join_requests (group_id, char_id, name, invite_id, body) VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (group_id, char_id) DO UPDATE SET invite_id = excluded.invite_id, body = excluded.body, created_at = now()",
+        "INSERT INTO wh_join_requests (group_id, char_id, device_id, name, label, invite_id, body) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (group_id, char_id, device_id) DO UPDATE SET invite_id = excluded.invite_id, body = excluded.body, label = excluded.label, created_at = now()",
     )
     .bind(&group)
     .bind(me.char_id)
+    .bind(&j.device_id)
     .bind(&me.name)
+    .bind(&j.label)
     .bind(&i)
     .bind(&j.body)
     .execute(&mut *tx)
@@ -345,9 +510,26 @@ async fn join(
 }
 
 #[derive(Serialize)]
+struct MyRequest {
+    group_id: String,
+    device_id: String,
+}
+
+/// What the caller is still waiting on: a device asked in and not yet let in.
+async fn my_requests(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<Vec<MyRequest>>, AppError> {
+    let rows = sqlx::query("SELECT group_id, device_id FROM wh_join_requests WHERE char_id = $1 ORDER BY created_at")
+        .bind(me.char_id)
+        .fetch_all(&st.db)
+        .await?;
+    Ok(Json(rows.iter().map(|r| MyRequest { group_id: r.get(0), device_id: r.get(1) }).collect()))
+}
+
+#[derive(Serialize)]
 struct RequestRow {
     char_id: i64,
+    device_id: String,
     name: String,
+    label: String,
     invite_id: String,
     body: String,
 }
@@ -358,45 +540,85 @@ async fn requests(
     Path(g): Path<String>,
 ) -> Result<Json<Vec<RequestRow>>, AppError> {
     manager(&st, &g, me.char_id).await?;
-    let rows = sqlx::query("SELECT char_id, name, invite_id, body FROM wh_join_requests WHERE group_id = $1 ORDER BY created_at")
-        .bind(&g)
-        .fetch_all(&st.db)
-        .await?;
-    Ok(Json(rows.iter().map(|r| RequestRow { char_id: r.get(0), name: r.get(1), invite_id: r.get(2), body: r.get(3) }).collect()))
+    let rows = sqlx::query(
+        "SELECT char_id, device_id, name, label, invite_id, body FROM wh_join_requests WHERE group_id = $1 ORDER BY created_at",
+    )
+    .bind(&g)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| RequestRow { char_id: r.get(0), device_id: r.get(1), name: r.get(2), label: r.get(3), invite_id: r.get(4), body: r.get(5) })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
 struct Approve {
-    /// Every epoch key the new member should be able to read, wrapped to them.
+    /// Every epoch key the device should be able to read, wrapped to it.
     keys: Vec<KeyRow>,
+    /// For a new character; another device of a member keeps the member's role.
+    #[serde(default = "default_role")]
+    role: String,
+}
+
+fn default_role() -> String {
+    "member".into()
 }
 
 async fn approve(
     State(st): State<AppState>,
     SessionIdentity(me): SessionIdentity,
-    Path((g, c)): Path<(String, i64)>,
+    Path((g, c, d)): Path<(String, i64, String)>,
     Json(a): Json<Approve>,
 ) -> Result<StatusCode, AppError> {
-    manager(&st, &g, me.char_id).await?;
+    let mine = manager(&st, &g, me.char_id).await?;
+    let allowed = match a.role.as_str() {
+        "member" | "viewer" => true,
+        "admin" => mine == "owner",
+        _ => false,
+    };
+    if !allowed {
+        return Err(AppError::Forbidden);
+    }
     let mut tx = st.db.begin().await?;
-    let name: String = sqlx::query_scalar("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 RETURNING name")
+    let row = sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3 RETURNING name, label")
         .bind(&g)
         .bind(c)
+        .bind(&d)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
-    sqlx::query("INSERT INTO wh_members (group_id, char_id, name, role) VALUES ($1, $2, $3, 'member') ON CONFLICT DO NOTHING")
+    let (name, label): (String, String) = (row.get(0), row.get(1));
+    sqlx::query("INSERT INTO wh_members (group_id, char_id, name, role) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
         .bind(&g)
         .bind(c)
         .bind(&name)
+        .bind(&a.role)
+        .execute(&mut *tx)
+        .await?;
+    let devices: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_devices WHERE group_id = $1 AND char_id = $2")
+        .bind(&g)
+        .bind(c)
+        .fetch_one(&mut *tx)
+        .await?;
+    if devices >= MAX_DEVICES {
+        return Err(AppError::BadRequest("too many devices".into()));
+    }
+    sqlx::query("INSERT INTO wh_devices (group_id, char_id, device_id, label) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
+        .bind(&g)
+        .bind(c)
+        .bind(&d)
+        .bind(&label)
         .execute(&mut *tx)
         .await?;
     for k in &a.keys {
         check_blob(&k.wrapped)?;
-        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, wrapped) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
             .bind(&g)
             .bind(k.epoch)
             .bind(c)
+            .bind(&d)
             .bind(&k.wrapped)
             .execute(&mut *tx)
             .await?;
@@ -408,24 +630,69 @@ async fn approve(
 async fn reject(
     State(st): State<AppState>,
     SessionIdentity(me): SessionIdentity,
-    Path((g, c)): Path<(String, i64)>,
+    Path((g, c, d)): Path<(String, i64, String)>,
 ) -> Result<StatusCode, AppError> {
     manager(&st, &g, me.char_id).await?;
-    sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2").bind(&g).bind(c).execute(&st.db).await?;
+    sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(c)
+        .bind(&d)
+        .execute(&st.db)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
-struct MemberKey {
+struct DeviceKey {
     char_id: i64,
+    device_id: String,
     wrapped: String,
 }
 
 #[derive(Deserialize)]
 struct Remove {
-    /// The next epoch, and its key wrapped to every member who stays.
+    /// The next epoch, and its key wrapped to every device that stays.
     epoch: i32,
-    keys: Vec<MemberKey>,
+    keys: Vec<DeviceKey>,
+}
+
+/// Whether `mine` may take `theirs` (or one of their devices) out. Anyone may take themselves out.
+fn may_remove(mine: &str, theirs: &str, own: bool) -> bool {
+    match theirs {
+        "owner" => false,
+        "admin" => own || mine == "owner",
+        _ => own || mine == "owner" || mine == "admin",
+    }
+}
+
+/// Moves the group to `r.epoch` once the key reaches exactly the devices left in it.
+async fn rotate(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, g: &str, current: i32, r: &Remove) -> Result<(), AppError> {
+    if r.epoch != current + 1 {
+        return Err(AppError::BadRequest(format!("the next epoch is {}", current + 1)));
+    }
+    let stay: Vec<(i64, String)> = sqlx::query_as("SELECT char_id, device_id FROM wh_devices WHERE group_id = $1")
+        .bind(g)
+        .fetch_all(&mut **tx)
+        .await?;
+    // Every remaining device must get the new key, or it would be locked out of the group.
+    let sent: std::collections::HashSet<(i64, &str)> = r.keys.iter().map(|k| (k.char_id, k.device_id.as_str())).collect();
+    let left: std::collections::HashSet<(i64, &str)> = stay.iter().map(|(c, d)| (*c, d.as_str())).collect();
+    if sent != left || sent.len() != r.keys.len() {
+        return Err(AppError::BadRequest("the new key must be wrapped to exactly the remaining devices".into()));
+    }
+    for k in &r.keys {
+        check_blob(&k.wrapped)?;
+        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, $2, $3, $4, $5)")
+            .bind(g)
+            .bind(r.epoch)
+            .bind(k.char_id)
+            .bind(&k.device_id)
+            .bind(&k.wrapped)
+            .execute(&mut **tx)
+            .await?;
+    }
+    sqlx::query("UPDATE wh_groups SET epoch = $2 WHERE id = $1").bind(g).bind(r.epoch).execute(&mut **tx).await?;
+    Ok(())
 }
 
 async fn remove_member(
@@ -436,37 +703,62 @@ async fn remove_member(
 ) -> Result<StatusCode, AppError> {
     let mine = member(&st, &g, me.char_id).await?;
     let theirs = role(&st, &g, c).await?.ok_or(AppError::NotFound)?;
-    let leaving = c == me.char_id;
-    let allowed = match theirs.as_str() {
-        "owner" => false,
-        "admin" => leaving || mine == "owner",
-        _ => leaving || mine == "owner" || mine == "admin",
-    };
+    if !may_remove(&mine, &theirs, c == me.char_id) {
+        return Err(AppError::Forbidden);
+    }
+    let mut tx = st.db.begin().await?;
+    let current: i32 = sqlx::query_scalar("SELECT epoch FROM wh_groups WHERE id = $1 FOR UPDATE").bind(&g).fetch_one(&mut *tx).await?;
+    sqlx::query("DELETE FROM wh_members WHERE group_id = $1 AND char_id = $2").bind(&g).bind(c).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM wh_keys WHERE group_id = $1 AND char_id = $2").bind(&g).bind(c).execute(&mut *tx).await?;
+    rotate(&mut tx, &g, current, &r).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_device(
+    State(st): State<AppState>,
+    SessionIdentity(me): SessionIdentity,
+    Path((g, c, d)): Path<(String, i64, String)>,
+    Json(r): Json<Remove>,
+) -> Result<StatusCode, AppError> {
+    let mine = member(&st, &g, me.char_id).await?;
+    let theirs = role(&st, &g, c).await?.ok_or(AppError::NotFound)?;
+    let own = c == me.char_id;
+    // An owner's device goes only by the owner's own hand, and never the last one.
+    let allowed = if theirs == "owner" { own } else { may_remove(&mine, &theirs, own) };
     if !allowed {
         return Err(AppError::Forbidden);
     }
     let mut tx = st.db.begin().await?;
     let current: i32 = sqlx::query_scalar("SELECT epoch FROM wh_groups WHERE id = $1 FOR UPDATE").bind(&g).fetch_one(&mut *tx).await?;
-    if r.epoch != current + 1 {
-        return Err(AppError::BadRequest(format!("the next epoch is {}", current + 1)));
+    let n = sqlx::query("DELETE FROM wh_devices WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(c)
+        .bind(&d)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound);
     }
-    sqlx::query("DELETE FROM wh_members WHERE group_id = $1 AND char_id = $2").bind(&g).bind(c).execute(&mut *tx).await?;
-    let stay: Vec<i64> = sqlx::query_scalar("SELECT char_id FROM wh_members WHERE group_id = $1").bind(&g).fetch_all(&mut *tx).await?;
-    // Every remaining member must get the new key, or they would be locked out of the group.
-    if stay.iter().any(|m| !r.keys.iter().any(|k| k.char_id == *m)) || r.keys.iter().any(|k| !stay.contains(&k.char_id)) {
-        return Err(AppError::BadRequest("the new key must be wrapped to exactly the remaining members".into()));
+    sqlx::query("DELETE FROM wh_keys WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(c)
+        .bind(&d)
+        .execute(&mut *tx)
+        .await?;
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_devices WHERE group_id = $1 AND char_id = $2")
+        .bind(&g)
+        .bind(c)
+        .fetch_one(&mut *tx)
+        .await?;
+    if left == 0 {
+        if theirs == "owner" {
+            return Err(AppError::BadRequest("the owner keeps at least one device".into()));
+        }
+        sqlx::query("DELETE FROM wh_members WHERE group_id = $1 AND char_id = $2").bind(&g).bind(c).execute(&mut *tx).await?;
     }
-    for k in &r.keys {
-        check_blob(&k.wrapped)?;
-        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, wrapped) VALUES ($1, $2, $3, $4)")
-            .bind(&g)
-            .bind(r.epoch)
-            .bind(k.char_id)
-            .bind(&k.wrapped)
-            .execute(&mut *tx)
-            .await?;
-    }
-    sqlx::query("UPDATE wh_groups SET epoch = $2 WHERE id = $1").bind(&g).bind(r.epoch).execute(&mut *tx).await?;
+    rotate(&mut tx, &g, current, &r).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -482,7 +774,7 @@ async fn set_role(
     Path((g, c)): Path<(String, i64)>,
     Json(r): Json<SetRole>,
 ) -> Result<StatusCode, AppError> {
-    if member(&st, &g, me.char_id).await? != "owner" || !matches!(r.role.as_str(), "admin" | "member") || c == me.char_id {
+    if member(&st, &g, me.char_id).await? != "owner" || !matches!(r.role.as_str(), "admin" | "member" | "viewer") || c == me.char_id {
         return Err(AppError::Forbidden);
     }
     let n = sqlx::query("UPDATE wh_members SET role = $3 WHERE group_id = $1 AND char_id = $2")

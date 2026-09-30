@@ -1061,7 +1061,7 @@ fn wormholes_focus_scene(
             if name.ends_with("_pins") {
                 a.settings.wh_route_pins = vec!["319-3D".into()];
             }
-            if name.ends_with("_sharing") {
+            if name.contains("_sharing") {
                 use crate::share::ops::Role;
                 use crate::store::{ShareGroup, SharePrefs};
                 let group = |id: &str, name: &str, role, prefs| ShareGroup { id: id.into(), name: name.into(), char_id: 1, role, epoch: 0, cursor: 0, prefs };
@@ -1069,7 +1069,20 @@ fn wormholes_focus_scene(
                     group("g1", "Home chain", Role::Owner, SharePrefs::default()),
                     group("g2", "Scout pool", Role::Member, SharePrefs { send_holes: false, recv_holes: false, hidden: true, ..Default::default() }),
                 ]);
+                if name.ends_with("_members") {
+                    // Big groups: the sharing window must not grow with them.
+                    let keys = crate::share::crypto::DeviceKeys::generate().public();
+                    let member = |i: i64, role| crate::share::ops::Member::new(90_000_000 + i, &format!("Pilot {i:02}"), role, crate::share::ops::Device::of(keys, "EVE Spai app"));
+                    for (g, off) in [("g1", 0), ("g2", 100)] {
+                        let mut ms: Vec<_> = (1..60).map(|i| member(off + i, Role::Member)).collect();
+                        ms.push(member(off, Role::Owner));
+                        a.wh_share_seed_members(g, &ms, g == "g1");
+                    }
+                }
                 a.wh_share.open = true;
+                // Nothing behind the windows: the scene is about them, and the checks would read the
+                // map's widgets under a floating window as overlaps.
+                a.wh_cache.clear();
             }
             if name.contains("_zoomed_out") {
                 a.wh_graph.set_zoom(0.25);
@@ -2277,6 +2290,7 @@ pub(crate) fn all() -> Vec<Scene> {
         }
     }));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_sharing_members", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
     v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));
     v.push(map_layers_scene("map_layers", [320.0, 800.0]));

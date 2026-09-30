@@ -11,6 +11,8 @@ use super::crypto::{self, DeviceKeys, Key, PublicKeys};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Sees the group's data, shares none.
+    Viewer,
     Member,
     Admin,
     Owner,
@@ -21,21 +23,87 @@ impl Role {
         self >= Role::Admin
     }
 
+    pub fn can_write(self) -> bool {
+        self >= Role::Member
+    }
+
     pub fn label(self) -> &'static str {
         match self {
+            Role::Viewer => "Viewer",
             Role::Member => "Member",
             Role::Admin => "Admin",
             Role::Owner => "Owner",
         }
     }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Role::Viewer => "viewer",
+            Role::Member => "member",
+            Role::Admin => "admin",
+            Role::Owner => "owner",
+        }
+    }
 }
 
+/// Most devices one character may hold in a group.
+pub const MAX_DEVICES: usize = 16;
+
+/// One install or browser of a member: its keys sign what it writes and receive the group key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub keys: PublicKeys,
+    #[serde(default)]
+    pub label: String,
+}
+
+impl Device {
+    pub fn of(keys: PublicKeys, label: &str) -> Self {
+        Device { id: keys.device_id(), keys, label: label.to_owned() }
+    }
+}
+
+/// A character in a group. The role is the character's, whichever of its devices acts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "MemberWire")]
 pub struct Member {
     pub char_id: i64,
     pub name: String,
-    pub keys: PublicKeys,
     pub role: Role,
+    pub devices: Vec<Device>,
+}
+
+/// A member as either version wrote it: before devices, one set of keys.
+#[derive(Deserialize)]
+struct MemberWire {
+    char_id: i64,
+    name: String,
+    role: Role,
+    #[serde(default)]
+    devices: Vec<Device>,
+    #[serde(default)]
+    keys: Option<PublicKeys>,
+}
+
+impl From<MemberWire> for Member {
+    fn from(w: MemberWire) -> Self {
+        let devices = match (w.devices.is_empty(), w.keys) {
+            (true, Some(k)) => vec![Device::of(k, "")],
+            _ => w.devices,
+        };
+        Member { char_id: w.char_id, name: w.name, role: w.role, devices }
+    }
+}
+
+impl Member {
+    pub fn new(char_id: i64, name: &str, role: Role, device: Device) -> Self {
+        Member { char_id, name: name.to_owned(), role, devices: vec![device] }
+    }
+
+    pub fn device(&self, id: &str) -> Option<&Device> {
+        self.devices.iter().find(|d| d.id == id)
+    }
 }
 
 /// One field of a hole and when it was last set, for last-writer-wins per field.
@@ -71,6 +139,9 @@ pub enum Op {
     /// The first entry: who owns the group.
     Genesis { name: String, owner: Member },
     MemberAdded { member: Member },
+    /// Another device of a member; the member's role covers it.
+    DeviceAdded { char_id: i64, device: Device },
+    DeviceRemoved { char_id: i64, device_id: String },
     MemberRemoved { char_id: i64 },
     RoleSet { char_id: i64, role: Role },
     Hole { hole: HoleState },
@@ -84,7 +155,20 @@ pub enum Op {
 impl Op {
     /// Membership is kept for as long as the group lives; data expires with the holes.
     pub fn keep(&self) -> bool {
-        matches!(self, Op::Genesis { .. } | Op::MemberAdded { .. } | Op::MemberRemoved { .. } | Op::RoleSet { .. })
+        matches!(
+            self,
+            Op::Genesis { .. }
+                | Op::MemberAdded { .. }
+                | Op::DeviceAdded { .. }
+                | Op::DeviceRemoved { .. }
+                | Op::MemberRemoved { .. }
+                | Op::RoleSet { .. }
+        )
+    }
+
+    /// Group data, which only a member who may write can make.
+    pub fn is_data(&self) -> bool {
+        matches!(self, Op::Hole { .. } | Op::HoleDead { .. } | Op::Sigs { .. } | Op::SigDelete { .. })
     }
 }
 
@@ -95,6 +179,9 @@ pub struct Envelope {
     pub group: String,
     pub epoch: u32,
     pub author: i64,
+    /// Which of the author's devices signed. Absent in entries from before devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     #[serde(with = "b64v")]
     pub sealed: Vec<u8>,
     #[serde(with = "b64v")]
@@ -116,9 +203,12 @@ fn context(group: &str, epoch: u32, op_id: &str) -> Vec<u8> {
 }
 
 /// The bytes a signature covers: everything the envelope says, so none of it can be moved.
-fn signed_bytes(group: &str, epoch: u32, op_id: &str, author: i64, sealed: &[u8]) -> Vec<u8> {
+fn signed_bytes(group: &str, epoch: u32, op_id: &str, author: i64, device: Option<&str>, sealed: &[u8]) -> Vec<u8> {
     let mut m = context(group, epoch, op_id);
-    m.extend_from_slice(format!("|{author}|").as_bytes());
+    match device {
+        Some(d) => m.extend_from_slice(format!("|{author}|{d}|").as_bytes()),
+        None => m.extend_from_slice(format!("|{author}|").as_bytes()),
+    }
     m.extend_from_slice(sealed);
     m
 }
@@ -138,14 +228,23 @@ pub fn seal_op(op: &Op, group: &str, epoch: u32, key: &Key, author: i64, device:
     value["v"] = serde_json::Value::from(VERSION);
     let plain = serde_json::to_vec(&value).expect("ops serialize");
     let sealed = crypto::seal(key, &context(group, epoch, &op_id), &plain);
-    let sig = device.sign(&signed_bytes(group, epoch, &op_id, author, &sealed));
-    Envelope { op_id, group: group.to_owned(), epoch, author, sealed, sig }
+    let id = device.public().device_id();
+    let sig = device.sign(&signed_bytes(group, epoch, &op_id, author, Some(&id), &sealed));
+    Envelope { op_id, group: group.to_owned(), epoch, author, device: Some(id), sealed, sig }
 }
 
-/// Checks the author's signature against `author_keys`, then opens the payload.
-pub fn open_op(env: &Envelope, key: &Key, author_keys: &PublicKeys) -> Result<Op> {
-    let msg = signed_bytes(&env.group, env.epoch, &env.op_id, env.author, &env.sealed);
-    if !crypto::verify(&author_keys.sign, &msg, &env.sig) {
+/// Checks the signature against the author's device that made it, then opens the payload. An entry
+/// from before devices names none, and any of the author's devices may have signed it.
+pub fn open_op(env: &Envelope, key: &Key, author: &Member) -> Result<Op> {
+    let signed_by = |d: &Device| {
+        let msg = signed_bytes(&env.group, env.epoch, &env.op_id, env.author, env.device.as_deref(), &env.sealed);
+        crypto::verify(&d.keys.sign, &msg, &env.sig)
+    };
+    let ok = match &env.device {
+        Some(id) => author.device(id).is_some_and(|d| d.keys.device_id() == *id && signed_by(d)),
+        None => author.devices.iter().any(signed_by),
+    };
+    if !ok {
         bail!("signature does not match the author");
     }
     let plain = crypto::open(key, &context(&env.group, env.epoch, &env.op_id), &env.sealed)?;
@@ -163,6 +262,11 @@ pub struct Roster {
 impl Roster {
     pub fn role(&self, char_id: i64) -> Option<Role> {
         self.members.get(&char_id).map(|m| m.role)
+    }
+
+    /// Whether `author` may share data now.
+    pub fn can_write(&self, author: i64) -> bool {
+        self.role(author).is_some_and(Role::can_write)
     }
 
     /// Applies a membership entry by `author`. Data entries are none of its business.
@@ -186,7 +290,44 @@ impl Roster {
                 if member.role == Role::Owner || (member.role == Role::Admin && self.role(author) != Some(Role::Owner)) {
                     bail!("role above what the author may give");
                 }
+                if self.members.contains_key(&member.char_id) {
+                    bail!("already a member; another device is added as a device");
+                }
+                if member.devices.is_empty() || member.devices.len() > MAX_DEVICES || member.devices.iter().any(|d| d.keys.device_id() != d.id) {
+                    bail!("a member's devices do not add up");
+                }
                 self.members.insert(member.char_id, member.clone());
+            }
+            Op::DeviceAdded { char_id, device } => {
+                if !manager && *char_id != author {
+                    bail!("only an admin, or the member themselves, adds a device");
+                }
+                if device.keys.device_id() != device.id {
+                    bail!("a device named for other keys");
+                }
+                let m = self.members.get_mut(char_id).ok_or_else(|| anyhow!("not a member"))?;
+                if m.device(&device.id).is_none() {
+                    if m.devices.len() >= MAX_DEVICES {
+                        bail!("too many devices");
+                    }
+                    m.devices.push(device.clone());
+                }
+            }
+            Op::DeviceRemoved { char_id, device_id } => {
+                let own = *char_id == author;
+                let target = self.role(*char_id).ok_or_else(|| anyhow!("not a member"))?;
+                if !own && (!manager || (target >= Role::Admin && self.role(author) != Some(Role::Owner))) {
+                    bail!("not allowed to remove that device");
+                }
+                let m = self.members.get_mut(char_id).expect("checked above");
+                let last = m.devices.iter().all(|d| d.id == *device_id);
+                if last && target == Role::Owner {
+                    bail!("the owner keeps at least one device");
+                }
+                m.devices.retain(|d| d.id != *device_id);
+                if last {
+                    self.members.remove(char_id);
+                }
             }
             Op::MemberRemoved { char_id } => {
                 let leaving = *char_id == author;
@@ -219,7 +360,7 @@ mod tests {
     use super::*;
 
     fn member(id: i64, keys: &DeviceKeys, role: Role) -> Member {
-        Member { char_id: id, name: format!("Pilot {id}"), keys: keys.public(), role }
+        Member::new(id, &format!("Pilot {id}"), role, Device::of(keys.public(), ""))
     }
 
     #[test]
@@ -228,14 +369,23 @@ mod tests {
         let key = crypto::random32();
         let op = Op::HoleDead { uid: "u1".into(), at: 5 };
         let env = seal_op(&op, "g1", 0, &key, 1, &alice);
-        assert_eq!(open_op(&env, &key, &alice.public()).unwrap(), op);
-        assert!(open_op(&env, &key, &mallory.public()).is_err(), "claimed by someone else's key");
+        let (a, m) = (member(1, &alice, Role::Member), member(1, &mallory, Role::Member));
+        assert_eq!(open_op(&env, &key, &a).unwrap(), op);
+        assert!(open_op(&env, &key, &m).is_err(), "claimed by someone else's key");
         let mut moved = env.clone();
         moved.group = "g2".into();
-        assert!(open_op(&moved, &key, &alice.public()).is_err(), "replayed into another group");
+        assert!(open_op(&moved, &key, &a).is_err(), "replayed into another group");
         let mut reauthored = env.clone();
         reauthored.author = 2;
-        assert!(open_op(&reauthored, &key, &alice.public()).is_err());
+        assert!(open_op(&reauthored, &key, &a).is_err());
+        // Another device of the same member signed it: the named device must be the one.
+        let mut both = a.clone();
+        both.devices.push(Device::of(mallory.public(), "second"));
+        let mut renamed = env.clone();
+        renamed.device = Some(mallory.public().device_id());
+        assert!(open_op(&renamed, &key, &both).is_err(), "a signature passed off as another device's");
+        let by_second = seal_op(&op, "g1", 0, &key, 1, &mallory);
+        assert_eq!(open_op(&by_second, &key, &both).unwrap(), op, "any of the member's devices writes");
     }
 
     #[test]
@@ -246,13 +396,14 @@ mod tests {
         let plain = crypto::open(&key, &context("g1", 0, &env.op_id), &env.sealed).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&plain).unwrap();
         assert_eq!(v["v"], 1);
-        assert_eq!(open_op(&env, &key, &alice.public()).unwrap(), op);
-        // As released versions seal it, without `v`.
+        let a = member(1, &alice, Role::Member);
+        assert_eq!(open_op(&env, &key, &a).unwrap(), op);
+        // As released versions seal it, without `v` and without a device.
         let op_id = new_op_id();
         let sealed = crypto::seal(&key, &context("g1", 0, &op_id), &serde_json::to_vec(&op).unwrap());
-        let sig = alice.sign(&signed_bytes("g1", 0, &op_id, 1, &sealed));
-        let old = Envelope { op_id, group: "g1".into(), epoch: 0, author: 1, sealed, sig };
-        assert_eq!(open_op(&old, &key, &alice.public()).unwrap(), op);
+        let sig = alice.sign(&signed_bytes("g1", 0, &op_id, 1, None, &sealed));
+        let old = Envelope { op_id, group: "g1".into(), epoch: 0, author: 1, device: None, sealed, sig };
+        assert_eq!(open_op(&old, &key, &a).unwrap(), op);
     }
 
     #[test]
@@ -269,5 +420,41 @@ mod tests {
         r.apply(3, &Op::MemberRemoved { char_id: 3 }).unwrap();
         assert_eq!(r.role(3), None, "anyone may leave");
         assert!(r.apply(1, &Op::Genesis { name: "x".into(), owner: member(1, &o, Role::Owner) }).is_err());
+    }
+
+    /// A character's devices share its role; each is added by an admin or by the character itself,
+    /// and a viewer is a member that shares nothing.
+    #[test]
+    fn devices_share_their_character_and_viewers_do_not_write() {
+        let (o, v, v2, x) = (DeviceKeys::generate(), DeviceKeys::generate(), DeviceKeys::generate(), DeviceKeys::generate());
+        let mut r = Roster::default();
+        r.apply(1, &Op::Genesis { name: "Chain".into(), owner: member(1, &o, Role::Owner) }).unwrap();
+        r.apply(1, &Op::MemberAdded { member: member(2, &v, Role::Viewer) }).unwrap();
+        assert!(!r.can_write(2) && r.can_write(1));
+        assert!(r.apply(1, &Op::MemberAdded { member: member(2, &v2, Role::Member) }).is_err(), "a second device is not a second member");
+        r.apply(2, &Op::DeviceAdded { char_id: 2, device: Device::of(v2.public(), "browser") }).unwrap();
+        assert_eq!(r.members[&2].devices.len(), 2);
+        assert_eq!(r.role(2), Some(Role::Viewer), "the new device keeps the character's role");
+        let forged = Device { id: v.public().device_id(), keys: x.public(), label: String::new() };
+        assert!(r.apply(1, &Op::DeviceAdded { char_id: 2, device: forged }).is_err(), "an id that is not its keys'");
+        assert!(r.apply(2, &Op::DeviceAdded { char_id: 1, device: Device::of(x.public(), "") }).is_err(), "adding to someone else");
+        r.apply(1, &Op::RoleSet { char_id: 2, role: Role::Member }).unwrap();
+        assert!(r.can_write(2));
+        r.apply(2, &Op::DeviceRemoved { char_id: 2, device_id: v.public().device_id() }).unwrap();
+        r.apply(1, &Op::DeviceRemoved { char_id: 2, device_id: v2.public().device_id() }).unwrap();
+        assert_eq!(r.role(2), None, "no devices left, no member");
+        assert!(r.apply(1, &Op::DeviceRemoved { char_id: 1, device_id: o.public().device_id() }).is_err(), "the owner's last device");
+    }
+
+    /// A member stored or logged before devices had one set of keys: it reads as one device.
+    #[test]
+    fn a_member_from_before_devices_reads_as_one_device() {
+        let k = DeviceKeys::generate().public();
+        let old = serde_json::json!({ "char_id": 7, "name": "Old Pilot", "keys": k, "role": "admin" });
+        let m: Member = serde_json::from_value(old).unwrap();
+        assert_eq!(m.devices, vec![Device::of(k, "")]);
+        assert_eq!(m.role, Role::Admin);
+        let back: Member = serde_json::from_value(serde_json::to_value(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
     }
 }

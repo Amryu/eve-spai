@@ -89,11 +89,19 @@ pub struct PublicKeys {
 impl PublicKeys {
     /// Short, comparable over voice: the first bytes of both keys' hash.
     pub fn fingerprint(&self) -> String {
+        self.digest()[..8].chunks(2).map(|c| format!("{:02X}{:02X}", c[0], c[1])).collect::<Vec<_>>().join("-")
+    }
+
+    /// Names one device among a member's: anyone holding the keys can work it out again.
+    pub fn device_id(&self) -> String {
+        self.digest()[..16].iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn digest(&self) -> Vec<u8> {
         let mut h = ring::digest::Context::new(&ring::digest::SHA256);
         h.update(&self.sign);
         h.update(&self.enc);
-        let d = h.finish();
-        d.as_ref()[..8].chunks(2).map(|c| format!("{:02X}{:02X}", c[0], c[1])).collect::<Vec<_>>().join("-")
+        h.finish().as_ref().to_vec()
     }
 }
 
