@@ -1523,6 +1523,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
+ "glow",
  "glutin",
  "glutin-winit",
  "image",
@@ -5879,6 +5880,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spai-assets"
+version = "0.13.1"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "spai-core",
+]
+
+[[package]]
 name = "spai-core"
 version = "0.13.1"
 dependencies = [
@@ -5917,7 +5927,22 @@ dependencies = [
  "egui",
  "egui-phosphor",
  "rust-sugiyama",
+ "serde",
  "spai-core",
+]
+
+[[package]]
+name = "spai-web"
+version = "0.13.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "ehttp",
+ "log",
+ "spai-core",
+ "spai-ui",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

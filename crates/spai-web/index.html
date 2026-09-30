@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>EVE Spai wormholes</title>
+  <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
+  <link data-trunk rel="copy-file" href="assets/universe.json.gz">
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1e22; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+               color: #9aa3ad; font: 15px system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <canvas id="spai"></canvas>
+  <div id="loading">Loading EVE Spai…</div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+[package]
+name = "spai-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Writes the data files the EVE Spai web app loads, from the desktop's imported static data"
+publish = false
+
+[dependencies]
+spai-core = { path = "../spai-core" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+anyhow = "1"

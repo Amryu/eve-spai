@@ -1,0 +1,20 @@
+[package]
+name = "spai-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai's wormhole map in the browser, for group members without the app"
+publish = false
+
+[dependencies]
+spai-core = { path = "../spai-core" }
+spai-ui = { path = "../spai-ui" }
+egui = "0.34"
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WebGL through glow: works in more browsers than WebGPU, and is smaller.
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+ehttp = "0.7"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Window", "Element", "HtmlCanvasElement"] }

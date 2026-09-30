@@ -3,6 +3,7 @@
 
 pub mod ansiblex;
 pub mod clock;
+pub mod factions;
 pub mod geo;
 pub mod jove;
 pub mod jumproute;
@@ -11,5 +12,6 @@ pub mod route;
 pub mod routeforce;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod universe;
 pub mod whdata;
 pub mod wormholes;

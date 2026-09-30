@@ -13,6 +13,7 @@ path = "src/lib.rs"
 spai-core = { path = "../spai-core" }
 egui = "0.34"
 egui-phosphor = "0.12"
+serde = { version = "1", features = ["derive"] }
 # Sugiyama's layered layout for the wormhole map's "Layered" style. Pure Rust (petgraph).
 rust-sugiyama = "0.4"
 
