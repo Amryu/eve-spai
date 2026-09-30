@@ -4152,7 +4152,7 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
         .collect()
 }
 
-const BAKED_DEFAULTS: u32 = 1;
+const BAKED_DEFAULTS: u32 = 2;
 const BAKED_REGION: &str = "Insmother";
 const BAKED_BRIDGES: &str = include_str!("../assets/default_ansiblex.txt");
 const BAKED_UPGRADES: &str = include_str!("../assets/default_sov_upgrades.txt");
