@@ -77,6 +77,12 @@ impl<T: Transport> Client<T> {
         v["id"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("no group id"))
     }
 
+    /// Ends the group for everyone; the owner only.
+    pub async fn delete_group(&self, g: &str) -> Result<()> {
+        self.call(Method::Delete, &format!("/groups/{g}"), None).await?;
+        Ok(())
+    }
+
     pub async fn keys(&self, g: &str) -> Result<Vec<KeyRow>> {
         self.get(&format!("/groups/{g}/keys")).await
     }

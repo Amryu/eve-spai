@@ -28,6 +28,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let r = |p: &str| format!("{V}{p}");
     Router::new()
         .route(&r("/groups"), get(my_groups).post(create_group))
+        .route(&r("/groups/{g}"), axum::routing::delete(delete_group))
         .route(&r("/groups/{g}/members"), get(members))
         .route(&r("/groups/{g}/members/{c}/remove"), post(remove_member))
         .route(&r("/groups/{g}/members/{c}/devices/{d}/remove"), post(remove_device))
@@ -120,8 +121,28 @@ async fn role(st: &AppState, group: &str, char_id: i64) -> Result<Option<String>
         .await?)
 }
 
+/// The caller's role, or why there is none: a deleted group says so, so members' apps drop it.
 async fn member(st: &AppState, group: &str, char_id: i64) -> Result<String, AppError> {
-    role(st, group, char_id).await?.ok_or(AppError::Forbidden)
+    if let Some(r) = role(st, group, char_id).await? {
+        return Ok(r);
+    }
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_groups WHERE id = $1").bind(group).fetch_optional(&st.db).await?;
+    Err(match exists {
+        Some(_) => AppError::Forbidden,
+        None => AppError::Gone(GROUP_DELETED.into()),
+    })
+}
+
+/// What a member's app hears about a group its owner deleted.
+pub const GROUP_DELETED: &str = "this group was deleted by its owner";
+
+/// The owner ends the group: members, keys, the log and invites go with it.
+async fn delete_group(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(g): Path<String>) -> Result<StatusCode, AppError> {
+    if member(&st, &g, me.char_id).await? != "owner" {
+        return Err(AppError::Forbidden);
+    }
+    sqlx::query("DELETE FROM wh_groups WHERE id = $1").bind(&g).execute(&st.db).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A member's role, when the request comes from one of their devices in the group.

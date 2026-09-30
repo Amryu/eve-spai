@@ -59,6 +59,20 @@ if (mode === 'edit') {
   }
   console.log('edited');
 }
+if (mode === 'admin') {
+  // An admin now: the Group tab, where the next request waits, then Approve on it.
+  const at = JSON.parse(process.env.SPAI_E2E_CLICKS || '[]');
+  for (const [i, [x, y]] of at.entries()) {
+    // Requests show after the round that fetches them.
+    await page.waitForTimeout(i === 0 ? 1000 : 17000);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(800);
+    await page.screenshot({ path: shot.replace('.png', `-admin${i}.png`) });
+  }
+  // The approval goes out on the round it starts.
+  await page.waitForTimeout(6000);
+  console.log('approved-there');
+}
 if (process.env.SPAI_E2E_MAP) {
   const [x, y] = JSON.parse(process.env.SPAI_E2E_MAP);
   await page.mouse.click(x, y);
