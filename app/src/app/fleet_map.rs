@@ -913,9 +913,11 @@ impl SpaiApp {
                                 }
                                 let t = egui::RichText::new(&r.text);
                                 let t = if r.at > until { t.weak() } else if here { t.strong() } else { t };
-                                let label = ui.add(egui::Label::new(t).truncate());
+                                // One tooltip: the full line (it may be cut off) and its details, rather than
+                                // egui's copy of the cut-off line beside ours.
+                                let label = ui.add(egui::Label::new(t).truncate().show_tooltip_when_elided(r.tip.is_none()));
                                 if let Some(tip) = &r.tip {
-                                    label.on_hover_text(tip);
+                                    label.on_hover_text(format!("{}\n{tip}", r.text));
                                 }
                             });
                         }

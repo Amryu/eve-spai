@@ -506,7 +506,7 @@ impl SpaiApp {
                             let link = egui::RichText::new(sys_name).color(ui.visuals().hyperlink_color);
                             if !self.sig_browser.tree
                                 && ui
-                                    .add(egui::Label::new(link).truncate().sense(egui::Sense::click()))
+                                    .add(egui::Label::new(link).truncate().show_tooltip_when_elided(false).sense(egui::Sense::click()))
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .on_hover_text(format!("{sys_name}: show it on the wormhole map"))
                                     .clicked()
