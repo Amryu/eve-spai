@@ -2659,9 +2659,9 @@ mod route_extension_tests {
     #[test]
     fn dragging_on_from_the_destination_keeps_it_as_a_waypoint() {
         let (_ctx, mut a) = app();
-        a.map_take_route("gate", DQ, THREE);
+        a.map_take_route("gate", "gate", DQ, THREE);
         assert_eq!(a.map_route_anchors, vec![DQ, THREE]);
-        a.map_take_route("gate", THREE, K5);
+        a.map_take_route("gate", "gate", THREE, K5);
         assert_eq!(a.map_route_anchors, vec![DQ, THREE, K5], "the old destination became a waypoint");
         let opt = a.map_route_opts.first().expect("a route");
         let wp = crate::web::route::ingame_waypoints(opt, Some(DQ));
@@ -2674,9 +2674,9 @@ mod route_extension_tests {
     #[test]
     fn extending_a_route_does_not_push_a_destination() {
         let (_ctx, mut a) = app();
-        a.map_take_route("gate", DQ, THREE);
+        a.map_take_route("gate", "gate", DQ, THREE);
         assert_eq!(a.route_destination, Some(THREE), "a plain route still sets its destination");
-        a.map_take_route("gate", THREE, K5);
+        a.map_take_route("gate", "gate", THREE, K5);
         assert_eq!(
             a.route_destination,
             Some(THREE),
@@ -2688,9 +2688,9 @@ mod route_extension_tests {
     #[test]
     fn dragging_from_the_start_restarts_the_route() {
         let (_ctx, mut a) = app();
-        a.map_take_route("gate", DQ, THREE);
-        a.map_take_route("gate", THREE, K5);
-        a.map_take_route("gate", DQ, K5);
+        a.map_take_route("gate", "gate", DQ, THREE);
+        a.map_take_route("gate", "gate", THREE, K5);
+        a.map_take_route("gate", "gate", DQ, K5);
         assert_eq!(a.map_route_anchors, vec![DQ, K5], "everything after the start is rewritten");
     }
 
@@ -2699,9 +2699,9 @@ mod route_extension_tests {
     fn waypoints_keep_the_order_they_were_added_in() {
         let (_ctx, mut a) = app();
         a.map_route_start("gate", DQ);
-        a.map_route_set_dest(K5);
-        a.map_route_add_waypoint(THREE);
-        a.map_route_add_waypoint(DQ);
+        a.map_route_set_dest(K5, None);
+        a.map_route_add_waypoint(THREE, None);
+        a.map_route_add_waypoint(DQ, None);
         assert_eq!(a.map_route_anchors, vec![DQ, THREE, DQ, K5]);
     }
 
@@ -2711,8 +2711,39 @@ mod route_extension_tests {
         use crate::app::map_route::plain_gate_plan;
         assert!(plain_gate_plan("gate", 2), "a start and a destination is what it always did");
         assert!(!plain_gate_plan("gate", 3), "a waypoint would be cleared by a bare destination");
-        assert!(!plain_gate_plan("titan", 2), "a titan route is never flown by the autopilot");
+        assert!(!plain_gate_plan("mixed", 2), "a mixed route is never flown by the autopilot alone");
         assert!(!plain_gate_plan("jump", 2));
+    }
+
+    /// A mixed route keeps one kind per leg, lined up with the anchors through every edit.
+    #[test]
+    fn a_mixed_route_keeps_each_legs_kind_through_edits() {
+        let (_ctx, mut a) = app();
+        a.map_take_route("mixed", "jump", DQ, THREE);
+        a.map_take_route("mixed", "gate", THREE, K5);
+        assert_eq!((a.map_route_kind, a.map_leg_kinds.clone()), ("mixed", vec!["jump", "gate"]));
+        a.map_route_add_waypoint(DQ, Some("jump"));
+        assert_eq!(a.map_route_anchors, vec![DQ, THREE, DQ, K5]);
+        assert_eq!(a.map_leg_kinds, vec!["jump", "jump", "gate"], "the new leg in, the old one on keeps its way");
+        a.map_route_remove_anchor(1);
+        assert_eq!(a.map_leg_kinds, vec!["jump", "gate"], "the leg into the removed waypoint goes with it");
+        a.map_route_set_dest(THREE, Some("jump"));
+        assert_eq!(a.map_leg_kinds, vec!["jump", "jump"]);
+    }
+
+    /// Switching one leg of a plain route makes it a mixed one; choosing Gates again makes every
+    /// leg a gate leg.
+    #[test]
+    fn switching_a_leg_makes_the_route_mixed() {
+        let (_ctx, mut a) = app();
+        a.map_take_route("gate", "gate", DQ, THREE);
+        a.map_take_route("gate", "gate", THREE, K5);
+        a.map_set_leg_kind(1, "jump");
+        assert_eq!((a.map_route_kind, a.map_leg_kinds.clone()), ("mixed", vec!["gate", "jump"]));
+        assert!(a.map_route_has("jump") && a.map_route_has("gate"));
+        assert_eq!(a.map_route_avoid_lists(), vec![false, true], "both avoid lists apply");
+        a.map_set_route_mode("gate");
+        assert_eq!(a.map_leg_kinds, vec!["gate", "gate"]);
     }
 
     /// The same by menu: set a destination, then name a further one.
@@ -2720,10 +2751,10 @@ mod route_extension_tests {
     fn setting_a_further_destination_keeps_the_waypoints() {
         let (_ctx, mut a) = app();
         a.map_route_start("gate", DQ);
-        a.map_route_set_dest(THREE);
-        a.map_route_add_waypoint(K5);
+        a.map_route_set_dest(THREE, None);
+        a.map_route_add_waypoint(K5, None);
         assert_eq!(a.map_route_anchors, vec![DQ, K5, THREE], "a waypoint goes in before the end");
-        a.map_route_set_dest(DQ);
+        a.map_route_set_dest(DQ, None);
         assert_eq!(a.map_route_anchors, vec![DQ, K5, DQ], "only the far end is replaced");
     }
 }

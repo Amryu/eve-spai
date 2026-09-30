@@ -115,7 +115,7 @@ pub(crate) fn scenes() -> Vec<Scene> {
             let (Some(from), Some(to)) = (g.lookup(HOME).map(|i| i.id), g.lookup("EKPB-3").map(|i| i.id)) else { return };
             a.settings.intel_count_bridges = true;
             a.map_route_start("gate", from);
-            a.map_route_set_dest(to);
+            a.map_route_set_dest(to, None);
         }),
     ];
     v.into_iter().map(with_images).collect()

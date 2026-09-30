@@ -344,9 +344,6 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         .filter(|i| *i < crate::jumproute::SHIP_CLASSES.len())
                         .unwrap_or(0);
                     let class = &crate::jumproute::SHIP_CLASSES[hull];
-                    // A titan regardless of the hull the jump planner is set to.
-                    let titan_ly =
-                        crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[1], jdc);
                     let mut out = super::route::RouteOut {
                         kind: kind.clone(),
                         from,
@@ -394,21 +391,18 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         .split(',')
                         .map(|v| v.parse::<usize>().unwrap_or(0))
                         .collect();
+                    // Titan routes left the planner; a page still asking for one gets gates.
+                    let leg = if kind == "jump" { "jump" } else { "gate" };
                     let (legs, options) = super::route::chain(
                         graph,
                         coords,
                         &anchors,
-                        &kind,
+                        &[leg],
                         class,
                         jdc,
                         jfc,
-                        titan_ly,
-                        routes::query_param(query, "tstart").unwrap_or("1") != "0",
-                        // Per route, not a setting: titan positions belong to the operation being
-                        // planned, so the client carries them like the avoid list.
-                        &ids("titans").into_iter().collect::<Vec<i64>>(),
-                        routes::query_param(query, "tself").unwrap_or("0") == "1",
                         d.count_bridges,
+                        &avoid,
                         &avoid,
                         &d.holes,
                         &pick,
@@ -432,7 +426,6 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         out.error = Some(match kind.as_str() {
                             "jump" => "No capital route: every path needs a cyno-able system in range."
                                 .to_owned(),
-                            "titan" => "Nothing in titan range can reach it by gates.".to_owned(),
                             _ => "No gate route.".to_owned(),
                         });
                     }

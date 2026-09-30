@@ -1,4 +1,4 @@
-//! Routes planned on the map: gate, jump and titan legs, their waypoints, avoidance and the intel along them.
+//! Routes planned on the map: gate and jump legs, mixed or not, their waypoints, avoidance and the intel along them.
 
 use super::*;
 
@@ -11,33 +11,56 @@ pub(crate) fn plain_gate_plan(kind: &str, anchors: usize) -> bool {
     kind == "gate" && anchors == 2
 }
 
+/// The kind of route a mode starts new legs as: a mixed route asks, and until it has, gates.
+pub(crate) fn default_leg(mode: &str) -> &'static str {
+    if mode == "jump" { "jump" } else { "gate" }
+}
+
+fn mode_of(kind: &str) -> &'static str {
+    match kind {
+        "jump" => "jump",
+        "mixed" => "mixed",
+        "scan" => "scan",
+        _ => "gate",
+    }
+}
+
 impl SpaiApp {
-    /// The four things a finished route drag can mean, arranged around where it was let go.
+    /// What a finished route drag can mean, arranged around where it was let go: a new route's kind,
+    /// or, for a leg of a mixed route, whether to gate or jump it.
     ///
-    /// One area with one disc and four buttons placed on it, since four separate popups overlap
-    /// each other.
+    /// One area with one disc and its buttons placed on it, since separate popups overlap each other.
     pub(crate) fn map_link_menu_ui(&mut self, ui: &mut egui::Ui) {
-        let Some((from, to, at)) = self.map_link_menu else { return };
-        // A drag off the current destination is adding a waypoint to a route that already has a
-        // kind, and the kind is one answer per route rather than one per leg.
-        if self.map_route_anchors.len() > 1 && self.map_route_anchors.contains(&from) {
-            self.map_link_menu = None;
-            let kind = self.map_route_kind;
-            self.map_take_route(kind, from, to);
+        let Some((from, to, at, leg_only)) = self.map_link_menu else { return };
+        // A drag off a system of the route extends it: a plain route by its own kind, a mixed one
+        // asks how to fly the new leg.
+        let extends = self.map_route_anchors.len() > 1 && self.map_route_anchors.contains(&from);
+        if extends && !leg_only {
+            if self.map_route_kind == "mixed" {
+                self.map_link_menu = Some((from, to, at, true));
+            } else {
+                self.map_link_menu = None;
+                let kind = self.map_route_kind;
+                self.map_take_route(kind, default_leg(kind), from, to);
+            }
             return;
         }
         use egui_phosphor::regular as i;
         const R: f32 = 58.0;
-        const BTN: egui::Vec2 = egui::vec2(96.0, 28.0);
-        let opts: [(&str, &str, &str); 4] = [
-            ("gate", i::SIGN_IN, "Gate route"),
-            ("jump", i::SPIRAL, "Jump route"),
-            ("titan", i::CROSSHAIR_SIMPLE, "Titan route"),
-            ("cancel", i::X, "Cancel"),
-        ];
+        const BTN: egui::Vec2 = egui::vec2(104.0, 28.0);
+        let opts: Vec<(&str, &str, &str)> = if leg_only {
+            vec![("gate", i::SIGN_IN, "Gate"), ("jump", i::SPIRAL, "Jump"), ("cancel", i::X, "Cancel")]
+        } else {
+            vec![
+                ("gate", i::SIGN_IN, "Gate route"),
+                ("jump", i::SPIRAL, "Jump route"),
+                ("mixed", i::SHUFFLE, "Mixed route"),
+                ("cancel", i::X, "Cancel"),
+            ]
+        };
         let half = egui::vec2(R + BTN.x / 2.0 + 8.0, R + BTN.y / 2.0 + 8.0);
         let mut chose: Option<&str> = None;
-        let area = egui::Area::new(egui::Id::new("map_link_menu"))
+        let area = egui::Area::new(egui::Id::new("map_link_menu").with(leg_only))
             .order(egui::Order::Foreground)
             .fixed_pos(at - half)
             .show(ui.ctx(), |ui| {
@@ -74,17 +97,28 @@ impl SpaiApp {
                 self.map_link_menu = None;
             }
         }
-        if let Some(kind) = chose {
-            self.map_link_menu = None;
-            self.map_take_route(kind, from, to);
+        match chose {
+            None => {}
+            Some("cancel") => self.map_link_menu = None,
+            // A new mixed route: the first leg is asked for like every later one.
+            Some("mixed") => self.map_link_menu = Some((from, to, at, true)),
+            Some(leg) if leg_only => {
+                self.map_link_menu = None;
+                let mode = if extends { self.map_route_kind } else { "mixed" };
+                self.map_take_route(mode, default_leg(leg), from, to);
+            }
+            Some(kind) => {
+                self.map_link_menu = None;
+                self.map_take_route(kind, default_leg(kind), from, to);
+            }
         }
     }
 
-    /// Act on a route the user picked off the map.
+    /// Act on a route the user picked off the map: `mode` for the route, `leg` for the part just
+    /// dragged.
     ///
-    /// The same `web::route` the phone calls, so the two maps answer the question identically rather
-    /// than each having its own idea of what a titan route is.
-    pub(crate) fn map_take_route(&mut self, kind: &str, from: i64, to: i64) {
+    /// The same `web::route` the phone calls, so the two maps answer the question identically.
+    pub(crate) fn map_take_route(&mut self, mode: &str, leg: &'static str, from: i64, to: i64) {
         self.map_route_opts.clear();
         self.map_route_at = 0;
         // A drag off a system already on the route rewrites it from there: everything after that
@@ -95,19 +129,19 @@ impl SpaiApp {
             Some(at) if self.map_route_anchors.len() > 1 => {
                 self.map_route_anchors.truncate(at + 1);
                 self.map_route_anchors.push(to);
+                self.map_leg_kinds.truncate(at);
+                self.map_leg_kinds.push(leg);
             }
-            _ => self.map_route_anchors = vec![from, to],
+            _ => {
+                self.map_route_anchors = vec![from, to];
+                self.map_leg_kinds = vec![leg];
+            }
         }
-        if plain_gate_plan(kind, self.map_route_anchors.len()) {
+        self.map_route_kind = mode_of(mode);
+        if plain_gate_plan(self.map_route_kind, self.map_route_anchors.len()) {
             self.web_set_destination(to);
             self.route_destination = Some(to);
         }
-        self.map_route_kind = match kind {
-            "jump" => "jump",
-            "titan" => "titan",
-            "scan" => "scan",
-            _ => "gate",
-        };
         self.map_replan_route();
     }
 
@@ -128,18 +162,60 @@ impl SpaiApp {
         !(self.map_route_kind_active() && self.map_route_kind == "gate")
     }
 
-    /// Start a route here: this system, nowhere to go yet, and a kind chosen once for the whole
-    /// route rather than once per leg.
+    /// How leg `i` is flown.
+    pub(crate) fn map_leg_kind(&self, i: usize) -> &'static str {
+        self.map_leg_kinds.get(i).copied().unwrap_or(default_leg(self.map_route_kind))
+    }
+
+    /// Whether any leg is flown as `kind`. With no leg yet, what the next one would be.
+    pub(crate) fn map_route_has(&self, kind: &str) -> bool {
+        let n = self.map_route_anchors.len().saturating_sub(1);
+        if n == 0 {
+            return self.map_route_kind == kind || (self.map_route_kind == "mixed" && kind == "gate");
+        }
+        (0..n).any(|i| self.map_leg_kind(i) == kind)
+    }
+
+    /// Flies leg `i` the other way. A plain route with one leg changed is a mixed one.
+    pub(crate) fn map_set_leg_kind(&mut self, i: usize, kind: &'static str) {
+        let n = self.map_route_anchors.len().saturating_sub(1);
+        self.map_leg_kinds = (0..n).map(|k| self.map_leg_kind(k)).collect();
+        if let Some(k) = self.map_leg_kinds.get_mut(i) {
+            *k = kind;
+        }
+        if self.map_route_kind != "mixed" && self.map_leg_kinds.iter().any(|k| *k != self.map_route_kind) {
+            self.map_route_kind = "mixed";
+        }
+        self.map_replan_route();
+    }
+
+    /// A route mode for the whole route: gate or jump sets every leg, mixed keeps them as they are.
+    pub(crate) fn map_set_route_mode(&mut self, kind: &str) {
+        self.map_route_kind = mode_of(kind);
+        if matches!(self.map_route_kind, "gate" | "jump") {
+            let k = self.map_route_kind;
+            self.map_leg_kinds.iter_mut().for_each(|l| *l = k);
+        }
+    }
+
+    /// Takes anchor `i` out, and the leg into it with it: the leg out of it now starts one earlier.
+    pub(crate) fn map_route_remove_anchor(&mut self, i: usize) {
+        if i == 0 || i >= self.map_route_anchors.len() {
+            return;
+        }
+        self.map_route_anchors.remove(i);
+        if i - 1 < self.map_leg_kinds.len() {
+            self.map_leg_kinds.remove(i - 1);
+        }
+        self.map_replan_route();
+    }
+
+    /// Start a route here: this system, nowhere to go yet.
     pub(crate) fn map_route_start(&mut self, kind: &str, sid: i64) {
-        self.map_route_kind = match kind {
-            "jump" => "jump",
-            "titan" => "titan",
-            "scan" => "scan",
-            _ => "gate",
-        };
+        self.map_route_kind = mode_of(kind);
         self.map_route_anchors = vec![sid];
+        self.map_leg_kinds.clear();
         self.map_avoid_once.clear();
-        self.map_titans.clear();
         self.map_route_opts.clear();
         self.map_route_legs.clear();
         self.scan_route.clear();
@@ -150,13 +226,23 @@ impl SpaiApp {
     }
 
     /// One anchor becomes the destination. With only a start that completes it; with a route it
-    /// replaces the far end and leaves the waypoints alone.
-    pub(crate) fn map_route_set_dest(&mut self, sid: i64) {
+    /// replaces the far end and leaves the waypoints alone. `leg` says how to fly there; `None`
+    /// keeps the last leg's way, or the route's.
+    pub(crate) fn map_route_set_dest(&mut self, sid: i64, leg: Option<&'static str>) {
         if self.map_route_anchors.len() <= 1 {
             self.map_route_anchors.push(sid);
+            self.map_leg_kinds = vec![leg.unwrap_or(default_leg(self.map_route_kind))];
         } else {
             self.map_route_anchors.pop();
             self.map_route_anchors.push(sid);
+            if let (Some(k), Some(last)) = (leg, self.map_leg_kinds.last_mut()) {
+                *last = k;
+            }
+        }
+        if let Some(k) = leg {
+            if self.map_route_kind != "mixed" && k != self.map_route_kind {
+                self.map_route_kind = "mixed";
+            }
         }
         if plain_gate_plan(self.map_route_kind, self.map_route_anchors.len()) {
             self.web_set_destination(sid);
@@ -164,16 +250,23 @@ impl SpaiApp {
         self.map_replan_route();
     }
 
-    /// A waypoint goes in before the destination, which is the difference between the two.
-    pub(crate) fn map_route_add_waypoint(&mut self, sid: i64) {
+    /// A waypoint goes in before the destination, which is the difference between the two. `leg` is
+    /// how to fly to it; the leg on to the destination keeps its way.
+    pub(crate) fn map_route_add_waypoint(&mut self, sid: i64, leg: Option<&'static str>) {
         let at = self.map_route_anchors.len().saturating_sub(1);
         self.map_route_anchors.insert(at, sid);
+        let k = leg.unwrap_or(default_leg(self.map_route_kind));
+        let into = at.saturating_sub(1).min(self.map_leg_kinds.len());
+        self.map_leg_kinds.insert(into, k);
+        if self.map_route_kind != "mixed" && k != self.map_route_kind {
+            self.map_route_kind = "mixed";
+        }
         self.map_replan_route();
     }
 
     pub(crate) fn map_route_clear(&mut self) {
-        self.map_titans.clear();
         self.map_route_anchors.clear();
+        self.map_leg_kinds.clear();
         self.map_route_opts.clear();
         self.map_route_legs.clear();
         self.map_leg_pick.clear();
@@ -205,28 +298,23 @@ impl SpaiApp {
         self.ensure_jump_systems();
         let Some(graph) = self.route_graph() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
-        // A titan at JDC V. The same figure the rescue planner uses, stated here because that one is
-        // behind a feature flag and this is not.
-        const TITAN_LY: f64 = 6.0;
         let bridges = self.settings.intel_count_bridges;
         let danger = self.route_danger();
-        let avoid = self.route_avoid(self.map_route_kind == "jump");
+        let (avoid_gate, avoid_jump) = (self.route_avoid(false), self.route_avoid(true));
         let holes =
             if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
+        let kinds: Vec<&str> = (0..self.map_route_anchors.len().saturating_sub(1)).map(|i| self.map_leg_kind(i)).collect();
         let (legs, opts) = crate::web::route::chain(
             &graph,
             &coords,
             &self.map_route_anchors,
-            self.map_route_kind,
+            &kinds,
             &crate::jumproute::SHIP_CLASSES[self.jump_ship.min(crate::jumproute::SHIP_CLASSES.len() - 1)],
             self.jump_jdc,
             self.jump_jfc,
-            TITAN_LY,
-            self.map_titan_at_start,
-            &self.map_titans.clone(),
-            self.map_titan_self_jump,
             bridges,
-            &avoid,
+            &avoid_gate,
+            &avoid_jump,
             &holes,
             &self.map_leg_pick,
             &self.map_forks,
@@ -238,7 +326,13 @@ impl SpaiApp {
         crate::web::route::mark_anchors(&mut self.map_route_opts, &anchors);
         // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
         // legs end.
-        crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid, &holes);
+        crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid_gate, &holes);
+    }
+
+    /// The avoid lists this route is planned against: the gate list for gate legs, the jump list for
+    /// jump legs.
+    pub(crate) fn map_route_avoid_lists(&self) -> Vec<bool> {
+        [(false, "gate"), (true, "jump")].into_iter().filter(|(_, k)| self.map_route_has(k)).map(|(j, _)| j).collect()
     }
 
     /// The graph the route planner walks: the shared one, or one re-laid for the route's own

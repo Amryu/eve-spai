@@ -781,7 +781,7 @@ fn route_gate_options_scene(name: &'static str) -> Scene {
             a.settings.jump_bridges = vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }];
             a.settings.route_via_wormholes = true;
             a.map_route_start("gate", 30_004_759);
-            a.map_route_set_dest(30_003_704);
+            a.map_route_set_dest(30_003_704, None);
             a
         });
         egui::ScrollArea::vertical().show(ui, |ui| app.jump_plan_content(ui));

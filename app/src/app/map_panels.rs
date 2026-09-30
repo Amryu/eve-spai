@@ -57,16 +57,11 @@ impl SpaiApp {
         ui.add_space(4.0);
         let mut replan = false;
         ui.horizontal(|ui| {
-            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("titan", "Titan"), ("scan", "Scan")] {
+            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("mixed", "Mixed"), ("scan", "Scan")] {
                 if ui.menu_label(self.map_route_kind == kind, label).clicked()
                     && self.map_route_kind != kind
                 {
-                    self.map_route_kind = match kind {
-                        "jump" => "jump",
-                        "titan" => "titan",
-                        "scan" => "scan",
-                        _ => "gate",
-                    };
+                    self.map_set_route_mode(kind);
                     replan = true;
                 }
             }
@@ -101,10 +96,20 @@ impl SpaiApp {
             g.as_ref().and_then(|s| s.info_of(id).map(|i| i.name.clone())).unwrap_or_default()
         };
         let mut drop_anchor: Option<usize> = None;
+        let mut flip: Option<(usize, &'static str)> = None;
         ui.horizontal_wrapped(|ui| {
             for (i, &id) in anchors.iter().enumerate() {
                 if i > 0 {
-                    ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
+                    // How the leg into this anchor is flown, switched in place.
+                    let jump = self.map_leg_kind(i - 1) == "jump";
+                    let (glyph, tip, other) = if jump {
+                        (icon::SPIRAL, "Jumped; click to gate it", "gate")
+                    } else {
+                        (icon::SIGN_IN, "Gated; click to jump it", "jump")
+                    };
+                    if ui.small_button(glyph).on_hover_text(tip).clicked() {
+                        flip = Some((i - 1, other));
+                    }
                 }
                 let txt = egui::RichText::new(name(id, &self.systems)).strong();
                 ui.label(if i == 0 || i == anchors.len() - 1 {
@@ -118,33 +123,19 @@ impl SpaiApp {
             }
         });
         if let Some(i) = drop_anchor {
-            self.map_route_anchors.remove(i);
-            replan = true;
+            self.map_route_remove_anchor(i);
+            return;
+        }
+        if let Some((i, k)) = flip {
+            self.map_set_leg_kind(i, k);
+            return;
         }
 
-        if self.map_route_kind == "titan" {
-            if ui
-                .checkbox(&mut self.map_titan_at_start, "Titan is in the starting system")
-                .changed()
-            {
-                replan = true;
-            }
-            if self.map_titan_at_start
-                && ui
-                    .checkbox(&mut self.map_titan_self_jump, "Titan may reposition first")
-                    .on_hover_text(
-                        "The titan jumps somewhere that bridges better and the fleet gates out to \
-                         meet it. Often the difference between two gates and twenty.",
-                    )
-                    .changed()
-            {
-                replan = true;
-            }
-        }
-        if self.map_route_kind != "jump" && self.route_zone_combo(ui) {
+        let gating = self.map_route_has("gate");
+        if gating && self.route_zone_combo(ui) {
             replan = true;
         }
-        if self.map_route_kind != "jump"
+        if gating
             && ui
                 .checkbox(&mut self.settings.route_via_wormholes, "Route via scanned wormholes")
                 .changed()
@@ -152,12 +143,12 @@ impl SpaiApp {
             self.needs_save = true;
             replan = true;
         }
-        if self.map_route_kind != "jump" && self.settings.route_via_wormholes && self.wh_route_options_ui(ui) {
+        if gating && self.settings.route_via_wormholes && self.wh_route_options_ui(ui) {
             self.needs_save = true;
             replan = true;
         }
 
-        if self.map_route_kind == "jump" {
+        if self.map_route_has("jump") {
             egui::CollapsingHeader::new(format!(
                 "{}  {} · {:.1} ly",
                 icon::SPIRAL,
@@ -210,7 +201,10 @@ impl SpaiApp {
 
         // What the route is being planned around, and which systems those are: a count on its own is
         // not something anyone can check.
-        let avoid = self.route_avoid(self.map_route_kind == "jump");
+        let mut avoid = crate::web::route::Avoid { always: Default::default(), once: self.map_avoid_once.clone() };
+        for jump in self.map_route_avoid_lists() {
+            avoid.always.extend(self.route_avoid(jump).always);
+        }
         let listed = self
             .systems
             .as_ref()
@@ -240,13 +234,10 @@ impl SpaiApp {
             });
             if let Some((id, always)) = stop {
                 if always {
-                    let jump = self.map_route_kind == "jump";
-                    let list = if jump {
-                        &mut self.settings.route_avoid_jump
-                    } else {
-                        &mut self.settings.route_avoid_gate
-                    };
-                    list.retain(|&s| s != id);
+                    for jump in self.map_route_avoid_lists() {
+                        let list = if jump { &mut self.settings.route_avoid_jump } else { &mut self.settings.route_avoid_gate };
+                        list.retain(|&s| s != id);
+                    }
                     self.needs_save = true;
                 } else {
                     self.map_avoid_once.remove(&id);
@@ -312,7 +303,7 @@ impl SpaiApp {
 
         // Alternatives, one row per leg that has more than one way to fly it. Same jump count, so
         // the row reads as "these cost the same, shortest first".
-        let legs: Vec<(String, String, Vec<String>, bool)> = self
+        let legs: Vec<(String, String, Vec<String>)> = self
             .map_route_legs
             .iter()
             .map(|l| {
@@ -322,15 +313,12 @@ impl SpaiApp {
                     // The label names the system that makes this option different, since every
                     // option has the same jump count by construction.
                     l.options.iter().map(|o| o.label.clone()).collect(),
-                    l.whole_route,
                 )
             })
             .collect();
         let mut pick: Option<(usize, usize)> = None;
-        for (i, (from, to, opts, whole)) in legs.iter().enumerate() {
-            // A titan leg's options are the route's options, already shown in the option row
-            // above, and this leg's pick does not feed them.
-            if opts.len() < 2 || *whole {
+        for (i, (from, to, opts)) in legs.iter().enumerate() {
+            if opts.len() < 2 {
                 continue;
             }
             ui.horizontal_wrapped(|ui| {
@@ -407,8 +395,7 @@ impl SpaiApp {
             .unwrap_or_default();
         let mut avoid_now: Option<i64> = None;
         let mut unavoid_now: Option<i64> = None;
-        let mut waypoint_now: Option<i64> = None;
-        let mut titan_now: Option<(i64, bool)> = None;
+        let mut waypoint_now: Option<(i64, &'static str)> = None;
         let mut drop_anchor_row: Option<usize> = None;
         let mut alts_for: Option<usize> = None;
         let mut show_intel: Option<i64> = None;
@@ -466,11 +453,11 @@ impl SpaiApp {
                                     ui.close();
                                 }
                                 if ui.button("Add waypoint here").clicked() {
-                                    waypoint_now = Some(h.id);
+                                    waypoint_now = Some((h.id, if h.kind == 2 { "jump" } else { "gate" }));
                                     ui.close();
                                 }
                             }
-                            if self.map_route_kind == "jump"
+                            if h.kind == 2
                                 && i > 0
                                 && i + 1 < hops.len()
                                 && ui.button("Other systems between…").clicked()
@@ -483,20 +470,6 @@ impl SpaiApp {
                                 self.right_dock_open = true;
                                 self.right_dock_tab = RightDockTab::System;
                                 ui.close();
-                            }
-                            if self.map_route_kind == "titan" {
-                                let t = self.map_titans.contains(&h.id);
-                                if ui
-                                    .button(if t {
-                                        "Not a titan system"
-                                    } else {
-                                        "Set as titan system"
-                                    })
-                                    .clicked()
-                                {
-                                    titan_now = Some((h.id, !t));
-                                    ui.close();
-                                }
                             }
                         });
                     }
@@ -589,21 +562,13 @@ impl SpaiApp {
             self.map_avoid_once.remove(&id);
             self.map_replan_route();
         }
-        if let Some(id) = waypoint_now {
-            self.map_route_add_waypoint(id);
+        if let Some((id, leg)) = waypoint_now {
+            self.map_route_add_waypoint(id, Some(leg));
         }
         if let Some(i) = drop_anchor_row {
             if self.map_route_anchors.len() > 2 || i == self.map_route_anchors.len() - 1 {
-                self.map_route_anchors.remove(i);
-                self.map_replan_route();
+                self.map_route_remove_anchor(i);
             }
-        }
-        if let Some((id, on)) = titan_now {
-            self.map_titans.retain(|&t| t != id);
-            if on {
-                self.map_titans.push(id);
-            }
-            self.map_replan_route();
         }
         if let Some(id) = show_intel {
             self.map_intel_for = Some(id);
@@ -673,9 +638,10 @@ impl SpaiApp {
                     kind: self.map_route_kind.to_owned(),
                     anchors: self.map_route_anchors.clone(),
                     avoid: self.map_avoid_once.iter().copied().collect(),
-                    titans: self.map_titans.clone(),
-                    titan_at_start: self.map_titan_at_start,
-                    titan_self_jump: self.map_titan_self_jump,
+                    titans: Vec::new(),
+                    titan_at_start: true,
+                    titan_self_jump: false,
+                    legs: self.map_leg_kinds.iter().map(|k| k.to_string()).collect(),
                     hull: self.jump_ship,
                     jdc: self.jump_jdc,
                     jfc: self.jump_jfc,
@@ -742,16 +708,22 @@ impl SpaiApp {
                 self.apply_overlay_message(crate::ipc::OverlayToMain::DeleteRoute { name }, ctx);
             }
             if let Some(r) = load {
+                // A saved titan route comes back as the gate route it was built on.
                 self.map_route_kind = match r.kind.as_str() {
                     "jump" => "jump",
-                    "titan" => "titan",
+                    "mixed" => "mixed",
                     _ => "gate",
                 };
+                let legs = r.anchors.len().saturating_sub(1);
+                self.map_leg_kinds = (0..legs)
+                    .map(|i| match r.legs.get(i).map(String::as_str) {
+                        Some("jump") => "jump",
+                        Some(_) => "gate",
+                        None => super::map_route::default_leg(self.map_route_kind),
+                    })
+                    .collect();
                 self.map_route_anchors = r.anchors;
                 self.map_avoid_once = r.avoid.into_iter().collect();
-                self.map_titans = r.titans;
-                self.map_titan_at_start = r.titan_at_start;
-                self.map_titan_self_jump = r.titan_self_jump;
                 self.jump_ship = r.hull.min(crate::jumproute::SHIP_CLASSES.len() - 1);
                 self.jump_jdc = r.jdc.min(5);
                 self.jump_jfc = r.jfc.min(5);
@@ -800,7 +772,7 @@ impl SpaiApp {
                 });
             });
         if let Some(id) = pick {
-            self.map_route_add_waypoint(id);
+            self.map_route_add_waypoint(id, Some("jump"));
             self.map_alts = None;
         } else if !open {
             self.map_alts = None;

@@ -779,18 +779,18 @@ pub struct SpaiApp {
     /// Where the last frame put each system, so a drag can be hit-tested against where the user
     /// actually pressed rather than against positions the same frame's pan has already moved.
     map_pos_prev: std::collections::HashMap<i64, egui::Pos2>,
-    /// The radial menu a finished route drag left behind: (from, to) and where to draw it.
-    map_link_menu: Option<(i64, i64, egui::Pos2)>,
+    /// The radial menu a finished route drag left behind: (from, to), where to draw it, and whether
+    /// it asks only how to fly this leg (a mixed route) rather than what kind of route to start.
+    map_link_menu: Option<(i64, i64, egui::Pos2, bool)>,
     /// The route the user picked, its alternatives, and which one is showing.
     map_route_opts: Vec<crate::web::route::RouteOption>,
     map_route_at: usize,
+    /// "gate", "jump", "mixed" or "scan": what a new leg is flown as, a mixed route asking each time.
     map_route_kind: &'static str,
     /// The systems the drags named, in order: start, waypoints, destination.
     map_route_anchors: Vec<i64>,
-    /// Whether the titan is in the system the route starts from. Off, it is waiting at the far end.
-    map_titan_at_start: bool,
-    /// Whether the titan may move itself first and have the fleet gate out to meet it.
-    map_titan_self_jump: bool,
+    /// How each leg between two anchors is flown, "gate" or "jump".
+    map_leg_kinds: Vec<&'static str>,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
@@ -809,9 +809,6 @@ pub struct SpaiApp {
     map_avoid_once: std::collections::HashSet<i64>,
     /// The system whose intel is being read from a route warning.
     map_intel_for: Option<i64>,
-    /// Systems a titan is sitting in, for this route. Not a setting: which ships are where is a fact
-    /// about the operation you are planning, not about the installation.
-    map_titans: Vec<i64>,
     /// Systems offered as a stop between two hops, while that picker is open.
     map_alts: Option<Vec<i64>>,
     map_save_open: bool,
@@ -1707,8 +1704,7 @@ impl SpaiApp {
             map_route_at: 0,
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
-            map_titan_at_start: true,
-            map_titan_self_jump: false,
+            map_leg_kinds: Vec::new(),
             map_route_zone: None,
             scan_route: Default::default(),
             br_authed: Default::default(),
@@ -1721,7 +1717,6 @@ impl SpaiApp {
             map_forks: Default::default(),
             map_avoid_once: std::collections::HashSet::new(),
             map_intel_for: None,
-            map_titans: Vec::new(),
             map_alts: None,
             map_save_open: false,
             map_save_name: String::new(),
@@ -3300,6 +3295,7 @@ impl SpaiApp {
             .expect("the fixture systems are connected");
         self.map_route_kind = "gate";
         self.map_route_anchors = vec![from, to];
+        self.map_leg_kinds = vec!["gate"];
         self.map_route_opts = vec![opt];
         self.map_route_at = 0;
     }

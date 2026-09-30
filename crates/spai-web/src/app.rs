@@ -256,6 +256,7 @@ impl WebApp {
                 if let Some(d) = &mut self.map_data {
                     d.set_holes(&host.holes);
                 }
+                self.map.plan.holes_changed();
                 self.shown = sync.store.generation.get();
             }
             // The group's Ansiblex network, once in the group; routes on both tabs use it.

@@ -1484,7 +1484,6 @@ function menuFor(id) {
   const verb = routeKind && anchors.length ? "Restart as" : "Start";
   items.push(["start:gate", `${verb} Gate Route`]);
   items.push(["start:jump", `${verb} Jump Route`]);
-  items.push(["start:titan", `${verb} Titan Route`]);
   items.push(null);
   if (state.snapshot?.meta?.allow_writeback) {
     items.push(["notes:tags", "Tags…"]);
