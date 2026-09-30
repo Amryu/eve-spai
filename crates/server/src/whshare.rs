@@ -176,15 +176,6 @@ async fn own_invite(st: &AppState, group: &str, char_id: i64, device: &str, by: 
     Ok(hit.is_some())
 }
 
-async fn manager(st: &AppState, group: &str, char_id: i64) -> Result<String, AppError> {
-    let r = member(st, group, char_id).await?;
-    if r == "owner" || r == "admin" {
-        Ok(r)
-    } else {
-        Err(AppError::Forbidden)
-    }
-}
-
 #[derive(Serialize)]
 struct GroupRow {
     id: String,
