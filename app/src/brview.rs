@@ -388,16 +388,15 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
             .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
             .cloned();
         if let Some(b) = b {
-            let ship_ids: Vec<i64> = b
+            // One entry per hull type, not per attacker: tens of thousands in a big fight.
+            let mut ship_ids: Vec<i64> = b
                 .engagements
                 .iter()
-                .flat_map(|e| {
-                    let mut v = vec![e.victim_ship];
-                    v.extend(e.attackers.iter().map(|a| a.ship));
-                    v
-                })
+                .flat_map(|e| std::iter::once(e.victim_ship).chain(e.attackers.iter().map(|a| a.ship)))
                 .filter(|&id| id != 0)
                 .collect();
+            ship_ids.sort_unstable();
+            ship_ids.dedup();
             let inv = b.involvement();
             let rosters: Vec<Vec<Participant>> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
             let type_names = deps.type_names.lock().unwrap();

@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS wormhole_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_wormhole_audit ON wormhole_audit(uid, at);
 -- The probe scanner's signatures and anomalies per system, as pasted.
+-- Reports made on br.evetools.org, by the earliest kill of the battle at the time.
+CREATE TABLE IF NOT EXISTS evetools_brs (
+    anchor_kill INTEGER PRIMARY KEY,
+    body        TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS system_sigs (
     system_id  INTEGER NOT NULL,
     sig        TEXT NOT NULL,
@@ -643,6 +648,24 @@ impl Store {
     /// The user chose to start fresh, so the stash is no longer worth protecting.
     pub fn unlock_settings(&self) {
         self.settings_locked.set(false);
+    }
+
+    /// Keeps a br.evetools report made for the battle whose earliest kill was `anchor`.
+    pub fn evetools_save(&self, anchor: i64, saved: &crate::evetools::Saved) {
+        if let Ok(body) = serde_json::to_string(saved) {
+            let _ = self.conn.execute(
+                "INSERT INTO evetools_brs (anchor_kill, body) VALUES (?1, ?2) ON CONFLICT(anchor_kill) DO UPDATE SET body = ?2",
+                params![anchor, body],
+            );
+        }
+    }
+
+    /// Every br.evetools report made here, by anchor kill.
+    pub fn evetools_all(&self) -> Vec<(i64, crate::evetools::Saved)> {
+        let Ok(mut st) = self.conn.prepare("SELECT anchor_kill, body FROM evetools_brs") else { return Vec::new() };
+        st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.flatten().filter_map(|(k, b)| Some((k, serde_json::from_str(&b).ok()?))).collect())
+            .unwrap_or_default()
     }
 
     pub fn kv_get(&self, key: &str) -> Option<String> {

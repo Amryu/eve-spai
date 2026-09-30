@@ -269,23 +269,25 @@ impl SpaiApp {
     pub(crate) fn battle_edit_view(&mut self, ui: &mut egui::Ui, now: i64) {
         use egui_phosphor::regular as icon;
         let ctx = ui.ctx().clone();
-        let mut engs: Vec<br_core::battle::Engagement> = self
-            .battle_detail_cache
-            .as_ref()
-            .map(|c| c.battle.engagements.clone())
-            .unwrap_or_default();
-        engs.sort_by_key(|e| e.time);
-        let splits = self
-            .battle_detail_cache
-            .as_ref()
-            .map(|c| c.battle.suggested_splits.clone())
-            .unwrap_or_default();
+        // Sorted, counted and deduplicated once per worker output, not every frame.
+        let Some(cache) = self.battle_detail_cache.clone() else { return };
+        let key = (cache.kid, self.battle_detail_out_sig);
+        let data = match &self.battle_edit_data {
+            Some((k, d)) if *k == key => d.clone(),
+            _ => {
+                let d = std::sync::Arc::new(crate::app::BattleEditData::of(&cache.battle));
+                self.ensure_type_names(&d.ship_ids, &ctx);
+                self.battle_edit_data = Some((key, d.clone()));
+                d
+            }
+        };
+        let engs = &data.engs;
+        let splits = &cache.battle.suggested_splits;
         if engs.is_empty() {
             ui.label(egui::RichText::new("No kills to edit.").weak());
             return;
         }
-        let ship_ids: Vec<i64> = engs.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
-        self.ensure_type_names(&ship_ids, &ctx);
+        let ship_ids = &data.ship_ids;
         let names: std::collections::HashMap<i64, String> = {
             let g = self.type_names.lock().unwrap();
             ship_ids
@@ -310,31 +312,10 @@ impl SpaiApp {
         let mut do_split = false;
 
         if !splits.is_empty() {
-            let ship_count = |pred: &dyn Fn(&br_core::battle::Engagement) -> bool| -> usize {
-                let mut set: std::collections::HashSet<i64> = std::collections::HashSet::new();
-                for e in engs.iter().filter(|e| pred(e)) {
-                    if e.victim_char != 0 {
-                        set.insert(e.victim_char);
-                    }
-                    for a in &e.attackers {
-                        if a.char_id != 0 {
-                            set.insert(a.char_id);
-                        }
-                    }
-                }
-                set.len()
-            };
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Suggested splits:").strong());
-                for sug in &splits {
+                for (sug, &(off, split_before)) in splits.iter().zip(&data.splits) {
                     let boundary = sug.time;
-                    let before_ships = ship_count(&|e| e.time < boundary);
-                    let after_ships = ship_count(&|e| e.time >= boundary);
-                    let before_kills = engs.iter().filter(|e| e.time < boundary).count();
-                    let after_kills = engs.len() - before_kills;
-                    let split_before = before_ships < after_ships
-                        || (before_ships == after_ships && before_kills < after_kills);
-                    let off = before_ships.min(after_ships);
                     let hhmm = chrono::DateTime::from_timestamp(boundary, 0)
                         .map(|t| t.format("%H:%M").to_string())
                         .unwrap_or_default();
@@ -414,8 +395,16 @@ impl SpaiApp {
         }
 
         let avail_h = (ui.available_height() - 8.0).max(160.0);
-        egui::ScrollArea::vertical().id_salt("battle_edit_kills").max_height(avail_h).show(ui, |ui| {
-            for e in &engs {
+        // Only rows in view are laid out; every kill row is one height, learned from those drawn.
+        let heights_id = egui::Id::new(("battle_edit_row_heights", cache.kid));
+        let mut heights: [f32; 2] = ui.data(|d| d.get_temp(heights_id)).unwrap_or([0.0; 2]);
+        egui::ScrollArea::vertical().id_salt("battle_edit_kills").max_height(avail_h).show_viewport(ui, |ui, viewport| {
+            let rows = crate::app::RowSkipper::new(ui, viewport);
+            for e in engs {
+                if rows.skip(ui, heights[0]) {
+                    continue;
+                }
+                let top = ui.cursor().top();
                 let mut sel = self.battle_kill_sel.contains(&e.kill_id);
                 egui::Frame::new()
                     .fill(if sel {
@@ -460,6 +449,7 @@ impl SpaiApp {
                         });
                     });
                 ui.add_space(2.0);
+                heights[0] = ui.cursor().top() - top;
             }
 
             ui.add_space(6.0);
@@ -475,20 +465,12 @@ impl SpaiApp {
                     )
                     .weak(),
                 );
-                let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
-                let mut pilots: Vec<(i64, String)> = Vec::new();
-                for e in &engs {
-                    if e.victim_char != 0 && seen.insert(e.victim_char) {
-                        pilots.push((e.victim_char, e.victim_pilot.clone()));
+                let pilots = &data.pilots;
+                for (char_id, pilot) in pilots {
+                    if rows.skip(ui, heights[1]) {
+                        continue;
                     }
-                    for a in &e.attackers {
-                        if a.char_id != 0 && seen.insert(a.char_id) {
-                            pilots.push((a.char_id, a.pilot.clone()));
-                        }
-                    }
-                }
-                pilots.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-                for (char_id, pilot) in &pilots {
+                    let top = ui.cursor().top();
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(pilot).strong());
                         if ui
@@ -499,12 +481,14 @@ impl SpaiApp {
                             purge_pilot = Some(*char_id);
                         }
                     });
+                    heights[1] = ui.cursor().top() - top;
                 }
                 if pilots.is_empty() {
                     ui.label(egui::RichText::new("No identified pilots.").weak());
                 }
             });
         });
+        ui.data_mut(|d| d.insert_temp(heights_id, heights));
 
         if let Some(sid) = open_sys {
             self.open_system(sid);
@@ -513,7 +497,7 @@ impl SpaiApp {
             self.apply_battle_edit(&ctx, |s| s.set_battle_excluded(kid, true));
         }
         if let Some(p) = purge_pilot {
-            let engs2 = engs.clone();
+            let engs2 = engs.to_vec();
             self.apply_battle_edit(&ctx, move |s| {
                 for e in &engs2 {
                     if e.victim_char == p {
@@ -798,17 +782,58 @@ impl SpaiApp {
         Ok(Some(path))
     }
 
-    pub(crate) fn br_authed_chars(&self) -> Vec<(i64, String)> {
-        self.characters
+    /// The characters that hold a login, read from the keychain again when the character list
+    /// changes or half a minute has passed.
+    fn br_authed_ids(&self) -> Vec<i64> {
+        let chars: Vec<i64> = self.characters.iter().map(|c| c.id).collect();
+        let mut cache = self.br_authed.borrow_mut();
+        let fresh = cache.as_ref().is_some_and(|(of, _, at)| *of == chars && at.elapsed() < std::time::Duration::from_secs(30));
+        if !fresh {
+            let authed = chars.iter().copied().filter(|id| crate::tokens::load_refresh(*id).is_some()).collect();
+            *cache = Some((chars, authed, std::time::Instant::now()));
+        }
+        cache.as_ref().map(|(_, a, _)| a.clone()).unwrap_or_default()
+    }
+
+    /// The open battle's br.evetools report, if one was made here, and whether the battle's times
+    /// moved since: worked out once per worker output.
+    fn evetools_for_open(&mut self) -> Option<(i64, crate::evetools::Saved, bool)> {
+        use crate::evetools::Status;
+        let busy = *self.evetools.lock().unwrap() == Status::Working;
+        if self.evetools_busy && !busy {
+            // Made or updated: read the saved list again.
+            self.evetools_saved = None;
+        }
+        self.evetools_busy = busy;
+        if self.evetools_saved.is_none() {
+            self.evetools_saved = Some(self.store.as_ref().map(|s| s.evetools_all()).unwrap_or_default());
+            self.evetools_match = None;
+        }
+        let cache = self.battle_detail_cache.clone()?;
+        let saved = self.evetools_saved.as_ref()?;
+        let key = (cache.kid, self.battle_detail_out_sig, saved.len());
+        if let Some((k, m)) = &self.evetools_match {
+            if *k == key {
+                return m.clone();
+            }
+        }
+        let found = saved
             .iter()
-            .filter(|c| crate::tokens::load_refresh(c.id).is_some())
-            .map(|c| (c.id, c.name.clone()))
-            .collect()
+            .find(|(anchor, _)| cache.battle.engagements.iter().any(|e| e.kill_id == *anchor))
+            .map(|(anchor, s)| (*anchor, s.clone(), s.timings != crate::evetools::timings(&cache.battle)));
+        self.evetools_match = Some((key, found.clone()));
+        found
+    }
+
+    pub(crate) fn br_authed_chars(&self) -> Vec<(i64, String)> {
+        let authed = self.br_authed_ids();
+        self.characters.iter().filter(|c| authed.contains(&c.id)).map(|c| (c.id, c.name.clone())).collect()
     }
 
     pub(crate) fn share_identity(&self) -> Option<(i64, std::path::PathBuf)> {
         let path = self.store.as_ref()?.path().to_path_buf();
-        let authed = |id: i64| crate::tokens::load_refresh(id).is_some();
+        let ids = self.br_authed_ids();
+        let authed = |id: i64| ids.contains(&id);
         let id = self
             .br_character
             .filter(|id| authed(*id))
@@ -1383,11 +1408,12 @@ impl SpaiApp {
             }
         }
         if let Some(kid) = self.battle_selected {
-            let exists = source
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|b| b.engagements.iter().any(|e| e.kill_id == kid));
+            // Looked for only when the worker has something new or the selection moved: a scan of
+            // every kill in the list each frame is a cost of its own in a big fight.
+            let changed = self.battle_detail_cache.as_ref().map(|c| c.kid) != Some(kid)
+                || self.battle_detail_out_sig != self.br_outputs.lock().unwrap().sig;
+            let exists = !changed
+                || source.lock().unwrap().iter().any(|b| b.engagements.iter().any(|e| e.kill_id == kid));
             match exists {
                 false => {
                     self.battle_selected = None;
@@ -1425,6 +1451,10 @@ impl SpaiApp {
                         let mut save_clicked = false;
                         let mut share_clicked = false;
                         let mut mine_clicked = false;
+                        let evetools_saved = self.evetools_for_open();
+                        let evetools_busy = self.evetools_busy;
+                        // `Some(None)` makes a report, `Some(Some(..))` updates the saved one.
+                        let mut evetools_click: Option<Option<(i64, crate::evetools::Saved)>> = None;
                         toolbar(ui, |ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
@@ -1525,7 +1555,52 @@ impl SpaiApp {
                             {
                                 mine_clicked = true;
                             }
+                            toolbar_sep(ui);
+                            match &evetools_saved {
+                                None => {
+                                    let label = if evetools_busy { format!("{}  br.evetools\u{2026}", icon::GLOBE_HEMISPHERE_WEST) } else { format!("{}  br.evetools", icon::GLOBE_HEMISPHERE_WEST) };
+                                    if ui
+                                        .add_enabled(!evetools_busy, egui::Button::new(label))
+                                        .on_hover_text("Make a report on br.evetools.org from this battle's systems and times. The link is kept for this battle.")
+                                        .clicked()
+                                    {
+                                        evetools_click = Some(None);
+                                    }
+                                }
+                                Some((anchor, saved, changed)) => {
+                                    let url = saved.url();
+                                    if ui.button(format!("{}  br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}")).clicked() {
+                                        let _ = open::that(&url);
+                                    }
+                                    if ui.button(icon::COPY).on_hover_text("Copy the br.evetools link").clicked() {
+                                        ui.ctx().copy_text(url.clone());
+                                    }
+                                    if *changed {
+                                        let label = egui::RichText::new(format!("{}  Update", icon::ARROWS_CLOCKWISE)).color(crate::theme::standing::WARNING);
+                                        if ui
+                                            .add_enabled(!evetools_busy, egui::Button::new(label))
+                                            .on_hover_text("The battle's systems or times changed since the br.evetools report was made: send them again")
+                                            .clicked()
+                                        {
+                                            evetools_click = Some(Some((*anchor, saved.clone())));
+                                        }
+                                    }
+                                }
+                            }
                         });
+                        if let Some(target) = evetools_click {
+                            if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
+                                let anchor = match &target {
+                                    Some((a, _)) => *a,
+                                    None => b.engagements.iter().min_by_key(|e| (e.time, e.kill_id)).map_or(0, |e| e.kill_id),
+                                };
+                                crate::evetools::spawn(b, target.map(|(_, s)| s), anchor, self.evetools.clone(), ui.ctx().clone());
+                            }
+                        }
+                        if let crate::evetools::Status::Failed(e) = self.evetools.lock().unwrap().clone() {
+                            self.report_msg = Some(e);
+                            *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
+                        }
                         if share_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 let ctx = ui.ctx().clone();
@@ -1595,14 +1670,24 @@ impl SpaiApp {
                         // Snapshot only the type names this battle needs, so the render loop
                         // (hundreds of rows) does not hold the shared type_names lock and stall
                         // the brview worker. 670 = the default capsule pod fallback.
-                        let names: std::collections::HashMap<i64, String> = {
+                        let names = {
                             let t = self.type_names.lock().unwrap();
-                            cache
-                                .ship_ids
-                                .iter()
-                                .chain(std::iter::once(&670))
-                                .filter_map(|id| t.get(id).map(|n| (*id, n.clone())))
-                                .collect()
+                            let key = (cache.kid, self.battle_detail_out_sig, t.len());
+                            match &self.battle_names {
+                                Some((k, n)) if *k == key => n.clone(),
+                                _ => {
+                                    let n: std::sync::Arc<std::collections::HashMap<i64, String>> = std::sync::Arc::new(
+                                        cache
+                                            .ship_ids
+                                            .iter()
+                                            .chain(std::iter::once(&670))
+                                            .filter_map(|id| t.get(id).map(|n| (*id, n.clone())))
+                                            .collect(),
+                                    );
+                                    self.battle_names = Some((key, n.clone()));
+                                    n
+                                }
+                            }
                         };
                         let (clicked_system, hover) = battle_detail(
                             ui,

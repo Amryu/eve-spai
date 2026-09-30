@@ -81,13 +81,16 @@ impl SpaiApp {
         (st.pings_new as usize).max(1)
     }
 
-    /// New messages in conversations that are not muted, plus new pings: the box's number.
+    /// New messages in conversations that are not muted and contact requests: the Messages tab.
+    fn notify_messages_count(&self) -> usize {
+        let st = self.jabber.lock().unwrap();
+        let msgs: u32 = st.unread_counts.iter().filter(|(k, _)| !self.jabber_is_muted(k)).map(|(_, c)| *c).sum();
+        msgs as usize + st.sub_requests.len()
+    }
+
+    /// The Messages tab's count plus new pings: the box's number.
     pub(crate) fn notify_count(&self) -> usize {
-        let msgs: u32 = {
-            let st = self.jabber.lock().unwrap();
-            st.unread_counts.iter().filter(|(k, _)| !self.jabber_is_muted(k)).map(|(_, c)| *c).sum()
-        };
-        msgs as usize + self.notify_new_pings()
+        self.notify_messages_count() + self.notify_new_pings()
     }
 
     fn convo_name(&self, key: &str) -> String {
@@ -110,6 +113,14 @@ impl SpaiApp {
             egui::RichText::new(format!("{}  {}", icon::BELL_RINGING, badge_count(n as u32))).strong().color(ui.visuals().hyperlink_color)
         };
         let btn = ui.button(text).on_hover_text("New messages, pings and mentions");
+        if btn.clicked() {
+            // Opened on the first tab with something new, not on whichever was last looked at.
+            let (msgs, mentions) = (self.notify_messages_count(), self.jabber.lock().unwrap().mentions.len());
+            let firsts = [(NotifyTab::Messages, msgs), (NotifyTab::Pings, self.notify_new_pings()), (NotifyTab::Mentions, mentions)];
+            if let Some((tab, _)) = firsts.into_iter().find(|(_, n)| *n > 0) {
+                self.notify_box.tab = tab;
+            }
+        }
         let mut shown = false;
         #[cfg(test)]
         let btn = {
@@ -136,16 +147,16 @@ impl SpaiApp {
 
     fn notify_box_ui(&mut self, ui: &mut egui::Ui) {
         use crate::app::SteadySelect as _;
-        let (msgs, pings, mentions) = {
+        let msgs = self.notify_messages_count();
+        let (pings, mentions) = {
             let st = self.jabber.lock().unwrap();
-            let msgs: u32 = st.unread_counts.iter().filter(|(k, _)| !self.jabber_is_muted(k)).map(|(_, c)| *c).sum();
-            (msgs, st.pings.len(), st.mentions.len())
+            (st.pings.len(), st.mentions.len())
         };
         let new_pings = self.notify_new_pings();
         ui.horizontal(|ui| {
             let tab = &mut self.notify_box.tab;
             let label = |t: &str, n: usize| if n == 0 { t.to_owned() } else { format!("{t} ({n})") };
-            ui.menu_value(tab, NotifyTab::Messages, label("Messages", msgs as usize));
+            ui.menu_value(tab, NotifyTab::Messages, label("Messages", msgs));
             ui.menu_value(tab, NotifyTab::Pings, label("Pings", new_pings));
             ui.menu_value(tab, NotifyTab::Mentions, label("Mentions", mentions));
         });
@@ -186,9 +197,28 @@ impl SpaiApp {
                 })
                 .collect()
         };
-        if groups.is_empty() {
+        let requests: Vec<String> = self.jabber.lock().unwrap().sub_requests.iter().cloned().collect();
+        if groups.is_empty() && requests.is_empty() {
             empty(ui, "No new messages");
             return;
+        }
+        for jid in requests {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                use egui_phosphor::regular as icon;
+                ui.label(egui::RichText::new(format!("{}  {}", icon::USER_PLUS, crate::jabber::convo_name(&jid))).strong())
+                    .on_hover_text(&jid);
+                ui.label(egui::RichText::new("wants to see your online status").weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(format!("{}  Decline", icon::X)).clicked() {
+                        self.jabber_answer_request(&jid, false);
+                    }
+                    if ui.button(format!("{}  Accept", icon::CHECK)).on_hover_text("Share your status, and ask to see theirs").clicked() {
+                        self.jabber_answer_request(&jid, true);
+                    }
+                });
+            });
+            ui.separator();
         }
         for mut g in groups {
             g.name = self.convo_name(&g.key);

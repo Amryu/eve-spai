@@ -214,6 +214,108 @@ impl SpaiApp {
         }
     }
 
+    /// Where `jid` stands on the server's contact list; `None` when it is not on it.
+    pub(crate) fn jabber_sub(&self, jid: &str) -> Option<crate::jabber::Sub> {
+        self.jabber.lock().unwrap().roster.get(jid).map(|c| c.sub)
+    }
+
+    fn jabber_send_cmd(&self, cmd: crate::jabber::Cmd) {
+        if let Some(tx) = &self.jabber_tx {
+            let _ = tx.send(cmd);
+        }
+    }
+
+    /// On the server's contact list, asking to see their status; also kept in the DM list.
+    pub(crate) fn jabber_add_contact(&mut self, jid: &str) {
+        self.jabber_send_cmd(crate::jabber::Cmd::AddContact { jid: jid.to_owned() });
+        if !self.settings.jabber_contacts.iter().any(|c| c == jid) {
+            self.settings.jabber_contacts.push(jid.to_owned());
+            self.needs_save = true;
+        }
+    }
+
+    pub(crate) fn jabber_remove_contact(&mut self, jid: &str) {
+        self.jabber_send_cmd(crate::jabber::Cmd::RemoveContact { jid: jid.to_owned() });
+        self.settings.jabber_contacts.retain(|c| c != jid);
+        self.needs_save = true;
+    }
+
+    pub(crate) fn jabber_answer_request(&mut self, jid: &str, accept: bool) {
+        self.jabber_send_cmd(crate::jabber::Cmd::AnswerRequest { jid: jid.to_owned(), accept });
+        self.jabber.lock().unwrap().sub_requests.remove(jid);
+        if accept && !self.settings.jabber_contacts.iter().any(|c| c == jid) {
+            self.settings.jabber_contacts.push(jid.to_owned());
+            self.needs_save = true;
+        }
+    }
+
+    /// The star in a DM's title bar and on Directory rows: filled for a contact whose status we see,
+    /// half-lit while they have not answered, and a menu of what can be done either way.
+    pub(crate) fn jabber_contact_button(&mut self, ui: &mut egui::Ui, jid: &str) {
+        use egui_phosphor::regular as icon;
+        let sub = self.jabber_sub(jid);
+        let (glyph, col, tip) = match sub {
+            Some(s) if s.theirs => (icon::STAR, ui.visuals().hyperlink_color, "Contact: you see their online status"),
+            Some(s) if s.asked => (icon::STAR_HALF, ui.visuals().hyperlink_color, "Contact: waiting for them to share their status"),
+            Some(_) => (icon::STAR, ui.visuals().weak_text_color(), "Contact, without their status"),
+            None => (icon::STAR, ui.visuals().weak_text_color(), "Not a contact: their online status is not shared"),
+        };
+        ui.menu_button(egui::RichText::new(glyph).size(15.0).color(col), |ui| self.jabber_contact_menu(ui, jid))
+            .response
+            .on_hover_text(tip);
+    }
+
+    /// What can be done about `jid` as a contact: the entries of a menu.
+    pub(crate) fn jabber_contact_menu(&mut self, ui: &mut egui::Ui, jid: &str) {
+        use egui_phosphor::regular as icon;
+        let sub = self.jabber_sub(jid);
+        let requested = self.jabber.lock().unwrap().sub_requests.contains(jid);
+        let weak = |ui: &mut egui::Ui, t: &str| {
+            ui.label(egui::RichText::new(t).weak());
+        };
+        if requested {
+            weak(ui, "Wants to see your online status");
+            if ui.button(format!("{}  Accept", icon::CHECK)).on_hover_text("Share your status, and ask to see theirs").clicked() {
+                self.jabber_answer_request(jid, true);
+                ui.close();
+            }
+            if ui.button(format!("{}  Decline", icon::X)).clicked() {
+                self.jabber_answer_request(jid, false);
+                ui.close();
+            }
+            ui.separator();
+        }
+        match sub {
+            None => {
+                if ui
+                    .button(format!("{}  Add to contacts", icon::STAR))
+                    .on_hover_text("Asks to see their online status. They have to accept, and see yours in turn.")
+                    .clicked()
+                {
+                    self.jabber_add_contact(jid);
+                    ui.close();
+                }
+            }
+            Some(s) => {
+                weak(ui, if s.theirs { "You see their status" } else if s.asked { "Waiting for them to accept" } else { "You do not see their status" });
+                weak(ui, if s.ours { "They see yours" } else { "They do not see yours" });
+                if !s.theirs && ui.button(format!("{}  Ask for their status", icon::ARROW_CLOCKWISE)).on_hover_text("Sends the request again").clicked() {
+                    self.jabber_add_contact(jid);
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .button(egui::RichText::new(format!("{}  Remove from contacts", icon::USER_MINUS)).color(crate::theme::standing::HOSTILE))
+                    .on_hover_text("Neither of you sees the other's status any more. The conversation stays.")
+                    .clicked()
+                {
+                    self.jabber_remove_contact(jid);
+                    ui.close();
+                }
+            }
+        }
+    }
+
     pub(crate) fn jabber_has_unread(&self) -> bool {
         self.jabber_unread_total() > 0
     }
@@ -1280,20 +1382,43 @@ impl SpaiApp {
             section(ui, "Direct messages");
             egui::ScrollArea::vertical().id_salt("dm_scroll").max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.push_id("dmlist", |ui| {
+            // Someone waiting on an answer comes first: it is a question, not a conversation.
+            let requests: Vec<String> = self.jabber.lock().unwrap().sub_requests.iter().cloned().collect();
+            for jid in requests {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::USER_PLUS).color(accent));
+                    ui.add(egui::Label::new(crate::jabber::convo_name(&jid)).truncate())
+                        .on_hover_text(format!("{jid} wants to see your online status"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(egui_phosphor::regular::X).on_hover_text("Decline").clicked() {
+                            self.jabber_answer_request(&jid, false);
+                        }
+                        if ui.small_button(egui_phosphor::regular::CHECK).on_hover_text("Accept: share your status and ask to see theirs").clicked() {
+                            self.jabber_answer_request(&jid, true);
+                        }
+                    });
+                });
+            }
             for c in &dms {
                 let (r, g, b) = c.presence.color();
+                let shared = crate::jabber::is_room_private(&c.jid) || self.jabber_sub(&c.jid).is_some_and(|s| s.theirs);
+                let dot = if shared { egui::Color32::from_rgb(r, g, b) } else { egui::Color32::TRANSPARENT };
                 let row = self.jabber_convo_row(
                     ui,
                     &c.jid,
                     &c.name,
                     c.unread_count,
                     c.mention,
-                    Some(egui::Color32::from_rgb(r, g, b)),
+                    Some(dot),
                     "",
                     false,
                     false,
                 );
+                let row = if shared { row } else { row.on_hover_text(NOT_SHARED_TIP) };
                 row.context_menu(|ui| {
+                    if !crate::jabber::is_room_private(&c.jid) {
+                        ui.menu_button(format!("{}  Contact", egui_phosphor::regular::STAR), |ui| self.jabber_contact_menu(ui, &c.jid));
+                    }
                     self.jabber_notify_menu(ui, &c.jid);
                     ui.separator();
                     if ui.button(format!("{}  Remove from list", egui_phosphor::regular::X)).on_hover_text("A new message brings it back").clicked() {
@@ -1499,6 +1624,12 @@ impl SpaiApp {
                 match presence {
                     // Filled, not an outline glyph: a ring at this size reads as absent rather than
                     // as a status, and is invisible for anyone offline.
+                    // Transparent: not shared, which is not offline.
+                    Some(c) if c == egui::Color32::TRANSPARENT => {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_stroke(rect.center(), 3.5, egui::Stroke::new(1.2, ui.visuals().weak_text_color()));
+                    }
                     Some(c) => {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -2147,7 +2278,6 @@ impl SpaiApp {
                     groups.entry(g).or_default().push(c);
                 }
                 let accent = ui.visuals().hyperlink_color;
-                let mut toggle_contact: Option<(String, bool)> = None;
                 let mut forget_convo: Option<String> = None;
                 let pinned = self.jabber_rescue_rooms();
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
@@ -2228,8 +2358,13 @@ impl SpaiApp {
                                 egui::RichText::new(disp).weak()
                             };
                             let is_contact = contacts.contains(&c.jid);
+                            let shared = self.jabber_sub(&c.jid).is_some_and(|s| s.theirs);
                             let resp = ui.horizontal(|ui| {
-                                status_dot(ui, egui::Color32::from_rgb(r, g, b), 9.0);
+                                if shared {
+                                    status_dot(ui, egui::Color32::from_rgb(r, g, b), 9.0);
+                                } else {
+                                    unknown_status_dot(ui, 9.0);
+                                }
                                 let clicked = ui.menu_label(sel, name)
                                     .on_hover_text(&c.name)
                                     .clicked();
@@ -2240,27 +2375,10 @@ impl SpaiApp {
                                             .size(8.0),
                                     );
                                 }
-                                let star_col = if is_contact {
-                                    ui.visuals().hyperlink_color
-                                } else {
-                                    ui.visuals().weak_text_color()
-                                };
-                                if ui
-                                    .add(
-                                        // Not `.small()`: at 9px this is hard to hit on purpose
-                                        // and easy to hit by accident, and it adds or drops a
-                                        // contact.
-                                        egui::Button::new(
-                                            egui::RichText::new(egui_phosphor::regular::STAR)
-                                                .size(15.0)
-                                                .color(star_col),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text(if is_contact { "Remove from contacts" } else { "Add to contacts" })
-                                    .clicked()
-                                {
-                                    toggle_contact = Some((c.jid.clone(), !is_contact));
+                                let _ = is_contact;
+                                // A room remembered under "Other" is no one's contact.
+                                if !f.channels.iter().any(|ch| ch.jid == c.jid) {
+                                    self.jabber_contact_button(ui, &c.jid);
                                 }
                                 // Roster rows come from the server and would be back on the next
                                 // push, so only a conversation we remember ourselves can be dropped.
@@ -2270,12 +2388,17 @@ impl SpaiApp {
                                 }
                                 clicked
                             });
-                            let tip = if c.status_text.is_empty() {
+                            let tip = if !shared {
+                                NOT_SHARED_TIP.to_owned()
+                            } else if c.status_text.is_empty() {
                                 c.presence.label().to_owned()
                             } else {
                                 format!("{} — {}", c.presence.label(), c.status_text)
                             };
-                            resp.response.on_hover_text(tip);
+                            let r = resp.response.on_hover_text(tip);
+                            if !f.channels.iter().any(|ch| ch.jid == c.jid) {
+                                r.context_menu(|ui| self.jabber_contact_menu(ui, &c.jid));
+                            }
                             if resp.inner {
                                 self.settings.jabber_closed_dms.retain(|j| j != &c.jid);
                                 self.jabber_open(&c.jid, ChatWinKey::Main);
@@ -2284,16 +2407,6 @@ impl SpaiApp {
                         }
                     }
                 });
-                if let Some((jid, add)) = toggle_contact {
-                    if add {
-                        if !self.settings.jabber_contacts.contains(&jid) {
-                            self.settings.jabber_contacts.push(jid);
-                        }
-                    } else {
-                        self.settings.jabber_contacts.retain(|j| j != &jid);
-                    }
-                    self.needs_save = true;
-                }
                 if let Some(jid) = forget_convo {
                     let is_room = f.rooms.iter().any(|r| r == &jid);
                     self.jabber_forget(&jid, is_room);
@@ -2797,30 +2910,8 @@ impl SpaiApp {
             ui.with_layout(
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    if !is_room {
-                        let is_contact =
-                            self.settings.jabber_contacts.contains(&jid);
-                        let col = if is_contact {
-                            ui.visuals().hyperlink_color
-                        } else {
-                            ui.visuals().weak_text_color()
-                        };
-                        if ui
-                            .button(egui::RichText::new(icon::STAR).color(col))
-                            .on_hover_text(if is_contact {
-                                "Remove from contacts"
-                            } else {
-                                "Add as contact"
-                            })
-                            .clicked()
-                        {
-                            if is_contact {
-                                self.settings.jabber_contacts.retain(|j| j != &jid);
-                            } else {
-                                self.settings.jabber_contacts.push(jid.clone());
-                            }
-                            self.needs_save = true;
-                        }
+                    if !is_room && !crate::jabber::is_room_private(&jid) {
+                        self.jabber_contact_button(ui, &jid);
                     }
                     let bell = if mark == NotifyMark::Muted { icon::BELL_SLASH } else { icon::BELL };
                     ui.menu_button(bell, |ui| self.jabber_notify_menu(ui, &jid))

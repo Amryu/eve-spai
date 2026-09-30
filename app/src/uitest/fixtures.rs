@@ -1492,6 +1492,30 @@ pub(crate) fn insmother() -> Region {
 
 /// A real fight in F-5WYK, from public killmails as the app stores them, clustered
 /// the way the kill worker does; the largest battle in it, with its hull names.
+/// The real fight `times` over: each copy with its own kills and characters, the same sides.
+pub(crate) fn big_battle(times: i64) -> (br_core::battle::Battle, HashMap<i64, String>) {
+    let (mut b, names) = real_battle();
+    let one = b.engagements.clone();
+    for k in 1..times {
+        let shift = k * 100_000_000;
+        b.engagements.extend(one.iter().cloned().map(|mut e| {
+            e.kill_id += shift;
+            if e.victim_char != 0 {
+                e.victim_char += shift;
+                e.victim_pilot = format!("{} {k}", e.victim_pilot);
+            }
+            for a in &mut e.attackers {
+                if a.char_id != 0 {
+                    a.char_id += shift;
+                    a.pilot = format!("{} {k}", a.pilot);
+                }
+            }
+            e
+        }));
+    }
+    (b, names)
+}
+
 pub(crate) fn real_battle() -> (br_core::battle::Battle, HashMap<i64, String>) {
     use br_core::battle;
     #[derive(serde::Deserialize)]

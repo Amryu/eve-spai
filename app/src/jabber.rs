@@ -125,6 +125,18 @@ pub struct Contact {
     pub groups: Vec<String>,
     pub presence: Presence,
     pub status_text: String,
+    pub sub: Sub,
+}
+
+/// Whose status the server passes on, for one contact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sub {
+    /// We see theirs.
+    pub theirs: bool,
+    /// They see ours.
+    pub ours: bool,
+    /// We asked to see theirs and they have not answered.
+    pub asked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,6 +178,12 @@ pub enum Cmd {
     JoinRoom { room: String },
     LeaveRoom { room: String },
     SetPresence { show: Presence, status: String },
+    /// On the server's contact list, asking to see their status.
+    AddContact { jid: String },
+    /// Off the server's contact list: neither side sees the other's status any more.
+    RemoveContact { jid: String },
+    /// Answer someone asking to see our status; accepting asks to see theirs back.
+    AnswerRequest { jid: String, accept: bool },
     /// Skip the remaining reconnect backoff and try again now.
     RetryNow,
 }
@@ -301,6 +319,9 @@ pub struct JabberState {
     /// Conversations carrying an unread message that named us.
     pub mentions: std::collections::BTreeSet<String>,
     pub pings: Vec<Ping>,
+    /// People asking to see our status, not answered yet. The server hands them over again at
+    /// every sign-in until they are.
+    pub sub_requests: std::collections::BTreeSet<String>,
     /// Conversations a DM just came in on, drained by the UI to open them.
     pub dm_arrived: Vec<String>,
     pub notify_cfg: JabberNotifyCfg,
@@ -1032,10 +1053,55 @@ async fn session(
                     }
                     let _ = agent.send_stanza(pres).await;
                 }
+                Cmd::AddContact { jid } => {
+                    if let Ok(bare) = jid.parse::<BareJid>() {
+                        roster_set(agent, &bare, false).await;
+                        let _ = agent.send_stanza(presence_to(xmpp::parsers::presence::Type::Subscribe, &bare)).await;
+                    }
+                }
+                Cmd::RemoveContact { jid } => {
+                    if let Ok(bare) = jid.parse::<BareJid>() {
+                        roster_set(agent, &bare, true).await;
+                    }
+                    state.lock().unwrap().sub_requests.remove(&jid);
+                }
+                Cmd::AnswerRequest { jid, accept } => {
+                    use xmpp::parsers::presence::Type;
+                    if let Ok(bare) = jid.parse::<BareJid>() {
+                        let answer = if accept { Type::Subscribed } else { Type::Unsubscribed };
+                        let _ = agent.send_stanza(presence_to(answer, &bare)).await;
+                        let theirs = state.lock().unwrap().roster.get(&jid).is_some_and(|c| c.sub.theirs || c.sub.asked);
+                        if accept && !theirs {
+                            roster_set(agent, &bare, false).await;
+                            let _ = agent.send_stanza(presence_to(Type::Subscribe, &bare)).await;
+                        }
+                    }
+                    state.lock().unwrap().sub_requests.remove(&jid);
+                }
                 Cmd::RetryNow => {}
             },
         }
     }
+}
+
+fn presence_to(ty: xmpp::parsers::presence::Type, to: &xmpp::jid::BareJid) -> xmpp::parsers::presence::Presence {
+    xmpp::parsers::presence::Presence::new(ty).with_to(to.clone())
+}
+
+/// Adds `jid` to the server's contact list, or takes it off.
+async fn roster_set(agent: &mut xmpp::Agent, jid: &xmpp::jid::BareJid, remove: bool) {
+    use xmpp::parsers::iq::Iq;
+    use xmpp::parsers::roster::{Ask, Item, Roster, Subscription};
+    let item = Item {
+        jid: jid.clone(),
+        name: None,
+        subscription: if remove { Subscription::Remove } else { Subscription::None },
+        ask: Ask::None,
+        groups: Vec::new(),
+        approved: None,
+    };
+    let iq = Iq::from_set(format!("spai-roster-{jid}"), Roster { ver: None, items: vec![item] });
+    let _ = agent.send_stanza(iq).await;
 }
 
 fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
@@ -1100,9 +1166,16 @@ fn handle_event(
                 groups: Vec::new(),
                 presence: Presence::default(),
                 status_text: String::new(),
+                sub: Sub::default(),
             });
             entry.name = item.name.clone();
             entry.groups = groups;
+            use xmpp::parsers::roster::{Ask, Subscription as S};
+            entry.sub = Sub {
+                theirs: matches!(item.subscription, S::To | S::Both),
+                ours: matches!(item.subscription, S::From | S::Both),
+                asked: item.ask == Ask::Subscribe,
+            };
             if let Some((pres, st)) = known {
                 entry.presence = pres;
                 entry.status_text = st;
@@ -1112,6 +1185,26 @@ fn handle_event(
             state.lock().unwrap().roster.remove(&item.jid.to_string());
         }
         Event::Presence(p) => {
+            use xmpp::parsers::presence::Type;
+            // Subscription traffic says nothing of anyone's status and must not mark them offline.
+            match (p.type_.clone(), &p.from) {
+                (Type::Subscribe, Some(from)) => {
+                    let who = from.to_bare().to_string();
+                    let mut s = state.lock().unwrap();
+                    // Already shown ours: the server only asks again to be sure.
+                    if s.roster.get(&who).is_some_and(|c| c.sub.ours) {
+                        return true;
+                    }
+                    if s.sub_requests.insert(who.clone()) {
+                        drop(s);
+                        crate::app::notify_os("Contact request", &format!("{} wants to see your online status", convo_name(&who)));
+                    }
+                    // Shown at once: someone is waiting on an answer.
+                    return true;
+                }
+                (Type::Subscribed | Type::Unsubscribe | Type::Unsubscribed | Type::Probe | Type::Error, _) => return urgent,
+                _ => {}
+            }
             if let Some(from) = &p.from {
                 let bare = from.to_bare().to_string();
                 let presence = presence_from(&p);
@@ -1310,6 +1403,43 @@ mod tests {
             &mut online,
         );
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn event(state: &super::SharedJabber, ev: xmpp::Event) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ping: crate::app::SharedPingWindow = Default::default();
+        let mut online = false;
+        let resolve = |_: &str| None;
+        super::handle_event(ev, state, &resolve, &ping, &tx, &egui::Context::default(), None, "me", &mut online);
+    }
+
+    fn presence(xml: &str) -> xmpp::Event {
+        xmpp::Event::Presence(xml.parse::<xmpp::minidom::Element>().unwrap().try_into().unwrap())
+    }
+
+    /// A request to see our status is a question for the user, not news of anyone's status; its
+    /// answers are not either.
+    #[test]
+    fn a_contact_request_is_held_and_says_nothing_of_status() {
+        let state: super::SharedJabber = Default::default();
+        event(&state, presence(r#"<presence xmlns='jabber:client' from='friend@goonfleet.com/eve' type='available'/>"#.replace(" type='available'", "").as_str()));
+        assert_eq!(state.lock().unwrap().presences.get("friend@goonfleet.com").map(|p| p.0), Some(super::Presence::Online));
+        event(&state, presence(r#"<presence xmlns='jabber:client' from='friend@goonfleet.com' type='subscribe'/>"#));
+        event(&state, presence(r#"<presence xmlns='jabber:client' from='friend@goonfleet.com' type='unsubscribed'/>"#));
+        let st = state.lock().unwrap();
+        assert!(st.sub_requests.contains("friend@goonfleet.com"));
+        assert_eq!(st.presences.get("friend@goonfleet.com").map(|p| p.0), Some(super::Presence::Online), "not marked offline");
+    }
+
+    #[test]
+    fn a_roster_entry_says_who_sees_whose_status() {
+        let state: super::SharedJabber = Default::default();
+        let item = |xml: &str| -> xmpp::parsers::roster::Item { xml.parse::<xmpp::minidom::Element>().unwrap().try_into().unwrap() };
+        event(&state, xmpp::Event::ContactAdded(item(r#"<item xmlns='jabber:iq:roster' jid='a@goonfleet.com' subscription='both'/>"#)));
+        event(&state, xmpp::Event::ContactAdded(item(r#"<item xmlns='jabber:iq:roster' jid='b@goonfleet.com' subscription='from' ask='subscribe'/>"#)));
+        let st = state.lock().unwrap();
+        assert_eq!(st.roster["a@goonfleet.com"].sub, super::Sub { theirs: true, ours: true, asked: false });
+        assert_eq!(st.roster["b@goonfleet.com"].sub, super::Sub { theirs: false, ours: true, asked: true });
     }
 
     #[test]

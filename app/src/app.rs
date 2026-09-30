@@ -420,6 +420,9 @@ pub struct SpaiApp {
     sde_status: SharedStatus,
     auth_status: SharedAuth,
     pub(crate) characters: Vec<CharacterRow>,
+    /// Which characters hold a login, by id, with the character list and time it was read for.
+    /// Asking the keychain costs a round trip per character, and the battle toolbar asks each frame.
+    br_authed: std::cell::RefCell<Option<(Vec<i64>, Vec<i64>, std::time::Instant)>>,
     copy_settings: crate::copysettings::CopyState,
     eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
     eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
@@ -442,6 +445,13 @@ pub struct SpaiApp {
     build_kill_error: Option<String>,
     battle_ship_ids: Option<std::sync::Arc<std::collections::HashSet<i64>>>,
     br_share: crate::brshare::SharedShare,
+    /// A br.evetools report being made or updated.
+    evetools: crate::evetools::Shared,
+    /// The br.evetools reports made here, read again after each one is made or updated.
+    evetools_saved: Option<Vec<(i64, crate::evetools::Saved)>>,
+    evetools_busy: bool,
+    /// The open battle's report and whether the battle changed since, per worker output.
+    evetools_match: Option<((i64, u64, usize), Option<(i64, crate::evetools::Saved, bool)>)>,
     /// The battle (by kid) the current share status belongs to, so the "Shared:" banner shows only
     /// on that report, not on whatever BR you navigate to next.
     br_share_kid: Option<i64>,
@@ -473,8 +483,10 @@ pub struct SpaiApp {
     pub(crate) battle_select_pending: Option<(Vec<i64>, std::time::Instant)>,
     battle_excluded_count: usize,
     battle_scrub_count: usize,
-    battle_edit_mode: bool,
+    pub(crate) battle_edit_mode: bool,
     battle_kill_sel: std::collections::HashSet<i64>,
+    /// What the kill review needs of the open battle, worked out once per worker output.
+    battle_edit_data: Option<((i64, u64), std::sync::Arc<BattleEditData>)>,
     battle_split_preview:
         Option<(std::collections::HashSet<i64>, br_core::battle::Battle, br_core::battle::Battle)>,
     battle_merge_sel: std::collections::HashSet<i64>,
@@ -501,6 +513,9 @@ pub struct SpaiApp {
     battle_cards_out_sig: u64,
     battle_wait_since: Option<std::time::Instant>,
     battle_detail_out_sig: u64,
+    /// The type names the open battle needs, by (battle, worker output, names known): a snapshot
+    /// so drawing does not hold the shared lock, rebuilt only when one of those changes.
+    battle_names: Option<((i64, u64, usize), std::sync::Arc<std::collections::HashMap<i64, String>>)>,
     camps: crate::camp::SharedCamps,
     camped_cache: Vec<(i64, crate::camp::CampLevel)>,
     camped_cache_at: i64,
@@ -1432,6 +1447,10 @@ impl SpaiApp {
             build_kill_error: None,
             battle_ship_ids: None,
             br_share: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::ShareStatus::Idle)),
+            evetools: Default::default(),
+            evetools_saved: None,
+            evetools_busy: false,
+            evetools_match: None,
             br_share_kid: None,
             br_mine: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::MineState::default())),
             br_mine_open: false,
@@ -1462,6 +1481,7 @@ impl SpaiApp {
             battle_scrub_count: 0,
             battle_edit_mode: false,
             battle_kill_sel: std::collections::HashSet::new(),
+            battle_edit_data: None,
             battle_split_preview: None,
             battle_merge_sel: std::collections::HashSet::new(),
             battle_add_open: false,
@@ -1484,6 +1504,7 @@ impl SpaiApp {
             battle_cards_out_sig: u64::MAX,
             battle_wait_since: None,
             battle_detail_out_sig: u64::MAX,
+            battle_names: None,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -1691,6 +1712,7 @@ impl SpaiApp {
             map_titan_self_jump: false,
             map_route_zone: None,
             scan_route: Default::default(),
+            br_authed: Default::default(),
             notify_box: Default::default(),
             sig_browser: Default::default(),
             scanner_track: Default::default(),
@@ -3145,12 +3167,14 @@ impl SpaiApp {
     #[cfg(test)]
     pub(crate) fn seed_battle(&mut self, b: br_core::battle::Battle, names: std::collections::HashMap<i64, String>) {
         let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
-        let ship_ids: Vec<i64> = b
+        let mut ship_ids: Vec<i64> = b
             .engagements
             .iter()
             .flat_map(|e| std::iter::once(e.victim_ship).chain(e.attackers.iter().map(|a| a.ship)))
             .filter(|&id| id != 0)
             .collect();
+        ship_ids.sort_unstable();
+        ship_ids.dedup();
         let inv = b.involvement();
         let rosters: Vec<Vec<br_core::battle::Participant>> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
         let (rosters, condensed) = crate::brview::sorted_detail(&rosters, Default::default(), &self.ship_sizes, &names);
@@ -4695,6 +4719,16 @@ fn fit_chars(width: f32) -> usize {
 
 /// A filled presence/status dot. `size` is the font size of the phosphor CIRCLE glyph it replaces;
 /// the painted diameter matches that glyph's ~0.72em footprint so inline spacing is unchanged.
+/// Said of anyone whose online status the server does not pass on.
+pub(crate) const NOT_SHARED_TIP: &str = "Online status not shared. Add them as a contact (the star, or right-click) and they can accept.";
+
+/// A ring where the status dot would be: no status known, which is not the same as offline.
+fn unknown_status_dot(ui: &mut egui::Ui, size: f32) {
+    let d = size * 0.72;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
+    ui.painter().circle_stroke(rect.center(), d / 2.0 - 0.6, egui::Stroke::new(1.2, ui.visuals().weak_text_color()));
+}
+
 fn status_dot(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
     let d = size * 0.72;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
@@ -6027,6 +6061,82 @@ pub(crate) fn ship_row(
     resp
 }
 
+/// The kill review's lists, sorted and counted once.
+pub(crate) struct BattleEditData {
+    /// The kills, oldest first.
+    pub engs: Vec<br_core::battle::Engagement>,
+    /// Victim hull types, each once.
+    pub ship_ids: Vec<i64>,
+    /// Per suggested split: ships on the smaller side, and whether that side is the earlier one.
+    pub splits: Vec<(usize, bool)>,
+    /// Every identified pilot, by name.
+    pub pilots: Vec<(i64, String)>,
+}
+
+impl BattleEditData {
+    pub(crate) fn of(b: &br_core::battle::Battle) -> Self {
+        let mut engs = b.engagements.clone();
+        engs.sort_by_key(|e| e.time);
+        let mut ship_ids: Vec<i64> = engs.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
+        ship_ids.sort_unstable();
+        ship_ids.dedup();
+        let ships = |pred: &dyn Fn(&br_core::battle::Engagement) -> bool| -> usize {
+            let mut set: std::collections::HashSet<i64> = std::collections::HashSet::new();
+            for e in engs.iter().filter(|e| pred(e)) {
+                set.extend(std::iter::once(e.victim_char).chain(e.attackers.iter().map(|a| a.char_id)).filter(|c| *c != 0));
+            }
+            set.len()
+        };
+        let splits = b
+            .suggested_splits
+            .iter()
+            .map(|sug| {
+                let (before, after) = (ships(&|e| e.time < sug.time), ships(&|e| e.time >= sug.time));
+                let before_kills = engs.iter().filter(|e| e.time < sug.time).count();
+                let earlier = before < after || (before == after && before_kills < engs.len() - before_kills);
+                (before.min(after), earlier)
+            })
+            .collect();
+        let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut pilots: Vec<(i64, String)> = Vec::new();
+        for e in &engs {
+            for (c, p) in std::iter::once((e.victim_char, &e.victim_pilot)).chain(e.attackers.iter().map(|a| (a.char_id, &a.pilot))) {
+                if c != 0 && seen.insert(c) {
+                    pilots.push((c, p.clone()));
+                }
+            }
+        }
+        pilots.sort_by_cached_key(|(_, p)| p.to_lowercase());
+        BattleEditData { engs, ship_ids, splits, pilots }
+    }
+}
+
+/// Stands blank space in for rows out of view in a `show_viewport` list, once their height is
+/// known, so a list of thousands lays out only what shows.
+pub(crate) struct RowSkipper {
+    origin: f32,
+    viewport: egui::Rect,
+}
+
+impl RowSkipper {
+    /// Rows this far past the viewport are laid out too, so a quick scroll shows no blank.
+    const OVERDRAW: f32 = 300.0;
+
+    pub(crate) fn new(ui: &egui::Ui, viewport: egui::Rect) -> Self {
+        RowSkipper { origin: ui.cursor().top(), viewport }
+    }
+
+    /// True when the next row, `h` high, is out of view and was stood in for.
+    pub(crate) fn skip(&self, ui: &mut egui::Ui, h: f32) -> bool {
+        let y = ui.cursor().top() - self.origin;
+        let off = h > 0.0 && (y + h < self.viewport.min.y - Self::OVERDRAW || y > self.viewport.max.y + Self::OVERDRAW);
+        if off {
+            ui.add_space(h);
+        }
+        off
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct BattleHover {
     char_id: i64,
@@ -6104,7 +6214,6 @@ pub(crate) fn battle_detail(
     };
 
     const SIDE_W: f32 = 360.0;
-    const MAX_ROWS: usize = 200;
     let col_h = (ui.available_height() - 12.0).max(180.0);
     let list_h = (col_h - 60.0).max(120.0);
     egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
@@ -6123,8 +6232,9 @@ pub(crate) fn battle_detail(
                             }
                             ui.label(egui::RichText::new(side_title(side)).color(col).strong().size(15.0));
                             if side.parties.len() > 1 {
-                                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak())
-                                    .on_hover_text(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+                                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak()).on_hover_ui(|ui| {
+                                    ui.label(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+                                });
                             }
                         });
                         ui.horizontal_wrapped(|ui| {
@@ -6143,15 +6253,26 @@ pub(crate) fn battle_detail(
                             ui.label(egui::RichText::new(format!("{} lost", fmt_isk(side.isk_lost))).weak());
                         });
                         ui.add_space(4.0);
+                        // Only rows in view are laid out: a big fight has thousands, each with images.
+                        // A row's height depends on its kind alone (a loss has a second line of
+                        // links), learned from the rows drawn, so the rest stand in as blank space.
+                        let heights_id = egui::Id::new(("battle_row_heights", b.start, i, condensed));
+                        let mut heights: [f32; 2] = ui.data(|d| d.get_temp(heights_id)).unwrap_or([0.0; 2]);
                         egui::ScrollArea::vertical()
                             .id_salt(("battle_side", b.start, i))
                             .max_height(list_h)
                             .auto_shrink([false, true])
-                            .show(ui, |ui| {
+                            .show_viewport(ui, |ui, viewport| {
                                 ui.set_width(SIDE_W - 16.0);
                                 let row_w = SIDE_W - 16.0;
+                                let rows = RowSkipper::new(ui, viewport);
+                                let skip = |ui: &mut egui::Ui, h: f32| rows.skip(ui, h);
                                 if condensed {
                                     for r in &condensed_rows[i] {
+                                        if skip(ui, heights[0]) {
+                                            continue;
+                                        }
+                                        let top = ui.cursor().top();
                                         let resp = condensed_row(
                                             ui, row_w, r.ship, r.total, r.lost, r.ship_isk,
                                             r.pod_isk, &name_of, red,
@@ -6162,6 +6283,7 @@ pub(crate) fn battle_detail(
                                             );
                                             ui.painter().rect_filled(resp.rect, 4.0, hl);
                                         }
+                                        heights[0] = ui.cursor().top() - top;
                                     }
                                     if roster.is_empty() {
                                         ui.label(egui::RichText::new("No ships").weak());
@@ -6169,7 +6291,12 @@ pub(crate) fn battle_detail(
                                     return;
                                 }
                                 // `roster` is already sorted for the active sort by the worker.
-                                for p in roster.iter().take(MAX_ROWS) {
+                                for p in roster.iter() {
+                                    let kind = usize::from(p.lost.is_some());
+                                    if skip(ui, heights[kind]) {
+                                        continue;
+                                    }
+                                    let top = ui.cursor().top();
                                     let row_kill = p.lost.as_ref().map(|l| l.kill_id);
                                     let is_hovered = p.char_id != 0
                                         && prev_hover.map_or(false, |h| h.char_id == p.char_id && h.kill_id == row_kill);
@@ -6192,14 +6319,13 @@ pub(crate) fn battle_detail(
                                             kill_id: p.lost.as_ref().map(|l| l.kill_id),
                                         }));
                                     }
-                                }
-                                if roster.len() > MAX_ROWS {
-                                    ui.label(egui::RichText::new(format!("+{} more", roster.len() - MAX_ROWS)).weak());
+                                    heights[kind] = ui.cursor().top() - top;
                                 }
                                 if roster.is_empty() {
                                     ui.label(egui::RichText::new("No ships").weak());
                                 }
                             });
+                        ui.data_mut(|d| d.insert_temp(heights_id, heights));
                     });
                 });
                 ui.add_space(6.0);

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
+mod evetools;
 mod zkapi;
 mod app;
 mod auth;

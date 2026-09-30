@@ -1921,6 +1921,7 @@ mod jabber_forget_tests {
                 groups: vec!["Corp".to_owned()],
                 presence: crate::jabber::Presence::default(),
                 status_text: String::new(),
+                sub: Default::default(),
             },
         );
         let f = a.jabber_frame(false);

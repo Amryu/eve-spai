@@ -1284,6 +1284,21 @@ fn jabber_sidebar_scene_cfg(
             a.settings.fc_rescue_enabled = rescue;
             a.settings.fleet_enabled = true;
             a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: chrono::Utc::now().timestamp(), command_group: "SC".into() });
+            if name.ends_with("_requests") {
+                // One asking to see our status; the DM partner shares theirs, so its dot is lit.
+                let mut st = a.jabber.lock().unwrap();
+                st.sub_requests.insert("logilead@goonfleet.com".into());
+                st.roster.insert(
+                    fixtures::JABBER_DM.into(),
+                    crate::jabber::Contact {
+                        name: Some("Wingmate Alpha".into()),
+                        groups: vec!["Corp".into()],
+                        presence: crate::jabber::Presence::Online,
+                        status_text: String::new(),
+                        sub: crate::jabber::Sub { theirs: true, ours: true, asked: false },
+                    },
+                );
+            }
             if name.ends_with("_marks") {
                 // One room only rings for mentions, the other and the DM are muted.
                 let mentions_only = crate::settings::RoomNotify { messages: false, ..Default::default() };
@@ -1952,6 +1967,7 @@ pub(crate) fn all() -> Vec<Scene> {
         // Both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
         jabber_sidebar_scene("jabber_sidebar_convos_marks", [900.0, 560.0], true),
+        jabber_sidebar_scene("jabber_sidebar_convos_requests", [900.0, 560.0], true),
         jabber_empty_convos_scene("jabber_sidebar_convos_empty", [420.0, 400.0]),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
         // One dialog per kind, and neither offering the other kind's conversations.
@@ -7743,6 +7759,122 @@ fn uitest_the_notification_box_marks_what_was_seen_read() {
     let b = app.borrow();
     let drafts = &b.as_ref().unwrap().jabber_drafts;
     assert!(drafts.values().all(|d| d.is_empty()), "sent: {drafts:?}");
+}
+
+/// Clicking the bell opens the first tab with something new: with only a ping waiting, the Pings
+/// tab, not an empty Messages tab.
+#[test]
+fn uitest_the_bell_opens_the_tab_with_news() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui(move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let a = crate::app::SpaiApp::build(ui.ctx(), true);
+            {
+                let mut st = a.jabber.lock().unwrap();
+                st.pings = vec![fixtures::ping_fleet()];
+                st.pings_unread = true;
+                st.pings_new = 1;
+            }
+            a
+        });
+        a.root_chrome(ui);
+    });
+    h.run();
+    h.get_by_label_contains(egui_phosphor::regular::BELL_RINGING).click();
+    h.run();
+    assert!(h.query_by_label_contains("Fleet pings").is_some(), "the Pings tab is open");
+    assert!(h.query_by_label_contains("No new messages").is_none());
+}
+
+/// Frame time of a big battle report, at rest and while scrolling: run before and after work on it.
+/// `cargo test --release --features fleet --bin eve-spai uitest_battle_frame_time -- --ignored --nocapture`
+#[test]
+#[ignore = "timing, run by hand"]
+fn uitest_battle_frame_time() {
+    for edit in [false, true] {
+        battle_frame_time(edit);
+    }
+}
+
+fn battle_frame_time(edit: bool) {
+    harness::scratch_profile();
+    let (b, names) = fixtures::big_battle(4);
+    let kills = b.engagements.len();
+    let pilots: std::collections::HashSet<i64> = b.engagements.iter().flat_map(|e| e.attackers.iter().map(|a| a.char_id)).collect();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui(move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            // Signed-in characters, as the share toolbar looks them up.
+            a.characters = (0..3)
+                .map(|i| crate::store::CharacterRow { id: 2_112_999_000 + i, name: format!("Timing Pilot {i}"), expires_at: 0, scopes: String::new() })
+                .collect();
+            a.seed_battle(b.clone(), names.clone());
+            a.battle_edit_mode = edit;
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    for _ in 0..5 {
+        h.step();
+    }
+    let time = |h: &mut egui_kittest::Harness<'_>, scroll: bool| {
+        let n = 60;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            if scroll {
+                h.hover_at(egui::pos2(500.0, 600.0));
+                h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -40.0), phase: egui::TouchPhase::Move, modifiers: Default::default() });
+            }
+            h.step();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    };
+    let rest = time(&mut h, false);
+    let scroll = time(&mut h, true);
+    let mode = if edit { "edit" } else { "report" };
+    println!("{mode}: battle of {kills} kills, {} attackers: {rest:.2} ms/frame at rest, {scroll:.2} ms/frame scrolling", pilots.len());
+}
+
+/// A big battle's roster lays out only what shows, and still reaches every pilot: scrolled to the
+/// bottom, the last one is drawn and the first is not.
+#[test]
+fn uitest_a_big_battle_roster_scrolls_to_its_last_pilot() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let (b, names) = fixtures::big_battle(4);
+    let rosters: Vec<_> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
+    let (sorted, _) = crate::brview::sorted_detail(&rosters, Default::default(), &Default::default(), &names);
+    let side = &sorted[0];
+    assert!(side.len() > 400, "past the old cap of 200: {}", side.len());
+    let (first, last) = (side[0].pilot.clone(), side[side.len() - 1].pilot.clone());
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui(move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    h.run();
+    assert!(h.query_by_label(&first).is_some(), "the first pilot at the top");
+    assert!(h.query_by_label(&last).is_none(), "the last one not laid out yet");
+    let row = h.get_by_label(&first).rect().center();
+    for _ in 0..200 {
+        h.hover_at(row);
+        h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -4000.0), phase: egui::TouchPhase::Move, modifiers: Default::default() });
+        h.step();
+    }
+    h.run();
+    assert!(h.query_by_label(&last).is_some(), "the last pilot drawn at the bottom");
+    assert!(h.query_by_label(&first).is_none(), "the first one no longer laid out");
 }
 
 /// A system suggestion is taken by a click as well as by Enter, with the press and release in

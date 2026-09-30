@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+/// How long finished images wait to be shown together.
+const REPAINT_BATCH: Duration = Duration::from_millis(50);
+
 const EVE_IMG_PREFIX: &str = "https://images.evetech.net/";
 /// Fetch and decode threads. A feed scrolled fast asks for hundreds of portraits at once; one
 /// thread each swamped the machine, and decoding on the UI thread stalled the frame instead.
@@ -105,7 +108,8 @@ impl BytesLoader for EveImageCache {
             if let Some(slot) = mem.lock().unwrap().get_mut(&uri) {
                 *slot = Poll::Ready(result);
             }
-            ctx.request_repaint();
+            // Batched: a list opening asks for hundreds at once, and each would be a frame.
+            ctx.request_repaint_after(REPAINT_BATCH);
         }));
 
         Ok(BytesPoll::Pending { size: None })
@@ -282,7 +286,8 @@ impl ImageLoader for EveImageDecoder {
             if let Some(slot) = mem.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&uri) {
                 *slot = Poll::Ready(result);
             }
-            ctx.request_repaint();
+            // Batched: a list opening asks for hundreds at once, and each would be a frame.
+            ctx.request_repaint_after(REPAINT_BATCH);
         }));
         Ok(ImagePoll::Pending { size: None })
     }
