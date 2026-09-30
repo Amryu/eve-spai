@@ -134,6 +134,12 @@ fn related(
     false
 }
 
+/// The floating window whose frame holds all of `w`, if any. egui does not parent a window's
+/// contents under its `Window` node, so the frame is what places them.
+fn window_of(w: &Widget, windows: &[egui::Rect]) -> Option<usize> {
+    windows.iter().position(|r| r.expand(0.5).contains_rect(w.rect))
+}
+
 /// A label that wraps onto a second row starts its galley at the row's left edge, so its bounding
 /// box swallows whatever shared the first row with it (a chat nick, say) while the painted first
 /// row is indented clear of it. A shared origin plus the extra rows is what that shape looks like.
@@ -197,13 +203,20 @@ pub(crate) fn inspect(harness: &mut Harness<'_>, size: egui::Vec2) -> Report {
             .iter()
             .filter(|w| w.role == egui::accesskit::Role::Label && !w.label.is_empty() && w.painted)
             .collect();
+        let windows: Vec<egui::Rect> = widgets.iter().filter(|w| w.role == egui::accesskit::Role::Window).map(|w| w.rect).collect();
         for (i, a) in text.iter().enumerate() {
             for b in &text[i + 1..] {
                 let hit = a.rect.intersect(b.rect);
+                // A floating window covers the panel under it: text there is hidden, not crossed.
+                let covered = match (window_of(a, &windows), window_of(b, &windows)) {
+                    (Some(_), None) | (None, Some(_)) => true,
+                    _ => false,
+                };
                 if hit.width() > 1.0
                     && hit.height() > 1.0
                     && !related(a, b, &parents)
                     && !wrapped_lead_in(a, b)
+                    && !covered
                 {
                     report.text_overlaps.push(format!("{} <-> {}", a.describe(), b.describe()));
                 }

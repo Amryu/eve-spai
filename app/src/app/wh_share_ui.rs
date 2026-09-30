@@ -66,7 +66,26 @@ impl SpaiApp {
 
     #[cfg(test)]
     pub(crate) fn wh_share_seed(&mut self, groups: Vec<ShareGroup>) {
+        // The scratch profile outlives a run: what another scene stored for these groups (keys,
+        // members) must not show here.
+        if let Some(store) = &self.store {
+            for g in &groups {
+                store.share_group_forget(&g.id);
+            }
+        }
         self.wh_share.groups = groups;
+    }
+
+    /// An invite link just made for `group`, as the share thread reports it, in a group this
+    /// install holds the key of.
+    #[cfg(test)]
+    pub(crate) fn wh_share_seed_invite(&mut self, group: &str, link: &str, for_name: &str) {
+        if let Some(store) = &self.store {
+            store.share_key_save(group, 0, &[1; 32]);
+        }
+        let (tx, _) = std::sync::mpsc::channel();
+        let status = engine::Status { invite: Some((group.to_owned(), link.to_owned(), for_name.to_owned())), ..Default::default() };
+        self.wh_share.handle = Some(engine::Handle { tx, status: std::sync::Arc::new(std::sync::Mutex::new(status)) });
     }
 
     /// Members stored for `group`, and optionally its members dialog open.
@@ -344,13 +363,21 @@ impl SpaiApp {
                                 });
                                 if let Some((gid, link, for_name)) = &status.invite {
                                     if *gid == g.id {
-                                        ui.horizontal(|ui| {
-                                            ui.add(egui::TextEdit::singleline(&mut link.clone()).desired_width(360.0));
-                                            if ui.button(icon::COPY).on_hover_text("Copy the link").clicked() {
-                                                copy = Some(link.clone());
-                                            }
-                                        });
-                                        ui.label(egui::RichText::new(format!("For {for_name} only. Send it to them privately.")).weak());
+                                        // The same invite opens in the app or, for someone without it, in a browser.
+                                        let web = link.split_once("join/").map(|(_, rest)| format!("{}/wh/join/{rest}", crate::brshare::api_base()));
+                                        let label_w = ["App", "Browser"].iter().map(|t| ui.painter().layout_no_wrap((*t).to_owned(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x).fold(0.0, f32::max);
+                                        for (label, l, hint) in [("App", Some(link.clone()), "Copy the link for EVE Spai"), ("Browser", web, "Copy the link for the web map, no app needed")] {
+                                            let Some(l) = l else { continue };
+                                            ui.horizontal(|ui| {
+                                                ui.add_sized([label_w, ui.spacing().interact_size.y], egui::Label::new(label));
+                                                let copy_w = ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 2.0 + 8.0;
+                                                ui.add(egui::TextEdit::singleline(&mut l.clone()).desired_width((ui.available_width() - copy_w).max(80.0)));
+                                                if ui.button(icon::COPY).on_hover_text(hint).clicked() {
+                                                    copy = Some(l);
+                                                }
+                                            });
+                                        }
+                                        ui.label(egui::RichText::new(format!("For {for_name} only. Send one of them to them privately.")).weak());
                                     }
                                 }
                             }

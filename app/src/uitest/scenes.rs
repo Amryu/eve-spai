@@ -1079,6 +1079,9 @@ fn wormholes_focus_scene(
                         a.wh_share_seed_members(g, &ms, g == "g1");
                     }
                 }
+                if name.ends_with("_invite") {
+                    a.wh_share_seed_invite("g1", "eve-spai://join/5f0c2a9e41b37d68a0e1c4b29f7d3e10#q7Vx2mNfL0pRtY8sW3kZcB6hJ9dG4aE1uI5oX0yT2vM", "Invited Pilot");
+                }
                 a.wh_share.open = true;
                 // Nothing behind the windows: the scene is about them, and the checks would read the
                 // map's widgets under a floating window as overlaps.
@@ -2292,6 +2295,7 @@ pub(crate) fn all() -> Vec<Scene> {
     }));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing_members", [1280.0, 800.0], false, None));
+    v.push(wormholes_scene("view_wormholes_sharing_invite", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
     v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));
     v.push(map_layers_scene("map_layers", [320.0, 800.0]));
