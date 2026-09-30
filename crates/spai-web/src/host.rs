@@ -102,12 +102,82 @@ pub struct WebHost {
     pub form: Option<HoleForm>,
     /// Changes made since the app last took them.
     pub edits: Vec<Edit>,
+    side: Side,
+    pin_input: String,
+}
+
+/// The side panel's tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Side {
+    #[default]
+    Holes,
+    Signatures,
+    Routes,
 }
 
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: 10, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new() }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new() }
+    }
+}
+
+/// Pinned on first use: the chains hang from these and routes are measured to them.
+pub const DEFAULT_PINS: [&str; 3] = ["C-J6MT", "C-N4OD", "4-HWWF"];
+
+impl WebHost {
+    /// The Routes tab: how far each pinned system is from the selected one, and the pins
+    /// themselves to add and remove.
+    fn routes(&mut self, ui: &mut egui::Ui, geo: &Systems, sel: i64, sel_name: &str) {
+        let pinned = self.prefs.route_pins.iter().any(|p| p.eq_ignore_ascii_case(sel_name));
+        let label = if pinned { format!("Unpin {sel_name}") } else { format!("Pin {sel_name}") };
+        let mut change: Option<(String, bool)> = None;
+        if ui.button(format!("{}  {label}", egui_phosphor::regular::PUSH_PIN)).clicked() {
+            change = Some((sel_name.to_owned(), !pinned));
+        }
+        ui.add_space(4.0);
+        if self.prefs.route_pins.is_empty() {
+            ui.label(egui::RichText::new("No pinned systems. Pin the systems you stage in: chains hang from them and routes are measured to them.").weak());
+        }
+        egui::Grid::new("wh_web_pins").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
+            for name in &self.prefs.route_pins {
+                let info = geo.lookup(name);
+                ui.label(egui::RichText::new(name).strong());
+                let jumps = info.and_then(|i| geo.jumps(sel, i.id, 60));
+                ui.label(egui::RichText::new(match jumps {
+                    Some(0) => "here".to_owned(),
+                    Some(1) => "1 jump".to_owned(),
+                    Some(n) => format!("{n} jumps"),
+                    None => "no route".to_owned(),
+                }).weak())
+                .on_hover_text("By gate and Ansiblex; holes are on the map");
+                if ui.small_button(egui_phosphor::regular::X).on_hover_text("Unpin").clicked() {
+                    change = Some((name.clone(), false));
+                }
+                ui.end_row();
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut self.pin_input).hint_text("System to pin").desired_width(160.0));
+            let go = ui.button("Pin").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if go {
+                match geo.lookup(self.pin_input.trim()).or_else(|| geo.lookup_prefix(self.pin_input.trim())) {
+                    Some(i) => {
+                        change = Some((i.name.clone(), true));
+                        self.pin_input.clear();
+                    }
+                    None => self.pin_input = format!("{} (no such system)", self.pin_input.trim()),
+                }
+            }
+        });
+        if let Some((name, on)) = change {
+            self.prefs.route_pins.retain(|p| !p.eq_ignore_ascii_case(&name));
+            if on {
+                self.prefs.route_pins.push(name);
+            }
+            self.dirty = true;
+        }
     }
 }
 
@@ -214,6 +284,16 @@ impl WhHost for WebHost {
                     }
                     return;
                 }
+                let here_n = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).count();
+                ui.horizontal(|ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    ui.menu_value(&mut self.side, Side::Holes, format!("Holes ({here_n})"));
+                    ui.menu_value(&mut self.side, Side::Signatures, format!("Signatures ({})", sigs.len()));
+                    ui.menu_value(&mut self.side, Side::Routes, "Routes");
+                });
+                ui.separator();
+                match self.side {
+                    Side::Holes => {
                 ui.horizontal(|ui| {
                     ui.strong("Holes");
                     if self.can_edit && ui.small_button(format!("{}  Add", egui_phosphor::regular::PLUS)).clicked() {
@@ -246,8 +326,8 @@ impl WhHost for WebHost {
                 if edit.is_some() {
                     self.form = edit;
                 }
-                ui.add_space(8.0);
-                ui.strong(format!("Signatures ({})", sigs.len()));
+                    }
+                    Side::Signatures => {
                 if sigs.is_empty() {
                     ui.label(egui::RichText::new("No probe scan shared for this system").weak());
                 }
@@ -268,6 +348,9 @@ impl WhHost for WebHost {
                         ui.end_row();
                     }
                 });
+                    }
+                    Side::Routes => self.routes(ui, geo, sel, &info.name),
+                }
             });
         });
     }
