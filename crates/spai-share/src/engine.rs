@@ -27,6 +27,8 @@ pub enum Cmd {
     Remove { group: String, char_id: i64 },
     RemoveDevice { group: String, char_id: i64, device_id: String },
     Leave { group: String },
+    /// The owner ends the group for everyone.
+    Delete { group: String },
     SetRole { group: String, char_id: i64, role: Role },
     /// Reads the group's whole log again, for what was passed over while it was not taken.
     Rescan { group: String },
@@ -58,6 +60,8 @@ pub struct Status {
     pub generation: u64,
     /// Groups whose keys from before devices this device has claimed, this run.
     pub claimed: std::collections::HashSet<String>,
+    /// Groups their owner deleted, by name, since this install last showed it.
+    pub deleted: Vec<String>,
 }
 
 /// What the engine needs from the platform besides storage.
@@ -243,7 +247,8 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                     let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role.min(Role::Admin) };
                     Op::MemberAdded { member: Member::new(char_id, &req.row.name, role, device) }
                 };
-                let code = roster.role(char_id).unwrap_or(role).code();
+                // Another device keeps the member's role; the server reads the role for newcomers only.
+                let code = if roster.members.contains_key(&char_id) { Role::Member.code() } else { role.code() };
                 c.approve(&g.id, char_id, &device_id, code, &wrapped).await?;
                 self.post(&c, &g, &op).await?;
                 roster.apply(g.char_id, &op)?;
@@ -273,6 +278,14 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 if self.store.share_key(&g.id, g.epoch).is_some() {
                     self.remove(&group, g.char_id, others.then_some(me.as_str())).await?;
                 }
+                self.store.share_group_forget(&g.id);
+            }
+            Cmd::Delete { group } => {
+                let g = self.group(&group)?;
+                if g.role != Role::Owner {
+                    bail!("only the owner deletes the group");
+                }
+                self.client(g.char_id)?.delete_group(&g.id).await?;
                 self.store.share_group_forget(&g.id);
             }
             Cmd::SetRole { group, char_id, role } => {
@@ -383,6 +396,12 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         let had_key = self.store.share_key(&g.id, g.epoch).is_some();
         let keys = match c.keys(&g.id).await {
             Ok(k) => k,
+            // Its owner deleted it: nothing more will come, so it goes here too.
+            Err(e) if e.to_string().contains("deleted by its owner") => {
+                self.store.share_group_forget(&g.id);
+                self.status.lock().unwrap().deleted.push(g.name.clone());
+                return Ok(());
+            }
             // Asked to join and not approved yet: nothing to fetch, nothing wrong.
             Err(_) if !had_key => return Ok(()),
             Err(e) => return Err(e),

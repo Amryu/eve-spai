@@ -410,4 +410,78 @@ mod end_to_end {
         assert!(holds.contains("\"sigs\":[\"WEB-123\"]"), "the probe scan came with the snapshot: {holds}");
     }
 
+
+    /// The web app as an admin lets a new member in: the owner here promotes the browser, a third
+    /// install asks to join, the browser approves it from its Group tab, and the newcomer reads
+    /// the group. Run as `web_joins_through_an_invite`, with `SPAI_E2E_ADMIN_CLICKS` (the Group
+    /// tab, then the request's Approve, at 1280x800).
+    #[test]
+    #[ignore = "needs a running server, a served web build and Playwright"]
+    fn web_admin_lets_a_member_in() {
+        use std::io::{BufRead as _, Write as _};
+        let (Ok(base), Ok(secret), Ok(site), Ok(clicks)) = (
+            std::env::var("SPAI_SHARE_TEST_BASE"),
+            std::env::var("SPAI_SHARE_TEST_SECRET"),
+            std::env::var("SPAI_WEB_SITE"),
+            std::env::var("SPAI_E2E_ADMIN_CLICKS"),
+        ) else {
+            return;
+        };
+        let now = crate::clock::utc().timestamp();
+        let owner_id = 93_000_000 + (now % 100_000) * 3;
+        let (web_id, new_id) = (owner_id + 1, owner_id + 2);
+        let a = Install::new(&base, &secret);
+        a.store.upsert_wormhole(&Wormhole {
+            system_id: 31_000_200,
+            signature: Some("ADM-123".into()),
+            dest: DestClass::Highsec,
+            dest_system_id: Some(30_000_142),
+            source: Source::Manual,
+            reported_at: now,
+            updated_at: now,
+            ..Default::default()
+        });
+        a.run(Cmd::Create { name: "Admin chain".into(), char_id: owner_id, char_name: "Owner".into(), prefs: SharePrefs::default() });
+        let g = a.store.share_groups()[0].id.clone();
+        let link = a.invite_for(&g, web_id, "Pilot W");
+        let invite = format!("/wh/{}", &link[link.find("join/").unwrap()..]);
+        let web_session = serde_json::json!({
+            "token": session(&secret, web_id, "Pilot W"), "expires_at": now + 3600, "character_id": web_id, "character_name": "Pilot W",
+        });
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../crates/spai-web/e2e/join.mjs");
+        let shot = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/webshots/web-admin.png");
+        let _ = std::fs::create_dir_all(std::path::Path::new(shot).parent().unwrap());
+        let mut node = std::process::Command::new("node")
+            .args([script, &site, &invite, &web_session.to_string(), shot, "admin"])
+            .env("SPAI_E2E_CLICKS", &clicks)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node runs");
+        let mut out = std::io::BufReader::new(node.stdout.take().unwrap()).lines();
+        for line in out.by_ref() {
+            if line.unwrap() == "requested" {
+                break;
+            }
+        }
+        a.sync();
+        let reqs = a.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
+        let req = reqs.iter().find(|r| r.row.char_id == web_id).expect("the browser's request");
+        a.run(Cmd::Approve { group: g.clone(), char_id: web_id, device_id: req.row.device_id.clone(), role: Role::Admin });
+        // Someone new asks while the browser is an admin.
+        let newcomer = Install::new(&base, &secret);
+        let link2 = a.invite_for(&g, new_id, "Pilot N");
+        newcomer.run(Cmd::Join { link: link2, char_id: new_id, prefs: SharePrefs::default() });
+        writeln!(node.stdin.as_mut().unwrap(), "approved").unwrap();
+        drop(node.stdin.take());
+        let rest: Vec<String> = out.map_while(Result::ok).collect();
+        let _ = node.wait();
+        assert!(rest.iter().any(|l| l == "approved-there"), "{rest:?}");
+        newcomer.sync();
+        assert!(newcomer.hole("ADM-123").is_some(), "the browser let the newcomer in and the snapshot reached them");
+        let roster = a.store.share_members(&g);
+        a.sync();
+        assert!(a.store.share_members(&g).len() > roster.len() || a.store.share_members(&g).iter().any(|m| m.char_id == new_id));
+    }
+
 }

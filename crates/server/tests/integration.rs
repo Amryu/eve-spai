@@ -614,6 +614,17 @@ async fn wormhole_group_membership_and_log() {
     assert_eq!(left, vec!["genesis".to_string()]);
     let legacy: Vec<String> = sqlx::query_scalar("SELECT wrapped FROM wh_keys WHERE device_id = 'legacy' ORDER BY wrapped").fetch_all(&pool).await.unwrap();
     assert_eq!(legacy, vec!["fresh".to_string()]);
+
+    // Only the owner deletes the group; everyone else then hears it is gone, not refused.
+    let (s, _) = wh(&app, "DELETE", &format!("/groups/{g}"), &joiner, &jd, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = wh(&app, "DELETE", &format!("/groups/{g}"), &owner, &od, None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, v) = wh(&app, "GET", &format!("/groups/{g}/keys"), &joiner, &jd, None).await;
+    assert_eq!(s, StatusCode::GONE);
+    assert!(v["error"].as_str().unwrap().contains("deleted"), "{v}");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_ops WHERE group_id = $1").bind(&g).fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 0, "the log went with it");
 }
 
 const THIRD_PARTY: &str = "third-party-client";

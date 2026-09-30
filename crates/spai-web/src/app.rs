@@ -34,6 +34,7 @@ pub struct WebApp {
     map_data: Option<MapData>,
     network: Arc<Mutex<Option<Network>>>,
     asked_network: bool,
+    group: crate::group::GroupTab,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -41,6 +42,7 @@ enum Tab {
     #[default]
     Wormholes,
     Map,
+    Group,
 }
 
 impl WebApp {
@@ -69,6 +71,7 @@ impl WebApp {
             map_data: None,
             network: Default::default(),
             asked_network: false,
+            group: Default::default(),
         }
     }
 
@@ -230,6 +233,7 @@ impl eframe::App for WebApp {
                     ui.separator();
                     ui.menu_value(&mut self.tab, Tab::Wormholes, "Wormholes");
                     ui.menu_value(&mut self.tab, Tab::Map, "Map");
+                    ui.menu_value(&mut self.tab, Tab::Group, "Group");
                     ui.separator();
                 }
                 if let Some(sync) = &self.sync {
@@ -262,6 +266,13 @@ impl eframe::App for WebApp {
         });
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if self.waiting(ui, &state) {
+                return;
+            }
+            if let (Tab::Group, Some(sync), Auth::SignedIn(session)) = (self.tab, &mut self.sync, &state) {
+                let status = sync.status.lock().unwrap().clone();
+                for cmd in self.group.show(ui, &*sync.store, &status, session.character_id, &page::origin()) {
+                    sync.send(cmd);
+                }
                 return;
             }
             match (&mut self.host, &self.error) {

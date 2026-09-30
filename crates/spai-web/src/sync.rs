@@ -133,11 +133,16 @@ impl Sync {
         wasm_bindgen_futures::spawn_local(async move {
             let e = Engine { store: &*store, env: &env, device: device(), label: DEVICE_LABEL, status: &status };
             status.lock().unwrap().busy = true;
-            let cmd = commands.borrow_mut().pop_front();
-            let result = match cmd {
-                Some(c) => e.command(c).await,
-                None => Ok(()),
-            };
+            // Everything asked since the last round, in order; the first failure is the one shown.
+            let mut result = Ok(());
+            loop {
+                let Some(c) = commands.borrow_mut().pop_front() else { break };
+                if let Err(err) = e.command(c).await {
+                    if result.is_ok() {
+                        result = Err(err);
+                    }
+                }
+            }
             let sync = if store.share_groups_any() { e.sync_all().await } else { Ok(()) };
             {
                 let mut s = status.lock().unwrap();

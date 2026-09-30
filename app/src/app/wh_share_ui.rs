@@ -26,6 +26,8 @@ pub(crate) struct ShareUi {
     /// The group whose members dialog is open.
     members_of: Option<String>,
     members_filter: String,
+    /// A group about to be deleted: its id, its name, and what the owner has typed so far.
+    delete: Option<(String, String, String)>,
 }
 
 impl SpaiApp {
@@ -74,6 +76,12 @@ impl SpaiApp {
             }
         }
         self.wh_share.groups = groups;
+    }
+
+    /// The delete dialog open for `group`, with `typed` so far.
+    #[cfg(test)]
+    pub(crate) fn wh_share_seed_delete(&mut self, group: &str, name: &str, typed: &str) {
+        self.wh_share.delete = Some((group.to_owned(), name.to_owned(), typed.to_owned()));
     }
 
     /// An invite link just made for `group`, as the share thread reports it, in a group this
@@ -210,6 +218,9 @@ impl SpaiApp {
                 if let Some(e) = &status.error {
                     ui.colored_label(crate::theme::standing::WARNING, e);
                 }
+                for name in &status.deleted {
+                    ui.colored_label(crate::theme::standing::WARNING, format!("{name} was deleted by its owner."));
+                }
                 if let Some(fp) = &status.fingerprint {
                     ui.horizontal(|ui| {
                         ui.label("Your key fingerprint");
@@ -294,6 +305,9 @@ impl SpaiApp {
                                 if ui.button(format!("{}  Members\u{2026}", icon::USERS)).on_hover_text("Everyone in the group, their roles and keys").clicked() {
                                     self.wh_share.members_of = Some(g.id.clone());
                                     self.wh_share.members_filter.clear();
+                                }
+                                if g.role == Role::Owner && has_key && ui.button(icon::TRASH).on_hover_text("Delete the group for every member").clicked() {
+                                    self.wh_share.delete = Some((g.id.clone(), g.name.clone(), String::new()));
                                 }
                             });
                             if g.role.can_manage() && has_key {
@@ -384,6 +398,7 @@ impl SpaiApp {
                             if g.role != Role::Owner && ui.button(format!("{}  Leave", icon::SIGN_OUT)).clicked() {
                                 cmd = Some(Cmd::Leave { group: g.id.clone() });
                             }
+
                         });
                     }
                 });
@@ -443,6 +458,39 @@ impl SpaiApp {
         }
         self.wh_share.open = open;
         self.wh_share_members_window(ctx);
+        self.wh_share_delete_window(ctx);
+    }
+
+    /// Asks the owner to type the group's name before it goes, for every member at once.
+    fn wh_share_delete_window(&mut self, ctx: &egui::Context) {
+        let Some((id, name, mut typed)) = self.wh_share.delete.take() else { return };
+        let mut open = true;
+        let mut go = false;
+        let mut cancel = false;
+        egui::Window::new(format!("Delete {name}?"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone.");
+                ui.label("Holes already on members' maps stay until they expire.");
+                ui.add_space(6.0);
+                ui.label(format!("Type the group's name, {name}, to delete it:"));
+                let edit = ui.add(egui::TextEdit::singleline(&mut typed).hint_text(name.as_str()).desired_width(260.0));
+                let matches = typed == name;
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let delete = egui::Button::new(egui::RichText::new("Delete the group").color(if matches { crate::theme::standing::HOSTILE } else { ui.visuals().weak_text_color() }));
+                    go = ui.add_enabled(matches, delete).clicked() || (matches && edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if go {
+            self.share_send(Cmd::Delete { group: id });
+        } else if open && !cancel {
+            self.wh_share.delete = Some((id, name, typed));
+        }
     }
 
     /// One group's members in a window of their own, filtered and scrolling, so a big group does
