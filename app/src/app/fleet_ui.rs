@@ -5755,6 +5755,7 @@ fn fleet_sidebar(
     }
     ui.add_space(6.0);
 
+    e.settle(&fleet);
     let dirty = e.differs(&fleet);
     // A closed fleet takes a snowflake correction and nothing else.
     let sendable = if read_only {
