@@ -93,10 +93,7 @@ impl SpaiApp {
     /// at, or `fallback` where the zone is unknown.
     pub(crate) fn bridge_colors(&self, a: i64, b: i64, fallback: egui::Color32) -> (egui::Color32, egui::Color32) {
         let Some(g) = &self.systems else { return (fallback, fallback) };
-        let col = |sys| {
-            crate::ansiblex::zone_at(g, &self.settings.ansiblex_capital, sys).map_or(fallback, crate::ansiblex::zone_color)
-        };
-        (col(a), col(b))
+        spai_ui::star_map::bridge_colors(g, &self.settings.ansiblex_capital, a, b, fallback)
     }
 
     /// Zone bands around the Ansiblex capital: rings at each 5 LY edge and every system dot tinted
@@ -756,80 +753,15 @@ impl SpaiApp {
             }
         }
 
-        // Keyed low id first, with whether the zone limit lets a route take each direction.
-        let bridges: std::collections::HashMap<(i64, i64), (bool, bool)> = if let Some(g) = &self.systems {
-            let max = self.settings.ansiblex_max_zone;
-            crate::ansiblex::bridges(&self.settings.jump_bridges, g, &self.settings.ansiblex_capital)
-                .into_iter()
-                .map(|br| {
-                    let (fwd, back) = (br.forward(max), br.back(max));
-                    if br.a < br.b {
-                        ((br.a, br.b), (fwd, back))
-                    } else {
-                        ((br.b, br.a), (back, fwd))
-                    }
-                })
-                .collect()
-        } else {
-            Default::default()
+        let bridges = match &self.systems {
+            Some(g) => spai_ui::star_map::bridge_directions(&self.settings.jump_bridges, g, &self.settings.ansiblex_capital, self.settings.ansiblex_max_zone),
+            None => Default::default(),
         };
 
         let cull = rect.expand(8.0);
-        let seg_visible = |a: egui::Pos2, b: egui::Pos2| egui::Rect::from_two_pos(a, b).intersects(cull);
 
-        let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
-        // A gate says where you are as much as where you can go: inside a constellation, out of it,
-        // or out of the region entirely. On a map of identical solid lines none of those boundaries
-        // would be visible.
-        let region_of: std::collections::HashMap<i64, i64> =
-            self.map_draw.iter().map(|s| (s.id, s.region_id)).collect();
-        let constel_of: std::collections::HashMap<i64, &str> = self
-            .systems
-            .as_ref()
-            .map(|g| {
-                self.map_draw
-                    .iter()
-                    .filter_map(|s| g.info_of(s.id).map(|i| (s.id, i.constellation.as_str())))
-                    .collect()
-            })
-            .unwrap_or_default();
         if let Some(graph) = &self.systems {
-            for s in &self.map_draw {
-                let p1 = pos[&s.id];
-                for &n in graph.neighbors(s.id) {
-                    if s.id < n && !bridges.contains_key(&(s.id, n)) {
-                        if let Some(p2) = pos.get(&n) {
-                            if seg_visible(p1, *p2) {
-                                let stroke = egui::Stroke::new(1.0, line_col);
-                                let other_region =
-                                    region_of.get(&n).is_some_and(|r| *r != s.region_id);
-                                let other_constel = constel_of.get(&s.id).zip(constel_of.get(&n))
-                                    .is_some_and(|(a, b)| a != b);
-                                if other_region {
-                                    painter.extend(egui::Shape::dashed_line(
-                                        &[p1, *p2],
-                                        stroke,
-                                        4.0,
-                                        4.0,
-                                    ));
-                                } else if other_constel {
-                                    // Dotted: a short dash with a wide gap reads as dots without
-                                    // needing a separate shape. 1 px dots shimmered out of sight as
-                                    // their sub-pixel position moved with pan and zoom.
-                                    painter.extend(egui::Shape::dashed_line(
-                                        &[p1, *p2],
-                                        egui::Stroke::new(1.3, line_col),
-                                        2.0,
-                                        3.0,
-                                    ));
-                                } else {
-                                    painter.line_segment([p1, *p2], stroke);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            spai_ui::star_map::paint_gates(&painter, ui.visuals(), graph, &self.map_draw, &pos, &bridges, cull);
         }
         if ov.bridges {
             let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
@@ -866,150 +798,14 @@ impl SpaiApp {
                     }
                 }
             }
-            for (&(a, c), &(up, down)) in &bridges {
-                if routed.contains(&(a, c)) {
-                    continue;
-                }
-                let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) else { continue };
-                if !seg_visible(*p1, *p2) {
-                    continue;
-                }
-                let arc = arc_polyline(*p1, *p2, BRIDGE_BOW);
-                let (ca, cc) = self.bridge_colors(a, c, bridge_col);
-                if !up && !down {
-                    polyline_flow_gradient(&painter, &arc, ca.gamma_multiply(0.5), cc.gamma_multiply(0.5), 0.0);
-                    continue;
-                }
-                gradient_polyline(&painter, &arc, ca, cc, 1.8);
-                if up != down {
-                    let (tip, col): (Vec<egui::Pos2>, _) =
-                        if up { (arc, cc) } else { (arc.into_iter().rev().collect(), ca) };
-                    bridge_arrowhead(&painter, &tip, col, dot + 5.0);
-                }
-            }
+            spai_ui::star_map::paint_bridges(&painter, &bridges, &routed, &pos, cull, dot, |a, c| self.bridge_colors(a, c, bridge_col));
         }
 
         if ov.wormholes {
-            let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
-            let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
-            const TURNUR: i64 = 30_002_086;
-            let off = |a: i64, b: i64| self.wh_overlay.blocked.contains(&(a.min(b), a.max(b)));
-            for &(a, b) in &self.wh_overlay.direct {
-                if !ov.turnur && (a == TURNUR || b == TURNUR) {
-                    continue;
-                }
-                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
-                    let stroke = egui::Stroke::new(1.6, wh_col);
-                    if off(a, b) {
-                        super::wh_graph::slashed(&painter, &[*p1, *p2], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
-                            p.add(egui::Shape::line(l.to_vec(), s));
-                        });
-                    } else {
-                        painter.line_segment([*p1, *p2], stroke);
-                    }
-                }
-            }
-            for &(a, b, hops) in &self.wh_overlay.chains {
-                if !ov.turnur && (a == TURNUR || b == TURNUR) {
-                    continue;
-                }
-                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
-                    let stroke = egui::Stroke::new(1.8, chain_col);
-                    if off(a, b) {
-                        super::wh_graph::slashed(&painter, &[*p1, *p2], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
-                            p.extend(egui::Shape::dashed_line(l, s, 6.0, 4.0));
-                        });
-                    } else {
-                        painter.extend(egui::Shape::dashed_line(&[*p1, *p2], stroke, 6.0, 4.0));
-                    }
-                    let mid = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
-                    let txt = format!("{hops}J");
-                    let r = painter.text(
-                        mid,
-                        egui::Align2::CENTER_CENTER,
-                        &txt,
-                        egui::FontId::proportional(11.0),
-                        chain_col,
-                    );
-                    painter.rect_filled(r.expand(2.0), 3.0, ui.visuals().extreme_bg_color.gamma_multiply(0.7));
-                    painter.text(
-                        mid,
-                        egui::Align2::CENTER_CENTER,
-                        &txt,
-                        egui::FontId::proportional(11.0),
-                        chain_col,
-                    );
-                }
-            }
-            if ov.thera {
-                let conns: Vec<&crate::store::MapSystem> = self
-                    .wh_overlay
-                    .thera_conns
-                    .iter()
-                    .filter_map(|id| self.map_draw.iter().find(|s| s.id == *id))
-                    .collect();
-                let conn_screen: Vec<egui::Pos2> =
-                    conns.iter().filter_map(|s| pos.get(&s.id).copied()).collect();
-                if !conns.is_empty() && !conn_screen.is_empty() {
-                    let mut cx = conns.iter().map(|s| s.x).sum::<f64>() / conns.len() as f64;
-                    let min_z = conns.iter().map(|s| s.z).fold(f64::INFINITY, f64::min);
-                    let max_z = conns.iter().map(|s| s.z).fold(f64::NEG_INFINITY, f64::max);
-                    let mut tz = min_z - (max_z - min_z).max(1.0) * 0.25;
-                    if self.map_layout == crate::map::MapLayout::Spaced {
-                        let rc = |rid: i64| -> Option<(f64, f64)> {
-                            let sys: Vec<&crate::store::MapSystem> =
-                                self.map_draw.iter().filter(|s| s.region_id == rid).collect();
-                            if sys.is_empty() {
-                                return None;
-                            }
-                            let n = sys.len() as f64;
-                            Some((
-                                sys.iter().map(|s| s.x).sum::<f64>() / n,
-                                sys.iter().map(|s| s.z).sum::<f64>() / n,
-                            ))
-                        };
-                        if let (Some(sl), Some(dm)) = (rc(10_000_053), rc(10_000_045)) {
-                            cx = (sl.0 + dm.0) / 2.0;
-                            tz = (sl.1 + dm.1) / 2.0;
-                        }
-                    }
-                    let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
-                    let line_col = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
-                    let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0);
-                    for (s, p) in conns.iter().filter_map(|s| Some((s, pos.get(&s.id)?))) {
-                        let stroke = egui::Stroke::new(1.6, line_col);
-                        if self.wh_overlay.blocked.contains(&(s.id, 31_000_005)) {
-                            super::wh_graph::slashed(&painter, &[tp, *p], super::wh_graph::desaturate_stroke(stroke), |p, l, s| {
-                                p.add(egui::Shape::line(l.to_vec(), s));
-                            });
-                        } else {
-                            painter.line_segment([tp, *p], stroke);
-                        }
-                    }
-                    painter.circle_filled(tp, dot + 3.0, tcol);
-                    painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, tcol));
-                    let lp = tp + egui::vec2(0.0, -dot - 11.0);
-                    let r = painter.text(lp, egui::Align2::CENTER_CENTER, "Thera",
-                        egui::FontId::proportional(12.0), tcol);
-                    painter.rect_filled(r.expand(2.0), 3.0,
-                        ui.visuals().extreme_bg_color.gamma_multiply(0.7));
-                    painter.text(lp, egui::Align2::CENTER_CENTER, "Thera",
-                        egui::FontId::proportional(12.0), tcol);
-                }
-            }
-            if ov.turnur {
-                if let Some(tp) = pos.get(&TURNUR).copied() {
-                    let col = egui::Color32::from_rgb(0xE0, 0xA8, 0x4C);
-                    painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, col));
-                    let lp = tp + egui::vec2(0.0, -dot - 11.0);
-                    let r = painter.text(lp, egui::Align2::CENTER_CENTER, "Turnur",
-                        egui::FontId::proportional(12.0), col);
-                    painter.rect_filled(r.expand(2.0), 3.0,
-                        ui.visuals().extreme_bg_color.gamma_multiply(0.7));
-                    painter.text(lp, egui::Align2::CENTER_CENTER, "Turnur",
-                        egui::FontId::proportional(12.0), col);
-                }
-            }
+            let spaced = self.map_layout == crate::map::MapLayout::Spaced;
+            let place = |x: f64, z: f64| crate::map::project(x, z, &bounds, rect, self.map_zoom, self.map_pan);
+            let marks = spai_ui::star_map::HoleLayer { turnur: ov.turnur, thera: ov.thera, spaced };
+            spai_ui::star_map::paint_wormholes(&painter, ui.visuals(), &self.wh_overlay, &self.map_draw, &pos, marks, dot, place);
         }
 
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {

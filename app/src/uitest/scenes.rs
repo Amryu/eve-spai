@@ -2312,7 +2312,7 @@ pub(crate) fn all() -> Vec<Scene> {
                 0 => crate::app::gradient_polyline(painter, &arc, ca, cb, 1.8),
                 1 => {
                     crate::app::gradient_polyline(painter, &arc, ca, cb, 1.8);
-                    crate::app::bridge_arrowhead(painter, &arc, cb, dot + 5.0);
+                    spai_ui::star_map::bridge_arrowhead(painter, &arc, cb, dot + 5.0);
                 }
                 2 => crate::app::polyline_flow_gradient(painter, &arc, ca, cb, 5.0),
                 _ => crate::app::polyline_flow_gradient(
