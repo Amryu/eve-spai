@@ -79,6 +79,26 @@ if (process.env.SPAI_E2E_MAP) {
   await page.waitForTimeout(1500);
   await page.screenshot({ path: shot.replace('.png', '-map.png') });
 }
+// Then any steps a test gives: ["click", x, y], ["rclick", x, y], ["drag", x1, y1, x2, y2],
+// ["move", x, y], ["wheel", x, y, dy], ["key", "Enter"], ["wait", ms] or ["shot", "name"].
+for (const step of JSON.parse(process.env.SPAI_E2E_ACTIONS || '[]')) {
+  const [what, ...a] = step;
+  if (what === 'click') await page.mouse.click(a[0], a[1]);
+  if (what === 'rclick') await page.mouse.click(a[0], a[1], { button: 'right' });
+  if (what === 'drag') {
+    await page.mouse.move(a[0], a[1]);
+    await page.mouse.down();
+    for (let k = 1; k <= 12; k++) await page.mouse.move(a[0] + (a[2] - a[0]) * k / 12, a[1] + (a[3] - a[1]) * k / 12);
+    await page.waitForTimeout(300);
+    await page.mouse.up();
+  }
+  if (what === 'wheel') { await page.mouse.move(a[0], a[1]); await page.mouse.wheel(0, a[2]); }
+  if (what === 'move') await page.mouse.move(a[0], a[1], { steps: 5 });
+  if (what === 'key') await page.keyboard.press(a[0]);
+  if (what === 'wait') await page.waitForTimeout(a[0]);
+  if (what === 'shot') await page.screenshot({ path: shot.replace('.png', `-${a[0]}.png`) });
+  await page.waitForTimeout(500);
+}
 const s = JSON.parse(await page.evaluate(() => localStorage.getItem('spai.store')) || '{}');
 console.log('holds', JSON.stringify({ groups: (s.groups || []).map(g => [g.name, g.role, g.epoch]), keys: (s.keys || []).length, holes: Object.values(s.holes || {}).map(h => h.state.fields.signature?.v), sigs: Object.values(s.sigs || {}).flat().map(x => x.sig) }));
 await browser.close();

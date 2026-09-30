@@ -9,6 +9,8 @@ use spai_core::map::{Bounds, MapSystem};
 use spai_core::wormholes::Wormhole;
 use spai_ui::star_map::{self as layers, HoleLayer, WhOverlay};
 
+use crate::planner::{PlanInput, RoutePlan};
+
 /// The Ansiblex network as the server keeps it for the group.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Network {
@@ -30,21 +32,26 @@ impl Network {
 pub struct MapData {
     /// Every k-space system at its place on the flat map.
     pub all: Vec<MapSystem>,
+    /// Every system at its true place, for jump ranges.
+    pub real: Vec<MapSystem>,
     pub regions: Vec<(i64, String)>,
     pub network: Network,
     pub bridges: HashMap<(i64, i64), (bool, bool)>,
     pub overlay: WhOverlay,
     /// Holes with both ends known, both ways, for routes.
     pub holes: HashMap<i64, Vec<i64>>,
+    /// Every live hole, for the systems' tooltips.
+    pub hole_list: Vec<Wormhole>,
 }
 
 impl MapData {
-    pub fn new(all: Vec<MapSystem>, regions: Vec<(i64, String)>) -> Self {
-        MapData { all, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new() }
+    pub fn new(all: Vec<MapSystem>, real: Vec<MapSystem>, regions: Vec<(i64, String)>) -> Self {
+        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new() }
     }
 
     pub fn set_holes(&mut self, holes: &[Wormhole]) {
         self.overlay = WhOverlay::build(holes, |_| true);
+        self.hole_list = holes.to_vec();
         self.holes.clear();
         for w in holes {
             if let Some(b) = w.dest_system_id {
@@ -67,9 +74,24 @@ pub struct StarMap {
     zoom: f32,
     pan: egui::Vec2,
     pub selected: Option<i64>,
-    from: String,
-    to: String,
-    route: Option<Result<Vec<i64>, String>>,
+    pub plan: RoutePlan,
+    /// The system a right-click opened the menu on.
+    menu_sys: Option<i64>,
+    pub layers: Layers,
+}
+
+/// What the map draws over New Eden, as the desktop's layer toggles.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Layers {
+    pub wormholes: bool,
+    pub jove: bool,
+    pub bridges: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Layers { wormholes: true, jove: true, bridges: true }
+    }
 }
 
 const GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
@@ -81,27 +103,42 @@ impl StarMap {
         if self.zoom <= 0.0 {
             self.zoom = 1.0;
         }
+        self.plan.update(&PlanInput { geo, coords: &d.real, holes: &d.holes });
         self.panel(ui, geo, d);
         let draw: Vec<MapSystem> = d.all.iter().filter(|s| self.region.is_none_or(|r| s.region_id == r)).cloned().collect();
         let Some(bounds) = Bounds::of(&draw) else { return };
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-        if resp.dragged() {
+        let pos: HashMap<i64, egui::Pos2> =
+            draw.iter().map(|s| (s.id, spai_core::map::project(s.x, s.z, &bounds, rect, self.zoom, self.pan))).collect();
+        let near = |p: egui::Pos2| pos.iter().map(|(id, q)| (*id, q.distance(p))).filter(|(_, dd)| *dd < 10.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id);
+        let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
+        let hovered = pointer.and_then(near);
+        // A drag that starts on a system draws a route; anywhere else it pans.
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            self.plan.link = ui.input(|i| i.pointer.press_origin()).and_then(near);
+        }
+        if resp.dragged() && self.plan.link.is_none() {
             self.pan += resp.drag_delta();
+        }
+        if resp.drag_stopped() {
+            if let (Some(from), Some(to), Some(at)) = (self.plan.link.take(), hovered, pointer) {
+                if from != to {
+                    self.plan.link_menu = Some((from, to, at));
+                }
+            }
         }
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 let old = self.zoom;
                 self.zoom = (old * (scroll * 0.003).exp()).clamp(0.5, 40.0);
-                if let Some(m) = ui.input(|i| i.pointer.hover_pos()) {
+                if let Some(m) = pointer {
                     let rel = m - (rect.center() + self.pan);
                     self.pan += rel * (1.0 - self.zoom / old);
                 }
             }
         }
-        let pos: HashMap<i64, egui::Pos2> =
-            draw.iter().map(|s| (s.id, spai_core::map::project(s.x, s.z, &bounds, rect, self.zoom, self.pan))).collect();
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals().clone();
         painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
@@ -109,70 +146,121 @@ impl StarMap {
         let dot = (0.5 * self.zoom * if self.region.is_some() { 6.0 } else { 1.0 }).clamp(1.5, 7.0);
 
         layers::paint_gates(&painter, &visuals, geo, &draw, &pos, &d.bridges, cull);
-        let route_pairs: HashSet<(i64, i64)> = self.route_legs().into_iter().map(|(a, b)| (a.min(b), a.max(b))).collect();
+        let hops = self.plan.route().map(|o| o.hops.clone()).unwrap_or_default();
+        // A bridge the route flies is drawn by the route, animated, rather than twice.
+        let routed: HashSet<(i64, i64)> =
+            hops.windows(2).filter(|w| w[1].kind == 1).map(|w| (w[0].id.min(w[1].id), w[0].id.max(w[1].id))).collect();
         let capital = d.network.capital.clone();
-        layers::paint_bridges(&painter, &d.bridges, &route_pairs, &pos, cull, dot, |a, b| layers::bridge_colors(geo, &capital, a, b, BRIDGE));
+        let no_bridges = HashMap::new();
+        let bridges = if self.layers.bridges { &d.bridges } else { &no_bridges };
+        layers::paint_bridges(&painter, bridges, &routed, &pos, cull, dot, |a, b| layers::bridge_colors(geo, &capital, a, b, BRIDGE));
         let place = |x: f64, z: f64| spai_core::map::project(x, z, &bounds, rect, self.zoom, self.pan);
-        layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: true, thera: true, spaced: true }, dot, place);
-        let phase = (ui.input(|i| i.time) * 28.0) as f32;
-        for (a, b) in self.route_legs() {
-            let (Some(pa), Some(pb)) = (pos.get(&a), pos.get(&b)) else { continue };
-            if d.bridges.contains_key(&(a.min(b), a.max(b))) {
-                let (ca, cb) = layers::bridge_colors(geo, &capital, a, b, BRIDGE);
-                layers::polyline_flow_gradient(&painter, &layers::arc_polyline(*pa, *pb, layers::BRIDGE_BOW), ca, cb, phase);
-            } else {
-                let gate = geo.neighbors_gates_only(a).contains(&b);
-                layers::dashed_flow(&painter, *pa, *pb, if gate { GATE } else { HOLE }, phase);
-            }
+        if self.layers.wormholes {
+            layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: true, thera: true, spaced: true }, dot, place);
         }
-        if self.route.as_ref().is_some_and(|r| r.is_ok()) {
+        if !hops.is_empty() {
+            let phase = (ui.input(|i| i.time) * 28.0) as f32;
+            let by_hole = |a: i64, b: i64| d.holes.get(&a).is_some_and(|v| v.contains(&b));
+            layers::paint_route_legs(&painter, &pos, &hops, phase, HOLE, by_hole, |a, b, fallback| layers::bridge_colors(geo, &capital, a, b, fallback));
             ui.ctx().request_repaint();
         }
+        // The route drag: a line to the pointer, snapped to the system under it.
+        if let (Some(from), Some(p)) = (self.plan.link, pointer) {
+            if let Some(a) = pos.get(&from) {
+                let b = hovered.and_then(|h| pos.get(&h).copied()).unwrap_or(p);
+                painter.line_segment([*a, b], egui::Stroke::new(2.5, GATE));
+                painter.circle_stroke(b, 10.0, egui::Stroke::new(2.0, GATE));
+                if let Some(to) = hovered.filter(|t| *t != from) {
+                    link_tip(ui, p, geo, d, from, to);
+                }
+            }
+        }
 
-        let hovered = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)).and_then(|p| {
-            pos.iter().map(|(id, q)| (*id, q.distance(p))).filter(|(_, dd)| *dd < 10.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id)
-        });
         let names = self.region.is_some() || self.zoom >= 6.0;
         let font = egui::FontId::proportional(12.0);
+        let (anchors, titans) = self.plan.marks();
         for s in &draw {
             let p = pos[&s.id];
             if !cull.contains(p) {
                 continue;
             }
             painter.circle_filled(p, dot, spai_ui::colors::security_color(s.security));
+            if anchors.contains(&s.id) {
+                painter.circle_stroke(p, dot + 7.0, egui::Stroke::new(2.0, visuals.hyperlink_color));
+            }
+            if titans.contains(&s.id) {
+                painter.circle_filled(p, dot + 9.0, egui::Color32::from_rgb(0xFF, 0x7A, 0x3D).gamma_multiply(0.25));
+            }
             if self.selected == Some(s.id) {
                 painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             } else if hovered == Some(s.id) {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
             }
-            if names && rect.contains(p) {
-                painter.text(p + egui::vec2(0.0, -dot - 3.0), egui::Align2::CENTER_BOTTOM, &s.name, font.clone(), visuals.text_color());
+            // Above the dot, centred as one row: the hole mark, the Jove Observatory, then the name.
+            // The icons show at any zoom; the name only when it has room.
+            let mark = d.overlay.marks.get(&s.id).filter(|_| self.layers.wormholes);
+            // Nullsec is full of observatories: marked only once the names show.
+            let jove = self.layers.jove && names && spai_core::jove::has(s.id);
+            let show_name = names && rect.contains(p);
+            if mark.is_some() || jove || show_name {
+                let icon_h = (dot * 1.6 + 8.0).clamp(11.0, 20.0);
+                let icon_w = icon_h + 3.0;
+                let lead = mark.map_or(0.0, layers::hole_mark_slots) + if jove { 1.0 } else { 0.0 };
+                let name_g = show_name.then(|| painter.layout_no_wrap(s.name.clone(), font.clone(), visuals.text_color()));
+                let name_w = name_g.as_ref().map_or(0.0, |g| g.size().x + if lead > 0.0 { 4.0 } else { 0.0 });
+                let mid_y = p.y - dot - 3.0 - icon_h.max(12.0) / 2.0;
+                let mut x = p.x - (lead * icon_w + name_w) / 2.0;
+                if let Some(m) = mark {
+                    layers::paint_hole_mark(&painter, egui::pos2(x, mid_y), icon_h, icon_w, m, d.overlay.jspace_blocked.contains(&s.id));
+                    x += layers::hole_mark_slots(m) * icon_w;
+                }
+                if jove {
+                    painter.text(egui::pos2(x, mid_y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::CELL_TOWER, egui::FontId::proportional(icon_h), layers::JOVE_COLOR);
+                    x += icon_w;
+                }
+                if let Some(g) = name_g {
+                    let at = egui::pos2(x + if lead > 0.0 { 4.0 } else { 0.0 }, mid_y - g.size().y / 2.0);
+                    painter.galley(at, g, visuals.text_color());
+                }
             }
         }
         if !names {
             layers::paint_region_labels(&painter, &draw, &pos, &d.regions, rect);
         }
-        if let Some(h) = hovered {
-            if let Some(i) = geo.info_of(h) {
-                resp.clone().on_hover_text(format!("{} \u{b7} {:.1} \u{b7} {}", i.name, i.security, i.region));
-            }
-        }
         if resp.clicked() {
             self.selected = hovered;
         }
-    }
-
-    fn route_legs(&self) -> Vec<(i64, i64)> {
-        match &self.route {
-            Some(Ok(path)) => path.windows(2).map(|w| (w[0], w[1])).collect(),
-            _ => Vec::new(),
+        if resp.secondary_clicked() {
+            self.menu_sys = hovered;
         }
+        let menu_sys = self.menu_sys;
+        let plan = &mut self.plan;
+        resp.context_menu(|ui| {
+            let Some(sid) = menu_sys else {
+                ui.label(egui::RichText::new("Right-click a system").weak());
+                return;
+            };
+            if let Some(i) = geo.info_of(sid) {
+                ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", i.name, i.security)).strong());
+                ui.separator();
+            }
+            plan.system_menu(ui, sid);
+        });
+        if self.plan.link.is_none() && self.plan.link_menu.is_none() {
+            // Beside the pointer: a tooltip of the whole map would sit at the map's corner.
+            if let (Some(h), Some(p), None) = (hovered, pointer, ui.ctx().dragged_id()) {
+                egui::Area::new(egui::Id::new("web_system_tip")).order(egui::Order::Tooltip).fixed_pos(p + egui::vec2(16.0, 16.0)).show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| system_tip(ui, geo, d, h));
+                });
+            }
+        }
+        self.plan.link_menu(ui);
     }
 
     fn panel(&mut self, ui: &mut egui::Ui, geo: &Systems, d: &MapData) {
-        egui::Panel::left("web_map_panel").resizable(true).default_size(260.0).show_inside(ui, |ui| {
+        egui::Panel::left("web_map_panel").resizable(true).default_size(300.0).show_inside(ui, |ui| {
             let region_name = |id: Option<i64>| id.and_then(|r| d.regions.iter().find(|(x, _)| *x == r)).map_or("All of New Eden".to_owned(), |(_, n)| n.clone());
-            let mut regions: Vec<&(i64, String)> = d.regions.iter().filter(|(id, _)| *id < 11_000_000).collect();
+            let mut regions: Vec<&(i64, String)> = d.regions.iter().filter(|(id, n)| *id < 11_000_000 && !n.chars().any(|c| c.is_ascii_digit())).collect();
             regions.sort_by(|a, b| a.1.cmp(&b.1));
             let before = self.region;
             egui::ComboBox::from_id_salt("web_map_region").width(ui.available_width()).selected_text(region_name(self.region)).show_ui(ui, |ui| {
@@ -185,56 +273,43 @@ impl StarMap {
                 self.zoom = 1.0;
                 self.pan = egui::Vec2::ZERO;
             }
-            ui.add_space(8.0);
-            ui.strong("Route");
-            egui::Grid::new("web_route").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                ui.label("From");
-                ui.add(egui::TextEdit::singleline(&mut self.from).hint_text("System").desired_width(160.0));
-                ui.end_row();
-                ui.label("To");
-                ui.add(egui::TextEdit::singleline(&mut self.to).hint_text("System").desired_width(160.0));
-                ui.end_row();
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut self.layers.wormholes, "Wormholes");
+                ui.checkbox(&mut self.layers.bridges, "Ansiblex");
+                ui.checkbox(&mut self.layers.jove, "Jove Observatories").on_hover_text("Where drifter holes can lead to; shown once system names show");
             });
-            ui.horizontal(|ui| {
-                if ui.button("Find route").clicked() {
-                    self.route = Some(find(geo, d, &self.from, &self.to));
-                }
-                if let Some(sel) = self.selected.and_then(|s| geo.info_of(s)) {
-                    if ui.small_button(format!("To {}", sel.name)).clicked() {
-                        self.to = sel.name.clone();
-                    }
-                }
-            });
-            match &self.route {
-                Some(Ok(path)) => {
-                    let jumps = path.len().saturating_sub(1);
-                    ui.label(format!("{jumps} jump{}", if jumps == 1 { "" } else { "s" }));
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        for w in path.windows(2) {
-                            let kind = if d.bridges.contains_key(&(w[0].min(w[1]), w[0].max(w[1]))) {
-                                ("Ansiblex", BRIDGE)
-                            } else if geo.neighbors_gates_only(w[0]).contains(&w[1]) {
-                                ("gate", GATE)
-                            } else {
-                                ("wormhole", HOLE)
-                            };
-                            let name = geo.info_of(w[1]).map_or_else(|| w[1].to_string(), |i| i.name.clone());
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(kind.0).color(kind.1));
-                                ui.label(name);
-                            });
-                        }
-                    });
-                }
-                Some(Err(e)) => {
-                    ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
-                }
-                None => {
-                    ui.label(egui::RichText::new("Over gates, the group's Ansiblex bridges and its known holes.").weak());
-                }
-            }
+            ui.separator();
+            self.plan.panel(ui, geo);
         });
     }
+}
+
+/// The readout beside the system a route drag is aimed at: light years, gates, and gates with
+/// bridges, which often differ a lot.
+fn link_tip(ui: &egui::Ui, at: egui::Pos2, geo: &Systems, d: &MapData, from: i64, to: i64) {
+    let find = |id: i64| d.real.iter().find(|s| s.id == id);
+    let ly = find(from).zip(find(to)).map(|(a, b)| spai_core::map::ly_distance(a, b));
+    let gates = geo.jumps_gates_only(from, to, 200);
+    let bridged = geo.jumps(from, to, 200);
+    let jumps = |n: Option<u32>| match n {
+        Some(1) => "1 jump".to_owned(),
+        Some(n) => format!("{n} jumps"),
+        None => "no route".to_owned(),
+    };
+    egui::Area::new(egui::Id::new("web_link_tip")).order(egui::Order::Tooltip).fixed_pos(at + egui::vec2(14.0, 14.0)).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            if let Some(i) = geo.info_of(to) {
+                ui.label(egui::RichText::new(&i.name).strong());
+            }
+            if let Some(ly) = ly {
+                ui.label(egui::RichText::new(format!("{ly:.1} ly")).weak());
+            }
+            ui.label(egui::RichText::new(format!("{} by gate", jumps(gates))).weak());
+            if bridged.is_some() && bridged != gates {
+                ui.label(egui::RichText::new(format!("{} with bridges", jumps(bridged))).weak());
+            }
+        });
+    });
 }
 
 /// The shortest way between two systems named by the user.
@@ -251,10 +326,10 @@ mod tests {
     #[test]
     fn a_route_takes_a_known_hole_when_it_is_shorter() {
         let mut geo = spai_core::test_support::small_universe(&[]);
-        let d0 = MapData::new(Vec::new(), Vec::new());
+        let d0 = MapData::new(Vec::new(), Vec::new(), Vec::new());
         assert_eq!(find(&geo, &d0, "1DQ1-A", "7-K5EL").unwrap().len(), 3, "two gates");
         assert!(find(&geo, &d0, "1DQ1-A", "Jita").is_err(), "no gate reaches Jita in this universe");
-        let mut d = MapData::new(Vec::new(), Vec::new());
+        let mut d = MapData::new(Vec::new(), Vec::new(), Vec::new());
         d.set_holes(&[Wormhole { system_id: 30_004_759, dest_system_id: Some(30_000_142), ..Default::default() }]);
         assert_eq!(find(&geo, &d, "1dq1-a", "jita").unwrap(), vec![30_004_759, 30_000_142]);
         let network = Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())] };
@@ -263,3 +338,42 @@ mod tests {
         assert_eq!(find(&geo, &d, "1DQ1-A", "7-K5EL").unwrap().len(), 2, "one bridge");
     }
 }
+
+/// A system at a glance: where it is, what it is, and the group's holes there. Nothing live: the
+/// web map has no ESI kills or jumps.
+fn system_tip(ui: &mut egui::Ui, geo: &Systems, d: &MapData, id: i64) {
+    let Some(i) = geo.info_of(id) else { return };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(&i.name).strong());
+        ui.label(egui::RichText::new(format!("{:.1}", (i.security * 10.0).round() / 10.0)).color(spai_ui::colors::security_color(i.security)));
+    });
+    let place = if i.constellation.is_empty() { i.region.clone() } else { format!("{} \u{b7} {}", i.region, i.constellation) };
+    ui.label(egui::RichText::new(place).weak());
+    if !i.faction.is_empty() {
+        ui.label(egui::RichText::new(&i.faction).weak());
+    }
+    if spai_core::jove::has(id) {
+        ui.label(egui::RichText::new(format!("{}  Jove Observatory", egui_phosphor::regular::CELL_TOWER)).color(layers::JOVE_COLOR));
+    }
+    let now = spai_core::clock::utc().timestamp();
+    let here: Vec<&Wormhole> = d.hole_list.iter().filter(|w| w.system_id == id || w.dest_system_id == Some(id)).collect();
+    if !here.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("{} hole{}", here.len(), if here.len() == 1 { "" } else { "s" })).strong());
+        for w in here.iter().take(8) {
+            let near = w.system_id == id;
+            let (sig, far) = if near { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
+            let far = far.and_then(|f| geo.info_of(f)).map_or_else(|| w.dest.label().to_owned(), |f| f.name.clone());
+            let mut facts: Vec<String> = [w.wh_type.clone(), w.mass.map(|m| m.short().to_owned())].into_iter().flatten().collect();
+            if let Some(h) = w.hours_left(now) {
+                facts.push(format!("{h}h left"));
+            }
+            let facts = if facts.is_empty() { String::new() } else { format!("  ({})", facts.join(", ")) };
+            ui.label(format!("{} {} {far}{facts}", sig.as_deref().unwrap_or("?"), egui_phosphor::regular::ARROW_RIGHT));
+        }
+        if here.len() > 8 {
+            ui.label(egui::RichText::new(format!("and {} more", here.len() - 8)).weak());
+        }
+    }
+}
+

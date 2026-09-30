@@ -18,6 +18,7 @@ type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
 
 const PREFS: &str = "spai.wh.prefs";
 const LAYOUT: &str = "spai.wh.layout";
+const ROUTE_PREFS: &str = "spai.route.prefs";
 
 pub struct WebApp {
     loading: Loading,
@@ -255,9 +256,14 @@ impl eframe::App for WebApp {
                         .map_systems()
                         .into_iter()
                         .filter(|s| s.id < 31_000_000)
+                        // The unreachable regions (A821-A, J7HZ-F, UUA-F4) are left off, as the desktop does.
+                        .filter(|s| !u.region_name(s.region_id).chars().any(|c| c.is_ascii_digit()))
                         .map(|s| spai_core::map::MapSystem { x: s.x2d, z: s.z2d, ..s })
                         .collect();
-                    self.map_data = Some(MapData::new(flat, u.regions.clone()));
+                    self.map_data = Some(MapData::new(flat, u.map_systems(), u.regions.clone()));
+                    if let Some(p) = page::load(ROUTE_PREFS) {
+                        self.map.plan.prefs = p;
+                    }
                 }
                 Some(Err(e)) => self.error = Some(e),
                 None => {}
@@ -322,6 +328,9 @@ impl eframe::App for WebApp {
                 (Some(host), _) if self.tab == Tab::Map => {
                     if let Some(d) = &self.map_data {
                         self.map.show(ui, &host.geo, d);
+                    }
+                    if std::mem::take(&mut self.map.plan.dirty) {
+                        page::save(ROUTE_PREFS, &self.map.plan.prefs);
                     }
                 }
                 (Some(host), _) => {

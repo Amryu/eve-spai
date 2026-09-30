@@ -780,9 +780,10 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     if let Some(w) = hovered_edge {
         let name = |id: i64| geo.info_of(id).map_or(format!("#{id}"), |i| i.name.clone());
         let mut tip = format!(
-            "{} {} \u{2192} {} {}",
+            "{} {} {} {} {}",
             name(w.system_id),
             w.signature.as_deref().unwrap_or(""),
+            icon::ARROW_RIGHT,
             w.dest_system_id.map(name).unwrap_or_default(),
             w.dest_signature.as_deref().unwrap_or("")
         );
