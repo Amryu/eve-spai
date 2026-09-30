@@ -11,40 +11,15 @@ impl SpaiApp {
         o: &crate::web::route::RouteOption,
         phase: f32,
     ) {
-        const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
-        const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
-        const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-        // A J-space system has no place on this map: the hop is drawn between the k-space systems
-        // on either side of it, as a hole, rather than dropped.
-        let mut last: Option<(i64, egui::Pos2)> = None;
-        let mut through_jspace = false;
-        for h in &o.hops {
-            let Some(&b) = pos.get(&h.id) else {
-                through_jspace |= last.is_some();
-                continue;
-            };
-            let Some((prev_id, a)) = last.replace((h.id, b)) else { continue };
-            let hole = std::mem::take(&mut through_jspace) || (h.kind == 0 && self.leg_kind(prev_id, h.id, false) == Leg::Hole);
-            if hole {
-                dashed_flow(painter, a, b, Leg::Hole.color(), phase);
-                continue;
-            }
-            match h.kind {
-                2 | 1 => {
-                    let (ca, cb) = if h.kind == 2 {
-                        (PICK_JUMP, PICK_JUMP)
-                    } else {
-                        self.bridge_colors(prev_id, h.id, PICK_BRIDGE)
-                    };
-                    // Dashed and crawling like the gates and like the browser's: an arc drawn
-                    // solid while the rest of the route moves reads as a different kind of thing.
-                    polyline_flow_gradient(painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
-                }
-                // Crawling dashes, the same as the browser's and the same as this map's own
-                // travel route: a static line is hard to pick out of a map already full of them.
-                _ => dashed_flow(painter, a, b, PICK_GATE, phase),
-            }
-        }
+        spai_ui::star_map::paint_route_legs(
+            painter,
+            pos,
+            &o.hops,
+            phase,
+            Leg::Hole.color(),
+            |a, b| self.leg_kind(a, b, false) == Leg::Hole,
+            |a, b, fallback| self.bridge_colors(a, b, fallback),
+        );
     }
 
     /// Systems lit by recent intel: the worst severity reported there and when it last came in.
@@ -1392,33 +1367,7 @@ impl SpaiApp {
         }
 
         if !show_sys_labels {
-            let mut acc: std::collections::HashMap<i64, (egui::Vec2, u32)> =
-                std::collections::HashMap::new();
-            for s in &self.map_draw {
-                let e = acc.entry(s.region_id).or_insert((egui::Vec2::ZERO, 0));
-                e.0 += pos[&s.id].to_vec2();
-                e.1 += 1;
-            }
-            let mut labels: Vec<(i64, egui::Pos2)> =
-                acc.into_iter().map(|(rid, (sum, n))| (rid, (sum / n as f32).to_pos2())).collect();
-            labels.sort_by_key(|(rid, _)| *rid);
-            let font = egui::FontId::proportional(16.0);
-            for (rid, c) in labels {
-                if !rect.contains(c) {
-                    continue;
-                }
-                let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) else {
-                    continue;
-                };
-                painter.text(
-                    c + egui::vec2(1.0, 1.0),
-                    egui::Align2::CENTER_CENTER,
-                    name,
-                    font.clone(),
-                    egui::Color32::from_black_alpha(180),
-                );
-                painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), egui::Color32::from_gray(220));
-            }
+            spai_ui::star_map::paint_region_labels(&painter, &self.map_draw, &pos, &self.map_regions, rect);
         }
 
         // Cyno-generator layer + rescue highlights. Isolated in catch_unwind so a stale id can't

@@ -530,3 +530,83 @@ pub fn paint_wormholes(
             }
         }
 }
+
+/// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes, holes in the
+/// hole colour. `by_hole` says whether a gate-kind hop is really a wormhole.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_route_legs(
+    painter: &egui::Painter,
+    pos: &HashMap<i64, egui::Pos2>,
+    hops: &[spai_core::route::Hop],
+    phase: f32,
+    hole_color: egui::Color32,
+    by_hole: impl Fn(i64, i64) -> bool,
+    bridge_colors: impl Fn(i64, i64, egui::Color32) -> (egui::Color32, egui::Color32),
+) {
+    const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
+    const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
+    const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+    // A J-space system has no place on this map: the hop is drawn between the k-space systems
+    // on either side of it, as a hole, rather than dropped.
+    let mut last: Option<(i64, egui::Pos2)> = None;
+    let mut through_jspace = false;
+    for h in hops {
+        let Some(&b) = pos.get(&h.id) else {
+            through_jspace |= last.is_some();
+            continue;
+        };
+        let Some((prev_id, a)) = last.replace((h.id, b)) else { continue };
+        let hole = std::mem::take(&mut through_jspace) || (h.kind == 0 && by_hole(prev_id, h.id));
+        if hole {
+            dashed_flow(painter, a, b, hole_color, phase);
+            continue;
+        }
+        match h.kind {
+            2 | 1 => {
+                let (ca, cb) = if h.kind == 2 {
+                    (PICK_JUMP, PICK_JUMP)
+                } else {
+                    bridge_colors(prev_id, h.id, PICK_BRIDGE)
+                };
+                // Dashed and crawling like the gates and like the browser's: an arc drawn
+                // solid while the rest of the route moves reads as a different kind of thing.
+                polyline_flow_gradient(painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
+            }
+            // Crawling dashes, the same as the browser's and the same as this map's own
+            // travel route: a static line is hard to pick out of a map already full of them.
+            _ => dashed_flow(painter, a, b, PICK_GATE, phase),
+        }
+    }
+}
+
+/// Region names over the middle of each region's drawn systems, for a map zoomed out too far for
+/// system names.
+pub fn paint_region_labels(painter: &egui::Painter, draw: &[MapSystem], pos: &HashMap<i64, egui::Pos2>, regions: &[(i64, String)], rect: egui::Rect) {
+        let mut acc: std::collections::HashMap<i64, (egui::Vec2, u32)> =
+            std::collections::HashMap::new();
+        for s in draw {
+            let e = acc.entry(s.region_id).or_insert((egui::Vec2::ZERO, 0));
+            e.0 += pos[&s.id].to_vec2();
+            e.1 += 1;
+        }
+        let mut labels: Vec<(i64, egui::Pos2)> =
+            acc.into_iter().map(|(rid, (sum, n))| (rid, (sum / n as f32).to_pos2())).collect();
+        labels.sort_by_key(|(rid, _)| *rid);
+        let font = egui::FontId::proportional(16.0);
+        for (rid, c) in labels {
+            if !rect.contains(c) {
+                continue;
+            }
+            let Some((_, name)) = regions.iter().find(|(id, _)| *id == rid) else {
+                continue;
+            };
+            painter.text(
+                c + egui::vec2(1.0, 1.0),
+                egui::Align2::CENTER_CENTER,
+                name,
+                font.clone(),
+                egui::Color32::from_black_alpha(180),
+            );
+            painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), egui::Color32::from_gray(220));
+        }
+}
