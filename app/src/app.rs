@@ -793,6 +793,14 @@ pub struct SpaiApp {
     map_leg_kinds: Vec<&'static str>,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
+    /// The rescue window: whether its saved geometry went to the builder yet, and its position fix.
+    #[cfg(feature = "fleet")]
+    rescue_geom_applied: bool,
+    #[cfg(feature = "fleet")]
+    rescue_pos_fix: Option<alert_window::PosFix>,
+    /// How far the tackled capital is from staging, once worked out.
+    #[cfg(feature = "fleet")]
+    rescue_ly: Option<f64>,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
@@ -1709,6 +1717,12 @@ impl SpaiApp {
             map_route_anchors: Vec::new(),
             map_leg_kinds: Vec::new(),
             main_pos_fix: main_pos_fix_at,
+            #[cfg(feature = "fleet")]
+            rescue_geom_applied: false,
+            #[cfg(feature = "fleet")]
+            rescue_pos_fix: None,
+            #[cfg(feature = "fleet")]
+            rescue_ly: None,
             map_route_zone: None,
             scan_route: Default::default(),
             br_authed: Default::default(),
@@ -3748,6 +3762,10 @@ impl SpaiApp {
             self.jabber_popout_windows(ctx, f);
         }
         self.cyno_generators_window(ctx);
+        #[cfg(feature = "fleet")]
+        if self.settings.fc_rescue_enabled && self.settings.rescue_popped && self.rescue_on() {
+            self.rescue_popout_window(ctx);
+        }
         #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled {
             // The feature being on is the mode. `active` still gates the pollers, and nothing else

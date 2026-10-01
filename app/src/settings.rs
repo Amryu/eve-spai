@@ -417,6 +417,13 @@ pub struct Settings {
     pub rescue_delve911_jid: String,
     #[serde(default = "default_rescue_col_ops")]
     pub rescue_col_ops_w: f32,
+    /// The rescue tab is in its own window, and where that window was left.
+    #[serde(default)]
+    pub rescue_popped: bool,
+    #[serde(default)]
+    pub rescue_popout_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub rescue_popout_size: Option<(f32, f32)>,
 }
 
 fn default_jabber_server() -> String {
@@ -1554,6 +1561,9 @@ impl Default for Settings {
             rescue_skirmish_jid: String::new(),
             rescue_delve911_jid: String::new(),
             rescue_col_ops_w: default_rescue_col_ops(),
+            rescue_popped: false,
+            rescue_popout_pos: None,
+            rescue_popout_size: None,
         }
     }
 }

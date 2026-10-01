@@ -214,6 +214,7 @@ impl SpaiApp {
         else {
             self.rescue_range = None;
             self.rescue_range_for = None;
+            self.rescue_ly = None;
             return;
         };
         let Some(staging) =
@@ -221,6 +222,7 @@ impl SpaiApp {
         else {
             self.rescue_range = None;
             self.rescue_range_for = None;
+            self.rescue_ly = None;
             return;
         };
         if self.rescue_range_for == Some((staging, target)) {
@@ -228,10 +230,12 @@ impl SpaiApp {
         }
         self.rescue_range_for = Some((staging, target));
         self.rescue_range = None;
+        self.rescue_ly = None;
 
         let at = |id: i64| coords.iter().find(|s| s.id == id);
         let (Some(stage_pos), Some(target_pos)) = (at(staging), at(target)) else { return };
         let ly_from_staging = crate::map::ly_distance(stage_pos, target_pos);
+        self.rescue_ly = Some(ly_from_staging);
         if ly_from_staging <= DELVE911_RANGE_LY {
             return;
         }
@@ -524,7 +528,67 @@ impl SpaiApp {
     /// the case where someone reaches the view some other way.
     #[cfg(feature = "fleet")]
     pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
+        if self.settings.rescue_popped {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Rescue is in its own window.").weak());
+            if ui.button("Dock rescue").clicked() {
+                self.settings.rescue_popped = false;
+                self.needs_save = true;
+            }
+            return;
+        }
         self.rescue_window_body(ui);
+    }
+
+    /// The rescue tab in its own window, compact: the ping and its buttons on top, the delve911
+    /// and skirmish chat below, and a pin to keep it over EVE.
+    #[cfg(feature = "fleet")]
+    #[allow(deprecated)]
+    pub(crate) fn rescue_popout_window(&mut self, ctx: &egui::Context) {
+        let mut builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
+            .with_title("EVE Spai - Rescue")
+            .with_min_inner_size([420.0, 360.0])
+            .with_window_level(egui::WindowLevel::AlwaysOnTop);
+        if !self.rescue_geom_applied {
+            let (w, h) = self.settings.rescue_popout_size.unwrap_or((520.0, 640.0));
+            builder = builder.with_inner_size([w, h]);
+            if let Some((x, y)) = self.settings.rescue_popout_pos {
+                builder = builder.with_position([x, y]);
+            }
+            self.rescue_pos_fix = super::alert_window::PosFix::new(self.settings.rescue_popout_pos);
+            self.rescue_geom_applied = true;
+        }
+        let mut keep = true;
+        let mut geom: Option<((f32, f32), Option<(f32, f32)>)> = None;
+        let mut pos_fix = self.rescue_pos_fix;
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("rescue_window"), builder, |ctx, _| {
+            super::alert_window::apply_pos_fix(ctx, &mut pos_fix);
+            egui::CentralPanel::default().show(ctx, |ui| self.rescue_body(ui, true));
+            let sz = ctx.content_rect().size();
+            if sz.x > 100.0 && sz.y > 100.0 {
+                geom = Some(((sz.x, sz.y), ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)))));
+            }
+            if ctx.input(|i| i.viewport().close_requested()) {
+                keep = false;
+            }
+        });
+        self.rescue_pos_fix = pos_fix;
+        if let Some((sz, pos)) = geom.filter(|_| pos_fix.is_none()) {
+            if let Some(s) = super::alert_window::geometry_update(self.settings.rescue_popout_size, sz, 2.0) {
+                self.settings.rescue_popout_size = Some(s);
+                self.needs_save = true;
+            }
+            if let Some(p) = pos.and_then(|p| super::alert_window::geometry_update(self.settings.rescue_popout_pos, p, 1.0)) {
+                self.settings.rescue_popout_pos = Some(p);
+                self.needs_save = true;
+            }
+        }
+        if !keep {
+            self.settings.rescue_popped = false;
+            self.rescue_geom_applied = false;
+            self.needs_save = true;
+        }
     }
 
     #[cfg(not(feature = "fleet"))]
@@ -534,6 +598,13 @@ impl SpaiApp {
 
     #[cfg(feature = "fleet")]
     pub(crate) fn rescue_window_body(&mut self, ui: &mut egui::Ui) {
+        self.rescue_body(ui, false);
+    }
+
+    /// The rescue view. `compact` is the popped-out window: the ops column becomes a band over
+    /// the chat, with its buttons sharing rows.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn rescue_body(&mut self, ui: &mut egui::Ui, compact: bool) {
         // This viewport is the only one on screen while a rescue runs, and the fleet tab is where
         // worker results are normally taken off the channel. Without this the dashboard's ping
         // lands nowhere and the window keeps rendering the local template.
@@ -612,6 +683,9 @@ impl SpaiApp {
         let mut start_tracking = false;
         let mut chat_dm: Option<String> = None;
         let has_char = self.active_character != "No character";
+        let in_range_ly = self.rescue_ly.filter(|_| self.rescue_range.is_none());
+        let staging_name = self.settings.rescue_staging_system.clone();
+        let mut pop_out = false;
         let range_warning = self.rescue_range.as_ref().map(|w| {
             let jumps = |n: Option<u32>, unit: &str| match n {
                 Some(j) => format!("{j} {unit}"),
@@ -711,61 +785,81 @@ impl SpaiApp {
             let mut pick: Option<u64> = None;
             let mut resolve: Option<u64> = None;
 
+            // The open pings, newest at the far right: beside the casualty, or on their own row in
+            // the narrow pop-out.
+            let mut chips = |ui: &mut egui::Ui| {
+                if listed.is_empty() {
+                    ui.label(egui::RichText::new("No delve911 pings yet").weak());
+                    return;
+                }
+                let now = crate::clock::utc().timestamp();
+                // Newest first: in a right-to-left layout the first widget lands furthest right.
+                for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
+                    if ui
+                        .small_button(egui_phosphor::regular::CHECK)
+                        .on_hover_text("Resolved, dismiss this ping")
+                        .clicked()
+                    {
+                        resolve = Some(*seq);
+                    }
+                    let age = fmt_age_compact(now - received);
+                    // The clock on the chip, not only in the tooltip: which ping has been
+                    // running longest is the first thing to know with several open.
+                    let mut text =
+                        egui::RichText::new(format!("{chip}  {}", since_ping(now - received)));
+                    if i == 0 {
+                        text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
+                    }
+                    let btn = egui::Button::new(text)
+                        .selected(selected == Some(*seq))
+                        .frame_when_inactive(selected == Some(*seq))
+                        .stroke(egui::Stroke::NONE);
+                    // Same pulse as the buttons: this ping still needs coord/comms/invite.
+                    let btn = match pulse_fill(ui, !actions_done.contains(seq)) {
+                        Some(c) => btn.fill(c),
+                        None => btn,
+                    };
+                    let tip = if actions_done.contains(seq) {
+                        format!("{sys}  ·  cyno {cyno}  ·  {age} ago")
+                    } else {
+                        format!("{sys}  ·  cyno {cyno}  ·  {age} ago\nAction outstanding")
+                    };
+                    if ui.add(btn).on_hover_text(tip).clicked() {
+                        pick = Some(*seq);
+                    }
+                    ui.add_space(8.0);
+                }
+            };
             ui.horizontal(|ui| {
-                ui.heading(egui_phosphor::regular::WARNING_OCTAGON.to_string());
+                let big = |t: egui::RichText| if compact { t.strong() } else { t.heading() };
+                ui.label(big(egui::RichText::new(egui_phosphor::regular::WARNING_OCTAGON)));
                 let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
                 let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
-                ui.heading(egui::RichText::new(pilot).strong());
+                ui.label(big(egui::RichText::new(pilot).strong()));
                 ui.label("in");
-                ui.heading(egui::RichText::new(sys).strong());
+                ui.label(big(egui::RichText::new(sys).strong()));
                 if let Some(class) = r.cap_class {
                     ui.label(format!("[{}]", class.label()));
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if listed.is_empty() {
-                        ui.label(egui::RichText::new("No delve911 pings yet").weak());
-                        return;
+                    if compact {
+                        super::ontop_pin_ui(ui, "rescue_window");
+                    } else if ui
+                        .small_button(egui_phosphor::regular::ARROW_SQUARE_OUT)
+                        .on_hover_text("Pop out into its own window, over EVE")
+                        .clicked()
+                    {
+                        pop_out = true;
                     }
-                    let now = crate::clock::utc().timestamp();
-                    // Newest first: in a right-to-left layout the first widget lands furthest right.
-                    for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
-                        if ui
-                            .small_button(egui_phosphor::regular::CHECK)
-                            .on_hover_text("Resolved, dismiss this ping")
-                            .clicked()
-                        {
-                            resolve = Some(*seq);
-                        }
-                        let age = fmt_age_compact(now - received);
-                        // The clock on the chip, not only in the tooltip: which ping has been
-                        // running longest is the first thing to know with several open.
-                        let mut text =
-                            egui::RichText::new(format!("{chip}  {}", since_ping(now - received)));
-                        if i == 0 {
-                            text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
-                        }
-                        let btn = egui::Button::new(text)
-                            .selected(selected == Some(*seq))
-                            .frame_when_inactive(selected == Some(*seq))
-                            .stroke(egui::Stroke::NONE);
-                        // Same pulse as the buttons: this ping still needs coord/comms/invite.
-                        let btn = match pulse_fill(ui, !actions_done.contains(seq)) {
-                            Some(c) => btn.fill(c),
-                            None => btn,
-                        };
-                        let tip = if actions_done.contains(seq) {
-                            format!("{sys}  ·  cyno {cyno}  ·  {age} ago")
-                        } else {
-                            format!("{sys}  ·  cyno {cyno}  ·  {age} ago\nAction outstanding")
-                        };
-                        if ui.add(btn).on_hover_text(tip).clicked() {
-                            pick = Some(*seq);
-                        }
-                        ui.add_space(8.0);
+                    if !compact {
+                        chips(ui);
                     }
                 });
             });
+            if compact {
+                ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chips(ui)));
+            }
             if let Some(seq) = pick {
                 r.select_ping(seq);
             }
@@ -797,6 +891,15 @@ impl SpaiApp {
                 if resp.clicked() {
                     set_dest = target.map(|(id, _)| id);
                 }
+                if let Some(ly) = in_range_ly {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  in titan range, {ly:.1} ly from {staging_name}",
+                            egui_phosphor::regular::CHECK_CIRCLE
+                        ))
+                        .color(crate::theme::standing::FRIENDLY),
+                    );
+                }
             });
             // Only rendered in the rare out-of-range case, and wrapped so a long system name can't
             // widen the window or push the chat panel around.
@@ -827,18 +930,10 @@ impl SpaiApp {
             }
             ui.separator();
 
-            let ops_resp = egui::Panel::left("rescue_ops_panel")
-                .resizable(true)
-                .default_size(ops_w)
-                .size_range(180.0..=640.0)
-                .show_inside(ui, |ui| {
-                    // Scrolled, and auto_shrink off on the vertical axis: without this the column's
-                    // content sets a minimum height on the whole window, so a short window pushes
-                    // the chat panel off the bottom instead of clipping this column.
-                    egui::ScrollArea::vertical()
-                        .id_salt("rescue_ops")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
+            let mut ops_body = |ui: &mut egui::Ui| {
+                    // Compact, the band takes its content's height and the chat the rest, so it
+                    // is not scrolled.
+                    let mut inner = |ui: &mut egui::Ui| {
                     // Actions outstanding for the ping being worked; the buttons pulse until done.
                     let sel_seq = r.selected_ping;
                     let op_now = r.op_channel;
@@ -851,7 +946,8 @@ impl SpaiApp {
                     // The rule belongs to the timer: with no ping selected the timer draws
                     // nothing and the line was left sitting at the top of the pane dividing
                     // nothing from the ping below it.
-                    if ping_timer_ui(ui, &r) {
+                    // Compact, the ping's button carries its clock.
+                    if !compact && ping_timer_ui(ui, &r) {
                         ui.add_space(4.0);
                         ui.separator();
                     }
@@ -965,7 +1061,7 @@ impl SpaiApp {
                             .response
                             .on_hover_text("A different doctrine means a different preset.");
                     });
-                    {
+                    let command_comms = |ui: &mut egui::Ui, wide: bool| -> bool {
                         let btn = egui::Button::new(format!(
                             "{}  Command Comms",
                             egui_phosphor::regular::HEADSET
@@ -974,14 +1070,14 @@ impl SpaiApp {
                             Some(c) => btn.fill(c),
                             None => btn,
                         };
-                        if ui
-                            .add_sized([ui.available_width(), 24.0], btn)
+                        let size = if wide { [ui.available_width(), 24.0] } else { [0.0, 0.0] };
+                        ui.add_sized(size, btn)
                             .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
                             .clicked()
-                        {
-                            let _ = open::that(command_mumble_url(op_now));
-                            mark_cmd = true;
-                        }
+                    };
+                    if !compact && command_comms(ui, true) {
+                        let _ = open::that(command_mumble_url(op_now));
+                        mark_cmd = true;
                     }
                     // Rebuild from the template on first show and on an op/doctrine change, but not
                     // once the FC has typed into the box: the combos sit right above it, so silently
@@ -1012,7 +1108,7 @@ impl SpaiApp {
                     if ui
                         .add(
                             egui::TextEdit::multiline(&mut r.pending_ping)
-                                .desired_rows(3)
+                                .desired_rows(if compact { 2 } else { 3 })
                                 .desired_width(f32::INFINITY),
                         )
                         .changed()
@@ -1020,6 +1116,10 @@ impl SpaiApp {
                         r.ping_edited = true;
                     }
                     ui.horizontal_wrapped(|ui| {
+                        if compact && command_comms(ui, false) {
+                            let _ = open::that(command_mumble_url(op_now));
+                            mark_cmd = true;
+                        }
                         if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
                             if let Ok(mut clip) = arboard::Clipboard::new() {
                                 let _ = clip.set_text(r.pending_ping.clone());
@@ -1048,10 +1148,76 @@ impl SpaiApp {
                         }
                     });
 
+                    // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
+                    // their delve911 nick so it reads as a direct call-out in the channel.
+                    let ping_author = r.ping_author.clone();
+                    let op_for_invite = r.op_channel;
+                    let mut invite_ui = |ui: &mut egui::Ui| {
+                        match rescue_comms_invite(ping_author.as_deref(), op_for_invite) {
+                            None => {
+                                if !compact {
+                                    ui.label(egui::RichText::new("No ping author to invite").weak());
+                                }
+                            }
+                            Some(msg) => {
+                                // Compact, the message is the button's tooltip rather than a box.
+                                if !compact {
+                                    egui::Frame::group(ui.style())
+                                        .inner_margin(egui::Margin::symmetric(6, 4))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.label(egui::RichText::new(&msg).monospace());
+                                        });
+                                }
+                                let can_invite =
+                                    !test_mode && jab_connected && !delve911_jid.is_empty();
+                                let btn = egui::Button::new(format!(
+                                    "{}  Invite to Op {op_now} comms",
+                                    egui_phosphor::regular::HEADSET
+                                ));
+                                let btn = match pulse_fill(ui, invite_pending) {
+                                    Some(c) => btn.fill(c),
+                                    None => btn,
+                                };
+                                let hover = if compact { format!("Post in delve911:\n{msg}") } else { "Post this in delve911".to_owned() };
+                                if ui
+                                    .add_enabled(can_invite, btn)
+                                    .on_hover_text(hover)
+                                    .clicked()
+                                {
+                                    if let Some(tx) = &tx {
+                                        let _ = tx.send(crate::jabber::Cmd::SendRoom {
+                                            room: delve911_jid.clone(),
+                                            body: msg,
+                                        });
+                                    }
+                                    mark_invite = true;
+                                }
+                            }
+                        }
+                    };
                     // Whether the FC is actually boss of a fleet in game, on the same clock the
                     // start form uses. Nothing else tells you before you try to track.
-                    ui.add_space(6.0);
+                    ui.add_space(if compact { 2.0 } else { 6.0 });
+                    let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
+                    let track_button = |ui: &mut egui::Ui, wide: bool| -> bool {
+                        let b = egui::Button::new(format!("{}  Start tracking", egui_phosphor::regular::ROCKET_LAUNCH));
+                        let b = if wide { b.min_size(egui::vec2(ui.available_width(), 24.0)) } else { b };
+                        ui.add_enabled(can_track, b)
+                            .on_hover_text("Fill the start form from this preset and open the fleet tab")
+                            .on_disabled_hover_text(
+                                "That character is not the boss of a fleet in game, so there would be \
+                                 nothing to track.",
+                            )
+                            .clicked()
+                    };
                     ui.horizontal_wrapped(|ui| {
+                        if compact {
+                            if track_button(ui, false) {
+                                start_tracking = true;
+                            }
+                            invite_ui(ui);
+                        }
                         let (glyph, colour, text) = match &boss {
                             Some((true, why)) => (
                                 egui_phosphor::regular::CHECK_CIRCLE,
@@ -1075,71 +1241,18 @@ impl SpaiApp {
 
                     // Handing over to the fleet tab: the preset fills the start form and the
                     // fleet it starts is the one being tracked from here on.
-                    ui.add_space(6.0);
-                    let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
-                    if ui
-                        .add_enabled(
-                            can_track,
-                            egui::Button::new(format!(
-                                "{}  Start tracking",
-                                egui_phosphor::regular::ROCKET_LAUNCH
-                            ))
-                            .min_size(egui::vec2(ui.available_width(), 24.0)),
-                        )
-                        .on_hover_text(
-                            "Fill the start form from this preset and open the fleet tab",
-                        )
-                        .on_disabled_hover_text(
-                            "That character is not the boss of a fleet in game, so there would be \
-                             nothing to track.",
-                        )
-                        .clicked()
-                    {
-                        start_tracking = true;
+                    if !compact {
+                        ui.add_space(6.0);
+                        if track_button(ui, true) {
+                            start_tracking = true;
+                        }
                     }
 
-                    // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
-                    // their delve911 nick so it reads as a direct call-out in the channel.
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.label(egui::RichText::new("Comms invite").strong());
-                    match rescue_comms_invite(r.ping_author.as_deref(), r.op_channel) {
-                        None => {
-                            ui.label(
-                                egui::RichText::new("No ping author to invite").weak(),
-                            );
-                        }
-                        Some(msg) => {
-                            egui::Frame::group(ui.style())
-                                .inner_margin(egui::Margin::symmetric(6, 4))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.label(egui::RichText::new(&msg).monospace());
-                                });
-                            let can_invite =
-                                !test_mode && jab_connected && !delve911_jid.is_empty();
-                            let btn = egui::Button::new(format!(
-                                "{}  Invite to Op {op_now} comms",
-                                egui_phosphor::regular::HEADSET
-                            ));
-                            let btn = match pulse_fill(ui, invite_pending) {
-                                Some(c) => btn.fill(c),
-                                None => btn,
-                            };
-                            if ui
-                                .add_enabled(can_invite, btn)
-                                .on_hover_text("Post this in delve911")
-                                .clicked()
-                            {
-                                if let Some(tx) = &tx {
-                                    let _ = tx.send(crate::jabber::Cmd::SendRoom {
-                                        room: delve911_jid.clone(),
-                                        body: msg,
-                                    });
-                                }
-                                mark_invite = true;
-                            }
-                        }
+                    if !compact {
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new("Comms invite").strong());
+                        invite_ui(ui);
                     }
 
                     if let Some(seq) = sel_seq {
@@ -1153,9 +1266,23 @@ impl SpaiApp {
                             r.actions_mut(seq).invited_op = Some(op_now);
                         }
                     }
-                        });
-                });
-            new_ops_w = ops_resp.response.rect.width();
+                    };
+                    if compact {
+                        inner(ui);
+                    } else {
+                        egui::ScrollArea::vertical().id_salt("rescue_ops").auto_shrink([false, false]).show(ui, inner);
+                    }
+            };
+            if compact {
+                egui::Panel::top("rescue_ops_top").show_inside(ui, |ui| ops_body(ui));
+            } else {
+                let ops_resp = egui::Panel::left("rescue_ops_panel")
+                    .resizable(true)
+                    .default_size(ops_w)
+                    .size_range(180.0..=640.0)
+                    .show_inside(ui, |ui| ops_body(ui));
+                new_ops_w = ops_resp.response.rect.width();
+            }
 
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 0)))
@@ -1280,6 +1407,11 @@ impl SpaiApp {
 
         if start_tracking {
             self.rescue_start_tracking();
+        }
+        if pop_out {
+            self.settings.rescue_popped = true;
+            self.rescue_geom_applied = false;
+            self.needs_save = true;
         }
 
         // Persist op and preset so the next rescue starts where we left off.
