@@ -1005,6 +1005,7 @@ pub(crate) fn offerable(s: &crate::store::SystemSig, system: i64, holes: &[crate
 }
 
 pub(crate) use spai_ui::wh_form::{choice_row, drifter_autofill, sig_field, wh_type_picker, WhForm};
+pub(crate) use spai_ui::wh_tab::wh_filter_ui;
 
 /// The destination class of a hole whose far side is system `id`.
 pub(crate) use spai_core::wormholes::dest_class;
@@ -1110,67 +1111,7 @@ pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::Sy
 }
 
 
-/// Toggles that add and remove codes from `set`; an empty set means any. Returns whether it changed.
-fn code_toggles(ui: &mut egui::Ui, set: &mut Vec<String>, items: &[(&str, &str)]) -> bool {
-    use crate::app::SteadySelect as _;
-    let mut changed = false;
-    ui.horizontal_wrapped(|ui| {
-        for (code, label) in items {
-            let on = set.iter().any(|c| c == code);
-            if ui.menu_label(on, *label).clicked() {
-                if on {
-                    set.retain(|c| c != code);
-                } else {
-                    set.push((*code).to_owned());
-                }
-                changed = true;
-            }
-        }
-    });
-    changed
-}
 
-/// The wormhole tab's filter popup. Returns whether anything changed.
-pub(crate) fn wh_filter_ui(ui: &mut egui::Ui, f: &mut crate::wormholes::WhFilter) -> bool {
-    use crate::wormholes::{DestClass, Mass, ShipSize, Source, TimeLeft, UNKNOWN};
-    let mut changed = false;
-    ui.set_min_width(540.0);
-    ui.label(egui::RichText::new("Nothing picked in a row lets everything through").weak());
-    egui::Grid::new("wh_filter_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label("Leads to");
-        let dests: Vec<(&str, &str)> = [DestClass::Highsec, DestClass::Lowsec, DestClass::Nullsec, DestClass::Wspace, DestClass::Thera, DestClass::Turnur, DestClass::Unknown]
-            .into_iter()
-            .map(|d| (d.code(), d.label()))
-            .collect();
-        changed |= code_toggles(ui, &mut f.dest, &dests);
-        ui.end_row();
-        ui.label("Type");
-        changed |= ui
-            .add(egui::TextEdit::singleline(&mut f.types).hint_text("C247 K162").desired_width(160.0))
-            .on_hover_text("Hole types, either side")
-            .changed();
-        ui.end_row();
-        ui.label("Size");
-        let mut sizes: Vec<(&str, &str)> = ShipSize::ALL.into_iter().map(|s| (s.code(), s.short())).collect();
-        sizes.push((UNKNOWN, "Unknown"));
-        changed |= code_toggles(ui, &mut f.size, &sizes);
-        ui.end_row();
-        ui.label("Mass left");
-        let mut masses: Vec<(&str, &str)> = Mass::ALL.into_iter().map(|m| (m.code(), m.short())).collect();
-        masses.push((UNKNOWN, "Unknown"));
-        changed |= code_toggles(ui, &mut f.mass, &masses);
-        ui.end_row();
-        ui.label("Time left");
-        let times: Vec<(&str, &str)> = TimeLeft::ALL.into_iter().map(|t| (t.code(), t.short())).collect();
-        changed |= code_toggles(ui, &mut f.time, &times);
-        ui.end_row();
-        ui.label("Source");
-        let sources: Vec<(&str, &str)> = Source::ALL.into_iter().map(|s| (s.code(), s.label())).collect();
-        changed |= code_toggles(ui, &mut f.source, &sources);
-        ui.end_row();
-    });
-    changed
-}
 
 
 /// Kilograms as whole tonnes with thousands separators, e.g. 62,000.

@@ -45,6 +45,8 @@ pub struct WebHost {
     pub not_holes: HashMap<(i64, i64), i64>,
     /// How wide the side panel was drawn this frame, 0 when it was not: the card keeps clear of it.
     pub side_w: f32,
+    /// Which holes the tab shows, as the desktop's Filter.
+    pub filter: spai_core::wormholes::WhFilter,
 }
 
 /// A jump an added character made that looks like a hole, asked about as the desktop asks.
@@ -73,8 +75,8 @@ enum Side {
 
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
-        let prefs = WhPrefs { pin_jumps: 10, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0 }
+        let prefs = WhPrefs { pin_jumps: PIN_JUMPS, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0, filter: Default::default() }
     }
 }
 
@@ -344,13 +346,16 @@ impl WebHost {
     }
 }
 
+/// Gate jumps under which a pinned system joins a chain, the desktop's default.
+pub const PIN_JUMPS: u32 = 30;
+
 /// Pinned on first use: the chains hang from these and routes are measured to them.
 pub const DEFAULT_PINS: [&str; 3] = ["C-J6MT", "C-N4OD", "4-HWWF"];
 
 impl WebHost {
     /// The Routes tab: how far each pinned system is from the selected one, and the pins
     /// themselves to add and remove.
-    fn routes(&mut self, ui: &mut egui::Ui, geo: &Systems, sel: i64, sel_name: &str) {
+    fn routes(&mut self, ui: &mut egui::Ui, geo: &Systems, sel: i64, sel_name: &str) -> Option<i64> {
         let pinned = self.prefs.route_pins.iter().any(|p| p.eq_ignore_ascii_case(sel_name));
         let label = if pinned { format!("Unpin {sel_name}") } else { format!("Pin {sel_name}") };
         let mut change: Option<(String, bool)> = None;
@@ -361,24 +366,23 @@ impl WebHost {
         if self.prefs.route_pins.is_empty() {
             ui.label(egui::RichText::new("No pinned systems. Pin the systems you stage in: chains hang from them and routes are measured to them.").weak());
         }
-        egui::Grid::new("wh_web_pins").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
-            for name in &self.prefs.route_pins {
-                let info = geo.lookup(name);
-                ui.label(egui::RichText::new(name).strong());
-                let jumps = info.and_then(|i| geo.jumps(sel, i.id, 60));
-                ui.label(egui::RichText::new(match jumps {
-                    Some(0) => "here".to_owned(),
-                    Some(1) => "1 jump".to_owned(),
-                    Some(n) => format!("{n} jumps"),
-                    None => "no route".to_owned(),
-                }).weak())
-                .on_hover_text("By gate and Ansiblex; holes are on the map");
-                if ui.small_button(egui_phosphor::regular::X).on_hover_text("Unpin").clicked() {
-                    change = Some((name.clone(), false));
-                }
-                ui.end_row();
+        // Pinned systems, then where the added characters are, by gates, bridges and every live hole.
+        let now = spai_core::clock::utc().timestamp();
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for w in self.holes.iter().filter(|w| !w.is_expired(now)) {
+            if let Some(b) = w.dest_system_id {
+                adj.entry(w.system_id).or_default().push(b);
+                adj.entry(b).or_default().push(w.system_id);
             }
-        });
+        }
+        let mut targets: Vec<(String, i64, bool)> = self.prefs.route_pins.iter().filter_map(|p| geo.lookup(p).map(|i| (i.name.clone(), i.id, true))).collect();
+        let mut chars: Vec<(&String, &(i64, bool))> = self.chars.iter().collect();
+        chars.sort();
+        targets.extend(chars.into_iter().map(|(n, (sys, _))| (n.clone(), *sys, false)));
+        let (unpin, select) = spai_ui::wh_tab::route_rows(ui, geo, sel, &targets, &adj);
+        if let Some(name) = unpin {
+            change = Some((name, false));
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             // Picking a suggestion pins it at once; Pin takes what was typed.
@@ -403,6 +407,7 @@ impl WebHost {
             }
             self.dirty = true;
         }
+        select
     }
 }
 
@@ -412,7 +417,8 @@ impl WhHost for WebHost {
     }
 
     fn holes(&self, now: i64) -> Vec<Wormhole> {
-        self.holes.iter().filter(|w| !w.is_expired(now)).cloned().collect()
+        let touches = |w: &Wormhole, d: spai_core::wormholes::DestClass| w.dest == d || spai_core::wormholes::dest_class(&self.geo, w.system_id) == d;
+        self.holes.iter().filter(|w| !w.is_expired(now) && self.filter.matches(w, now, |d| touches(w, d))).cloned().collect()
     }
 
     fn characters(&self) -> HashMap<String, (i64, bool)> {
@@ -468,7 +474,30 @@ impl WhHost for WebHost {
 
     fn system_menu(&mut self, _: &mut egui::Ui, _: i64) {}
 
-    fn toolbar(&mut self, _: &mut WhGraphView, _: &mut egui::Ui) {}
+    /// The desktop's Filter, beside Legend: which holes the tab shows.
+    fn toolbar(&mut self, _: &mut WhGraphView, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let active = self.filter.active();
+        let label = if active == 0 { format!("{}  Filter", icon::FUNNEL) } else { format!("{}  Filter ({active})", icon::FUNNEL) };
+        let btn = ui.button(label).on_hover_text("Which holes the map shows");
+        egui::Popup::from_toggle_button_response(&btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            self.dirty |= spai_ui::wh_tab::wh_filter_ui(ui, &mut self.filter);
+        });
+        if ui.add_enabled(active > 0, egui::Button::new(icon::FUNNEL_X)).on_hover_text("Clear the filter").on_disabled_hover_text("No filter set").clicked() {
+            self.filter = Default::default();
+            self.dirty = true;
+        }
+        ui.menu_button(icon::GEAR_SIX, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Pinned systems join clusters within");
+                self.dirty |= ui
+                    .add(egui::DragValue::new(&mut self.prefs.pin_jumps).range(1..=spai_ui::wh_graph::WH_PIN_JUMPS_MAX))
+                    .on_hover_text("Gate jumps from a cluster's nearest exit. Further out, a pinned system shows on its own.")
+                    .changed();
+                ui.label("jumps");
+            });
+        });
+    }
 
     /// The pinned systems are in the side panel's Routes tab, which only shows with a system open:
     /// this opens it, on the last system opened, else the first pinned one.
@@ -581,7 +610,11 @@ impl WhHost for WebHost {
                     }
                 });
                     }
-                    Side::Routes => self.routes(ui, geo, sel, &info.name),
+                    Side::Routes => {
+                        if let Some(id) = self.routes(ui, geo, sel, &info.name) {
+                            view.selected = Some(id);
+                        }
+                    }
                 }
             });
         });
