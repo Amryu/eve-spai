@@ -1666,13 +1666,19 @@ fn fleet_confirm_scene(
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
 #[cfg(feature = "fleet")]
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    rescue_panel_scene_with(name, size, None)
+    rescue_panel_scene_with(name, size, None, false)
+}
+
+/// The rescue tab popped out: the ping and its buttons in a band over the chat.
+#[cfg(feature = "fleet")]
+fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    rescue_panel_scene_with(name, size, None, true)
 }
 
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
 /// and picks it. The invented table's "Comms N" names resolve to no op at all.
 #[cfg(feature = "fleet")]
-fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>) -> Scene {
+fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -1700,7 +1706,7 @@ fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8
             }
             a
         });
-        app.rescue_window_body(ui);
+        app.rescue_body(ui, compact);
     })
 }
 
@@ -2438,7 +2444,9 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
     #[cfg(feature = "fleet")]
-    v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3)));
+    v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
+    #[cfg(feature = "fleet")]
+    v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
