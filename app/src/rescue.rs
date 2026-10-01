@@ -118,6 +118,29 @@ impl PingActions {
     }
 }
 
+/// Seconds after a coord or fc ping before fc may go out: coord is always pinged first, and fc
+/// reaches more people as a backup.
+pub const FC_PING_AFTER: i64 = 10;
+/// How long after the last coord or fc ping an fc ping still belongs to that rescue.
+pub const FC_PING_UNTIL: i64 = 15 * 60;
+
+/// Whether an fc ping may go out now: `Ok` if so, else why not, with seconds to wait when that is
+/// all it takes.
+pub fn fc_ping_wait(coord_at: Option<i64>, last_at: Option<i64>, now: i64) -> Result<(), (String, Option<i64>)> {
+    let (Some(_), Some(last)) = (coord_at, last_at) else {
+        return Err(("Ping coord first: fc is the backup".to_owned(), None));
+    };
+    let since = now - last;
+    if since < FC_PING_AFTER {
+        let wait = FC_PING_AFTER - since;
+        return Err((format!("Wait {wait}s after the last ping"), Some(wait)));
+    }
+    if since > FC_PING_UNTIL {
+        return Err(("Over 15 minutes since the last ping: ping coord again first".to_owned(), None));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct RescueState {
     pub active: bool,
@@ -156,6 +179,10 @@ pub struct RescueState {
     pub delve911_reply: String,
     /// Selected chat tab: 0 = delve911, 1 = skirmish_commanders.
     pub chat_tab: u8,
+    /// When coord was last pinged, and when coord or fc was: fc is a backup that only follows a
+    /// coord ping, see [`fc_ping_wait`].
+    pub coord_pinged_at: Option<i64>,
+    pub bpinged_at: Option<i64>,
 }
 
 impl RescueState {
@@ -706,6 +733,19 @@ pub fn parse_raw_dscan(text: &str) -> Vec<(String, u32)> {
 
 #[cfg(test)]
 mod tests {
+    /// fc follows coord: never first, never within 10s of the last ping, and not once the rescue
+    /// has gone quiet for 15 minutes.
+    #[test]
+    fn fc_waits_for_coord_and_ten_seconds_and_lapses_after_fifteen_minutes() {
+        use super::{fc_ping_wait, FC_PING_UNTIL};
+        assert!(fc_ping_wait(None, None, 100).is_err(), "coord first");
+        assert_eq!(fc_ping_wait(Some(100), Some(100), 104).unwrap_err().1, Some(6), "six seconds to go");
+        assert!(fc_ping_wait(Some(100), Some(100), 110).is_ok());
+        assert!(fc_ping_wait(Some(100), Some(110), 115).is_err(), "an fc ping restarts the wait");
+        assert!(fc_ping_wait(Some(100), Some(110), 120).is_ok());
+        assert!(fc_ping_wait(Some(100), Some(110), 110 + FC_PING_UNTIL + 1).is_err(), "too long since the last ping");
+    }
+
     use super::*;
     use crate::geo::{Systems, SystemInfo};
     use std::collections::HashMap;
