@@ -34,6 +34,10 @@ pub struct Data {
     #[serde(default)]
     invite_roles: HashMap<String, String>,
     holes: HashMap<String, Held>,
+    /// A uid another install gave a hole held here under another: as the desktop's
+    /// `wh_uid_alias`, so both settle on the smaller of the two.
+    #[serde(default)]
+    alias: HashMap<String, String>,
     sigs: HashMap<i64, Vec<SystemSig>>,
     outbox: Vec<(i64, Option<String>, Outgoing)>,
     next_out: i64,
@@ -276,6 +280,49 @@ impl WebStore {
     }
 }
 
+impl Data {
+    fn resolve(&self, uid: &str) -> String {
+        let mut uid = uid.to_owned();
+        // Bounded: an alias chain is short, and a cycle must not hang the page.
+        for _ in 0..8 {
+            match self.alias.get(&uid) {
+                Some(next) if *next != uid => uid = next.clone(),
+                _ => break,
+            }
+        }
+        uid
+    }
+
+    /// Moves the hole held as `from` to `to`, its unsent changes with it.
+    fn rename(&mut self, from: &str, to: &str) {
+        if let Some(mut h) = self.holes.remove(from) {
+            h.state.uid = to.to_owned();
+            self.holes.insert(to.to_owned(), h);
+        }
+        for (_, _, out) in self.outbox.iter_mut() {
+            if let Outgoing::Hole(u) | Outgoing::Dead(u) = out {
+                if u == from {
+                    *u = to.to_owned();
+                }
+            }
+        }
+        self.alias.insert(from.to_owned(), to.to_owned());
+    }
+
+    /// The live hole held here that `remote` is the same jump as, under another uid.
+    fn twin_of(&self, remote: &HoleState, now: i64) -> Option<String> {
+        let w = hole::fresh(remote);
+        self.holes
+            .values()
+            .filter(|h| !h.dead && h.state.uid != remote.uid)
+            .find(|h| {
+                let mine = hole::fresh(&h.state);
+                mine.same_connection(&w) && !mine.is_expired(now)
+            })
+            .map(|h| h.state.uid.clone())
+    }
+}
+
 impl ShareStore for WebStore {
     fn share_groups(&self) -> Vec<ShareGroup> {
         self.data.borrow().groups.clone()
@@ -399,7 +446,22 @@ impl ShareStore for WebStore {
         }
         let changed = {
             let mut d = self.data.borrow_mut();
-            match d.holes.get_mut(&remote.uid) {
+            let mut uid = d.resolve(&remote.uid);
+            // The same jump this browser recorded too: one hole, under the smaller uid, as the
+            // desktop settles it.
+            if !d.holes.contains_key(&uid) {
+                let now = spai_core::clock::utc().timestamp();
+                if let Some(mine) = d.twin_of(remote, now) {
+                    if remote.uid < mine {
+                        d.rename(&mine, &remote.uid);
+                        uid = remote.uid.clone();
+                    } else {
+                        d.alias.insert(remote.uid.clone(), mine.clone());
+                        uid = mine;
+                    }
+                }
+            }
+            match d.holes.get_mut(&uid) {
                 Some(held) => {
                     let mut w = hole::fresh(&held.state);
                     let mut clocks: HashMap<String, hole::Clock> = held.state.fields.iter().map(|(k, f)| (k.clone(), (f.at, f.by))).collect();
@@ -428,9 +490,12 @@ impl ShareStore for WebStore {
     }
 
     fn share_apply_dead(&self, uid: &str) {
-        if let Some(h) = self.data.borrow_mut().holes.get_mut(uid) {
+        let mut d = self.data.borrow_mut();
+        let uid = d.resolve(uid);
+        if let Some(h) = d.holes.get_mut(&uid) {
             h.dead = true;
         }
+        drop(d);
         self.touch(true);
     }
 
@@ -543,6 +608,27 @@ mod tests {
                 ("dest_system_id".to_owned(), Field { v: serde_json::json!(30_000_142), at, by }),
             ]),
         }
+    }
+
+    /// The desktop and this page both saw one jump and each recorded it before the other's came
+    /// in: one hole, under the smaller uid, whichever arrives second.
+    #[test]
+    fn one_jump_recorded_on_two_installs_is_one_hole() {
+        let now = spai_core::clock::utc().timestamp();
+        let mine = |uid: &str| Wormhole { uid: uid.into(), system_id: 31_000_200, dest_system_id: Some(30_000_142), reported_at: now, ..Default::default() };
+        let s = WebStore::default();
+        s.edit_hole(&mine("m"), now);
+        assert!(s.share_apply_hole(&remote("a", "ABC-123", now, 7), "g", "Pilot"));
+        let holes = s.wormholes();
+        assert_eq!(holes.len(), 1, "not two");
+        assert_eq!((holes[0].uid.as_str(), holes[0].signature.as_deref()), ("a", Some("ABC-123")));
+        assert!(matches!(&s.share_outbox(10)[..], [(_, _, Outgoing::Hole(u))] if u == "a"), "the unsent change goes out under the kept uid");
+        let s = WebStore::default();
+        s.edit_hole(&mine("m"), now);
+        s.share_apply_hole(&remote("z", "ABC-123", now, 7), "g", "Pilot");
+        assert_eq!(s.wormholes().iter().map(|w| w.uid.clone()).collect::<Vec<_>>(), vec!["m".to_owned()]);
+        s.share_apply_dead("z");
+        assert!(s.wormholes().is_empty(), "closing it under the other uid closes it here");
     }
 
     #[test]

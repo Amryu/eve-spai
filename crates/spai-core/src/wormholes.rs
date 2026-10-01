@@ -744,6 +744,12 @@ impl Wormhole {
     }
 
     /// Whether `other` cannot be this hole: its far system or its signature is a different one.
+    /// Whether `other` is this same connection under another uid: the same two systems the same
+    /// way round, signatures not contradicting. Two installs that saw one jump each record it.
+    pub fn same_connection(&self, other: &Wormhole) -> bool {
+        self.dest_system_id.is_some() && self.dest_system_id == other.dest_system_id && !self.conflicts(other)
+    }
+
     pub fn conflicts(&self, other: &Wormhole) -> bool {
         let letters = |s: &Option<String>| {
             s.as_deref().map(|s| s.trim().chars().take(3).collect::<String>().to_uppercase()).filter(|s| s.len() == 3)
