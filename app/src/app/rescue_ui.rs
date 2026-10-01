@@ -1169,29 +1169,43 @@ impl SpaiApp {
                                 let _ = clip.set_text(r.pending_ping.clone());
                             }
                         }
-                        // coord/fc/all are directorbot ping GROUPS: prefix "!bping <group>" onto the
-                        // ping and post it to skirmish_commanders. Off in test mode.
+                        // coord and fc are directorbot ping GROUPS, posted to skirmish_commanders. Coord
+                        // carries the ping; fc is the bare "!bping fc" backup that reaches more people,
+                        // only after coord and never within 10s of the last ping. Off in test mode.
                         let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
                         if compact {
                             ui.label("Ping");
                         }
-                        for group in ["coord", "fc", "all"] {
-                            let btn = egui::Button::new(if compact { group.to_owned() } else { format!("Ping {group}") });
-                            let btn = match pulse_fill(ui, coord_pending && group == "coord") {
-                                Some(c) => btn.fill(c),
-                                None => btn,
-                            };
-                            if ui.add_enabled(can_send, btn).clicked() {
-                                if let Some(tx) = &tx {
-                                    let _ = tx.send(crate::jabber::Cmd::SendRoom {
-                                        room: skirmish_jid.clone(),
-                                        body: format!("!bping {group}\n\n{}", r.pending_ping),
-                                    });
-                                }
-                                if group == "coord" {
-                                    mark_coord = true;
-                                }
+                        let now = crate::clock::utc().timestamp();
+                        let fc_ok = crate::rescue::fc_ping_wait(r.coord_pinged_at, r.bpinged_at, now);
+                        if let Err((_, Some(wait))) = &fc_ok {
+                            ui.ctx().request_repaint_after(std::time::Duration::from_secs((*wait).max(1) as u64));
+                        }
+                        let send = |body: String| {
+                            if let Some(tx) = &tx {
+                                let _ = tx.send(crate::jabber::Cmd::SendRoom { room: skirmish_jid.clone(), body });
                             }
+                        };
+                        let coord = egui::Button::new(if compact { "coord" } else { "Ping coord" });
+                        let coord = match pulse_fill(ui, coord_pending) {
+                            Some(c) => coord.fill(c),
+                            None => coord,
+                        };
+                        if ui.add_enabled(can_send, coord).on_hover_text("!bping coord with the ping").clicked() {
+                            send(format!("!bping coord\n\n{}", r.pending_ping));
+                            mark_coord = true;
+                            r.coord_pinged_at = Some(now);
+                            r.bpinged_at = Some(now);
+                        }
+                        let fc = egui::Button::new(if compact { "fc" } else { "Ping fc" });
+                        let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text("!bping fc alone: the backup after coord, reaching more people");
+                        let resp = match &fc_ok {
+                            Err((why, _)) => resp.on_disabled_hover_text(why),
+                            Ok(()) => resp,
+                        };
+                        if resp.clicked() {
+                            send("!bping fc".to_owned());
+                            r.bpinged_at = Some(now);
                         }
                     });
 
