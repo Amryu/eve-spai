@@ -268,12 +268,13 @@ pub fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
         Some(Life::Expired) => TimeLeft::Expiring,
         Some(Life::Under1h) => TimeLeft::Under1h,
         Some(Life::Under4h) => TimeLeft::Under4h,
-        // "Less than a day" says nothing of how much less: a warning from the start, stale once
-        // six hours old and critical after twelve, by how long ago it was read.
-        Some(Life::UnderDay) => match now - w.observed_at.unwrap_or(w.reported_at) {
+        // "Less than a day" is what most holes read, and says nothing of how much less: fine at
+        // first, stale six hours after the hole was found and critical after twelve. Counted from
+        // when it was found, so reading "<1d" again does not make it fresh.
+        Some(Life::UnderDay) => match now - w.reported_at {
             age if age >= 12 * 3600 => TimeLeft::Under1h,
-            age if age >= 6 * 3600 => TimeLeft::Under4h,
-            _ => TimeLeft::Under12h,
+            age if age >= 6 * 3600 => TimeLeft::Under12h,
+            _ => TimeLeft::Plenty,
         },
         _ => TimeLeft::Plenty,
     };
@@ -978,13 +979,16 @@ mod tests {
         assert_eq!(w.hours_left(1000 + 3600), None);
     }
 
-    /// "Less than a day" warns from the start, is stale after 6 hours and critical after 12.
+    /// "Less than a day", what most holes read, is fine at first, stale 6 hours after the hole was
+    /// found and critical after 12.
     #[test]
-    fn a_hole_read_as_under_a_day_ages_from_yellow_to_red() {
+    fn a_hole_read_as_under_a_day_ages_from_green_to_red() {
         let now = 1_000_000;
         let read = |ago: i64| Wormhole { life: Some(Life::UnderDay), observed_at: Some(now - ago), reported_at: now - ago, explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
-        assert_eq!(time_left(&read(3600), now), TimeLeft::Under12h);
-        assert_eq!(time_left(&read(7 * 3600), now), TimeLeft::Under4h);
+        assert_eq!(time_left(&read(3600), now), TimeLeft::Plenty);
+        assert_eq!(time_left(&read(7 * 3600), now), TimeLeft::Under12h);
+        let reread = Wormhole { observed_at: Some(now - 60), ..read(7 * 3600) };
+        assert_eq!(time_left(&reread, now), TimeLeft::Under12h, "reading <1d again does not make it fresh");
         assert_eq!(time_left(&read(13 * 3600), now), TimeLeft::Under1h);
         assert_eq!(time_left(&read(25 * 3600), now), TimeLeft::Expiring);
     }
