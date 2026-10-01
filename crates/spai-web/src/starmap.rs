@@ -109,7 +109,7 @@ pub struct Layers {
 
 impl Default for Layers {
     fn default() -> Self {
-        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false, scout: true, thera: true, turnur: true }
+        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false, scout: true, thera: false, turnur: false }
     }
 }
 
