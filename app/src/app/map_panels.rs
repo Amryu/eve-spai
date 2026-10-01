@@ -301,44 +301,7 @@ impl SpaiApp {
             ui.label(egui::RichText::new(n).weak());
         }
 
-        // Alternatives, one row per leg that has more than one way to fly it. Same jump count, so
-        // the row reads as "these cost the same, shortest first".
-        let legs: Vec<(String, String, Vec<String>)> = self
-            .map_route_legs
-            .iter()
-            .map(|l| {
-                (
-                    l.from_name.clone(),
-                    l.to_name.clone(),
-                    // The label names the system that makes this option different, since every
-                    // option has the same jump count by construction.
-                    l.options.iter().map(|o| o.label.clone()).collect(),
-                )
-            })
-            .collect();
-        let mut pick: Option<(usize, usize)> = None;
-        for (i, (from, to, opts)) in legs.iter().enumerate() {
-            if opts.len() < 2 {
-                continue;
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("{from} → {to}")).weak().size(11.0));
-                for (k, label) in opts.iter().enumerate() {
-                    let on = self.map_leg_pick.get(i).copied().unwrap_or(0) == k;
-                    if ui.menu_label(on, label).clicked() {
-                        pick = Some((i, k));
-                    }
-                }
-            });
-        }
-        if let Some((i, k)) = pick {
-            if self.map_leg_pick.len() <= i {
-                self.map_leg_pick.resize(i + 1, 0);
-            }
-            self.map_leg_pick[i] = k;
-            self.map_replan_route();
-            return;
-        }
+        // A leg's equally long alternatives are picked at its forks, in the steps below.
 
         let ingame = self
             .map_route_opts
@@ -513,32 +476,22 @@ impl SpaiApp {
                                 }
                                 // Every way on is the same length, so the choice is the user's and
                                 // belongs in the list rather than in a menu three clicks away.
+                                // A fork: the way this route goes, with the equally long others to pick from.
                                 if !h.fork.is_empty() {
                                     let taken = hops.get(i + 1).map(|n| n.id);
-                                    ui.label(
-                                        egui::RichText::new(icon::ARROWS_SPLIT)
-                                            .color(ui.visuals().hyperlink_color)
-                                            .size(11.0),
-                                    )
-                                    .on_hover_text("Ways on from here, all the same length");
-                                    for alt in &h.fork {
-                                        let on = taken == Some(alt.id);
-                                        if ui
-                                            .menu_label(
-                                                on,
-                                                egui::RichText::new(&alt.name).size(11.0),
-                                            )
-                                            .on_hover_text(if on {
-                                                "The way this route goes"
-                                            } else {
-                                                "Go this way instead"
-                                            })
-                                            .clicked()
-                                            && !on
-                                        {
-                                            fork_now = Some((h.id, alt.id));
-                                        }
-                                    }
+                                    let current = h.fork.iter().find(|a| Some(a.id) == taken).map_or("?", |a| a.name.as_str());
+                                    egui::ComboBox::from_id_salt(("route_fork", h.id))
+                                        .selected_text(egui::RichText::new(format!("{}  {current}", icon::ARROWS_SPLIT)).size(11.0))
+                                        .show_ui(ui, |ui| {
+                                            for alt in &h.fork {
+                                                let on = taken == Some(alt.id);
+                                                if ui.menu_label(on, &alt.name).clicked() && !on {
+                                                    fork_now = Some((h.id, alt.id));
+                                                }
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text("Ways on from here, all the same length");
                                 }
                             });
                         });

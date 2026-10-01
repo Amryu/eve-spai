@@ -297,10 +297,11 @@ impl SpaiApp {
                         let anomaly = super::sig_browser::is_anomaly(sg);
                         let aged = super::sig_browser::age_color(&visuals, now, sg.updated_at);
                         row.col(|ui| {
+                            let text = format!("{} {}", spai_ui::widgets::sig_icon(&sg.kind), sg.sig);
                             let id = ui.label(match aged {
-                                Some(c) => egui::RichText::new(&sg.sig).color(c),
-                                None if anomaly => egui::RichText::new(&sg.sig).weak(),
-                                None => egui::RichText::new(&sg.sig),
+                                Some(c) => egui::RichText::new(text).color(c),
+                                None if anomaly => egui::RichText::new(text).weak(),
+                                None => egui::RichText::new(text),
                             });
                             id.on_hover_text(format!(
                                 "{}\nAdded {} ago by {}, last seen in a paste {} ago",

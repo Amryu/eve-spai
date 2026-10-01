@@ -163,6 +163,57 @@ impl WebStore {
 }
 
 impl WebStore {
+    /// A probe scanner copy pasted here for `system`: merged into what is known there and sent to
+    /// the groups. `full` drops what the paste does not list, of the kinds it lists, as a full copy
+    /// from the scanner means it is gone. Returns how many were added, updated and removed.
+    pub fn paste_sigs(&self, system: i64, scan: &[spai_core::wormholes::ScanSig], who: &str, now: i64, full: bool) -> (usize, usize, usize) {
+        let (mut added, mut updated, mut removed) = (0, 0, 0);
+        {
+            let mut d = self.data.borrow_mut();
+            let list = d.sigs.entry(system).or_default();
+            for r in scan {
+                match list.iter_mut().find(|s| s.sig == r.id) {
+                    Some(s) => {
+                        s.kind = r.kind.clone();
+                        if !r.group.is_empty() {
+                            s.group = r.group.clone();
+                        }
+                        if !r.name.is_empty() {
+                            s.name = r.name.clone();
+                        }
+                        s.updated_at = now;
+                        s.who = who.to_owned();
+                        updated += 1;
+                    }
+                    None => {
+                        list.push(SystemSig {
+                            sig: r.id.clone(),
+                            kind: r.kind.clone(),
+                            group: r.group.clone(),
+                            name: r.name.clone(),
+                            added_at: now,
+                            updated_at: now,
+                            who: who.to_owned(),
+                            origin: None,
+                        });
+                        added += 1;
+                    }
+                }
+            }
+            if full {
+                let kinds: HashSet<String> = scan.iter().map(|r| r.kind.to_lowercase()).collect();
+                let listed: HashSet<&str> = scan.iter().map(|r| r.id.as_str()).collect();
+                let before = list.len();
+                list.retain(|s| !kinds.contains(&s.kind.to_lowercase()) || listed.contains(s.sig.as_str()));
+                removed = before - list.len();
+            }
+        }
+        let rows: Vec<SigRow> = self.system_sigs(system).iter().filter(|s| scan.iter().any(|r| r.id == s.sig)).map(sig_row).collect();
+        self.queue(None, Outgoing::Sigs { system_id: system, rows, drop_missing: full, at: now });
+        self.touch(true);
+        (added, updated, removed)
+    }
+
     /// A hole collapsed, as someone here saw it: off the map, and out to the groups.
     pub fn kill_hole(&self, uid: &str) {
         let group = {

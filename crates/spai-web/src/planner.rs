@@ -724,29 +724,7 @@ impl RoutePlan {
             ui.label(egui::RichText::new(n).weak());
         }
         self.set_in_game(ui, &o);
-        // Alternatives, per leg that has several equally long ways.
-        let mut pick: Option<(usize, usize)> = None;
-        for (i, l) in self.legs.iter().enumerate() {
-            if l.options.len() < 2 {
-                continue;
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("{} {} {}", l.from_name, icon::ARROW_RIGHT, l.to_name)).weak());
-                for (k, opt) in l.options.iter().enumerate() {
-                    let on = self.leg_pick.get(i).copied().unwrap_or(0) == k;
-                    if ui.menu_label(on, &opt.label).clicked() {
-                        pick = Some((i, k));
-                    }
-                }
-            });
-        }
-        if let Some((i, k)) = pick {
-            if self.leg_pick.len() <= i {
-                self.leg_pick.resize(i + 1, 0);
-            }
-            self.leg_pick[i] = k;
-            self.stale = true;
-        }
+        // A leg's equally long alternatives are picked at its forks, in the steps below.
         ui.separator();
         let mut act: Option<(i64, &'static str)> = None;
         let mut fork_now: Option<(i64, i64)> = None;
@@ -784,15 +762,22 @@ impl RoutePlan {
                                 if let (Some(fuel), Some(fat), Some(react)) = (h.fuel, h.fatigue_min, h.reactivation_min) {
                                     ui.label(egui::RichText::new(format!("{} iso \u{b7} fatigue {} \u{b7} ready in {}", fuel.round() as i64, minutes(fat), minutes(react))).weak());
                                 }
+                                // A fork: the way this route goes, with the equally long others to pick from.
                                 if !h.fork.is_empty() {
                                     let taken = o.hops.get(i + 1).map(|n| n.id);
-                                    ui.label(egui::RichText::new(icon::ARROWS_SPLIT).color(ui.visuals().hyperlink_color)).on_hover_text("Ways on from here, all the same length");
-                                    for alt in &h.fork {
-                                        let on = taken == Some(alt.id);
-                                        if ui.menu_label(on, &alt.name).on_hover_text(if on { "The way this route goes" } else { "Go this way instead" }).clicked() && !on {
-                                            fork_now = Some((h.id, alt.id));
-                                        }
-                                    }
+                                    let current = h.fork.iter().find(|a| Some(a.id) == taken).map_or("?", |a| a.name.as_str());
+                                    egui::ComboBox::from_id_salt(("web_route_fork", h.id))
+                                        .selected_text(format!("{}  {current}", icon::ARROWS_SPLIT))
+                                        .show_ui(ui, |ui| {
+                                            for alt in &h.fork {
+                                                let on = taken == Some(alt.id);
+                                                if ui.menu_label(on, &alt.name).clicked() && !on {
+                                                    fork_now = Some((h.id, alt.id));
+                                                }
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text("Ways on from here, all the same length");
                                 }
                             });
                         });

@@ -15,6 +15,8 @@ use spai_ui::wh_tab::{WhHost, WhPrefs};
 pub enum Edit {
     Save(Wormhole),
     Dead(String),
+    /// A probe scanner copy pasted for a system; `full` drops what it does not list.
+    Sigs { system: i64, scan: Vec<spai_core::wormholes::ScanSig>, full: bool },
 }
 
 pub struct WebHost {
@@ -47,6 +49,15 @@ pub struct WebHost {
     pub side_w: f32,
     /// Which holes the tab shows, as the desktop's Filter.
     pub filter: spai_core::wormholes::WhFilter,
+    /// A paste keeps what it does not list, rather than taking it as gone.
+    keep_missing: bool,
+    /// How the last paste went.
+    pub sig_note: Option<String>,
+    /// Holes are recorded from the added characters' jumps; the app keeps it, this mirrors it for
+    /// the settings menu.
+    pub detect: bool,
+    /// The settings menu asked for the Group tab.
+    pub open_group: bool,
 }
 
 /// A jump an added character made that looks like a hole, asked about as the desktop asks.
@@ -76,7 +87,7 @@ enum Side {
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: PIN_JUMPS, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0, filter: Default::default() }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0, filter: Default::default(), keep_missing: false, sig_note: None, detect: true, open_group: false }
     }
 }
 
@@ -488,6 +499,8 @@ impl WhHost for WebHost {
             self.dirty = true;
         }
         ui.menu_button(icon::GEAR_SIX, |ui| {
+            ui.checkbox(&mut self.detect, "Record holes my characters go through")
+                .on_hover_text("Watches where your added characters are. A jump the gates cannot explain opens a card to fill the hole in.");
             ui.horizontal(|ui| {
                 ui.label("Pinned systems join clusters within");
                 self.dirty |= ui
@@ -496,6 +509,11 @@ impl WhHost for WebHost {
                     .changed();
                 ui.label("jumps");
             });
+            ui.separator();
+            if ui.button(format!("{}  Sharing\u{2026}", icon::USERS_THREE)).on_hover_text("The group: members, invites and roles").clicked() {
+                self.open_group = true;
+                ui.close();
+            }
         });
     }
 
@@ -536,15 +554,16 @@ impl WhHost for WebHost {
                 let here_n = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).count();
                 ui.horizontal(|ui| {
                     use spai_ui::widgets::SteadySelect as _;
-                    ui.menu_value(&mut self.side, Side::Holes, format!("Holes ({here_n})"));
-                    ui.menu_value(&mut self.side, Side::Signatures, format!("Signatures ({})", sigs.len()));
+                    // The desktop's tabs, in its order.
+                    ui.menu_value(&mut self.side, Side::Holes, if here_n == 0 { "Info".to_owned() } else { format!("Info ({here_n})") });
                     ui.menu_value(&mut self.side, Side::Routes, "Routes");
+                    ui.menu_value(&mut self.side, Side::Signatures, if sigs.is_empty() { "Signatures".to_owned() } else { format!("Signatures ({})", sigs.len()) });
                 });
                 ui.separator();
                 match self.side {
                     Side::Holes => {
                 ui.horizontal(|ui| {
-                    ui.strong("Holes");
+                    ui.strong("Connections");
                     if self.can_edit && ui.small_button(format!("{}  Add", egui_phosphor::regular::PLUS)).clicked() {
                         self.add_form(Some(sel));
                     }
@@ -587,10 +606,43 @@ impl WhHost for WebHost {
                 if let Some(uid) = dead {
                     self.edits.push(Edit::Dead(uid));
                 }
+                // What a wormhole system is like: its class, effect, statics and celestials.
+                if !spai_ui::star_map::is_kspace(sel) {
+                    ui.add_space(10.0);
+                    spai_ui::wh_tab::wh_system_facts(ui, sel, &info, false);
+                }
                     }
                     Side::Signatures => {
+                // A probe scanner copy, pasted with Ctrl+V: a browser page cannot read the
+                // clipboard by itself the way the app does.
+                if self.can_edit {
+                    let pasted = ui.input(|i| {
+                        i.events.iter().find_map(|e| match e {
+                            egui::Event::Paste(t) => Some(t.clone()),
+                            _ => None,
+                        })
+                    });
+                    let typing = ui.ctx().memory(|m| m.focused().is_some());
+                    if let Some(text) = pasted.filter(|_| !typing) {
+                        let scan = spai_core::wormholes::probe_scan(&text);
+                        if scan.is_empty() {
+                            self.sig_note = Some("That paste holds no probe scanner rows.".into());
+                        } else {
+                            self.edits.push(Edit::Sigs { system: sel, scan, full: !self.keep_missing });
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{}  In EVE, select all in the probe scanner, copy, then Ctrl+V here", egui_phosphor::regular::CLIPBOARD_TEXT));
+                        ui.checkbox(&mut self.keep_missing, "Keep missing")
+                            .on_hover_text("Keep signatures the paste does not list. Off, a full paste replaces the list: what is missing is gone from space.");
+                    });
+                    if let Some(n) = &self.sig_note {
+                        ui.label(egui::RichText::new(n).weak());
+                    }
+                    ui.add_space(4.0);
+                }
                 if sigs.is_empty() {
-                    ui.label(egui::RichText::new("No probe scan shared for this system").weak());
+                    ui.label(egui::RichText::new("No probe scan for this system yet").weak());
                 }
                 egui::Grid::new("wh_web_sigs").num_columns(3).spacing([10.0, 4.0]).striped(true).show(ui, |ui| {
                     let mut sigs = sigs.clone();
@@ -601,7 +653,14 @@ impl WhHost for WebHost {
                             Some(c) => t.color(c),
                             None => t,
                         };
-                        ui.label(tint(egui::RichText::new(&s.sig).monospace())).on_hover_text(&s.kind);
+                        // The icon in the body font: the monospace one has no icons.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.label(tint(egui::RichText::new(spai_ui::widgets::sig_icon(&s.kind))));
+                            ui.label(tint(egui::RichText::new(&s.sig).monospace()));
+                        })
+                        .response
+                        .on_hover_text(&s.kind);
                         ui.label(tint(egui::RichText::new(spai_ui::widgets::found_at(s.added_at, now, true))))
                             .on_hover_text(spai_ui::widgets::found_hover(s.added_at, now, true));
                         let what = if s.name.is_empty() { spai_ui::wh_graph::short_group(&s.group).to_owned() } else { s.name.clone() };
