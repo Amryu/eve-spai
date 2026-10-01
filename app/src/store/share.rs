@@ -253,7 +253,18 @@ impl Store {
             let mut row = match self.wormhole_where("uid=?1", params![uid]) {
                 Some(r) => r,
                 None => {
-                    let id = self.upsert_wormhole(&hole::fresh(remote));
+                    // The same jump seen here too, under this install's uid: one hole, not two,
+                    // even when only one side has its signature yet.
+                    let fresh = hole::fresh(remote);
+                    let now = crate::clock::utc().timestamp();
+                    let twin = fresh
+                        .dest_system_id
+                        .and_then(|b| self.wormhole_where("dead = 0 AND system_id=?1 AND dest_system_id=?2", params![fresh.system_id, b]))
+                        .filter(|w| w.same_connection(&fresh) && !w.is_expired(now));
+                    let id = match twin {
+                        Some(w) => w.id,
+                        None => self.upsert_wormhole(&fresh),
+                    };
                     let Some(r) = self.wormhole_by_id(id) else { return false };
                     // New here: it belongs to the group. A hole this install already had stays
                     // its own, so it is still shared with the other groups and never hidden.
@@ -811,6 +822,42 @@ mod tests {
         let g1 = a.share_groups().into_iter().find(|g| g.id == "g1").unwrap();
         let (holes, _, sigs) = a.share_snapshot(&g1);
         assert_eq!((holes.len(), sigs.len()), (1, 1));
+    }
+
+    /// This install and another both saw one jump, one of them with the signature: one hole here,
+    /// under the smaller uid, the signature joined in.
+    #[test]
+    fn one_jump_recorded_on_two_installs_is_one_hole() {
+        let now = crate::clock::utc().timestamp();
+        let jumped = |uid: &str, sig: Option<&str>| Wormhole {
+            uid: uid.into(),
+            signature: sig.map(str::to_owned),
+            source: Source::Auto,
+            reported_at: now,
+            updated_at: now,
+            ..hole()
+        };
+        let live = |s: &Store| s.wormholes().into_iter().filter(|w| w.dest_system_id == Some(30_000_142)).map(|w| (w.uid, w.signature)).collect::<Vec<_>>();
+        let sent = |uid: &str| {
+            let other = Store::mem();
+            join(&other, "g1", SharePrefs::default());
+            other.upsert_wormhole(&jumped(uid, Some("ABC-123")));
+            other.share_hole_state(uid, 2).unwrap()
+        };
+
+        let a = Store::mem();
+        join(&a, "g1", SharePrefs::default());
+        a.upsert_wormhole(&jumped("mmmm", None));
+        a.share_apply_hole(&sent("aaaa"), "g1", "Pilot 2");
+        assert_eq!(live(&a), vec![("aaaa".to_owned(), Some("ABC-123".to_owned()))]);
+
+        let b = Store::mem();
+        join(&b, "g1", SharePrefs::default());
+        b.upsert_wormhole(&jumped("mmmm", None));
+        b.share_apply_hole(&sent("zzzz"), "g1", "Pilot 2");
+        assert_eq!(live(&b), vec![("mmmm".to_owned(), Some("ABC-123".to_owned()))]);
+        b.share_apply_dead("zzzz");
+        assert!(live(&b).is_empty(), "closing it under the other uid closes it here");
     }
 
     #[test]
