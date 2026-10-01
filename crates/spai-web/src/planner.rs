@@ -775,16 +775,12 @@ impl RoutePlan {
                         ui.vertical(|ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(&h.name).color(spai_ui::colors::security_color(h.security)).strong());
-                                let tail = if i == 0 {
-                                    "start".to_owned()
-                                } else {
-                                    match h.kind {
-                                        2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                        1 => "ansiblex".to_owned(),
-                                        _ => "gate".to_owned(),
-                                    }
-                                };
-                                ui.label(egui::RichText::new(tail).weak());
+                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i == 0);
+                                let tail = egui::RichText::new(tail);
+                                ui.label(match colour {
+                                    Some(c) => tail.color(c),
+                                    None => tail.weak(),
+                                });
                                 if let (Some(fuel), Some(fat), Some(react)) = (h.fuel, h.fatigue_min, h.reactivation_min) {
                                     ui.label(egui::RichText::new(format!("{} iso \u{b7} fatigue {} \u{b7} ready in {}", fuel.round() as i64, minutes(fat), minutes(react))).weak());
                                 }

@@ -96,12 +96,7 @@ fn drifter_type(geo: &crate::geo::Systems, p: &mut Pending) {
     p.size = (sizes.len() == 1).then(|| sizes[0]);
 }
 
-/// A hole type as entered, or `None` for none or K162: K162 is the far end of any hole, so naming it
-/// says nothing about which kind this one is.
-pub(crate) fn known_type(entered: &str) -> Option<String> {
-    let t = entered.trim().to_uppercase();
-    (!t.is_empty() && t != "K162").then_some(t)
-}
+pub(crate) use spai_ui::wh_form::known_type;
 
 /// The first three letters of a signature, as a scout names it.
 /// A signature as the form writes it: "ABC-123" in full when the digits are known, else "ABC".

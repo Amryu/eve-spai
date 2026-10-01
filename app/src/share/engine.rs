@@ -187,6 +187,14 @@ mod end_to_end {
             make_link(&id, &secret)
         }
 
+        /// An invite as `Cmd::Invite` makes one: it lets its character in as `role` when used.
+        fn invite_as(&self, g: &str, char_id: i64, name: &str, role: Role) -> String {
+            let link = self.invite_for(g, char_id, name);
+            let (id, _) = parse_link(&link).unwrap();
+            self.store.share_invite_role_save(&id, role);
+            link
+        }
+
         fn hole(&self, sig: &str) -> Option<Wormhole> {
             self.store.wormholes().into_iter().find(|w| w.signature.as_deref() == Some(sig))
         }
@@ -265,16 +273,15 @@ mod end_to_end {
         b.try_sync().expect("a demoted member still syncs");
         assert_eq!(b.store.share_groups()[0].role, Role::Member);
 
-        // B, a member, invites a guest and lets them in: as a viewer, whatever B asks for, and the
-        // owner's install takes B's entry for them.
+        // B, a member, invites a guest. The invite is the approval: B's next sync lets them in, as a
+        // viewer, and the owner's install takes B's entry for them.
         let guest_id = joiner_id + 400_000;
         let w = Install::new(&base, &secret);
-        let link_w = b.invite_for(&g, guest_id, "Pilot W");
+        let link_w = b.invite_as(&g, guest_id, "Pilot W", Role::Viewer);
         w.run(Cmd::Join { link: link_w, char_id: guest_id, prefs: SharePrefs::default() });
         b.sync();
         let reqs = b.status.lock().unwrap().requests.get(&g).cloned().unwrap_or_default();
-        assert!(reqs.iter().any(|r| r.row.char_id == guest_id && r.verified), "the member sees the answer to their invite: {reqs:?}");
-        b.run(Cmd::Approve { group: g.clone(), char_id: guest_id, device_id: w.device.public().device_id(), role: Role::Member });
+        assert!(!reqs.iter().any(|r| r.row.char_id == guest_id), "let in at once, nothing left to approve: {reqs:?}");
         w.sync();
         assert!(w.hole("ABC").is_some(), "the guest reads the group");
         assert_eq!(w.store.share_groups()[0].role, Role::Viewer);

@@ -27,6 +27,9 @@ pub struct Data {
     members: HashMap<String, Vec<Member>>,
     applied: HashSet<String>,
     invites: HashMap<String, (String, Key, i64, String)>,
+    /// The role each invite made here lets its character in as.
+    #[serde(default)]
+    invite_roles: HashMap<String, String>,
     holes: HashMap<String, Held>,
     sigs: HashMap<i64, Vec<SystemSig>>,
     outbox: Vec<(i64, Option<String>, Outgoing)>,
@@ -218,6 +221,15 @@ impl ShareStore for WebStore {
 
     fn share_invite(&self, id: &str) -> Option<(Key, i64, String)> {
         self.data.borrow().invites.get(id).map(|(_, k, c, n)| (*k, *c, n.clone()))
+    }
+
+    fn share_invite_role_save(&self, id: &str, role: spai_share::ops::Role) {
+        self.data.borrow_mut().invite_roles.insert(id.to_owned(), role.code().to_owned());
+        self.touch(false);
+    }
+
+    fn share_invite_role(&self, id: &str) -> Option<spai_share::ops::Role> {
+        self.data.borrow().invite_roles.get(id).and_then(|c| spai_share::ops::Role::from_code(c))
     }
 
     fn share_queue_group(&self, group: &str, holes: bool, sigs: bool) {

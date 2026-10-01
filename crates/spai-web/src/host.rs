@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use spai_core::geo::Systems;
-use spai_core::wormholes::{DestClass, Life, Mass, Source, SystemSig, Wormhole};
+use spai_core::wormholes::{Life, Mass, Source, SystemSig, Wormhole};
+use spai_ui::wh_form::{self, SysHit, WhForm};
 use spai_ui::wh_graph::WhGraphView;
 use spai_ui::wh_tab::{WhHost, WhPrefs};
 
@@ -14,79 +15,6 @@ use spai_ui::wh_tab::{WhHost, WhPrefs};
 pub enum Edit {
     Save(Wormhole),
     Dead(String),
-}
-
-/// The hole being added or edited in the side panel.
-#[derive(Clone, Debug, Default)]
-pub struct HoleForm {
-    /// The hole edited; `None` adds one.
-    pub uid: Option<String>,
-    pub sig: String,
-    /// A system name, or a kind of space ("Highsec", "C3").
-    pub far: String,
-    pub far_sig: String,
-    pub wh_type: String,
-    pub life: Option<Life>,
-    pub mass: Option<Mass>,
-    pub note: String,
-    pub error: Option<String>,
-}
-
-impl HoleForm {
-    fn of(w: &Wormhole, here: i64, geo: &Systems) -> Self {
-        let near = w.system_id == here;
-        let (sig, far, far_sig) = if near { (&w.signature, w.dest_system_id, &w.dest_signature) } else { (&w.dest_signature, Some(w.system_id), &w.signature) };
-        HoleForm {
-            uid: Some(w.uid.clone()),
-            sig: sig.clone().unwrap_or_default(),
-            far: far.and_then(|id| geo.info_of(id)).map_or_else(|| if w.dest == DestClass::Unknown { String::new() } else { w.dest.label().to_owned() }, |i| i.name.clone()),
-            far_sig: far_sig.clone().unwrap_or_default(),
-            wh_type: w.wh_type.clone().unwrap_or_default(),
-            life: w.life,
-            mass: w.mass,
-            note: w.note.clone().unwrap_or_default(),
-            error: None,
-        }
-    }
-
-    /// The hole as the form leaves it, from `was` when editing; seen from `here`.
-    fn apply(&self, was: Option<&Wormhole>, here: i64, geo: &Systems, now: i64) -> Result<Wormhole, String> {
-        let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_uppercase());
-        let far_id = if self.far.trim().is_empty() { None } else { geo.lookup(self.far.trim()).map(|i| i.id) };
-        let far_kind = far_id.is_none().then(|| DestClass::from_words(&self.far)).flatten();
-        if !self.far.trim().is_empty() && far_id.is_none() && far_kind.is_none() {
-            return Err(format!("No system or kind of space called {:?}.", self.far.trim()));
-        }
-        let mut w = was.cloned().unwrap_or_else(|| Wormhole {
-            uid: spai_share::crypto::random32()[..16].iter().map(|b| format!("{b:02x}")).collect(),
-            system_id: here,
-            source: Source::Manual,
-            reported_at: now,
-            ..Default::default()
-        });
-        // Kept the way round it was stored: a hole seen from its far end is edited from there.
-        let near = w.system_id == here;
-        let (sig, far_sig) = (text(&self.sig), text(&self.far_sig));
-        if near {
-            w.signature = sig;
-            w.dest_signature = far_sig;
-            w.dest_system_id = far_id;
-            w.dest = far_id.map_or(far_kind.unwrap_or(DestClass::Unknown), |id| spai_core::wormholes::dest_class(geo, id));
-        } else {
-            w.dest_signature = sig;
-            w.signature = far_sig;
-        }
-        w.wh_type = text(&self.wh_type);
-        if w.life != self.life || w.mass != self.mass {
-            w.explicit_expiry = w.expiry_after_reading(self.life, now);
-            w.observed_at = Some(now);
-        }
-        w.life = self.life;
-        w.mass = self.mass;
-        w.note = (!self.note.trim().is_empty()).then(|| self.note.trim().to_owned());
-        w.updated_at = now;
-        Ok(w)
-    }
 }
 
 pub struct WebHost {
@@ -99,11 +27,16 @@ pub struct WebHost {
     pub dirty: bool,
     /// The character may share into a group, so holes can be added and edited.
     pub can_edit: bool,
-    pub form: Option<HoleForm>,
+    /// The add or edit window, the desktop's own form.
+    pub form: Option<WhForm>,
+    /// Which suggestion each system field has highlighted.
+    sugg: HashMap<&'static str, usize>,
     /// Changes made since the app last took them.
     pub edits: Vec<Edit>,
     side: Side,
     pin_input: String,
+    /// The system last opened in the side panel.
+    last_sel: Option<i64>,
     /// The added characters where ESI says they are: name to (system, online).
     pub chars: HashMap<String, (i64, bool)>,
     /// Holes to fill in, one card at a time in the top right corner.
@@ -114,21 +47,19 @@ pub struct WebHost {
     pub side_w: f32,
 }
 
-/// A card asking about a hole: one to add by hand, or a jump an added character made.
+/// A jump an added character made that looks like a hole, asked about as the desktop asks.
 pub struct Prompt {
-    /// The system the hole is in; `None` while the user is still to name it.
-    pub from: Option<i64>,
-    /// The system as typed, for a hole added by hand.
-    pub system: String,
-    /// Who jumped, when it was detected.
-    pub who: Option<String>,
-    pub to: Option<i64>,
+    pub who: String,
+    pub from: i64,
+    pub to: i64,
     /// Certainly a hole, as opposed to maybe one.
     pub certain: bool,
     /// The hole types that could have joined the two systems.
     pub candidates: Vec<&'static str>,
     pub at: i64,
-    pub form: HoleForm,
+    /// The user said a possible hole was one.
+    confirmed: bool,
+    pub form: WhForm,
 }
 
 /// The side panel's tabs.
@@ -143,154 +74,266 @@ enum Side {
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: 10, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new(), chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0 }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0 }
+    }
+}
+
+/// A system name field with suggestions from New Eden, as the desktop's: arrows and Enter or a
+/// click pick one, which writes its name into `q`.
+fn system_input(ui: &mut egui::Ui, geo: &Systems, sel: &mut HashMap<&'static str, usize>, key: &'static str, q: &mut String, hint: &str, width: f32) -> Option<i64> {
+    let hits: Vec<SysHit> = geo.search(q, 8).into_iter().map(|i| (i.id, i.name.clone(), i.security, i.constellation.clone(), i.region.clone())).collect();
+    let pick = wh_form::system_field(ui, q, sel.entry(key).or_insert(0), hint, width, &hits);
+    if let Some(i) = pick.and_then(|id| geo.info_of(id)) {
+        *q = i.name.clone();
+    }
+    pick
+}
+
+/// A hole as the form saved it, kept the hole it was when editing: its id, origin and when it was
+/// seen stay, and a reading not given keeps the old one, as the desktop merges.
+fn merge(was: Option<&Wormhole>, fresh: Wormhole, now: i64) -> Wormhole {
+    match was {
+        Some(was) => Wormhole {
+            id: was.id,
+            uid: was.uid.clone(),
+            source: was.source,
+            seen_by: was.seen_by | Source::Manual.bit(),
+            reported_at: was.reported_at,
+            detected_by: was.detected_by.clone(),
+            jumped_at: was.jumped_at,
+            explicit_expiry: was.expiry_after_reading(fresh.life, now),
+            mass: fresh.mass.or(was.mass),
+            life: fresh.life.or(was.life),
+            observed_at: fresh.observed_at.or(was.observed_at),
+            ..fresh
+        },
+        None => Wormhole { uid: spai_share::crypto::random32()[..16].iter().map(|b| format!("{b:02x}")).collect(), ..fresh },
     }
 }
 
 impl WebHost {
-    /// A card to add a hole in `sel`, or in a system still to be named.
-    pub fn add_prompt(&mut self, sel: Option<i64>) {
+    /// The add window, in `sel` or in a system still to be named.
+    pub fn add_form(&mut self, sel: Option<i64>) {
         let system = sel.and_then(|id| self.geo.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
-        let now = spai_core::clock::utc().timestamp();
-        self.prompts.push_front(Prompt { from: None, system, who: None, to: None, certain: false, candidates: Vec::new(), at: now, form: HoleForm::default() });
+        self.form = Some(WhForm { system, ..WhForm::fresh() });
+    }
+
+    /// The signatures saved in a system that a hole there could still take, as the desktop offers
+    /// them: wormholes first, then what is not scanned yet. `except` is the hole being edited.
+    fn offered(&self, name: &str, except: Option<&str>) -> Vec<(String, String)> {
+        let Some(id) = self.geo.lookup(name.trim()).map(|i| i.id) else { return Vec::new() };
+        let letters = |x: &str| x.trim().chars().take(3).collect::<String>().to_uppercase();
+        let taken: Vec<String> = self
+            .holes
+            .iter()
+            .filter(|w| Some(w.uid.as_str()) != except)
+            .filter_map(|w| if w.system_id == id { w.signature.clone() } else if w.dest_system_id == Some(id) { w.dest_signature.clone() } else { None })
+            .map(|s| letters(&s))
+            .collect();
+        let mut list: Vec<SystemSig> = self.sigs.get(&id).cloned().unwrap_or_default();
+        list.retain(|s| {
+            let group = s.group.to_lowercase();
+            !s.kind.to_lowercase().contains("anomal") && (group.is_empty() || group.contains("wormhole")) && !taken.contains(&letters(&s.sig))
+        });
+        let rank = |g: &str| if g.to_lowercase().contains("wormhole") { 0 } else if g.is_empty() { 1 } else { 2 };
+        list.sort_by(|a, b| rank(&a.group).cmp(&rank(&b.group)).then(a.sig.cmp(&b.sig)));
+        list.into_iter()
+            .map(|s| {
+                let what = if s.name.is_empty() { if s.group.is_empty() { "not scanned yet".to_owned() } else { s.group } } else { s.name };
+                (s.sig, what)
+            })
+            .collect()
+    }
+
+    /// A typed signature in `system` made whole from those known there, or which ones it could be.
+    fn complete(&self, system: Option<i64>, typed: &str, except: Option<&str>) -> Result<Option<String>, String> {
+        let Some(system) = system else { return Ok(None) };
+        let mut known: Vec<String> = self.sigs.get(&system).map(|v| v.iter().map(|s| s.sig.clone()).collect()).unwrap_or_default();
+        for w in self.holes.iter().filter(|w| Some(w.uid.as_str()) != except) {
+            if w.system_id == system {
+                known.extend(w.signature.clone());
+            }
+            if w.dest_system_id == Some(system) {
+                known.extend(w.dest_signature.clone());
+            }
+        }
+        spai_core::wormholes::complete_sig(typed, &known).map_err(|ids| {
+            let name = self.geo.info_of(system).map(|i| i.name.clone()).unwrap_or_default();
+            format!("{} in {name} could be {}. Type more of it.", typed.trim().to_uppercase(), ids.join(" or "))
+        })
+    }
+
+    /// The desktop's Add and Edit wormhole window.
+    pub fn form_window(&mut self, ctx: &egui::Context, top: f32) {
+        let Some(mut form) = self.form.take() else { return };
+        let geo = self.geo.clone();
+        let except = form.uid.clone();
+        let (here_sigs, there_sigs) = (self.offered(&form.system, except.as_deref()), self.offered(&form.dest, except.as_deref()));
+        let (type_was, dest_was) = (form.wh_type.clone(), form.dest.clone());
+        let (mut open, mut save) = (true, false);
+        let sugg = &mut self.sugg;
+        egui::Window::new(if form.uid.is_some() { "Edit wormhole" } else { "Add wormhole" })
+            .id(egui::Id::new("web_wh_form"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(self.side_w + 12.0), top + 8.0))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                save = wh_form::form_ui(ui, &mut form, &mut |ui, key, q, hint, w| system_input(ui, &geo, sugg, key, q, hint, w), &here_sigs, &there_sigs);
+            });
+        let (t, d) = (form.wh_type != type_was, form.dest != dest_was);
+        wh_form::drifter_autofill(&geo, &mut form.wh_type, &mut form.dest, t, d);
+        if save {
+            let now = spai_core::clock::utc().timestamp();
+            let complete = |sys: Option<i64>, typed: &str| self.complete(sys, typed, except.as_deref());
+            match wh_form::build(&mut form, &geo, &complete, now) {
+                Ok((fresh, _)) => {
+                    let was = except.as_ref().and_then(|u| self.holes.iter().find(|w| &w.uid == u));
+                    let w = merge(was, fresh, now);
+                    self.edits.push(Edit::Save(w));
+                    return;
+                }
+                Err(e) => form.error = Some(e),
+            }
+        }
+        if open {
+            self.form = Some(form);
+        }
     }
 
     /// A card for a jump an added character made that looks like a hole.
     pub fn detected(&mut self, who: &str, from: i64, to: i64, at: i64, certain: bool, candidates: Vec<&'static str>) {
-        if self.prompts.iter().any(|p| p.from == Some(from) && p.to == Some(to)) {
+        if self.prompts.iter().any(|p| p.from == from && p.to == to) {
             return;
         }
-        let far = self.geo.info_of(to).map(|i| i.name.clone()).unwrap_or_default();
-        let form = HoleForm {
-            far,
-            wh_type: if candidates.len() == 1 { candidates[0].to_owned() } else { String::new() },
-            life: Some(Life::UnderDay),
-            mass: Some(Mass::Fresh),
-            ..Default::default()
-        };
-        self.prompts.push_back(Prompt { from: Some(from), system: String::new(), who: Some(who.to_owned()), to: Some(to), certain, candidates, at, form });
+        let name = |id: i64| self.geo.info_of(id).map(|i| i.name.clone()).unwrap_or_default();
+        let wh_type = if candidates.len() == 1 { candidates[0].to_owned() } else { String::new() };
+        let known: Vec<&str> = if wh_type.is_empty() { candidates.clone() } else { vec![wh_type.as_str()] };
+        let sizes = spai_core::wormholes::sizes_for(&known);
+        let form = WhForm { system: name(from), dest: name(to), size: (sizes.len() == 1).then(|| sizes[0]), wh_type, ..WhForm::fresh() };
+        self.prompts.push_back(Prompt { who: who.to_owned(), from, to, certain, candidates, at, confirmed: false, form });
     }
 
-    /// The card for the front of the queue, in the top right corner and clear of the side panel.
+    /// The card for the front of the queue, in the top right corner and clear of the side panel: the
+    /// desktop's questions, on the desktop's widgets.
     pub fn corner(&mut self, ctx: &egui::Context, top: f32) {
-        let Some(p) = self.prompts.front_mut() else { return };
+        use egui_phosphor::regular as icon;
+        if self.prompts.is_empty() {
+            return;
+        }
         let geo = self.geo.clone();
         let name = |id: i64| geo.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
-        let title = match (&p.who, p.certain) {
-            (None, _) => "Add a wormhole",
-            (Some(_), true) => "Through a wormhole",
-            (Some(_), false) => "A wormhole?",
+        let count = self.prompts.len();
+        let (here_opts, there_opts) = {
+            let p = &self.prompts[0];
+            (self.offered(&p.form.system, None), self.offered(&p.form.dest, None))
         };
-        let more = self.prompts.len() - 1;
+        // Clear of the add and edit window, which takes the corner while it is open.
+        let below = if self.form.is_some() { 470.0 } else { 0.0 };
         let p = self.prompts.front_mut().expect("checked");
         let mut act: Option<&'static str> = None;
-        egui::Window::new(title)
+        egui::Window::new("Wormhole?")
             .id(egui::Id::new("web_corner_card"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(self.side_w + 12.0), top + 8.0))
+            .title_bar(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(self.side_w + 12.0), top + 8.0 + below))
             .collapsible(false)
             .resizable(false)
-            .default_width(300.0)
             .show(ctx, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                match (&p.who, p.from, p.to) {
-                    (Some(who), Some(from), Some(to)) => {
-                        ui.label(format!("{who} went {} {} {}", name(from), egui_phosphor::regular::ARROW_RIGHT, name(to)));
-                        ui.label(
-                            egui::RichText::new(if p.certain { "No gate joins them: a hole." } else { "Faster than the gates allow: maybe a hole." }).weak(),
-                        );
-                        egui::Grid::new("web_corner_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                            ui.label(format!("Signature in {}", name(from)));
-                            ui.add(egui::TextEdit::singleline(&mut p.form.sig).hint_text("ABC-123").desired_width(100.0));
-                            ui.end_row();
-                            ui.label(format!("Signature in {}", name(to)));
-                            ui.add(egui::TextEdit::singleline(&mut p.form.far_sig).hint_text("XYZ-789").desired_width(100.0));
-                            ui.end_row();
-                            ui.label("Type");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut p.form.wh_type).hint_text("K162\u{2026}").desired_width(60.0));
-                                for c in p.candidates.iter().take(4) {
-                                    if ui.small_button(*c).on_hover_text("Could have joined these two").clicked() {
-                                        p.form.wh_type = (*c).to_owned();
-                                    }
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Life");
-                            egui::ComboBox::from_id_salt("web_corner_life").selected_text(p.form.life.map_or("Not known", Life::label)).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut p.form.life, None, "Not known");
-                                for l in Life::ALL {
-                                    ui.selectable_value(&mut p.form.life, Some(l), l.label());
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Mass");
-                            egui::ComboBox::from_id_salt("web_corner_mass").selected_text(p.form.mass.map_or("Not known", Mass::label)).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut p.form.mass, None, "Not known");
-                                for m in Mass::ALL {
-                                    ui.selectable_value(&mut p.form.mass, Some(m), m.label());
-                                }
-                            });
-                            ui.end_row();
-                        });
-                        if let Some(e) = &p.form.error {
-                            ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
+                let n = if count > 1 { format!(" (1 of {count})") } else { String::new() };
+                ui.label(egui::RichText::new(format!("{}  Wormhole?{n}", icon::SPIRAL)).strong());
+                // EVE time, which is UTC.
+                let when = format!("{:02}:{:02}", p.at.rem_euclid(86_400) / 3600, p.at.rem_euclid(3600) / 60);
+                ui.label(format!("{}: {} {} {} at {when}", p.who, name(p.from), icon::ARROW_RIGHT, name(p.to)));
+                if !(p.certain || p.confirmed) {
+                    ui.label(egui::RichText::new("That jump fits a wormhole, a filament, a clone or a capital jump.").weak());
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("{}  Wormhole", icon::SPIRAL)).clicked() {
+                            p.confirmed = true;
                         }
-                        ui.horizontal(|ui| {
-                            if ui.button(format!("{}  Save", egui_phosphor::regular::CHECK)).clicked() {
-                                act = Some("save");
-                            }
-                            if !p.certain && ui.button("Not a hole").on_hover_text("Not asked again about these two for an hour").clicked() {
-                                act = Some("not");
-                            }
-                            if ui.button("Skip").clicked() {
-                                act = Some("skip");
-                            }
-                        });
-                    }
-                    _ => {
-                        ui.horizontal(|ui| {
-                            ui.label("In system");
-                            ui.add(egui::TextEdit::singleline(&mut p.system).hint_text("J123456, Jita\u{2026}").desired_width(160.0));
-                        });
-                        match hole_form(ui, &mut p.form, false) {
-                            FormAct::Save => act = Some("save"),
-                            FormAct::Cancel => act = Some("skip"),
-                            _ => {}
+                        if ui.button("Not a hole").on_hover_text("A filament, a clone or a jump. Not asked again for this pair for an hour.").clicked() {
+                            act = Some("not");
+                        }
+                    });
+                    return;
+                }
+                egui::Grid::new("web_prompt_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    ui.label(format!("Sig in {}", name(p.from)));
+                    wh_form::sig_field(ui, "web_prompt_sig_here", &mut p.form.sig, "ABC-123", &here_opts);
+                    ui.end_row();
+                    ui.label("Type");
+                    // The likely types first, then every other one: the guess can be wrong.
+                    let mut candidates: Vec<&str> = p.candidates.clone();
+                    for t in spai_core::whdata::types() {
+                        if !candidates.contains(&t.code.as_str()) {
+                            candidates.push(t.code.as_str());
                         }
                     }
-                }
-                if more > 0 {
-                    ui.label(egui::RichText::new(format!("{more} more to look at")).weak());
-                }
+                    if wh_form::wh_type_picker(ui, "web_prompt_type", 170.0, &mut p.form.wh_type, &candidates) {
+                        let sizes = spai_core::wormholes::sizes_for(&[p.form.wh_type.as_str()]);
+                        p.form.size = (sizes.len() == 1).then(|| sizes[0]);
+                    }
+                    ui.end_row();
+                    ui.label(format!("Sig in {}", name(p.to)));
+                    wh_form::sig_field(ui, "web_prompt_sig_there", &mut p.form.dest_sig, "ABC-123", &there_opts);
+                    ui.end_row();
+                    ui.label("Size");
+                    let known: Vec<&str> = if p.form.wh_type.is_empty() { p.candidates.clone() } else { vec![p.form.wh_type.as_str()] };
+                    let sizes: Vec<_> = spai_core::wormholes::sizes_for(&known).into_iter().map(|s| (s, s.short(), s.label())).collect();
+                    wh_form::choice_row(ui, &mut p.form.size, &sizes);
+                    ui.end_row();
+                    ui.label("Time left");
+                    let lives: Vec<_> = Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();
+                    wh_form::choice_row(ui, &mut p.form.life, &lives);
+                    ui.end_row();
+                    ui.label("Mass left");
+                    let masses: Vec<_> = Mass::ALL.into_iter().map(|m| (m, m.short(), m.label())).collect();
+                    wh_form::choice_row(ui, &mut p.form.mass, &masses);
+                    ui.end_row();
+                    if let Some(e) = &p.form.error {
+                        ui.label("");
+                        ui.label(egui::RichText::new(e).color(spai_ui::theme::standing::HOSTILE));
+                        ui.end_row();
+                    }
+                    ui.label("Note");
+                    ui.add(egui::TextEdit::singleline(&mut p.form.note).desired_width(170.0));
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{}  Save", icon::FLOPPY_DISK)).clicked() {
+                        act = Some("save");
+                    }
+                    if ui.button("Skip").on_hover_text("Move on without saving it").clicked() {
+                        act = Some("skip");
+                    }
+                });
             });
         let now = spai_core::clock::utc().timestamp();
         match act {
             Some("save") => {
-                let p = self.prompts.front_mut().expect("checked");
-                let here = p.from.or_else(|| geo.lookup(p.system.trim()).or_else(|| geo.lookup_prefix(p.system.trim())).map(|i| i.id));
-                let Some(here) = here else {
-                    p.form.error = Some(format!("No system called {:?}.", p.system.trim()));
-                    return;
-                };
-                match p.form.apply(None, here, &geo, now) {
-                    Ok(mut w) => {
-                        if let Some(who) = &p.who {
-                            w.source = Source::Auto;
-                            w.detected_by = Some(who.clone());
-                            w.jumped_at = Some(p.at);
-                            w.reported_at = p.at;
-                        }
+                let Some(mut p) = self.prompts.pop_front() else { return };
+                let complete = |sys: Option<i64>, typed: &str| self.complete(sys, typed, None);
+                match wh_form::build(&mut p.form, &geo, &complete, now) {
+                    Ok((mut w, _)) => {
+                        w.source = Source::Auto;
+                        w.detected_by = Some(p.who.clone());
+                        w.jumped_at = Some(p.at);
+                        w.reported_at = p.at;
+                        // One hole whichever way it is taken: one already joining the two is filled in.
+                        let was = self.holes.iter().find(|h| (h.system_id == p.from && h.dest_system_id == Some(p.to)) || (h.system_id == p.to && h.dest_system_id == Some(p.from)));
+                        let w = merge(was, w, now);
                         self.edits.push(Edit::Save(w));
-                        self.prompts.pop_front();
                     }
-                    Err(e) => p.form.error = Some(e),
+                    Err(e) => {
+                        p.form.error = Some(e);
+                        self.prompts.push_front(p);
+                    }
                 }
             }
             Some("not") => {
                 if let Some(p) = self.prompts.pop_front() {
-                    if let (Some(a), Some(b)) = (p.from, p.to) {
-                        self.not_holes.insert((a.min(b), a.max(b)), now);
-                    }
+                    self.not_holes.insert((p.from.min(p.to), p.from.max(p.to)), now);
                 }
             }
             Some(_) => {
@@ -338,9 +381,12 @@ impl WebHost {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut self.pin_input).hint_text("System to pin").desired_width(160.0));
-            let go = ui.button("Pin").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            if go {
+            // Picking a suggestion pins it at once; Pin takes what was typed.
+            if let Some(i) = system_input(ui, geo, &mut self.sugg, "web_pin", &mut self.pin_input, "System to pin", 160.0).and_then(|id| geo.info_of(id)) {
+                change = Some((i.name.clone(), true));
+                self.pin_input.clear();
+            }
+            if ui.button("Pin").clicked() {
                 match geo.lookup(self.pin_input.trim()).or_else(|| geo.lookup_prefix(self.pin_input.trim())) {
                     Some(i) => {
                         change = Some((i.name.clone(), true));
@@ -424,6 +470,21 @@ impl WhHost for WebHost {
 
     fn toolbar(&mut self, _: &mut WhGraphView, _: &mut egui::Ui) {}
 
+    /// The pinned systems are in the side panel's Routes tab, which only shows with a system open:
+    /// this opens it, on the last system opened, else the first pinned one.
+    fn after_tidy(&mut self, view: &mut WhGraphView, ui: &mut egui::Ui) {
+        let open = view.selected.is_some() && self.side == Side::Routes;
+        if ui
+            .add(egui::Button::new(format!("{}  Pinned", egui_phosphor::regular::PUSH_PIN)).selected(open))
+            .on_hover_text("Pinned systems, and how far each is from the open system")
+            .clicked()
+        {
+            let staging = self.prefs.route_pins.first().and_then(|p| self.geo.lookup(p)).map(|i| i.id);
+            view.selected = view.selected.or(self.last_sel).or(staging);
+            self.side = Side::Routes;
+        }
+    }
+
     fn side_panel(
         &mut self,
         view: &mut WhGraphView,
@@ -434,6 +495,7 @@ impl WhHost for WebHost {
         _: i64,
     ) {
         let Some(sel) = view.selected else { return };
+        self.last_sel = Some(sel);
         let Some(info) = geo.info_of(sel) else { return };
         let now = spai_core::clock::utc().timestamp();
         let sigs = self.sigs.get(&sel).cloned().unwrap_or_default();
@@ -442,27 +504,6 @@ impl WhHost for WebHost {
                 ui.heading(&info.name);
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", info.region, info.security)).weak());
                 ui.separator();
-                if let Some(form) = &mut self.form {
-                    let was = form.uid.as_ref().and_then(|u| holes.iter().find(|w| &w.uid == u)).cloned();
-                    match hole_form(ui, form, was.is_some()) {
-                        FormAct::Save => match form.apply(was.as_ref(), sel, geo, now) {
-                            Ok(w) => {
-                                self.edits.push(Edit::Save(w));
-                                self.form = None;
-                            }
-                            Err(e) => form.error = Some(e),
-                        },
-                        FormAct::Dead => {
-                            if let Some(w) = was {
-                                self.edits.push(Edit::Dead(w.uid));
-                            }
-                            self.form = None;
-                        }
-                        FormAct::Cancel => self.form = None,
-                        FormAct::None => {}
-                    }
-                    return;
-                }
                 let here_n = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).count();
                 ui.horizontal(|ui| {
                     use spai_ui::widgets::SteadySelect as _;
@@ -476,15 +517,16 @@ impl WhHost for WebHost {
                 ui.horizontal(|ui| {
                     ui.strong("Holes");
                     if self.can_edit && ui.small_button(format!("{}  Add", egui_phosphor::regular::PLUS)).clicked() {
-                        self.form = Some(HoleForm::default());
+                        self.add_form(Some(sel));
                     }
                 });
                 let here: Vec<&Wormhole> = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).collect();
                 if here.is_empty() {
                     ui.label(egui::RichText::new("None known here").weak());
                 }
-                let mut edit: Option<HoleForm> = None;
-                egui::Grid::new("wh_web_holes").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                let mut edit: Option<WhForm> = None;
+                let mut dead: Option<String> = None;
+                egui::Grid::new("wh_web_holes").num_columns(5).spacing([10.0, 4.0]).show(ui, |ui| {
                     for w in here {
                         let near = w.system_id == sel;
                         let (sig, far) = if near { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
@@ -496,14 +538,24 @@ impl WhHost for WebHost {
                             facts.push(format!("{h}h left"));
                         }
                         ui.label(egui::RichText::new(facts.join(" \u{b7} ")).weak());
-                        if self.can_edit && ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
-                            edit = Some(HoleForm::of(w, sel, geo));
+                        if self.can_edit {
+                            ui.horizontal(|ui| {
+                                if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
+                                    edit = Some(WhForm::of(w, Some(geo)));
+                                }
+                                if ui.small_button(egui_phosphor::regular::X_CIRCLE).on_hover_text("Collapsed: take it off the map for everyone").clicked() {
+                                    dead = Some(w.uid.clone());
+                                }
+                            });
                         }
                         ui.end_row();
                     }
                 });
                 if edit.is_some() {
                     self.form = edit;
+                }
+                if let Some(uid) = dead {
+                    self.edits.push(Edit::Dead(uid));
                 }
                     }
                     Side::Signatures => {
@@ -536,66 +588,6 @@ impl WhHost for WebHost {
     }
 }
 
-enum FormAct {
-    None,
-    Save,
-    Dead,
-    Cancel,
-}
-
-fn hole_form(ui: &mut egui::Ui, f: &mut HoleForm, editing: bool) -> FormAct {
-    let mut act = FormAct::None;
-    ui.strong(if editing { "Edit hole" } else { "Add a hole" });
-    egui::Grid::new("wh_web_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Signature");
-        ui.add(egui::TextEdit::singleline(&mut f.sig).hint_text("ABC-123").desired_width(120.0));
-        ui.end_row();
-        ui.label("Leads to");
-        ui.add(egui::TextEdit::singleline(&mut f.far).hint_text("System, or Highsec, C3\u{2026}").desired_width(180.0));
-        ui.end_row();
-        ui.label("Far signature");
-        ui.add(egui::TextEdit::singleline(&mut f.far_sig).hint_text("XYZ-789").desired_width(120.0));
-        ui.end_row();
-        ui.label("Type");
-        ui.add(egui::TextEdit::singleline(&mut f.wh_type).hint_text("K162, B274\u{2026}").desired_width(80.0));
-        ui.end_row();
-        ui.label("Life");
-        egui::ComboBox::from_id_salt("wh_web_life").width(180.0).selected_text(f.life.map_or("Not known", Life::label)).show_ui(ui, |ui| {
-            ui.selectable_value(&mut f.life, None, "Not known");
-            for l in Life::ALL {
-                ui.selectable_value(&mut f.life, Some(l), l.label());
-            }
-        });
-        ui.end_row();
-        ui.label("Mass");
-        egui::ComboBox::from_id_salt("wh_web_mass").width(180.0).selected_text(f.mass.map_or("Not known", Mass::label)).show_ui(ui, |ui| {
-            ui.selectable_value(&mut f.mass, None, "Not known");
-            for m in Mass::ALL {
-                ui.selectable_value(&mut f.mass, Some(m), m.label());
-            }
-        });
-        ui.end_row();
-        ui.label("Note");
-        ui.add(egui::TextEdit::singleline(&mut f.note).desired_width(180.0));
-        ui.end_row();
-    });
-    if let Some(e) = &f.error {
-        ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
-    }
-    ui.horizontal(|ui| {
-        if ui.button(format!("{}  Save", egui_phosphor::regular::CHECK)).clicked() {
-            act = FormAct::Save;
-        }
-        if ui.button("Cancel").clicked() {
-            act = FormAct::Cancel;
-        }
-        if editing && ui.button(format!("{}  Collapsed", egui_phosphor::regular::X_CIRCLE)).on_hover_text("It is gone: take it off the map for everyone").clicked() {
-            act = FormAct::Dead;
-        }
-    });
-    act
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,26 +597,30 @@ mod tests {
     }
 
     #[test]
-    fn a_new_hole_takes_the_form_and_a_fresh_id() {
+    fn a_new_hole_from_the_shared_form_gets_a_fresh_id() {
         let g = geo();
-        let f = HoleForm { sig: "abc-123".into(), far: "Jita".into(), life: Some(Life::UnderDay), ..Default::default() };
-        let w = f.apply(None, 31_000_200, &g, 1_000).unwrap();
-        assert_eq!((w.signature.as_deref(), w.dest_system_id, w.dest), (Some("ABC-123"), Some(30_000_142), DestClass::Highsec));
+        let mut f = WhForm { system: "J100200".into(), sig: "abc-123".into(), dest: "Jita".into(), life: Some(Life::UnderDay), ..Default::default() };
+        let none = |_: Option<i64>, _: &str| Ok(None);
+        let (fresh, _) = wh_form::build(&mut f, &g, &none, 1_000).unwrap();
+        let w = merge(None, fresh, 1_000);
+        assert_eq!((w.signature.as_deref(), w.dest_system_id), (Some("ABC-123"), Some(30_000_142)));
         assert_eq!(w.uid.len(), 32);
         assert_eq!(w.explicit_expiry, Some(1_000 + 86_400));
-        assert!(HoleForm { far: "Nowhere".into(), ..Default::default() }.apply(None, 31_000_200, &g, 1_000).is_err());
+        let mut bad = WhForm { system: "J100200".into(), dest: "Nowhere".into(), ..Default::default() };
+        assert!(wh_form::build(&mut bad, &g, &none, 1_000).is_err());
     }
 
     #[test]
-    fn a_hole_edited_from_its_far_end_stays_the_way_round_it_was() {
+    fn an_edit_keeps_the_hole_and_what_was_not_read_again() {
         let g = geo();
-        let was = Wormhole { uid: "u".into(), system_id: 30_000_142, signature: Some("AAA-111".into()), dest_system_id: Some(31_000_200), dest_signature: Some("BBB-222".into()), ..Default::default() };
-        let mut f = HoleForm::of(&was, 31_000_200, &g);
-        assert_eq!((f.sig.as_str(), f.far.as_str(), f.far_sig.as_str()), ("BBB-222", "Jita", "AAA-111"));
-        f.sig = "BBB-223".into();
+        let was = Wormhole { uid: "u".into(), system_id: 31_000_200, reported_at: 10, signature: Some("AAA-111".into()), dest_system_id: Some(30_000_142), life: Some(Life::UnderDay), ..Default::default() };
+        let mut f = WhForm::of(&was, Some(&g));
+        assert_eq!((f.system.as_str(), f.dest.as_str(), f.uid.as_deref()), ("J100200", "Jita", Some("u")));
         f.mass = Some(Mass::Critical);
-        let w = f.apply(Some(&was), 31_000_200, &g, 5_000).unwrap();
-        assert_eq!((w.system_id, w.signature.as_deref(), w.dest_signature.as_deref()), (30_000_142, Some("AAA-111"), Some("BBB-223")));
-        assert_eq!((w.mass, w.observed_at), (Some(Mass::Critical), Some(5_000)));
+        f.life = None;
+        let none = |_: Option<i64>, _: &str| Ok(None);
+        let (fresh, _) = wh_form::build(&mut f, &g, &none, 5_000).unwrap();
+        let w = merge(Some(&was), fresh, 5_000);
+        assert_eq!((w.uid.as_str(), w.reported_at, w.mass, w.life), ("u", 10, Some(Mass::Critical), Some(Life::UnderDay)));
     }
 }

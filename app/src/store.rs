@@ -1249,6 +1249,7 @@ fn migrate_share(conn: &Connection) {
         "ALTER TABLE share_groups ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE share_outbox ADD COLUMN group_id TEXT",
         "ALTER TABLE system_sigs ADD COLUMN origin TEXT",
+        "ALTER TABLE share_invites ADD COLUMN role TEXT",
         "DROP INDEX IF EXISTS idx_share_outbox_uid",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_outbox_group ON share_outbox(kind, uid, group_id)",
     ] {

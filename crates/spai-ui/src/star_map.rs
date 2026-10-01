@@ -612,6 +612,20 @@ pub fn paint_region_labels(painter: &egui::Painter, draw: &[MapSystem], pos: &Ha
 }
 
 /// Jove Observatory systems' marker colour.
+/// How a route list names the way into a hop, and its colour: the map's own colours for each kind
+/// of leg, so a jump, a bridge or a hole stands out from the gates around it. `None` is a gate.
+pub fn hop_tail(h: &spai_core::route::Hop, first: bool) -> (String, Option<egui::Color32>) {
+    if first {
+        return ("start".to_owned(), None);
+    }
+    match h.kind {
+        2 => (format!("jump {:.1} ly", h.ly.unwrap_or_default()), Some(egui::Color32::from_rgb(0xE0, 0x7B, 0xE0))),
+        1 => ("ansiblex".to_owned(), Some(egui::Color32::from_rgb(0x3A, 0xD0, 0x6A))),
+        _ if h.hole => ("wormhole".to_owned(), Some(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4))),
+        _ => ("gate".to_owned(), None),
+    }
+}
+
 pub const JOVE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB8, 0x8C, 0xF0);
 
 /// How many icon widths a system's hole mark takes.

@@ -1666,19 +1666,26 @@ fn fleet_confirm_scene(
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
 #[cfg(feature = "fleet")]
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    rescue_panel_scene_with(name, size, None, false)
+    rescue_panel_scene_with(name, size, None, false, false)
+}
+
+/// The docked rescue tab with the titan route on a map: beside the chat when wide, a chat tab when
+/// not.
+#[cfg(feature = "fleet")]
+fn rescue_map_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    rescue_panel_scene_with(name, size, None, false, true)
 }
 
 /// The rescue tab popped out: the ping and its buttons in a band over the chat.
 #[cfg(feature = "fleet")]
 fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    rescue_panel_scene_with(name, size, None, true)
+    rescue_panel_scene_with(name, size, None, true, false)
 }
 
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
 /// and picks it. The invented table's "Comms N" names resolve to no op at all.
 #[cfg(feature = "fleet")]
-fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool) -> Scene {
+fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -1694,6 +1701,12 @@ fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
             fixtures::seed_rescue_ping(&a);
+            if map {
+                let (g, coords) = fixtures::fleet_map_world();
+                a.seed_map_world(g, coords);
+                a.settings.rescue_staging_system = "Placeholder Staging".into();
+                a.rescue_state_for_test().lock().unwrap().capital_system = Some(30_004_759);
+            }
             if let Some(op) = in_use {
                 a.fleet_state_for_test().lock().unwrap().seed.mumble_channels = (1..=12)
                     .map(|n| crate::fleets::model::ChannelItem {
@@ -2446,11 +2459,15 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
     #[cfg(feature = "fleet")]
+    v.push(rescue_map_scene("rescue_panel_map_wide", [1500.0, 760.0]));
+    #[cfg(feature = "fleet")]
+    v.push(rescue_map_scene("rescue_panel_map_tab", [1000.0, 700.0]));
+    #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
     #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
     #[cfg(feature = "fleet")]
-    v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false));
+    v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",

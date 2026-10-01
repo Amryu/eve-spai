@@ -80,7 +80,7 @@ impl ActivityMode {
     }
 }
 
-pub(crate) type SysHit = (i64, String, f64, String, String);
+pub(crate) use spai_ui::wh_form::SysHit;
 
 use spai_ui::star_map::JOVE_COLOR;
 
@@ -801,6 +801,8 @@ pub struct SpaiApp {
     /// How far the tackled capital is from staging, once worked out.
     #[cfg(feature = "fleet")]
     rescue_ly: Option<f64>,
+    #[cfg(feature = "fleet")]
+    rescue_map_view: rescue_ui::RescueMapView,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
@@ -1723,6 +1725,8 @@ impl SpaiApp {
             rescue_pos_fix: None,
             #[cfg(feature = "fleet")]
             rescue_ly: None,
+            #[cfg(feature = "fleet")]
+            rescue_map_view: Default::default(),
             map_route_zone: None,
             scan_route: Default::default(),
             br_authed: Default::default(),

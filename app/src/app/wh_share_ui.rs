@@ -14,6 +14,8 @@ pub(crate) struct ShareUi {
     new_name: String,
     join_link: String,
     invite_for: String,
+    /// The next invite lets its character in as a viewer rather than a member.
+    invite_viewer: bool,
     char_id: Option<i64>,
     /// What a group created or joined from the window gets sent.
     new_prefs: Option<SharePrefs>,
@@ -295,12 +297,12 @@ impl SpaiApp {
                         let title = if has_key {
                             format!("{}  ({}{})", g.name, g.role.label(), synced.unwrap_or_default())
                         } else {
-                            format!("{}  (waiting for an admin to approve)", g.name)
+                            format!("{}  (waiting to be let in)", g.name)
                         };
                         egui::CollapsingHeader::new(title).id_salt(("wh_share_group", &g.id)).default_open(true).show(ui, |ui| {
                             if !has_key {
                                 if let Some(fp) = &status.fingerprint {
-                                    ui.label(format!("Read your fingerprint {fp} to the admin approving you."));
+                                    ui.label(format!("The invite lets you in as soon as the EVE Spai that made it next syncs. Your fingerprint, should anyone ask: {fp}"));
                                 }
                             }
                             let members = self.store.as_ref().map(|s| s.share_members(&g.id)).unwrap_or_default();
@@ -381,16 +383,28 @@ impl SpaiApp {
                                 ui.horizontal(|ui| {
                                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.invite_for).hint_text("Character it is for").desired_width(180.0));
                                     let ok = !self.wh_share.invite_for.trim().is_empty();
+                                    // Members invite viewers only.
+                                    if admin {
+                                        let v = &mut self.wh_share.invite_viewer;
+                                        egui::ComboBox::from_id_salt(("invite_role", &g.id))
+                                            .width(80.0)
+                                            .selected_text(if *v { "as Viewer" } else { "as Member" })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(v, false, "as Member").on_hover_text("Sees and shares");
+                                                ui.selectable_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
+                                            });
+                                    } else {
+                                        ui.label(egui::RichText::new("as Viewer").weak());
+                                    }
                                     if ui
                                         .add_enabled(ok, egui::Button::new(format!("{}  New invite link", icon::LINK)))
-                                        .on_hover_text(if admin {
-                                            "Only that character can use it, once, within two days; you still approve them"
-                                        } else {
-                                            "Only that character can use it, once, within two days; you still approve them, as a viewer: members invite viewers only"
-                                        })
+                                        .on_hover_text(
+                                            "Only that character can use it, once, within two days. Using it lets them in, while this app is running.",
+                                        )
                                         .clicked()
                                     {
-                                        cmd = Some(Cmd::Invite { group: g.id.clone(), for_name: self.wh_share.invite_for.trim().to_owned() });
+                                        let role = if admin && !self.wh_share.invite_viewer { Role::Member } else { Role::Viewer };
+                                        cmd = Some(Cmd::Invite { group: g.id.clone(), for_name: self.wh_share.invite_for.trim().to_owned(), role });
                                     }
                                 });
                                 if let Some((gid, link, for_name)) = &status.invite {

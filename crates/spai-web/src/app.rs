@@ -385,8 +385,8 @@ impl WebApp {
         if let Some(g) = groups.iter().find(|g| g.char_id == session.character_id && sync.store.share_key(&g.id, g.epoch).is_none()) {
             let mut lines = vec![
                 format!("Waiting to be let into {}", g.name),
-                "An admin of the group approves this browser. Read them its fingerprint:".into(),
-                fingerprint,
+                "The invite lets you in as soon as the EVE Spai that made it next syncs: it has to be running.".into(),
+                format!("This browser's fingerprint, should anyone ask: {fingerprint}"),
             ];
             lines.extend(status.error.clone());
             say(ui, &lines);
@@ -464,7 +464,7 @@ impl eframe::App for WebApp {
                     if let Some(h) = self.host.as_mut().filter(|h| h.can_edit) {
                         if ui.button(format!("{}  Add a wormhole", egui_phosphor::regular::PLUS)).clicked() {
                             let sel = if self.tab == Tab::Wormholes { self.view.selected } else { self.map.selected };
-                            h.add_prompt(sel);
+                            h.add_form(sel);
                         }
                         ui.separator();
                     }
@@ -539,6 +539,7 @@ impl eframe::App for WebApp {
             }
         });
         if let (Some(h), Auth::SignedIn(_)) = (&mut self.host, &state) {
+            h.form_window(ui.ctx(), top.response.rect.bottom());
             h.corner(ui.ctx(), top.response.rect.bottom());
         }
     }

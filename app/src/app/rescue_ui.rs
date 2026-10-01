@@ -707,6 +707,9 @@ impl SpaiApp {
             )
         });
 
+        // Gathered before the rescue lock below, which the route's own lookups would need.
+        let map = if compact { None } else { self.rescue_map_data() };
+        let mut map_view = std::mem::take(&mut self.rescue_map_view);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut r = self.rescue.lock().unwrap();
             let test_mode = r.test_mode;
@@ -1345,6 +1348,21 @@ impl SpaiApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 0)))
                 .show_inside(ui, |ui| {
+                // Docked and wide, the map takes half beside the chat; narrower, it is a chat tab.
+                let beside = !compact && ui.available_width() >= 760.0;
+                let map_tab = !compact && !beside && map.is_some();
+                if r.chat_tab == 2 && !map_tab {
+                    r.chat_tab = 0;
+                }
+                if let (true, Some(m)) = (beside, &map) {
+                    let half = ui.available_width() / 2.0;
+                    egui::Panel::right("rescue_map_panel")
+                        .resizable(true)
+                        .default_size(half)
+                        .size_range(240.0..=ui.available_width() - 260.0)
+                        .show_inside(ui, |ui| rescue_map_ui(ui, m, &mut map_view));
+                }
+                if r.chat_tab != 2 {
                 egui::Panel::bottom("rescue_chat_reply").show_inside(ui, |ui| {
                     let (room, room_set) = if r.chat_tab == 1 {
                         (skirmish_jid.clone(), !skirmish_jid.is_empty())
@@ -1386,24 +1404,24 @@ impl SpaiApp {
                         }
                     });
                 });
+                }
                 egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
-                    ui.columns(2, |c| {
-                        let w0 = c[0].available_width();
-                        if c[0]
-                            .menu_label_sized([w0, 22.0], r.chat_tab == 0, "delve911")
-                            .clicked()
-                        {
-                            r.chat_tab = 0;
-                        }
-                        let w1 = c[1].available_width();
-                        if c[1]
-                            .menu_label_sized([w1, 22.0], r.chat_tab == 1, "skirmish")
-                            .clicked()
-                        {
-                            r.chat_tab = 1;
+                    let tabs: &[(u8, &str)] = if map_tab { &[(0, "delve911"), (1, "skirmish"), (2, "map")] } else { &[(0, "delve911"), (1, "skirmish")] };
+                    ui.columns(tabs.len(), |c| {
+                        for (col, (n, label)) in c.iter_mut().zip(tabs) {
+                            let w = col.available_width();
+                            if col.menu_label_sized([w, 22.0], r.chat_tab == *n, *label).clicked() {
+                                r.chat_tab = *n;
+                            }
                         }
                     });
                     ui.separator();
+                    if r.chat_tab == 2 {
+                        if let Some(m) = &map {
+                            rescue_map_ui(ui, m, &mut map_view);
+                        }
+                        return;
+                    }
                     // Don't snap to the bottom while the pointer is held, so a drag-select isn't wiped
                     // by an incoming message (parity with the main chat).
                     let selecting = ui.input(|i| i.pointer.any_down());
@@ -1437,6 +1455,7 @@ impl SpaiApp {
 
         });
 
+        self.rescue_map_view = map_view;
         // Persist the ops column width once a resize drag ends (avoids a write storm mid-drag).
         if !ui.ctx().input(|i| i.pointer.any_down())
             && (new_ops_w - self.settings.rescue_col_ops_w).abs() > 1.0
@@ -1483,6 +1502,124 @@ impl SpaiApp {
             self.needs_save = true;
         }
     }
+}
+
+/// What the rescue map draws: the titan route from staging to the capital and the regions around
+/// it, laid flat as the map tab lays New Eden.
+#[cfg(feature = "fleet")]
+pub(crate) struct RescueMap {
+    graph: std::sync::Arc<crate::geo::Systems>,
+    subset: Vec<crate::store::MapSystem>,
+    hops: Vec<crate::web::route::Hop>,
+    staging: Option<i64>,
+    target: Option<i64>,
+    note: String,
+    /// The systems that set the view, so it refits when they change.
+    ids: Vec<i64>,
+}
+
+/// Zoom, pan, and the systems the view was last fitted to.
+#[cfg(feature = "fleet")]
+pub(crate) type RescueMapView = (f32, egui::Vec2, Vec<i64>);
+
+#[cfg(feature = "fleet")]
+impl SpaiApp {
+    pub(crate) fn rescue_map_data(&mut self) -> Option<RescueMap> {
+        let graph = self.systems.clone()?;
+        let coords = self.map_coords.clone()?;
+        let target = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).capital_system;
+        let staging = self.rescue_staging_id(&graph);
+        let route = match (staging, target) {
+            (Some(from), Some(to)) => self.fleet_map_route(&graph, &coords, from, to),
+            _ => None,
+        };
+        let name = |id: i64| graph.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
+        let note = match (staging, target, &route) {
+            (_, None, _) => "No capital pinged yet.".to_owned(),
+            (None, _, _) => "No rescue staging system set.".to_owned(),
+            (Some(s), Some(t), None) => format!("No titan route from {} to {}.", name(s), name(t)),
+            (Some(s), _, Some(o)) => format!("Titan at {}: {}", name(s), o.note.clone().unwrap_or_else(|| o.label.clone())),
+        };
+        let hops = route.map(|o| o.hops).unwrap_or_default();
+        let mut ids: Vec<i64> = hops.iter().map(|h| h.id).chain(staging).chain(target).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let on_map = |id: i64| spai_ui::star_map::is_kspace(id) && graph.info_of(id).is_none_or(|i| !is_hidden_region(&i.region));
+        let regions: std::collections::HashSet<i64> = coords.iter().filter(|s| ids.binary_search(&s.id).is_ok() && on_map(s.id)).map(|s| s.region_id).collect();
+        let subset = coords
+            .iter()
+            .filter(|s| regions.contains(&s.region_id) && on_map(s.id))
+            .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
+            .collect();
+        Some(RescueMap { graph, subset, hops, staging, target, note, ids })
+    }
+}
+
+/// The titan route to the tackled capital over the regions it crosses, with staging and the capital
+/// marked. Drag to pan, scroll to zoom.
+#[cfg(feature = "fleet")]
+pub(crate) fn rescue_map_ui(ui: &mut egui::Ui, m: &RescueMap, view: &mut RescueMapView) {
+    use std::collections::HashMap;
+    let rect = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals().clone();
+    painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
+    let note_at = rect.left_top() + egui::vec2(8.0, 6.0);
+    let Some(bounds) = crate::map::Bounds::of(&m.subset) else {
+        painter.text(note_at, egui::Align2::LEFT_TOP, &m.note, egui::FontId::proportional(13.0), visuals.weak_text_color());
+        return;
+    };
+    if view.0 <= 0.0 || view.2 != m.ids {
+        *view = (1.0, egui::Vec2::ZERO, m.ids.clone());
+    }
+    if resp.dragged() {
+        view.1 += resp.drag_delta();
+    }
+    if resp.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll.abs() > 0.0 {
+            let old = view.0;
+            view.0 = (old * (scroll * 0.003).exp()).clamp(0.5, 40.0);
+            if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                let rel = p - (rect.center() + view.1);
+                view.1 += rel * (1.0 - view.0 / old);
+            }
+        }
+    }
+    let fit = rect.shrink2(egui::vec2(40.0, 28.0));
+    let pos: HashMap<i64, egui::Pos2> = m.subset.iter().map(|s| (s.id, crate::map::project(s.x, s.z, &bounds, fit, view.0, view.1))).collect();
+    let cull = rect.expand(8.0);
+    spai_ui::star_map::paint_gates(&painter, &visuals, &m.graph, &m.subset, &pos, &HashMap::new(), cull);
+    let dot = (2.0 * view.0.sqrt()).clamp(2.0, 6.0);
+    for s in &m.subset {
+        if let Some(p) = pos.get(&s.id).filter(|p| cull.contains(**p)) {
+            painter.circle_filled(*p, dot, crate::app::security_color(s.security).gamma_multiply(0.75));
+        }
+    }
+    if !m.hops.is_empty() {
+        let phase = (ui.input(|i| i.time) * 28.0) as f32;
+        spai_ui::star_map::paint_route_legs(&painter, &pos, &m.hops, phase, egui::Color32::from_rgb(0x4D, 0xD0, 0xC4), |_, _| false, |_, _, c| (c, c));
+        ui.ctx().request_repaint();
+    }
+    let font = egui::FontId::proportional(12.0);
+    for h in &m.hops {
+        if let Some(p) = pos.get(&h.id) {
+            painter.text(*p + egui::vec2(0.0, -dot - 3.0), egui::Align2::CENTER_BOTTOM, &h.name, font.clone(), visuals.text_color());
+        }
+    }
+    if let Some(p) = m.staging.and_then(|s| pos.get(&s)) {
+        painter.text(*p + egui::vec2(dot + 4.0, 0.0), egui::Align2::LEFT_CENTER, egui_phosphor::regular::STAR_FOUR, egui::FontId::proportional(16.0), egui::Color32::from_rgb(0xFF, 0x7A, 0x3D));
+    }
+    if let Some(p) = m.target.and_then(|t| pos.get(&t)) {
+        let red = egui::Color32::from_rgb(0xE0, 0x3B, 0x2E);
+        painter.circle_stroke(*p, dot + 7.0, egui::Stroke::new(2.5, red));
+        if !m.hops.iter().any(|h| Some(h.id) == m.target) {
+            let name = m.graph.info_of(m.target.unwrap_or_default()).map(|i| i.name.clone()).unwrap_or_default();
+            painter.text(*p + egui::vec2(0.0, -dot - 9.0), egui::Align2::CENTER_BOTTOM, name, font.clone(), red);
+        }
+    }
+    painter.text(note_at, egui::Align2::LEFT_TOP, &m.note, egui::FontId::proportional(13.0), visuals.weak_text_color());
 }
 
 /// Seconds as a stopwatch, because a rescue is counted in minutes and the seconds matter.

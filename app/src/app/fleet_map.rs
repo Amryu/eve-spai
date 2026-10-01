@@ -1270,7 +1270,7 @@ impl SpaiApp {
 
     /// The titan route from staging to the capital, over zone 1 bridges only. Cached: the search
     /// walks every system in range.
-    fn fleet_map_route(
+    pub(crate) fn fleet_map_route(
         &mut self,
         graph: &crate::geo::Systems,
         coords: &[crate::store::MapSystem],

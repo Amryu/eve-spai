@@ -382,6 +382,7 @@ impl SpaiApp {
                         name: h.name.clone(),
                         security: h.security,
                         kind: h.kind,
+                        hole: h.hole,
                         ly: h.ly,
                         fuel: h.fuel,
                         fatigue_min: h.fatigue_min,
@@ -487,16 +488,12 @@ impl SpaiApp {
                                         .color(security_color(h.security))
                                         .strong(),
                                 );
-                                let tail = if i == 0 {
-                                    "start".to_owned()
-                                } else {
-                                    match h.kind {
-                                        2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                        1 => "ansiblex".to_owned(),
-                                        _ => "gate".to_owned(),
-                                    }
-                                };
-                                ui.label(egui::RichText::new(tail).weak().size(11.0));
+                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i == 0);
+                                let tail = egui::RichText::new(tail).size(11.0);
+                                ui.label(match colour {
+                                    Some(c) => tail.color(c),
+                                    None => tail.weak(),
+                                });
                                 if let Some(((fuel, fat), react)) = cost {
                                     ui.label(
                                         egui::RichText::new(format!(
@@ -2116,81 +2113,5 @@ impl SpaiApp {
     }
 }
 
-/// A system name field with matching systems listed under it while it has focus: arrows move
-/// through them, Enter or a click takes one. Returns the system picked.
-pub(crate) fn system_field(
-    ui: &mut egui::Ui,
-    q: &mut String,
-    sel: &mut usize,
-    hint: &str,
-    width: f32,
-    suggestions: &[SysHit],
-) -> Option<i64> {
-    let mut pick = None;
-    let resp = ui.add(
-        egui::TextEdit::singleline(q).hint_text(hint).desired_width(width),
-    );
-    if resp.changed() {
-        *sel = 0;
-    }
-    // A singleline TextEdit surrenders focus the instant Enter is pressed, so by now
-    // `has_focus` is already false. The key itself is still in the queue, so the accept has
-    // to hang off `lost_focus` or Enter would never pick the highlighted suggestion.
-    let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    // Pressing on a suggestion takes the focus from the field before the release makes it a
-    // click, so the list stays up while the pointer is over where it was last drawn.
-    let area_id = ui.id().with(("travel_sugg", hint));
-    let last: Option<egui::Rect> = ui.data(|d| d.get_temp(area_id));
-    let over = last.is_some_and(|r| ui.input(|i| i.pointer.hover_pos().is_some_and(|p| r.contains(p))));
-    let open = resp.has_focus() || over;
-    if !open {
-        ui.data_mut(|d| d.remove::<egui::Rect>(area_id));
-    }
-    if !suggestions.is_empty() && (open || entered) {
-        let n = suggestions.len();
-        if open {
-            let (down, up) = ui.input(|i| {
-                (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
-            });
-            if down {
-                *sel = (*sel + 1).min(n - 1);
-            }
-            if up {
-                *sel = sel.saturating_sub(1);
-            }
-            let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-            let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
-            let width = resp.rect.width();
-            let shown = egui::Area::new(area_id)
-                .order(egui::Order::Foreground)
-                .fixed_pos(below)
-                .constrain(true)
-                .show(ui.ctx(), |ui| {
-                    ui.set_min_width(width);
-                    ui.set_max_width(width);
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
-                            let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                            let rr = ui.menu_label(i == *sel, row);
-                            if rr.hovered() && moving {
-                                *sel = i;
-                            }
-                            if rr.clicked() {
-                                pick = Some(*id);
-                            }
-                        }
-                    });
-                });
-            ui.data_mut(|d| d.insert_temp(area_id, shown.response.rect));
-        }
-        if entered && pick.is_none() {
-            pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
-        }
-    }
-    if pick.is_some() {
-        resp.surrender_focus();
-        ui.data_mut(|d| d.remove::<egui::Rect>(area_id));
-    }
-    pick
-}
+pub(crate) use spai_ui::wh_form::system_field;
 

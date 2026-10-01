@@ -17,8 +17,9 @@ const INVITE_TTL_SECS: i64 = 2 * 86_400;
 
 pub enum Cmd {
     Create { name: String, char_id: i64, char_name: String, prefs: SharePrefs },
-    /// An invite only `for_name` can use.
-    Invite { group: String, for_name: String },
+    /// An invite only `for_name` can use, letting them in as `role` as soon as they use it. A member
+    /// invites viewers only.
+    Invite { group: String, for_name: String, role: Role },
     Join { link: String, char_id: i64, prefs: SharePrefs },
     /// Lets a device in: a new character with `role`, or another device of a member, which keeps
     /// the member's role.
@@ -177,7 +178,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 self.post(&c, &g, &Op::Genesis { name, owner }).await?;
                 self.store.share_queue_group(&id, true, true);
             }
-            Cmd::Invite { group, for_name } => {
+            Cmd::Invite { group, for_name, role } => {
                 let g = self.group(&group)?;
                 let (for_char, for_name) = self.character(&for_name).await?;
                 let c = self.client(g.char_id)?;
@@ -192,6 +193,9 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 let blob = crypto::b64(&crypto::seal(&crypto::invite_key(&secret), b"eve-spai invite", &serde_json::to_vec(&info)?));
                 let id = c.create_invite(&g.id, &blob, INVITE_TTL_SECS).await?;
                 self.store.share_invite_save(&id, &g.id, &secret, for_char, &for_name);
+                let role = if g.role.can_manage() { role.min(Role::Admin) } else { Role::Viewer };
+                let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role };
+                self.store.share_invite_role_save(&id, role);
                 self.status.lock().unwrap().invite = Some((g.id, make_link(&id, &secret), for_name));
             }
             Cmd::Join { link, char_id, prefs } => {
@@ -224,41 +228,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                     .into_iter()
                     .find(|r| r.row.char_id == char_id && r.row.device_id == device_id)
                     .ok_or_else(|| anyhow!("no such request"))?;
-                let keys = match (req.verified, req.keys) {
-                    (true, Some(k)) => k,
-                    _ if req.meant_for.is_some() => bail!("this invite was for {}, not {}", req.meant_for.unwrap_or_default(), req.row.name),
-                    _ => bail!("this request does not prove it came through our invite; not approving it"),
-                };
-                // Every epoch held, so the log's older membership entries open for them too.
-                let wrapped: Vec<(u32, String)> = (0..=g.epoch)
-                    .filter_map(|e| Some((e, self.store.share_key(&g.id, e)?)))
-                    .map(|(e, k)| Ok((e, serde_json::to_string(&crypto::wrap_key(&keys.enc, &k, &wrap_ctx(e)))?)))
-                    .collect::<Result<_>>()?;
-                if !wrapped.iter().any(|(e, _)| *e == g.epoch) {
-                    bail!("no key for the group");
-                }
-                let mut roster = self.roster(&g.id);
-                let device = Device::of(keys, &req.row.label);
-                // A character already in has its role; only a new one gets `role`, and only the
-                // owner makes admins.
-                if !g.role.can_manage() && roster.members.contains_key(&char_id) {
-                    bail!("{} is already in; an admin adds their devices", req.row.name);
-                }
-                let role = if g.role.can_manage() { role } else { Role::Viewer };
-                let op = if roster.members.contains_key(&char_id) {
-                    Op::DeviceAdded { char_id, device }
-                } else {
-                    let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role.min(Role::Admin) };
-                    Op::MemberAdded { member: Member::new(char_id, &req.row.name, role, device) }
-                };
-                // Another device keeps the member's role; the server reads the role for newcomers only.
-                let code = if roster.members.contains_key(&char_id) { Role::Member.code() } else { role.code() };
-                c.approve(&g.id, char_id, &device_id, code, &wrapped).await?;
-                self.post(&c, &g, &op).await?;
-                roster.apply(g.char_id, &op)?;
-                self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
-                let (holes, dead, sigs) = self.store.share_snapshot(&g);
-                self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() }).await?;
+                self.approve(&c, &g, req, role).await?;
             }
             Cmd::Reject { group, char_id, device_id } => {
                 let g = self.group(&group)?;
@@ -351,6 +321,48 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
 
     async fn character(&self, name: &str) -> Result<(i64, String)> {
         self.env.character(name.trim()).await?.ok_or_else(|| anyhow!("no character named {}", name.trim()))
+    }
+
+    /// Lets in the device behind `req`: a new character as `role`, another device of a member with
+    /// the member's role. Only a request proving one of this install's invites.
+    async fn approve(&self, c: &Client<E::T>, g: &ShareGroup, req: Request, role: Role) -> Result<()> {
+        let (char_id, device_id) = (req.row.char_id, req.row.device_id.clone());
+        let keys = match (req.verified, req.keys) {
+            (true, Some(k)) => k,
+            _ if req.meant_for.is_some() => bail!("this invite was for {}, not {}", req.meant_for.unwrap_or_default(), req.row.name),
+            _ => bail!("this request does not prove it came through our invite; not approving it"),
+        };
+        // Every epoch held, so the log's older membership entries open for them too.
+        let wrapped: Vec<(u32, String)> = (0..=g.epoch)
+            .filter_map(|e| Some((e, self.store.share_key(&g.id, e)?)))
+            .map(|(e, k)| Ok((e, serde_json::to_string(&crypto::wrap_key(&keys.enc, &k, &wrap_ctx(e)))?)))
+            .collect::<Result<_>>()?;
+        if !wrapped.iter().any(|(e, _)| *e == g.epoch) {
+            bail!("no key for the group");
+        }
+        let mut roster = self.roster(&g.id);
+        let device = Device::of(keys, &req.row.label);
+        // A character already in has its role; only a new one gets `role`, and only the
+        // owner makes admins.
+        if !g.role.can_manage() && roster.members.contains_key(&char_id) {
+            bail!("{} is already in; an admin adds their devices", req.row.name);
+        }
+        let role = if g.role.can_manage() { role } else { Role::Viewer };
+        let op = if roster.members.contains_key(&char_id) {
+            Op::DeviceAdded { char_id, device }
+        } else {
+            let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role.min(Role::Admin) };
+            Op::MemberAdded { member: Member::new(char_id, &req.row.name, role, device) }
+        };
+        // Another device keeps the member's role; the server reads the role for newcomers only.
+        let code = if roster.members.contains_key(&char_id) { Role::Member.code() } else { role.code() };
+        c.approve(&g.id, char_id, &device_id, code, &wrapped).await?;
+        self.post(&c, &g, &op).await?;
+        roster.apply(g.char_id, &op)?;
+        self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
+        let (holes, dead, sigs) = self.store.share_snapshot(&g);
+        self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() }).await?;
+        Ok(())
     }
 
     async fn fetch_requests(&self, c: &Client<E::T>, g: &ShareGroup) -> Result<Vec<Request>> {
@@ -462,11 +474,30 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         // who still took itself for an admin was refused here every round and so never read the
         // entry that says otherwise.
         // Members too: the answers to their own invites, which they let in as viewers.
-        let reqs = if role.can_write() {
+        let mut reqs = if role.can_write() {
             self.fetch_requests(c, g).await.inspect_err(|e| eprintln!("[share] join requests for {}: {e:#}", g.name)).ok()
         } else {
             None
         };
+        // The invite is the approval: a request that proves one of this install's invites, from the
+        // character it was for, is let in as the invite said, with no one to click Approve.
+        if let Some(list) = reqs.as_mut() {
+            let g = ShareGroup { role, ..g.clone() };
+            let mut kept = Vec::new();
+            for r in std::mem::take(list) {
+                let invited = r.verified.then(|| self.store.share_invite_role(&r.row.invite_id)).flatten();
+                let Some(as_role) = invited else {
+                    kept.push(r);
+                    continue;
+                };
+                let name = r.row.name.clone();
+                if let Err(e) = self.approve(c, &g, r.clone(), as_role).await {
+                    eprintln!("[share] letting {name} into {}: {e:#}", g.name);
+                    kept.push(r);
+                }
+            }
+            *list = kept;
+        }
         let mut s = self.status.lock().unwrap();
         match reqs {
             Some(r) => {
