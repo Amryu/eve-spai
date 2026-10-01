@@ -33,7 +33,13 @@ struct SavedView {
     region: Option<i64>,
     #[serde(default)]
     wh_view: crate::host::WhView,
+    /// Which defaults the saved view was made with: 1 drew Thera and Turnur holes by default.
+    #[serde(default)]
+    version: u8,
 }
+
+/// Bumped when a default changes for views saved before it.
+const VIEW_VERSION: u8 = 2;
 /// EVE-Scout's feed changes as its scouts report; five minutes, as the desktop polls it.
 const SCOUT_EVERY: i64 = 300;
 
@@ -114,6 +120,10 @@ impl WebApp {
                 if let Some(v) = page::load::<SavedView>(VIEW) {
                     m.layers = v.layers;
                     m.region = v.region;
+                    // Thera and Turnur holes went off by default; routes still use them.
+                    if v.version < 2 {
+                        (m.layers.thera, m.layers.turnur) = (false, false);
+                    }
                 }
                 m.layers.scout = page::load(SCOUT).unwrap_or(m.layers.scout);
                 m
@@ -535,7 +545,7 @@ impl eframe::App for WebApp {
             }
             _ => self.sync = None,
         }
-        let view = SavedView { tab: self.tab, layers: self.map.layers, region: self.map.region, wh_view: self.wh_view };
+        let view = SavedView { tab: self.tab, layers: self.map.layers, region: self.map.region, wh_view: self.wh_view, version: VIEW_VERSION };
         if self.view_saved.as_ref() != Some(&view) {
             page::save(VIEW, &view);
             self.view_saved = Some(view);
