@@ -319,8 +319,9 @@ impl SpaiApp {
                                     self.wh_share.delete = Some((g.id.clone(), g.name.clone(), String::new()));
                                 }
                             });
-                            // Members invite too, and let their own invitees in as viewers only.
-                            if g.role.can_write() && has_key {
+                            // Members invite too, and let their own invitees in as viewers only; anyone
+                            // invites their own other devices.
+                            if has_key {
                                 let admin = g.role.can_manage();
                                 let reqs = status.requests.get(&g.id).cloned().unwrap_or_default();
                                 if !reqs.is_empty() {
@@ -383,9 +384,17 @@ impl SpaiApp {
                                 }
                                 ui.horizontal(|ui| {
                                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.invite_for).hint_text("Character it is for").desired_width(180.0));
-                                    let ok = !self.wh_share.invite_for.trim().is_empty();
-                                    // Members invite viewers only.
-                                    if admin {
+                                    let typed = self.wh_share.invite_for.trim();
+                                    // Yourself is another device: at your own rank, which no one picks.
+                                    let me = members.iter().find(|m| m.char_id == g.char_id).is_some_and(|m| m.name.eq_ignore_ascii_case(typed));
+                                    let ok = !typed.is_empty() && (me || g.role.can_write());
+                                    if me {
+                                        ui.label(egui::RichText::new(format!("as {}", g.role.label())).weak())
+                                            .on_hover_text("Your own other device: it keeps your rank");
+                                    } else if !g.role.can_write() {
+                                        ui.label(egui::RichText::new("your own devices only").weak())
+                                            .on_hover_text("A viewer invites only their own character, for another device");
+                                    } else if admin {
                                         let v = &mut self.wh_share.invite_viewer;
                                         egui::ComboBox::from_id_salt(("invite_role", &g.id))
                                             .width(80.0)

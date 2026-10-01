@@ -808,9 +808,21 @@ async fn members_invite_viewers_only() {
     let guest_row = members.as_array().unwrap().iter().find(|m| m["char_id"] == 91_000_003).unwrap();
     assert_eq!(guest_row["role"].as_str(), Some("viewer"));
 
-    // The viewer invites nobody.
-    let (s, _) = invite(guest.clone(), gd.clone()).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "viewers do not invite");
+    // The viewer invites their own other device, and lets it in at their own role only.
+    let gd2 = "e".repeat(32);
+    let (s, inv) = invite(guest.clone(), gd.clone()).await;
+    assert_eq!(s, StatusCode::OK, "anyone invites their own devices");
+    wh(&app, "POST", &format!("/invites/{}/join", inv.unwrap()), &guest, &gd2, Some(json!({ "body": "kg2", "device_id": gd2 }))).await;
+    let (_, inv) = invite(guest.clone(), gd.clone()).await;
+    let xd2 = "f".repeat(32);
+    wh(&app, "POST", &format!("/invites/{}/join", inv.unwrap()), &other, &xd2, Some(json!({ "body": "kx", "device_id": xd2 }))).await;
+    let (_, reqs) = wh(&app, "GET", &format!("/groups/{g}/requests"), &guest, &gd, None).await;
+    assert_eq!(reqs.as_array().unwrap().len(), 2, "the answers to the viewer's own invites");
+    assert_eq!(approve(guest.clone(), gd.clone(), 91_000_004, xd2.clone(), "viewer").await, StatusCode::FORBIDDEN, "a viewer lets in nobody else");
+    assert_eq!(approve(guest.clone(), gd.clone(), 91_000_003, gd2.clone(), "admin").await, StatusCode::NO_CONTENT);
+    let (_, members) = wh(&app, "GET", &format!("/groups/{g}/members"), &owner, &od, None).await;
+    let guest_row = members.as_array().unwrap().iter().find(|m| m["char_id"] == 91_000_003).unwrap();
+    assert_eq!(guest_row["role"].as_str(), Some("viewer"), "another device keeps the character's role, whatever the approval asks");
 }
 
 /// A member from before devices opens an invite in a new browser: the browser must not take the

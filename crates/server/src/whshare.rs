@@ -466,11 +466,9 @@ async fn create_invite(
     Path(g): Path<String>,
     Json(inv): Json<NewInvite>,
 ) -> Result<Json<Created>, AppError> {
-    // Members invite too, for viewers only: they approve their own invites, and the roster and
-    // `approve` hold them to that.
-    if member(&st, &g, me.char_id).await? == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    // Members invite too, for viewers, and anyone in the group invites their own other devices:
+    // they approve their own invites, and the roster and `approve` hold them to that.
+    member(&st, &g, me.char_id).await?;
     check_blob(&inv.blob)?;
     let ttl = inv.ttl_secs.clamp(300, 7 * 86_400);
     let id = new_id();
@@ -601,10 +599,10 @@ async fn requests(
     SessionIdentity(me): SessionIdentity,
     Path(g): Path<String>,
 ) -> Result<Json<Vec<RequestRow>>, AppError> {
-    // A member sees the answers to their own invites only.
+    // A member or viewer sees the answers to their own invites only.
     let only = match member(&st, &g, me.char_id).await?.as_str() {
         "owner" | "admin" => None,
-        "member" => Some(me.char_id),
+        "member" | "viewer" => Some(me.char_id),
         _ => return Err(AppError::Forbidden),
     };
     let rows = sqlx::query(
@@ -655,6 +653,9 @@ async fn approve(
                     _ => false,
                 }
         }
+        // Their own other device, through their own invite, at their own role: the role of a
+        // character already in is never changed here.
+        "member" | "viewer" if c == me.char_id => already && own_invite(&st, &g, c, &d, me.char_id).await?,
         "member" => !already && a.role == "viewer" && own_invite(&st, &g, c, &d, me.char_id).await?,
         _ => false,
     };
@@ -716,7 +717,7 @@ async fn reject(
     Path((g, c, d)): Path<(String, i64, String)>,
 ) -> Result<StatusCode, AppError> {
     let mine = member(&st, &g, me.char_id).await?;
-    if !(mine == "owner" || mine == "admin" || (mine == "member" && own_invite(&st, &g, c, &d, me.char_id).await?)) {
+    if !(mine == "owner" || mine == "admin" || (matches!(mine.as_str(), "member" | "viewer") && own_invite(&st, &g, c, &d, me.char_id).await?)) {
         return Err(AppError::Forbidden);
     }
     sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
