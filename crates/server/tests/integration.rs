@@ -812,3 +812,39 @@ async fn members_invite_viewers_only() {
     let (s, _) = invite(guest.clone(), gd.clone()).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "viewers do not invite");
 }
+
+/// A member from before devices opens an invite in a new browser: the browser must not take the
+/// old keys, which are wrapped to the install that joined then, and its approval's key must land.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn a_new_device_does_not_take_the_keys_from_before_devices() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    sqlx::query("TRUNCATE wh_groups CASCADE").execute(&pool).await.unwrap();
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool.clone(), base_config(url));
+    let owner = mint(&app, 92_000_001, "Owner").await;
+    let old = mint(&app, 92_000_002, "Old Member").await;
+    let (od, bd) = ("a".repeat(32), "b".repeat(32));
+    let (_, v) = wh(&app, "POST", "/groups", &owner, &od, Some(json!({ "wrapped": "k0", "device_id": od }))).await;
+    let g = v["id"].as_str().unwrap().to_string();
+    // A member from before devices: one legacy device and its key.
+    sqlx::query("INSERT INTO wh_members (group_id, char_id, name, role) VALUES ($1, 92000002, 'Old Member', 'member')").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_devices (group_id, char_id, device_id) VALUES ($1, 92000002, 'legacy')").bind(&g).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, 0, 92000002, 'legacy', 'k0-old-install')").bind(&g).execute(&pool).await.unwrap();
+
+    let (_, v) = wh(&app, "POST", &format!("/groups/{g}/invites"), &owner, &od, Some(json!({ "blob": "invite", "ttl_secs": 3600 }))).await;
+    let inv = v["id"].as_str().unwrap().to_string();
+    wh(&app, "POST", &format!("/invites/{inv}/join"), &old, &bd, Some(json!({ "body": "keys", "device_id": bd }))).await;
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/devices/claim"), &old, &bd, Some(json!({ "device_id": bd }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let legacy: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_keys WHERE group_id = $1 AND device_id = 'legacy'").bind(&g).fetch_one(&pool).await.unwrap();
+    assert_eq!(legacy, 1, "a joining device leaves the old install's key where it is");
+
+    // A key row the device already has, as one taken before this fix left it, is replaced.
+    sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, 0, 92000002, $2, 'k0-wrong')").bind(&g).bind(&bd).execute(&pool).await.unwrap();
+    let (s, _) = wh(&app, "POST", &format!("/groups/{g}/requests/92000002/{bd}/approve"), &owner, &od, Some(json!({ "keys": [{ "epoch": 0, "wrapped": "k0-browser" }], "role": "member" }))).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &old, &bd, None).await;
+    assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-browser"), "the approval's key, not the one it cannot open");
+}

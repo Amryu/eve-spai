@@ -302,7 +302,8 @@ impl SpaiApp {
                         egui::CollapsingHeader::new(title).id_salt(("wh_share_group", &g.id)).default_open(true).show(ui, |ui| {
                             if !has_key {
                                 if let Some(fp) = &status.fingerprint {
-                                    ui.label(format!("The invite lets you in as soon as the EVE Spai that made it next syncs. Your fingerprint, should anyone ask: {fp}"));
+                                    ui.label("The invite lets you in as soon as the EVE Spai that made it next syncs.");
+                                    ui.label(format!("Fingerprint: {fp}"));
                                 }
                             }
                             let members = self.store.as_ref().map(|s| s.share_members(&g.id)).unwrap_or_default();

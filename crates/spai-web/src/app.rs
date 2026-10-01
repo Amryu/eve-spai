@@ -436,7 +436,7 @@ impl WebApp {
             let mut lines = vec![
                 format!("Waiting to be let into {}", g.name),
                 "The invite lets you in as soon as the EVE Spai that made it next syncs: it has to be running.".into(),
-                format!("This browser's fingerprint, should anyone ask: {fingerprint}"),
+                format!("Fingerprint: {fingerprint}"),
             ];
             lines.extend(status.error.clone());
             say(ui, &lines);
