@@ -17,6 +17,18 @@ pub enum Edit {
     Dead(String),
     /// A probe scanner copy pasted for a system; `full` drops what it does not list.
     Sigs { system: i64, scan: Vec<spai_core::wormholes::ScanSig>, full: bool },
+    /// Signatures deleted in the browser, and ones its undo put back.
+    SigsGone(Vec<(i64, SystemSig)>),
+    SigsBack(Vec<(i64, SystemSig)>),
+}
+
+/// How the Wormholes tab shows the holes, as the desktop's switch above it.
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WhView {
+    #[default]
+    Map,
+    Table,
+    Signatures,
 }
 
 pub struct WebHost {
@@ -58,6 +70,19 @@ pub struct WebHost {
     pub detect: bool,
     /// The settings menu asked for the Group tab.
     pub open_group: bool,
+    /// Which holes routes may use: the map's route planner owns them, the app keeps this copy in
+    /// step, and `plan_changed` says this side changed them.
+    pub plan: crate::planner::PlanPrefs,
+    pub plan_changed: bool,
+    pub wh_view: WhView,
+    pub sig_browser: spai_ui::sig_browser::SigBrowser,
+    /// Group names by id, for the table's Source column.
+    pub group_names: HashMap<String, String>,
+    /// The top bar's system facts lookup, and the system it opened.
+    pub facts_query: String,
+    pub facts: Option<i64>,
+    /// The group each shared hole came in, by uid.
+    pub hole_group: HashMap<String, String>,
 }
 
 /// A jump an added character made that looks like a hole, asked about as the desktop asks.
@@ -87,7 +112,7 @@ enum Side {
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: PIN_JUMPS, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0, filter: Default::default(), keep_missing: false, sig_note: None, detect: true, open_group: false }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, sugg: HashMap::new(), edits: Vec::new(), side: Side::default(), pin_input: String::new(), last_sel: None, chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0, filter: Default::default(), keep_missing: false, sig_note: None, detect: true, open_group: false, plan: Default::default(), plan_changed: false, wh_view: WhView::Map, sig_browser: Default::default(), group_names: HashMap::new(), hole_group: HashMap::new(), facts_query: String::new(), facts: None }
     }
 }
 
@@ -126,6 +151,104 @@ fn merge(was: Option<&Wormhole>, fresh: Wormhole, now: i64) -> Wormhole {
 
 impl WebHost {
     /// The add window, in `sel` or in a system still to be named.
+    /// The desktop's Table view: every hole shown, with its buttons.
+    pub fn table_view(&mut self, view: &mut WhGraphView, ui: &mut egui::Ui) {
+        let now = spai_core::clock::utc().timestamp();
+        let shown = self.holes(now);
+        let list: Vec<&Wormhole> = shown.iter().collect();
+        let geo = self.geo.clone();
+        let (plan, names, of) = (&self.plan, &self.group_names, &self.hole_group);
+        let mut act = spai_ui::wh_tab::holes_table(
+            ui,
+            &geo,
+            &list,
+            now,
+            &|w| plan.wh_off_holes.contains(&w.uid),
+            &|uid| of.get(uid).and_then(|g| names.get(g)).cloned(),
+        );
+        // Closing and editing change the group's map, which a viewer cannot.
+        if !self.can_edit {
+            (act.kill, act.edit) = (None, None);
+        }
+        let by_id = |id: i64| shown.iter().find(|w| w.id == id);
+        if let Some(w) = act.kill.and_then(by_id) {
+            self.edits.push(Edit::Dead(w.uid.clone()));
+        }
+        if let Some(w) = act.edit.and_then(by_id) {
+            self.form = Some(WhForm::of(w, Some(&geo)));
+        }
+        if let Some(uid) = act.toggle {
+            self.plan.toggle_off_hole(&uid);
+            self.plan_changed = true;
+        }
+        if let Some(id) = act.open.or(act.info) {
+            self.wh_view = WhView::Map;
+            view.selected = Some(id);
+            self.side = Side::Holes;
+        }
+    }
+
+    /// The desktop's signature browser over what this browser holds.
+    pub fn sig_view(&mut self, view: &mut WhGraphView, ui: &mut egui::Ui) {
+        let now = spai_core::clock::utc().timestamp();
+        let geo = self.geo.clone();
+        let act = spai_ui::sig_browser::view(ui, &mut self.sig_browser, Some(&geo), &self.holes, now, false);
+        if !act.deleted.is_empty() {
+            self.edits.push(Edit::SigsGone(act.deleted));
+        }
+        if !act.restored.is_empty() {
+            self.edits.push(Edit::SigsBack(act.restored));
+        }
+        if let Some(id) = act.open {
+            self.wh_view = WhView::Map;
+            view.selected = Some(id);
+            self.side = Side::Signatures;
+        }
+        if self.can_edit {
+            if let Some(w) = act.edit.and_then(|uid| self.holes.iter().find(|w| w.uid == uid)) {
+                self.form = Some(WhForm::of(w, Some(&geo)));
+            }
+            if let Some(f) = act.new_hole {
+                self.form = Some(f);
+            }
+        }
+    }
+
+    /// The desktop's "System facts" box: a system's class, effect, statics and celestials.
+    pub fn facts_search(&mut self, ui: &mut egui::Ui) {
+        let geo = self.geo.clone();
+        let picked = system_input(ui, &geo, &mut self.sugg, "web_facts", &mut self.facts_query, "System facts: J-name or system", 200.0);
+        if picked.is_some() {
+            self.facts = picked;
+        }
+    }
+
+    pub fn facts_window(&mut self, ctx: &egui::Context, top: f32) {
+        let Some(sys) = self.facts else { return };
+        let geo = self.geo.clone();
+        let Some(info) = geo.info_of(sys).cloned() else {
+            self.facts = None;
+            return;
+        };
+        let mut open = true;
+        egui::Window::new(&info.name)
+            .id(egui::Id::new("web_facts"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(self.side_w + 12.0), top + 8.0))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                ui.label(format!("{} \u{b7} {}", spai_core::whdata::class_of(sys, info.security, &info.region).label(), info.region));
+                spai_ui::wh_tab::wh_system_facts(ui, sys, &info, true);
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(spai_core::whdata::ATTRIBUTION).weak());
+            });
+        if !open {
+            self.facts = None;
+        }
+    }
+
     pub fn add_form(&mut self, sel: Option<i64>) {
         let system = sel.and_then(|id| self.geo.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
         self.form = Some(WhForm { system, ..WhForm::fresh() });
@@ -379,18 +502,18 @@ impl WebHost {
         }
         // Pinned systems, then where the added characters are, by gates, bridges and every live hole.
         let now = spai_core::clock::utc().timestamp();
-        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
-        for w in self.holes.iter().filter(|w| !w.is_expired(now)) {
-            if let Some(b) = w.dest_system_id {
-                adj.entry(w.system_id).or_default().push(b);
-                adj.entry(b).or_default().push(w.system_id);
-            }
-        }
+        let adj = self.plan.hole_graph(geo, &self.holes, now);
         let mut targets: Vec<(String, i64, bool)> = self.prefs.route_pins.iter().filter_map(|p| geo.lookup(p).map(|i| (i.name.clone(), i.id, true))).collect();
         let mut chars: Vec<(&String, &(i64, bool))> = self.chars.iter().collect();
         chars.sort();
         targets.extend(chars.into_iter().map(|(n, (sys, _))| (n.clone(), *sys, false)));
         let (unpin, select) = spai_ui::wh_tab::route_rows(ui, geo, sel, &targets, &adj);
+        ui.horizontal(|ui| {
+            ui.label("Through");
+            if self.plan.kinds_button(ui) {
+                self.plan_changed = true;
+            }
+        });
         if let Some(name) = unpin {
             change = Some((name, false));
         }
@@ -459,23 +582,27 @@ impl WhHost for WebHost {
         self.dirty = true;
     }
 
-    fn blocked(&self, _: &Wormhole, _: i64) -> bool {
-        false
+    fn blocked(&self, w: &Wormhole, _: i64) -> bool {
+        self.disabled(w)
     }
 
-    fn disabled(&self, _: &Wormhole) -> bool {
-        false
+    fn disabled(&self, w: &Wormhole) -> bool {
+        self.plan.wh_off_holes.contains(&w.uid) || self.plan.wh_off_systems.contains(&w.system_id) || w.dest_system_id.is_some_and(|b| self.plan.wh_off_systems.contains(&b))
     }
 
     fn disabled_count(&self) -> usize {
-        0
+        self.holes.iter().filter(|w| self.plan.wh_off_holes.contains(&w.uid)).count() + self.plan.wh_off_systems.len()
     }
 
     fn disabled_systems(&self) -> Vec<i64> {
-        Vec::new()
+        self.plan.wh_off_systems.clone()
     }
 
-    fn clear_disabled(&mut self) {}
+    fn clear_disabled(&mut self) {
+        self.plan.wh_off_holes.clear();
+        self.plan.wh_off_systems.clear();
+        self.plan_changed = true;
+    }
 
     fn group_name(&self, _: &str) -> Option<String> {
         None
@@ -483,7 +610,13 @@ impl WhHost for WebHost {
 
     fn open_system(&mut self, _: i64) {}
 
-    fn system_menu(&mut self, _: &mut egui::Ui, _: i64) {}
+    /// The desktop's: the system's holes, each to switch on or off for routes.
+    fn system_menu(&mut self, ui: &mut egui::Ui, id: i64) {
+        let (geo, holes) = (self.geo.clone(), self.holes.clone());
+        if self.plan.hole_switches(ui, id, &geo, &holes) {
+            self.plan_changed = true;
+        }
+    }
 
     /// The desktop's Filter, beside Legend: which holes the tab shows.
     fn toolbar(&mut self, _: &mut WhGraphView, ui: &mut egui::Ui) {
@@ -574,29 +707,45 @@ impl WhHost for WebHost {
                 }
                 let mut edit: Option<WhForm> = None;
                 let mut dead: Option<String> = None;
-                egui::Grid::new("wh_web_holes").num_columns(6).spacing([10.0, 4.0]).show(ui, |ui| {
+                let mut flip_route: Option<String> = None;
+                egui::Grid::new("wh_web_holes").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
                     for w in here {
                         let near = w.system_id == sel;
                         let (sig, far) = if near { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
                         let far = far.and_then(|id| geo.info_of(id)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
                         ui.monospace(sig.as_deref().unwrap_or("?"));
-                        ui.label(format!("{} {far}", egui_phosphor::regular::ARROW_RIGHT));
                         let mut facts: Vec<String> = [w.wh_type.clone(), w.effective_size().map(|s| s.label().to_owned()), w.mass.map(|m| m.short().to_owned())].into_iter().flatten().collect();
                         if let Some(h) = w.hours_left(now) {
                             facts.push(format!("{h}h left"));
                         }
-                        ui.label(egui::RichText::new(facts.join(" \u{b7} ")).weak());
+                        // Where it leads, its facts wrapped under it in a fixed width, so the side panel
+                        // keeps its size and the toolbar its row.
+                        ui.allocate_ui(egui::vec2(120.0, 0.0), |ui| {
+                            ui.set_max_width(120.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.label(format!("{} {far}", egui_phosphor::regular::ARROW_RIGHT));
+                                if !facts.is_empty() {
+                                    ui.add(egui::Label::new(egui::RichText::new(facts.join(" \u{b7} ")).weak()).wrap());
+                                }
+                            });
+                        });
                         spai_ui::wh_graph::who_cell(ui, w, now);
-                        if self.can_edit {
-                            ui.horizontal(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            if self.can_edit {
                                 if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
                                     edit = Some(WhForm::of(w, Some(geo)));
                                 }
                                 if ui.small_button(egui_phosphor::regular::X_CIRCLE).on_hover_text("Collapsed: take it off the map for everyone").clicked() {
                                     dead = Some(w.uid.clone());
                                 }
-                            });
-                        }
+                            }
+                            // Off for routes here only: a choice of this browser, not the group's.
+                            if spai_ui::wh_graph::wh_route_toggle(ui, self.plan.wh_off_holes.contains(&w.uid)) {
+                                flip_route = Some(w.uid.clone());
+                            }
+                        });
                         ui.end_row();
                     }
                 });
@@ -605,6 +754,10 @@ impl WhHost for WebHost {
                 }
                 if let Some(uid) = dead {
                     self.edits.push(Edit::Dead(uid));
+                }
+                if let Some(uid) = flip_route {
+                    self.plan.toggle_off_hole(&uid);
+                    self.plan_changed = true;
                 }
                 // What a wormhole system is like: its class, effect, statics and celestials.
                 if !spai_ui::star_map::is_kspace(sel) {

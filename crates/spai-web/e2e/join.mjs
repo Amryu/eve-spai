@@ -98,7 +98,7 @@ if (process.env.SPAI_E2E_MAP) {
   await page.screenshot({ path: shot.replace('.png', '-map.png') });
 }
 // Then any steps a test gives: ["click", x, y], ["rclick", x, y], ["drag", x1, y1, x2, y2],
-// ["move", x, y], ["wheel", x, y, dy], ["sdrag", x1, y1, x2, y2] (with shift), ["key", "Enter"], ["wait", ms] or ["shot", "name"].
+// ["move", x, y], ["wheel", x, y, dy], ["sdrag", x1, y1, x2, y2] (with shift), ["key", "Enter"], ["type", "text"], ["wait", ms] or ["shot", "name"].
 for (const step of JSON.parse(process.env.SPAI_E2E_ACTIONS || '[]')) {
   const [what, ...a] = step;
   if (what === 'click') await page.mouse.click(a[0], a[1]);
@@ -122,6 +122,7 @@ for (const step of JSON.parse(process.env.SPAI_E2E_ACTIONS || '[]')) {
   if (what === 'wheel') { await page.mouse.move(a[0], a[1]); await page.mouse.wheel(0, a[2]); }
   if (what === 'move') await page.mouse.move(a[0], a[1], { steps: 5 });
   if (what === 'key') await page.keyboard.press(a[0]);
+  if (what === 'type') await page.keyboard.type(a[0], { delay: 30 });
   if (what === 'wait') await page.waitForTimeout(a[0]);
   if (what === 'shot') await page.screenshot({ path: shot.replace('.png', `-${a[0]}.png`) });
   await page.waitForTimeout(500);

@@ -657,168 +657,29 @@ impl SpaiApp {
             return;
         }
         let now = crate::clock::utc().timestamp();
-        struct Row {
-            id: i64,
-            sys_id: i64,
-            sys: String,
-            wh_type: String,
-            drifter: bool,
-            dest: String,
-            dest_click: Option<i64>,
-            dest_const: String,
-            dest_region: String,
-            size: String,
-            life: String,
-            source: String,
-            uid: String,
-            off: bool,
+        let shown: Vec<&crate::wormholes::Wormhole> = self.wh_cache.iter().filter(|w| self.wh_shown(w, now)).collect();
+        let Some(geo) = self.systems.clone() else { return };
+        let act = spai_ui::wh_tab::holes_table(
+            ui,
+            &geo,
+            &shown,
+            now,
+            &|w| self.settings.wh_disabled_holes.contains(&w.uid),
+            &|uid| self.wh_group_of.get(uid).and_then(|g| self.share_group_name(g)).map(str::to_owned),
+        );
+        if let Some(id) = act.open {
+            self.open_system(id);
         }
-        let info_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).cloned();
-        let rows: Vec<Row> = self
-            .wh_cache
-            .iter()
-            .filter(|w| self.wh_shown(w, now))
-            .map(|w| {
-                let mut sys = info_of(w.system_id)
-                    .map(|i| i.name)
-                    .unwrap_or_else(|| format!("#{}", w.system_id));
-                if let Some(sig) = &w.signature {
-                    sys = format!("{sys}  [{sig}]");
-                }
-                let (dest, dest_const, dest_region) = match w.dest_system_id.and_then(info_of) {
-                    Some(i) => (i.name, i.constellation, i.region),
-                    None => (w.dest.label().to_string(), String::new(), String::new()),
-                };
-                let seen = |at: Option<i64>| at.map(|t| format!(", seen {} ago", human_ago(now - t))).unwrap_or_default();
-                let life = if let Some(l) = w.life {
-                    format!("{}{}", l.label(), seen(w.observed_at))
-                } else if w.explicit_expiry.is_some() {
-                    match w.hours_left(now) {
-                        Some(h) => format!("< {h}h left"),
-                        None => "expired".into(),
-                    }
-                } else {
-                    format!("reported {} ago", human_ago(now - w.reported_at))
-                };
-                // The entry's origin first, then whoever else has seen it.
-                let mut source = match (&w.detected_by, w.source) {
-                    (Some(who), crate::wormholes::Source::Auto) => format!("{} ({who})", w.source.label()),
-                    _ => w.source.label().to_string(),
-                };
-                let also: Vec<&str> = crate::wormholes::Source::ALL
-                    .into_iter()
-                    .filter(|s| *s != w.source && w.seen_by & s.bit() != 0)
-                    .map(|s| s.label())
-                    .collect();
-                if !also.is_empty() {
-                    source.push_str(&format!(", also {}", also.join(", ")));
-                }
-                if let Some(name) = self.wh_group_of.get(&w.uid).and_then(|g| self.share_group_name(g)) {
-                    source.push_str(&format!(", in {name}"));
-                }
-                Row {
-                    id: w.id,
-                    sys_id: w.system_id,
-                    sys,
-                    wh_type: w.wh_type.clone().unwrap_or_else(|| "—".into()),
-                    drifter: w.is_drifter,
-                    dest,
-                    dest_click: w.dest_system_id,
-                    dest_const,
-                    dest_region,
-                    size: {
-                        let size = w.effective_size().map(|s| s.label().to_string()).unwrap_or_else(|| "—".into());
-                        match w.mass {
-                            Some(m) => format!("{size}, mass {}", m.label().to_lowercase()),
-                            None => size,
-                        }
-                    },
-                    life,
-                    source,
-                    uid: w.uid.clone(),
-                    off: self.settings.wh_disabled_holes.contains(&w.uid),
-                }
-            })
-            .collect();
-
-        let mut kill: Option<i64> = None;
-        let mut edit: Option<i64> = None;
-        let mut info: Option<i64> = None;
-        let mut toggle: Option<String> = None;
-        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("wh_grid").striped(true).num_columns(8).spacing([16.0, 6.0]).show(
-                ui,
-                |ui| {
-                    for h in
-                        ["System", "Type", "Destination", "Constellation", "Region", "Size", "Life", "Source"]
-                    {
-                        ui.label(egui::RichText::new(h).strong());
-                    }
-                    ui.end_row();
-                    for r in &rows {
-                        // In the first column, not the last: this grid is eight columns and scrolls
-                        // sideways, so anything at the far end is off the screen exactly when the
-                        // window is small enough to need it.
-                        ui.horizontal(|ui| {
-                            if ui
-                                .small_button(icon::X)
-                                .on_hover_text("Mark this hole dead")
-                                .clicked()
-                            {
-                                kill = Some(r.id);
-                            }
-                            if ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
-                                edit = Some(r.id);
-                            }
-                            if ui.small_button(icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
-                                info = Some(r.sys_id);
-                            }
-                            if super::wh_graph::wh_route_toggle(ui, r.off) {
-                                toggle = Some(r.uid.clone());
-                            }
-                            if ui.link(&r.sys).clicked() {
-                                self.open_system(r.sys_id);
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(&r.wh_type);
-                            if r.drifter {
-                                ui.label(
-                                    egui::RichText::new(format!("{} drifter", icon::WARNING))
-                                        .color(crate::theme::standing::WARNING),
-                                );
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
-                            if let Some(id) = r.dest_click {
-                                if ui.link(&r.dest).clicked() {
-                                    self.open_system(id);
-                                }
-                            } else {
-                                ui.label(&r.dest);
-                            }
-                        });
-                        ui.label(&r.dest_const);
-                        ui.label(&r.dest_region);
-                        ui.label(&r.size);
-                        ui.label(&r.life);
-                        ui.label(&r.source);
-                        ui.end_row();
-                    }
-                },
-            );
-        });
-        if let Some(id) = kill {
+        if let Some(id) = act.kill {
             self.kill_wormhole(id);
         }
-        if let Some(id) = edit {
+        if let Some(id) = act.edit {
             self.wh_edit(id);
         }
-        if info.is_some() {
-            self.wh_info = info;
+        if act.info.is_some() {
+            self.wh_info = act.info;
         }
-        if let Some(uid) = toggle {
+        if let Some(uid) = act.toggle {
             self.toggle_wh_hole(&uid);
         }
     }
