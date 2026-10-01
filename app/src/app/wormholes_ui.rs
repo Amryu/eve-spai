@@ -98,6 +98,13 @@ impl SpaiApp {
                 whs.retain(|w| groups.get(&w.uid).is_none_or(|g| !hidden.contains(g)));
             }
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            let authors = store.wormhole_authors();
+            for w in &mut whs {
+                if let Some((created, edited)) = authors.get(&w.uid) {
+                    w.created_by = Some(created.clone());
+                    w.edited_by = edited.clone();
+                }
+            }
             // A hole switched off that has since closed is forgotten with it.
             let before = self.settings.wh_disabled_holes.len();
             self.settings.wh_disabled_holes.retain(|u| whs.iter().any(|w| &w.uid == u));

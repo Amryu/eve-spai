@@ -525,7 +525,25 @@ impl Store {
             uid: row.get::<_, Option<String>>(19)?.unwrap_or_default(),
             life: row.get::<_, Option<String>>(20)?.and_then(|l| crate::wormholes::Life::from_code(&l)),
             observed_at: row.get(21)?,
+            created_by: None,
+            edited_by: None,
         })
+    }
+
+    /// Who first wrote each hole's history, and who last changed it and when, by uid. A jump through
+    /// it is not a change to it.
+    #[allow(clippy::type_complexity)]
+    pub fn wormhole_authors(&self) -> std::collections::HashMap<String, (String, Option<(String, i64)>)> {
+        let mut out: std::collections::HashMap<String, (String, Option<(String, i64)>)> = Default::default();
+        let Ok(mut st) = self.conn.prepare("SELECT uid, at, who, field FROM wormhole_audit ORDER BY at, rowid") else { return out };
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)));
+        for (uid, at, who, field) in rows.into_iter().flatten().flatten() {
+            let e = out.entry(uid).or_insert_with(|| (who.clone(), None));
+            if field != "jumped" {
+                e.1 = Some((who, at));
+            }
+        }
+        out
     }
 }
 

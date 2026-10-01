@@ -526,7 +526,7 @@ impl WhHost for WebHost {
                 }
                 let mut edit: Option<WhForm> = None;
                 let mut dead: Option<String> = None;
-                egui::Grid::new("wh_web_holes").num_columns(5).spacing([10.0, 4.0]).show(ui, |ui| {
+                egui::Grid::new("wh_web_holes").num_columns(6).spacing([10.0, 4.0]).show(ui, |ui| {
                     for w in here {
                         let near = w.system_id == sel;
                         let (sig, far) = if near { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
@@ -538,6 +538,7 @@ impl WhHost for WebHost {
                             facts.push(format!("{h}h left"));
                         }
                         ui.label(egui::RichText::new(facts.join(" \u{b7} ")).weak());
+                        spai_ui::wh_graph::who_cell(ui, w, now);
                         if self.can_edit {
                             ui.horizontal(|ui| {
                                 if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {

@@ -20,6 +20,9 @@ const PREFS: &str = "spai.wh.prefs";
 const LAYOUT: &str = "spai.wh.layout";
 const ROUTE_PREFS: &str = "spai.route.prefs";
 const DETECT: &str = "spai.detect";
+const SCOUT: &str = "spai.scout";
+/// EVE-Scout's feed changes as its scouts report; five minutes, as the desktop polls it.
+const SCOUT_EVERY: i64 = 300;
 
 pub struct WebApp {
     loading: Loading,
@@ -47,6 +50,13 @@ pub struct WebApp {
     skills: std::rc::Rc<std::cell::RefCell<Option<Result<(u32, u32), String>>>>,
     /// Ask about the holes the added characters' jumps look like they went through.
     detect: bool,
+    /// Thera and Turnur holes from EVE-Scout: whether to use them, what last came in, and when it
+    /// was asked for. They stay in this browser, never shared to the group.
+    scout_on: bool,
+    scout_in: Arc<Mutex<Option<Vec<spai_core::wormholes::Wormhole>>>>,
+    scout: Vec<spai_core::wormholes::Wormhole>,
+    scout_at: i64,
+    scout_changed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -82,7 +92,11 @@ impl WebApp {
             joined: false,
             tried_app: false,
             tab: Tab::default(),
-            map: StarMap::default(),
+            map: {
+                let mut m = StarMap::default();
+                m.layers.scout = page::load(SCOUT).unwrap_or(true);
+                m
+            },
             map_data: None,
             network: Default::default(),
             asked_network: false,
@@ -91,6 +105,11 @@ impl WebApp {
             added,
             add_scopes: (true, true, true),
             detect: page::load(DETECT).unwrap_or(true),
+            scout_on: page::load(SCOUT).unwrap_or(true),
+            scout_in: Default::default(),
+            scout: Vec::new(),
+            scout_at: 0,
+            scout_changed: false,
             route_note: Default::default(),
             skills: Default::default(),
         }
@@ -274,8 +293,39 @@ impl WebApp {
                 .share_groups()
                 .iter()
                 .any(|g| g.char_id == session.character_id && g.role.can_write() && sync.store.share_key(&g.id, g.epoch).is_some());
-            if sync.store.generation.get() != self.shown {
+            // EVE-Scout's holes, asked for every few minutes while they are wanted. The switch is on
+            // the map's layers; switching it redoes the holes at once.
+            let now_s = spai_core::clock::utc().timestamp();
+            if self.map.layers.scout != self.scout_on {
+                self.scout_on = self.map.layers.scout;
+                page::save(SCOUT, &self.scout_on);
+                self.scout_changed = true;
+            }
+            if self.scout_on && now_s - self.scout_at >= SCOUT_EVERY {
+                self.scout_at = now_s;
+                let (slot, ctx) = (self.scout_in.clone(), ctx.clone());
+                ehttp::fetch(ehttp::Request::get(spai_core::wormholes::SCOUT_URL), move |r| {
+                    let Some(sigs) = r.ok().filter(|r| r.ok).and_then(|r| serde_json::from_slice::<Vec<spai_core::wormholes::ScoutSig>>(&r.bytes).ok()) else { return };
+                    let now = spai_core::clock::utc().timestamp();
+                    *slot.lock().unwrap() = Some(scout_holes(&sigs, now));
+                    ctx.request_repaint();
+                });
+            }
+            if let Some(list) = self.scout_in.lock().unwrap().take() {
+                self.scout = list;
+                self.scout_changed = true;
+            }
+            if sync.store.generation.get() != self.shown || std::mem::take(&mut self.scout_changed) {
                 host.holes = sync.store.wormholes();
+                if self.scout_on {
+                    // A connection the group shares already is the group's entry, kept as it is.
+                    let joined = |w: &spai_core::wormholes::Wormhole, h: &spai_core::wormholes::Wormhole| {
+                        let a = (w.system_id, w.dest_system_id);
+                        a == (h.system_id, h.dest_system_id) || a == (h.dest_system_id.unwrap_or(0), Some(h.system_id))
+                    };
+                    let extra: Vec<_> = self.scout.iter().filter(|w| !w.is_expired(now_s) && !host.holes.iter().any(|h| joined(w, h))).cloned().collect();
+                    host.holes.extend(extra);
+                }
                 host.sigs = sync.store.all_sigs();
                 if let Some(d) = &mut self.map_data {
                     d.set_holes(&host.holes);
@@ -543,4 +593,16 @@ impl eframe::App for WebApp {
             h.corner(ui.ctx(), top.response.rect.bottom());
         }
     }
+}
+
+/// EVE-Scout's entries as holes, each with an id stable across polls so the map keeps its place.
+fn scout_holes(sigs: &[spai_core::wormholes::ScoutSig], now: i64) -> Vec<spai_core::wormholes::Wormhole> {
+    sigs.iter()
+        .filter_map(|s| spai_core::wormholes::scout_to_wormhole(s, now))
+        .map(|w| {
+            let uid = format!("evescout:{}:{}", w.system_id, w.dest_system_id.unwrap_or(0));
+            let id = uid.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211)) as i64 & i64::MAX;
+            spai_core::wormholes::Wormhole { uid, id, ..w }
+        })
+        .collect()
 }

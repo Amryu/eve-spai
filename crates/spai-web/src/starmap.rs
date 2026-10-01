@@ -100,11 +100,16 @@ pub struct Layers {
     pub jump_range: bool,
     /// Systems tinted by the Ansiblex zone they are in around the capital.
     pub zones: bool,
+    /// EVE-Scout's Thera and Turnur holes, on both tabs and for routes.
+    pub scout: bool,
+    /// Holes to Thera and to Turnur drawn, as the desktop's map toggles them.
+    pub thera: bool,
+    pub turnur: bool,
 }
 
 impl Default for Layers {
     fn default() -> Self {
-        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false }
+        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false, scout: true, thera: true, turnur: true }
     }
 }
 
@@ -181,7 +186,7 @@ impl StarMap {
         layers::paint_bridges(&painter, bridges, &routed, &pos, cull, dot, |a, b| layers::bridge_colors(geo, &capital, a, b, BRIDGE));
         let place = |x: f64, z: f64| spai_core::map::project(x, z, &bounds, rect, self.zoom, self.pan);
         if self.layers.wormholes {
-            layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: true, thera: true, spaced: true }, dot, place);
+            layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: self.layers.turnur, thera: self.layers.thera, spaced: true }, dot, place);
         }
         if !hops.is_empty() {
             let phase = (ui.input(|i| i.time) * 28.0) as f32;
@@ -339,6 +344,14 @@ impl StarMap {
                 ui.checkbox(&mut self.layers.wormholes, "Wormholes");
                 ui.checkbox(&mut self.layers.bridges, "Ansiblex");
                 ui.checkbox(&mut self.layers.jove, "Jove Observatories").on_hover_text("Where drifter holes can lead to; shown once system names show");
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut self.layers.scout, "EVE-Scout")
+                    .on_hover_text("Thera and Turnur holes from EVE-Scout, on both tabs and for routes. They stay in this browser.");
+                ui.add_enabled_ui(self.layers.wormholes, |ui| {
+                    ui.checkbox(&mut self.layers.thera, format!("{}  Thera", egui_phosphor::regular::PLANET));
+                    ui.checkbox(&mut self.layers.turnur, format!("{}  Turnur", egui_phosphor::regular::PLANET));
+                });
             });
             // One tint at a time: both colour the same dots.
             ui.horizontal_wrapped(|ui| {
