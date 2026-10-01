@@ -19,6 +19,7 @@ type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
 const PREFS: &str = "spai.wh.prefs";
 const LAYOUT: &str = "spai.wh.layout";
 const ROUTE_PREFS: &str = "spai.route.prefs";
+const DETECT: &str = "spai.detect";
 
 pub struct WebApp {
     loading: Loading,
@@ -44,6 +45,8 @@ pub struct WebApp {
     add_scopes: (bool, bool, bool),
     route_note: std::rc::Rc<std::cell::RefCell<Option<Result<String, String>>>>,
     skills: std::rc::Rc<std::cell::RefCell<Option<Result<(u32, u32), String>>>>,
+    /// Ask about the holes the added characters' jumps look like they went through.
+    detect: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -87,6 +90,7 @@ impl WebApp {
             accounts,
             added,
             add_scopes: (true, true, true),
+            detect: page::load(DETECT).unwrap_or(true),
             route_note: Default::default(),
             skills: Default::default(),
         }
@@ -98,6 +102,17 @@ impl WebApp {
         use crate::accounts::{web, SKILLS, WAYPOINT};
         if !self.accounts.borrow().list.is_empty() {
             web::poll(&self.accounts, ctx);
+        }
+        // Jumps that look like holes, for the corner card; only for someone who may add holes.
+        let moves = std::mem::take(&mut self.accounts.borrow_mut().moves);
+        if let Some(h) = self.host.as_mut().filter(|h| self.detect && h.can_edit) {
+            let now = spai_core::clock::utc().timestamp();
+            h.not_holes.retain(|_, t| now - *t < 3600);
+            for m in moves {
+                if let Some((certain, cands)) = crate::accounts::judge(&h.geo, &m, &h.holes, &h.not_holes) {
+                    h.detected(&m.name, m.from, m.to, m.at, certain, cands);
+                }
+            }
         }
         let (chars, pilots, here) = {
             let a = self.accounts.borrow();
@@ -206,12 +221,21 @@ impl WebApp {
             if let Some(id) = remove {
                 crate::accounts::web::remove(&self.accounts, id);
             }
+            if list.iter().any(|a| a.can(crate::accounts::LOCATION)) {
+                if ui
+                    .checkbox(&mut self.detect, "Detect wormholes from their jumps")
+                    .on_hover_text("A jump no gate explains opens a small card to fill the hole in")
+                    .changed()
+                {
+                    page::save(DETECT, &self.detect);
+                }
+            }
             if !list.is_empty() {
                 ui.separator();
             }
             ui.label(egui::RichText::new("Add a character").strong());
             ui.label(egui::RichText::new("Its EVE login stays in this browser and is used with ESI only, never sent to EVE Spai's server.").weak());
-            ui.checkbox(&mut self.add_scopes.0, "Location and online status").on_hover_text("Shows where it is on both maps, and starts routes there");
+            ui.checkbox(&mut self.add_scopes.0, "Location and online status").on_hover_text("Shows where it is on both maps, starts routes there, and notices the holes it jumps through");
             ui.checkbox(&mut self.add_scopes.1, "Set waypoints").on_hover_text("Set in game from the route planner");
             ui.checkbox(&mut self.add_scopes.2, "Jump skills").on_hover_text("JDC and JFC for jump routes");
             let (l, w, k) = self.add_scopes;
@@ -427,7 +451,7 @@ impl eframe::App for WebApp {
             }
             _ => self.sync = None,
         }
-        egui::Panel::top("web_top").show_inside(ui, |ui| {
+        let top = egui::Panel::top("web_top").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 5))).show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("EVE Spai");
                 if self.host.is_some() && matches!(state, Auth::SignedIn(_)) {
@@ -437,6 +461,13 @@ impl eframe::App for WebApp {
                     ui.menu_value(&mut self.tab, Tab::Map, "Map");
                     ui.menu_value(&mut self.tab, Tab::Group, "Group");
                     ui.separator();
+                    if let Some(h) = self.host.as_mut().filter(|h| h.can_edit) {
+                        if ui.button(format!("{}  Add a wormhole", egui_phosphor::regular::PLUS)).clicked() {
+                            let sel = if self.tab == Tab::Wormholes { self.view.selected } else { self.map.selected };
+                            h.add_prompt(sel);
+                        }
+                        ui.separator();
+                    }
                 }
                 if let Some(sync) = &self.sync {
                     let groups = sync.store.share_groups();
@@ -468,6 +499,9 @@ impl eframe::App for WebApp {
                 });
             });
         });
+        if let Some(h) = &mut self.host {
+            h.side_w = 0.0;
+        }
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if self.invite_choice(ui, &state) || self.waiting(ui, &state) {
                 return;
@@ -504,5 +538,8 @@ impl eframe::App for WebApp {
                 }
             }
         });
+        if let (Some(h), Auth::SignedIn(_)) = (&mut self.host, &state) {
+            h.corner(ui.ctx(), top.response.rect.bottom());
+        }
     }
 }

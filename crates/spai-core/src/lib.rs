@@ -14,4 +14,5 @@ pub mod routeforce;
 pub mod test_support;
 pub mod universe;
 pub mod whdata;
+pub mod whdetect;
 pub mod wormholes;

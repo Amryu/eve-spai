@@ -106,6 +106,29 @@ pub struct WebHost {
     pin_input: String,
     /// The added characters where ESI says they are: name to (system, online).
     pub chars: HashMap<String, (i64, bool)>,
+    /// Holes to fill in, one card at a time in the top right corner.
+    pub prompts: std::collections::VecDeque<Prompt>,
+    /// Pairs of systems the user said were joined by no hole, and when, by low id first.
+    pub not_holes: HashMap<(i64, i64), i64>,
+    /// How wide the side panel was drawn this frame, 0 when it was not: the card keeps clear of it.
+    pub side_w: f32,
+}
+
+/// A card asking about a hole: one to add by hand, or a jump an added character made.
+pub struct Prompt {
+    /// The system the hole is in; `None` while the user is still to name it.
+    pub from: Option<i64>,
+    /// The system as typed, for a hole added by hand.
+    pub system: String,
+    /// Who jumped, when it was detected.
+    pub who: Option<String>,
+    pub to: Option<i64>,
+    /// Certainly a hole, as opposed to maybe one.
+    pub certain: bool,
+    /// The hole types that could have joined the two systems.
+    pub candidates: Vec<&'static str>,
+    pub at: i64,
+    pub form: HoleForm,
 }
 
 /// The side panel's tabs.
@@ -120,7 +143,161 @@ enum Side {
 impl WebHost {
     pub fn new(geo: Arc<Systems>) -> Self {
         let prefs = WhPrefs { pin_jumps: 10, layout_style: "tree".into(), layout_pack: true, ..Default::default() };
-        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new(), chars: HashMap::new() }
+        WebHost { geo, holes: Vec::new(), prefs, layout: HashMap::new(), sigs: HashMap::new(), dirty: false, can_edit: false, form: None, edits: Vec::new(), side: Side::default(), pin_input: String::new(), chars: HashMap::new(), prompts: Default::default(), not_holes: HashMap::new(), side_w: 0.0 }
+    }
+}
+
+impl WebHost {
+    /// A card to add a hole in `sel`, or in a system still to be named.
+    pub fn add_prompt(&mut self, sel: Option<i64>) {
+        let system = sel.and_then(|id| self.geo.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
+        let now = spai_core::clock::utc().timestamp();
+        self.prompts.push_front(Prompt { from: None, system, who: None, to: None, certain: false, candidates: Vec::new(), at: now, form: HoleForm::default() });
+    }
+
+    /// A card for a jump an added character made that looks like a hole.
+    pub fn detected(&mut self, who: &str, from: i64, to: i64, at: i64, certain: bool, candidates: Vec<&'static str>) {
+        if self.prompts.iter().any(|p| p.from == Some(from) && p.to == Some(to)) {
+            return;
+        }
+        let far = self.geo.info_of(to).map(|i| i.name.clone()).unwrap_or_default();
+        let form = HoleForm {
+            far,
+            wh_type: if candidates.len() == 1 { candidates[0].to_owned() } else { String::new() },
+            life: Some(Life::UnderDay),
+            mass: Some(Mass::Fresh),
+            ..Default::default()
+        };
+        self.prompts.push_back(Prompt { from: Some(from), system: String::new(), who: Some(who.to_owned()), to: Some(to), certain, candidates, at, form });
+    }
+
+    /// The card for the front of the queue, in the top right corner and clear of the side panel.
+    pub fn corner(&mut self, ctx: &egui::Context, top: f32) {
+        let Some(p) = self.prompts.front_mut() else { return };
+        let geo = self.geo.clone();
+        let name = |id: i64| geo.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
+        let title = match (&p.who, p.certain) {
+            (None, _) => "Add a wormhole",
+            (Some(_), true) => "Through a wormhole",
+            (Some(_), false) => "A wormhole?",
+        };
+        let more = self.prompts.len() - 1;
+        let p = self.prompts.front_mut().expect("checked");
+        let mut act: Option<&'static str> = None;
+        egui::Window::new(title)
+            .id(egui::Id::new("web_corner_card"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(self.side_w + 12.0), top + 8.0))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                match (&p.who, p.from, p.to) {
+                    (Some(who), Some(from), Some(to)) => {
+                        ui.label(format!("{who} went {} {} {}", name(from), egui_phosphor::regular::ARROW_RIGHT, name(to)));
+                        ui.label(
+                            egui::RichText::new(if p.certain { "No gate joins them: a hole." } else { "Faster than the gates allow: maybe a hole." }).weak(),
+                        );
+                        egui::Grid::new("web_corner_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                            ui.label(format!("Signature in {}", name(from)));
+                            ui.add(egui::TextEdit::singleline(&mut p.form.sig).hint_text("ABC-123").desired_width(100.0));
+                            ui.end_row();
+                            ui.label(format!("Signature in {}", name(to)));
+                            ui.add(egui::TextEdit::singleline(&mut p.form.far_sig).hint_text("XYZ-789").desired_width(100.0));
+                            ui.end_row();
+                            ui.label("Type");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut p.form.wh_type).hint_text("K162\u{2026}").desired_width(60.0));
+                                for c in p.candidates.iter().take(4) {
+                                    if ui.small_button(*c).on_hover_text("Could have joined these two").clicked() {
+                                        p.form.wh_type = (*c).to_owned();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Life");
+                            egui::ComboBox::from_id_salt("web_corner_life").selected_text(p.form.life.map_or("Not known", Life::label)).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut p.form.life, None, "Not known");
+                                for l in Life::ALL {
+                                    ui.selectable_value(&mut p.form.life, Some(l), l.label());
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Mass");
+                            egui::ComboBox::from_id_salt("web_corner_mass").selected_text(p.form.mass.map_or("Not known", Mass::label)).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut p.form.mass, None, "Not known");
+                                for m in Mass::ALL {
+                                    ui.selectable_value(&mut p.form.mass, Some(m), m.label());
+                                }
+                            });
+                            ui.end_row();
+                        });
+                        if let Some(e) = &p.form.error {
+                            ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{}  Save", egui_phosphor::regular::CHECK)).clicked() {
+                                act = Some("save");
+                            }
+                            if !p.certain && ui.button("Not a hole").on_hover_text("Not asked again about these two for an hour").clicked() {
+                                act = Some("not");
+                            }
+                            if ui.button("Skip").clicked() {
+                                act = Some("skip");
+                            }
+                        });
+                    }
+                    _ => {
+                        ui.horizontal(|ui| {
+                            ui.label("In system");
+                            ui.add(egui::TextEdit::singleline(&mut p.system).hint_text("J123456, Jita\u{2026}").desired_width(160.0));
+                        });
+                        match hole_form(ui, &mut p.form, false) {
+                            FormAct::Save => act = Some("save"),
+                            FormAct::Cancel => act = Some("skip"),
+                            _ => {}
+                        }
+                    }
+                }
+                if more > 0 {
+                    ui.label(egui::RichText::new(format!("{more} more to look at")).weak());
+                }
+            });
+        let now = spai_core::clock::utc().timestamp();
+        match act {
+            Some("save") => {
+                let p = self.prompts.front_mut().expect("checked");
+                let here = p.from.or_else(|| geo.lookup(p.system.trim()).or_else(|| geo.lookup_prefix(p.system.trim())).map(|i| i.id));
+                let Some(here) = here else {
+                    p.form.error = Some(format!("No system called {:?}.", p.system.trim()));
+                    return;
+                };
+                match p.form.apply(None, here, &geo, now) {
+                    Ok(mut w) => {
+                        if let Some(who) = &p.who {
+                            w.source = Source::Auto;
+                            w.detected_by = Some(who.clone());
+                            w.jumped_at = Some(p.at);
+                            w.reported_at = p.at;
+                        }
+                        self.edits.push(Edit::Save(w));
+                        self.prompts.pop_front();
+                    }
+                    Err(e) => p.form.error = Some(e),
+                }
+            }
+            Some("not") => {
+                if let Some(p) = self.prompts.pop_front() {
+                    if let (Some(a), Some(b)) = (p.from, p.to) {
+                        self.not_holes.insert((a.min(b), a.max(b)), now);
+                    }
+                }
+            }
+            Some(_) => {
+                self.prompts.pop_front();
+            }
+            None => {}
+        }
     }
 }
 
@@ -260,7 +437,7 @@ impl WhHost for WebHost {
         let Some(info) = geo.info_of(sel) else { return };
         let now = spai_core::clock::utc().timestamp();
         let sigs = self.sigs.get(&sel).cloned().unwrap_or_default();
-        egui::Panel::right("wh_web_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
+        let shown = egui::Panel::right("wh_web_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.heading(&info.name);
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", info.region, info.security)).weak());
@@ -355,6 +532,7 @@ impl WhHost for WebHost {
                 }
             });
         });
+        self.side_w = shown.response.rect.width();
     }
 }
 

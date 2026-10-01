@@ -33,6 +33,54 @@ impl Account {
 /// Where each added character is, as ESI last said: system and whether they are online.
 pub type Live = HashMap<i64, (i64, bool)>;
 
+/// A character seen in a new system: what auto-detection judges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Move {
+    pub name: String,
+    pub from: i64,
+    pub to: i64,
+    pub at: i64,
+    /// Seconds since it was last seen in `from`.
+    pub gap_secs: i64,
+}
+
+/// Whether a move went through a wormhole: `Some((certain, the types that could have joined the
+/// two))`, or `None` when gates, a hole already on the map or a "not a hole" answer explain it.
+pub fn judge(geo: &spai_core::geo::Systems, m: &Move, holes: &[spai_core::wormholes::Wormhole], not_holes: &HashMap<(i64, i64), i64>) -> Option<(bool, Vec<&'static str>)> {
+    use spai_core::whdetect::{classify, Clones, Transition, Verdict};
+    let known = holes.iter().any(|w| (w.system_id == m.from && w.dest_system_id == Some(m.to)) || (w.system_id == m.to && w.dest_system_id == Some(m.from)));
+    if known || not_holes.contains_key(&(m.from.min(m.to), m.from.max(m.to))) {
+        return None;
+    }
+    // No hole joins a drifter system and one without a Jove Observatory: something else moved it.
+    if spai_core::whdata::connection_problem(m.from, Some(m.to), |_| None, None, None).is_some() {
+        return None;
+    }
+    let t = Transition {
+        character: m.name.clone(),
+        from: m.from,
+        to: m.to,
+        at: m.at,
+        gap_secs: m.gap_secs,
+        ship_before: None,
+        ship_after: None,
+        group_after: None,
+        docked_after: false,
+        last_jump: None,
+    };
+    let codes = |c: Vec<spai_core::whdata::Candidate>| {
+        let mut v: Vec<&'static str> = c.iter().map(|c| c.code).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    match classify(&t, geo, &Clones::default()) {
+        Verdict::Hole(c) => Some((true, codes(c))),
+        Verdict::Possible(c) => Some((false, codes(c))),
+        Verdict::Explained(_) => None,
+    }
+}
+
 /// The scopes to ask for, from what the user ticked.
 pub fn scopes(location: bool, waypoints: bool, skills: bool) -> Vec<String> {
     let mut v = Vec::new();
@@ -87,6 +135,10 @@ pub mod web {
     pub struct Accounts {
         pub list: Vec<Account>,
         pub live: Live,
+        /// When each character's location was last read.
+        seen_at: HashMap<i64, i64>,
+        /// Characters seen in a new system since the app last took them.
+        pub moves: Vec<Move>,
         /// What the last ESI call that failed said, per character.
         pub errors: HashMap<i64, String>,
         last: i64,
@@ -195,8 +247,15 @@ pub mod web {
                     true
                 };
                 let mut s = shared.borrow_mut();
+                let now = spai_core::clock::utc().timestamp();
                 match loc.as_ref().ok().and_then(|v| v["solar_system_id"].as_i64()) {
                     Some(sys) => {
+                        if let Some((was, _)) = s.live.get(&id).copied().filter(|(was, _)| *was != sys) {
+                            let name = s.list.iter().find(|a| a.char_id == id).map(|a| a.name.clone()).unwrap_or_default();
+                            let gap_secs = now - s.seen_at.get(&id).copied().unwrap_or(now);
+                            s.moves.push(Move { name, from: was, to: sys, at: now, gap_secs });
+                        }
+                        s.seen_at.insert(id, now);
                         s.live.insert(id, (sys, online));
                         s.errors.remove(&id);
                     }
@@ -265,6 +324,19 @@ mod tests {
         ]});
         assert_eq!(jump_skills(&v), (4, 3));
         assert_eq!(jump_skills(&serde_json::json!({})), (0, 0));
+    }
+
+    #[test]
+    fn a_jump_into_jspace_is_a_hole_and_gates_or_known_holes_are_not() {
+        let geo = spai_core::test_support::small_universe(&[(31_000_200, "J100200".into(), -1.0, "A-R00001".into())]);
+        let m = |from: i64, to: i64| Move { name: "Scout".into(), from, to, at: 0, gap_secs: 10 };
+        let none = HashMap::new();
+        assert!(judge(&geo, &m(30_004_759, 31_000_200), &[], &none).is_some_and(|(certain, _)| certain), "into J-space there is no gate");
+        assert!(judge(&geo, &m(30_004_759, 30_004_608), &[], &none).is_none(), "one gate apart");
+        let known = spai_core::wormholes::Wormhole { system_id: 31_000_200, dest_system_id: Some(30_004_759), ..Default::default() };
+        assert!(judge(&geo, &m(30_004_759, 31_000_200), &[known], &none).is_none(), "already on the map, either way round");
+        let said = HashMap::from([((30_004_759, 31_000_200), 0)]);
+        assert!(judge(&geo, &m(31_000_200, 30_004_759), &[], &said).is_none(), "the user said it was not a hole");
     }
 
     #[test]

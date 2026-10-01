@@ -16,6 +16,7 @@ await page.goto(site + '/wh/');
 await page.evaluate(s => { localStorage.setItem('spai.session', s); localStorage.setItem('spai.invite.here', 'true'); }, session);
 // SPAI_E2E_ESI: a character added with every scope, and ESI answered here: in Jita, JDC 5, JFC 4.
 const waypoints = [];
+let locReads = 0;
 if (process.env.SPAI_E2E_ESI) {
   const acc = [{ char_id: 90000777, name: 'Alt Pilot', scopes: ['esi-location.read_location.v1', 'esi-location.read_online.v1', 'esi-ui.write_waypoint.v1', 'esi-skills.read_skills.v1'],
     access: 'x', refresh: 'y', expires_at: 4102444800 }];
@@ -23,7 +24,8 @@ if (process.env.SPAI_E2E_ESI) {
   await page.route('https://esi.evetech.net/**', r => {
     const u = r.request().url();
     const json = b => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b), headers: { 'access-control-allow-origin': '*' } });
-    if (u.includes('/location/')) return json({ solar_system_id: 30000142 });
+    // SPAI_E2E_ESI_JUMP: in Jita for two reads, then in that system, as if through a hole.
+    if (u.includes('/location/')) { locReads++; const to = Number(process.env.SPAI_E2E_ESI_JUMP || 0); return json({ solar_system_id: to && locReads > 2 ? to : 30000142 }); }
     if (u.includes('/online/')) return json({ online: true });
     if (u.includes('/skills/')) return json({ skills: [{ skill_id: 21611, trained_skill_level: 5 }, { skill_id: 21610, trained_skill_level: 4 }] });
     if (u.includes('/waypoint/')) { waypoints.push(new URL(u).searchParams.get('destination_id')); return r.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } }); }
