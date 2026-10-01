@@ -46,6 +46,50 @@ pub fn line_tip(ui: &egui::Ui, pointer: Option<egui::Pos2>, text: String) {
 
 /// Below and right of the pointer, flipped to the other side on whichever axis would run off
 /// `screen`, and kept on it as a last resort.
+/// Who added a hole and when, and who last changed it, for tooltips and lists: "Added by X 3h ago"
+/// and, when someone changed it since, "edited by Y 20m ago".
+pub fn who_lines(w: &spai_core::wormholes::Wormhole, now: i64) -> (String, Option<String>) {
+    use spai_core::wormholes::Source;
+    let ago = |t: i64| crate::widgets::human_ago(now - t);
+    let added = match w.created_by.as_ref().or(w.detected_by.as_ref()) {
+        Some(who) => format!("Added by {who} {} ago", ago(w.reported_at)),
+        None => match w.source {
+            Source::Manual => format!("Added by hand {} ago", ago(w.reported_at)),
+            Source::Auto => format!("Detected {} ago", ago(w.reported_at)),
+            s => format!("Added from {} {} ago", s.label(), ago(w.reported_at)),
+        },
+    };
+    // A change within a minute of adding it is the adding itself.
+    let edited = w.edited_by.as_ref().filter(|(_, at)| *at > w.reported_at + 60).map(|(who, at)| format!("Edited by {who} {} ago", ago(*at)));
+    (added, edited)
+}
+
+/// The same as [`who_lines`] for a list cell: how long ago and who, the edit marked with a pencil,
+/// with the full sentences on hover.
+pub fn who_cell(ui: &mut egui::Ui, w: &spai_core::wormholes::Wormhole, now: i64) {
+    let (added, edited) = who_lines(w, now);
+    let ago = |t: i64| crate::widgets::human_ago(now - t);
+    let by = w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().to_owned());
+    let hover = match &edited {
+        Some(e) => format!("{added}\n{e}"),
+        None => added,
+    };
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // A fixed width the names wrap in by word: a long name must neither widen the panel nor
+        // break letter by letter in a squeezed column.
+        ui.set_min_width(56.0);
+        ui.set_max_width(56.0);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        ui.label(egui::RichText::new(format!("{} ago", ago(w.reported_at))).weak()).on_hover_text(&hover);
+        ui.label(egui::RichText::new(by).weak()).on_hover_text(&hover);
+        if let (Some(_), Some((who, at))) = (&edited, &w.edited_by) {
+            ui.label(egui::RichText::new(format!("{} {} ago", egui_phosphor::regular::PENCIL_SIMPLE, ago(*at))).weak()).on_hover_text(&hover);
+            ui.label(egui::RichText::new(who).weak()).on_hover_text(&hover);
+        }
+    });
+}
+
 pub fn tip_pos(pointer: egui::Pos2, size: egui::Vec2, screen: egui::Rect) -> egui::Pos2 {
     const GAP: f32 = 14.0;
     let mut p = pointer + egui::vec2(GAP, GAP);

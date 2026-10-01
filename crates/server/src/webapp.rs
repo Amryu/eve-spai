@@ -78,7 +78,7 @@ fn hashes(blocks: &[&str]) -> String {
 pub fn csp(index: &str) -> String {
     format!(
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' {}; style-src 'self' {}; \
-         connect-src 'self' https://login.eveonline.com https://esi.evetech.net; img-src 'self' data: https://images.evetech.net; \
+         connect-src 'self' https://login.eveonline.com https://esi.evetech.net https://api.eve-scout.com; img-src 'self' data: https://images.evetech.net; \
          object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         hashes(&inline_blocks(index, "script")),
         hashes(&inline_blocks(index, "style")),

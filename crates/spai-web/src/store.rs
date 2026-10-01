@@ -18,6 +18,9 @@ struct Held {
     state: HoleState,
     group: Option<String>,
     dead: bool,
+    /// Who it came from first, 0 for this browser; older saves fall back to the oldest field.
+    #[serde(default)]
+    first_by: Option<i64>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -80,14 +83,34 @@ impl WebStore {
     /// The live holes, for the map.
     pub fn wormholes(&self) -> Vec<Wormhole> {
         let now = spai_core::clock::utc().timestamp();
-        self.data
-            .borrow()
-            .holes
+        let d = self.data.borrow();
+        d.holes
             .values()
             .filter(|h| !h.dead)
-            .map(|h| Wormhole { id: Self::id_of(&h.state.uid), ..hole::fresh(&h.state) })
+            .map(|h| {
+                let (created_by, edited_by) = Self::authors(&d, h);
+                Wormhole { id: Self::id_of(&h.state.uid), created_by, edited_by, ..hole::fresh(&h.state) }
+            })
             .filter(|w| !w.is_expired(now))
             .collect()
+    }
+
+    /// Who wrote a hole's first and its latest field, by name from its group's members; a change
+    /// made in this browser and not yet sent is "you".
+    fn authors(d: &Data, h: &Held) -> (Option<String>, Option<(String, i64)>) {
+        let name = |by: i64| -> String {
+            if by == 0 {
+                return "you".to_owned();
+            }
+            h.group
+                .as_ref()
+                .and_then(|g| d.members.get(g))
+                .and_then(|ms| ms.iter().find(|m| m.char_id == by))
+                .map_or_else(|| format!("#{by}"), |m| m.name.clone())
+        };
+        let first = h.first_by.or_else(|| h.state.fields.values().min_by_key(|f| f.at).map(|f| f.by)).map(name);
+        let last = h.state.fields.values().max_by_key(|f| f.at).map(|f| (name(f.by), f.at));
+        (first, last)
     }
 
     /// Forgets holes past their lifetime, dead or not, as the desktop's `prune_wormholes` does. A
@@ -123,6 +146,7 @@ impl WebStore {
         {
             let mut d = self.data.borrow_mut();
             let held = d.holes.entry(w.uid.clone()).or_insert_with(|| Held {
+                first_by: Some(0),
                 state: HoleState { uid: w.uid.clone(), system_id: w.system_id, source: w.source.code().to_owned(), reported_at: w.reported_at, fields: HashMap::new() },
                 group: None,
                 dead: false,
@@ -291,7 +315,8 @@ impl ShareStore for WebStore {
                     let w = hole::fresh(remote);
                     let mut state = remote.clone();
                     state.fields.retain(|name, f| hole::get(&w, name) == f.v);
-                    d.holes.insert(remote.uid.clone(), Held { state, group: Some(group.to_owned()), dead: false });
+                    let first_by = state.fields.values().min_by_key(|f| f.at).map(|f| f.by);
+                    d.holes.insert(remote.uid.clone(), Held { state, group: Some(group.to_owned()), dead: false, first_by });
                     true
                 }
             }
@@ -432,6 +457,23 @@ mod tests {
         assert_eq!(back.wormhole_group("u1").as_deref(), Some("g"));
         back.share_apply_dead("u1");
         assert!(back.wormholes().is_empty());
+    }
+
+    #[test]
+    fn a_hole_says_who_added_it_and_who_changed_it_last() {
+        let s = WebStore::default();
+        s.data.borrow_mut().members.insert(
+            "g".into(),
+            vec![
+                spai_share::ops::Member { char_id: 7, name: "Scout A".into(), role: spai_share::ops::Role::Member, devices: Vec::new() },
+                spai_share::ops::Member { char_id: 8, name: "Scout B".into(), role: spai_share::ops::Role::Member, devices: Vec::new() },
+            ],
+        );
+        s.share_apply_hole(&remote("u1", "ABC-123", 1_000, 7), "g", "Scout A");
+        s.share_apply_hole(&remote("u1", "ABC-124", 2_000, 8), "g", "Scout B");
+        let w = &s.wormholes()[0];
+        assert_eq!(w.created_by.as_deref(), Some("Scout A"));
+        assert_eq!(w.edited_by, Some(("Scout B".to_owned(), 2_000)));
     }
 
     #[test]

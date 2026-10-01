@@ -803,7 +803,11 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         if let Some((life, _)) = life_badge(w, now, ui.visuals()) {
             tip.push_str(&format!("\nLife: {life}"));
         }
-        tip.push_str(&format!("\nAdded {} ago", crate::widgets::human_ago(now - w.reported_at)));
+        let (added, edited) = crate::wh_graph::who_lines(w, now);
+        tip.push_str(&format!("\n{added}"));
+        if let Some(e) = edited {
+            tip.push_str(&format!("\n{e}"));
+        }
         tip.push_str(&format!("\nSource: {}", w.source.label()));
         if let Some(name) = host.group_name(&w.uid) {
             tip.push_str(&format!("\nShared in {name}"));

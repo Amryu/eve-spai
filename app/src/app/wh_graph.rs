@@ -153,8 +153,7 @@ impl SpaiApp {
                                 ui.label(egui::RichText::new(m.short()).color(mass_color(Some(m)))).on_hover_text(format!("Mass: {}", m.label()));
                             }
                         });
-                        ui.label(egui::RichText::new(format!("{} ago", super::human_ago(now - w.reported_at))).weak())
-                            .on_hover_text(format!("Added {} ago, from {}", super::human_ago(now - w.reported_at), w.source.label()));
+                        spai_ui::wh_graph::who_cell(ui, w, now);
                         ui.horizontal(|ui| {
                             if ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
                                 edit = Some(w.id);
