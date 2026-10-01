@@ -496,8 +496,8 @@ impl eframe::App for WebApp {
                 Some(Ok(u)) => {
                     let mut host = WebHost::new(Arc::new(u.systems()));
                     match page::load::<spai_ui::wh_tab::WhPrefs>(PREFS) {
-                        // 10 was this page's own default before it took the desktop's.
-                        Some(p) if p.pin_jumps == 10 => host.prefs = spai_ui::wh_tab::WhPrefs { pin_jumps: crate::host::PIN_JUMPS, ..p },
+                        // Earlier defaults, 10 and then 30, move to the current one.
+                        Some(p) if p.pin_jumps == 10 || p.pin_jumps == 30 => host.prefs = spai_ui::wh_tab::WhPrefs { pin_jumps: crate::host::PIN_JUMPS, ..p },
                         Some(p) => host.prefs = p,
                         // First visit: the systems most of the group stages in.
                         None => {

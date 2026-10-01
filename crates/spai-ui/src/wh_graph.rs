@@ -193,23 +193,16 @@ pub fn probe_effects(holes: &[Wormhole], system: i64, scan: &[spai_core::wormhol
 
 pub const SHATTERED_COLOR: egui::Color32 = egui::Color32::from_rgb(0x9A, 0xD8, 0xF0);
 
-/// Drops from `holes` those whose k-space end is not in `keep`, unless both ends are k-space (so
-/// k-space to Pochven, which is k-space too). Returns how many were dropped at each end kept.
+/// Drops from `holes` those whose k-space end is not in `keep`; a hole with both ends in k-space
+/// (Turnur's, Pochven's) stays when either end is kept. Returns how many were dropped at each end
+/// kept.
 pub fn overview(holes: &mut Vec<Wormhole>, kspace: impl Fn(i64) -> bool, keep: &HashSet<i64>) -> HashMap<i64, usize> {
-    // A k-space system on the map anyway, as one end of a k-space to k-space hole, keeps its
-    // other holes too.
-    let mut keep = keep.clone();
-    for w in holes.iter() {
-        if let Some(b) = w.dest_system_id.filter(|b| kspace(w.system_id) && kspace(*b)) {
-            keep.extend([w.system_id, b]);
-        }
-    }
     let mut hidden: HashMap<i64, usize> = HashMap::new();
     holes.retain(|w| {
         let Some(b) = w.dest_system_id else { return true };
         let a = w.system_id;
         let (ka, kb) = (kspace(a), kspace(b));
-        if ka && kb {
+        if ka && kb && (keep.contains(&a) || keep.contains(&b)) {
             return true;
         }
         let (gone_a, gone_b) = (ka && !keep.contains(&a), kb && !keep.contains(&b));
@@ -1608,16 +1601,19 @@ mod tests {
         let keep = HashSet::from([amamake]);
         let hidden = overview(&mut holes, kspace, &keep);
         let left: Vec<(i64, Option<i64>)> = holes.iter().map(|w| (w.system_id, w.dest_system_id)).collect();
-        // Jita is drawn anyway, for its k-space holes, so its holes into wormhole space stay too.
-        assert_eq!(left.len(), 6, "{left:?}");
-        assert!(hidden.is_empty());
+        // A k-space to k-space hole stays for its kept end; one with neither end kept goes, and
+        // Jita being on the map for it keeps none of its other holes.
+        assert_eq!(left, vec![(thera, Some(amamake)), (jita, Some(amamake)), (j, None)]);
+        assert_eq!(hidden, HashMap::from([(thera, 1), (j, 1)]));
         // Without those, Jita leads nowhere pinned: counted on the wormhole side instead.
         let mut holes = vec![hole(thera, jita), hole(thera, amamake), hole(j, jita)];
         let hidden = overview(&mut holes, kspace, &keep);
         let left: Vec<(i64, Option<i64>)> = holes.iter().map(|w| (w.system_id, w.dest_system_id)).collect();
         assert_eq!(left, vec![(thera, Some(amamake))]);
         assert_eq!(hidden, HashMap::from([(thera, 1), (j, 1)]));
-        let _ = pochven;
+        let mut holes = vec![hole(pochven, jita)];
+        overview(&mut holes, kspace, &keep);
+        assert!(holes.is_empty(), "Pochven to Jita leads to no pin");
     }
 
     #[test]
