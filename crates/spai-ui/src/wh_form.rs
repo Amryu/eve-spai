@@ -131,7 +131,7 @@ pub fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut Str
                 spai_core::whdata::Dest::AnyKspace => "k-space".into(),
                 spai_core::whdata::Dest::Unknown => "the other side".into(),
             };
-            format!("\u{2192} {dest}, {}", t.size_label())
+            format!("{} {dest}, {}", egui_phosphor::regular::ARROW_RIGHT, t.size_label())
         })
     };
     let shown = egui::ComboBox::from_id_salt(salt)

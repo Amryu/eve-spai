@@ -1105,6 +1105,15 @@ impl SpaiApp {
         // top of the endpoint rather than under it.
         if let Some(from) = self.map_link {
             let cursor = ui.input(|i| i.pointer.interact_pos());
+            // Near an edge the map pans towards it, so a far system can be reached.
+            if let Some(c) = cursor {
+                let content = egui::Rect::from_points(&pos.values().copied().collect::<Vec<_>>());
+                let shift = spai_ui::star_map::edge_pan(rect, c, content, ui.input(|i| i.stable_dt));
+                if shift != egui::Vec2::ZERO {
+                    self.map_pan += shift;
+                    ui.ctx().request_repaint();
+                }
+            }
             if let (Some(&a), Some(c)) = (pos.get(&from), cursor) {
                 let over = nearest_system(c, &pos, 14.0).filter(|id| *id != from);
                 let b = over.and_then(|id| pos.get(&id).copied()).unwrap_or(c);

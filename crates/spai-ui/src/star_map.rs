@@ -354,6 +354,35 @@ pub fn paint_gates(
     }
 }
 
+/// How far to pan this frame while a route is dragged near the edge of `view`: faster the deeper
+/// the pointer is into the edge band, up to a steady top speed, and not once the map's systems
+/// (`content`) no longer reach past the middle of the view on that side, so it cannot run away.
+pub fn edge_pan(view: egui::Rect, pointer: egui::Pos2, content: egui::Rect, dt: f32) -> egui::Vec2 {
+    const BAND: f32 = 56.0;
+    const TOP_SPEED: f32 = 900.0;
+    let depth = |into: f32| (into / BAND).clamp(0.0, 1.0);
+    let speed = |t: f32| TOP_SPEED * t * t * dt.min(0.05);
+    let mut d = egui::Vec2::ZERO;
+    let c = view.center();
+    let right = depth(pointer.x - (view.right() - BAND));
+    let left = depth(view.left() + BAND - pointer.x);
+    let down = depth(pointer.y - (view.bottom() - BAND));
+    let up = depth(view.top() + BAND - pointer.y);
+    if right > 0.0 && content.right() > c.x {
+        d.x -= speed(right);
+    }
+    if left > 0.0 && content.left() < c.x {
+        d.x += speed(left);
+    }
+    if down > 0.0 && content.bottom() > c.y {
+        d.y -= speed(down);
+    }
+    if up > 0.0 && content.top() < c.y {
+        d.y += speed(up);
+    }
+    d
+}
+
 /// The pairs of systems a route runs between, low id first: each step, and each stretch through
 /// wormhole space between two k-space systems, which the map draws as one chain.
 pub fn route_pairs(path: &[i64], out: &mut HashSet<(i64, i64)>) {
@@ -701,6 +730,21 @@ mod tests {
 
     /// Each step is a pair, and so is a stretch through wormhole space between two k-space
     /// systems, which the map draws as one chain; k-space systems a gate apart add nothing more.
+    /// Faster towards the edge, capped, and only while the map still reaches past the middle.
+    #[test]
+    fn dragging_near_an_edge_pans_towards_it_within_limits() {
+        let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 800.0));
+        let wide = egui::Rect::from_min_max(egui::pos2(-2000.0, -2000.0), egui::pos2(3000.0, 3000.0));
+        let dt = 1.0 / 60.0;
+        assert_eq!(edge_pan(view, egui::pos2(500.0, 400.0), wide, dt), egui::Vec2::ZERO, "nothing mid-screen");
+        let near = edge_pan(view, egui::pos2(970.0, 400.0), wide, dt).x;
+        let at = edge_pan(view, egui::pos2(1000.0, 400.0), wide, dt).x;
+        assert!(near < 0.0 && at < near, "the map moves left, faster at the edge: {near} {at}");
+        assert!(edge_pan(view, egui::pos2(1400.0, 400.0), wide, dt).x >= at, "no faster past the edge");
+        let gone = egui::Rect::from_min_max(egui::pos2(-900.0, 0.0), egui::pos2(400.0, 800.0));
+        assert_eq!(edge_pan(view, egui::pos2(995.0, 400.0), gone, dt).x, 0.0, "nothing more to the right");
+    }
+
     #[test]
     fn a_route_covers_its_steps_and_its_wormhole_stretches() {
         let (jita, j1, j2, amarr, dodixie) = (30_000_142, 31_000_200, 31_000_300, 30_002_187, 30_002_659);

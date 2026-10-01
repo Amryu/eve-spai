@@ -393,10 +393,9 @@ impl SpaiApp {
         let actions_w = 76.0 + scrollbar_gutter(ui);
         // The first sighting's age too, where the window has room for it.
         let others = 24.0 + sys_w + id_w + group_w + 60.0 + seen_w + actions_w + ui.spacing().item_spacing.x * 8.0;
-        let found_age = ui.available_width() >= others + by_w + fit("Found", "Wed 88:88 (88h)");
         // Narrower still, who pasted it moves into the Seen column's hover.
         let show_by = ui.available_width() >= others + by_w + fit("Found", "Wed 88:88");
-        let found_w = fit("Found", if found_age { "Wed 88:88 (88h)" } else { "Wed 88:88" });
+        let found_w = fit("Found", "88h ago");
         {
             let mut table = egui_extras::TableBuilder::new(ui)
                 .id_salt("sig_browser_table")
@@ -515,7 +514,7 @@ impl SpaiApp {
                             }
                         });
                         row.col(|ui| {
-                            let t = egui::RichText::new(&s.sig);
+                            let t = egui::RichText::new(format!("{} {}", spai_ui::widgets::sig_icon(&s.kind), s.sig));
                             ui.label(if is_anomaly(s) && aged.is_none() { t.weak() } else { tint(t) }).on_hover_text(&s.kind);
                         });
                         row.col(|ui| {
@@ -532,11 +531,7 @@ impl SpaiApp {
                             ui.add(egui::Label::new(tint(egui::RichText::new(info))).truncate());
                         });
                         row.col(|ui| {
-                            let found = if found_age {
-                                format!("{} ({})", found_at(s.added_at, now, eve), super::human_ago(now - s.added_at))
-                            } else {
-                                found_at(s.added_at, now, eve)
-                            };
+                            let found = found_at(s.added_at, now, eve);
                             ui.label(tint(egui::RichText::new(found))).on_hover_text(found_hover(s.added_at, now, eve));
                         });
                         row.col(|ui| {

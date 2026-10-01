@@ -303,6 +303,10 @@ impl WebApp {
                 match e {
                     crate::host::Edit::Save(w) => sync.store.edit_hole(&w, now),
                     crate::host::Edit::Dead(uid) => sync.store.kill_hole(&uid),
+                    crate::host::Edit::Sigs { system, scan, full } => {
+                        let (added, updated, removed) = sync.store.paste_sigs(system, &scan, &session.character_name, now, full);
+                        host.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed"));
+                    }
                 }
                 sync.poke();
             }
@@ -599,7 +603,16 @@ impl eframe::App for WebApp {
                     }
                 }
                 (Some(host), _) => {
+                    host.detect = self.detect;
                     spai_ui::wh_tab::show(&mut self.view, host, ui);
+                    // The settings menu's switches, back into the app that owns them.
+                    if host.detect != self.detect {
+                        self.detect = host.detect;
+                        page::save(DETECT, &self.detect);
+                    }
+                    if std::mem::take(&mut host.open_group) {
+                        self.tab = Tab::Group;
+                    }
                     if std::mem::take(&mut host.dirty) {
                         page::save(PREFS, &host.prefs);
                         page::save(FILTER, &host.filter);

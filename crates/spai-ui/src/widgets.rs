@@ -86,15 +86,18 @@ pub fn human_ago(secs: i64) -> String {
 
 /// When a signature was first seen, as a clock time, with the weekday when not today: how long a
 /// hole has been open starts there.
-pub fn found_at(at: i64, now: i64, eve: bool) -> String {
-    let (Some(t), Some(n)) = (chrono::DateTime::from_timestamp(at, 0), chrono::DateTime::from_timestamp(now, 0)) else { return String::new() };
-    let fmt = |t: chrono::NaiveDateTime, n: chrono::NaiveDateTime| {
-        if t.date() == n.date() { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
-    };
-    if eve {
-        fmt(t.naive_utc(), n.naive_utc())
+pub fn found_at(at: i64, now: i64, _eve: bool) -> String {
+    // How long ago, which is what matters for a signature; the time itself is on hover.
+    format!("{} ago", human_ago(now - at))
+}
+
+/// A signature's kind as a leading icon, so the two read apart at a glance: a magnifying glass for
+/// a signature, which takes probing, a sparkle for an anomaly, which the scanner shows at once.
+pub fn sig_icon(kind: &str) -> &'static str {
+    if kind.to_lowercase().contains("anomal") {
+        egui_phosphor::regular::SPARKLE
     } else {
-        fmt(t.with_timezone(&chrono::Local).naive_local(), n.with_timezone(&chrono::Local).naive_local())
+        egui_phosphor::regular::MAGNIFYING_GLASS
     }
 }
 

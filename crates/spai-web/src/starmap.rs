@@ -197,6 +197,17 @@ impl StarMap {
             layers::paint_route_legs(&painter, &pos, &hops, phase, HOLE, by_hole, |a, b, fallback| layers::bridge_colors(geo, &capital, a, b, fallback));
             ui.ctx().request_repaint();
         }
+        // Near an edge the map pans towards it while a route is dragged, so a far system can be reached.
+        if self.plan.link.is_some() {
+            if let Some(c) = ui.input(|i| i.pointer.interact_pos()) {
+                let content = egui::Rect::from_points(&pos.values().copied().collect::<Vec<_>>());
+                let shift = layers::edge_pan(rect, c, content, ui.input(|i| i.stable_dt));
+                if shift != egui::Vec2::ZERO {
+                    self.pan += shift;
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         // The route drag: a line to the pointer, snapped to the system under it.
         if let (Some(from), Some(p)) = (self.plan.link, pointer) {
             if let Some(a) = pos.get(&from) {

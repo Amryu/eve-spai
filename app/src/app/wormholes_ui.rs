@@ -1005,125 +1005,16 @@ pub(crate) fn offerable(s: &crate::store::SystemSig, system: i64, holes: &[crate
 }
 
 pub(crate) use spai_ui::wh_form::{choice_row, drifter_autofill, sig_field, wh_type_picker, WhForm};
-pub(crate) use spai_ui::wh_tab::wh_filter_ui;
+pub(crate) use spai_ui::wh_tab::{wh_filter_ui, wh_system_facts};
 
 /// The destination class of a hole whose far side is system `id`.
 pub(crate) use spai_core::wormholes::dest_class;
 
 
 
-/// What a system is like for wormhole purposes: class, effect with what it does, statics,
-/// celestials, and for k-space the holes that can open there when `spawns` is set.
-pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::SystemInfo, spawns: bool) {
-    use crate::whdata::{self, Class, Dest};
-    let class = whdata::class_of(sys, info.security, &info.region);
-    let summary = whdata::class_summary(class);
-    if !summary.is_empty() {
-        ui.label(summary);
-    }
-    let hole_line = |ui: &mut egui::Ui, t: &whdata::HoleType| {
-        let dest = match t.dest {
-            Dest::Class(c) => c.label(),
-            Dest::AnyKspace => "k-space".into(),
-            Dest::Unknown => "the other side".into(),
-        };
-        ui.label(format!("{} \u{2192} {dest}, {}", t.code, t.size_label())).on_hover_text(format!(
-            "{} t per jump\n{} t in all\nLasts {}h{}",
-            tonnes(t.jump_mass),
-            tonnes(t.total_mass),
-            t.lifetime_h,
-            if t.is_static { "\nA static somewhere" } else { "" }
-        ));
-    };
-    if let Some(j) = whdata::jsystem(sys) {
-        if j.shattered() && class != Class::W(13) {
-            ui.label(whdata::SHATTERED_NOTE);
-        }
-        ui.add_space(6.0);
-        match &j.effect {
-            Some(effect) => {
-                ui.label(egui::RichText::new(effect).strong());
-                ui.label(whdata::effect_summary(effect));
-                for (m, v) in whdata::effect_mods(effect, j.class) {
-                    ui.label(format!("{m} {v}"));
-                }
-            }
-            None => {
-                ui.label(egui::RichText::new("No system effect").weak());
-            }
-        }
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Statics").strong());
-        if j.statics.is_empty() {
-            ui.label(egui::RichText::new("None").weak());
-        }
-        for code in &j.statics {
-            match whdata::hole_type(code) {
-                Some(t) => hole_line(ui, t),
-                None => {
-                    ui.label(code);
-                }
-            }
-        }
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Celestials").strong());
-        let mut kinds: Vec<(&str, usize)> = Vec::new();
-        for p in &j.planets {
-            match kinds.iter_mut().find(|(k, _)| *k == p.as_str()) {
-                Some((_, n)) => *n += 1,
-                None => kinds.push((p.as_str(), 1)),
-            }
-        }
-        ui.label(format!(
-            "Sun {} \u{b7} {} planet{} \u{b7} {} moon{}",
-            j.sun,
-            j.planets.len(),
-            if j.planets.len() == 1 { "" } else { "s" },
-            j.moons,
-            if j.moons == 1 { "" } else { "s" }
-        ));
-        if !kinds.is_empty() {
-            ui.label(kinds.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", "));
-        }
-    }
-    if !spawns {
-        return;
-    }
-    if class == Class::Pochven {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Its C729 can open in").strong());
-        let zone = whdata::c729_zone(&info.name);
-        ui.label(if zone.is_empty() { "unknown".into() } else { zone.join(", ") });
-    } else if class.is_kspace() {
-        let targets = whdata::c729_targets(&info.name);
-        if !targets.is_empty() {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Can host the C729 of").strong());
-            ui.label(targets.join(", "));
-        }
-    }
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new("Holes that can open here").strong());
-    let lowsec_hub = matches!(class, Class::Turnur | Class::Tabbetzur);
-    for t in whdata::types().iter().filter(|t| t.src.contains(&class) || (lowsec_hub && t.src.contains(&Class::Ls))) {
-        hole_line(ui, t);
-    }
-}
 
 
 
 
 
-/// Kilograms as whole tonnes with thousands separators, e.g. 62,000.
-fn tonnes(kg: u64) -> String {
-    let digits = (kg / 1000).to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
 
