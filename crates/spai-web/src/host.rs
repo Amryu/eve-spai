@@ -679,7 +679,8 @@ impl WhHost for WebHost {
         let Some(info) = geo.info_of(sel) else { return };
         let now = spai_core::clock::utc().timestamp();
         let sigs = self.sigs.get(&sel).cloned().unwrap_or_default();
-        let shown = egui::Panel::right("wh_web_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
+        let mut pick: Option<i64> = None;
+        let shown = egui::Panel::right("wh_web_side").resizable(true).default_size(380.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.heading(&info.name);
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", info.region, info.security)).weak());
@@ -708,47 +709,16 @@ impl WhHost for WebHost {
                 let mut edit: Option<WhForm> = None;
                 let mut dead: Option<String> = None;
                 let mut flip_route: Option<String> = None;
-                egui::Grid::new("wh_web_holes").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
-                    for w in here {
-                        let near = w.system_id == sel;
-                        let (sig, far) = if near { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
-                        let far = far.and_then(|id| geo.info_of(id)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
-                        ui.monospace(sig.as_deref().unwrap_or("?"));
-                        let mut facts: Vec<String> = [w.wh_type.clone(), w.effective_size().map(|s| s.label().to_owned()), w.mass.map(|m| m.short().to_owned())].into_iter().flatten().collect();
-                        if let Some(h) = w.hours_left(now) {
-                            facts.push(format!("{h}h left"));
-                        }
-                        // Where it leads, its facts wrapped under it in a fixed width, so the side panel
-                        // keeps its size and the toolbar its row.
-                        ui.allocate_ui(egui::vec2(120.0, 0.0), |ui| {
-                            ui.set_max_width(120.0);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.label(format!("{} {far}", egui_phosphor::regular::ARROW_RIGHT));
-                                if !facts.is_empty() {
-                                    ui.add(egui::Label::new(egui::RichText::new(facts.join(" \u{b7} ")).weak()).wrap());
-                                }
-                            });
-                        });
-                        spai_ui::wh_graph::who_cell(ui, w, now);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if self.can_edit {
-                                if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
-                                    edit = Some(WhForm::of(w, Some(geo)));
-                                }
-                                if ui.small_button(egui_phosphor::regular::X_CIRCLE).on_hover_text("Collapsed: take it off the map for everyone").clicked() {
-                                    dead = Some(w.uid.clone());
-                                }
-                            }
-                            // Off for routes here only: a choice of this browser, not the group's.
-                            if spai_ui::wh_graph::wh_route_toggle(ui, self.plan.wh_off_holes.contains(&w.uid)) {
-                                flip_route = Some(w.uid.clone());
-                            }
-                        });
-                        ui.end_row();
-                    }
-                });
+                let plan = &self.plan;
+                let conn = spai_ui::side_lists::connections(ui, sel, &here, now, geo, self.can_edit, &|w| plan.wh_off_holes.contains(&w.uid));
+                if let Some(w) = conn.edit.and_then(|uid| here.iter().find(|w| w.uid == uid)) {
+                    edit = Some(WhForm::of(w, Some(geo)));
+                }
+                dead = conn.kill.or(dead);
+                flip_route = conn.toggle.or(flip_route);
+                if conn.select.is_some() {
+                    pick = conn.select;
+                }
                 if edit.is_some() {
                     self.form = edit;
                 }
@@ -788,6 +758,10 @@ impl WhHost for WebHost {
                         ui.label(format!("{}  In EVE, select all in the probe scanner, copy, then Ctrl+V here", egui_phosphor::regular::CLIPBOARD_TEXT));
                         ui.checkbox(&mut self.keep_missing, "Keep missing")
                             .on_hover_text("Keep signatures the paste does not list. Off, a full paste replaces the list: what is missing is gone from space.");
+                        let back = self.sig_browser.undo_button(ui, egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE, Some(geo));
+                        if !back.is_empty() {
+                            self.edits.push(Edit::SigsBack(back));
+                        }
                     });
                     if let Some(n) = &self.sig_note {
                         ui.label(egui::RichText::new(n).weak());
@@ -797,30 +771,24 @@ impl WhHost for WebHost {
                 if sigs.is_empty() {
                     ui.label(egui::RichText::new("No probe scan for this system yet").weak());
                 }
-                egui::Grid::new("wh_web_sigs").num_columns(3).spacing([10.0, 4.0]).striped(true).show(ui, |ui| {
-                    let mut sigs = sigs.clone();
-                    sigs.sort_by(|a, b| a.sig.cmp(&b.sig));
-                    for s in &sigs {
-                        let aged = spai_ui::widgets::age_color(ui.visuals(), now, s.updated_at);
-                        let tint = |t: egui::RichText| match aged {
-                            Some(c) => t.color(c),
-                            None => t,
-                        };
-                        // The icon in the body font: the monospace one has no icons.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.label(tint(egui::RichText::new(spai_ui::widgets::sig_icon(&s.kind))));
-                            ui.label(tint(egui::RichText::new(&s.sig).monospace()));
-                        })
-                        .response
-                        .on_hover_text(&s.kind);
-                        ui.label(tint(egui::RichText::new(spai_ui::widgets::found_at(s.added_at, now, true))))
-                            .on_hover_text(spai_ui::widgets::found_hover(s.added_at, now, true));
-                        let what = if s.name.is_empty() { spai_ui::wh_graph::short_group(&s.group).to_owned() } else { s.name.clone() };
-                        ui.label(tint(egui::RichText::new(what)));
-                        ui.end_row();
-                    }
-                });
+                let mut sigs = sigs.clone();
+                sigs.sort_by(|a, b| a.sig.cmp(&b.sig));
+                let every = self.holes.clone();
+                let act = spai_ui::side_lists::sig_table(ui, sel, &info.name, &sigs, &every, now, true, geo, self.can_edit);
+                if act.select.is_some() {
+                    pick = act.select;
+                }
+                if let Some(sg) = act.delete {
+                    // Through the browser's list, so its undo puts it back.
+                    self.sig_browser.forget(vec![(sel, sg.clone())]);
+                    self.edits.push(Edit::SigsGone(vec![(sel, sg)]));
+                }
+                if let Some(w) = act.edit.and_then(|uid| every.iter().find(|w| w.uid == uid)) {
+                    self.form = Some(WhForm::of(w, Some(geo)));
+                }
+                if act.new_hole.is_some() {
+                    self.form = act.new_hole;
+                }
                     }
                     Side::Routes => {
                         if let Some(id) = self.routes(ui, geo, sel, &info.name) {
@@ -831,6 +799,9 @@ impl WhHost for WebHost {
             });
         });
         self.side_w = shown.response.rect.width();
+        if pick.is_some() {
+            view.selected = pick;
+        }
     }
 }
 

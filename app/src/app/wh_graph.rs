@@ -63,7 +63,7 @@ impl SpaiApp {
         let mut unpin: Option<String> = None;
         let mut paste: Option<Option<String>> = None;
         let mut drop_sig: Option<crate::store::SystemSig> = None;
-        let mut new_hole: Option<String> = None;
+        let mut new_form: Option<spai_ui::wh_form::WhForm> = None;
         let mut toggle: Option<String> = None;
         let mut clear_filter = false;
         // The filter narrows the map and the Info list, never what a signature is known to lead to.
@@ -87,7 +87,6 @@ impl SpaiApp {
                 });
                 let c = whdata::class_of(sel, info.security, &info.region);
                 ui.label(format!("{} \u{b7} {}", c.label(), info.region));
-                let name = |id: i64| geo.info_of(id).map_or(format!("#{id}"), |i| i.name.clone());
                 ui.add_space(4.0);
                 let n_sigs = self.wh_graph_sigs(sel).len();
                 let tabs = [
@@ -115,59 +114,23 @@ impl SpaiApp {
                 match self.wh_graph.side_tab {
                     SideTab::Info => {
                 ui.label(egui::RichText::new("Connections").strong());
-                let mut any = false;
-                egui::Grid::new("wh_graph_sigs").striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-                    for w in holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)) {
-                        any = true;
-                        // Seen from the selected side.
-                        let (sig, far, far_sig) = if w.system_id == sel {
-                            (&w.signature, w.dest_system_id, &w.dest_signature)
-                        } else {
-                            (&w.dest_signature, Some(w.system_id), &w.signature)
-                        };
-                        let ty = hole_code(w);
-                        ui.label(sig.as_deref().unwrap_or("—"));
-                        ui.label(ty.as_deref().unwrap_or("—"));
-                        match far {
-                            Some(f) => {
-                                let text = match far_sig {
-                                    Some(s) => format!("{} {}", name(f), s),
-                                    None => name(f),
-                                };
-                                if ui.link(format!("{} {text}", icon::ARROW_RIGHT)).clicked() {
-                                    select = Some(f);
-                                }
-                            }
-                            None => {
-                                ui.label(format!("{} {}", icon::ARROW_RIGHT, w.dest.label()));
-                            }
-                        }
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if let Some((text, color)) = life_badge(w, now, ui.visuals()) {
-                                let read = w.observed_at.map(|t| format!(", read {} ago", super::human_ago(now - t))).unwrap_or_default();
-                                ui.label(egui::RichText::new(text).color(color))
-                                    .on_hover_text(format!("Time left{read}"));
-                            }
-                            if let Some(m) = w.mass {
-                                ui.label(egui::RichText::new(m.short()).color(mass_color(Some(m)))).on_hover_text(format!("Mass: {}", m.label()));
-                            }
-                        });
-                        spai_ui::wh_graph::who_cell(ui, w, now);
-                        ui.horizontal(|ui| {
-                            if ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
-                                edit = Some(w.id);
-                            }
-                            if ui.small_button(icon::X).on_hover_text("Mark this hole dead").clicked() {
-                                kill = Some(w.id);
-                            }
-                            if wh_route_toggle(ui, self.settings.wh_disabled_holes.contains(&w.uid)) {
-                                toggle = Some(w.uid.clone());
-                            }
-                        });
-                        ui.end_row();
-                    }
-                });
+                let here: Vec<&crate::wormholes::Wormhole> = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).collect();
+                let any = !here.is_empty();
+                let disabled = &self.settings.wh_disabled_holes;
+                let conn = spai_ui::side_lists::connections(ui, sel, &here, now, &geo, true, &|w| disabled.contains(&w.uid));
+                let id_of = |uid: &String| holes.iter().find(|w| &w.uid == uid).map(|w| w.id);
+                if conn.select.is_some() {
+                    select = conn.select;
+                }
+                if let Some(id) = conn.edit.as_ref().and_then(id_of) {
+                    edit = Some(id);
+                }
+                if let Some(id) = conn.kill.as_ref().and_then(id_of) {
+                    kill = Some(id);
+                }
+                if conn.toggle.is_some() {
+                    toggle = conn.toggle;
+                }
                 if !any {
                     ui.label(egui::RichText::new(if hidden > 0 { "None shown" } else { "None known" }).weak());
                 }
@@ -258,114 +221,19 @@ impl SpaiApp {
                 };
                 ui.add(egui::Label::new(egui::RichText::new(summary).weak()).truncate());
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-                // A table, not a grid: the Info column takes whatever width the panel has left.
-                let row_h = ui.spacing().interact_size.y + 4.0;
-                let text_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x;
-                let id_w = text_w("MMM-888");
-                let eve = self.settings.use_eve_time;
-                // As wide as the times shown: a weekday only for the ones not from today.
-                let found_head = egui::WidgetText::from(egui::RichText::new("Found").strong()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
-                let found_w = sigs.iter().map(|sg| text_w(&super::sig_browser::found_at(sg.added_at, now, eve))).fold(found_head, f32::max);
-                // The table takes one column gap more than it is given; in a resizable panel that
-                // grows the panel a little every frame until it settles. Give it one gap less.
-                let room = egui::vec2(ui.available_width() - ui.spacing().item_spacing.x, 0.0);
-                let gutter = super::sig_browser::scrollbar_gutter(ui);
-                let visuals = ui.visuals().clone();
-                ui.allocate_ui(room, |ui| {
-                egui_extras::TableBuilder::new(ui)
-                    .id_salt("wh_graph_scan")
-                    .striped(true)
-                    .vscroll(false)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(egui_extras::Column::exact(id_w))
-                    .column(egui_extras::Column::exact(found_w))
-                    // Narrow enough for the panel as it is: pasting must never widen it.
-                    .column(egui_extras::Column::remainder().at_least(40.0).clip(true))
-                    // Room for remove and edit, whichever rows have them: measured, it drifts. Past
-                    // them, room for the panel's scrollbar.
-                    .column(egui_extras::Column::exact(76.0 + gutter))
-                    .header(row_h, |mut header| {
-                        for h in ["Id", "Found", "Info", ""] {
-                            header.col(|ui| {
-                                ui.label(egui::RichText::new(h).strong());
-                            });
-                        }
-                    })
-                    .body(|mut body| {
-                    for sg in &sigs {
-                        body.row(row_h, |mut row| {
-                        let anomaly = super::sig_browser::is_anomaly(sg);
-                        let aged = super::sig_browser::age_color(&visuals, now, sg.updated_at);
-                        row.col(|ui| {
-                            let text = format!("{} {}", spai_ui::widgets::sig_icon(&sg.kind), sg.sig);
-                            let id = ui.label(match aged {
-                                Some(c) => egui::RichText::new(text).color(c),
-                                None if anomaly => egui::RichText::new(text).weak(),
-                                None => egui::RichText::new(text),
-                            });
-                            id.on_hover_text(format!(
-                                "{}\nAdded {} ago by {}, last seen in a paste {} ago",
-                                sg.kind,
-                                super::human_ago(now - sg.added_at),
-                                sg.who,
-                                super::human_ago(now - sg.updated_at)
-                            ));
-                        });
-                        row.col(|ui| {
-                            let t = egui::RichText::new(super::sig_browser::found_at(sg.added_at, now, eve));
-                            ui.label(match aged {
-                                Some(c) => t.color(c),
-                                None => t,
-                            })
-                            .on_hover_text(super::sig_browser::found_hover(sg.added_at, now, eve));
-                        });
-                        // A wormhole signature we know the far side of says where it goes.
-                        let hole = sig_hole(&every, sel, &sg.sig);
-                        row.col(|ui| {
-                        // The group in front, short and grey, so the site's name gets the room.
-                        ui.label(egui::RichText::new(short_group(&sg.group)).weak());
-                        match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
-                            Some(Some(f)) => {
-                                let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
-                                let text = egui::RichText::new(format!("{code}{} {}", icon::ARROW_RIGHT, name(f))).color(ui.visuals().hyperlink_color);
-                                if ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                    select = Some(f);
-                                }
-                            }
-                            // Known to be a hole, its far side only a kind of space so far.
-                            Some(None) => {
-                                let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
-                                let dest = hole.map_or("?", |w| w.dest.label());
-                                ui.add(egui::Label::new(format!("{code}{} {dest}", icon::ARROW_RIGHT)).truncate());
-                            }
-                            _ => {
-                                let text = match unidentified_type(sel, &sg.name) {
-                                    Some(code) => format!("{code} \u{b7} {}", sg.name),
-                                    None if sg.name.is_empty() => "\u{2014}".to_owned(),
-                                    None => sg.name.clone(),
-                                };
-                                let text = egui::RichText::new(text);
-                                ui.add(egui::Label::new(if let Some(c) = aged { text.color(c) } else { text }).truncate());
-                            }
-                        }
-                        });
-                        row.col(|ui| {
-                            // Remove first, so those line up whether or not an edit button follows.
-                            if ui.small_button(icon::X).on_hover_text("Remove").clicked() {
-                                drop_sig = Some(sg.clone());
-                            }
-                            let is_hole = hole.is_some() || sg.group == "Wormhole";
-                            if is_hole && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this wormhole").clicked() {
-                                match hole {
-                                    Some(w) => edit = Some(w.id),
-                                    None => new_hole = Some(sg.sig.clone()),
-                                }
-                            }
-                        });
-                        });
-                    }
-                });
-                });
+                let sig_act = spai_ui::side_lists::sig_table(ui, sel, &info.name, &sigs, &every, now, self.settings.use_eve_time, &geo, true);
+                if sig_act.select.is_some() {
+                    select = sig_act.select;
+                }
+                if let Some(id) = sig_act.edit.as_ref().and_then(|uid| every.iter().find(|w| &w.uid == uid)).map(|w| w.id) {
+                    edit = Some(id);
+                }
+                if sig_act.new_hole.is_some() {
+                    new_form = sig_act.new_hole;
+                }
+                if let Some(sg) = sig_act.delete {
+                    drop_sig = Some(sg);
+                }
                     }
                 }
             });
@@ -373,14 +241,8 @@ impl SpaiApp {
         if let Some(text) = paste {
             self.wh_graph_paste(sel, text, now);
         }
-        if let Some(sig) = new_hole {
-            let wh_type = self
-                .wh_graph
-                .sigs
-                .as_ref()
-                .and_then(|(_, l)| l.iter().find(|s| s.sig == sig))
-                .and_then(|s| unidentified_type(sel, &s.name));
-            self.wh_form = Some(crate::app::wormholes_ui::WhForm::at(info.name.clone(), sig, wh_type));
+        if new_form.is_some() {
+            self.wh_form = new_form;
         }
         if let Some(sig) = drop_sig {
             self.sig_delete(vec![(sel, sig)]);

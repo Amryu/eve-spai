@@ -243,7 +243,7 @@ impl WebApp {
                         ui.label(egui::RichText::new(icon::WARNING).color(spai_ui::theme::standing::WARNING)).on_hover_text(e);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(icon::X).on_hover_text("Remove from this browser").clicked() {
+                        if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove from this browser").clicked() {
                             remove = Some(acc.char_id);
                         }
                         let grants: Vec<&str> = [

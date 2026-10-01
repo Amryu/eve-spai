@@ -796,8 +796,7 @@ impl SpaiApp {
                 let now = crate::clock::utc().timestamp();
                 // Newest first: in a right-to-left layout the first widget lands furthest right.
                 for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
-                    if ui
-                        .small_button(egui_phosphor::regular::CHECK)
+                    if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CHECK)
                         .on_hover_text("Resolved, dismiss this ping")
                         .clicked()
                     {
@@ -869,8 +868,7 @@ impl SpaiApp {
                             ui.label(egui::RichText::new(egui_phosphor::regular::FLASK).color(egui::Color32::from_rgb(0x40, 0xB0, 0xF0)))
                                 .on_hover_text("Test: sending disabled");
                         }
-                    } else if ui
-                        .small_button(egui_phosphor::regular::ARROW_SQUARE_OUT)
+                    } else if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROW_SQUARE_OUT)
                         .on_hover_text("Pop out into its own window, over EVE")
                         .clicked()
                     {
@@ -990,8 +988,7 @@ impl SpaiApp {
                         ui.separator();
                     }
                     let regen = |ui: &mut egui::Ui, r: &mut crate::rescue::RescueState| {
-                        if ui
-                            .small_button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROWS_CLOCKWISE)
                             .on_hover_text("Regenerate the ping from the template")
                             .clicked()
                         {

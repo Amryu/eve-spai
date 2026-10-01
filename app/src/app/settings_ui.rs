@@ -2090,7 +2090,7 @@ impl SpaiApp {
                 *v = Some(x);
                 changed = true;
             }
-            if v.is_some() && ui.small_button(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to the shared volume").clicked() {
+            if v.is_some() && spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to the shared volume").clicked() {
                 *v = None;
                 changed = true;
             }

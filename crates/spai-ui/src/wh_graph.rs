@@ -294,8 +294,10 @@ pub struct WhGraphView {
     pub keep_missing: bool,
     /// The last routes worked out, and what they were worked out for.
     pub route_cache: Option<RouteCache>,
-    /// Gate jumps from each pinned system, for joining it to the focused chain.
+    /// Jumps to each pinned system, for joining it to the chains, and the graph they were counted
+    /// on: bridges arriving or changing lay a new one.
     pub gate_dist: HashMap<i64, HashMap<i64, u32>>,
+    pub gate_dist_graph: usize,
     /// The last auto layout and what it was worked out from: the layered one is too slow to
     /// redo every frame.
     pub layout_cache: Option<(u64, Vec<(i64, Option<i64>, egui::Pos2)>)>,
@@ -1167,7 +1169,7 @@ pub fn stroke_hole(painter: &egui::Painter, line: &[egui::Pos2], stroke: egui::S
 /// A hole's switch for routes, lit while it is off. Returns whether it was clicked.
 pub fn wh_route_toggle(ui: &mut egui::Ui, off: bool) -> bool {
     let text = if off { egui::RichText::new(icon::PROHIBIT).color(crate::colors::HOSTILE) } else { egui::RichText::new(icon::PROHIBIT) };
-    ui.small_button(text)
+    crate::widgets::icon_button(ui, text)
         .on_hover_text(if off { "Switched off for routes: click to let routes use it" } else { "Do not use this hole in routes" })
         .clicked()
 }

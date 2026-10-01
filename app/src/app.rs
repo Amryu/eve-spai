@@ -7127,7 +7127,7 @@ fn sound_picker(
                         *value = p.to_owned();
                         changed = true;
                     }
-                    if ui.small_button(icon::PLAY).on_hover_text("Preview").clicked() {
+                    if spai_ui::widgets::icon_button(ui, icon::PLAY).on_hover_text("Preview").clicked() {
                         crate::sound::play(p, volume);
                     }
                 });

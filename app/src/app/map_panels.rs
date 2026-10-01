@@ -107,7 +107,7 @@ impl SpaiApp {
                     } else {
                         (icon::SIGN_IN, "Gated; click to jump it", "jump")
                     };
-                    if ui.small_button(glyph).on_hover_text(tip).clicked() {
+                    if spai_ui::widgets::icon_button(ui, glyph).on_hover_text(tip).clicked() {
                         flip = Some((i - 1, other));
                     }
                 }
@@ -117,7 +117,7 @@ impl SpaiApp {
                 } else {
                     txt
                 });
-                if i > 0 && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
                     drop_anchor = Some(i);
                 }
             }
@@ -226,7 +226,7 @@ impl SpaiApp {
                         if a.always {
                             ui.label(egui::RichText::new("always").weak().size(11.0));
                         }
-                        if ui.small_button(icon::X).on_hover_text("Stop avoiding").clicked() {
+                        if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Stop avoiding").clicked() {
                             stop = Some((a.id, a.always));
                         }
                     });
@@ -648,7 +648,7 @@ impl SpaiApp {
                                 if r.via_wormholes { " · expires" } else { "" }
                             );
                             ui.label(egui::RichText::new(ends).weak().size(11.0));
-                            if ui.small_button(icon::X).on_hover_text("Forget").clicked() {
+                            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Forget").clicked() {
                                 forget = Some(r.name.clone());
                             }
                         });

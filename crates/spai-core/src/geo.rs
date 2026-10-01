@@ -214,6 +214,12 @@ impl Systems {
         Self::ball(&self.adjacency, from, max_jumps)
     }
 
+    /// Jumps from every system within `max_jumps` to `to`: [`Self::distances_from`] the other way,
+    /// which differs once a bridge may be taken in one direction only. Over gates and bridges.
+    pub fn jumps_to(&self, to: i64, max_jumps: u32) -> HashMap<i64, u32> {
+        Self::ball(&self.reverse_adjacency, to, max_jumps)
+    }
+
     /// [`Self::distances_from`] over gates only, matching [`Self::jumps_gates_only`].
     pub fn gate_distances_from(&self, from: i64, max_jumps: u32) -> HashMap<i64, u32> {
         Self::ball(&self.gate_adjacency, from, max_jumps)
@@ -548,6 +554,15 @@ mod tests {
         assert_eq!(g.jumps(1, 4, 10), Some(3));
         assert_eq!(g.jumps(1, 4, 2), None);
         assert_eq!(g.jumps(1, 99, 10), None);
+    }
+
+    #[test]
+    fn jumps_to_take_a_one_way_bridge_only_its_way() {
+        let mut g = line_graph();
+        g.add_directed_bridges(&[(4, 1)]);
+        assert_eq!(g.jumps_to(1, 10).get(&4).copied(), Some(1), "D bridges to A");
+        assert_eq!(g.jumps_to(4, 10).get(&1).copied(), Some(3), "A has no bridge to D");
+        assert_eq!(g.distances_from(4, 10).get(&1).copied(), Some(1));
     }
 
     #[test]
