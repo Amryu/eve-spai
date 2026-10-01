@@ -211,6 +211,13 @@ pub struct RoutePlan {
     /// How the last request went.
     pub note: Option<Result<String, String>>,
     pilot: Option<i64>,
+    /// This route's own Ansiblex limit over the group's, 0 for none at all, as the desktop's.
+    pub zone: Option<u8>,
+    /// The graph laid for `zone`, and the graph and zone it was laid from.
+    zone_graph: Option<(usize, u8, Systems)>,
+    /// The group's limit and whether it has bridges, for the panel.
+    group_zone: u8,
+    has_bridges: bool,
 }
 
 /// A character the route can be set for or whose skills can be read.
@@ -239,6 +246,8 @@ pub struct PlanInput<'a> {
     pub coords: &'a [MapSystem],
     /// The group's live holes.
     pub holes: &'a [Wormhole],
+    /// The group's Ansiblexes, to re-lay for a route's own zone limit.
+    pub network: &'a crate::starmap::Network,
 }
 
 /// The way a mode flies a leg nobody asked about: a mixed route's default is gates.
@@ -419,10 +428,28 @@ impl RoutePlan {
 
     /// Works the route out again if anything changed.
     pub fn update(&mut self, input: &PlanInput) {
+        self.group_zone = input.network.max_zone.max(1);
+        self.has_bridges = !input.network.bridges.is_empty();
         if !self.stale {
             return;
         }
         self.stale = false;
+        let base_key = input.geo as *const Systems as usize;
+        let geo: &Systems = match self.zone.filter(|z| *z != self.group_zone && self.has_bridges) {
+            None => input.geo,
+            Some(z) => {
+                if self.zone_graph.as_ref().is_none_or(|(k, zz, _)| *k != base_key || *zz != z) {
+                    let g = if z == 0 {
+                        input.geo.gates_only()
+                    } else {
+                        spai_core::ansiblex::with_max_zone(input.geo, &input.network.list(), &input.network.capital, z)
+                    };
+                    self.zone_graph = Some((base_key, z, g));
+                }
+                &self.zone_graph.as_ref().unwrap().2
+            }
+        };
+        let input = &PlanInput { geo, ..*input };
         let (avoid_gate, avoid_jump) = (self.avoid(false), self.avoid(true));
         let holes = self.prefs.hole_graph(input.geo, input.holes, spai_core::clock::utc().timestamp());
         let class = &SHIP_CLASSES[self.prefs.ship.min(SHIP_CLASSES.len() - 1)];
@@ -615,11 +642,46 @@ impl RoutePlan {
         }
     }
 
+    /// The route's own Ansiblex limit over the group's, as the desktop offers it: none at all, or
+    /// up to a zone.
+    fn zone_combo(&mut self, ui: &mut egui::Ui) {
+        if !self.has_bridges {
+            return;
+        }
+        let group = self.group_zone;
+        let current = self.zone.unwrap_or(group);
+        let text = |z: u8| if z == 0 { "None".to_owned() } else { format!("Up to {}", spai_core::ansiblex::zone_label(z)) };
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Ansiblexes");
+            egui::ComboBox::from_id_salt("web_route_zone")
+                .selected_text(text(current))
+                .show_ui(ui, |ui| {
+                    for z in 0..=spai_core::ansiblex::MAX_ZONE {
+                        let mut label = text(z);
+                        if z == group {
+                            label.push_str(" (group's)");
+                        }
+                        if ui.menu_label(current == z, label).clicked() && current != z {
+                            self.zone = (z != group).then_some(z);
+                            changed = true;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("For this route only. The group's limit stays as it is.");
+        });
+        if changed {
+            self.replan();
+        }
+    }
+
     /// The route panel: what is planned, its settings, alternatives and hops.
     pub fn panel(&mut self, ui: &mut egui::Ui, geo: &Systems) {
         let name = |id: i64| geo.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
         if !self.active() {
             ui.label(egui::RichText::new("Drag from one system to another to plan a route, or right-click a system to start one.").weak());
+            self.zone_combo(ui);
             self.hole_options(ui);
             return;
         }
@@ -669,6 +731,7 @@ impl RoutePlan {
             return;
         }
         if self.has("gate") {
+            self.zone_combo(ui);
             self.hole_options(ui);
         }
         if self.has("jump") {
@@ -997,10 +1060,33 @@ mod tests {
     }
 
     #[test]
+    fn a_route_can_skip_the_groups_ansiblexes() {
+        let mut geo = spai_core::test_support::small_universe(&[]);
+        let network = crate::starmap::Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())] };
+        spai_core::ansiblex::feed(spai_core::ansiblex::BridgeKey { bridges: network.list(), capital: network.capital.clone(), max_zone: 5 }, &mut geo);
+        let (from, to) = (geo.lookup("1DQ1-A").unwrap().id, geo.lookup("7-K5EL").unwrap().id);
+        let coords: Vec<MapSystem> = Vec::new();
+        let input = PlanInput { geo: &geo, coords: &coords, holes: &[], network: &network };
+        let mut p = RoutePlan::default();
+        p.take("gate", "gate", from, to);
+        p.update(&input);
+        assert_eq!(p.route().unwrap().path.len(), 2, "over the bridge");
+        p.zone = Some(0);
+        p.replan();
+        p.update(&input);
+        assert_eq!(p.route().unwrap().path.len(), 3, "by gates only");
+        p.zone = None;
+        p.replan();
+        p.update(&input);
+        assert_eq!(p.route().unwrap().path.len(), 2, "the group's limit again");
+    }
+
+    #[test]
     fn a_drag_plans_and_a_drag_off_the_destination_extends_it() {
         let geo = spai_core::test_support::small_universe(&[]);
         let coords: Vec<MapSystem> = Vec::new();
-        let input = PlanInput { geo: &geo, coords: &coords, holes: &[] };
+        let network = crate::starmap::Network::default();
+        let input = PlanInput { geo: &geo, coords: &coords, holes: &[], network: &network };
         let mut p = RoutePlan::default();
         p.take("gate", "gate", 30_004_759, 30_004_608);
         p.update(&input);

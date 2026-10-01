@@ -133,7 +133,7 @@ impl StarMap {
         if self.zoom <= 0.0 {
             self.zoom = 1.0;
         }
-        self.plan.update(&PlanInput { geo, coords: &d.real, holes: &d.hole_list });
+        self.plan.update(&PlanInput { geo, coords: &d.real, holes: &d.hole_list, network: &d.network });
         self.panel(ui, geo, d);
         let draw: Vec<MapSystem> = d.all.iter().filter(|s| self.region.is_none_or(|r| s.region_id == r)).cloned().collect();
         let Some(bounds) = Bounds::of(&draw) else { return };
