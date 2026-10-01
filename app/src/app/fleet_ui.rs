@@ -857,7 +857,7 @@ impl SpaiApp {
             if let Some(e) = st.error.clone() {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(crate::theme::standing::HOSTILE, e);
-                    if ui.small_button(egui_phosphor::regular::X).clicked() {
+                    if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).clicked() {
                         st.error = None;
                     }
                 });
@@ -3397,8 +3397,7 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
                 ui.label(egui::RichText::new("Fleet boss not checked").weak());
             }
         }
-        if ui
-            .small_button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROWS_CLOCKWISE)
             .on_hover_text("Ask again whether this character is boss of a fleet")
             .clicked()
         {
@@ -4457,7 +4456,7 @@ fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &
             }
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(title).strong());
-                if ui.small_button(egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
                     ui.ctx().copy_text(text.clone());
                 }
             });
@@ -4493,7 +4492,7 @@ fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
         for (i, rec) in st.journal.iter().enumerate().rev() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(rec.line()).monospace());
-                if ui.small_button(egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
                     let text = match rec.pretty_body() {
                         Some(b) => format!("{}\n{b}", rec.line()),
                         None => rec.line(),

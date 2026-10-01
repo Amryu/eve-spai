@@ -633,7 +633,7 @@ impl RoutePlan {
             if let Some(k) = mode {
                 self.set_mode(k);
             }
-            if ui.small_button(icon::X).on_hover_text("Clear the route").clicked() {
+            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Clear the route").clicked() {
                 self.clear();
             }
         });
@@ -647,13 +647,13 @@ impl RoutePlan {
                 if i > 0 {
                     // How the leg into this anchor is flown, switched in place.
                     let (glyph, tip, other) = if self.leg_kind(i - 1) == "jump" { (icon::SPIRAL, "Jumped; click to gate it", "gate") } else { (icon::SIGN_IN, "Gated; click to jump it", "jump") };
-                    if ui.small_button(glyph).on_hover_text(tip).clicked() {
+                    if spai_ui::widgets::icon_button(ui, glyph).on_hover_text(tip).clicked() {
                         flip = Some((i - 1, other));
                     }
                 }
                 let t = egui::RichText::new(name(id)).strong();
                 ui.label(if i == 0 || i == self.anchors.len() - 1 { t.color(ui.visuals().hyperlink_color) } else { t });
-                if i > 0 && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
                     drop = Some(i);
                 }
             }
@@ -720,7 +720,7 @@ impl RoutePlan {
                             if a.always {
                                 ui.label(egui::RichText::new("always").weak());
                             }
-                            if ui.small_button(icon::X).on_hover_text("Stop avoiding").clicked() {
+                            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Stop avoiding").clicked() {
                                 stop = Some((a.id, a.always));
                             }
                         });

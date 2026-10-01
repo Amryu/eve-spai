@@ -421,7 +421,7 @@ impl SpaiApp {
                         if r.detours.contains(s) {
                             ui.label(egui::RichText::new("detour").weak()).on_hover_text("Outside the radius, a few jumps off the route");
                         }
-                        if ui.small_button(icon::CHECK).on_hover_text("Done: leave it out of the next plan").clicked() {
+                        if spai_ui::widgets::icon_button(ui, icon::CHECK).on_hover_text("Done: leave it out of the next plan").clicked() {
                             tick = Some(*s);
                         }
                     });

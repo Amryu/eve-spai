@@ -146,8 +146,14 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             (*p, own)
         })
         .collect();
+    let graph = Arc::as_ptr(&geo) as usize;
+    if view.gate_dist_graph != graph {
+        view.gate_dist.clear();
+        view.gate_dist_graph = graph;
+    }
+    // Toward the pin, the way it is flown: a one-way bridge counts only in its direction.
     for a in anchors.values().flatten() {
-        view.gate_dist.entry(*a).or_insert_with(|| geo.distances_from(*a, WH_PIN_JUMPS_MAX));
+        view.gate_dist.entry(*a).or_insert_with(|| geo.jumps_to(*a, WH_PIN_JUMPS_MAX));
     }
     let dist = |from: i64, exit: i64| view.gate_dist.get(&from).and_then(|d| d.get(&exit).copied());
     // Every k-space exit within reach of a pinned system leads somewhere, so it stays on the map;
@@ -163,7 +169,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         }
     }
     // A gate link is a way somewhere only when it is short: further out it says nothing.
-    gate_links.retain(|(_, _, n, _)| *n < near_jumps);
+    gate_links.retain(|(_, _, n, _)| *n <= near_jumps);
     // The overview keeps every wormhole system but only the k-space exits that lead somewhere:
     // a pinned system, a character, or the short way to either. The rest are counted on the
     // box they hang from. k-space to k-space and k-space to Pochven holes always stay.
@@ -185,7 +191,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     let mut pill_alone: Vec<i64> = Vec::new();
     let clusters = components(&edges);
     let shown_pins: Vec<i64> = user_pins.iter().copied().filter(|p| !drifters.contains(p)).collect();
-    let gap = |pid: i64, e: i64| anchors[&pid].iter().filter_map(|a| dist(*a, e)).min().filter(|n| *n < near_jumps);
+    let gap = |pid: i64, e: i64| anchors[&pid].iter().filter_map(|a| dist(*a, e)).min().filter(|n| *n <= near_jumps);
     let mut pill = |pid: i64, exit: i64, n: u32, edges: &mut Vec<(i64, i64)>| {
         let id = pill_id(pid, exit);
         if pills.insert(id, (pid, n)).is_none() {
@@ -379,7 +385,8 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                     host.toolbar(view, ui);
                     if let Some(name) = &focus_name {
                         ui.separator();
-                        ui.label(format!("{}  {name}", icon::CROSSHAIR));
+                        // Whole, onto the next row with its depth buttons when the toolbar wraps.
+                        ui.add(egui::Label::new(format!("{}  {name}", icon::CROSSHAIR)).wrap_mode(egui::TextWrapMode::Extend));
                         for d in 1..=3u8 {
                             if ui
                                 .menu_label(view.depth() == d, format!("{d}"))
@@ -1291,7 +1298,7 @@ pub fn route_rows(
     for (label, dest, is_pin) in targets {
         let route = geo.route_with(sel, *dest, true, true, adj, |_| true);
         ui.horizontal(|ui| {
-            if *is_pin && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+            if *is_pin && crate::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
                 unpin = Some(label.clone());
             }
             if !*is_pin {
@@ -1620,17 +1627,16 @@ pub fn holes_table(
                         // sideways, so anything at the far end is off the screen exactly when the
                         // window is small enough to need it.
                         ui.horizontal(|ui| {
-                            if ui
-                                .small_button(icon::X)
+                            if crate::widgets::icon_button(ui, icon::X)
                                 .on_hover_text("Mark this hole dead")
                                 .clicked()
                             {
                                 act.kill = Some(r.id);
                             }
-                            if ui.small_button(icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
+                            if crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
                                 act.edit = Some(r.id);
                             }
-                            if ui.small_button(icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
+                            if crate::widgets::icon_button(ui, icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
                                 act.info = Some(r.sys_id);
                             }
                             if crate::wh_graph::wh_route_toggle(ui, r.off) {

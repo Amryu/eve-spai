@@ -1394,10 +1394,10 @@ impl SpaiApp {
                     ui.add(egui::Label::new(crate::jabber::convo_name(&jid)).truncate().show_tooltip_when_elided(false))
                         .on_hover_text(format!("{jid} wants to see your online status"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(egui_phosphor::regular::X).on_hover_text("Decline").clicked() {
+                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).on_hover_text("Decline").clicked() {
                             self.jabber_answer_request(&jid, false);
                         }
-                        if ui.small_button(egui_phosphor::regular::CHECK).on_hover_text("Accept: share your status and ask to see theirs").clicked() {
+                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CHECK).on_hover_text("Accept: share your status and ask to see theirs").clicked() {
                             self.jabber_answer_request(&jid, true);
                         }
                     });

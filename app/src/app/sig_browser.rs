@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use super::*;
 use crate::store::SystemSig;
 
-pub(crate) use spai_ui::sig_browser::{age_color, found_at, found_hover, is_anomaly, scrollbar_gutter};
+#[cfg(test)]
+use spai_ui::sig_browser::age_color;
 
 /// How often the list is read again while it is on screen: pastes and shares land from elsewhere.
 const RELOAD: std::time::Duration = std::time::Duration::from_secs(3);

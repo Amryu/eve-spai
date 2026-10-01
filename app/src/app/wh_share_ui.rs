@@ -577,7 +577,7 @@ impl SpaiApp {
                                         }
                                         let last_of_owner = m.role == Role::Owner && m.devices.len() == 1;
                                         if (manage || me) && m.devices.len() > 1 && !last_of_owner
-                                            && ui.small_button(icon::X).on_hover_text("Remove this device; the others keep their access").clicked()
+                                            && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove this device; the others keep their access").clicked()
                                         {
                                             cmd = Some(Cmd::RemoveDevice { group: g.id.clone(), char_id: m.char_id, device_id: d.id.clone() });
                                         }

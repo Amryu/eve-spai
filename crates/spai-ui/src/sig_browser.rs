@@ -515,11 +515,11 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                         });
                     }
                     row.col(|ui| {
-                        if ui.small_button(icon::X).on_hover_text("Delete").clicked() {
+                        if crate::widgets::icon_button(ui, icon::X).on_hover_text("Delete").clicked() {
                             delete = vec![key.clone()];
                         }
                         if (hole.is_some() || s.group == "Wormhole")
-                            && ui.small_button(icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { "Edit this wormhole" } else { "Add it as a wormhole" }).clicked()
+                            && crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { "Edit this wormhole" } else { "Add it as a wormhole" }).clicked()
                         {
                             match hole {
                                 Some(w) => act.edit = Some(w.uid.clone()),

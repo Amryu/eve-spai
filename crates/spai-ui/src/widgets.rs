@@ -26,6 +26,16 @@ pub trait SteadySelect {
     ) -> egui::Response;
 }
 
+/// A small button holding only an icon: about as wide as it is tall, where the theme's padding,
+/// sized for words, would make it twice that.
+pub fn icon_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+        ui.add(egui::Button::new(text).small())
+    })
+    .inner
+}
+
 impl SteadySelect for egui::Ui {
     fn menu_label<'a>(
         &mut self,

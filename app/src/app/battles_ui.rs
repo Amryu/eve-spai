@@ -1889,7 +1889,7 @@ impl SpaiApp {
         if let Some(err) = self.build_kill_error.clone() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(err).color(crate::theme::standing::WARNING));
-                if ui.small_button(egui_phosphor::regular::X).clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).clicked() {
                     self.build_kill_error = None;
                 }
             });
@@ -1901,7 +1901,7 @@ impl SpaiApp {
         if let Some(msg) = self.report_msg.clone() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(msg).weak());
-                if ui.small_button(egui_phosphor::regular::X).clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).clicked() {
                     self.report_msg = None;
                 }
             });
