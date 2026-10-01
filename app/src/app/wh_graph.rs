@@ -203,47 +203,12 @@ impl SpaiApp {
                 if targets.is_empty() {
                     ui.label(egui::RichText::new("Pin a system to see how far it is.").weak());
                 }
-                for (label, dest, is_pin) in &targets {
-                    let route = geo.route_with(sel, *dest, true, true, &adj, |_| true);
-                    ui.horizontal(|ui| {
-                        if *is_pin && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
-                            unpin = Some(label.clone());
-                        }
-                        if !*is_pin {
-                            ui.label(egui::RichText::new(icon::USER).weak());
-                        }
-                        let dest_name = name(*dest);
-                        let text = if *is_pin || dest_name == *label { label.clone() } else { format!("{label} ({dest_name})") };
-                        if ui.link(text).clicked() {
-                            select = Some(*dest);
-                        }
-                        match &route {
-                            Some(r) => ui.label(format!("{}j", r.len() - 1)),
-                            None => ui.label(egui::RichText::new("no route").weak()),
-                        };
-                    });
-                    if let Some(r) = &route {
-                        // One square per jump, wrapped to the panel's width, at least ten a row.
-                        const STEP: f32 = 10.0;
-                        const ROW: f32 = 13.0;
-                        let hops = r.len().saturating_sub(1);
-                        // The visible width: wider content above can stretch the layout past it.
-                        let visible = ui.clip_rect().right().min(ui.max_rect().right()) - ui.cursor().left();
-                        let per_row = (((visible + 2.0) / STEP) as usize).max(10);
-                        let rows = hops.div_ceil(per_row).max(1);
-                        let (resp, painter) =
-                            ui.allocate_painter(egui::vec2(hops.min(per_row) as f32 * STEP, rows as f32 * ROW), egui::Sense::hover());
-                        for (i, s) in r.iter().skip(1).enumerate() {
-                            let color = geo
-                                .info_of(*s)
-                                .map(|i| class_color(whdata::class_of(*s, i.security, &i.region), i.security))
-                                .unwrap_or(egui::Color32::GRAY);
-                            let at = resp.rect.min + egui::vec2((i % per_row) as f32 * STEP, (i / per_row) as f32 * ROW + 1.0);
-                            painter.rect_filled(egui::Rect::from_min_size(at, egui::vec2(8.0, 10.0)), 1.0, color);
-                        }
-                        resp.on_hover_text(r.iter().skip(1).map(|s| name(*s)).collect::<Vec<_>>().join(" \u{2192} "));
-                    }
-                    ui.add_space(4.0);
+                let (un, sel_to) = spai_ui::wh_tab::route_rows(ui, &geo, sel, &targets, &adj);
+                if un.is_some() {
+                    unpin = un;
+                }
+                if sel_to.is_some() {
+                    select = sel_to;
                 }
                 ui.horizontal(|ui| {
                     let mut q = std::mem::take(&mut self.wh_graph.pin_query);

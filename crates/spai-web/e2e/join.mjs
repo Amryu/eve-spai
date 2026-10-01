@@ -98,11 +98,20 @@ if (process.env.SPAI_E2E_MAP) {
   await page.screenshot({ path: shot.replace('.png', '-map.png') });
 }
 // Then any steps a test gives: ["click", x, y], ["rclick", x, y], ["drag", x1, y1, x2, y2],
-// ["move", x, y], ["wheel", x, y, dy], ["key", "Enter"], ["wait", ms] or ["shot", "name"].
+// ["move", x, y], ["wheel", x, y, dy], ["sdrag", x1, y1, x2, y2] (with shift), ["key", "Enter"], ["wait", ms] or ["shot", "name"].
 for (const step of JSON.parse(process.env.SPAI_E2E_ACTIONS || '[]')) {
   const [what, ...a] = step;
   if (what === 'click') await page.mouse.click(a[0], a[1]);
   if (what === 'rclick') await page.mouse.click(a[0], a[1], { button: 'right' });
+  if (what === 'sdrag') {
+    await page.keyboard.down('Shift');
+    await page.mouse.move(a[0], a[1]);
+    await page.mouse.down();
+    for (let k = 1; k <= 12; k++) await page.mouse.move(a[0] + (a[2] - a[0]) * k / 12, a[1] + (a[3] - a[1]) * k / 12);
+    await page.waitForTimeout(300);
+    await page.mouse.up();
+    await page.keyboard.up('Shift');
+  }
   if (what === 'drag') {
     await page.mouse.move(a[0], a[1]);
     await page.mouse.down();

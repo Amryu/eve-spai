@@ -299,6 +299,12 @@ pub struct WhGraphView {
     /// The last auto layout and what it was worked out from: the layered one is too slow to
     /// redo every frame.
     pub layout_cache: Option<(u64, Vec<(i64, Option<i64>, egui::Pos2)>)>,
+    /// The pinned systems the layout was last made with, to notice one being added.
+    pub pins_seen: Option<Vec<i64>>,
+    /// Systems picked with a shift-drag box, moved together by dragging any one of them.
+    pub multi: HashSet<i64>,
+    /// The shift-drag box being drawn: where it started and where the pointer is, on screen.
+    pub marquee: Option<(egui::Pos2, egui::Pos2)>,
     /// The canvas as last drawn, whose shape the chains are packed to.
     pub canvas: Option<egui::Rect>,
     /// Holes whose signature a probe scan no longer lists, waiting on the user: the system, and
@@ -1118,6 +1124,10 @@ pub fn effect_color(effect: &str) -> egui::Color32 {
 /// clock's worse figure. `None` when nothing is known and nothing is near.
 pub fn life_badge(w: &Wormhole, now: i64, visuals: &egui::Visuals) -> Option<(String, egui::Color32)> {
     let t = time_left(w, now);
+    // Read as under a day, it says so until it is past its time; the colour tells how old that is.
+    if w.life == Some(spai_core::wormholes::Life::UnderDay) && t != TimeLeft::Expiring {
+        return Some(("<1d".to_owned(), time_color(t)));
+    }
     Some(match t {
         TimeLeft::Plenty => (w.life?.short().to_owned(), visuals.text_color()),
         TimeLeft::Under12h => ("<12h".to_owned(), time_color(t)),
@@ -1652,11 +1662,11 @@ mod tests {
         assert_eq!(time_left(&hole(None, -60), now), TimeLeft::Expiring);
         assert_eq!(time_left(&hole(Some(Life::Expired), 10 * 3600), now), TimeLeft::Expiring, "the scout's word wins");
         assert_eq!(time_left(&hole(Some(Life::Under1h), 10 * 3600), now), TimeLeft::Under1h);
-        // Read as less than a day: half of that gone, as likely closed as not, then on down.
-        let day = |ago: i64| Wormhole { life: Some(Life::UnderDay), explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
-        assert_eq!(time_left(&day(6 * 3600), now), TimeLeft::Plenty);
-        assert_eq!(time_left(&day(13 * 3600), now), TimeLeft::Under12h);
-        assert_eq!(time_left(&day(21 * 3600), now), TimeLeft::Under4h);
+        // Read as less than a day: a warning from the start, stale after 6 hours, critical after 12.
+        let day = |ago: i64| Wormhole { life: Some(Life::UnderDay), observed_at: Some(now - ago), explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
+        assert_eq!(time_left(&day(3600), now), TimeLeft::Under12h);
+        assert_eq!(time_left(&day(6 * 3600), now), TimeLeft::Under4h);
+        assert_eq!(time_left(&day(13 * 3600), now), TimeLeft::Under1h);
         assert_eq!(time_left(&day(25 * 3600), now), TimeLeft::Expiring);
         // A reading of under four hours runs out too.
         let four = Wormhole { life: Some(Life::Under4h), explicit_expiry: Some(now - 60), ..Default::default() };

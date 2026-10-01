@@ -385,6 +385,29 @@ mod end_to_end {
             updated_at: now,
             ..Default::default()
         });
+        // SPAI_E2E_DRIFTER: a hole as the desktop records an auto-detected one, from a drifter
+        // system to k-space and read half a day ago.
+        if std::env::var("SPAI_E2E_DRIFTER").is_ok() {
+            let at = now - 13 * 3600;
+            a.store.upsert_wormhole(&Wormhole {
+                system_id: 31_000_006,
+                signature: Some("FIJ".into()),
+                wh_type: Some("R259".into()),
+                dest: DestClass::Nullsec,
+                dest_system_id: Some(30_002_901),
+                size: Some(crate::wormholes::ShipSize::Large),
+                reported_at: at,
+                explicit_expiry: Some(at + 86_400),
+                source: Source::Auto,
+                updated_at: at,
+                detected_by: Some("Owner".into()),
+                jumped_at: Some(at),
+                mass: Some(Mass::Fresh),
+                life: Some(crate::wormholes::Life::UnderDay),
+                observed_at: Some(at),
+                ..Default::default()
+            });
+        }
         let scan = [crate::wormholes::ScanSig { id: "WEB-123".into(), kind: "Cosmic Signature".into(), group: "Wormhole".into(), name: "Unstable Wormhole".into() }];
         a.store.merge_system_sigs(31_000_200, &scan, "Owner", now - 3600, false, None);
         a.run(Cmd::Create { name: "Web chain".into(), char_id: owner_id, char_name: "Owner".into(), prefs: SharePrefs::default() });

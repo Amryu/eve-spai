@@ -268,6 +268,13 @@ pub fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
         Some(Life::Expired) => TimeLeft::Expiring,
         Some(Life::Under1h) => TimeLeft::Under1h,
         Some(Life::Under4h) => TimeLeft::Under4h,
+        // "Less than a day" says nothing of how much less: a warning from the start, stale once
+        // six hours old and critical after twelve, by how long ago it was read.
+        Some(Life::UnderDay) => match now - w.observed_at.unwrap_or(w.reported_at) {
+            age if age >= 12 * 3600 => TimeLeft::Under1h,
+            age if age >= 6 * 3600 => TimeLeft::Under4h,
+            _ => TimeLeft::Under12h,
+        },
         _ => TimeLeft::Plenty,
     };
     let clock = match w.expiry() - now {
@@ -963,6 +970,17 @@ mod tests {
         assert_eq!(w.expiry(), 1000 + 3600);
         assert_eq!(w.hours_left(1000), Some(1));
         assert_eq!(w.hours_left(1000 + 3600), None);
+    }
+
+    /// "Less than a day" warns from the start, is stale after 6 hours and critical after 12.
+    #[test]
+    fn a_hole_read_as_under_a_day_ages_from_yellow_to_red() {
+        let now = 1_000_000;
+        let read = |ago: i64| Wormhole { life: Some(Life::UnderDay), observed_at: Some(now - ago), reported_at: now - ago, explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
+        assert_eq!(time_left(&read(3600), now), TimeLeft::Under12h);
+        assert_eq!(time_left(&read(7 * 3600), now), TimeLeft::Under4h);
+        assert_eq!(time_left(&read(13 * 3600), now), TimeLeft::Under1h);
+        assert_eq!(time_left(&read(25 * 3600), now), TimeLeft::Expiring);
     }
 
     #[test]

@@ -186,7 +186,10 @@ impl StarMap {
         layers::paint_bridges(&painter, bridges, &routed, &pos, cull, dot, |a, b| layers::bridge_colors(geo, &capital, a, b, BRIDGE));
         let place = |x: f64, z: f64| spai_core::map::project(x, z, &bounds, rect, self.zoom, self.pan);
         if self.layers.wormholes {
-            layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: self.layers.turnur, thera: self.layers.thera, spaced: true }, dot, place);
+            // The route draws the holes it takes; the plain lines under them are left out.
+            let mut taken: HashSet<(i64, i64)> = HashSet::new();
+            layers::route_pairs(&hops.iter().map(|h| h.id).collect::<Vec<_>>(), &mut taken);
+            layers::paint_wormholes(&painter, &visuals, &d.overlay, &draw, &pos, HoleLayer { turnur: self.layers.turnur, thera: self.layers.thera, spaced: true }, dot, place, &taken);
         }
         if !hops.is_empty() {
             let phase = (ui.input(|i| i.time) * 28.0) as f32;
@@ -488,6 +491,12 @@ fn system_tip(ui: &mut egui::Ui, geo: &Systems, d: &MapData, id: i64) {
             }
             let facts = if facts.is_empty() { String::new() } else { format!("  ({})", facts.join(", ")) };
             ui.label(format!("{} {} {far}{facts}", sig.as_deref().unwrap_or("?"), egui_phosphor::regular::ARROW_RIGHT));
+            let (added, edited) = spai_ui::wh_graph::who_lines(w, now);
+            ui.label(egui::RichText::new(match edited {
+                Some(e) => format!("{added} \u{b7} {e}"),
+                None => added,
+            })
+            .weak());
         }
         if here.len() > 8 {
             ui.label(egui::RichText::new(format!("and {} more", here.len() - 8)).weak());

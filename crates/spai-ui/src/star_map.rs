@@ -354,6 +354,24 @@ pub fn paint_gates(
     }
 }
 
+/// The pairs of systems a route runs between, low id first: each step, and each stretch through
+/// wormhole space between two k-space systems, which the map draws as one chain.
+pub fn route_pairs(path: &[i64], out: &mut HashSet<(i64, i64)>) {
+    let mut last_k: Option<i64> = None;
+    for (i, &id) in path.iter().enumerate() {
+        if i > 0 {
+            let a = path[i - 1];
+            out.insert((a.min(id), a.max(id)));
+        }
+        if is_kspace(id) {
+            if let Some(k) = last_k.filter(|k| *k != id && path.get(i.wrapping_sub(1)) != Some(k)) {
+                out.insert((k.min(id), k.max(id)));
+            }
+            last_k = Some(id);
+        }
+    }
+}
+
 /// Ansiblex bridges as arcs coloured by zone, skipping those in `routed` (a route draws its own).
 /// A bridge the zone limit closes both ways is faint and dashed; one open only one way gets an
 /// arrowhead.
@@ -409,13 +427,17 @@ pub fn paint_wormholes(
     layer: HoleLayer,
     dot: f32,
     place: impl Fn(f64, f64) -> egui::Pos2,
+    routed: &HashSet<(i64, i64)>,
 ) {
         let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
+        // A hole or chain a route takes is drawn by the route, animated: the plain line under it would
+        // put two lines on one hop. See [`route_pairs`].
+        let taken = |a: i64, b: i64| routed.contains(&(a.min(b), a.max(b)));
         let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
         const TURNUR: i64 = 30_002_086;
         let off = |a: i64, b: i64| overlay.blocked.contains(&(a.min(b), a.max(b)));
         for &(a, b) in &overlay.direct {
-            if !layer.turnur && (a == TURNUR || b == TURNUR) {
+            if (!layer.turnur && (a == TURNUR || b == TURNUR)) || taken(a, b) {
                 continue;
             }
             if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
@@ -430,7 +452,7 @@ pub fn paint_wormholes(
             }
         }
         for &(a, b, hops) in &overlay.chains {
-            if !layer.turnur && (a == TURNUR || b == TURNUR) {
+            if (!layer.turnur && (a == TURNUR || b == TURNUR)) || taken(a, b) {
                 continue;
             }
             if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
@@ -670,5 +692,24 @@ pub fn paint_hole_mark(painter: &egui::Painter, at: egui::Pos2, icon_h: f32, ico
     }
     if m.thera {
         letters(at.x, "T");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each step is a pair, and so is a stretch through wormhole space between two k-space
+    /// systems, which the map draws as one chain; k-space systems a gate apart add nothing more.
+    #[test]
+    fn a_route_covers_its_steps_and_its_wormhole_stretches() {
+        let (jita, j1, j2, amarr, dodixie) = (30_000_142, 31_000_200, 31_000_300, 30_002_187, 30_002_659);
+        let mut out = HashSet::new();
+        route_pairs(&[jita, j1, j2, amarr, dodixie], &mut out);
+        assert!(out.contains(&(jita.min(j1), jita.max(j1))));
+        assert!(out.contains(&(jita.min(amarr), jita.max(amarr))), "the chain from Jita to Amarr");
+        assert!(out.contains(&(amarr.min(dodixie), amarr.max(dodixie))));
+        assert!(!out.contains(&(jita.min(dodixie), jita.max(dodixie))), "not across a gate step");
+        assert_eq!(out.len(), 5);
     }
 }

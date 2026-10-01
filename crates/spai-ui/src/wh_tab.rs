@@ -250,6 +250,20 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     if view.dragged.is_none() {
         view.dragged = Some(host.saved_layout());
     }
+    // A system just pinned reshapes the chains it joins: lay them out afresh, keeping each cluster
+    // where it was.
+    let mut pins_now = user_pins.clone();
+    pins_now.sort_unstable();
+    let pin_added = view.pins_seen.as_ref().is_some_and(|was| pins_now.iter().any(|p| !was.contains(p)));
+    view.pins_seen = Some(pins_now);
+    if pin_added && focus.is_none() {
+        let kept = keep_clusters(&auto, view.dragged.as_ref().unwrap());
+        host.clear_layout();
+        for (id, p) in &kept {
+            host.save_layout(*id, *p);
+        }
+        view.dragged = Some(kept);
+    }
     // A focused view is laid out around its system; moving things there is only for the moment.
     let mut pos = if focus.is_some() {
         place_with(&auto, &view.focus_dragged, opts)
@@ -270,7 +284,17 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             }
         }
     }
+    // Where everything sits before a drag moves it: a dragged box takes the boxes picked with it.
+    let placed = pos.clone();
     if let Some((id, p)) = view.drag {
+        if view.multi.contains(&id) {
+            let shift = p - placed.get(&id).copied().unwrap_or(p);
+            for m in &view.multi {
+                if let Some(q) = placed.get(m) {
+                    pos.insert(*m, *q + shift);
+                }
+            }
+        }
         pos.insert(id, p);
     }
 
@@ -391,11 +415,25 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     if std::mem::take(&mut view.fit_pending) {
         view.fit(&pos, rect);
     }
-    if bg.dragged() && view.drag.is_none() {
+    // Shift and drag on the canvas draws a box that picks the systems it touches.
+    if bg.drag_started() && ui.input(|i| i.modifiers.shift) {
+        let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+        view.marquee = Some((from, from));
+    }
+    let mut marquee_done: Option<egui::Rect> = None;
+    if let Some((from, _)) = view.marquee {
+        if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+            view.marquee = Some((from, p));
+        }
+        if bg.drag_stopped() || !ui.input(|i| i.pointer.any_down()) {
+            marquee_done = view.marquee.take().map(|(a, b)| egui::Rect::from_two_pos(a, b));
+        }
+    } else if bg.dragged() && view.drag.is_none() {
         view.pan += bg.drag_delta();
     }
     if bg.clicked() {
         view.selected = None;
+        view.multi.clear();
     }
     if bg.hovered() || ui.rect_contains_pointer(rect) {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
@@ -505,6 +543,9 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         );
     }
 
+    if let Some(area) = marquee_done {
+        view.multi = rects.iter().filter(|(_, (r, _, _))| r.intersects(area)).map(|(id, _)| *id).collect();
+    }
     let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
     let mut hovered_edge: Option<&Wormhole> = None;
     // Routes and label spots are worked out on the map's own boxes, in map units, and only
@@ -820,12 +861,31 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         line_tip(ui, pointer, tip);
     }
 
+    // The picked boxes and the box being drawn, over the map.
+    for id in &view.multi {
+        if let Some((r, _, _)) = rects.get(id) {
+            painter.rect_stroke(r.expand(3.0), 6.0, egui::Stroke::new(2.0, visuals.hyperlink_color), egui::StrokeKind::Outside);
+        }
+    }
+    if let Some((a, b)) = view.marquee {
+        let r = egui::Rect::from_two_pos(a, b);
+        painter.rect(r, 2.0, visuals.hyperlink_color.gamma_multiply(0.12), egui::Stroke::new(1.0, visuals.hyperlink_color), egui::StrokeKind::Inside);
+        ui.ctx().request_repaint();
+    }
     if let Some((id, at)) = drop {
-        if focus.is_some() {
-            view.focus_dragged.insert(id, at);
-        } else {
-            host.save_layout(id, at);
-            view.dragged.get_or_insert_default().insert(id, at);
+        // A picked box takes the others along by as much as it moved.
+        let shift = at - placed.get(&id).copied().unwrap_or(at);
+        let mut moved: Vec<(i64, egui::Pos2)> = vec![(id, at)];
+        if view.multi.contains(&id) {
+            moved.extend(view.multi.iter().filter(|m| **m != id).filter_map(|m| Some((*m, snap(*placed.get(m)? + shift)))));
+        }
+        for (id, at) in moved {
+            if focus.is_some() {
+                view.focus_dragged.insert(id, at);
+            } else {
+                host.save_layout(id, at);
+                view.dragged.get_or_insert_default().insert(id, at);
+            }
         }
     }
     if let Some(id) = clicked {
@@ -1146,4 +1206,178 @@ fn legend(ui: &mut egui::Ui) {
         );
     });
     ui.add_space(4.0);
+}
+
+/// Toggles that add and remove codes from `set`; an empty set means any. Returns whether it changed.
+fn code_toggles(ui: &mut egui::Ui, set: &mut Vec<String>, items: &[(&str, &str)]) -> bool {
+    use crate::widgets::SteadySelect as _;
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        for (code, label) in items {
+            let on = set.iter().any(|c| c == code);
+            if ui.menu_label(on, *label).clicked() {
+                if on {
+                    set.retain(|c| c != code);
+                } else {
+                    set.push((*code).to_owned());
+                }
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// The wormhole tab's filter popup. Returns whether anything changed.
+pub fn wh_filter_ui(ui: &mut egui::Ui, f: &mut spai_core::wormholes::WhFilter) -> bool {
+    use spai_core::wormholes::{DestClass, Mass, ShipSize, Source, TimeLeft, UNKNOWN};
+    let mut changed = false;
+    ui.set_min_width(540.0);
+    ui.label(egui::RichText::new("Nothing picked in a row lets everything through").weak());
+    egui::Grid::new("wh_filter_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Leads to");
+        let dests: Vec<(&str, &str)> = [DestClass::Highsec, DestClass::Lowsec, DestClass::Nullsec, DestClass::Wspace, DestClass::Thera, DestClass::Turnur, DestClass::Unknown]
+            .into_iter()
+            .map(|d| (d.code(), d.label()))
+            .collect();
+        changed |= code_toggles(ui, &mut f.dest, &dests);
+        ui.end_row();
+        ui.label("Type");
+        changed |= ui
+            .add(egui::TextEdit::singleline(&mut f.types).hint_text("C247 K162").desired_width(160.0))
+            .on_hover_text("Hole types, either side")
+            .changed();
+        ui.end_row();
+        ui.label("Size");
+        let mut sizes: Vec<(&str, &str)> = ShipSize::ALL.into_iter().map(|s| (s.code(), s.short())).collect();
+        sizes.push((UNKNOWN, "Unknown"));
+        changed |= code_toggles(ui, &mut f.size, &sizes);
+        ui.end_row();
+        ui.label("Mass left");
+        let mut masses: Vec<(&str, &str)> = Mass::ALL.into_iter().map(|m| (m.code(), m.short())).collect();
+        masses.push((UNKNOWN, "Unknown"));
+        changed |= code_toggles(ui, &mut f.mass, &masses);
+        ui.end_row();
+        ui.label("Time left");
+        let times: Vec<(&str, &str)> = TimeLeft::ALL.into_iter().map(|t| (t.code(), t.short())).collect();
+        changed |= code_toggles(ui, &mut f.time, &times);
+        ui.end_row();
+        ui.label("Source");
+        let sources: Vec<(&str, &str)> = Source::ALL.into_iter().map(|s| (s.code(), s.label())).collect();
+        changed |= code_toggles(ui, &mut f.source, &sources);
+        ui.end_row();
+    });
+    changed
+}
+
+/// The Routes tab's rows: each target with how many jumps it is from `sel` over gates, bridges and
+/// the holes in `adj`, and a square per jump in the colour of the system it lands in. Pins can be
+/// removed; characters are marked. Returns a pin to remove and a system to open.
+pub fn route_rows(
+    ui: &mut egui::Ui,
+    geo: &Systems,
+    sel: i64,
+    targets: &[(String, i64, bool)],
+    adj: &HashMap<i64, Vec<i64>>,
+) -> (Option<String>, Option<i64>) {
+    let (mut unpin, mut select) = (None, None);
+    let name = |id: i64| geo.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
+    for (label, dest, is_pin) in targets {
+        let route = geo.route_with(sel, *dest, true, true, adj, |_| true);
+        ui.horizontal(|ui| {
+            if *is_pin && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                unpin = Some(label.clone());
+            }
+            if !*is_pin {
+                ui.label(egui::RichText::new(icon::USER).weak());
+            }
+            let dest_name = name(*dest);
+            let text = if *is_pin || dest_name == *label { label.clone() } else { format!("{label} ({dest_name})") };
+            if ui.link(text).clicked() {
+                select = Some(*dest);
+            }
+            match &route {
+                Some(r) => ui.label(format!("{}j", r.len() - 1)),
+                None => ui.label(egui::RichText::new("no route").weak()),
+            };
+        });
+        if let Some(r) = &route {
+            // One square per jump, wrapped to the panel's width, at least ten a row.
+            const STEP: f32 = 10.0;
+            const ROW: f32 = 13.0;
+            let hops = r.len().saturating_sub(1);
+            // The visible width: wider content above can stretch the layout past it.
+            let visible = ui.clip_rect().right().min(ui.max_rect().right()) - ui.cursor().left();
+            let per_row = (((visible + 2.0) / STEP) as usize).max(10);
+            let rows = hops.div_ceil(per_row).max(1);
+            let (resp, painter) = ui.allocate_painter(egui::vec2(hops.min(per_row) as f32 * STEP, rows as f32 * ROW), egui::Sense::hover());
+            for (i, s) in r.iter().skip(1).enumerate() {
+                let color = geo
+                    .info_of(*s)
+                    .map(|i| crate::wh_graph::class_color(whdata::class_of(*s, i.security, &i.region), i.security))
+                    .unwrap_or(egui::Color32::GRAY);
+                let at = resp.rect.min + egui::vec2((i % per_row) as f32 * STEP, (i / per_row) as f32 * ROW + 1.0);
+                painter.rect_filled(egui::Rect::from_min_size(at, egui::vec2(8.0, 10.0)), 1.0, color);
+            }
+            resp.on_hover_text(r.iter().skip(1).map(|s| name(*s)).collect::<Vec<_>>().join(" \u{2192} "));
+        }
+        ui.add_space(4.0);
+    }
+    (unpin, select)
+}
+
+/// A fresh layout with each cluster moved back to where it was: the systems a cluster already had
+/// keep their centre, and only its inside is rearranged. A cluster of systems new to the map stays
+/// where the fresh layout put it.
+pub fn keep_clusters(auto: &[(i64, Option<i64>, egui::Pos2)], was: &HashMap<i64, egui::Pos2>) -> HashMap<i64, egui::Pos2> {
+    let parent: HashMap<i64, Option<i64>> = auto.iter().map(|(id, p, _)| (*id, *p)).collect();
+    let root = |mut id: i64| {
+        let mut steps = 0;
+        while let Some(Some(p)) = parent.get(&id) {
+            id = *p;
+            steps += 1;
+            if steps > auto.len() {
+                break;
+            }
+        }
+        id
+    };
+    let mut clusters: HashMap<i64, Vec<(i64, egui::Pos2)>> = HashMap::new();
+    for (id, _, p) in auto {
+        clusters.entry(root(*id)).or_default().push((*id, *p));
+    }
+    let mut out = HashMap::new();
+    for members in clusters.values() {
+        let known: Vec<(egui::Pos2, egui::Pos2)> = members.iter().filter_map(|(id, p)| Some((*p, *was.get(id)?))).collect();
+        let shift = if known.is_empty() {
+            egui::Vec2::ZERO
+        } else {
+            let n = known.len() as f32;
+            let fresh = known.iter().fold(egui::Vec2::ZERO, |a, (f, _)| a + f.to_vec2()) / n;
+            let old = known.iter().fold(egui::Vec2::ZERO, |a, (_, o)| a + o.to_vec2()) / n;
+            old - fresh
+        };
+        for (id, p) in members {
+            out.insert(*id, *p + shift);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new layout moves a cluster back to where its systems were, and leaves a new one alone.
+    #[test]
+    fn a_relayout_keeps_each_cluster_where_it_was() {
+        let p = egui::pos2;
+        // Cluster 1 (root 1, child 2) laid out at the origin; cluster 10 is new to the map.
+        let auto = [(1, None, p(0.0, 0.0)), (2, Some(1), p(100.0, 0.0)), (10, None, p(500.0, 0.0))];
+        let was = HashMap::from([(1, p(1000.0, 1000.0)), (2, p(1300.0, 1000.0))]);
+        let out = keep_clusters(&auto, &was);
+        // The two kept their middle, 1150, and the fresh spacing of 100 between them.
+        assert_eq!((out[&1], out[&2]), (p(1100.0, 1000.0), p(1200.0, 1000.0)));
+        assert_eq!(out[&10], p(500.0, 0.0));
+    }
 }

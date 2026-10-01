@@ -21,6 +21,17 @@ const LAYOUT: &str = "spai.wh.layout";
 const ROUTE_PREFS: &str = "spai.route.prefs";
 const DETECT: &str = "spai.detect";
 const SCOUT: &str = "spai.scout";
+const FILTER: &str = "spai.wh.filter";
+/// The tab, the map's layers and its region, as they were left.
+const VIEW: &str = "spai.view";
+
+/// What the page looks like between loads.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SavedView {
+    tab: Tab,
+    layers: crate::starmap::Layers,
+    region: Option<i64>,
+}
 /// EVE-Scout's feed changes as its scouts report; five minutes, as the desktop polls it.
 const SCOUT_EVERY: i64 = 300;
 
@@ -57,9 +68,11 @@ pub struct WebApp {
     scout: Vec<spai_core::wormholes::Wormhole>,
     scout_at: i64,
     scout_changed: bool,
+    /// The view as last saved, to save it again only when it changes.
+    view_saved: Option<SavedView>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum Tab {
     #[default]
     Wormholes,
@@ -91,10 +104,14 @@ impl WebApp {
             shown: u64::MAX,
             joined: false,
             tried_app: false,
-            tab: Tab::default(),
+            tab: page::load::<SavedView>(VIEW).map_or_else(Tab::default, |v| v.tab),
             map: {
                 let mut m = StarMap::default();
-                m.layers.scout = page::load(SCOUT).unwrap_or(true);
+                if let Some(v) = page::load::<SavedView>(VIEW) {
+                    m.layers = v.layers;
+                    m.region = v.region;
+                }
+                m.layers.scout = page::load(SCOUT).unwrap_or(m.layers.scout);
                 m
             },
             map_data: None,
@@ -110,6 +127,7 @@ impl WebApp {
             scout: Vec::new(),
             scout_at: 0,
             scout_changed: false,
+            view_saved: None,
             route_note: Default::default(),
             skills: Default::default(),
         }
@@ -464,7 +482,9 @@ impl eframe::App for WebApp {
             match self.loading.lock().unwrap().take() {
                 Some(Ok(u)) => {
                     let mut host = WebHost::new(Arc::new(u.systems()));
-                    match page::load(PREFS) {
+                    match page::load::<spai_ui::wh_tab::WhPrefs>(PREFS) {
+                        // 10 was this page's own default before it took the desktop's.
+                        Some(p) if p.pin_jumps == 10 => host.prefs = spai_ui::wh_tab::WhPrefs { pin_jumps: crate::host::PIN_JUMPS, ..p },
                         Some(p) => host.prefs = p,
                         // First visit: the systems most of the group stages in.
                         None => {
@@ -472,6 +492,7 @@ impl eframe::App for WebApp {
                             host.dirty = true;
                         }
                     }
+                    host.filter = page::load(FILTER).unwrap_or_default();
                     let layout: Vec<(i64, f32, f32)> = page::load(LAYOUT).unwrap_or_default();
                     host.layout = layout.into_iter().map(|(id, x, y)| (id, egui::pos2(x, y))).collect();
                     self.host = Some(host);
@@ -500,6 +521,11 @@ impl eframe::App for WebApp {
                 self.run_accounts(ui.ctx());
             }
             _ => self.sync = None,
+        }
+        let view = SavedView { tab: self.tab, layers: self.map.layers, region: self.map.region };
+        if self.view_saved.as_ref() != Some(&view) {
+            page::save(VIEW, &view);
+            self.view_saved = Some(view);
         }
         let top = egui::Panel::top("web_top").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 5))).show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -576,6 +602,7 @@ impl eframe::App for WebApp {
                     spai_ui::wh_tab::show(&mut self.view, host, ui);
                     if std::mem::take(&mut host.dirty) {
                         page::save(PREFS, &host.prefs);
+                        page::save(FILTER, &host.filter);
                         let layout: Vec<(i64, f32, f32)> = host.layout.iter().map(|(id, p)| (*id, p.x, p.y)).collect();
                         page::save(LAYOUT, &layout);
                     }

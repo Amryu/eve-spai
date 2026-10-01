@@ -739,25 +739,16 @@ impl SpaiApp {
         if let Some(graph) = &self.systems {
             spai_ui::star_map::paint_gates(&painter, ui.visuals(), graph, &self.map_draw, &pos, &bridges, cull);
         }
-        if ov.bridges {
-            let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-            // A bridge a route is flying is drawn by that route, animated and in the route's colour,
-            // so the plain arc is skipped rather than putting two lines on one hop.
-            let mut routed: std::collections::HashSet<(i64, i64)> = Default::default();
-            let mut note = |a: i64, b: i64| {
-                routed.insert((a.min(b), a.max(b)));
-            };
+        // A bridge or hole a route is flying is drawn by that route, animated and in the route's
+        // colour, so the plain line is skipped rather than putting two lines on one hop.
+        let mut routed: std::collections::HashSet<(i64, i64)> = Default::default();
+        {
+            use spai_ui::star_map::route_pairs;
             if let Some(o) = self.map_route_opts.get(self.map_route_at) {
-                for w in o.hops.windows(2) {
-                    if w[1].kind == 1 {
-                        note(w[0].id, w[1].id);
-                    }
-                }
+                route_pairs(&o.hops.iter().map(|h| h.id).collect::<Vec<_>>(), &mut routed);
             }
             if let Some(r) = &self.travel_route {
-                for w in r.windows(2) {
-                    note(w[0], w[1]);
-                }
+                route_pairs(r, &mut routed);
             }
             // And the in-game destination route, which walks the same graph a few lines below.
             if let (Some(ps), Some(dest), Some(g)) =
@@ -769,11 +760,12 @@ impl SpaiApp {
                     std::collections::HashMap::new()
                 };
                 if let Some(r) = g.route_with(ps, dest, true, true, &holes, |_| true) {
-                    for w in r.windows(2) {
-                        note(w[0], w[1]);
-                    }
+                    route_pairs(&r, &mut routed);
                 }
             }
+        }
+        if ov.bridges {
+            let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
             spai_ui::star_map::paint_bridges(&painter, &bridges, &routed, &pos, cull, dot, |a, c| self.bridge_colors(a, c, bridge_col));
         }
 
@@ -781,7 +773,7 @@ impl SpaiApp {
             let spaced = self.map_layout == crate::map::MapLayout::Spaced;
             let place = |x: f64, z: f64| crate::map::project(x, z, &bounds, rect, self.map_zoom, self.map_pan);
             let marks = spai_ui::star_map::HoleLayer { turnur: ov.turnur, thera: ov.thera, spaced };
-            spai_ui::star_map::paint_wormholes(&painter, ui.visuals(), &self.wh_overlay, &self.map_draw, &pos, marks, dot, place);
+            spai_ui::star_map::paint_wormholes(&painter, ui.visuals(), &self.wh_overlay, &self.map_draw, &pos, marks, dot, place, &routed);
         }
 
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
@@ -1856,6 +1848,12 @@ impl SpaiApp {
                 None => "expiring".to_owned(),
             });
             ui.label(egui::RichText::new(format!("{sig} {} {other}  ({})", egui_phosphor::regular::ARROW_RIGHT, parts.join(", "))));
+            let (added, edited) = spai_ui::wh_graph::who_lines(w, now);
+            let who = match edited {
+                Some(e) => format!("{added} \u{b7} {e}"),
+                None => added,
+            };
+            ui.label(egui::RichText::new(who).weak());
         }
     }
 
