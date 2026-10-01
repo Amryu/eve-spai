@@ -150,17 +150,14 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         view.gate_dist.entry(*a).or_insert_with(|| geo.distances_from(*a, WH_PIN_JUMPS_MAX));
     }
     let dist = |from: i64, exit: i64| view.gate_dist.get(&from).and_then(|d| d.get(&exit).copied());
-    // Every chain reaches every pinned system through its own closest exit; a pinned system is
-    // one box however many chains lead to it. A wormhole pin is met at its chain's closest exit.
+    // Every k-space exit within reach of a pinned system leads somewhere, so it stays on the map;
+    // a wormhole pin is met at the exits of its own chain.
     for chain in &chains {
-        for pid in pins.iter().filter(|p| !chain.contains(p)) {
-            let best = anchors[pid]
-                .iter()
-                .flat_map(|a| chain.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, *a, dist(*a, *e)?))))
-                .min_by_key(|(_, _, n)| *n);
-            if let Some((exit, anchor, n)) = best {
-                if !gate_links.iter().any(|(x, y, _, _)| (*x, *y) == (exit, anchor) || (*x, *y) == (anchor, exit)) {
-                    gate_links.push((exit, anchor, n, *pid));
+        for e in chain.iter().filter(|e| kspace(e)) {
+            for pid in pins.iter().filter(|p| !chain.contains(p)) {
+                let best = anchors[pid].iter().filter_map(|a| Some((*a, dist(*a, *e)?))).min_by_key(|(_, n)| *n);
+                if let Some((anchor, n)) = best {
+                    gate_links.push((*e, anchor, n, *pid));
                 }
             }
         }
@@ -180,36 +177,46 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         only_counted = hidden.keys().copied().filter(|id| !drawn.contains(id)).collect();
         edges = holes.iter().filter_map(|w| Some((w.system_id, w.dest_system_id?))).collect();
     }
-    // A pinned system joins every cluster near it as a rounded element beside the cluster's
-    // nearest exit, so the way to it reads at a glance without lines across the map. A pin
-    // near nothing still shows, once, on its own.
+    // Pinned systems as rounded elements beside the exits, so the way to them reads at a glance
+    // without lines across the map. Each exit shows the pinned system closest to it, the reason
+    // it is on the map; each pinned system shows at its closest exit in every cluster near it,
+    // so an exit can carry several. A pin near nothing still shows, once, on its own.
     let mut pills: HashMap<i64, (i64, u32)> = HashMap::new();
     let mut pill_alone: Vec<i64> = Vec::new();
     let clusters = components(&edges);
-    for pid in user_pins.iter().filter(|p| !drifters.contains(p)) {
-        let mut shown = false;
-        for cl in &clusters {
-            if cl.contains(pid) {
-                shown = true;
+    let shown_pins: Vec<i64> = user_pins.iter().copied().filter(|p| !drifters.contains(p)).collect();
+    let gap = |pid: i64, e: i64| anchors[&pid].iter().filter_map(|a| dist(*a, e)).min().filter(|n| *n < near_jumps);
+    let mut pill = |pid: i64, exit: i64, n: u32, edges: &mut Vec<(i64, i64)>| {
+        let id = pill_id(pid, exit);
+        if pills.insert(id, (pid, n)).is_none() {
+            edges.push((exit, id));
+        }
+    };
+    let mut seen: HashSet<i64> = HashSet::new();
+    for cl in &clusters {
+        let exits: Vec<i64> = cl.iter().copied().filter(|e| kspace(e)).collect();
+        for &e in &exits {
+            let closest = shown_pins.iter().filter(|p| !cl.contains(p)).filter_map(|p| Some((*p, gap(*p, e)?))).min_by_key(|(_, n)| *n);
+            if let Some((pid, n)) = closest {
+                pill(pid, e, n, &mut edges);
+                seen.insert(pid);
+            }
+        }
+        for &pid in &shown_pins {
+            if cl.contains(&pid) {
+                seen.insert(pid);
                 continue;
             }
-            let best = anchors[pid]
-                .iter()
-                .flat_map(|a| cl.iter().filter(|e| kspace(e)).filter_map(move |e| Some((*e, dist(*a, *e)?))))
-                .min_by_key(|(_, n)| *n)
-                .filter(|(_, n)| *n < near_jumps);
-            if let Some((exit, n)) = best {
-                let id = pill_id(*pid, exit);
-                pills.insert(id, (*pid, n));
-                edges.push((exit, id));
-                shown = true;
+            if let Some((e, n)) = exits.iter().filter_map(|e| Some((*e, gap(pid, *e)?))).min_by_key(|(_, n)| *n) {
+                pill(pid, e, n, &mut edges);
+                seen.insert(pid);
             }
         }
-        if !shown {
-            let id = pill_id(*pid, 0);
-            pills.insert(id, (*pid, u32::MAX));
-            pill_alone.push(id);
-        }
+    }
+    for pid in shown_pins.iter().filter(|p| !seen.contains(p)) {
+        let id = pill_id(*pid, 0);
+        pills.insert(id, (*pid, u32::MAX));
+        pill_alone.push(id);
     }
     let mut here: HashMap<i64, Vec<String>> = HashMap::new();
     for (name, (sys, _)) in &chars {
