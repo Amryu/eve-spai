@@ -45,9 +45,10 @@ impl GroupTab {
                     continue;
                 }
                 let members = store.share_members(&g.id);
-                // Members invite too, and let their own invitees in as viewers only.
+                // Members invite too, and let their own invitees in as viewers only; anyone invites
+                // their own other devices.
+                self.invites(ui, g, status, origin, &members, &mut out);
                 if g.role.can_write() {
-                    self.invites(ui, g, status, origin, &mut out);
                     requests(ui, g, status, &members, &mut out);
                 }
                 self.members(ui, g, &members, me, &mut out);
@@ -97,15 +98,22 @@ impl GroupTab {
         }
     }
 
-    fn invites(&mut self, ui: &mut egui::Ui, g: &ShareGroup, status: &Status, origin: &str, out: &mut Vec<Cmd>) {
+    fn invites(&mut self, ui: &mut egui::Ui, g: &ShareGroup, status: &Status, origin: &str, members: &[Member], out: &mut Vec<Cmd>) {
         ui.add_space(4.0);
         ui.strong("Invite");
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.invite_for).hint_text("Character it is for").desired_width(200.0));
-            let ok = !self.invite_for.trim().is_empty();
+            let typed = self.invite_for.trim();
+            // Yourself is another device: at your own rank, which no one picks.
+            let me = members.iter().find(|m| m.char_id == g.char_id).is_some_and(|m| m.name.eq_ignore_ascii_case(typed));
+            let ok = !typed.is_empty() && (me || g.role.can_write());
             // Members invite viewers only.
             let admin = g.role.can_manage();
-            if admin {
+            if me {
+                ui.label(egui::RichText::new(format!("as {}", g.role.label())).weak()).on_hover_text("Your own other device: it keeps your rank");
+            } else if !g.role.can_write() {
+                ui.label(egui::RichText::new("your own devices only").weak()).on_hover_text("A viewer invites only their own character, for another device");
+            } else if admin {
                 let v = &mut self.invite_viewer;
                 egui::ComboBox::from_id_salt(("web_invite_role", &g.id)).width(90.0).selected_text(if *v { "as Viewer" } else { "as Member" }).show_ui(ui, |ui| {
                     ui.selectable_value(v, false, "as Member").on_hover_text("Sees and shares");

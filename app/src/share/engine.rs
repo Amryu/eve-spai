@@ -331,6 +331,17 @@ mod end_to_end {
         let refused = pollster::block_on(v.client(viewer_id).post_op(&g, &env.op_id, vg.epoch, false, &serde_json::to_string(&env).unwrap()));
         assert!(refused.is_err(), "the server takes no data from a viewer");
 
+        // The viewer invites their own other device: their own sync lets it in, as a viewer.
+        let v2 = Install::new(&base, &secret);
+        let link_v2 = v.invite_as(&g, viewer_id, "Pilot V", Role::Viewer);
+        v2.run(Cmd::Join { link: link_v2, char_id: viewer_id, prefs: SharePrefs::default() });
+        v.sync();
+        v2.sync();
+        assert!(v2.hole("ABC").is_some(), "the viewer's second device reads the group");
+        a.sync();
+        let viewer = a.store.share_members(&g).into_iter().find(|m| m.char_id == viewer_id).unwrap();
+        assert_eq!((viewer.devices.len(), viewer.role), (2, Role::Viewer), "one viewer, two devices, still a viewer");
+
         // B's second device is removed: the new key reaches every other device and not it.
         a.run(Cmd::RemoveDevice { group: g.clone(), char_id: joiner_id, device_id: b2_dev });
         a.store.upsert_wormhole(&hole("DEV"));

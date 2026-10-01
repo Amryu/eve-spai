@@ -193,8 +193,13 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 let blob = crypto::b64(&crypto::seal(&crypto::invite_key(&secret), b"eve-spai invite", &serde_json::to_vec(&info)?));
                 let id = c.create_invite(&g.id, &blob, INVITE_TTL_SECS).await?;
                 self.store.share_invite_save(&id, &g.id, &secret, for_char, &for_name);
-                let role = if g.role.can_manage() { role.min(Role::Admin) } else { Role::Viewer };
-                let role = if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role };
+                // Inviting yourself is adding another device: at your own rank, whatever was picked.
+                let role = if for_char == g.char_id {
+                    g.role
+                } else {
+                    let role = if g.role.can_manage() { role.min(Role::Admin) } else { Role::Viewer };
+                    if role == Role::Admin && g.role != Role::Owner { Role::Member } else { role }
+                };
                 self.store.share_invite_role_save(&id, role);
                 self.status.lock().unwrap().invite = Some((g.id, make_link(&id, &secret), for_name));
             }
@@ -344,7 +349,8 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         let device = Device::of(keys, &req.row.label);
         // A character already in has its role; only a new one gets `role`, and only the
         // owner makes admins.
-        if !g.role.can_manage() && roster.members.contains_key(&char_id) {
+        // Anyone adds their own other devices; someone else's only an admin does.
+        if !g.role.can_manage() && roster.members.contains_key(&char_id) && char_id != g.char_id {
             bail!("{} is already in; an admin adds their devices", req.row.name);
         }
         let role = if g.role.can_manage() { role } else { Role::Viewer };
@@ -360,8 +366,11 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         self.post(&c, &g, &op).await?;
         roster.apply(g.char_id, &op)?;
         self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
-        let (holes, dead, sigs) = self.store.share_snapshot(&g);
-        self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() }).await?;
+        // A viewer posts no data; the new device reads the group's log from the start instead.
+        if g.role.can_write() {
+            let (holes, dead, sigs) = self.store.share_snapshot(&g);
+            self.post(&c, &g, &Op::Snapshot { holes, dead, sigs, members: roster.members.into_values().collect() }).await?;
+        }
         Ok(())
     }
 
@@ -476,12 +485,9 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         // After the log, whose role changes may have just demoted us, and never fatal: a member
         // who still took itself for an admin was refused here every round and so never read the
         // entry that says otherwise.
-        // Members too: the answers to their own invites, which they let in as viewers.
-        let mut reqs = if role.can_write() {
-            self.fetch_requests(c, g).await.inspect_err(|e| eprintln!("[share] join requests for {}: {e:#}", g.name)).ok()
-        } else {
-            None
-        };
+        // Members and viewers too: the answers to their own invites, which let in viewers and
+        // their own other devices.
+        let mut reqs = self.fetch_requests(c, g).await.inspect_err(|e| eprintln!("[share] join requests for {}: {e:#}", g.name)).ok();
         // The invite is the approval: a request that proves one of this install's invites, from the
         // character it was for, is let in as the invite said, with no one to click Approve.
         if let Some(list) = reqs.as_mut() {
