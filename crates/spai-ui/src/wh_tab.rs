@@ -160,7 +160,8 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     // a wormhole pin is met at the exits of its own chain.
     for chain in &chains {
         for e in chain.iter().filter(|e| kspace(e)) {
-            for pid in pins.iter().filter(|p| !chain.contains(p)) {
+            // Drifter systems show no badge, so they keep no exit either.
+            for pid in pins.iter().filter(|p| !chain.contains(p) && !drifters.contains(p)) {
                 let best = anchors[pid].iter().filter_map(|a| Some((*a, dist(*a, *e)?))).min_by_key(|(_, n)| *n);
                 if let Some((anchor, n)) = best {
                     gate_links.push((*e, anchor, n, *pid));
@@ -172,7 +173,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     gate_links.retain(|(_, _, n, _)| *n <= near_jumps);
     // The overview keeps every wormhole system but only the k-space exits that lead somewhere:
     // a pinned system, a character, or the short way to either. The rest are counted on the
-    // box they hang from. k-space to k-space and k-space to Pochven holes always stay.
+    // box they hang from. A k-space to k-space hole stays when either end does.
     let mut hidden: HashMap<i64, usize> = HashMap::new();
     let mut only_counted: Vec<i64> = Vec::new();
     if focus.is_none() {

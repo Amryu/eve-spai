@@ -481,7 +481,7 @@ impl WebHost {
 }
 
 /// Gate jumps under which a pinned system joins a chain, the desktop's default.
-pub const PIN_JUMPS: u32 = 30;
+pub const PIN_JUMPS: u32 = 20;
 
 /// Pinned on first use: the chains hang from these and routes are measured to them.
 pub const DEFAULT_PINS: [&str; 3] = ["C-J6MT", "C-N4OD", "4-HWWF"];

@@ -651,7 +651,7 @@ pub struct FleetUnlock {
 pub(crate) use spai_ui::wh_graph::WH_PIN_JUMPS_MAX;
 
 fn default_wh_pin_jumps() -> u32 {
-    30
+    20
 }
 
 fn default_wh_route_kinds() -> Vec<String> {

@@ -1058,7 +1058,8 @@ fn wormholes_focus_scene(
                 a.wh_graph.hold_view(1.0);
                 a.wh_graph.pan_to(egui::vec2(60.0, 24.0));
             }
-            if name.ends_with("_pins") {
+            // A pin a jump from 1DQ1-A, so its k-space holes have a reason to show.
+            if name.ends_with("_pins") || name == "wh_edge_tooltip" || name == "wh_under_panel" {
                 a.settings.wh_route_pins = vec!["319-3D".into()];
             }
             if name.contains("_sharing") {
