@@ -1660,10 +1660,10 @@ mod tests {
         assert_eq!(time_left(&hole(None, -60), now), TimeLeft::Expiring);
         assert_eq!(time_left(&hole(Some(Life::Expired), 10 * 3600), now), TimeLeft::Expiring, "the scout's word wins");
         assert_eq!(time_left(&hole(Some(Life::Under1h), 10 * 3600), now), TimeLeft::Under1h);
-        // Read as less than a day: a warning from the start, stale after 6 hours, critical after 12.
-        let day = |ago: i64| Wormhole { life: Some(Life::UnderDay), observed_at: Some(now - ago), explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
-        assert_eq!(time_left(&day(3600), now), TimeLeft::Under12h);
-        assert_eq!(time_left(&day(6 * 3600), now), TimeLeft::Under4h);
+        // Read as less than a day: fine at first, stale 6 hours after it was found, critical after 12.
+        let day = |ago: i64| Wormhole { life: Some(Life::UnderDay), reported_at: now - ago, observed_at: Some(now - ago), explicit_expiry: Some(now - ago + 86_400), ..Default::default() };
+        assert_eq!(time_left(&day(3600), now), TimeLeft::Plenty);
+        assert_eq!(time_left(&day(6 * 3600), now), TimeLeft::Under12h);
         assert_eq!(time_left(&day(13 * 3600), now), TimeLeft::Under1h);
         assert_eq!(time_left(&day(25 * 3600), now), TimeLeft::Expiring);
         // A reading of under four hours runs out too.
