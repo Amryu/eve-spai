@@ -5185,6 +5185,9 @@ fn uitest_jabber_tab_drag_paints_a_ghost_at_the_pointer() {
     use egui_kittest::kittest::NodeT as _;
 
     const LABEL: &str = "delve.imperium";
+    // `all()` below builds a scene that stops the clock; the control render has to read the same
+    // clock, or near midnight the two place the history's day separators differently.
+    crate::clock::freeze(Some(harness::FROZEN_AT));
     let pointer = egui::pos2(200.0, 150.0);
     let node_rects = |h: &egui_kittest::Harness<'_>| -> Vec<egui::Rect> {
         h.root()
