@@ -4297,6 +4297,7 @@ fn assign_fracs(
     }
 }
 
+#[cfg(feature = "fleet")]
 use spai_ui::star_map::is_kspace;
 #[cfg(test)]
 use spai_ui::star_map::is_jspace;

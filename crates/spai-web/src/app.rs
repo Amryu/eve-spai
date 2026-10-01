@@ -31,6 +31,8 @@ struct SavedView {
     tab: Tab,
     layers: crate::starmap::Layers,
     region: Option<i64>,
+    #[serde(default)]
+    wh_view: crate::host::WhView,
 }
 /// EVE-Scout's feed changes as its scouts report; five minutes, as the desktop polls it.
 const SCOUT_EVERY: i64 = 300;
@@ -70,6 +72,7 @@ pub struct WebApp {
     scout_changed: bool,
     /// The view as last saved, to save it again only when it changes.
     view_saved: Option<SavedView>,
+    wh_view: crate::host::WhView,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -105,6 +108,7 @@ impl WebApp {
             joined: false,
             tried_app: false,
             tab: page::load::<SavedView>(VIEW).map_or_else(Tab::default, |v| v.tab),
+            wh_view: page::load::<SavedView>(VIEW).map(|v| v.wh_view).unwrap_or_default(),
             map: {
                 let mut m = StarMap::default();
                 if let Some(v) = page::load::<SavedView>(VIEW) {
@@ -307,6 +311,8 @@ impl WebApp {
                         let (added, updated, removed) = sync.store.paste_sigs(system, &scan, &session.character_name, now, full);
                         host.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed"));
                     }
+                    crate::host::Edit::SigsGone(rows) => sync.store.delete_sigs(&rows),
+                    crate::host::Edit::SigsBack(rows) => sync.store.restore_sigs(&rows),
                 }
                 sync.poke();
             }
@@ -349,6 +355,9 @@ impl WebApp {
                     host.holes.extend(extra);
                 }
                 host.sigs = sync.store.all_sigs();
+                host.sig_browser.load(host.sigs.iter().flat_map(|(id, v)| v.iter().map(move |s| (*id, s.clone()))).collect());
+                host.hole_group = sync.store.hole_groups();
+                host.group_names = sync.store.share_groups().into_iter().map(|g| (g.id, g.name)).collect();
                 if let Some(d) = &mut self.map_data {
                     d.set_holes(&host.holes);
                 }
@@ -526,7 +535,7 @@ impl eframe::App for WebApp {
             }
             _ => self.sync = None,
         }
-        let view = SavedView { tab: self.tab, layers: self.map.layers, region: self.map.region };
+        let view = SavedView { tab: self.tab, layers: self.map.layers, region: self.map.region, wh_view: self.wh_view };
         if self.view_saved.as_ref() != Some(&view) {
             page::save(VIEW, &view);
             self.view_saved = Some(view);
@@ -541,6 +550,26 @@ impl eframe::App for WebApp {
                     ui.menu_value(&mut self.tab, Tab::Map, "Map");
                     ui.menu_value(&mut self.tab, Tab::Group, "Group");
                     ui.separator();
+                    if self.tab == Tab::Wormholes {
+                        use crate::host::WhView;
+                        use egui_phosphor::regular as icon;
+                        let label = |v: WhView| match v {
+                            WhView::Map => format!("{}  Map", icon::GRAPH),
+                            WhView::Table => format!("{}  Table", icon::TABLE),
+                            WhView::Signatures => format!("{}  Signatures", icon::LIST_MAGNIFYING_GLASS),
+                        };
+                        egui::ComboBox::from_id_salt("web_wh_view").selected_text(label(self.wh_view)).show_ui(ui, |ui| {
+                            for v in [WhView::Map, WhView::Table, WhView::Signatures] {
+                                ui.menu_value(&mut self.wh_view, v, label(v));
+                            }
+                        })
+                        .response
+                        .on_hover_text("The holes as a map, a table, or every signature pasted");
+                        if let Some(h) = self.host.as_mut() {
+                            h.facts_search(ui);
+                        }
+                        ui.separator();
+                    }
                     if let Some(h) = self.host.as_mut().filter(|h| h.can_edit) {
                         if ui.button(format!("{}  Add a wormhole", egui_phosphor::regular::PLUS)).clicked() {
                             let sel = if self.tab == Tab::Wormholes { self.view.selected } else { self.map.selected };
@@ -604,7 +633,20 @@ impl eframe::App for WebApp {
                 }
                 (Some(host), _) => {
                     host.detect = self.detect;
-                    spai_ui::wh_tab::show(&mut self.view, host, ui);
+                    host.plan = self.map.plan.prefs.clone();
+                    host.wh_view = self.wh_view;
+                    match host.wh_view {
+                        crate::host::WhView::Map => spai_ui::wh_tab::show(&mut self.view, host, ui),
+                        crate::host::WhView::Table => host.table_view(&mut self.view, ui),
+                        crate::host::WhView::Signatures => host.sig_view(&mut self.view, ui),
+                    }
+                    self.wh_view = host.wh_view;
+                    // Route settings changed here belong to the planner, which keeps and saves them.
+                    if std::mem::take(&mut host.plan_changed) {
+                        self.map.plan.prefs = host.plan.clone();
+                        self.map.plan.holes_changed();
+                        page::save(ROUTE_PREFS, &self.map.plan.prefs);
+                    }
                     // The settings menu's switches, back into the app that owns them.
                     if host.detect != self.detect {
                         self.detect = host.detect;
@@ -630,6 +672,7 @@ impl eframe::App for WebApp {
         });
         if let (Some(h), Auth::SignedIn(_)) = (&mut self.host, &state) {
             h.form_window(ui.ctx(), top.response.rect.bottom());
+            h.facts_window(ui.ctx(), top.response.rect.bottom());
             h.corner(ui.ctx(), top.response.rect.bottom());
         }
     }

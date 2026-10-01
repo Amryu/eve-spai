@@ -5927,6 +5927,7 @@ dependencies = [
  "chrono",
  "egui",
  "egui-phosphor",
+ "egui_extras",
  "rust-sugiyama",
  "serde",
  "spai-core",

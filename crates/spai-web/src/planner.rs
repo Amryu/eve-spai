@@ -55,6 +55,100 @@ impl Default for PlanPrefs {
 }
 
 impl PlanPrefs {
+    pub fn toggle_off_hole(&mut self, uid: &str) {
+        match self.wh_off_holes.iter().position(|u| u == uid) {
+            Some(i) => {
+                self.wh_off_holes.remove(i);
+            }
+            None => self.wh_off_holes.push(uid.to_owned()),
+        }
+    }
+
+    pub fn toggle_off_system(&mut self, id: i64) {
+        match self.wh_off_systems.iter().position(|s| *s == id) {
+            Some(i) => {
+                self.wh_off_systems.remove(i);
+            }
+            None => self.wh_off_systems.push(id),
+        }
+    }
+
+    /// A button naming the kinds of hole routes may use, opening the list to pick them. Returns
+    /// whether any changed.
+    pub fn kinds_button(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let on = |k: HoleKind, p: &PlanPrefs| p.wh_kinds.iter().any(|c| c == k.code());
+        let n = HoleKind::ALL.iter().filter(|k| on(**k, self)).count();
+        let text = match n {
+            0 => "No holes".to_owned(),
+            n if n == HoleKind::ALL.len() => "All kinds".to_owned(),
+            1 => HoleKind::ALL.iter().find(|k| on(**k, self)).map_or_else(String::new, |k| k.label().to_owned()),
+            n => format!("{n} of {} kinds", HoleKind::ALL.len()),
+        };
+        let button = ui.button(format!("{text}  {}", icon::CARET_DOWN));
+        // Stays open while kinds are picked: each click is one of several choices.
+        egui::Popup::from_toggle_button_response(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            for k in HoleKind::ALL {
+                let was = on(k, self);
+                if ui.menu_label(was, k.label()).clicked() {
+                    if was {
+                        self.wh_kinds.retain(|c| c != k.code());
+                    } else {
+                        self.wh_kinds.push(k.code().to_owned());
+                    }
+                    changed = true;
+                }
+            }
+        });
+        changed
+    }
+
+    /// A system's holes, each to switch on or off for routes, and the whole system at once, as the
+    /// desktop offers them. Nothing for a system without a hole.
+    pub fn hole_switches(&mut self, ui: &mut egui::Ui, sid: i64, geo: &Systems, holes: &[Wormhole]) -> bool {
+        const LISTED: usize = 8;
+        let here: Vec<(String, String)> = holes
+            .iter()
+            .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
+            .map(|w| {
+                let (sig, far) = if w.system_id == sid { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
+                let far = far.and_then(|f| geo.info_of(f)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
+                let sig = sig.as_deref().map(|s| format!("{} ", s.chars().take(3).collect::<String>())).unwrap_or_default();
+                (w.uid.clone(), format!("{sig}to {far}"))
+            })
+            .collect();
+        let off = self.wh_off_systems.contains(&sid);
+        if here.is_empty() && !off {
+            return false;
+        }
+        let mut changed = false;
+        let name = geo.info_of(sid).map_or_else(|| format!("#{sid}"), |i| i.name.clone());
+        ui.separator();
+        ui.label(egui::RichText::new("Wormholes routes may use").weak());
+        let mut all = !off;
+        if ui.checkbox(&mut all, format!("Any hole in {name}")).on_hover_text("Off keeps every hole here off routes, those found later too").changed() {
+            self.toggle_off_system(sid);
+            changed = true;
+        }
+        let mut flip: Option<String> = None;
+        ui.add_enabled_ui(all, |ui| {
+            for (uid, label) in here.iter().take(LISTED) {
+                let mut on = !self.wh_off_holes.contains(uid);
+                if ui.checkbox(&mut on, label).on_hover_text("Both sides of this hole").changed() {
+                    flip = Some(uid.clone());
+                }
+            }
+        });
+        if let Some(uid) = flip {
+            self.toggle_off_hole(&uid);
+            changed = true;
+        }
+        if here.len() > LISTED {
+            ui.label(egui::RichText::new(format!("and {} more", here.len() - LISTED)).weak());
+        }
+        changed
+    }
+
     fn limits(&self) -> RouteLimits {
         RouteLimits {
             min_mass: Mass::from_code(&self.wh_min_mass),
@@ -373,29 +467,6 @@ impl RoutePlan {
         self.replan();
     }
 
-    fn toggle_off_hole(&mut self, uid: &str) {
-        let list = &mut self.prefs.wh_off_holes;
-        match list.iter().position(|u| u == uid) {
-            Some(i) => {
-                list.remove(i);
-            }
-            None => list.push(uid.to_owned()),
-        }
-        self.dirty = true;
-        self.replan();
-    }
-
-    fn toggle_off_system(&mut self, id: i64) {
-        let list = &mut self.prefs.wh_off_systems;
-        match list.iter().position(|s| *s == id) {
-            Some(i) => {
-                list.remove(i);
-            }
-            None => list.push(id),
-        }
-        self.dirty = true;
-        self.replan();
-    }
 
     /// The route part of a system's right-click menu.
     pub fn system_menu(&mut self, ui: &mut egui::Ui, sid: i64, geo: &Systems, holes: &[Wormhole]) {
@@ -471,48 +542,9 @@ impl RoutePlan {
                 ui.close();
             }
         }
-        self.hole_switches(ui, sid, geo, holes);
-    }
-
-    /// A system's holes, each to switch on or off for routes, and the whole system at once, as the
-    /// desktop offers them. Nothing for a system without a hole.
-    fn hole_switches(&mut self, ui: &mut egui::Ui, sid: i64, geo: &Systems, holes: &[Wormhole]) {
-        const LISTED: usize = 8;
-        let here: Vec<(String, String)> = holes
-            .iter()
-            .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
-            .map(|w| {
-                let (sig, far) = if w.system_id == sid { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
-                let far = far.and_then(|f| geo.info_of(f)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
-                let sig = sig.as_deref().map(|s| format!("{} ", s.chars().take(3).collect::<String>())).unwrap_or_default();
-                (w.uid.clone(), format!("{sig}to {far}"))
-            })
-            .collect();
-        let off = self.prefs.wh_off_systems.contains(&sid);
-        if here.is_empty() && !off {
-            return;
-        }
-        let name = geo.info_of(sid).map_or_else(|| format!("#{sid}"), |i| i.name.clone());
-        ui.separator();
-        ui.label(egui::RichText::new("Wormholes routes may use").weak());
-        let mut all = !off;
-        if ui.checkbox(&mut all, format!("Any hole in {name}")).on_hover_text("Off keeps every hole here off routes, those found later too").changed() {
-            self.toggle_off_system(sid);
-        }
-        let mut flip: Option<String> = None;
-        ui.add_enabled_ui(all, |ui| {
-            for (uid, label) in here.iter().take(LISTED) {
-                let mut on = !self.prefs.wh_off_holes.contains(uid);
-                if ui.checkbox(&mut on, label).on_hover_text("Both sides of this hole").changed() {
-                    flip = Some(uid.clone());
-                }
-            }
-        });
-        if let Some(uid) = flip {
-            self.toggle_off_hole(&uid);
-        }
-        if here.len() > LISTED {
-            ui.label(egui::RichText::new(format!("and {} more", here.len() - LISTED)).weak());
+        if self.prefs.hole_switches(ui, sid, geo, holes) {
+            self.dirty = true;
+            self.replan();
         }
     }
 
@@ -828,29 +860,7 @@ impl RoutePlan {
             };
             egui::Grid::new("web_wh_route_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                 ui.label("Through");
-                let on = |k: HoleKind, p: &PlanPrefs| p.wh_kinds.iter().any(|c| c == k.code());
-                let n = HoleKind::ALL.iter().filter(|k| on(**k, &self.prefs)).count();
-                let text = match n {
-                    0 => "No holes".to_owned(),
-                    n if n == HoleKind::ALL.len() => "All kinds".to_owned(),
-                    1 => HoleKind::ALL.iter().find(|k| on(**k, &self.prefs)).map_or_else(String::new, |k| k.label().to_owned()),
-                    n => format!("{n} of {} kinds", HoleKind::ALL.len()),
-                };
-                let button = ui.button(format!("{text}  {}", icon::CARET_DOWN));
-                // Stays open while kinds are picked: each click is one of several choices.
-                egui::Popup::from_toggle_button_response(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                    for k in HoleKind::ALL {
-                        let was = on(k, &self.prefs);
-                        if ui.menu_label(was, k.label()).clicked() {
-                            if was {
-                                self.prefs.wh_kinds.retain(|c| c != k.code());
-                            } else {
-                                self.prefs.wh_kinds.push(k.code().to_owned());
-                            }
-                            changed = true;
-                        }
-                    }
-                });
+                changed |= self.prefs.kinds_button(ui);
                 ui.end_row();
                 ui.label("Mass");
                 changed |= combo(

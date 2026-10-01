@@ -2,6 +2,7 @@
 //! colours they share.
 
 pub mod colors;
+pub mod sig_browser;
 pub mod star_map;
 pub mod theme;
 pub mod wh_form;

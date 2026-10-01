@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 spai-core = { path = "../spai-core" }
 egui = "0.34"
+egui_extras = { version = "0.34", default-features = false }
 egui-phosphor = "0.12"
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

@@ -127,6 +127,11 @@ impl WebStore {
         }
     }
 
+    /// The group each shared hole came in, by uid.
+    pub fn hole_groups(&self) -> HashMap<String, String> {
+        self.data.borrow().holes.iter().filter_map(|(uid, h)| Some((uid.clone(), h.group.clone()?))).collect()
+    }
+
     pub fn all_sigs(&self) -> HashMap<i64, Vec<SystemSig>> {
         self.data.borrow().sigs.clone()
     }
@@ -163,6 +168,50 @@ impl WebStore {
 }
 
 impl WebStore {
+    /// Signatures deleted here, sent to the groups they came from.
+    pub fn delete_sigs(&self, rows: &[(i64, SystemSig)]) {
+        if rows.is_empty() {
+            return;
+        }
+        {
+            let mut d = self.data.borrow_mut();
+            for (sys, s) in rows {
+                if let Some(list) = d.sigs.get_mut(sys) {
+                    list.retain(|x| x.sig != s.sig);
+                }
+            }
+        }
+        for (sys, s) in rows {
+            self.queue(s.origin.clone(), Outgoing::SigDelete { system_id: *sys, sig: s.sig.clone() });
+        }
+        self.touch(true);
+    }
+
+    /// Deleted signatures put back as they were, and sent again.
+    pub fn restore_sigs(&self, rows: &[(i64, SystemSig)]) {
+        if rows.is_empty() {
+            return;
+        }
+        {
+            let mut d = self.data.borrow_mut();
+            for (sys, s) in rows {
+                let list = d.sigs.entry(*sys).or_default();
+                list.retain(|x| x.sig != s.sig);
+                list.push(s.clone());
+            }
+        }
+        let mut by: Vec<(i64, Option<String>)> = rows.iter().map(|(sys, s)| (*sys, s.origin.clone())).collect();
+        by.sort();
+        by.dedup();
+        for (sys, origin) in by {
+            let some: Vec<&SystemSig> = rows.iter().filter(|(i, s)| *i == sys && s.origin == origin).map(|(_, s)| s).collect();
+            let at = some.iter().map(|s| s.updated_at).max().unwrap_or_default();
+            let rows: Vec<SigRow> = some.into_iter().map(sig_row).collect();
+            self.queue(origin, Outgoing::Sigs { system_id: sys, rows, drop_missing: false, at });
+        }
+        self.touch(true);
+    }
+
     /// A probe scanner copy pasted here for `system`: merged into what is known there and sent to
     /// the groups. `full` drops what the paste does not list, of the kinds it lists, as a full copy
     /// from the scanner means it is gone. Returns how many were added, updated and removed.
