@@ -2446,6 +2446,10 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
     #[cfg(feature = "fleet")]
+    v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
+    #[cfg(feature = "fleet")]
+    v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
+    #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(

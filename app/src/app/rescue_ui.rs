@@ -716,13 +716,12 @@ impl SpaiApp {
             if !jab_connected && !jabber_set_up {
                 // Never set up: retrying has nothing to connect with.
                 ui.horizontal_wrapped(|ui| {
+                    let why = "Jabber is not set up: rescue pings to delve911 and the skirmish channel go through it.";
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
-                        format!(
-                            "{}  Jabber is not set up: rescue pings to delve911 and the skirmish channel go through it.",
-                            egui_phosphor::regular::PLUGS
-                        ),
-                    );
+                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber is not set up" } else { why }),
+                    )
+                    .on_hover_text(why);
                     if ui.button("Set up Jabber").clicked() {
                         open_jabber = true;
                     }
@@ -730,13 +729,12 @@ impl SpaiApp {
                 ui.separator();
             } else if !jab_connected {
                 ui.horizontal_wrapped(|ui| {
+                    let why = format!("Jabber disconnected — pings cannot be sent. {jab_status}");
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
-                        format!(
-                            "{}  Jabber disconnected — pings cannot be sent. {jab_status}",
-                            egui_phosphor::regular::PLUGS
-                        ),
-                    );
+                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber disconnected" } else { why.as_str() }),
+                    )
+                    .on_hover_text(&why);
                     if ui.button("Retry now").clicked() {
                         retry_click = true;
                     }
@@ -845,6 +843,29 @@ impl SpaiApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if compact {
                         super::ontop_pin_ui(ui, "rescue_window");
+                        // The destination and range rows, folded into this one as icons.
+                        let target = r.capital_system.zip(r.capital_system_name.clone());
+                        let resp = ui.add_enabled(target.is_some() && has_char, egui::Button::new(egui_phosphor::regular::MAP_PIN_LINE));
+                        let resp = match &target {
+                            None => resp.on_disabled_hover_text("This ping has no system to route to"),
+                            Some(_) if !has_char => resp.on_disabled_hover_text("No active character to route"),
+                            Some((_, name)) => resp.on_hover_text(format!("Set Destination: {name}")),
+                        };
+                        if resp.clicked() {
+                            set_dest = target.map(|(id, _)| id);
+                        }
+                        if let Some(ly) = in_range_ly {
+                            ui.label(egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE).color(crate::theme::standing::FRIENDLY))
+                                .on_hover_text(format!("In titan range, {ly:.1} ly from {staging_name}"));
+                        }
+                        if let Some((headline, detail)) = &range_warning {
+                            ui.label(egui::RichText::new(format!("{}  out of range", egui_phosphor::regular::WARNING)).strong().color(egui::Color32::from_rgb(0xE0, 0x3B, 0x2E)))
+                                .on_hover_text(format!("{headline}\n{detail}"));
+                        }
+                        if test_mode {
+                            ui.label(egui::RichText::new(egui_phosphor::regular::FLASK).color(egui::Color32::from_rgb(0x40, 0xB0, 0xF0)))
+                                .on_hover_text("Test: sending disabled");
+                        }
                     } else if ui
                         .small_button(egui_phosphor::regular::ARROW_SQUARE_OUT)
                         .on_hover_text("Pop out into its own window, over EVE")
@@ -858,7 +879,19 @@ impl SpaiApp {
                 });
             });
             if compact {
-                ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chips(ui)));
+                let cyno = [r.cyno_pilot.as_ref().map(|c| format!("cyno: {c}")), r.anomaly.as_ref().map(|a| format!("@ {a}"))]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ");
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        chips(ui);
+                        if !cyno.is_empty() {
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(egui::RichText::new(cyno).weak()));
+                        }
+                    })
+                });
             }
             if let Some(seq) = pick {
                 r.select_ping(seq);
@@ -869,6 +902,7 @@ impl SpaiApp {
             // The destination is auto-pushed when the selected ping changes, but never re-asserted,
             // so this is the way back after routing somewhere else mid-rescue. Routes to the
             // casualty's system, not staging.
+            if !compact {
             ui.horizontal(|ui| {
                 let target = r.capital_system.zip(r.capital_system_name.clone());
                 let label = match &target {
@@ -912,7 +946,7 @@ impl SpaiApp {
                 });
             }
             // Only render the cyno/anomaly line when there's something to show (avoids an empty gap).
-            if r.cyno_pilot.is_some() || r.anomaly.is_some() {
+            if !compact && (r.cyno_pilot.is_some() || r.anomaly.is_some()) {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(cyno) = &r.cyno_pilot {
                         ui.label(format!("cyno: {cyno}"));
@@ -927,6 +961,7 @@ impl SpaiApp {
                     egui::Color32::from_rgb(0x40, 0xB0, 0xF0),
                     format!("{}  TEST — sending disabled", egui_phosphor::regular::FLASK),
                 );
+            }
             }
             ui.separator();
 
@@ -951,20 +986,27 @@ impl SpaiApp {
                         ui.add_space(4.0);
                         ui.separator();
                     }
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
+                    let regen = |ui: &mut egui::Ui, r: &mut crate::rescue::RescueState| {
                         if ui
                             .small_button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                            .on_hover_text("Regenerate from template")
+                            .on_hover_text("Regenerate the ping from the template")
                             .clicked()
                         {
                             r.pending_ping = ping.clone();
-                            r.ping_built_for =
-                                Some((r.op_channel, r.doctrine.clone(), r.selected_ping));
+                            r.ping_built_for = Some((r.op_channel, r.doctrine.clone(), r.selected_ping));
                             r.ping_edited = false;
                         }
-                    });
+                    };
+                    if !compact {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
+                            regen(ui, &mut r);
+                        });
+                    }
                     ui.horizontal_wrapped(|ui| {
+                        if compact {
+                            regen(ui, &mut r);
+                        }
                         ui.label("Op");
                         egui::ComboBox::from_id_salt("rescue_op")
                             .width(56.0)
@@ -1036,8 +1078,10 @@ impl SpaiApp {
                             .and_then(|p| presets.iter().position(|q| q.key() == p.key()))
                             .map(|i| preset_names[i].clone())
                             .unwrap_or_else(|| crate::settings::preset_key_label(&cur));
+                        // Compact, what is left of the row, so a narrow window wraps rather than widens.
+                        let preset_w = if compact { (ui.available_size_before_wrap().x - 28.0).clamp(90.0, 170.0) } else { 170.0 };
                         egui::ComboBox::from_id_salt("rescue_preset")
-                            .width(170.0)
+                            .width(preset_w)
                             .selected_text(if cur.is_empty() { "—".into() } else { shown })
                             .show_ui(ui, |ui| {
                                 if presets.is_empty() {
@@ -1063,15 +1107,16 @@ impl SpaiApp {
                     });
                     let command_comms = |ui: &mut egui::Ui, wide: bool| -> bool {
                         let btn = egui::Button::new(format!(
-                            "{}  Command Comms",
-                            egui_phosphor::regular::HEADSET
+                            "{}  {}",
+                            egui_phosphor::regular::HEADSET,
+                            if wide { "Command Comms" } else { "Comms" }
                         ));
                         let btn = match pulse_fill(ui, cmd_pending) {
                             Some(c) => btn.fill(c),
                             None => btn,
                         };
-                        let size = if wide { [ui.available_width(), 24.0] } else { [0.0, 0.0] };
-                        ui.add_sized(size, btn)
+                        let resp = if wide { ui.add_sized([ui.available_width(), 24.0], btn) } else { ui.add(btn) };
+                        resp
                             .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
                             .clicked()
                     };
@@ -1116,10 +1161,6 @@ impl SpaiApp {
                         r.ping_edited = true;
                     }
                     ui.horizontal_wrapped(|ui| {
-                        if compact && command_comms(ui, false) {
-                            let _ = open::that(command_mumble_url(op_now));
-                            mark_cmd = true;
-                        }
                         if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
                             if let Ok(mut clip) = arboard::Clipboard::new() {
                                 let _ = clip.set_text(r.pending_ping.clone());
@@ -1128,8 +1169,11 @@ impl SpaiApp {
                         // coord/fc/all are directorbot ping GROUPS: prefix "!bping <group>" onto the
                         // ping and post it to skirmish_commanders. Off in test mode.
                         let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
+                        if compact {
+                            ui.label("Ping");
+                        }
                         for group in ["coord", "fc", "all"] {
-                            let btn = egui::Button::new(format!("Ping {group}"));
+                            let btn = egui::Button::new(if compact { group.to_owned() } else { format!("Ping {group}") });
                             let btn = match pulse_fill(ui, coord_pending && group == "coord") {
                                 Some(c) => btn.fill(c),
                                 None => btn,
@@ -1171,15 +1215,16 @@ impl SpaiApp {
                                 }
                                 let can_invite =
                                     !test_mode && jab_connected && !delve911_jid.is_empty();
-                                let btn = egui::Button::new(format!(
-                                    "{}  Invite to Op {op_now} comms",
-                                    egui_phosphor::regular::HEADSET
-                                ));
+                                let btn = egui::Button::new(if compact {
+                                    format!("{}  Invite", egui_phosphor::regular::USER_PLUS)
+                                } else {
+                                    format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET)
+                                });
                                 let btn = match pulse_fill(ui, invite_pending) {
                                     Some(c) => btn.fill(c),
                                     None => btn,
                                 };
-                                let hover = if compact { format!("Post in delve911:\n{msg}") } else { "Post this in delve911".to_owned() };
+                                let hover = if compact { format!("Invite to Op {op_now} comms, in delve911:\n{msg}") } else { "Post this in delve911".to_owned() };
                                 if ui
                                     .add_enabled(can_invite, btn)
                                     .on_hover_text(hover)
@@ -1201,7 +1246,7 @@ impl SpaiApp {
                     ui.add_space(if compact { 2.0 } else { 6.0 });
                     let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
                     let track_button = |ui: &mut egui::Ui, wide: bool| -> bool {
-                        let b = egui::Button::new(format!("{}  Start tracking", egui_phosphor::regular::ROCKET_LAUNCH));
+                        let b = egui::Button::new(format!("{}  {}", egui_phosphor::regular::ROCKET_LAUNCH, if wide { "Start tracking" } else { "Track" }));
                         let b = if wide { b.min_size(egui::vec2(ui.available_width(), 24.0)) } else { b };
                         ui.add_enabled(can_track, b)
                             .on_hover_text("Fill the start form from this preset and open the fleet tab")
@@ -1213,6 +1258,10 @@ impl SpaiApp {
                     };
                     ui.horizontal_wrapped(|ui| {
                         if compact {
+                            if command_comms(ui, false) {
+                                let _ = open::that(command_mumble_url(op_now));
+                                mark_cmd = true;
+                            }
                             if track_button(ui, false) {
                                 start_tracking = true;
                             }
@@ -1235,8 +1284,13 @@ impl SpaiApp {
                                 "Fleet boss not checked".to_owned(),
                             ),
                         };
-                        ui.label(egui::RichText::new(glyph).color(colour));
-                        ui.label(egui::RichText::new(text).color(colour));
+                        // Compact, the verdict is its icon; the words are on hover.
+                        let icon = ui.label(egui::RichText::new(glyph).color(colour));
+                        if compact {
+                            icon.on_hover_text(text);
+                        } else {
+                            ui.label(egui::RichText::new(text).color(colour));
+                        }
                     });
 
                     // Handing over to the fleet tab: the preset fills the start form and the
@@ -1274,7 +1328,11 @@ impl SpaiApp {
                     }
             };
             if compact {
-                egui::Panel::top("rescue_ops_top").show_inside(ui, |ui| ops_body(ui));
+                // Its content's height, up to most of a short window, which then scrolls: the chat
+                // keeps a usable share.
+                let most = (ui.available_height() * 0.6).max(120.0);
+                egui::ScrollArea::vertical().id_salt("rescue_ops_band").max_height(most).auto_shrink([false, true]).show(ui, |ui| ops_body(ui));
+                ui.separator();
             } else {
                 let ops_resp = egui::Panel::left("rescue_ops_panel")
                     .resizable(true)
