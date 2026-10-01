@@ -308,6 +308,16 @@ async fn claim(
         return Ok(StatusCode::NO_CONTENT);
     }
     let mut tx = st.db.begin().await?;
+    // A device still asking to join is a new one: the old keys are wrapped to another install.
+    let joining: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(me.char_id)
+        .bind(&c.device_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if joining.is_some() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let taken: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_devices WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
         .bind(&g)
         .bind(me.char_id)
@@ -682,9 +692,12 @@ async fn approve(
         .bind(&label)
         .execute(&mut *tx)
         .await?;
+    // The approver just wrapped these to the device's own keys: they replace whatever is there,
+    // which can only be a key the device cannot open.
     for k in &a.keys {
         check_blob(&k.wrapped)?;
-        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO wh_keys (group_id, epoch, char_id, device_id, wrapped) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (group_id, epoch, char_id, device_id) DO UPDATE SET wrapped = excluded.wrapped")
             .bind(&g)
             .bind(k.epoch)
             .bind(c)

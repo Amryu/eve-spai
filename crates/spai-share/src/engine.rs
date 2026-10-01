@@ -404,12 +404,15 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         let mut g = g.clone();
         // Once a run: the keys the server held for this character from before devices become this
         // device's. A no-op once done, or for a device that joined as one.
-        let claimed = self.status.lock().unwrap().claimed.contains(&g.id);
-        if !claimed && c.claim(&g.id).await.is_ok() {
-            self.status.lock().unwrap().claimed.insert(g.id.clone());
-        }
         // Keys this install was given and does not hold yet.
         let had_key = self.store.share_key(&g.id, g.epoch).is_some();
+        // Only an install that held the group's key from before devices may claim: the old keys
+        // are wrapped to it. A device that is still joining claiming them would take keys it cannot
+        // open, and leave the install they were wrapped to without any.
+        let claimed = self.status.lock().unwrap().claimed.contains(&g.id);
+        if had_key && !claimed && c.claim(&g.id).await.is_ok() {
+            self.status.lock().unwrap().claimed.insert(g.id.clone());
+        }
         let keys = match c.keys(&g.id).await {
             Ok(k) => k,
             // Its owner deleted it: nothing more will come, so it goes here too.
