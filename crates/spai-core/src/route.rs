@@ -13,6 +13,9 @@ pub struct Hop {
     pub security: f64,
     /// Edge into this hop: 0 gate, 1 jump bridge, 2 capital jump. The first hop is 0.
     pub kind: u8,
+    /// A kind 0 edge through a known wormhole rather than a stargate.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hole: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ly: Option<f64>,
     /// Isotopes burned and the fatigue and reactivation timers in minutes. Absent for a gate.
@@ -405,6 +408,7 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
         name: info.map(|i| i.name.clone()).unwrap_or_else(|| id.to_string()),
         security: info.map(|i| i.security).unwrap_or_default(),
         kind,
+        hole: false,
         ly,
         fuel: None,
         fatigue_min: None,
@@ -452,10 +456,12 @@ pub fn gate_via(
         .enumerate()
         .map(|(i, &id)| {
             let kind = if i > 0 && graph.is_bridge(path[i - 1], id) { 1 } else { 0 };
-            named(graph, id, kind, None)
+            let mut h = named(graph, id, kind, None);
+            h.hole = kind == 0 && i > 0 && graph.is_hole_step(path[i - 1], id);
+            h
         })
         .collect();
-    let gates = hops.iter().skip(1).filter(|h| h.kind == 0).count();
+    let gates = hops.iter().skip(1).filter(|h| h.kind == 0 && !h.hole).count();
     // A step that is not in the graph's own adjacency is one the hole map let through.
     let uses_wormhole = path.windows(2).any(|w| graph.is_hole_step(w[0], w[1]));
     Some(RouteOption {
@@ -1059,14 +1065,15 @@ fn recost_fatigue(o: &mut RouteOption, class: &crate::jumproute::ShipClass) {
 fn reverse(o: RouteOption) -> RouteOption {
     let n = o.hops.len();
     let mut hops: Vec<Hop> = o.hops.into_iter().rev().collect();
-    let edges: Vec<(u8, Option<f64>, Option<f64>, Option<f64>, Option<f64>)> = hops
+    let edges: Vec<(u8, bool, Option<f64>, Option<f64>, Option<f64>, Option<f64>)> = hops
         .iter()
-        .map(|h| (h.kind, h.ly, h.fuel, h.fatigue_min, h.reactivation_min))
+        .map(|h| (h.kind, h.hole, h.ly, h.fuel, h.fatigue_min, h.reactivation_min))
         .collect();
     for i in 0..n {
         let e = if i == 0 { None } else { edges.get(i - 1) };
-        let (kind, ly, fuel, fat, react) = e.copied().unwrap_or((0, None, None, None, None));
+        let (kind, hole, ly, fuel, fat, react) = e.copied().unwrap_or((0, false, None, None, None, None));
         hops[i].kind = kind;
+        hops[i].hole = hole;
         hops[i].ly = ly;
         hops[i].fuel = fuel;
         hops[i].fatigue_min = fat;
@@ -1100,6 +1107,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
                 name: h.name.clone(),
                 security: h.security,
                 kind: h.kind,
+                hole: h.hole,
                 ly: h.ly,
                 fuel: h.fuel,
                 fatigue_min: h.fatigue_min,
@@ -1135,6 +1143,7 @@ mod tests {
                     name: format!("S{id}"),
                     security: 0.0,
                     kind: *kind,
+                    hole: false,
                     ly: None,
                     fuel: None,
                     fatigue_min: None,
@@ -1580,6 +1589,18 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         assert_eq!((at(ids[5]), at(ids[6])), (Some(0), Some(0)), "the second leg is gates");
         assert_eq!(leg_kind(&["jump"], 3), "jump", "one kind covers every leg");
         assert_eq!(leg_kind(&[], 0), "gate");
+    }
+
+    /// A hop through a known hole says so, and is not counted as a gate.
+    #[test]
+    fn a_hop_through_a_hole_is_marked_and_not_a_gate() {
+        let g = crate::test_support::small_universe(&[]);
+        let holes = std::collections::HashMap::from([(30_004_759, vec![30_000_142]), (30_000_142, vec![30_004_759])]);
+        let o = gate(&g, 30_004_759, 30_000_142, false, &Avoid::default(), &holes).expect("through the hole");
+        assert_eq!(o.hops.iter().map(|h| h.hole).collect::<Vec<_>>(), vec![false, true]);
+        assert_eq!(o.gates, 0);
+        assert!(o.uses_wormhole);
+        assert!(reverse(o).hops[1].hole, "the hole stays on the hop it leads into, reversed");
     }
 
     /// Repeating the waypoint would draw a doubled system and count an extra jump.

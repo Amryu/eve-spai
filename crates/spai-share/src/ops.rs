@@ -36,6 +36,10 @@ impl Role {
         }
     }
 
+    pub fn from_code(code: &str) -> Option<Role> {
+        [Role::Viewer, Role::Member, Role::Admin, Role::Owner].into_iter().find(|r| r.code() == code)
+    }
+
     pub fn code(self) -> &'static str {
         match self {
             Role::Viewer => "viewer",

@@ -52,6 +52,8 @@ pub trait WhHost {
     fn system_menu(&mut self, ui: &mut egui::Ui, id: i64);
     /// More controls at the end of the toolbar.
     fn toolbar(&mut self, view: &mut WhGraphView, ui: &mut egui::Ui);
+    /// Controls beside Tidy.
+    fn after_tidy(&mut self, _view: &mut WhGraphView, _ui: &mut egui::Ui) {}
     /// The selected system's panel on the right.
     fn side_panel(
         &mut self,
@@ -310,6 +312,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                     {
                         tidy = true;
                     }
+                    host.after_tidy(view, ui);
                     ui.menu_button(format!("{}  Layout", icon::CARET_DOWN), |ui| {
                         use crate::wh_layout::Style;
                         let style = Style::from_code(&prefs.layout_style);

@@ -144,6 +144,19 @@ impl Systems {
         self.by_name.keys().any(|name| name.starts_with(&t))
     }
 
+    /// Systems whose names match what was typed, for suggestions: names starting with it first,
+    /// then names containing it, each alphabetical, `limit` at most.
+    pub fn search(&self, typed: &str, limit: usize) -> Vec<&SystemInfo> {
+        let t = typed.trim().to_lowercase();
+        if t.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<(bool, &String, &SystemInfo)> =
+            self.by_name.iter().filter(|(n, _)| n.contains(&t)).map(|(n, i)| (!n.starts_with(&t), n, i)).collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
+        hits.into_iter().take(limit).map(|(_, _, i)| i).collect()
+    }
+
     pub fn lookup_prefix(&self, token: &str) -> Option<&SystemInfo> {
         let t = token.to_lowercase();
         let mut found: Option<&SystemInfo> = None;
@@ -454,6 +467,15 @@ impl Systems {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_puts_names_starting_with_it_first() {
+        let g = crate::test_support::small_universe(&[]);
+        let names: Vec<&str> = g.search("1d", 5).iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names.first(), Some(&"1DQ1-A"));
+        assert!(g.search("  ", 5).is_empty());
+        assert!(g.search("ita", 5).iter().any(|i| i.name == "Jita"), "inside the name too");
+    }
+
     use super::*;
 
     /// Ring by ring, so a match twelve jumps out never beats one next door, and every match in the

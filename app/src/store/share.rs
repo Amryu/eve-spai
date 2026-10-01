@@ -532,6 +532,15 @@ impl Store {
         Some((crate::share::crypto::unb64_32(&s).ok()?, c, n))
     }
 
+    pub fn share_invite_role_save(&self, id: &str, role: crate::share::ops::Role) {
+        let _ = self.conn.execute("UPDATE share_invites SET role = ?2 WHERE id = ?1", params![id, role.code()]);
+    }
+
+    pub fn share_invite_role(&self, id: &str) -> Option<crate::share::ops::Role> {
+        let code: Option<String> = self.conn.query_row("SELECT role FROM share_invites WHERE id = ?1", params![id], |r| r.get(0)).ok()?;
+        crate::share::ops::Role::from_code(&code?)
+    }
+
     pub fn wormhole_groups(&self) -> HashMap<String, String> {
         self.conn
             .prepare("SELECT uid, group_id FROM wormholes WHERE group_id IS NOT NULL AND uid IS NOT NULL")
@@ -592,6 +601,12 @@ impl ShareStore for Store {
     }
     fn share_invite(&self, id: &str) -> Option<(crate::share::crypto::Key, i64, String)> {
         Store::share_invite(self, id)
+    }
+    fn share_invite_role_save(&self, id: &str, role: crate::share::ops::Role) {
+        Store::share_invite_role_save(self, id, role)
+    }
+    fn share_invite_role(&self, id: &str) -> Option<crate::share::ops::Role> {
+        Store::share_invite_role(self, id)
     }
     fn share_queue_group(&self, group: &str, holes: bool, sigs: bool) {
         Store::share_queue_group(self, group, holes, sigs)

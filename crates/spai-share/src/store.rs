@@ -75,6 +75,9 @@ pub trait ShareStore {
     fn share_invite_save(&self, id: &str, group: &str, secret: &Key, for_char: i64, for_name: &str);
     /// An invite made here: its secret, and the character it is for.
     fn share_invite(&self, id: &str) -> Option<(Key, i64, String)>;
+    /// The role an invite made here lets its character in as.
+    fn share_invite_role_save(&self, id: &str, role: crate::ops::Role);
+    fn share_invite_role(&self, id: &str) -> Option<crate::ops::Role>;
     /// Queues everything held for a group that has just been joined or made.
     fn share_queue_group(&self, group: &str, holes: bool, sigs: bool);
     fn share_snapshot(&self, g: &ShareGroup) -> Snapshot;

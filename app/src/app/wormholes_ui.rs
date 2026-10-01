@@ -843,7 +843,7 @@ impl SpaiApp {
 
     /// The add/edit form. A new entry is Manual; an edited one keeps the origin it had.
     pub(crate) fn wh_form_window(&mut self, ctx: &egui::Context) {
-        use crate::wormholes::{ShipSize, Source, Wormhole};
+        use crate::wormholes::{Source, Wormhole};
         let Some(mut form) = self.wh_form.take() else { return };
         let mut open = true;
         let mut save = false;
@@ -869,166 +869,31 @@ impl SpaiApp {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                egui::Grid::new("wh_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("System");
-                    self.system_input(ui, "wh_form_system", &mut form.system, "", 200.0);
-                    ui.end_row();
-                    ui.label("Signature");
-                    sig_field(ui, "wh_form_sig", &mut form.sig, "ABC-123", &here_sigs);
-                    ui.end_row();
-                    ui.label("Type");
-                    let codes: Vec<&str> = crate::whdata::types().iter().map(|t| t.code.as_str()).collect();
-                    if wh_type_picker(ui, "wh_form_type", 200.0, &mut form.wh_type, &codes) {
-                        // A type's size is fixed by its jump mass; it can still be corrected below.
-                        let sizes = crate::wormholes::sizes_for(&[form.wh_type.as_str()]);
-                        if sizes.len() == 1 {
-                            form.size = Some(sizes[0]);
-                        }
-                    }
-                    ui.end_row();
-                    ui.label("Leads to");
-                    self.system_input(ui, "wh_form_dest", &mut form.dest, "system or Highsec, C5...", 200.0);
-                    ui.end_row();
-                    ui.label("Its signature");
-                    sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "ABC-123", &there_sigs);
-                    ui.end_row();
-                    ui.label("Size");
-                    // Every size stays open: a recorded type can be wrong, or be the other side's.
-                    let sizes: Vec<_> = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge]
-                        .into_iter()
-                        .map(|s| (s, s.short(), s.label()))
-                        .collect();
-                    ui.vertical(|ui| {
-                        choice_row(ui, &mut form.size, &sizes);
-                        let implied = crate::whdata::hole_type(&form.wh_type).filter(|t| t.jump_mass > 0);
-                        if let Some(t) = implied {
-                            let fits = crate::wormholes::size_for_jump_mass(t.jump_mass);
-                            match form.size {
-                                Some(chosen) if chosen != fits => {
-                                    ui.colored_label(
-                                        crate::theme::standing::WARNING,
-                                        format!(
-                                            "{} {} is always a {} hole, not {}: check the type or the size",
-                                            egui_phosphor::regular::WARNING,
-                                            t.code,
-                                            fits.short(),
-                                            chosen.short()
-                                        ),
-                                    );
-                                }
-                                _ => {
-                                    ui.label(egui::RichText::new(format!("{} is always a {} hole", t.code, fits.short())).weak());
-                                }
-                            }
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Time left");
-                    let lives: Vec<_> = crate::wormholes::Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();
-                    choice_row(ui, &mut form.life, &lives);
-                    ui.end_row();
-                    ui.label("Mass left");
-                    let masses: Vec<_> = crate::wormholes::Mass::ALL.into_iter().map(|m| (m, m.short(), m.label())).collect();
-                    choice_row(ui, &mut form.mass, &masses);
-                    ui.end_row();
-                    ui.label("Note");
-                    ui.add(egui::TextEdit::singleline(&mut form.note).desired_width(200.0));
-                    ui.end_row();
-                });
-                if let Some(e) = &form.error {
-                    ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
-                }
-                if !form.history.is_empty() {
-                    egui::CollapsingHeader::new(format!("History ({})", form.history.len())).show(ui, |ui| {
-                        for line in &form.history {
-                            ui.label(line);
-                        }
-                    });
-                }
-                if ui.button(format!("{}  Save", egui_phosphor::regular::FLOPPY_DISK)).clicked() {
-                    save = true;
-                }
+                save = spai_ui::wh_form::form_ui(ui, &mut form, &mut |ui, key, q, hint, w| self.system_input(ui, key, q, hint, w), &here_sigs, &there_sigs);
             });
         if let Some(g) = self.systems.clone() {
             let (t, d) = (form.wh_type != type_was, form.dest != dest_was);
             drifter_autofill(&g, &mut form.wh_type, &mut form.dest, t, d);
         }
         if save {
-            let geo = self.systems.clone();
-            let lookup = |name: &str| geo.as_ref().and_then(|g| g.lookup(name.trim())).map(|i| i.id);
-            let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_uppercase());
-            let Some(sys) = lookup(&form.system) else {
-                form.error = Some(format!("No system called {:?}.", form.system.trim()));
+            let Some(geo) = self.systems.clone() else {
                 self.wh_form = Some(form);
                 return;
             };
-            let dest_id = if form.dest.trim().is_empty() { None } else { lookup(&form.dest) };
-            // Not a system: it may be a kind of space ("Highsec", "C5", "0.0").
-            let dest_kind = dest_id.is_none().then(|| crate::wormholes::DestClass::from_words(&form.dest)).flatten();
-            if !form.dest.trim().is_empty() && dest_id.is_none() && dest_kind.is_none() {
-                form.error = Some(format!("No system or kind of space called {:?}.", form.dest.trim()));
-                self.wh_form = Some(form);
-                return;
-            }
-            let class = |id: i64| geo.as_ref()?.info_of(id).map(|i| crate::whdata::class_of(id, i.security, &i.region));
-            if let Some(why) = crate::whdata::connection_problem(sys, dest_id, class, Some(form.wh_type.as_str()), None) {
-                form.error = Some(why);
-                self.wh_form = Some(form);
-                return;
-            }
-            match (self.wh_complete_sig(Some(sys), &form.sig, form.id), self.wh_complete_sig(dest_id, &form.dest_sig, form.id)) {
-                (Err(why), _) | (_, Err(why)) => {
+            let now = crate::clock::utc().timestamp();
+            let editing = form.id;
+            let complete = |sys: Option<i64>, typed: &str| self.wh_complete_sig(sys, typed, editing);
+            let built = spai_ui::wh_form::build(&mut form, &geo, &complete, now);
+            let (fresh, changes) = match built {
+                Ok(b) => b,
+                Err(why) => {
                     form.error = Some(why);
                     self.wh_form = Some(form);
                     return;
                 }
-                (Ok(here), Ok(there)) => {
-                    form.sig = here.unwrap_or(form.sig);
-                    form.dest_sig = there.unwrap_or(form.dest_sig);
-                }
-            }
-            let now = crate::clock::utc().timestamp();
-            let hole = crate::whdata::hole_type(&form.wh_type);
-            let dest = match (dest_id, hole.map(|h| h.dest)) {
-                (Some(d), _) => geo.as_ref().map_or(crate::wormholes::DestClass::Unknown, |g| dest_class(g, d)),
-                (None, _) if dest_kind.is_some() => dest_kind.unwrap_or_default(),
-                (None, Some(crate::whdata::Dest::Class(c))) => class_dest(c),
-                _ => crate::wormholes::DestClass::Unknown,
-            };
-            let fresh = Wormhole {
-                system_id: sys,
-                signature: text(&form.sig),
-                wh_type: crate::app::wh_prompt::known_type(&form.wh_type),
-                dest,
-                dest_system_id: dest_id,
-                dest_signature: text(&form.dest_sig),
-                size: form.size,
-                is_drifter: matches!(hole.map(|h| h.dest), Some(crate::whdata::Dest::Class(crate::whdata::Class::Drifter(_)))),
-                reported_at: now,
-                explicit_expiry: form.life.and_then(|l| l.closes_by(now)),
-                source: Source::Manual,
-                updated_at: now,
-                mass: form.mass,
-                life: form.life,
-                observed_at: (form.mass.is_some() || form.life.is_some()).then_some(now),
-                note: (!form.note.trim().is_empty()).then(|| form.note.trim().to_owned()),
-                ..Default::default()
             };
             let who = if self.settings.active_character.is_empty() { "me".to_owned() } else { self.settings.active_character.clone() };
             self.scanner_track.last_manual = Some((who.clone(), now));
-            let changes: Vec<(&str, String)> = [
-                ("signature", fresh.signature.clone()),
-                ("type", fresh.wh_type.clone()),
-                ("leads to", (!form.dest.trim().is_empty()).then(|| form.dest.trim().to_owned())),
-                ("far signature", fresh.dest_signature.clone()),
-                ("size", fresh.size.map(|s| s.label().to_owned())),
-                ("time left", fresh.life.map(|l| l.label().to_owned())),
-                ("mass left", fresh.mass.map(|m| m.label().to_owned())),
-                ("note", fresh.note.clone()),
-            ]
-            .into_iter()
-            .filter_map(|(f, v)| Some((f, v?)))
-            .collect();
             if let Some(store) = &self.store {
                 let id = match form.id.and_then(|id| store.wormhole_by_id(id)) {
                     Some(was) => {
@@ -1132,127 +997,12 @@ pub(crate) fn offerable(s: &crate::store::SystemSig, system: i64, holes: &[crate
     })
 }
 
-/// The add/edit form's fields, as typed.
-#[derive(Default)]
-pub(crate) struct WhForm {
-    id: Option<i64>,
-    pub(crate) system: String,
-    sig: String,
-    wh_type: String,
-    dest: String,
-    dest_sig: String,
-    size: Option<crate::wormholes::ShipSize>,
-    mass: Option<crate::wormholes::Mass>,
-    life: Option<crate::wormholes::Life>,
-    note: String,
-    error: Option<String>,
-    /// Who said what about this hole, oldest first.
-    history: Vec<String>,
-}
-
-impl WhForm {
-    /// A new hole behind a scanned signature.
-    pub(crate) fn at(system: String, sig: String, wh_type: Option<&str>) -> Self {
-        let wh_type = wh_type.unwrap_or_default().to_owned();
-        let size = crate::whdata::hole_type(&wh_type)
-            .filter(|t| t.jump_mass > 0)
-            .map(|t| crate::wormholes::size_for_jump_mass(t.jump_mass));
-        WhForm { system, sig, wh_type, size, ..WhForm::fresh() }
-    }
-
-    /// A hole nobody has read yet, at what a hole just found usually is: under a day, over half
-    /// its mass. One click changes either.
-    pub(crate) fn fresh() -> Self {
-        WhForm { life: Some(crate::wormholes::Life::UnderDay), mass: Some(crate::wormholes::Mass::Fresh), ..Default::default() }
-    }
-
-    fn of(w: &crate::wormholes::Wormhole, geo: Option<&crate::geo::Systems>) -> Self {
-        let name = |id: i64| geo.and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
-        WhForm {
-            id: Some(w.id),
-            system: name(w.system_id),
-            sig: w.signature.clone().unwrap_or_default(),
-            wh_type: w.wh_type.clone().unwrap_or_default(),
-            // A far side known only by its kind shows the kind, so saving keeps it.
-            dest: match w.dest_system_id {
-                Some(id) => name(id),
-                None if w.dest != crate::wormholes::DestClass::Unknown => w.dest.label().to_owned(),
-                None => String::new(),
-            },
-            dest_sig: w.dest_signature.clone().unwrap_or_default(),
-            size: w.size,
-            mass: w.mass,
-            life: w.life,
-            note: w.note.clone().unwrap_or_default(),
-            error: None,
-            history: Vec::new(),
-        }
-    }
-}
+pub(crate) use spai_ui::wh_form::{choice_row, drifter_autofill, sig_field, wh_type_picker, WhForm};
 
 /// The destination class of a hole whose far side is system `id`.
-pub(crate) use spai_core::wormholes::{class_dest, dest_class};
+pub(crate) use spai_core::wormholes::dest_class;
 
 
-/// A hole type combo box with a search field: there are close to a hundred codes. Typing filters
-/// by code or by where the hole leads, Enter takes the first match.
-pub(crate) fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut String, codes: &[&str]) -> bool {
-    use crate::app::SteadySelect as _;
-    let id = ui.make_persistent_id(salt);
-    let (q_id, open_id) = (id.with("q"), id.with("open"));
-    let before = value.clone();
-    let describe = |code: &str| {
-        crate::whdata::hole_type(code).map_or(String::new(), |t| {
-            let dest = match t.dest {
-                crate::whdata::Dest::Class(c) => c.label(),
-                crate::whdata::Dest::AnyKspace => "k-space".into(),
-                crate::whdata::Dest::Unknown => "the other side".into(),
-            };
-            format!("\u{2192} {dest}, {}", t.size_label())
-        })
-    };
-    let shown = egui::ComboBox::from_id_salt(salt)
-        .width(width)
-        .height(320.0)
-        .selected_text(if value.is_empty() { "unknown".to_owned() } else { value.clone() })
-        .show_ui(ui, |ui| {
-            let mut q: String = ui.data(|d| d.get_temp(q_id)).unwrap_or_default();
-            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search, e.g. C5 or H296").desired_width(width));
-            if ui.data(|d| d.get_temp::<bool>(open_id)).is_none() {
-                r.request_focus();
-                ui.data_mut(|d| d.insert_temp(open_id, true));
-            }
-            let needle = q.trim().to_lowercase();
-            let hits: Vec<&str> = codes
-                .iter()
-                .copied()
-                .filter(|c| needle.is_empty() || c.to_lowercase().contains(&needle) || describe(c).to_lowercase().contains(&needle))
-                .collect();
-            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if let Some(first) = hits.first() {
-                    *value = (*first).to_owned();
-                    ui.close();
-                }
-            }
-            if needle.is_empty() {
-                ui.menu_value(value, String::new(), "unknown");
-            }
-            for c in &hits {
-                ui.menu_value(value, (*c).to_owned(), format!("{c}  {}", describe(c)));
-            }
-            if hits.is_empty() {
-                ui.label(egui::RichText::new("No type matches").weak());
-            }
-            ui.data_mut(|d| d.insert_temp(q_id, q));
-        });
-    if shown.inner.is_none() {
-        ui.data_mut(|d| {
-            d.remove::<String>(q_id);
-            d.remove::<bool>(open_id);
-        });
-    }
-    *value != before
-}
 
 /// What a system is like for wormhole purposes: class, effect with what it does, statics,
 /// celestials, and for k-space the holes that can open there when `spawns` is set.
@@ -1352,28 +1102,6 @@ pub(crate) fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &crate::geo::Sy
     }
 }
 
-/// Keeps a drifter hole's type and far side in step: whichever was just changed fills in the
-/// other. A drifter named in words ("Barbican") becomes its J-code, which is what saving looks up.
-pub(crate) fn drifter_autofill(geo: &crate::geo::Systems, wh_type: &mut String, dest: &mut String, type_changed: bool, dest_changed: bool) {
-    use crate::whdata;
-    let dest_id = |d: &str| geo.lookup(d.trim()).map(|i| i.id).or_else(|| whdata::drifter_in_text(d));
-    if type_changed {
-        if let Some(id) = whdata::drifter_for_code(wh_type.trim()).filter(|id| dest_id(dest) != Some(*id)) {
-            if let Some(i) = geo.info_of(id) {
-                *dest = i.name.clone();
-            }
-        }
-    } else if dest_changed {
-        let Some(id) = dest_id(dest) else { return };
-        let Some(code) = whdata::drifter_code(id) else { return };
-        if let Some(i) = geo.info_of(id).filter(|i| !dest.trim().eq_ignore_ascii_case(&i.name)) {
-            *dest = i.name.clone();
-        }
-        if !wh_type.trim().eq_ignore_ascii_case(code) {
-            *wh_type = code.to_owned();
-        }
-    }
-}
 
 /// Toggles that add and remove codes from `set`; an empty set means any. Returns whether it changed.
 fn code_toggles(ui: &mut egui::Ui, set: &mut Vec<String>, items: &[(&str, &str)]) -> bool {
@@ -1437,18 +1165,6 @@ pub(crate) fn wh_filter_ui(ui: &mut egui::Ui, f: &mut crate::wormholes::WhFilter
     changed
 }
 
-/// One button per choice in a row; clicking the chosen one again clears it back to unknown.
-pub(crate) fn choice_row<T: Copy + PartialEq>(ui: &mut egui::Ui, value: &mut Option<T>, items: &[(T, &str, &str)]) {
-    use crate::app::SteadySelect as _;
-    ui.horizontal(|ui| {
-        for (v, short, long) in items {
-            let on = *value == Some(*v);
-            if ui.menu_label(on, *short).on_hover_text(*long).clicked() {
-                *value = if on { None } else { Some(*v) };
-            }
-        }
-    });
-}
 
 /// Kilograms as whole tonnes with thousands separators, e.g. 62,000.
 fn tonnes(kg: u64) -> String {
@@ -1463,22 +1179,3 @@ fn tonnes(kg: u64) -> String {
     out
 }
 
-/// A signature typed in, or picked from the ones saved for that system.
-pub(crate) fn sig_field(ui: &mut egui::Ui, salt: &str, value: &mut String, hint: &str, saved: &[(String, String)]) {
-    use crate::app::SteadySelect as _;
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(if saved.is_empty() { 200.0 } else { 160.0 }));
-        if saved.is_empty() {
-            return;
-        }
-        egui::ComboBox::from_id_salt(salt).width(32.0).selected_text("").show_ui(ui, |ui| {
-            for (sig, what) in saved {
-                if ui.menu_label(value.eq_ignore_ascii_case(sig), format!("{sig}  {what}")).clicked() {
-                    *value = sig.clone();
-                }
-            }
-        })
-        .response
-        .on_hover_text("Signatures saved for this system");
-    });
-}

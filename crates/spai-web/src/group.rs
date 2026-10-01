@@ -8,6 +8,8 @@ use spai_share::store::{ShareGroup, ShareStore};
 #[derive(Default)]
 pub struct GroupTab {
     invite_for: String,
+    /// The next invite lets its character in as a viewer rather than a member.
+    invite_viewer: bool,
     /// A removal waiting for its second click.
     confirm_remove: Option<(String, i64)>,
     /// A group about to be deleted, and its name as typed so far.
@@ -39,7 +41,7 @@ impl GroupTab {
                 ui.add_space(8.0);
                 ui.heading(format!("{}  ({})", g.name, g.role.label()));
                 if store.share_key(&g.id, g.epoch).is_none() {
-                    ui.label("Waiting for an admin to approve this browser.");
+                    ui.label("Waiting to be let in: the invite does it as soon as the EVE Spai that made it next syncs.");
                     continue;
                 }
                 let members = store.share_members(&g.id);
@@ -101,9 +103,21 @@ impl GroupTab {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.invite_for).hint_text("Character it is for").desired_width(200.0));
             let ok = !self.invite_for.trim().is_empty();
-            let tip = if g.role.can_manage() { "For that character only, valid two days" } else { "For that character only, valid two days; members invite viewers only" };
+            // Members invite viewers only.
+            let admin = g.role.can_manage();
+            if admin {
+                let v = &mut self.invite_viewer;
+                egui::ComboBox::from_id_salt(("web_invite_role", &g.id)).width(90.0).selected_text(if *v { "as Viewer" } else { "as Member" }).show_ui(ui, |ui| {
+                    ui.selectable_value(v, false, "as Member").on_hover_text("Sees and shares");
+                    ui.selectable_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
+                });
+            } else {
+                ui.label(egui::RichText::new("as Viewer").weak());
+            }
+            let tip = "For that character only, valid two days. Using it lets them in, while this page is open.";
             if ui.add_enabled(ok, egui::Button::new("New invite link")).on_hover_text(tip).clicked() {
-                out.push(Cmd::Invite { group: g.id.clone(), for_name: self.invite_for.trim().to_owned() });
+                let role = if admin && !self.invite_viewer { Role::Member } else { Role::Viewer };
+                out.push(Cmd::Invite { group: g.id.clone(), for_name: self.invite_for.trim().to_owned(), role });
             }
         });
         if let Some((gid, link, for_name)) = &status.invite {
