@@ -212,7 +212,10 @@ pub(crate) fn alert_viewport_builder(
         // Windows hides the window when idle instead, so a transparent (composite-alpha DX12)
         // swapchain buys nothing there and crashes the GPU driver when dragged across monitors.
         .with_transparent(!cfg!(target_os = "windows"))
-        .with_mouse_passthrough(true);
+        // Click-through is for the Linux idle window, which stays mapped. Windows hides it instead,
+        // and there click-through makes it a layered window, which Windows draws with a basic
+        // caption and frame round an empty, see-through body if it is ever shown.
+        .with_mouse_passthrough(!cfg!(target_os = "windows"));
     let _ = pos; // position is command-only on show; see seed_overlay_size
     b = seed_overlay_size(b, size, [360.0, 240.0]);
     #[cfg(target_os = "linux")]
@@ -278,7 +281,7 @@ pub(crate) fn build_alert_viewport_cb(
         }
         let want_visible =
             active || (st.enabled && !cfg!(target_os = "windows") && !st.dismissed);
-        let want_passthrough = !active;
+        let want_passthrough = !active && !cfg!(target_os = "windows");
         if st.applied_visible != Some(want_visible) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
             st.applied_visible = Some(want_visible);
