@@ -45,6 +45,53 @@ fn buttons_w(ui: &egui::Ui, n: usize) -> f32 {
     n as f32 * one + n.saturating_sub(1) as f32 * 2.0
 }
 
+/// Where a hole at `sel` leads, as its row says it: the far system and its signature.
+fn dest_text(w: &Wormhole, sel: i64, geo: &Systems) -> String {
+    let (far, far_sig) = if w.system_id == sel { (w.dest_system_id, &w.dest_signature) } else { (Some(w.system_id), &w.signature) };
+    match far {
+        Some(f) => {
+            let name = geo.info_of(f).map_or_else(|| format!("#{f}"), |i| i.name.clone());
+            match far_sig {
+                Some(s) => format!("{} {name} {s}", icon::ARROW_RIGHT),
+                None => format!("{} {name}", icon::ARROW_RIGHT),
+            }
+        }
+        None => format!("{} {}", icon::ARROW_RIGHT, w.dest.label()),
+    }
+}
+
+/// The type, time left and mass line under a hole's destination.
+fn facts_text(w: &Wormhole, now: i64) -> String {
+    let parts: Vec<String> = [hole_code(w), life_badge(w, now, &egui::Visuals::dark()).map(|(t, _)| t), w.mass.map(|m| m.short().to_owned())].into_iter().flatten().collect();
+    parts.join("  ")
+}
+
+/// Who last had a hand on a hole, as two lines: when, and who.
+fn who_texts(w: &Wormhole, now: i64) -> (String, String) {
+    let (_, edited) = who_lines(w, now);
+    match (&edited, &w.edited_by) {
+        (Some(_), Some((who, at))) => (format!("{} {} ago", icon::PENCIL_SIMPLE, human_ago(now - at)), who.clone()),
+        _ => (format!("{} ago", human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().to_owned())),
+    }
+}
+
+/// The who column: as wide as its longest name, within reason.
+fn who_width(ui: &egui::Ui, here: &[&Wormhole], now: i64) -> f32 {
+    here.iter().map(|w| {
+        let (at, by) = who_texts(w, now);
+        text_w(ui, &at).max(text_w(ui, &by))
+    })
+    .fold(text_w(ui, "88m ago"), f32::max)
+    .min(text_w(ui, "Mmmmmmmmmmmmmmmm"))
+}
+
+/// The width the connections list needs to show every row whole.
+pub fn connections_fit(ui: &egui::Ui, sel: i64, here: &[&Wormhole], now: i64, geo: &Systems, can_edit: bool) -> f32 {
+    let mid = here.iter().map(|w| text_w(ui, &dest_text(w, sel, geo)).max(text_w(ui, &facts_text(w, now)))).fold(60.0, f32::max);
+    let gaps = 5.0 * ui.spacing().item_spacing.x;
+    text_w(ui, "MMM-888") + mid + who_width(ui, here, now) + buttons_w(ui, if can_edit { 3 } else { 1 }) + scrollbar_gutter(ui) + gaps + 8.0
+}
+
 /// The holes at `sel`, each a row: its signature, where it leads with the type, time left and mass
 /// under it, who added it, and edit, close and the switch for routes. `off` says which holes are
 /// switched off for routes; without `can_edit` only that switch shows.
@@ -57,8 +104,10 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
     let line_h = ui.text_style_height(&egui::TextStyle::Body);
     let row_h = line_h * 2.0 + 6.0;
     let sig_w = text_w(ui, "MMM-888");
-    let who_w = text_w(ui, "Mmmmmmmmm");
     let actions_w = buttons_w(ui, if can_edit { 3 } else { 1 }) + scrollbar_gutter(ui);
+    // In a narrow panel the who column gives way too, so the table never holds the panel open.
+    let spare = ui.available_width() - sig_w - actions_w - 3.0 * ui.spacing().item_spacing.x - 40.0;
+    let who_w = who_width(ui, here, now).min(spare.max(28.0));
     // The table takes one column gap more than it is given; in a resizable panel that grows the
     // panel a little every frame until it settles. Give it one gap less.
     let room = egui::vec2(ui.available_width() - ui.spacing().item_spacing.x, 0.0);
@@ -69,7 +118,7 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
             .vscroll(false)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(egui_extras::Column::exact(sig_w))
-            .column(egui_extras::Column::remainder().at_least(60.0).clip(true))
+            .column(egui_extras::Column::remainder().at_least(30.0).clip(true))
             .column(egui_extras::Column::exact(who_w).clip(true))
             .column(egui_extras::Column::exact(actions_w))
             .body(|mut body| {
@@ -136,10 +185,7 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                                 None => added,
                             };
                             // The latest hand on it: the edit when there was one, else who added it.
-                            let (at, by) = match (&edited, &w.edited_by) {
-                                (Some(_), Some((who, at))) => (format!("{} {} ago", icon::PENCIL_SIMPLE, human_ago(now - at)), who.clone()),
-                                _ => (format!("{} ago", human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().to_owned())),
-                            };
+                            let (at, by) = who_texts(w, now);
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 ui.add(egui::Label::new(egui::RichText::new(at).weak()).truncate().show_tooltip_when_elided(false)).on_hover_text(&hover);
@@ -165,6 +211,81 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
             });
     });
     act
+}
+
+/// What a signature's Info column says: its short group, then where its hole leads or the site.
+fn sig_info_text(sg: &SystemSig, sel: i64, every: &[Wormhole], geo: &Systems) -> String {
+    let name = |id: i64| geo.info_of(id).map_or_else(|| format!("#{id}"), |i| i.name.clone());
+    let hole = sig_hole(every, sel, &sg.sig);
+    let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
+    let info = match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
+        Some(Some(f)) => format!("{code}{} {}", icon::ARROW_RIGHT, name(f)),
+        Some(None) => format!("{code}{} {}", icon::ARROW_RIGHT, hole.map_or("?", |w| w.dest.label())),
+        None => match unidentified_type(sel, &sg.name) {
+            Some(c) => format!("{c} \u{b7} {}", sg.name),
+            None if sg.name.is_empty() => "\u{2014}".to_owned(),
+            None => sg.name.clone(),
+        },
+    };
+    format!("{}  {info}", short_group(&sg.group))
+}
+
+/// The width the signatures list needs to show every row whole.
+pub fn sig_table_fit(ui: &egui::Ui, sel: i64, sigs: &[SystemSig], every: &[Wormhole], now: i64, eve: bool, geo: &Systems) -> f32 {
+    let id_w = text_w(ui, &format!("{} MMM-888", icon::MAGNIFYING_GLASS));
+    let found_w = sigs.iter().map(|sg| text_w(ui, &found_at(sg.added_at, now, eve))).fold(text_w(ui, "Found"), f32::max);
+    let info_w = sigs.iter().map(|sg| text_w(ui, &sig_info_text(sg, sel, every, geo))).fold(40.0, f32::max);
+    let gaps = 5.0 * ui.spacing().item_spacing.x;
+    id_w + found_w + info_w + buttons_w(ui, 2) + scrollbar_gutter(ui) + gaps + 8.0
+}
+
+/// How wide the side panel is: fitted to what it shows until the user drags it, then theirs.
+#[derive(Default)]
+pub struct SideWidth {
+    /// The width the user dragged it to.
+    pub user: Option<f32>,
+    fit: f32,
+}
+
+/// The wormhole map's side panel, on the right of `ui`. It starts as wide as `fit` (what the shown
+/// list needs, kept to half the room) and follows it until the user drags the edge, after which it
+/// keeps their width. Its lists give way when it is narrowed, so their columns never hold it open.
+pub fn side_panel<R>(ui: &mut egui::Ui, id: &str, width: &mut SideWidth, fit: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let id = egui::Id::new(id);
+    let max = (ui.available_width() * 0.5).max(260.0);
+    let fit = (fit + 2.0 * 8.0).clamp(260.0, max);
+    if width.user.is_none() && (width.fit - fit).abs() > 1.0 {
+        // Forget the panel's own memory of its width, so the new default takes.
+        ui.ctx().data_mut(|d| d.remove::<egui::containers::panel::PanelState>(id));
+        width.fit = fit;
+    }
+    let shown = egui::Panel::right(id)
+        .resizable(true)
+        .min_size(160.0)
+        .default_size(width.user.unwrap_or(fit))
+        .show_inside(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // A panel is as wide as what it holds, so anything sized from its width holds it
+                    // at that width. The contents go in a child whose overflow is clipped instead of
+                    // counted: only the panel's own width is taken.
+                    let width = ui.available_width();
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).layout(*ui.layout()));
+                    let out = add(&mut child);
+                    let used = child.min_rect();
+                    ui.allocate_rect(egui::Rect::from_min_size(used.min, egui::vec2(width, used.height())), egui::Sense::hover());
+                    out
+                })
+                .inner
+        });
+    let w = shown.response.rect.width();
+    match width.user {
+        None if (w - width.fit).abs() > 2.0 => width.user = Some(w),
+        Some(u) if (u - w).abs() > 0.5 => width.user = Some(w),
+        _ => {}
+    }
+    shown
 }
 
 /// The signatures pasted at `sel` (named `sys_name`): id, when found, and what it is or where the
