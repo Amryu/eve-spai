@@ -769,6 +769,7 @@ pub static SYSTEM_IDS: &[i64] = &[
     30004116, // Rayeret
     30004118, // Ardhis
     30004122, // Chanoun
+    30004133, // Hilmar: a drifter hole was taken here, missing from the June 2025 list
     30004138, // Bersyrim
     30004141, // Hiremir
     30004142, // Hikansog
@@ -1040,7 +1041,8 @@ mod tests {
     #[test]
     fn ids_sorted_and_unique() {
         assert!(SYSTEM_IDS.windows(2).all(|w| w[0] < w[1]));
-        assert_eq!(SYSTEM_IDS.len(), 1026);
+        assert_eq!(SYSTEM_IDS.len(), 1027);
+        assert!(has(30004133), "Hilmar");
         assert!(has(30000005));
         assert!(!has(30000001));
     }

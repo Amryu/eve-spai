@@ -159,8 +159,12 @@ impl SpaiApp {
                     continue;
                 }
             }
-            // No hole joins these two (a drifter system and one without a Jove Observatory): the
-            // move was something else.
+            // A drifter hole into a system the Jove Observatory list lacks: asked about rather than
+            // taken as certain, since the list has missed some.
+            let verdict = match verdict {
+                Verdict::Hole(c) if crate::whdata::jove_doubt(t.from, t.to) => Verdict::Possible(c),
+                v => v,
+            };
             if crate::whdata::connection_problem(t.from, Some(t.to), |_| None, None, None).is_some() {
                 continue;
             }
