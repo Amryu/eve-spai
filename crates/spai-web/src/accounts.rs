@@ -52,7 +52,7 @@ pub fn judge(geo: &spai_core::geo::Systems, m: &Move, holes: &[spai_core::wormho
     if known || not_holes.contains_key(&(m.from.min(m.to), m.from.max(m.to))) {
         return None;
     }
-    // No hole joins a drifter system and one without a Jove Observatory: something else moved it.
+    // A pair no hole can join (into itself, a type leading elsewhere): something else moved it.
     if spai_core::whdata::connection_problem(m.from, Some(m.to), |_| None, None, None).is_some() {
         return None;
     }
@@ -74,8 +74,10 @@ pub fn judge(geo: &spai_core::geo::Systems, m: &Move, holes: &[spai_core::wormho
         v.dedup();
         v
     };
+    // A drifter hole into a system the Jove Observatory list lacks is asked about, not taken as
+    // certain: the list has missed some.
     match classify(&t, geo, &Clones::default()) {
-        Verdict::Hole(c) => Some((true, codes(c))),
+        Verdict::Hole(c) => Some((!spai_core::whdata::jove_doubt(m.from, m.to), codes(c))),
         Verdict::Possible(c) => Some((false, codes(c))),
         Verdict::Explained(_) => None,
     }

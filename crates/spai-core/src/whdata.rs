@@ -229,6 +229,14 @@ fn load() -> Data {
     Data { types, systems, effects, c729 }
 }
 
+/// Whether a hole from `a` to `b` joins a drifter system to k-space the Jove Observatory list does
+/// not have. Drifter holes open by observatories, but the list is community data and has missed
+/// some, so this is a doubt to ask about, never a reason to refuse a hole.
+pub fn jove_doubt(a: i64, b: i64) -> bool {
+    let kspace = |id: i64| (30_000_000..31_000_000).contains(&id);
+    [(a, b), (b, a)].into_iter().any(|(d, k)| drifter_code(d).is_some() && kspace(k) && !crate::jove::has(k))
+}
+
 pub fn hole_type(code: &str) -> Option<&'static HoleType> {
     DATA.types.iter().find(|t| t.code.eq_ignore_ascii_case(code.trim()))
 }
@@ -242,12 +250,6 @@ pub fn connection_problem(a: i64, b: Option<i64>, class: impl Fn(i64) -> Option<
     let b = b?;
     if a == b {
         return Some("A hole cannot lead back into its own system.".to_owned());
-    }
-    let kspace = |id: i64| (30_000_000..31_000_000).contains(&id);
-    for (d, k) in [(a, b), (b, a)] {
-        if drifter_code(d).is_some() && kspace(k) && !crate::jove::has(k) {
-            return Some("Drifter holes only open in systems with a Jove Observatory.".to_owned());
-        }
     }
     let (ca, cb) = (class(a), class(b));
     let (Some(ca), Some(cb)) = (ca, cb) else { return None };
@@ -454,9 +456,11 @@ mod tests {
         };
         assert!(connection_problem(1, None, class, None, None).is_none(), "far side unknown");
         assert!(connection_problem(30_000_142, Some(30_000_142), class, None, None).is_some(), "into itself");
-        // Conflux and Jita: Jita has no Jove Observatory. 7-K5EL has one.
-        assert!(connection_problem(31_000_004, Some(30_000_142), class, None, None).is_some());
-        assert!(connection_problem(30_000_142, Some(31_000_004), class, None, None).is_some(), "either way round");
+        // Conflux and Jita: Jita has no Jove Observatory on the list, which is a doubt, not a refusal.
+        assert!(connection_problem(31_000_004, Some(30_000_142), class, None, None).is_none(), "the list has gaps");
+        assert!(jove_doubt(31_000_004, 30_000_142) && jove_doubt(30_000_142, 31_000_004), "either way round");
+        assert!(!jove_doubt(31_000_004, 30_000_005), "Sasta has one");
+        assert!(!jove_doubt(31_000_100, 30_000_142), "not a drifter system");
         // A type reads the same from either side: N432 leads to C5, so one end must be a C5.
         assert!(connection_problem(30_000_142, Some(31_000_100), class, Some("N432"), None).is_none(), "N432 leads to C5");
         assert!(connection_problem(31_000_100, Some(30_000_142), class, Some("N432"), None).is_none(), "read on the far side");
