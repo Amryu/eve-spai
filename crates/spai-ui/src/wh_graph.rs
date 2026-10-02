@@ -300,6 +300,8 @@ pub struct WhGraphView {
     pub multi: HashSet<i64>,
     /// The shift-drag box being drawn: where it started and where the pointer is, on screen.
     pub marquee: Option<(egui::Pos2, egui::Pos2)>,
+    /// The side panel's width: fitted to what it lists until the user drags it.
+    pub side_width: crate::side_lists::SideWidth,
     /// The canvas as last drawn, whose shape the chains are packed to.
     pub canvas: Option<egui::Rect>,
     /// Holes whose signature a probe scan no longer lists, waiting on the user: the system, and

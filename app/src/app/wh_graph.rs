@@ -69,8 +69,20 @@ impl SpaiApp {
         // The filter narrows the map and the Info list, never what a signature is known to lead to.
         let every: Vec<Wormhole> = self.wh_cache.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).cloned().collect();
         let hidden = every.len().saturating_sub(holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).count());
-        egui::Panel::right("wh_graph_side").resizable(true).default_size(320.0).show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // As wide as the tab's list needs, until the user drags it.
+        let fit = match self.wh_graph.side_tab {
+            SideTab::Info => {
+                let here: Vec<&Wormhole> = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).collect();
+                spai_ui::side_lists::connections_fit(ui, sel, &here, now, &geo, true)
+            }
+            SideTab::Sigs => {
+                let sigs = self.wh_graph_sigs(sel);
+                spai_ui::side_lists::sig_table_fit(ui, sel, &sigs, &every, now, self.settings.use_eve_time, &geo)
+            }
+            _ => 0.0,
+        };
+        let mut side_w = std::mem::take(&mut self.wh_graph.side_width);
+        spai_ui::side_lists::side_panel(ui, "wh_graph_side", &mut side_w, fit, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(&info.name);
                     if self.wh_graph.focus != Some(sel)
@@ -94,17 +106,12 @@ impl SpaiApp {
                     (SideTab::Routes, "Routes".to_owned()),
                     (SideTab::Sigs, if n_sigs == 0 { "Signatures".to_owned() } else { format!("Signatures ({n_sigs})") }),
                 ];
-                // Equal thirds while every label fits in one; a label wider than its third would
-                // widen the panel, which widens the thirds, frame after frame.
-                let w = (ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0;
-                let font = egui::TextStyle::Button.resolve(ui.style());
-                let pad = 2.0 * ui.spacing().button_padding.x;
-                let fits = tabs.iter().all(|(_, l)| ui.painter().layout_no_wrap(l.clone(), font.clone(), egui::Color32::WHITE).size().x + pad <= w);
+                // Each tab as wide as its label: tabs sized from the panel would hold it at that width.
                 ui.horizontal(|ui| {
                     use crate::app::SteadySelect as _;
                     for (t, label) in tabs {
                         let on = self.wh_graph.side_tab == t;
-                        let r = if fits { ui.menu_label_sized([w, 24.0], on, label) } else { ui.menu_label(on, label) };
+                        let r = ui.menu_label(on, label);
                         if r.clicked() {
                             self.wh_graph.side_tab = t;
                         }
@@ -236,8 +243,8 @@ impl SpaiApp {
                 }
                     }
                 }
-            });
         });
+        self.wh_graph.side_width = side_w;
         if let Some(text) = paste {
             self.wh_graph_paste(sel, text, now);
         }

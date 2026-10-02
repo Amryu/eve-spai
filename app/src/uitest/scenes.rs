@@ -3287,21 +3287,15 @@ fn uitest_wormhole_map_side_panel_lists_the_selected_system() {
     let harness = harness::build(&mut scene, false);
     let body = label_height(&harness, "Connections");
     assert!(label_height(&harness, "ABC-123") >= body - 0.5);
-    // Info, Routes and Signatures are tabs of one width.
+    // Info, Routes and Signatures are tabs, each as wide as its label: tabs sized from the panel
+    // would hold it at that width (uitest_wh_side_panel_shrinks).
     use egui_kittest::kittest::NodeT as _;
-    let widths: Vec<f64> = ["Info", "Routes", "Signatures"]
-        .iter()
-        .map(|t| {
-            let n = harness
-                .root()
-                .children_recursive()
-                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button && n.accesskit_node().label().as_deref() == Some(*t))
-                .unwrap_or_else(|| panic!("no {t} tab"));
-            let b = n.accesskit_node().bounding_box().unwrap();
-            b.x1 - b.x0
-        })
-        .collect();
-    assert!(widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "{widths:?}");
+    for t in ["Info", "Routes", "Signatures"] {
+        assert!(
+            harness.root().children_recursive().any(|n| n.accesskit_node().role() == egui::accesskit::Role::Button && n.accesskit_node().label().as_deref() == Some(t)),
+            "no {t} tab"
+        );
+    }
 }
 
 /// Fleet command stays out of sight until the dashboard confirms a commander: settings offer only
@@ -8054,3 +8048,28 @@ fn uitest_signatures_never_widen_the_side_panel() {
 }
 
 
+
+/// The wormhole map's side panel narrows when its edge is dragged in: nothing in it, the tab row
+/// or a table, holds it at the width it had.
+#[test]
+fn uitest_wh_side_panel_shrinks() {
+    let mut scene = wormholes_focus_scene("wh_connections_both_ways", [1280.0, 800.0], false, Some(30_004_759), Some(31_000_005));
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(4);
+    let id = egui::Id::new("wh_graph_side");
+    let before = egui::containers::panel::PanelState::load(&h.ctx, id).expect("the panel").rect;
+    let y = before.center().y;
+    let from = egui::pos2(before.min.x + 1.0, y);
+    h.event(egui::Event::PointerMoved(from));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    for k in 1..=10 {
+        h.event(egui::Event::PointerMoved(egui::pos2(from.x + 15.0 * k as f32, y)));
+        h.run_steps(1);
+    }
+    let to = egui::pos2(from.x + 150.0, y);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.run_steps(4);
+    let after = egui::containers::panel::PanelState::load(&h.ctx, id).unwrap().rect;
+    assert!(after.width() < before.width() - 100.0, "the panel stayed {} wide after a 150 px drag in, from {}", after.width(), before.width());
+}

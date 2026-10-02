@@ -680,8 +680,17 @@ impl WhHost for WebHost {
         let now = spai_core::clock::utc().timestamp();
         let sigs = self.sigs.get(&sel).cloned().unwrap_or_default();
         let mut pick: Option<i64> = None;
-        let shown = egui::Panel::right("wh_web_side").resizable(true).default_size(380.0).show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // As wide as the tab's list needs, until the user drags it.
+        let fit = match self.side {
+            Side::Holes => {
+                let here: Vec<&Wormhole> = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).collect();
+                spai_ui::side_lists::connections_fit(ui, sel, &here, now, geo, self.can_edit)
+            }
+            Side::Signatures => spai_ui::side_lists::sig_table_fit(ui, sel, &sigs, &self.holes, now, true, geo),
+            Side::Routes => 0.0,
+        };
+        let mut side_width = std::mem::take(&mut view.side_width);
+        let shown = spai_ui::side_lists::side_panel(ui, "wh_web_side", &mut side_width, fit, |ui| {
                 ui.heading(&info.name);
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", info.region, info.security)).weak());
                 ui.separator();
@@ -796,8 +805,8 @@ impl WhHost for WebHost {
                         }
                     }
                 }
-            });
         });
+        view.side_width = side_width;
         self.side_w = shown.response.rect.width();
         if pick.is_some() {
             view.selected = pick;
