@@ -1160,52 +1160,6 @@ impl SpaiApp {
                     {
                         r.ping_edited = true;
                     }
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
-                            if let Ok(mut clip) = arboard::Clipboard::new() {
-                                let _ = clip.set_text(r.pending_ping.clone());
-                            }
-                        }
-                        // coord and fc are directorbot ping GROUPS, posted to skirmish_commanders. Coord
-                        // carries the ping; fc is the bare "!bping fc" backup that reaches more people,
-                        // only after coord and never within 10s of the last ping. Off in test mode.
-                        let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
-                        if compact {
-                            ui.label("Ping");
-                        }
-                        let now = crate::clock::utc().timestamp();
-                        let fc_ok = crate::rescue::fc_ping_wait(r.coord_pinged_at, r.bpinged_at, now);
-                        if let Err((_, Some(wait))) = &fc_ok {
-                            ui.ctx().request_repaint_after(std::time::Duration::from_secs((*wait).max(1) as u64));
-                        }
-                        let send = |body: String| {
-                            if let Some(tx) = &tx {
-                                let _ = tx.send(crate::jabber::Cmd::SendRoom { room: skirmish_jid.clone(), body });
-                            }
-                        };
-                        let coord = egui::Button::new(if compact { "coord" } else { "Ping coord" });
-                        let coord = match pulse_fill(ui, coord_pending) {
-                            Some(c) => coord.fill(c),
-                            None => coord,
-                        };
-                        if ui.add_enabled(can_send, coord).on_hover_text("!bping coord with the ping").clicked() {
-                            send(format!("!bping coord\n\n{}", r.pending_ping));
-                            mark_coord = true;
-                            r.coord_pinged_at = Some(now);
-                            r.bpinged_at = Some(now);
-                        }
-                        let fc = egui::Button::new(if compact { "fc" } else { "Ping fc" });
-                        let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text("!bping fc alone: the backup after coord, reaching more people");
-                        let resp = match &fc_ok {
-                            Err((why, _)) => resp.on_disabled_hover_text(why),
-                            Ok(()) => resp,
-                        };
-                        if resp.clicked() {
-                            send("!bping fc".to_owned());
-                            r.bpinged_at = Some(now);
-                        }
-                    });
-
                     // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
                     // their delve911 nick so it reads as a direct call-out in the channel.
                     let ping_author = r.ping_author.clone();
@@ -1257,7 +1211,6 @@ impl SpaiApp {
                     };
                     // Whether the FC is actually boss of a fleet in game, on the same clock the
                     // start form uses. Nothing else tells you before you try to track.
-                    ui.add_space(if compact { 2.0 } else { 6.0 });
                     let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
                     let track_button = |ui: &mut egui::Ui, wide: bool| -> bool {
                         let b = egui::Button::new(format!("{}  {}", egui_phosphor::regular::ROCKET_LAUNCH, if wide { "Start tracking" } else { "Track" }));
@@ -1270,17 +1223,8 @@ impl SpaiApp {
                             )
                             .clicked()
                     };
-                    ui.horizontal_wrapped(|ui| {
-                        if compact {
-                            if command_comms(ui, false) {
-                                let _ = open::that(command_mumble_url(op_now));
-                                mark_cmd = true;
-                            }
-                            if track_button(ui, false) {
-                                start_tracking = true;
-                            }
-                            invite_ui(ui);
-                        }
+                    // The fleet boss verdict: compact, its icon with the words on hover.
+                    let verdict = |ui: &mut egui::Ui| {
                         let (glyph, colour, text) = match &boss {
                             Some((true, why)) => (
                                 egui_phosphor::regular::CHECK_CIRCLE,
@@ -1298,14 +1242,75 @@ impl SpaiApp {
                                 "Fleet boss not checked".to_owned(),
                             ),
                         };
-                        // Compact, the verdict is its icon; the words are on hover.
                         let icon = ui.label(egui::RichText::new(glyph).color(colour));
                         if compact {
                             icon.on_hover_text(text);
                         } else {
                             ui.label(egui::RichText::new(text).color(colour));
                         }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                            if let Ok(mut clip) = arboard::Clipboard::new() {
+                                let _ = clip.set_text(r.pending_ping.clone());
+                            }
+                        }
+                        // coord and fc are directorbot ping GROUPS, posted to skirmish_commanders. Coord
+                        // carries the ping; fc is the bare "!bping fc" backup that reaches more people,
+                        // only after coord and never within 10s of the last ping. Off in test mode.
+                        let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
+                        if compact {
+                            ui.label("Ping");
+                        }
+                        let now = crate::clock::utc().timestamp();
+                        let fc_ok = crate::rescue::fc_ping_wait(r.coord_pinged_at, r.bpinged_at, now);
+                        if let Err((_, Some(wait))) = &fc_ok {
+                            ui.ctx().request_repaint_after(std::time::Duration::from_secs((*wait).max(1) as u64));
+                        }
+                        let send = |body: String| {
+                            if let Some(tx) = &tx {
+                                let _ = tx.send(crate::jabber::Cmd::SendRoom { room: skirmish_jid.clone(), body });
+                            }
+                        };
+                        let coord = egui::Button::new(if compact { "coord" } else { "Ping coord" });
+                        let coord = match pulse_fill(ui, coord_pending) {
+                            Some(c) => coord.fill(c),
+                            None => coord,
+                        };
+                        if ui.add_enabled(can_send, coord).on_hover_text("!bping coord with the ping").clicked() {
+                            send(format!("!bping coord\n\n{}", r.pending_ping));
+                            mark_coord = true;
+                            r.coord_pinged_at = Some(now);
+                            r.bpinged_at = Some(now);
+                        }
+                        let fc = egui::Button::new(if compact { "fc" } else { "Ping fc" });
+                        let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text("!bping fc alone: the backup after coord, reaching more people");
+                        let resp = match &fc_ok {
+                            Err((why, _)) => resp.on_disabled_hover_text(why),
+                            Ok(()) => resp,
+                        };
+                        if resp.clicked() {
+                            send("!bping fc".to_owned());
+                            r.bpinged_at = Some(now);
+                        }
+                        // Compact, comms, tracking and the invite share the ping's row, and wrap
+                        // below it only when the window is too narrow.
+                        if compact {
+                            if command_comms(ui, false) {
+                                let _ = open::that(command_mumble_url(op_now));
+                                mark_cmd = true;
+                            }
+                            if track_button(ui, false) {
+                                start_tracking = true;
+                            }
+                            invite_ui(ui);
+                            verdict(ui);
+                        }
                     });
+                    if !compact {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| verdict(ui));
+                    }
 
                     // Handing over to the fleet tab: the preset fills the start form and the
                     // fleet it starts is the one being tracked from here on.
