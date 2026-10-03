@@ -362,14 +362,29 @@ impl SpaiApp {
                 .with_taskbar(false)
                 .with_resizable(true)
                 .with_position([pos.0, pos.1])
-                .with_inner_size([400.0, 430.0]),
+                .with_inner_size([400.0, 300.0]),
             |ctx, _| {
                 ontop_pin(ctx, "wh_prompt");
-                egui::CentralPanel::default().frame(egui::Frame::central_panel(&ctx.style())).show(ctx, |ui| {
+                let frame = egui::Frame::central_panel(&ctx.style());
+                let used = egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     if let Some(p) = self.wh_pending.front_mut() {
                         act = wh_prompt_body(ui, p, count, &name, &here_opts, &there_opts);
                     }
+                    ui.min_rect().height()
                 });
+                // As tall as what it asks, which changes with the questions: grown or shrunk to fit,
+                // at the width the user left it.
+                let want = used.inner + frame.total_margin().sum().y;
+                if let Some(inner) = ctx.input(|i| i.viewport().inner_rect) {
+                    if (inner.height() - want).abs() > 2.0 {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(inner.width(), want)));
+                    }
+                }
+                // The window's own close: none of the queued jumps are asked about any more. The
+                // holes taken as certain were saved when they were seen.
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    act = PromptAct::Close;
+                }
             },
         );
         match act {
@@ -382,6 +397,7 @@ impl SpaiApp {
                     self.wh_not_holes.insert((p.from.min(p.to), p.from.max(p.to)), crate::clock::utc().timestamp());
                 }
             }
+            PromptAct::Close => self.wh_pending.clear(),
             PromptAct::None => {}
         }
     }
@@ -478,6 +494,8 @@ pub(crate) enum PromptAct {
     Save,
     Skip,
     NotAHole,
+    /// The window was closed: ask about none of the queued jumps.
+    Close,
 }
 
 /// The questions for one pending jump.
