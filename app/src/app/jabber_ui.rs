@@ -1069,7 +1069,8 @@ impl SpaiApp {
                     if geometry_update(w.size, sz, 2.0).is_some() {
                         w.size = Some(sz);
                     }
-                    if let Some(p) = pos.and_then(|p| geometry_update(w.pos, p, 1.0)) {
+                    // Not while it is still being put back: the readings then are the misses.
+                    if let Some(p) = pos.filter(|_| pos_fix.is_none()).and_then(|p| geometry_update(w.pos, p, 1.0)) {
                         w.pos = Some(p);
                     }
                 }

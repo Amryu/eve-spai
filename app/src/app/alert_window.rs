@@ -55,36 +55,42 @@ pub(crate) fn geometry_update(
     }
 }
 
-/// A saved window position to send again once the window is up.
-///
-/// On X11 a window opened at a position is placed by KWin with its client area there, while
-/// winit reports and we save the frame's corner, so every restart put the window a title bar
-/// lower. A move of a window already shown is taken as the frame's position, so the saved spot is
-/// re-sent then, once.
+/// Puts a reopened window back where it was saved, on Linux. Under KWin on X11 the position a
+/// window reports and the one a move places it at differ by the title bar, in a direction that
+/// depends on the window manager, so neither is trusted: after the window is framed it is measured,
+/// and moved by however far it missed, until it lands (three tries at most).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PosFix {
     want: (f32, f32),
+    /// Where the last move asked for, which is not where it put the window.
+    sent: (f32, f32),
+    /// Frames since the window was last moved.
     frames: u32,
+    tries: u32,
 }
 
 impl PosFix {
     pub(crate) fn new(want: Option<(f32, f32)>) -> Option<Self> {
-        want.filter(|_| cfg!(target_os = "linux")).map(|want| PosFix { want, frames: 0 })
+        want.filter(|_| cfg!(target_os = "linux")).map(|want| PosFix { want, sent: want, frames: 0, tries: 0 })
     }
 
     /// One frame of the window, with where it says its frame is: where to move it, if anywhere,
     /// and whether the fix is done.
     pub(crate) fn step(&mut self, outer_min: Option<egui::Pos2>) -> (Option<egui::Pos2>, bool) {
         self.frames += 1;
-        // The first frames can report the window before the window manager framed it.
+        // The first frames after a map or a move can report the window before it settled.
         if self.frames < 3 {
             return (None, false);
         }
-        let want = egui::pos2(self.want.0, self.want.1);
-        match outer_min {
-            Some(p) => (((p - want).length() > 1.0).then_some(want), true),
-            None => (None, self.frames > 60),
+        let Some(p) = outer_min else { return (None, self.frames > 60) };
+        let miss = p - egui::pos2(self.want.0, self.want.1);
+        if miss.length() <= 1.0 || self.tries >= 3 {
+            return (None, true);
         }
+        self.sent = (self.sent.0 - miss.x, self.sent.1 - miss.y);
+        self.tries += 1;
+        self.frames = 0;
+        (Some(egui::pos2(self.sent.0, self.sent.1)), false)
     }
 }
 
@@ -917,9 +923,10 @@ pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowS
 mod pos_fix_tests {
     use super::PosFix;
 
-    /// A window a title bar below where it was saved is moved back once, after the first frames.
+    /// A window that lands a title bar below where it was saved, and where every move lands a title
+    /// bar lower than asked, is moved by the miss until it is where it was saved.
     #[test]
-    fn a_window_off_by_the_title_bar_is_moved_back_once() {
+    fn a_window_off_by_the_title_bar_is_moved_back() {
         if !cfg!(target_os = "linux") {
             return;
         }
@@ -927,7 +934,22 @@ mod pos_fix_tests {
         let off = Some(egui::pos2(100.0, 230.0));
         assert_eq!(f.step(off), (None, false), "not before the window is framed");
         assert_eq!(f.step(off), (None, false));
-        assert_eq!(f.step(off), (Some(egui::pos2(100.0, 200.0)), true));
+        // Asking for the saved spot itself would land it 30 lower again: ask 30 higher.
+        assert_eq!(f.step(off), (Some(egui::pos2(100.0, 170.0)), false));
+        f.step(off);
+        f.step(off);
+        assert_eq!(f.step(Some(egui::pos2(100.0, 200.0))), (None, true), "landed");
+        // A window manager that does nothing with the move: three tries, then left alone.
+        let mut stuck = PosFix::new(Some((100.0, 200.0))).unwrap();
+        let mut moves = 0;
+        for _ in 0..40 {
+            let (to, done) = stuck.step(off);
+            moves += to.is_some() as u32;
+            if done {
+                break;
+            }
+        }
+        assert_eq!(moves, 3);
         let mut right = PosFix::new(Some((100.0, 200.0))).unwrap();
         right.step(None);
         right.step(None);
