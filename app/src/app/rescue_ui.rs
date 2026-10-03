@@ -1495,6 +1495,10 @@ impl SpaiApp {
 
         if start_tracking {
             self.rescue_start_tracking();
+            // From the popped-out window: the start form is in the main window, so bring it up.
+            if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+                self.raise_main = true;
+            }
         }
         if pop_out {
             self.settings.rescue_popped = true;
