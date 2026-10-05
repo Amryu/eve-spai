@@ -172,7 +172,7 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                                     part(&mut job, m.short(), mass_color(Some(m)));
                                 }
                                 let read = w.observed_at.map(|t| format!(", read {} ago", human_ago(now - t))).unwrap_or_default();
-                                let hover = [hole_code(w), w.hours_left(now).map(|h| format!("Time left: {h}h{read}")), w.mass.map(|m| format!("Mass: {}", m.label()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
+                                let hover = [hole_code(w), w.hours_left(now).map(|h| format!("Time left: {h}h{read}")), crate::wh_graph::opened_line(w, now), w.mass.map(|m| format!("Mass: {}", m.label()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
                                 if !job.text.is_empty() {
                                     ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false)).on_hover_text(hover);
                                 }

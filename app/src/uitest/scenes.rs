@@ -802,6 +802,7 @@ fn sig_browser_scene(name: &'static str, size: [f32; 2]) -> Scene {
         updated_at: now - ago,
         who: who.into(),
         origin: None,
+        fresh_after: None,
     };
     let rows = vec![
         (30_004_759, sig("ABC-123", "Cosmic Signature", "Wormhole", "Unstable Wormhole", 60, "Scout Alpha")),
@@ -1036,6 +1037,7 @@ fn wormholes_focus_scene(
                     updated_at: if ago > 86_400 { now - ago } else { now - 20 },
                     who: "Kasper Stad".into(),
                     origin: None,
+                    fresh_after: None,
                 };
                 a.wh_graph.show_sigs(
                     30_004_759,

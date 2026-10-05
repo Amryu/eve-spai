@@ -271,6 +271,14 @@ pub fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
         // "Less than a day" is what most holes read, and says nothing of how much less: fine at
         // first, stale six hours after the hole was found and critical after twelve. Counted from
         // when it was found, so reading "<1d" again does not make it fresh.
+        // Known to have opened since a paste: it lives its lifetime from then at least.
+        Some(Life::UnderDay) | None if w.sure_until().is_some() => match w.sure_until().unwrap_or_default() - now {
+            s if s <= 0 => TimeLeft::Expiring,
+            s if s < 3600 => TimeLeft::Under1h,
+            s if s < 4 * 3600 => TimeLeft::Under4h,
+            s if s < 12 * 3600 => TimeLeft::Under12h,
+            _ => TimeLeft::Plenty,
+        },
         Some(Life::UnderDay) => match now - w.reported_at {
             age if age >= 12 * 3600 => TimeLeft::Under1h,
             age if age >= 6 * 3600 => TimeLeft::Under12h,
@@ -427,6 +435,35 @@ pub struct SystemSig {
     pub who: String,
     /// The sharing group it came from; `None` when pasted here.
     pub origin: Option<String>,
+    /// The paste before the one it first showed in: it spawned after this.
+    #[serde(default)]
+    pub fresh_after: Option<i64>,
+}
+
+/// When a signature first showed in a paste, the system's newest entry of that kind before it is
+/// the earlier paste it was missing from.
+pub fn fresh_after<'a>(kind: &str, earlier: impl IntoIterator<Item = &'a SystemSig>, first_seen: i64) -> Option<i64> {
+    earlier.into_iter().filter(|o| o.kind.eq_ignore_ascii_case(kind)).map(|o| o.updated_at).max().filter(|t| *t < first_seen)
+}
+
+/// Since when signature `sig` in `system` is known as one end of a live hole in `holes`: a paste
+/// listing it is not its first sighting.
+pub fn known_since(holes: &[Wormhole], system: i64, sig: &str) -> Option<i64> {
+    let letters = |s: &str| s.trim().trim_start_matches('[').chars().take(3).collect::<String>().to_uppercase();
+    let id = letters(sig);
+    let is = |s: &Option<String>| id.len() == 3 && s.as_deref().is_some_and(|s| letters(s) == id);
+    holes
+        .iter()
+        .filter(|w| (w.system_id == system && is(&w.signature)) || (w.dest_system_id == Some(system) && is(&w.dest_signature)))
+        .map(|w| w.reported_at)
+        .filter(|t| *t > 0)
+        .min()
+}
+
+/// The tightest of `bounds` that still predates the first sighting; a later one is from a
+/// sighting that missed it.
+pub fn tightest_fresh(bounds: impl IntoIterator<Item = Option<i64>>, first_seen: i64) -> Option<i64> {
+    bounds.into_iter().flatten().filter(|t| *t < first_seen).max()
 }
 
 /// One row of a probe scanner copy.
@@ -658,6 +695,9 @@ pub struct Wormhole {
     /// from the history kept there; not stored with the hole.
     pub created_by: Option<String>,
     pub edited_by: Option<(String, i64)>,
+    /// It opened after this, from when its signature was new in a paste. Filled in where holes are
+    /// loaded, from the signatures; not stored with the hole.
+    pub born_after: Option<i64>,
 }
 
 impl Wormhole {
@@ -667,6 +707,42 @@ impl Wormhole {
         } else {
             2 * DAY
         }
+    }
+
+    /// How long a hole of its type lives from when it opens: the type that is not K162 says, else
+    /// a day, which most holes live.
+    pub fn lifetime_secs(&self) -> i64 {
+        [&self.wh_type, &self.dest_wh_type]
+            .into_iter()
+            .flatten()
+            .filter(|t| !t.eq_ignore_ascii_case("K162"))
+            .filter_map(|t| crate::whdata::hole_type(t))
+            .find(|t| t.lifetime_h > 0.0)
+            .map_or(if self.is_drifter { self.max_life_secs() } else { DAY }, |t| (t.lifetime_h * 3600.0) as i64)
+    }
+
+    /// The earliest it can close of old age, when its opening is bounded.
+    pub fn sure_until(&self) -> Option<i64> {
+        self.born_after.map(|b| b + self.lifetime_secs())
+    }
+
+    /// When it opened at the latest, from the signatures pasted at its two ends. A K162 end shows
+    /// up only once the other end is found, so its first sighting says nothing of the hole's age.
+    pub fn opened_after(&self, near: &[SystemSig], far: &[SystemSig]) -> Option<i64> {
+        let k162 = |t: &Option<String>| t.as_deref().is_some_and(|t| t.trim().eq_ignore_ascii_case("K162"));
+        let typed = |t: &Option<String>| t.as_deref().is_some_and(|t| !t.trim().is_empty() && !t.trim().eq_ignore_ascii_case("K162"));
+        let near_ok = !(k162(&self.wh_type) || self.wh_type.is_none() && typed(&self.dest_wh_type));
+        let far_ok = !(k162(&self.dest_wh_type) || self.dest_wh_type.is_none() && typed(&self.wh_type));
+        let letters = |s: &str| s.trim().trim_start_matches('[').chars().take(3).collect::<String>().to_uppercase();
+        let bound = |sig: &Option<String>, list: &[SystemSig]| {
+            let id = letters(sig.as_deref()?);
+            (id.len() == 3).then_some(())?;
+            list.iter().find(|s| letters(&s.sig) == id)?.fresh_after
+        };
+        [near_ok.then(|| bound(&self.signature, near)).flatten(), far_ok.then(|| bound(&self.dest_signature, far)).flatten()]
+            .into_iter()
+            .flatten()
+            .max()
     }
 
     pub fn effective_size(&self) -> Option<ShipSize> {
@@ -991,6 +1067,45 @@ mod tests {
         assert_eq!(time_left(&reread, now), TimeLeft::Under12h, "reading <1d again does not make it fresh");
         assert_eq!(time_left(&read(13 * 3600), now), TimeLeft::Under1h);
         assert_eq!(time_left(&read(25 * 3600), now), TimeLeft::Expiring);
+    }
+
+    #[test]
+    fn a_hole_new_since_the_last_paste_lives_its_lifetime_from_that_paste() {
+        let now = 1_000_000;
+        let sig = |id: &str, fresh: Option<i64>| SystemSig { sig: id.into(), kind: "Cosmic Signature".into(), added_at: now, updated_at: now, fresh_after: fresh, ..Default::default() };
+        let near = [sig("ABC-123", Some(now - 2 * 3600)), sig("OLD-001", None)];
+        let far = [sig("XYZ-789", Some(now - 3600))];
+        let w = Wormhole { system_id: 1, dest_system_id: Some(2), signature: Some("ABC-123".into()), dest_signature: Some("XYZ".into()), reported_at: now, ..Default::default() };
+        assert_eq!(w.opened_after(&near, &far), Some(now - 3600), "the tighter end");
+        let k162_far = Wormhole { wh_type: Some("B274".into()), dest_wh_type: Some("K162".into()), ..w.clone() };
+        assert_eq!(k162_far.opened_after(&near, &far), Some(now - 2 * 3600), "a K162 shows long after its hole opened");
+        let k162_near = Wormhole { wh_type: None, dest_wh_type: Some("B274".into()), ..w.clone() };
+        assert_eq!(k162_near.opened_after(&near, &[]), None, "the far end's type makes this end the K162");
+        let old = Wormhole { signature: Some("OLD-001".into()), dest_signature: None, ..w.clone() };
+        assert_eq!(old.opened_after(&near, &far), None);
+
+        // Found 2h after the paste before: a day-long hole has 22h at least.
+        let fresh = Wormhole { born_after: Some(now - 2 * 3600), life: Some(Life::UnderDay), ..w.clone() };
+        assert_eq!(fresh.lifetime_secs(), DAY);
+        assert_eq!(fresh.sure_until(), Some(now + 22 * 3600));
+        assert_eq!(time_left(&fresh, now + 9 * 3600), TimeLeft::Plenty, "no longer aged from when it was found");
+        assert_eq!(time_left(&fresh, now + 12 * 3600), TimeLeft::Under12h);
+        assert_eq!(time_left(&fresh, now + 21 * 3600 + 1800), TimeLeft::Under1h);
+        assert_eq!(time_left(&Wormhole { life: Some(Life::Under4h), ..fresh.clone() }, now), TimeLeft::Under4h, "a worse reading wins");
+        let typed = Wormhole { wh_type: Some("B274".into()), ..fresh };
+        let h = crate::whdata::hole_type("B274").unwrap().lifetime_h;
+        assert_eq!(typed.lifetime_secs(), (h * 3600.0) as i64);
+    }
+
+    #[test]
+    fn a_signature_is_fresh_after_the_newest_earlier_paste_of_its_kind() {
+        let at = |kind: &str, t: i64| SystemSig { kind: kind.into(), updated_at: t, ..Default::default() };
+        let earlier = [at("Cosmic Signature", 100), at("Cosmic Signature", 300), at("Cosmic Anomaly", 500)];
+        assert_eq!(fresh_after("Cosmic Signature", earlier.iter(), 1_000), Some(300));
+        assert_eq!(fresh_after("Cosmic Signature", [].iter(), 1_000), None, "the first paste bounds nothing");
+        assert_eq!(fresh_after("Cosmic Signature", earlier.iter(), 300), None);
+        assert_eq!(tightest_fresh([Some(100), Some(400), None], 1_000), Some(400));
+        assert_eq!(tightest_fresh([Some(100), Some(400)], 300), Some(100), "a bound past its first sighting is wrong");
     }
 
     #[test]

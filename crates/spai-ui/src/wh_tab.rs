@@ -386,17 +386,25 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                     host.toolbar(view, ui);
                     if let Some(name) = &focus_name {
                         ui.separator();
-                        // Whole, onto the next row with its depth buttons when the toolbar wraps.
-                        ui.add(egui::Label::new(format!("{}  {name}", icon::CROSSHAIR)).wrap_mode(egui::TextWrapMode::Extend));
-                        for d in 1..=3u8 {
-                            if ui
-                                .menu_label(view.depth() == d, format!("{d}"))
-                                .on_hover_text(format!("Systems up to {d} hole{} away", if d == 1 { "" } else { "s" }))
-                                .clicked()
-                            {
-                                view.focus_depth = d;
-                                view.fit_pending = true;
-                            }
+                        // Whole, onto the next row with its depth slider when the toolbar wraps: the
+                        // slider is a group of its own, which the wrapping would not move.
+                        let label = format!("{}  {name}", icon::CROSSHAIR);
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let label_w = ui.painter().layout_no_wrap(label.clone(), font, egui::Color32::WHITE).size().x;
+                        let slider_w = 80.0;
+                        ui.spacing_mut().slider_width = slider_w;
+                        let value_w = ui.spacing().interact_size.x;
+                        // What is left of this row; `available_width` is the whole row here.
+                        let left = ui.max_rect().right() - ui.cursor().min.x;
+                        if left < label_w + slider_w + value_w + 3.0 * ui.spacing().item_spacing.x {
+                            ui.end_row();
+                        }
+                        ui.add(egui::Label::new(label).wrap_mode(egui::TextWrapMode::Extend));
+                        let mut d = view.depth();
+                        let hover = format!("Systems up to {d} hole{} away", if d == 1 { "" } else { "s" });
+                        if ui.add(egui::Slider::new(&mut d, 1..=MAX_FOCUS_DEPTH)).on_hover_text(hover).changed() {
+                            view.focus_depth = d;
+                            view.fit_pending = true;
                         }
                         if ui.button(format!("{}  Show all", icon::X)).clicked() {
                             focus_on = Some(None);
@@ -857,6 +865,9 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         }
         if let Some((life, _)) = life_badge(w, now, ui.visuals()) {
             tip.push_str(&format!("\nLife: {life}"));
+        }
+        if let Some(opened) = crate::wh_graph::opened_line(w, now) {
+            tip.push_str(&format!("\n{opened}"));
         }
         let (added, edited) = crate::wh_graph::who_lines(w, now);
         tip.push_str(&format!("\n{added}"));
