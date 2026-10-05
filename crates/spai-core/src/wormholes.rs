@@ -268,32 +268,42 @@ pub fn time_left(w: &Wormhole, now: i64) -> TimeLeft {
         Some(Life::Expired) => TimeLeft::Expiring,
         Some(Life::Under1h) => TimeLeft::Under1h,
         Some(Life::Under4h) => TimeLeft::Under4h,
-        // "Less than a day" is what most holes read, and says nothing of how much less: fine at
-        // first, stale six hours after the hole was found and critical after twelve. Counted from
-        // when it was found, so reading "<1d" again does not make it fresh.
-        // Known to have opened since a paste: it lives its lifetime from then at least.
-        Some(Life::UnderDay) | None if w.sure_until().is_some() => match w.sure_until().unwrap_or_default() - now {
-            s if s <= 0 => TimeLeft::Expiring,
-            s if s < 3600 => TimeLeft::Under1h,
-            s if s < 4 * 3600 => TimeLeft::Under4h,
-            s if s < 12 * 3600 => TimeLeft::Under12h,
-            _ => TimeLeft::Plenty,
-        },
-        Some(Life::UnderDay) => match now - w.reported_at {
-            age if age >= 12 * 3600 => TimeLeft::Under1h,
-            age if age >= 6 * 3600 => TimeLeft::Under12h,
-            _ => TimeLeft::Plenty,
-        },
-        _ => TimeLeft::Plenty,
+        Some(Life::UnderDay) | None => sure_left(w, now).map_or_else(|| aged(w, now), bucket),
+        Some(Life::OverDay) => TimeLeft::Plenty,
     };
-    let clock = match w.expiry() - now {
+    read.max(bucket(w.expiry() - now))
+}
+
+fn bucket(secs: i64) -> TimeLeft {
+    match secs {
         s if s <= 0 => TimeLeft::Expiring,
         s if s < 3600 => TimeLeft::Under1h,
         s if s < 4 * 3600 => TimeLeft::Under4h,
         s if s < 12 * 3600 => TimeLeft::Under12h,
         _ => TimeLeft::Plenty,
-    };
-    read.max(clock)
+    }
+}
+
+/// "Less than a day" is what most holes read, and says nothing of how much less: fine at first,
+/// stale six hours after the hole was found and critical after twelve. Counted from when it was
+/// found, so reading "<1d" again does not make it fresh.
+fn aged(w: &Wormhole, now: i64) -> TimeLeft {
+    match (w.life, now - w.reported_at) {
+        (Some(Life::UnderDay), age) if age >= 12 * 3600 => TimeLeft::Under1h,
+        (Some(Life::UnderDay), age) if age >= 6 * 3600 => TimeLeft::Under12h,
+        _ => TimeLeft::Plenty,
+    }
+}
+
+/// The time a hole is sure to have left from the paste before its signature, when that says at
+/// least as much as its age does. The bound is a floor: a paste from long before the hole was
+/// found bounds nothing, and must not age a hole found a minute ago.
+pub fn sure_left(w: &Wormhole, now: i64) -> Option<i64> {
+    if !matches!(w.life, None | Some(Life::UnderDay)) {
+        return None;
+    }
+    let s = w.sure_until()? - now;
+    (s > 0 && bucket(s) <= aged(w, now)).then_some(s)
 }
 
 /// How much of a hole's mass is left, as its info window reads it.
@@ -1092,9 +1102,20 @@ mod tests {
         assert_eq!(time_left(&fresh, now + 12 * 3600), TimeLeft::Under12h);
         assert_eq!(time_left(&fresh, now + 21 * 3600 + 1800), TimeLeft::Under1h);
         assert_eq!(time_left(&Wormhole { life: Some(Life::Under4h), ..fresh.clone() }, now), TimeLeft::Under4h, "a worse reading wins");
-        let typed = Wormhole { wh_type: Some("B274".into()), ..fresh };
+        let typed = Wormhole { wh_type: Some("B274".into()), ..fresh.clone() };
         let h = crate::whdata::hole_type("B274").unwrap().lifetime_h;
         assert_eq!(typed.lifetime_secs(), (h * 3600.0) as i64);
+
+        // The paste before is older than the hole's lifetime: found a minute ago, it is fresh.
+        let stale = Wormhole { born_after: Some(now - 3 * DAY), reported_at: now - 60, ..fresh.clone() };
+        assert_eq!(time_left(&stale, now), TimeLeft::Plenty);
+        assert_eq!(sure_left(&stale, now), None);
+        let unread = Wormhole { life: None, ..stale };
+        assert_eq!(time_left(&unread, now), TimeLeft::Plenty);
+        // A paste 23h before it was found guarantees one hour; its age says more.
+        let late = Wormhole { born_after: Some(now - 23 * 3600), reported_at: now, ..fresh };
+        assert_eq!(time_left(&late, now), TimeLeft::Plenty);
+        assert_eq!(sure_left(&late, now), None);
     }
 
     #[test]
