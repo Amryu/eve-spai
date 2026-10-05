@@ -1216,15 +1216,15 @@ impl SpaiApp {
         let loaded_pings: Vec<crate::pings::Ping> = store
             .as_ref()
             .map(|s| {
-                s.load_pings(2000).into_iter().filter_map(|j| serde_json::from_str(&j).ok()).collect()
+                s.load_pings(2000)
+                    .into_iter()
+                    .filter_map(|j| serde_json::from_str(&j).ok())
+                    .map(|p| crate::pings::upgrade(p, &|_| None))
+                    .collect()
             })
             .unwrap_or_default();
-        for p in &loaded_pings {
-            if let crate::pings::Ping::Fleet {
-                comms: Some(crate::pings::Comms::Mumble { channel, link }),
-                ..
-            } = p
-            {
+        for f in loaded_pings.iter().flat_map(|p| p.fleets()) {
+            if let Some(crate::pings::Comms::Mumble { channel, link }) = &f.comms {
                 if let Some(k) = op_key(channel) {
                     settings.op_channel_links.entry(k).or_insert_with(|| link.clone());
                 }
@@ -2733,7 +2733,7 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             crate::ipc::OverlayToMain::AlertAck { id } => self.ack_alert(id),
-            crate::ipc::OverlayToMain::JoinComms { ts } => self.join_comms(ts),
+            crate::ipc::OverlayToMain::JoinComms { ts, fleet } => self.join_comms(ts, fleet),
             crate::ipc::OverlayToMain::SelectSystem { id } => {
                 self.map_selected = Some(id);
                 self.map_focus = Some(id);
@@ -2913,17 +2913,14 @@ impl SpaiApp {
     ///
     /// Joins through `open_mumble`, which resolves a redirect page to the real `mumble://` URL, so
     /// this lands in the Mumble client rather than in a browser tab.
-    fn join_comms(&mut self, ts: i64) {
+    fn join_comms(&mut self, ts: i64, fleet: usize) {
         let link = {
             let j = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
-            j.pings.iter().find_map(|p| match p {
-                crate::pings::Ping::Fleet { timestamp, comms, .. } if *timestamp == ts => {
-                    match comms {
-                        Some(crate::pings::Comms::Mumble { link, .. }) => Some(link.clone()),
-                        _ => None,
-                    }
+            j.pings.iter().filter(|p| p.timestamp() == ts).find_map(|p| {
+                match p.fleets().into_iter().nth(fleet)?.comms? {
+                    crate::pings::Comms::Mumble { link, .. } => Some(link),
+                    crate::pings::Comms::Text(_) => None,
                 }
-                _ => None,
             })
         };
         match link {
@@ -6763,9 +6760,94 @@ pub(crate) fn render_ping(
     } else {
         egui::Frame::group(ui.style())
     };
+    let pap_badge = |ui: &mut egui::Ui, p: &PapType| {
+        let (t, c) = match p {
+            PapType::Strategic => ("STRAT", crate::theme::standing::HOSTILE),
+            PapType::Peacetime => ("PEACE", crate::theme::standing::WARNING),
+            PapType::Text(s) => (s.as_str(), ui.visuals().weak_text_color()),
+        };
+        ui.label(egui::RichText::new(t).color(c).strong());
+    };
+    let comms_row = |ui: &mut egui::Ui, c: &Comms| match c {
+        Comms::Mumble { channel, link } => mumble_row(ui, format!("Comms: {channel}"), link),
+        Comms::Text(t) => {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Comms:");
+                render_linked_text(ui, t, false);
+            });
+        }
+    };
+    let doctrine_label = |ui: &mut egui::Ui, d: &str| {
+        if let Some(url) = crate::doctrines::link_for(d) {
+            if ui.link(format!("Doctrine: {d} \u{2197}")).on_hover_text(url).clicked() {
+                let _ = open::that(url);
+            }
+        } else {
+            ui.label(format!("Doctrine: {d}"));
+        }
+    };
+    let text_row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+        let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+        let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
+        ui.allocate_ui_with_layout(size, row, |ui| add(ui));
+    };
+    let head_right = |ui: &mut egui::Ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button(format!("{}  Copy", icon::COPY)).on_hover_text("Copy the ping text").clicked() {
+                ui.ctx().copy_text(p.raw().to_owned());
+            }
+            ui.label(egui::RichText::new(format!("{ago} ago")).weak());
+        });
+    };
     frame.show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         match p {
+            Ping::Fleet { parts, source, target, .. } if !parts.is_empty() => {
+                use crate::pings::Part;
+                let n = parts.iter().filter(|x| matches!(x, Part::Fleet(_))).count();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{}  Fleet ping", icon::MEGAPHONE)).strong());
+                    ui.label(egui::RichText::new(format!("{n} fleets")).weak());
+                    head_right(ui);
+                });
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    match part {
+                        Part::Text(t) => render_ping_body(ui, t, true),
+                        Part::Fleet(f) => {
+                            text_row(ui, &mut |ui| {
+                                ui.label(format!("FC: {}", f.fc));
+                                if let Some(name) = &f.fleet {
+                                    ui.label(egui::RichText::new(name).strong());
+                                }
+                                if let Some(pp) = &f.pap {
+                                    pap_badge(ui, pp);
+                                }
+                            });
+                            if !f.formup.is_empty() {
+                                ui.label(format!("Formup: {}", formup_str(&f.formup)));
+                            }
+                            if let Some(c) = &f.comms {
+                                comms_row(ui, c);
+                            }
+                            if let Some(d) = &f.doctrine {
+                                text_row(ui, &mut |ui| doctrine_label(ui, d));
+                            }
+                        }
+                    }
+                }
+                ui.separator();
+                text_row(ui, &mut |ui| {
+                    let from = source.as_deref().unwrap_or("?");
+                    let to = target.as_deref().unwrap_or("?");
+                    ui.label(egui::RichText::new(format!("{from} {} {to}", icon::ARROW_RIGHT)).weak());
+                    if !doctrine_url.is_empty() && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked() {
+                        let _ = open::that(doctrine_url);
+                    }
+                });
+            }
             Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new(format!("{}  Fleet ping", icon::MEGAPHONE)).strong());
@@ -6773,40 +6855,16 @@ pub(crate) fn render_ping(
                         ui.label(egui::RichText::new(f).strong());
                     }
                     if let Some(p) = pap {
-                        let (t, c) = match p {
-                            PapType::Strategic => ("STRAT", crate::theme::standing::HOSTILE),
-                            PapType::Peacetime => ("PEACE", crate::theme::standing::WARNING),
-                            PapType::Text(s) => (s.as_str(), ui.visuals().weak_text_color()),
-                        };
-                        ui.label(egui::RichText::new(t).color(c).strong());
+                        pap_badge(ui, p);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(format!("{}  Copy", icon::COPY))
-                            .on_hover_text("Copy the ping text")
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(p.raw().to_owned());
-                        }
-                        ui.label(egui::RichText::new(format!("{ago} ago")).weak());
-                    });
+                    head_right(ui);
                 });
                 ui.label(format!("FC: {fc}"));
                 if !formup.is_empty() {
                     ui.label(format!("Formup: {}", formup_str(formup)));
                 }
                 if let Some(c) = comms {
-                    match c {
-                        Comms::Mumble { channel, link } => {
-                            mumble_row(ui, format!("Comms: {channel}"), link);
-                        }
-                        Comms::Text(t) => {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label("Comms:");
-                                render_linked_text(ui, t, false);
-                            });
-                        }
-                    }
+                    comms_row(ui, c);
                 } else if let Some(op) = find_op_channel(description) {
                     match op_key(&op).and_then(|k| op_links.get(&k)) {
                         Some(link) => mumble_row(ui, format!("Comms: {op}"), link),
@@ -6823,17 +6881,7 @@ pub(crate) fn render_ping(
                     let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
                     ui.allocate_ui_with_layout(size, row, |ui| {
                         if let Some(d) = doctrine {
-                            if let Some(url) = crate::doctrines::link_for(d) {
-                                if ui
-                                    .link(format!("Doctrine: {d} \u{2197}"))
-                                    .on_hover_text(url)
-                                    .clicked()
-                                {
-                                    let _ = open::that(url);
-                                }
-                            } else {
-                                ui.label(format!("Doctrine: {d}"));
-                            }
+                            doctrine_label(ui, d);
                         }
                         if !doctrine_url.is_empty()
                             && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()
@@ -6854,16 +6902,7 @@ pub(crate) fn render_ping(
                     let from = sender.as_deref().unwrap_or("ping");
                     let to = target.as_deref().map(|t| format!(" {} {t}", icon::ARROW_RIGHT)).unwrap_or_default();
                     ui.label(egui::RichText::new(format!("{from}{to}")).strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(format!("{}  Copy", icon::COPY))
-                            .on_hover_text("Copy the ping text")
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(p.raw().to_owned());
-                        }
-                        ui.label(egui::RichText::new(format!("{ago} ago")).weak());
-                    });
+                    head_right(ui);
                 });
                 render_ping_body(ui, text, false);
                 // Offer the op channel's cached Mumble link (from earlier well-formed pings).

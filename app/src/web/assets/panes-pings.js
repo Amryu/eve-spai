@@ -27,13 +27,13 @@ function formup(list, systems) {
     .join(" ");
 }
 
-function comms(c, ts) {
+function comms(c, ts, fleet = 0) {
   if (!c) return "";
   if (typeof c === "object" && "Mumble" in c) {
     const { channel, link } = c.Mumble;
     // The desktop joins, because that is where the Mumble client is.
     const join = state.snapshot?.meta?.allow_writeback
-      ? `<button class="chip mumble" data-join="${ts}">${ico("headset")} Join ${esc(channel)} on the desktop</button>`
+      ? `<button class="chip mumble" data-join="${ts}" data-fleet="${fleet}">${ico("headset")} Join ${esc(channel)} on the desktop</button>`
       : `<span class="chip">${ico("headset")} ${esc(channel)}</span>`;
     // The raw link stays for a browser on the machine with the client.
     return `${join}<a class="chip lnk" href="${esc(link)}" title="Open here instead">${ico("link")}</a>`;
@@ -51,6 +51,33 @@ function pingCard(entry, now, systems) {
   // A matched rule shows only as the highlight, as in `render_ping`.
   const matched = entry.rule && !entry.suppressed;
   const cls = `ping${matched ? " matched" : ""}`;
+
+  if ("Fleet" in p && p.Fleet.parts?.length) {
+    const f = p.Fleet;
+    let n = 0;
+    const parts = f.parts.map((part) => {
+      if ("Text" in part) return `<p class="pbody">${esc(part.Text)}</p>`;
+      const x = part.Fleet;
+      return (
+        `<div class="pfleet">` +
+        row("FC:", esc(x.fc) + (x.fleet ? ` <span class="fname">${esc(x.fleet)}</span>` : "") + papTag(x.pap)) +
+        row("Formup:", formup(x.formup, systems)) +
+        row("Comms:", comms(x.comms, f.timestamp, n++)) +
+        row("Doctrine:", x.doctrine ? esc(x.doctrine) : "") +
+        `</div>`
+      );
+    });
+    return (
+      `<article class="${cls}">` +
+      `<div class="phead">${ico("megaphone")} <b>Fleet ping</b> <span class="pcount">${n} fleets</span>` +
+      `<span class="page">${fmtAge(now - f.timestamp, false)} ago</span></div>` +
+      parts.join(`<hr class="psep">`) +
+      (f.source || f.target
+        ? `<hr class="psep"><div class="pfoot">${esc(f.source ?? "")} ${ico("arrow-right")} ${esc(f.target ?? "")}</div>`
+        : "") +
+      `</article>`
+    );
+  }
 
   if ("Fleet" in p) {
     const f = p.Fleet;
@@ -102,7 +129,7 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-join]");
   if (!b) return;
   b.disabled = true;
-  const ok = await send({ JoinComms: { ts: Number(b.dataset.join) } });
+  const ok = await send({ JoinComms: { ts: Number(b.dataset.join), fleet: Number(b.dataset.fleet ?? 0) } });
   b.textContent = ok ? "Joining on the desktop…" : "Could not reach the app";
 });
 

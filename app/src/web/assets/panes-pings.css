@@ -11,7 +11,7 @@
 }
 
 .phead { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-.phead .fname { color: var(--accent); }
+.phead .fname, .prow .fname { color: var(--accent); }
 .phead .page { margin-left: auto; color: var(--muted); }
 
 .pap {
@@ -46,3 +46,9 @@
 /* Line height matched to the ink, not 26px of row for 15px of text. */
 .pbody { margin: 0.4rem 0 0; line-height: 1.35; white-space: pre-wrap; }
 .pfoot { margin-top: 0.3rem; color: var(--muted); font-size: 0.9em; }
+
+.psep { border: 0; border-top: 1px solid var(--line); margin: 0.45rem 0; }
+.phead .pcount { color: var(--muted); }
+.pfleet .prow:first-child { margin-top: 0; }
+.ping .psep + .pbody { margin-top: 0; }
+.prow .pap { margin-left: 0.4rem; }

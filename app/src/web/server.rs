@@ -1067,7 +1067,7 @@ mod tests {
         assert_eq!(post(&c, &s.base, origin, r#"{"JoinComms":{"ts":1789173781}}"#).status(), 204);
         assert!(matches!(
             &s.inbox.lock().unwrap()[0],
-            crate::ipc::OverlayToMain::JoinComms { ts: 1789173781 }
+            crate::ipc::OverlayToMain::JoinComms { ts: 1789173781, fleet: 0 }
         ));
 
         // Nothing in the protocol accepts a link.

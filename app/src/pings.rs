@@ -22,7 +22,26 @@ pub enum Ping {
         target: Option<String>,
         #[serde(default)]
         raw: String,
+        /// Only for a broadcast calling several fleets; the fields above are then the first fleet's.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        parts: Vec<Part>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FleetInfo {
+    pub fc: String,
+    pub fleet: Option<String>,
+    pub formup: Vec<Formup>,
+    pub pap: Option<PapType>,
+    pub comms: Option<Comms>,
+    pub doctrine: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Part {
+    Text(String),
+    Fleet(FleetInfo),
 }
 
 impl Ping {
@@ -35,6 +54,27 @@ impl Ping {
     pub fn raw(&self) -> &str {
         match self {
             Ping::Plain { raw, .. } | Ping::Fleet { raw, .. } => raw,
+        }
+    }
+
+    pub fn fleets(&self) -> Vec<FleetInfo> {
+        match self {
+            Ping::Plain { .. } => Vec::new(),
+            Ping::Fleet { parts, .. } if !parts.is_empty() => parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Fleet(f) => Some(f.clone()),
+                    Part::Text(_) => None,
+                })
+                .collect(),
+            Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, .. } => vec![FleetInfo {
+                fc: fc.clone(),
+                fleet: fleet.clone(),
+                formup: formup.clone(),
+                pap: pap.clone(),
+                comms: comms.clone(),
+                doctrine: doctrine.clone(),
+            }],
         }
     }
 
@@ -86,10 +126,37 @@ const COMMS: Key = Key { names: &["Comms"], multiline: false };
 const DOCTRINE: Key = Key { names: &["Doctrine"], multiline: true };
 const ALL_KEYS: &[&Key] = &[&FC, &FLEET, &FORMUP, &PAP, &COMMS, &DOCTRINE];
 
+/// A rule matches a multi-fleet ping when it matches any one of its fleets, so a rule on one FC or
+/// doctrine is not defeated by the other fleets sharing the broadcast.
 pub fn match_ping_rule<'a>(
     rules: &'a [crate::settings::PingRule],
     p: &Ping,
 ) -> Option<&'a crate::settings::PingRule> {
+    let views: Vec<Ping> = match p {
+        Ping::Fleet { parts, description, timestamp, source, target, .. } if !parts.is_empty() => p
+            .fleets()
+            .into_iter()
+            .map(|f| Ping::Fleet {
+                timestamp: *timestamp,
+                description: description.clone(),
+                fc: f.fc,
+                fleet: f.fleet,
+                formup: f.formup,
+                pap: f.pap,
+                comms: f.comms,
+                doctrine: f.doctrine,
+                source: source.clone(),
+                target: target.clone(),
+                raw: String::new(),
+                parts: Vec::new(),
+            })
+            .collect(),
+        _ => vec![p.clone()],
+    };
+    rules.iter().find(|r| views.iter().any(|v| rule_hits(r, v)))
+}
+
+fn rule_hits(r: &crate::settings::PingRule, p: &Ping) -> bool {
     let (fc, pap, doctrine, formup_txt, all) = match p {
         Ping::Fleet { fc, pap, doctrine, formup, description, .. } => {
             let formup_txt = formup
@@ -126,14 +193,12 @@ pub fn match_ping_rule<'a>(
         }
     };
     let has = |field: &str, hay: &str| field.trim().is_empty() || hay.contains(&field.to_lowercase());
-    rules.iter().find(|r| {
-        r.enabled
-            && has(&r.fc, &fc)
-            && (r.pap.trim().is_empty() || r.pap.eq_ignore_ascii_case(pap))
-            && has(&r.doctrine, &doctrine)
-            && has(&r.formup, &formup_txt)
-            && has(&r.keyword, &all)
-    })
+    r.enabled
+        && has(&r.fc, &fc)
+        && (r.pap.trim().is_empty() || r.pap.eq_ignore_ascii_case(pap))
+        && has(&r.doctrine, &doctrine)
+        && has(&r.formup, &formup_txt)
+        && has(&r.keyword, &all)
 }
 
 pub fn ping_alerts(rules: &[crate::settings::PingRule], p: &Ping) -> bool {
@@ -148,10 +213,152 @@ pub fn parse_ping(timestamp: i64, text: &str, resolve: &dyn Fn(&str) -> Option<i
     if !clean.contains("~~~ This was") {
         return Vec::new();
     }
-    split_multi_fleet(&clean)
-        .into_iter()
-        .map(|ping_text| parse_one(timestamp, &clean, &ping_text, resolve))
-        .collect()
+    match parse_multi(timestamp, &clean, resolve) {
+        Some(p) => vec![p],
+        None => vec![parse_one(timestamp, &clean, &clean, resolve)],
+    }
+}
+
+/// Re-splits a multi-fleet ping stored before they were kept whole. Runs on load, the row stays.
+pub fn upgrade(p: Ping, resolve: &dyn Fn(&str) -> Option<i64>) -> Ping {
+    let Ping::Fleet { timestamp, parts, raw, source, target, .. } = &p else { return p };
+    if !parts.is_empty() || raw.matches("FC").count() < 2 {
+        return p;
+    }
+    match parse_multi(*timestamp, &clean_text(raw), resolve) {
+        Some(Ping::Fleet { timestamp, description, fc, fleet, formup, pap, comms, doctrine, raw, parts, .. }) => {
+            Ping::Fleet {
+                timestamp,
+                description,
+                fc,
+                fleet,
+                formup,
+                pap,
+                comms,
+                doctrine,
+                source: source.clone(),
+                target: target.clone(),
+                raw,
+                parts,
+            }
+        }
+        _ => p,
+    }
+}
+
+fn key_of(line: &str) -> Option<&'static Key> {
+    ALL_KEYS.iter().copied().find(|k| {
+        k.names.iter().any(|n| line.strip_prefix(n).is_some_and(|rest| rest.starts_with(':')))
+    })
+}
+
+fn parse_multi(timestamp: i64, clean: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Option<Ping> {
+    let mut parts: Vec<Part> = Vec::new();
+    let mut text: Vec<&str> = Vec::new();
+    let mut block: Vec<&str> = Vec::new();
+    let mut has_fc = false;
+    let mut in_doctrine = false;
+
+    fn flush_text(parts: &mut Vec<Part>, text: &mut Vec<&str>) {
+        let mut kept: Vec<&str> = Vec::new();
+        for l in text.drain(..) {
+            if !(l.is_empty() && kept.last().is_none_or(|p: &&str| p.is_empty())) {
+                kept.push(l);
+            }
+        }
+        let joined = kept.join("\n").trim().to_owned();
+        if !joined.is_empty() {
+            parts.push(Part::Text(joined));
+        }
+    }
+    fn flush_block<'a>(
+        parts: &mut Vec<Part>,
+        text: &mut Vec<&'a str>,
+        block: &mut Vec<&'a str>,
+        has_fc: bool,
+        resolve: &dyn Fn(&str) -> Option<i64>,
+    ) {
+        if block.is_empty() {
+            return;
+        }
+        if !has_fc {
+            text.append(block);
+            return;
+        }
+        flush_text(parts, text);
+        let b = block.join("\n");
+        block.clear();
+        parts.push(Part::Fleet(FleetInfo {
+            fc: get_value(&b, &FC).unwrap_or_default(),
+            fleet: get_value(&b, &FLEET),
+            formup: get_value(&b, &FORMUP).map(|t| parse_formups(&t, resolve)).unwrap_or_default(),
+            pap: get_value(&b, &PAP).and_then(|t| parse_pap(&t)),
+            comms: get_value(&b, &COMMS).map(|t| parse_comms(&t)),
+            doctrine: get_value(&b, &DOCTRINE),
+        }));
+    }
+
+    for line in clean.lines().map(str::trim).filter(|l| !l.starts_with("~~~ This was")) {
+        match key_of(line) {
+            Some(k) => {
+                if std::ptr::eq(k, &FC) && has_fc {
+                    flush_block(&mut parts, &mut text, &mut block, has_fc, resolve);
+                    has_fc = false;
+                }
+                has_fc |= std::ptr::eq(k, &FC);
+                in_doctrine = k.multiline;
+                block.push(line);
+            }
+            None if in_doctrine && !block.is_empty() && !line.is_empty() && !line.contains(':') => {
+                block.push(line);
+            }
+            None => {
+                flush_block(&mut parts, &mut text, &mut block, has_fc, resolve);
+                has_fc = false;
+                in_doctrine = false;
+                text.push(line);
+            }
+        }
+    }
+    flush_block(&mut parts, &mut text, &mut block, has_fc, resolve);
+    flush_text(&mut parts, &mut text);
+
+    let mut fleets = parts.iter().filter_map(|p| match p {
+        Part::Fleet(f) => Some(f),
+        Part::Text(_) => None,
+    });
+    let first = fleets.next()?.clone();
+    fleets.next()?;
+    let description = parts
+        .iter()
+        .filter_map(|p| match p {
+            Part::Text(t) => Some(t.as_str()),
+            Part::Fleet(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let sig = parse_signature(clean);
+    let raw = clean
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("~~~ This was"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
+    Some(Ping::Fleet {
+        timestamp,
+        description,
+        fc: first.fc,
+        fleet: first.fleet,
+        formup: first.formup,
+        pap: first.pap,
+        comms: first.comms,
+        doctrine: first.doctrine,
+        source: sig.as_ref().and_then(|s| s.0.clone()),
+        target: sig.as_ref().and_then(|s| s.2.clone()),
+        raw,
+        parts,
+    })
 }
 
 fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Ping {
@@ -199,6 +406,7 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
             source: sig.as_ref().and_then(|s| s.0.clone()),
             target: sig.as_ref().and_then(|s| s.2.clone()),
             raw,
+            parts: Vec::new(),
         }
     } else {
         let plain = clean
@@ -223,25 +431,10 @@ fn clean_text(text: &str) -> String {
         std::sync::LazyLock::new(|| regex::Regex::new(r"[^\n]Doctrine:").unwrap());
     let mut t = text.replace('\u{200D}', "").replace('\u{FEFF}', "");
     t = t.replace("PAP \nType:", "\nPAP Type:");
+    // Before the Doctrine split, which reads an indent as text before the key.
+    t = t.lines().map(str::trim).collect::<Vec<_>>().join("\n");
     // Put "Doctrine:" on its own line when it follows other text on a line.
     DOCTRINE_RE.replace_all(&t, "\nDoctrine:").into_owned()
-}
-
-fn split_multi_fleet(text: &str) -> Vec<String> {
-    let blocks: Vec<&str> = text.split("\n\n").collect();
-    let fc_idx: Vec<usize> =
-        blocks.iter().enumerate().filter(|(_, b)| get_value(b, &FC).is_some()).map(|(i, _)| i).collect();
-    if fc_idx.len() <= 1 {
-        return vec![text.to_owned()];
-    }
-    let mut splits = Vec::new();
-    let mut cur = 0usize;
-    for (n, &idx) in fc_idx.iter().enumerate() {
-        let to = if n == fc_idx.len() - 1 { blocks.len() } else { idx + 1 };
-        splits.push(blocks[cur..to].join("\n\n"));
-        cur = idx + 1;
-    }
-    splits
 }
 
 type Sig = (Option<String>, Option<String>, Option<String>);
@@ -488,5 +681,89 @@ mod tests {
             &[PingRule { fc: "havish".into(), suppress: true, ..Default::default() }],
             &fleet
         ));
+    }
+
+    /// The shape directorbot sends: one fleet flush left, the rest indented, zero-width joiners
+    /// after every key, and blank lines that are a single space.
+    pub(crate) const MULTI_FLEET: &str = "Just got home? Join these fleets!\n\nFC Name:\u{200D}\u{FEFF}\u{200D} Alpha Lead\nFormup Location:\u{200D}\u{FEFF} 1DQ1-A\nPAP Type:\u{200D} Strategic\nComms:\u{200D}\u{FEFF} Op 6 https://gnf.lt/aaaaaaa.html\nDoctrine:\u{200D} Tomahawks (Booster > Basilisk > RAVEN > Support > Else)\n\n\nOnce you get to UALX-3 join this fleet to get bridged. \n\n FC Name:\u{200D}\u{FEFF} Bravo Lead \n Formup Location:\u{200D} 1DQ1-A \n PAP Type:\u{200D}\u{FEFF} Strategic \n Comms:\u{200D} Op 4 https://gnf.lt/bbbbbbb.html \n \n Once you are in the fight these are the fleets for each doctrine. \n \n FC Name:\u{200D} Charlie Lead \n Formup Location:\u{200D} 1DQ1-A \n PAP Type:Strategic \n Comms:\u{200D} Op 5 https://gnf.lt/ccccccc.html \n Doctrine:\u{200D}\u{FEFF} Svipul (Boosters > Kirin/Scalpel > Svipul > Else) \n \n FC Name:\u{200D} Delta Lead \n Formup Location:\u{200D} 0SHT \n PAP Type:\u{200D} Peacetime \n Comms:\u{200D} Op 2 https://gnf.lt/ddddddd.html \n Doctrine:\u{200D} Maelstrom (Booster > Basilisk > Maelstrom > Support > Else)\n\u{200D}\u{FEFF}\u{200D}\nSee you there.\n~~~ This was a coord broadcast from someone_else to all at 2026-10-01 19:41:47.667123 EVE ~~~";
+
+    #[test]
+    fn multi_fleet_broadcast_is_one_ping_in_order() {
+        let p = parse_ping(7, MULTI_FLEET, &resolve);
+        assert_eq!(p.len(), 1);
+        let Ping::Fleet { fc, comms, parts, description, source, target, raw, .. } = &p[0] else {
+            panic!("expected fleet ping");
+        };
+        // The top-level fields are the first fleet's, so everything reading one fleet still works.
+        assert_eq!(fc, "Alpha Lead");
+        assert!(matches!(comms, Some(Comms::Mumble { channel, .. }) if channel == "Op 6"));
+        assert_eq!(source.as_deref(), Some("coord"));
+        assert_eq!(target.as_deref(), Some("all"));
+        assert!(!raw.contains("~~~ This was"));
+
+        let shape: Vec<String> = parts
+            .iter()
+            .map(|part| match part {
+                Part::Text(t) => format!("text: {t}"),
+                Part::Fleet(f) => format!("fleet: {}", f.fc),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "text: Just got home? Join these fleets!",
+                "fleet: Alpha Lead",
+                "text: Once you get to UALX-3 join this fleet to get bridged.",
+                "fleet: Bravo Lead",
+                "text: Once you are in the fight these are the fleets for each doctrine.",
+                "fleet: Charlie Lead",
+                "fleet: Delta Lead",
+                "text: See you there.",
+            ]
+        );
+        let Part::Fleet(delta) = &parts[6] else { unreachable!() };
+        assert_eq!(delta.formup, vec![Formup::System(100000003)]);
+        assert_eq!(delta.pap, Some(PapType::Peacetime));
+        assert_eq!(delta.doctrine.as_deref(), Some("Maelstrom (Booster > Basilisk > Maelstrom > Support > Else)"));
+        let Part::Fleet(bravo) = &parts[3] else { unreachable!() };
+        assert_eq!(bravo.doctrine, None);
+        assert!(matches!(&bravo.comms, Some(Comms::Mumble { channel, .. }) if channel == "Op 4"));
+        assert!(description.starts_with("Just got home?") && description.ends_with("See you there."));
+    }
+
+    #[test]
+    fn a_rule_matches_any_fleet_of_a_multi_fleet_ping() {
+        use crate::settings::PingRule;
+        let p = parse_ping(7, MULTI_FLEET, &resolve).remove(0);
+        let rule = |fc: &str, doctrine: &str| PingRule { fc: fc.into(), doctrine: doctrine.into(), ..Default::default() };
+        assert!(match_ping_rule(&[rule("delta", "")], &p).is_some());
+        assert!(match_ping_rule(&[rule("charlie", "svipul")], &p).is_some());
+        // Both fields have to hold for the same fleet.
+        assert!(match_ping_rule(&[rule("charlie", "maelstrom")], &p).is_none());
+    }
+
+    #[test]
+    fn a_stored_multi_fleet_ping_is_split_on_load() {
+        let Ping::Fleet { raw, .. } = parse_ping(7, MULTI_FLEET, &resolve).remove(0) else { unreachable!() };
+        let stored = Ping::Fleet {
+            timestamp: 7,
+            description: String::new(),
+            fc: "Alpha Lead".into(),
+            fleet: None,
+            formup: Vec::new(),
+            pap: None,
+            comms: None,
+            doctrine: None,
+            source: Some("coord".into()),
+            target: Some("all".into()),
+            raw,
+            parts: Vec::new(),
+        };
+        let up = upgrade(stored, &|_| None);
+        assert_eq!(up.fleets().len(), 4);
+        assert!(matches!(up, Ping::Fleet { ref source, .. } if source.as_deref() == Some("coord")));
+        // An ordinary one is left alone.
+        let single = parse_ping(5, "FC: X\nFormup: 1DQ1-A\n~~~ This was a broadcast from a to all at t EVE ~~~", &resolve).remove(0);
+        assert_eq!(upgrade(single.clone(), &resolve), single);
     }
 }
