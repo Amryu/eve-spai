@@ -159,7 +159,7 @@ fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
 
 fn pings(tick: u64) -> Vec<PingCard> {
     use crate::uitest::fixtures as f;
-    let all = [f::ping_fleet(), f::ping_plain(), f::ping_plain_multiline()];
+    let all = [f::ping_fleet_multi(), f::ping_fleet(), f::ping_plain(), f::ping_plain_multiline()];
     let n = (tick as usize % all.len()) + 1;
     all[..n]
         .iter()

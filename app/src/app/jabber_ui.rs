@@ -363,8 +363,8 @@ impl SpaiApp {
     pub(crate) fn cache_op_links(&mut self, pings: &[crate::pings::Ping]) {
         use crate::pings::{Comms, Ping};
         let mut changed = false;
-        for p in pings {
-            if let Ping::Fleet { comms: Some(Comms::Mumble { channel, link }), .. } = p {
+        for f in pings.iter().flat_map(Ping::fleets) {
+            if let Some(Comms::Mumble { channel, link }) = &f.comms {
                 if let Some(k) = op_key(channel) {
                     if self.settings.op_channel_links.get(&k) != Some(link) {
                         self.settings.op_channel_links.insert(k, link.clone());

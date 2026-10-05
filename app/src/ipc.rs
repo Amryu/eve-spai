@@ -25,6 +25,9 @@ pub enum OverlayToMain {
     /// link it already has.
     JoinComms {
         ts: i64,
+        /// Index into `Ping::fleets`.
+        #[serde(default)]
+        fleet: usize,
     },
     /// Acknowledge one alert, by `IntelReport::id`. Safe to add: this enum only flows child to
     /// parent, and the parent always spawns the child from its own `current_exe`, so the parent is

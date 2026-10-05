@@ -456,7 +456,27 @@ pub(crate) fn ping_fleet() -> crate::pings::Ping {
         source: Some("goonfleet".into()),
         target: Some("all".into()),
         raw: "raw ping body".into(),
+        parts: Vec::new(),
     }
+}
+
+/// One broadcast calling three fleets with text before, between and after them, indented the way
+/// directorbot sends it.
+pub(crate) fn ping_fleet_multi() -> crate::pings::Ping {
+    let sys = systems();
+    let text = "Just got home? Join these fleets!\n\nFC Name:\u{200D} Fleet Commander\nFormup Location: 1DQ1-A\n\
+                PAP Type: Strategic\nComms: Op 6 https://gnf.lt/aaaaaaa.html\nDoctrine: Tomahawks (Booster > Basilisk > RAVEN > Else)\n\n\
+                Once you get to 1DQ1-A join this fleet to get bridged.\n \n FC Name:\u{200D} Bridge Runner \n \
+                Formup Location: 1DQ1-A \n PAP Type: Strategic \n Comms: Op 4 https://gnf.lt/bbbbbbb.html \n \n \
+                FC Name: Second Wing \n Formup Location: 1DQ1-A \n PAP Type: Peacetime \n Comms: Op 5 https://gnf.lt/ccccccc.html \n \
+                Doctrine: Svipul (Boosters > Kirin/Scalpel > Svipul > Else) \n \nSee you there.\n\
+                ~~~ This was a coord broadcast from someone to all at 2026-10-01 19:41:47 EVE ~~~";
+    let resolve = move |t: &str| sys.lookup(t).map(|i| i.id);
+    let mut p = crate::pings::parse_ping(now() - 120, text, &resolve).remove(0);
+    if let crate::pings::Ping::Fleet { parts, .. } = &mut p {
+        assert_eq!(parts.iter().filter(|x| matches!(x, crate::pings::Part::Fleet(_))).count(), 3);
+    }
+    p
 }
 
 /// A fleet ping that names no doctrine, which is the case where the doctrine row has nothing to

@@ -139,6 +139,7 @@ pub(crate) fn home_defence_ping() -> crate::pings::Ping {
         source: Some("coord".into()),
         target: Some("all".into()),
         raw: raw.into(),
+        parts: Vec::new(),
     }
 }
 

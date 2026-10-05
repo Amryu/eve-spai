@@ -2163,6 +2163,12 @@ pub(crate) fn all() -> Vec<Scene> {
             "https://example.invalid/doctrines",
         ),
         ping_scene("ping_fleet_no_doctrine", fixtures::ping_fleet_no_doctrine()),
+        {
+            let (ping, systems) = (fixtures::ping_fleet_multi(), Some(fixtures::systems()));
+            Scene::ui("ping_fleet_multi", [520.0, 640.0], move |ui| {
+                crate::app::render_ping(ui, &ping, &systems, false, "", &Default::default());
+            })
+        },
         ping_scene("ping_plain", fixtures::ping_plain()),
         ping_scene("ping_plain_multiline", fixtures::ping_plain_multiline()),
         nav_scene("nav_rail_collapsed", false, 560.0),

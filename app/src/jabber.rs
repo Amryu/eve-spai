@@ -399,22 +399,30 @@ fn fire_arrival_notification(
     if let Some(m) = direct {
         crate::app::notify_os(&format!("Message from {}", convo_name(key)), &m.body);
     }
-    if let Some(Ping::Fleet { fc, doctrine, .. }) = ping.filter(|p| p.is_fleet_call()) {
-        let body = match doctrine {
-            Some(d) => format!("FC: {fc} \u{00B7} {d}"),
-            None => format!("FC: {fc}"),
-        };
-        crate::app::notify_os("Fleet ping", &body);
+    if let Some(p @ Ping::Fleet { .. }) = ping.filter(|p| p.is_fleet_call()) {
+        crate::app::notify_os("Fleet ping", &fleet_head(p));
+    }
+}
+
+fn fleet_head(p: &Ping) -> String {
+    let fleets = p.fleets();
+    if fleets.len() > 1 {
+        let fcs: Vec<&str> = fleets.iter().map(|f| f.fc.as_str()).collect();
+        return format!("{} fleets: {}", fleets.len(), fcs.join(", "));
+    }
+    match fleets.first() {
+        Some(f) => match &f.doctrine {
+            Some(d) => format!("FC: {} \u{00B7} {d}", f.fc),
+            None => format!("FC: {}", f.fc),
+        },
+        None => String::new(),
     }
 }
 
 fn ping_push_text(p: &Ping) -> (String, String) {
     match p {
-        Ping::Fleet { fc, doctrine, description, raw, .. } => {
-            let head = match doctrine {
-                Some(d) => format!("FC: {fc} \u{00B7} {d}"),
-                None => format!("FC: {fc}"),
-            };
+        Ping::Fleet { description, raw, .. } => {
+            let head = fleet_head(p);
             let text = if description.trim().is_empty() { raw.trim() } else { description.trim() };
             ("Fleet ping".to_owned(), if text.is_empty() { head } else { format!("{head}\n{text}") })
         }
