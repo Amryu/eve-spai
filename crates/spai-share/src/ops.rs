@@ -135,6 +135,9 @@ pub struct SigRow {
     pub group: String,
     pub name: String,
     pub added_at: i64,
+    /// The paste before the one it first showed in; left out by clients that do not track it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_after: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

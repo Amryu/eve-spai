@@ -17,6 +17,7 @@ fn sig_row(r: &rusqlite::Row, at: usize) -> rusqlite::Result<SystemSig> {
         updated_at: r.get(at + 5)?,
         who: r.get(at + 6)?,
         origin: r.get(at + 7)?,
+        fresh_after: r.get(at + 8)?,
     })
 }
 
@@ -187,7 +188,7 @@ impl Store {
     pub(crate) fn sigs_in(&self, system_id: i64, visible_only: bool) -> Vec<SystemSig> {
         let filter = if visible_only { format!("AND {NOT_HIDDEN}") } else { String::new() };
         let Ok(mut st) = self.conn.prepare(&format!(
-            "SELECT sig, kind, grp, name, added_at, updated_at, who, origin FROM system_sigs WHERE system_id = ?1 {filter} ORDER BY added_at DESC, sig"
+            "SELECT sig, kind, grp, name, added_at, updated_at, who, origin, fresh_after FROM system_sigs WHERE system_id = ?1 {filter} ORDER BY added_at DESC, sig"
         )) else {
             return Vec::new();
         };
@@ -205,7 +206,7 @@ impl Store {
     /// Every signature pasted, in every system, the latest seen first.
     pub fn all_system_sigs(&self) -> Vec<(i64, SystemSig)> {
         let Ok(mut st) = self.conn.prepare(&format!(
-            "SELECT system_id, sig, kind, grp, name, added_at, updated_at, who, origin FROM system_sigs WHERE {NOT_HIDDEN} ORDER BY updated_at DESC, system_id, sig"
+            "SELECT system_id, sig, kind, grp, name, added_at, updated_at, who, origin, fresh_after FROM system_sigs WHERE {NOT_HIDDEN} ORDER BY updated_at DESC, system_id, sig"
         )) else {
             return Vec::new();
         };
@@ -228,8 +229,9 @@ impl Store {
         self.merge_sigs_found(system_id, scan, who, now, drop_missing, origin, &Default::default())
     }
 
-    /// [`Self::merge_system_sigs`] with when each signature was first seen elsewhere, by id: the
-    /// earlier of that and what is known here is kept.
+    /// [`Self::merge_system_sigs`] with when each signature was first seen elsewhere and the paste
+    /// it was missing from there, by id: the earlier sighting and the tighter bound are kept. A
+    /// hole known here with the signature counts as a sighting from when it was reported.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn merge_sigs_found(
         &self,
@@ -239,9 +241,15 @@ impl Store {
         now: i64,
         drop_missing: bool,
         origin: Option<&str>,
-        found: &std::collections::HashMap<String, i64>,
+        found: &std::collections::HashMap<String, (i64, Option<i64>)>,
     ) -> (usize, usize, usize) {
-        let first = |id: &str| found.get(id).copied().filter(|t| *t > 0).map_or(now, |t| t.min(now));
+        // A hole already carrying the signature was known before this paste.
+        let holes: Vec<crate::wormholes::Wormhole> = self.wormholes().into_iter().filter(|w| !w.is_expired(now)).collect();
+        let first = |id: &str| {
+            let theirs = found.get(id).map(|f| f.0).filter(|t| *t > 0);
+            [theirs, crate::wormholes::known_since(&holes, system_id, id)].into_iter().flatten().fold(now, i64::min)
+        };
+        let their_fresh = |id: &str| found.get(id).and_then(|f| f.1);
         let old: std::collections::HashMap<String, SystemSig> = self.sigs_in(system_id, false).into_iter().map(|s| (s.sig.clone(), s)).collect();
         let (mut added, mut updated) = (0, 0);
         for s in scan {
@@ -252,16 +260,21 @@ impl Store {
                     if *group != o.group || *name != o.name {
                         updated += 1;
                     }
+                    let seen = o.added_at.min(first(&s.id));
+                    let fresh = crate::wormholes::tightest_fresh([o.fresh_after, their_fresh(&s.id)], seen);
                     self.exec_historic(
-                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7, origin=?8, added_at=MIN(added_at, ?9) WHERE system_id=?1 AND sig=?2",
-                        params![system_id, s.id, s.kind, group, name, now, who, origin, first(&s.id)],
+                        "UPDATE system_sigs SET kind=?3, grp=?4, name=?5, updated_at=?6, who=?7, origin=?8, added_at=?9, fresh_after=?10 WHERE system_id=?1 AND sig=?2",
+                        params![system_id, s.id, s.kind, group, name, now, who, origin, seen, fresh],
                     );
                 }
                 None => {
                     added += 1;
+                    let seen = first(&s.id);
+                    let here = crate::wormholes::fresh_after(&s.kind, old.values(), seen);
+                    let fresh = crate::wormholes::tightest_fresh([here, their_fresh(&s.id)], seen);
                     self.exec_historic(
-                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8)",
-                        params![system_id, s.id, s.kind, s.group, s.name, now, who, origin, first(&s.id)],
+                        "INSERT INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin, fresh_after) VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, ?10)",
+                        params![system_id, s.id, s.kind, s.group, s.name, now, who, origin, seen, fresh],
                     );
                 }
             }
@@ -295,8 +308,8 @@ impl Store {
     pub fn restore_system_sigs(&self, system_id: i64, sigs: &[SystemSig]) {
         for s in sigs {
             self.exec_historic(
-                "INSERT OR REPLACE INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![system_id, s.sig, s.kind, s.group, s.name, s.added_at, s.updated_at, s.who, s.origin],
+                "INSERT OR REPLACE INTO system_sigs (system_id, sig, kind, grp, name, added_at, updated_at, who, origin, fresh_after) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![system_id, s.sig, s.kind, s.group, s.name, s.added_at, s.updated_at, s.who, s.origin, s.fresh_after],
             );
         }
         self.share_track_sig_restore(system_id, sigs);
@@ -527,6 +540,7 @@ impl Store {
             observed_at: row.get(21)?,
             created_by: None,
             edited_by: None,
+            born_after: None,
         })
     }
 

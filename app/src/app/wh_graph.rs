@@ -325,6 +325,8 @@ impl SpaiApp {
         let full = !self.wh_graph.keep_missing;
         let (added, updated, removed) = store.merge_system_sigs(system, &scan, &who, now, full, None);
         let linked = self.wh_probe_followup(system, &scan, full, &who);
+        // A signature new since the last paste bounds how old its hole is.
+        self.wh_reloaded = None;
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
         self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed{linked}"));
@@ -593,6 +595,7 @@ mod tests {
             updated_at: 0,
             who: String::new(),
             origin: None,
+            fresh_after: None,
         };
         let here = 31_000_004;
         let holes = [

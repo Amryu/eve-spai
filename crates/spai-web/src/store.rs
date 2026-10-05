@@ -93,7 +93,10 @@ impl WebStore {
             .filter(|h| !h.dead)
             .map(|h| {
                 let (created_by, edited_by) = Self::authors(&d, h);
-                Wormhole { id: Self::id_of(&h.state.uid), created_by, edited_by, ..hole::fresh(&h.state) }
+                let w = hole::fresh(&h.state);
+                let sigs = |sys: Option<i64>| sys.and_then(|id| d.sigs.get(&id)).map_or(&[][..], Vec::as_slice);
+                let born_after = w.opened_after(sigs(Some(w.system_id)), sigs(w.dest_system_id));
+                Wormhole { id: Self::id_of(&h.state.uid), created_by, edited_by, born_after, ..w }
             })
             .filter(|w| !w.is_expired(now))
             .collect()
@@ -221,9 +224,13 @@ impl WebStore {
     /// from the scanner means it is gone. Returns how many were added, updated and removed.
     pub fn paste_sigs(&self, system: i64, scan: &[spai_core::wormholes::ScanSig], who: &str, now: i64, full: bool) -> (usize, usize, usize) {
         let (mut added, mut updated, mut removed) = (0, 0, 0);
+        // A hole already carrying the signature was known before this paste.
+        let holes = self.wormholes();
+        let first = |id: &str| spai_core::wormholes::known_since(&holes, system, id).map_or(now, |t| t.min(now));
         {
             let mut d = self.data.borrow_mut();
             let list = d.sigs.entry(system).or_default();
+            let before = list.clone();
             for r in scan {
                 match list.iter_mut().find(|s| s.sig == r.id) {
                     Some(s) => {
@@ -235,19 +242,24 @@ impl WebStore {
                             s.name = r.name.clone();
                         }
                         s.updated_at = now;
+                        s.added_at = s.added_at.min(first(&r.id));
+                        s.fresh_after = spai_core::wormholes::tightest_fresh([s.fresh_after], s.added_at);
                         s.who = who.to_owned();
                         updated += 1;
                     }
                     None => {
+                        let seen = first(&r.id);
+                        let fresh_after = spai_core::wormholes::fresh_after(&r.kind, before.iter(), seen);
                         list.push(SystemSig {
                             sig: r.id.clone(),
                             kind: r.kind.clone(),
                             group: r.group.clone(),
                             name: r.name.clone(),
-                            added_at: now,
+                            added_at: seen,
                             updated_at: now,
                             who: who.to_owned(),
                             origin: None,
+                            fresh_after,
                         });
                         added += 1;
                     }
@@ -504,11 +516,13 @@ impl ShareStore for WebStore {
             return;
         }
         let fits = |r: &&SigRow| r.sig.chars().count() <= 16 && [&r.kind, &r.group, &r.name].iter().all(|s| s.chars().count() <= 100);
+        let holes = self.wormholes();
         {
             let mut d = self.data.borrow_mut();
             let list = d.sigs.entry(system_id).or_default();
             for r in rows.iter().filter(fits) {
                 let found = if r.added_at > at - 30 * 86_400 && r.added_at > 0 { r.added_at.min(at) } else { at };
+                let found = spai_core::wormholes::known_since(&holes, system_id, &r.sig).map_or(found, |t| t.min(found));
                 match list.iter_mut().find(|s| s.sig == r.sig) {
                     Some(s) => {
                         s.kind = r.kind.clone();
@@ -520,19 +534,25 @@ impl ShareStore for WebStore {
                         }
                         s.updated_at = at;
                         s.added_at = s.added_at.min(found);
+                        s.fresh_after = spai_core::wormholes::tightest_fresh([s.fresh_after, r.fresh_after], s.added_at);
                         s.who = who.to_owned();
                         s.origin = Some(group.to_owned());
                     }
-                    None => list.push(SystemSig {
-                        sig: r.sig.clone(),
-                        kind: r.kind.clone(),
-                        group: r.group.clone(),
-                        name: r.name.clone(),
-                        added_at: found,
-                        updated_at: at,
-                        who: who.to_owned(),
-                        origin: Some(group.to_owned()),
-                    }),
+                    None => {
+                        let here = spai_core::wormholes::fresh_after(&r.kind, list.iter(), found);
+                        let fresh_after = spai_core::wormholes::tightest_fresh([here, r.fresh_after], found);
+                        list.push(SystemSig {
+                            sig: r.sig.clone(),
+                            kind: r.kind.clone(),
+                            group: r.group.clone(),
+                            name: r.name.clone(),
+                            added_at: found,
+                            updated_at: at,
+                            who: who.to_owned(),
+                            origin: Some(group.to_owned()),
+                            fresh_after,
+                        })
+                    }
                 }
             }
             if drop_missing {
@@ -589,7 +609,7 @@ fn settled(s: &HoleState, me: i64) -> HoleState {
 }
 
 fn sig_row(s: &SystemSig) -> SigRow {
-    SigRow { sig: s.sig.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: s.added_at }
+    SigRow { sig: s.sig.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: s.added_at, fresh_after: s.fresh_after }
 }
 
 #[cfg(test)]
@@ -695,7 +715,7 @@ mod tests {
     #[test]
     fn signatures_keep_the_first_sighting_and_drop_what_a_full_paste_lacks() {
         let s = WebStore::default();
-        let row = |sig: &str, kind: &str, added_at| SigRow { sig: sig.into(), kind: kind.into(), group: String::new(), name: String::new(), added_at };
+        let row = |sig: &str, kind: &str, added_at| SigRow { sig: sig.into(), kind: kind.into(), group: String::new(), name: String::new(), added_at, fresh_after: None };
         s.share_apply_sigs(31_000_200, &[row("ABC-123", "Cosmic Signature", 1_000), row("ANO-001", "Cosmic Anomaly", 1_000)], false, 1_000, "P", "g");
         s.share_apply_sigs(31_000_200, &[row("ABC-123", "Cosmic Signature", 900)], true, 5_000, "P", "g");
         let sigs = s.system_sigs(31_000_200);
@@ -704,5 +724,33 @@ mod tests {
         assert!(sigs.iter().any(|x| x.sig == "ANO-001"), "a paste of signatures says nothing of anomalies");
         s.share_apply_sigs(31_000_200, &[row("XYZ-000", "Cosmic Signature", 5_000)], true, 6_000, "P", "g");
         assert!(!s.system_sigs(31_000_200).iter().any(|x| x.sig == "ABC-123"));
+    }
+
+    #[test]
+    fn a_pasted_signature_a_known_hole_carries_is_as_old_as_that_hole() {
+        let s = WebStore::default();
+        let now = spai_core::clock::utc().timestamp();
+        let scan = |text: &str| spai_core::wormholes::probe_scan(text);
+        s.paste_sigs(31_000_200, &scan("OLD-001\tCosmic Signature\t\t\t10,0%\t8 AU"), "P", now - 3 * 3600, true);
+        let hole = Wormhole { uid: "u1".into(), system_id: 30_000_142, dest_system_id: Some(31_000_200), dest_signature: Some("ABC".into()), reported_at: now - 5 * 3600, ..Default::default() };
+        s.edit_hole(&hole, now - 5 * 3600);
+        s.paste_sigs(31_000_200, &scan("OLD-001\tCosmic Signature\t\t\t10,0%\t8 AU\nABC-123\tCosmic Signature\tWormhole\t\t10,0%\t8 AU"), "P", now, true);
+        let abc = s.system_sigs(31_000_200).into_iter().find(|x| x.sig == "ABC-123").unwrap();
+        assert_eq!((abc.added_at, abc.fresh_after), (now - 5 * 3600, None), "known before the paste before, so not new since it");
+    }
+
+    #[test]
+    fn a_signature_new_in_a_paste_bounds_its_holes_age() {
+        let s = WebStore::default();
+        let scan = |text: &str| spai_core::wormholes::probe_scan(text);
+        s.paste_sigs(31_000_200, &scan("ABC-123\tCosmic Signature\t\t\t10,0%\t8 AU"), "P", 1_000, true);
+        s.paste_sigs(31_000_200, &scan("ABC-123\tCosmic Signature\t\t\t10,0%\t8 AU\nNEW-456\tCosmic Signature\tWormhole\t\t10,0%\t8 AU"), "P", 8_000, true);
+        let fresh = |id: &str| s.system_sigs(31_000_200).into_iter().find(|x| x.sig == id).unwrap().fresh_after;
+        assert_eq!((fresh("ABC-123"), fresh("NEW-456")), (None, Some(1_000)));
+        let row = SigRow { sig: "NEW-456".into(), kind: "Cosmic Signature".into(), group: String::new(), name: String::new(), added_at: 8_000, fresh_after: Some(5_000) };
+        s.share_apply_sigs(31_000_200, std::slice::from_ref(&row), false, 8_100, "Q", "g");
+        assert_eq!(fresh("NEW-456"), Some(5_000), "a later paste that missed it is the tighter bound");
+        s.share_apply_sigs(31_000_200, &[SigRow { added_at: 4_000, fresh_after: None, ..row }], false, 8_200, "Q", "g");
+        assert_eq!(fresh("NEW-456"), None, "seen before that paste: the bound was wrong");
     }
 }

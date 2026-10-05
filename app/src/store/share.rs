@@ -62,10 +62,14 @@ impl Store {
         if !self.sharing() {
             return;
         }
-        let found: std::collections::HashMap<String, i64> = self.sigs_in(system_id, false).into_iter().map(|s| (s.sig, s.added_at)).collect();
+        let found: std::collections::HashMap<String, (i64, Option<i64>)> =
+            self.sigs_in(system_id, false).into_iter().map(|s| (s.sig, (s.added_at, s.fresh_after))).collect();
         let rows: Vec<SigRow> = scan
             .iter()
-            .map(|s| SigRow { sig: s.id.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: found.get(&s.id).copied().unwrap_or(at) })
+            .map(|s| {
+                let (added_at, fresh_after) = found.get(&s.id).copied().unwrap_or((at, None));
+                SigRow { sig: s.id.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at, fresh_after }
+            })
             .collect();
         let payload = serde_json::json!({ "system_id": system_id, "rows": rows, "drop_missing": drop_missing, "at": at });
         self.queue("sigs", None, Some(&payload.to_string()), None);
@@ -328,7 +332,12 @@ impl Store {
                 .map(|r| ScanSig { id: r.sig.clone(), kind: r.kind.clone(), group: r.group.clone(), name: r.name.clone() })
                 .collect();
             // A member's clock may be off, but not by a month.
-            let found = rows.iter().filter(fits).filter(|r| r.added_at > at - 30 * 86_400).map(|r| (r.sig.clone(), r.added_at)).collect();
+            let found = rows
+                .iter()
+                .filter(fits)
+                .filter(|r| r.added_at > at - 30 * 86_400)
+                .map(|r| (r.sig.clone(), (r.added_at, r.fresh_after.filter(|t| *t > r.added_at - 30 * 86_400))))
+                .collect();
             self.merge_sigs_found(system_id, &scan, who, at, drop_missing, Some(group), &found);
         });
     }
@@ -567,7 +576,7 @@ impl Store {
 
 fn sig_rows<'a>(sigs: impl IntoIterator<Item = &'a SystemSig>) -> Vec<SigRow> {
     sigs.into_iter()
-        .map(|s| SigRow { sig: s.sig.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: s.added_at })
+        .map(|s| SigRow { sig: s.sig.clone(), kind: s.kind.clone(), group: s.group.clone(), name: s.name.clone(), added_at: s.added_at, fresh_after: s.fresh_after })
         .collect()
 }
 
@@ -675,7 +684,7 @@ mod tests {
     }
 
     fn sigs_from(s: &Store, group: &str, sig: &str) {
-        let rows = vec![SigRow { sig: sig.into(), kind: "Cosmic Signature".into(), group: "Data Site".into(), name: "Unsecured Frontier Server".into(), added_at: 100 }];
+        let rows = vec![SigRow { sig: sig.into(), kind: "Cosmic Signature".into(), group: "Data Site".into(), name: "Unsecured Frontier Server".into(), added_at: 100, fresh_after: None }];
         s.share_apply_sigs(31_000_200, &rows, false, 100, "Pilot 2", group);
     }
 

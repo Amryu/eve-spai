@@ -565,7 +565,7 @@ mod tests {
     use super::*;
 
     fn sig(id: &str, group: &str, name: &str, seen: i64) -> SystemSig {
-        SystemSig { sig: id.into(), kind: "Cosmic Signature".into(), group: group.into(), name: name.into(), added_at: seen, updated_at: seen, who: "Scout Alpha".into(), origin: None }
+        SystemSig { sig: id.into(), kind: "Cosmic Signature".into(), group: group.into(), name: name.into(), added_at: seen, updated_at: seen, who: "Scout Alpha".into(), origin: None, fresh_after: None }
     }
 
     #[test]

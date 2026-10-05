@@ -141,6 +141,8 @@ CREATE TABLE IF NOT EXISTS system_sigs (
     who        TEXT NOT NULL,
     -- The sharing group it came from; NULL when pasted here.
     origin     TEXT,
+    -- The paste before the one it first showed in.
+    fresh_after INTEGER,
     PRIMARY KEY (system_id, sig)
 );
 -- Wormhole sharing groups this install is in, and what it needs to read and write their logs.
@@ -1249,6 +1251,7 @@ fn migrate_share(conn: &Connection) {
         "ALTER TABLE share_groups ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE share_outbox ADD COLUMN group_id TEXT",
         "ALTER TABLE system_sigs ADD COLUMN origin TEXT",
+        "ALTER TABLE system_sigs ADD COLUMN fresh_after INTEGER",
         "ALTER TABLE share_invites ADD COLUMN role TEXT",
         "DROP INDEX IF EXISTS idx_share_outbox_uid",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_outbox_group ON share_outbox(kind, uid, group_id)",
@@ -1467,6 +1470,35 @@ mod tests {
         assert_eq!((abc.group.as_str(), abc.added_at, abc.updated_at), ("Wormhole", 100, 200));
         assert_eq!(sigs.iter().find(|x| x.sig == "XYZ-999").unwrap().name, "Unsecured Frontier Server");
         assert!(sigs.iter().any(|x| x.sig == "WKR-862"));
+    }
+
+    #[test]
+    fn a_pasted_signature_a_known_hole_carries_is_as_old_as_that_hole() {
+        let _guard = crate::disk::test_guard();
+        use crate::wormholes::probe_scan;
+        let s = mem_store();
+        let now = crate::clock::utc().timestamp();
+        s.merge_system_sigs(30_004_759, &probe_scan("OLD-001\tCosmic Signature\t\t\t10,0%\t8 AU"), "Pilot", now - 3 * 3600, true, None);
+        s.upsert_wormhole(&crate::wormholes::Wormhole { reported_at: now - 5 * 3600, updated_at: now - 5 * 3600, ..a_hole(30_004_759, "ABC") });
+        let scan = probe_scan("OLD-001\tCosmic Signature\t\t\t10,0%\t8 AU\nABC-123\tCosmic Signature\tWormhole\t\t10,0%\t8 AU");
+        s.merge_system_sigs(30_004_759, &scan, "Pilot", now, true, None);
+        let abc = s.system_sigs(30_004_759).into_iter().find(|x| x.sig == "ABC-123").unwrap();
+        assert_eq!((abc.added_at, abc.fresh_after), (now - 5 * 3600, None), "known before the paste before, so not new since it");
+    }
+
+    #[test]
+    fn a_signature_new_in_a_paste_remembers_the_paste_before() {
+        let _guard = crate::disk::test_guard();
+        use crate::wormholes::probe_scan;
+        let s = mem_store();
+        s.merge_system_sigs(7, &probe_scan("ABC-123\tCosmic Signature\t\t\t10,0%\t8 AU"), "Pilot", 100, true, None);
+        s.merge_system_sigs(7, &probe_scan("ABC-123\tCosmic Signature\t\t\t10,0%\t8 AU\nNEW-456\tCosmic Signature\tWormhole\t\t10,0%\t8 AU"), "Pilot", 7_300, true, None);
+        let sigs = s.system_sigs(7);
+        let fresh = |id: &str| sigs.iter().find(|x| x.sig == id).unwrap().fresh_after;
+        assert_eq!((fresh("ABC-123"), fresh("NEW-456")), (None, Some(100)));
+        let (scan, gone) = (probe_scan("NEW-456\tCosmic Signature\tWormhole\t\t10,0%\t8 AU"), true);
+        s.merge_system_sigs(7, &scan, "Pilot", 9_000, gone, None);
+        assert_eq!(s.system_sigs(7)[0].fresh_after, Some(100), "seen again, it keeps its bound");
     }
 
     #[test]

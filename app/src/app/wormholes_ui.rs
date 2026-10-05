@@ -99,11 +99,17 @@ impl SpaiApp {
             }
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             let authors = store.wormhole_authors();
+            let mut sigs: std::collections::HashMap<i64, Vec<crate::store::SystemSig>> = std::collections::HashMap::new();
+            for (sys, sig) in store.all_system_sigs() {
+                sigs.entry(sys).or_default().push(sig);
+            }
+            let sigs_at = |sys: Option<i64>| sys.and_then(|id| sigs.get(&id)).map_or(&[][..], Vec::as_slice);
             for w in &mut whs {
                 if let Some((created, edited)) = authors.get(&w.uid) {
                     w.created_by = Some(created.clone());
                     w.edited_by = edited.clone();
                 }
+                w.born_after = w.opened_after(sigs_at(Some(w.system_id)), sigs_at(w.dest_system_id));
             }
             // A hole switched off that has since closed is forgotten with it.
             let before = self.settings.wh_disabled_holes.len();
