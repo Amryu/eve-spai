@@ -67,9 +67,8 @@ pub fn who_lines(w: &spai_core::wormholes::Wormhole, now: i64) -> (String, Optio
 /// What the paste before its signature says of a hole's age, for its hover.
 pub fn opened_line(w: &spai_core::wormholes::Wormhole, now: i64) -> Option<String> {
     let born = w.born_after?;
-    let sure = w.sure_until()? - now;
-    let left = if sure > 0 { format!("at least {} left", crate::widgets::human_ago(sure)) } else { "past its sure lifetime".to_owned() };
-    Some(format!("New since a paste {} ago: {left}", crate::widgets::human_ago(now - born)))
+    let sure = spai_core::wormholes::sure_left(w, now)?;
+    Some(format!("New since a paste {} ago: at least {} left", crate::widgets::human_ago(now - born), crate::widgets::human_ago(sure)))
 }
 
 /// The same as [`who_lines`] for a list cell: how long ago and who, the edit marked with a pencil,
@@ -1132,11 +1131,8 @@ pub fn effect_color(effect: &str) -> egui::Color32 {
 /// clock's worse figure. `None` when nothing is known and nothing is near.
 pub fn life_badge(w: &Wormhole, now: i64, visuals: &egui::Visuals) -> Option<(String, egui::Color32)> {
     let t = time_left(w, now);
-    // Opened since a paste and not read worse: the hours it has at least.
-    if let Some(sure) = w.sure_until().filter(|_| matches!(w.life, None | Some(spai_core::wormholes::Life::UnderDay))) {
-        if sure - now >= 3600 && t != TimeLeft::Expiring {
-            return Some((format!("{}h+", (sure - now) / 3600), time_color(t)));
-        }
+    if let Some(sure) = spai_core::wormholes::sure_left(w, now).filter(|s| *s >= 3600) {
+        return Some((format!("{}h+", sure / 3600), time_color(t)));
     }
     // Read as under a day, it says so until it is past its time; the colour tells how old that is.
     if w.life == Some(spai_core::wormholes::Life::UnderDay) && t != TimeLeft::Expiring {
