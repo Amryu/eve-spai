@@ -416,7 +416,7 @@ pub struct SpaiApp {
     alliance_add: String,
     pub(crate) active_character: String,
     needs_save: bool,
-    sde_status: SharedStatus,
+    pub(crate) sde_status: SharedStatus,
     auth_status: SharedAuth,
     pub(crate) characters: Vec<CharacterRow>,
     /// Which characters hold a login, by id, with the character list and time it was read for.
@@ -688,6 +688,8 @@ pub struct SpaiApp {
     wh_overlay: WhOverlay,
     /// The add/edit form, while it is open.
     wh_form: Option<crate::app::wormholes_ui::WhForm>,
+    /// The dialog for building the static data from a JSONL SDE zip the user downloaded.
+    pub(crate) sde_file_dialog: bool,
     /// The system whose wormhole facts the side panel shows, and the box that looks one up.
     wh_info: Option<i64>,
     wh_info_query: String,
@@ -1175,7 +1177,7 @@ impl SpaiApp {
         }
         if let Some(store) = &store {
             if !headless && matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
-                sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), ctx.clone());
+                sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), ctx.clone(), None);
             }
         }
 
@@ -1632,6 +1634,7 @@ impl SpaiApp {
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
             wh_form: None,
+            sde_file_dialog: false,
             wh_info: None,
             wh_info_query: String::new(),
             wh_graph: Default::default(),
@@ -2462,10 +2465,74 @@ impl SpaiApp {
         }
     }
 
-    fn start_sde(&self, ctx: &egui::Context) {
+    fn start_sde(&self, ctx: &egui::Context, zip: Option<std::path::PathBuf>) {
         if let Some(store) = &self.store {
-            sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone());
+            sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone(), zip);
         }
+    }
+
+    /// Retry, and a way round a download that keeps failing: the zip fetched in a browser.
+    pub(crate) fn sde_retry_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("Retry").clicked() {
+                self.start_sde(&ui.ctx().clone(), None);
+            }
+            if ui.button(format!("{}  Use a downloaded file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+                self.sde_file_dialog = true;
+            }
+        });
+        self.sde_file_window(ui.ctx());
+    }
+
+    /// While the static data downloads: stop it, or stop it and build from a file instead. The
+    /// build after the downloads cannot be stopped, so neither is offered then.
+    pub(crate) fn sde_cancel_row(&mut self, ui: &mut egui::Ui, msg: &str) {
+        if msg.starts_with("Downloading") || msg.starts_with("Connecting") {
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    sde::cancel(&self.sde_status);
+                }
+                if ui.button(format!("{}  Use a downloaded file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+                    sde::cancel(&self.sde_status);
+                    self.sde_file_dialog = true;
+                }
+            });
+        }
+        self.sde_file_window(ui.ctx());
+    }
+
+    fn sde_file_window(&mut self, ctx: &egui::Context) {
+        if !self.sde_file_dialog {
+            return;
+        }
+        let mut open = true;
+        let mut picked = None;
+        egui::Window::new("Static data from a file")
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label("Download FC's static data export (the JSONL zip, about 100 MB) in your browser, then choose the file. The smaller tables are still fetched from fuzzwork.co.uk.");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.hyperlink_to(format!("{}  Download the JSONL SDE", egui_phosphor::regular::DOWNLOAD_SIMPLE), sde::JSONL_URL);
+                    if ui.button(egui_phosphor::regular::COPY).on_hover_text("Copy the link").clicked() {
+                        ui.ctx().copy_text(sde::JSONL_URL.to_owned());
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.button(format!("{}  Choose file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+                    picked = rfd::FileDialog::new().add_filter("JSONL SDE", &["zip"]).pick_file();
+                }
+            });
+        if let Some(zip) = picked {
+            self.start_sde(ctx, Some(zip));
+            open = false;
+        }
+        self.sde_file_dialog = open;
     }
 
     fn alert_window(&mut self, ctx: &egui::Context) {

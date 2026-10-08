@@ -6,6 +6,10 @@ use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection};
 
 const BASE: &str = "https://www.fuzzwork.co.uk/dump/latest/csv";
+/// FC's static data export, which the map layout, gates and celestials come from.
+pub const JSONL_URL: &str = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip";
+/// The whole download on a slow line: the JSONL zip alone is about 100 MB.
+const DOWNLOAD_TIMEOUT_SECS: u64 = 3 * 3600;
 
 /// Dogma attribute ids we keep for ships (resonances, hp, drones, hardpoints,
 /// speed, slots). Resist = 1 - resonance.
@@ -31,6 +35,20 @@ pub enum SdeStatus {
 }
 
 pub type SharedStatus = Arc<Mutex<SdeStatus>>;
+
+/// The build running now. Cancelling moves it on, so a download still blocked on the network
+/// stops at its next read and never reports over a later build.
+static RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Stops the download in progress. A build already past its downloads finishes.
+pub fn cancel(status: &SharedStatus) {
+    RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    *status.lock().unwrap() = SdeStatus::Failed("Download cancelled.".to_owned());
+}
+
+fn cancelled(run: u64) -> bool {
+    RUN.load(std::sync::atomic::Ordering::SeqCst) != run
+}
 
 pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
     std::thread::spawn(move || {
@@ -92,32 +110,78 @@ fn strip_html(s: &str) -> String {
     out.trim().to_owned()
 }
 
-pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
+/// Builds the static data, from `zip` (the JSONL export the user downloaded) when given, else
+/// downloading it.
+pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context, zip: Option<PathBuf>) {
+    let me = RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         let set = |s: SdeStatus| {
-            *status.lock().unwrap() = s;
-            ctx.request_repaint();
+            if !cancelled(me) {
+                *status.lock().unwrap() = s;
+                ctx.request_repaint();
+            }
         };
         set(SdeStatus::Downloading("Connecting…".to_owned()));
-        match run(&path, &set) {
+        match run(&path, &set, zip.as_deref(), me) {
             Ok(()) => set(SdeStatus::Ready),
             Err(e) => set(SdeStatus::Failed(format!("{e:#}"))),
         }
     });
 }
 
-fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
-    let client = crate::http::client(180)?;
+/// The body of `url`, with how much has arrived shown as it comes in.
+fn download(client: &reqwest::blocking::Client, url: &str, what: &str, set: &impl Fn(SdeStatus), me: u64) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    const MB: f64 = 1_048_576.0;
+    set(SdeStatus::Downloading(format!("Downloading {what}…")));
+    let mut resp = client.get(url).send()?.error_for_status().with_context(|| format!("fetching {what}"))?;
+    let total = resp.content_length();
+    let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut buf = vec![0u8; 256 * 1024];
+    let started = std::time::Instant::now();
+    let mut shown = std::time::Instant::now();
+    loop {
+        if cancelled(me) {
+            anyhow::bail!("download cancelled");
+        }
+        let n = resp.read(&mut buf).with_context(|| format!("reading {what}"))?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&buf[..n]);
+        if shown.elapsed() >= std::time::Duration::from_millis(250) {
+            shown = std::time::Instant::now();
+            let got = body.len() as f64 / MB;
+            let rate = got / started.elapsed().as_secs_f64().max(0.001);
+            let of = total.map(|t| format!(" / {:.1}", t as f64 / MB)).unwrap_or_default();
+            set(SdeStatus::Downloading(format!("Downloading {what}… {got:.1}{of} MB at {rate:.1} MB/s")));
+        }
+    }
+    Ok(body)
+}
+
+/// Whether `bytes` is a zip holding the JSONL SDE's solar systems.
+fn check_jsonl_zip(bytes: &[u8]) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    archive.by_name("mapSolarSystems.jsonl").map_err(|e| anyhow::anyhow!("mapSolarSystems.jsonl: {e}"))?;
+    Ok(())
+}
+
+fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, me: u64) -> Result<()> {
+    let client = crate::http::client(DOWNLOAD_TIMEOUT_SECS)?;
+    // A file picked by hand is checked before anything is downloaded.
+    let local = match zip {
+        Some(file) => {
+            set(SdeStatus::Downloading(format!("Reading {}…", file.display())));
+            let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+            check_jsonl_zip(&bytes).with_context(|| format!("{} is not the JSONL SDE zip", file.display()))?;
+            Some(bytes)
+        }
+        None => None,
+    };
     let fetch = |name: &str| -> Result<String> {
-        set(SdeStatus::Downloading(format!("Downloading {name}…")));
-        let url = format!("{BASE}/{name}");
-        client
-            .get(&url)
-            .send()?
-            .error_for_status()
-            .with_context(|| format!("fetching {name}"))?
-            .text()
-            .with_context(|| format!("reading {name}"))
+        let body = download(&client, &format!("{BASE}/{name}"), name, set, me)?;
+        String::from_utf8(body).with_context(|| format!("reading {name}"))
     };
 
     let regions_csv = fetch("mapRegions.csv")?;
@@ -128,6 +192,14 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     let types_csv = fetch("invTypes.csv")?;
     let attrs_csv = fetch("dgmTypeAttributes.csv")?;
 
+    let zip_bytes = match local {
+        Some(b) => b,
+        None => download(&client, JSONL_URL, "the JSONL SDE", set, me)?,
+    };
+    // Past here the build writes the database; a cancel no longer stops it.
+    if cancelled(me) {
+        anyhow::bail!("download cancelled");
+    }
     set(SdeStatus::Downloading("Building local database…".to_owned()));
     let mut conn = Connection::open(path)?;
     crate::store::apply_pragmas(&conn);
@@ -314,17 +386,9 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
-    set(SdeStatus::Downloading("Downloading 2D map layout…".to_owned()));
-    let zip_bytes = client
-        .get("https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip")
-        .send()?
-        .error_for_status()
-        .context("fetching JSONL SDE")?
-        .bytes()
-        .context("reading JSONL SDE")?;
     {
         use std::io::Read as _;
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.clone()))
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.as_slice()))
             .map_err(|e| anyhow::anyhow!("opening JSONL SDE: {e}"))?;
         let mut jsonl = String::new();
         archive
@@ -429,7 +493,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
 
     // Celestials go in after the main commit, in chunked transactions: holding the write lock
     // across the 224MB moon parse blocks every UI-thread write on busy_timeout.
-    bake_celestials(&mut conn, zip_bytes.as_ref(), set)?;
+    bake_celestials(&mut conn, &zip_bytes, set)?;
 
     Ok(())
 }
@@ -608,5 +672,72 @@ mod tests {
         assert_eq!(roman(4), "IV");
         assert_eq!(roman(9), "IX");
         assert_eq!(roman(13), "XIII");
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::check_jsonl_zip;
+
+    fn zip_with(name: &str) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(b"{}\n").unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// The whole build from a zip on disk, into a scratch profile: `SDE_TEST_DIR` and `SDE_TEST_ZIP`.
+    #[test]
+    #[ignore]
+    fn builds_from_a_downloaded_zip() {
+        let dir = std::env::var("SDE_TEST_DIR").expect("SDE_TEST_DIR");
+        let zip = std::env::var("SDE_TEST_ZIP").expect("SDE_TEST_ZIP");
+        std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
+        let path = crate::store::Store::open().unwrap().path().to_path_buf();
+        let me = super::RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let set = |s: super::SdeStatus| eprintln!("{s:?}");
+        super::run(&path, &set, Some(std::path::Path::new(&zip)), me).unwrap();
+        assert!(crate::store::Store::open().unwrap().sde_ready());
+    }
+
+    /// A live download stopped once it has started: `SDE_TEST_DIR`.
+    #[test]
+    #[ignore]
+    fn a_download_stops_when_cancelled() {
+        let dir = std::env::var("SDE_TEST_DIR").expect("SDE_TEST_DIR");
+        std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
+        let path = crate::store::Store::open().unwrap().path().to_path_buf();
+        let status: super::SharedStatus = Default::default();
+        let me = super::RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let st = status.clone();
+        let worker = std::thread::spawn(move || {
+            let set = |s: super::SdeStatus| {
+                eprintln!("{s:?}");
+                *st.lock().unwrap() = s;
+            };
+            super::run(&path, &set, None, me)
+        });
+        loop {
+            let now = status.lock().unwrap().clone();
+            if matches!(&now, super::SdeStatus::Downloading(m) if m.contains("invTypes") && m.contains("MB")) {
+                break;
+            }
+            assert!(!worker.is_finished(), "ended before it could be cancelled: {now:?}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let at = std::time::Instant::now();
+        super::cancel(&status);
+        let err = worker.join().unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
+        assert!(at.elapsed() < std::time::Duration::from_secs(5));
+        assert!(!crate::store::Store::open().unwrap().sde_ready(), "nothing built");
+    }
+
+    #[test]
+    fn only_the_jsonl_export_is_taken_as_the_sde() {
+        assert!(check_jsonl_zip(&zip_with("mapSolarSystems.jsonl")).is_ok());
+        assert!(check_jsonl_zip(&zip_with("invTypes.csv")).is_err(), "another zip");
+        assert!(check_jsonl_zip(b"not a zip").is_err());
     }
 }
