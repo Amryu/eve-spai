@@ -1304,7 +1304,7 @@ impl SpaiApp {
     /// Drawn when the card list is empty and the worker has published nothing current. A spinner is
     /// only honest while a compute is in flight, so a worker that is off, never started, or wedged
     /// settles on a message instead of spinning forever.
-    pub(crate) fn battles_wait_note(&self, ui: &mut egui::Ui, waited: std::time::Duration) {
+    pub(crate) fn battles_wait_note(&mut self, ui: &mut egui::Ui, waited: std::time::Duration) {
         fn spin(ui: &mut egui::Ui, msg: String) {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
@@ -1319,13 +1319,18 @@ impl SpaiApp {
             return;
         }
         if !self.watcher_started {
-            match self.sde_status.lock().unwrap().clone() {
-                SdeStatus::Downloading(msg) => spin(ui, format!("Waiting for static data: {msg}")),
+            let status = self.sde_status.lock().unwrap().clone();
+            match status {
+                SdeStatus::Downloading(msg) => {
+                    spin(ui, format!("Waiting for static data: {msg}"));
+                    self.sde_cancel_row(ui, &msg);
+                }
                 SdeStatus::Failed(err) => {
                     ui.colored_label(
                         crate::theme::standing::WARNING,
                         format!("Battle reports need the static data, which failed: {err}"),
                     );
+                    self.sde_retry_row(ui);
                 }
                 _ => {
                     ui.label(

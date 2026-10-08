@@ -129,22 +129,21 @@ impl SpaiApp {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(msg);
+                    ui.label(&msg);
                 });
+                self.sde_cancel_row(ui, &msg);
             }
             SdeStatus::NotReady => {
                 ui.add_space(10.0);
                 ui.label("Static data has not been downloaded yet.");
                 if ui.button("Download static data").clicked() {
-                    self.start_sde(&ui.ctx().clone());
+                    self.start_sde(&ui.ctx().clone(), None);
                 }
             }
             SdeStatus::Failed(err) => {
                 ui.add_space(10.0);
                 ui.colored_label(crate::theme::standing::WARNING, format!("SDE download failed: {err}"));
-                if ui.button("Retry").clicked() {
-                    self.start_sde(&ui.ctx().clone());
-                }
+                self.sde_retry_row(ui);
             }
         }
     }

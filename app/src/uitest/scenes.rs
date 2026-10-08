@@ -2278,6 +2278,29 @@ pub(crate) fn all() -> Vec<Scene> {
             app.wh_form_window(ctx);
         })
     });
+    // A slow static data download: cancel, or build from a zip fetched in a browser.
+    for (name, dialog) in [("map_sde_downloading", false), ("dialog_sde_from_file", true)] {
+        v.push({
+            harness::scratch_profile();
+            let mut app: Option<crate::app::SpaiApp> = None;
+            Scene::ctx(name, [900.0, 420.0], move |ctx| {
+                let app = app.get_or_insert_with(|| {
+                    use crate::sde::SdeStatus;
+                    harness::render_dialogs_on_the_root(ctx);
+                    let a = crate::app::SpaiApp::build(ctx, true);
+                    *a.sde_status.lock().unwrap() = if dialog {
+                        SdeStatus::Failed("Download cancelled.".into())
+                    } else {
+                        SdeStatus::Downloading("Downloading the JSONL SDE… 34.2 / 94.7 MB at 0.4 MB/s".into())
+                    };
+                    a
+                });
+                app.sde_file_dialog = dialog;
+                #[allow(deprecated)]
+                egui::CentralPanel::default().show(ctx, |ui| app.map_view(ui));
+            })
+        });
+    }
     // A probe scan that no longer lists two holes' signatures, asking before they go.
     v.push({
         harness::scratch_profile();
@@ -8097,4 +8120,32 @@ fn uitest_wh_side_panel_shrinks() {
     h.run_steps(4);
     let after = egui::containers::panel::PanelState::load(&h.ctx, id).unwrap().rect;
     assert!(after.width() < before.width() - 100.0, "the panel stayed {} wide after a 150 px drag in, from {}", after.width(), before.width());
+}
+
+#[test]
+fn uitest_a_slow_static_data_download_gives_way_to_a_file() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let app: std::rc::Rc<std::cell::RefCell<Option<crate::app::SpaiApp>>> = Default::default();
+    let held = app.clone();
+    let mut scene = Scene::ctx("selftest_sde_from_file", [900.0, 420.0], move |ctx| {
+        let mut slot = held.borrow_mut();
+        let app = slot.get_or_insert_with(|| {
+            harness::render_dialogs_on_the_root(ctx);
+            let a = crate::app::SpaiApp::build(ctx, true);
+            *a.sde_status.lock().unwrap() = crate::sde::SdeStatus::Downloading("Downloading invTypes.csv… 1.0 / 18.8 MB at 0.2 MB/s".into());
+            a
+        });
+        #[allow(deprecated)]
+        egui::CentralPanel::default().show(ctx, |ui| app.map_view(ui));
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(2);
+    harness.get_by_label_contains("Use a downloaded file").click();
+    harness.run_steps(3);
+    let a = app.borrow();
+    let a = a.as_ref().unwrap();
+    assert!(matches!(*a.sde_status.lock().unwrap(), crate::sde::SdeStatus::Failed(_)), "the download is stopped");
+    assert!(a.sde_file_dialog);
+    drop(harness.get_by_label_contains("Choose file"));
 }
