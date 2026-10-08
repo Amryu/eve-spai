@@ -837,6 +837,32 @@ impl Wormhole {
         self.dest_system_id.is_some() && self.dest_system_id == other.dest_system_id && !self.conflicts(other)
     }
 
+    /// This hole as recorded from `row`'s end: a row written the other way round has this side as
+    /// its far side.
+    pub fn facing(self, row: &Wormhole) -> Wormhole {
+        if row.system_id == self.system_id {
+            return self;
+        }
+        Wormhole {
+            system_id: row.system_id,
+            dest_system_id: Some(self.system_id),
+            dest: DestClass::Unknown,
+            signature: self.dest_signature.clone(),
+            dest_signature: self.signature.clone(),
+            wh_type: self.dest_wh_type.clone(),
+            dest_wh_type: self.wh_type.clone(),
+            ..self
+        }
+    }
+
+    /// Whether `other` joins the same two systems, either way round, with no signature telling the
+    /// two apart: one with a signature and one without are one hole.
+    pub fn same_hole(&self, other: &Wormhole) -> bool {
+        let (Some(a), Some(b)) = (self.dest_system_id, other.dest_system_id) else { return false };
+        let pair = (self.system_id == other.system_id && a == b) || (self.system_id == b && a == other.system_id);
+        pair && !self.conflicts(&other.clone().facing(self))
+    }
+
     pub fn conflicts(&self, other: &Wormhole) -> bool {
         let letters = |s: &Option<String>| {
             s.as_deref().map(|s| s.trim().chars().take(3).collect::<String>().to_uppercase()).filter(|s| s.len() == 3)
@@ -1034,6 +1060,23 @@ mod tests {
             updated_at: reported,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_signature_only_tells_holes_apart_when_both_have_one() {
+        let hole = |sys: i64, sig: Option<&str>, dest: i64, dest_sig: Option<&str>| Wormhole {
+            system_id: sys,
+            signature: sig.map(Into::into),
+            dest_system_id: Some(dest),
+            dest_signature: dest_sig.map(Into::into),
+            ..wh(false, 0)
+        };
+        let known = hole(1, Some("ABC-123"), 2, None);
+        assert!(known.same_hole(&hole(1, None, 2, None)));
+        assert!(known.same_hole(&hole(2, Some("XYZ"), 1, Some("ABC"))), "the far end's view of it");
+        assert!(!known.same_hole(&hole(1, Some("DEF"), 2, None)));
+        assert!(!known.same_hole(&hole(2, None, 1, Some("DEF"))));
+        assert!(!known.same_hole(&hole(1, None, 3, None)), "another system");
     }
 
     #[test]

@@ -219,6 +219,10 @@ pub struct WhForm {
     pub error: Option<String>,
     /// Who said what about this hole, oldest first.
     pub history: Vec<String>,
+    /// A hole already joining the two systems, as the user knows it, while adding one: saving
+    /// fills that one in unless `second` says this is another.
+    pub twin: Option<String>,
+    pub second: bool,
 }
 
 impl WhForm {
@@ -258,6 +262,8 @@ impl WhForm {
             note: w.note.clone().unwrap_or_default(),
             error: None,
             history: Vec::new(),
+            twin: None,
+            second: false,
         }
     }
 }
@@ -343,6 +349,12 @@ pub fn form_ui(ui: &mut egui::Ui, form: &mut WhForm, system_input: &mut SystemIn
         ui.label("Note");
         ui.add(egui::TextEdit::singleline(&mut form.note).desired_width(200.0));
         ui.end_row();
+        if let Some(twin) = &form.twin {
+            ui.label("Known hole");
+            ui.checkbox(&mut form.second, format!("Another one, not {twin}"))
+                .on_hover_text("Unticked, saving fills in the hole already known between these systems. Another one needs its own signature.");
+            ui.end_row();
+        }
     });
     if let Some(e) = &form.error {
         ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
