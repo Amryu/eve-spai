@@ -2324,6 +2324,23 @@ pub(crate) fn all() -> Vec<Scene> {
             let _ = crate::app::wh_prompt::wh_prompt_body(ui, &mut p, 1, &name, &opts, &opts);
         }
     }));
+    // A jump into a drifter system a known hole already leads to: same hole or a second one.
+    v.push(Scene::ui("wh_prompt_drifter_twin", [400.0, 160.0], {
+        use crate::whdata::Candidate;
+        let mut p = crate::app::wh_prompt::Pending::new(
+            "Test Pilot".into(),
+            30_000_142,
+            31_000_004,
+            0,
+            true,
+            vec![Candidate { code: "C414", reverse: false }],
+        );
+        p.twin_of = Some((1, "ABC-123 C414, found 18:42".into()));
+        move |ui| {
+            let name = |id: i64| if id == 30_000_142 { "Jita".to_owned() } else { "Conflux".to_owned() };
+            let _ = crate::app::wh_prompt::wh_prompt_body(ui, &mut p, 1, &name, &[], &[]);
+        }
+    }));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing_members", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing_invite", [1280.0, 800.0], false, None));

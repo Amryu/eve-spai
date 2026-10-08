@@ -84,6 +84,14 @@ impl Store {
                     return owner.id;
                 }
             }
+            // Between the same two systems only a different signature makes another hole.
+            if let Some(b) = incoming.dest_system_id {
+                if let Some(mut row) = self.wormholes_between(incoming.system_id, b).into_iter().find(|w| w.same_hole(incoming)) {
+                    row.merge_from(&incoming.clone().facing(&row));
+                    self.write_wormhole(&row);
+                    return row.id;
+                }
+            }
         }
         let mut key = incoming.dedup_key();
         let uid = if incoming.uid.is_empty() { new_uid() } else { incoming.uid.clone() };
@@ -98,6 +106,10 @@ impl Store {
                 return existing.id;
             }
         }
+        self.insert_wormhole(incoming, &key, uid)
+    }
+
+    fn insert_wormhole(&self, incoming: &crate::wormholes::Wormhole, key: &str, uid: String) -> i64 {
         let _ = self.conn.execute(
             "INSERT INTO wormholes(dedup, system_id, signature, wh_type, dest_class,
                 dest_system_id, dest_signature, dest_wh_type, size, is_drifter, reported_at,
@@ -348,6 +360,20 @@ impl Store {
         self.exec_historic("DELETE FROM wh_layout", []);
     }
 
+    /// The unexpired holes joining `a` and `b`, recorded either way round.
+    pub fn wormholes_between(&self, a: i64, b: i64) -> Vec<crate::wormholes::Wormhole> {
+        let now = crate::clock::utc().timestamp();
+        let Ok(mut st) = self.conn.prepare(&format!(
+            "SELECT {} FROM wormholes WHERE dead = 0 AND ((system_id=?1 AND dest_system_id=?2) OR (system_id=?2 AND dest_system_id=?1))",
+            Self::WH_COLS
+        )) else {
+            return Vec::new();
+        };
+        st.query_map(params![a, b], Self::row_to_wormhole)
+            .map(|rows| rows.flatten().filter(|w| !w.is_expired(now)).collect())
+            .unwrap_or_default()
+    }
+
     /// A live hole joining `a` and `b`, recorded either way round.
     pub fn wormhole_between(&self, a: i64, b: i64) -> Option<crate::wormholes::Wormhole> {
         self.wormhole_where(
@@ -356,11 +382,13 @@ impl Store {
         )
     }
 
-    /// Folds into hole `id` the other rows that are the same hole by signature: one entered from
-    /// the signatures tab or intel with no far side yet, or written from the far side. Their
-    /// details join `id` and the twins go, so one hole is one connection.
+    /// Folds into hole `id` the other rows that are the same hole: by signature, one entered from
+    /// the signatures tab or intel with no far side yet, or written from the far side; or joining
+    /// the same two systems with no signature telling them apart. Their details join `id` and the
+    /// twins go, so one hole is one connection.
     pub fn absorb_twins(&self, id: i64) {
         let Some(mut row) = self.wormhole_by_id(id) else { return };
+        let now = crate::clock::utc().timestamp();
         let letters = |s: &Option<String>| s.as_deref().map(sig_letters).filter(|s| s.len() == 3);
         let (near, far) = (letters(&row.signature), letters(&row.dest_signature));
         let mut gone = Vec::new();
@@ -396,6 +424,8 @@ impl Store {
                     dest: row.dest,
                     ..other.clone()
                 });
+            } else if !other.is_expired(now) && row.same_hole(&other) {
+                row.merge_from(&other.clone().facing(&row));
             } else {
                 continue;
             }

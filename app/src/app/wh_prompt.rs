@@ -25,6 +25,11 @@ pub(crate) struct Pending {
     pub(crate) confirmed: bool,
     /// The hull it was passed in, when that hull is one holes are rolled with.
     pub(crate) rolling_hull: Option<String>,
+    /// A drifter hole already joining the two systems, by row and as the user knows it: asked
+    /// whether this jump went through it or through a second one.
+    pub(crate) twin_of: Option<(i64, String)>,
+    /// The user said it is a second hole beside `twin_of`.
+    pub(crate) second: bool,
     /// The signatures were filled in from saved scans once already; not again over the user.
     sigs_filled: bool,
     sig_here: String,
@@ -56,6 +61,8 @@ impl Pending {
             row: None,
             confirmed: false,
             rolling_hull: None,
+            twin_of: None,
+            second: false,
             sigs_filled: false,
             sig_here: String::new(),
             sig_there: String::new(),
@@ -76,6 +83,9 @@ const NOT_A_HOLE_FOR: i64 = 3600;
 /// Hulls people roll holes with, by type id: Sigil, Megathron, Praxis. Any battleship or
 /// dreadnought counts as well, by group.
 const ROLLING_HULLS: [i64; 3] = [19_744, 641, 47_466];
+/// A jump through a known drifter hole this soon after the last one went through it is the same
+/// hole: a fleet following, or the way back.
+const SAME_TRIP_FOR: i64 = 600;
 /// How long a probe scanner copy on the clipboard is offered as signature choices.
 const PROBE_SCAN_FOR: std::time::Duration = std::time::Duration::from_secs(900);
 
@@ -97,6 +107,39 @@ fn drifter_type(geo: &crate::geo::Systems, p: &mut Pending) {
 }
 
 pub(crate) use spai_ui::wh_form::known_type;
+
+/// A known hole as the user would tell it from another: its signature, type and when it was found.
+pub(crate) fn twin_label(w: &Wormhole) -> String {
+    let sig = w.signature.clone().or_else(|| w.dest_signature.clone()).unwrap_or_else(|| "no signature".to_owned());
+    let kind = w.wh_type.clone().or_else(|| w.dest_wh_type.clone()).map(|t| format!(" {t}")).unwrap_or_default();
+    let when = chrono::DateTime::from_timestamp(w.reported_at, 0).map(|d| d.format(", found %H:%M").to_string()).unwrap_or_default();
+    format!("{sig}{kind}{when}")
+}
+
+/// Fills `row` in with what `entry`, facing the same way, says about it.
+pub(crate) fn fill_in(row: &mut Wormhole, entry: Wormhole) {
+    row.signature = entry.signature.or(row.signature.take());
+    row.dest_signature = entry.dest_signature.or(row.dest_signature.take());
+    row.wh_type = entry.wh_type.or(row.wh_type.take());
+    row.dest_wh_type = entry.dest_wh_type.or(row.dest_wh_type.take());
+    row.size = entry.size.or(row.size);
+    if entry.observed_at.is_some() {
+        row.explicit_expiry = row.expiry_after_reading(entry.life, entry.updated_at);
+        row.mass = entry.mass.or(row.mass);
+        row.life = entry.life.or(row.life);
+        row.observed_at = entry.observed_at;
+    }
+    row.note = entry.note.or(row.note.take());
+    row.updated_at = entry.updated_at;
+}
+
+/// Whether a jump through known hole `w` is plainly through that one: the way back for the same
+/// pilot, or anyone's jump through it within `SAME_TRIP_FOR`.
+fn same_trip(audit: &[(i64, String, String, String, String)], character: &str, from: i64, to: i64, now: i64) -> bool {
+    let back = format!("{to} to {from}");
+    let jumps: Vec<_> = audit.iter().filter(|a| a.3 == "jumped").collect();
+    jumps.iter().any(|a| now - a.0 < SAME_TRIP_FOR) || jumps.iter().rev().find(|a| a.1 == character).is_some_and(|a| a.4 == back)
+}
 
 /// The first three letters of a signature, as a scout names it.
 /// A signature as the form writes it: "ABC-123" in full when the digits are known, else "ABC".
@@ -148,6 +191,26 @@ impl SpaiApp {
             };
             let clones = self.wh_clones.lock().unwrap().get(&t.character).cloned().unwrap_or_default();
             let verdict = crate::whdetect::classify(&t, &geo, &clones);
+            // Two drifter holes from one system to the same drifter system are not rare: asked
+            // which one it was. Between other systems a known hole is taken to be the one.
+            let drifter_pair = crate::whdata::drifter_code(t.from).is_some() || crate::whdata::drifter_code(t.to).is_some();
+            let twin = match (&self.store, drifter_pair && self.settings.wh_ask) {
+                (Some(store), true) => store.wormhole_between(t.from, t.to).filter(|w| {
+                    !w.is_expired(now) && !same_trip(&store.wormhole_audit(&w.uid), &t.character, t.from, t.to, now)
+                }),
+                _ => None,
+            };
+            if let (Some(w), Verdict::Hole(c) | Verdict::Possible(c)) = (twin, &verdict) {
+                if crate::whdata::connection_problem(t.from, Some(t.to), |_| None, None, None).is_none() {
+                    let mut p = Pending::new(t.character.clone(), t.from, t.to, t.at, matches!(verdict, Verdict::Hole(_)), c.clone());
+                    p.rolling_hull = rolling_hull;
+                    drifter_type(&geo, &mut p);
+                    p.row = Some(w.id);
+                    p.twin_of = Some((w.id, twin_label(&w)));
+                    self.wh_queue(p);
+                }
+                continue;
+            }
             // A hole already saved with what the user knows about it needs nothing more, whichever
             // way it is taken: note the jump and ask nothing.
             if matches!(verdict, Verdict::Hole(_) | Verdict::Possible(_)) {
@@ -390,7 +453,26 @@ impl SpaiApp {
         match act {
             PromptAct::Save => self.wh_save_front(&geo),
             PromptAct::Skip => {
-                self.wh_pending.pop_front();
+                // A second hole taken as certain is still one, kept with what was filled in, when
+                // its signature tells it from the known one; otherwise it was the known one.
+                if let Some(p) = self.wh_pending.pop_front().filter(|p| p.second && p.certain) {
+                    let entry = self.wh_entry(&geo, &p);
+                    if let Some(store) = &self.store {
+                        let known = p.twin_of.as_ref().and_then(|(id, _)| store.wormhole_by_id(*id)).filter(|k| k.same_hole(&entry));
+                        let id = known.map_or_else(|| store.upsert_wormhole(&entry), |k| k.id);
+                        if let Some(row) = store.wormhole_by_id(id) {
+                            store.audit_wormhole(&row.uid, &p.character, Source::Auto, &[("jumped", format!("{} to {}", p.from, p.to))]);
+                        }
+                    }
+                    self.wh_reloaded = None;
+                }
+            }
+            PromptAct::SameHole => {
+                if let (Some(p), Some(store)) = (self.wh_pending.pop_front(), &self.store) {
+                    if let Some(row) = p.twin_of.and_then(|(id, _)| store.wormhole_by_id(id)) {
+                        store.audit_wormhole(&row.uid, &p.character, Source::Auto, &[("jumped", format!("{} to {}", p.from, p.to))]);
+                    }
+                }
             }
             PromptAct::NotAHole => {
                 if let Some(p) = self.wh_pending.pop_front() {
@@ -424,6 +506,12 @@ impl SpaiApp {
         }
         let entry = self.wh_entry(geo, &p);
         let Some(store) = &self.store else { return };
+        // Only a different signature makes another hole between the same two systems.
+        if let Some((_, known)) = p.twin_of.as_ref().filter(|(id, _)| p.second && store.wormhole_by_id(*id).is_some_and(|k| k.same_hole(&entry))) {
+            p.error = Some(format!("Another hole needs a signature other than the known one's ({known})."));
+            self.wh_pending.push_front(p);
+            return;
+        }
         let mut changes: Vec<(&str, String)> = Vec::new();
         let mut note = |field: &'static str, v: Option<String>| {
             if let Some(v) = v {
@@ -440,39 +528,16 @@ impl SpaiApp {
         if p.rolled {
             changes.push(("rolled", "yes".to_owned()));
         }
+        if p.second {
+            changes.push(("jumped", format!("{} to {}", p.from, p.to)));
+        }
         // The row the jump found is only filled in when it is this hole: never a different one's
         // signature or far side overwritten.
-        let id = match p.row.and_then(|id| store.wormhole_by_id(id)).filter(|row| {
-            let mine = Wormhole { system_id: row.system_id, dest_system_id: Some(if row.system_id == p.from { p.to } else { p.from }), ..Default::default() };
-            let (near, far) = if row.system_id == p.from { (&entry.signature, &entry.dest_signature) } else { (&entry.dest_signature, &entry.signature) };
-            !row.conflicts(&Wormhole { signature: near.clone(), dest_signature: far.clone(), ..mine })
-        }) {
+        let row = p.row.and_then(|id| store.wormhole_by_id(id)).filter(|row| !row.conflicts(&entry.clone().facing(row)));
+        let id = match row {
             Some(mut row) => {
-                // The row may run the other way from this jump: then this side is its far side.
-                let entry = if row.system_id == p.from {
-                    entry
-                } else {
-                    Wormhole {
-                        signature: entry.dest_signature.clone(),
-                        dest_signature: entry.signature.clone(),
-                        wh_type: entry.dest_wh_type.clone(),
-                        dest_wh_type: entry.wh_type.clone(),
-                        ..entry
-                    }
-                };
-                row.signature = entry.signature.or(row.signature);
-                row.dest_signature = entry.dest_signature.or(row.dest_signature);
-                row.wh_type = entry.wh_type.or(row.wh_type);
-                row.dest_wh_type = entry.dest_wh_type.or(row.dest_wh_type);
-                row.size = entry.size.or(row.size);
-                if entry.observed_at.is_some() {
-                    row.explicit_expiry = row.expiry_after_reading(entry.life, entry.updated_at);
-                    row.mass = entry.mass.or(row.mass);
-                    row.life = entry.life.or(row.life);
-                    row.observed_at = entry.observed_at;
-                }
-                row.note = entry.note.or(row.note);
-                row.updated_at = entry.updated_at;
+                let entry = entry.facing(&row);
+                fill_in(&mut row, entry);
                 store.write_wormhole(&row);
                 row.id
             }
@@ -494,6 +559,8 @@ pub(crate) enum PromptAct {
     Save,
     Skip,
     NotAHole,
+    /// The jump went through the drifter hole already known, not a second one.
+    SameHole,
     /// The window was closed: ask about none of the queued jumps.
     Close,
 }
@@ -525,7 +592,20 @@ pub(crate) fn wh_prompt_body(
         });
         return act;
     }
-    if p.certain {
+    if let Some((_, known)) = p.twin_of.as_ref().filter(|_| !p.second) {
+        ui.label(format!("A hole between these two is known already: {known}. Was it that one?"));
+        ui.horizontal(|ui| {
+            if ui.button("Same hole").clicked() {
+                act = PromptAct::SameHole;
+            }
+            if ui.button(format!("{}  Another hole", icon::PLUS)).on_hover_text("A second drifter hole from the same system").clicked() {
+                p.second = true;
+                p.row = None;
+            }
+        });
+        return act;
+    }
+    if p.certain && !p.second {
         ui.label(egui::RichText::new("Recorded as auto-detected. Add what you know:").weak());
     }
     // One field with the known signatures in a list beside it: a button each floods the window.
@@ -607,6 +687,18 @@ mod tests {
         assert_eq!(known_type(" k162 "), None);
         assert_eq!(known_type(""), None);
         assert_eq!(known_type("k329"), Some("K329".into()));
+    }
+
+    #[test]
+    fn the_way_back_or_a_fleet_following_is_the_same_drifter_hole() {
+        let jumped = |at: i64, who: &str, way: &str| (at, who.to_owned(), "auto".to_owned(), "jumped".to_owned(), way.to_owned());
+        let now = 10_000;
+        let audit = vec![jumped(1_000, "Scout", "1 to 2")];
+        assert!(same_trip(&audit, "Scout", 2, 1, now), "the way back");
+        assert!(!same_trip(&audit, "Scout", 1, 2, now), "the same way again, long after, may be a second hole");
+        assert!(!same_trip(&audit, "Other", 2, 1, now), "someone else's way back is not theirs");
+        assert!(same_trip(&audit, "Other", 1, 2, 1_000 + SAME_TRIP_FOR - 1), "a fleet following");
+        assert!(!same_trip(&[], "Scout", 1, 2, now));
     }
 
     #[test]

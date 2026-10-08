@@ -737,6 +737,11 @@ impl SpaiApp {
                 .collect()
         };
         let (here_sigs, there_sigs) = (sigs_of(&form.system), sigs_of(&form.dest));
+        // Adding a hole between two systems a live one already joins: that one, unless the user
+        // says it is another.
+        let twin = form.id.is_none().then(|| self.wh_twin(&form.system, &form.dest)).flatten();
+        form.twin = twin.as_ref().map(crate::app::wh_prompt::twin_label);
+        form.second &= form.twin.is_some();
         let (type_was, dest_was) = (form.wh_type.clone(), form.dest.clone());
         egui::Window::new(if form.id.is_some() { "Edit wormhole" } else { "Add wormhole" })
             .open(&mut open)
@@ -766,6 +771,12 @@ impl SpaiApp {
                     return;
                 }
             };
+            // Only a different signature makes another hole between the same two systems.
+            if let Some(known) = twin.as_ref().filter(|t| form.second && t.same_hole(&fresh)) {
+                form.error = Some(format!("Another hole needs a signature other than the known one's ({}).", crate::app::wh_prompt::twin_label(known)));
+                self.wh_form = Some(form);
+                return;
+            }
             let who = if self.settings.active_character.is_empty() { "me".to_owned() } else { self.settings.active_character.clone() };
             self.scanner_track.last_manual = Some((who.clone(), now));
             if let Some(store) = &self.store {
@@ -789,7 +800,17 @@ impl SpaiApp {
                     });
                         id
                     }
-                    None => store.upsert_wormhole(&fresh),
+                    None if form.second => store.upsert_wormhole(&fresh),
+                    None => match fresh.dest_system_id.and_then(|b| store.wormholes_between(fresh.system_id, b).into_iter().find(|w| w.same_hole(&fresh))) {
+                        Some(mut row) => {
+                            let facing = fresh.facing(&row);
+                            crate::app::wh_prompt::fill_in(&mut row, facing);
+                            row.seen_by |= Source::Manual.bit();
+                            store.write_wormhole(&row);
+                            row.id
+                        }
+                        None => store.upsert_wormhole(&fresh),
+                    },
                 };
                 store.absorb_twins(id);
                 if let Some(row) = store.wormhole_by_id(id) {
@@ -802,6 +823,14 @@ impl SpaiApp {
         if open {
             self.wh_form = Some(form);
         }
+    }
+
+    /// The live hole joining the systems named, either way round.
+    fn wh_twin(&self, system: &str, dest: &str) -> Option<crate::wormholes::Wormhole> {
+        let geo = self.systems.as_ref()?;
+        let (a, b) = (geo.lookup(system.trim())?.id, geo.lookup(dest.trim())?.id);
+        let now = crate::clock::utc().timestamp();
+        self.store.as_ref()?.wormhole_between(a, b).filter(|w| !w.is_expired(now))
     }
 
     /// Full signature ids known in `system`: scanned there, or on another hole's end there.

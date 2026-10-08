@@ -1730,6 +1730,45 @@ mod tests {
         assert_eq!(s.wormhole_by_id(old).unwrap().signature.as_deref(), Some("ABC-123"));
     }
 
+    #[test]
+    fn between_two_systems_only_a_different_signature_is_another_hole() {
+        use crate::wormholes::{DestClass, Source, Wormhole};
+        let _guard = crate::disk::test_guard();
+        let s = mem_store();
+        let (a, b) = (30_000_142, 31_000_004);
+        let now = crate::clock::utc().timestamp();
+        let jump = Wormhole { signature: None, dest: DestClass::Unknown, dest_system_id: Some(b), source: Source::Auto, reported_at: now, updated_at: now, ..a_hole(a, "") };
+        let first = s.upsert_wormhole(&jump);
+        let signed = s.upsert_wormhole(&Wormhole { signature: Some("ABC-123".into()), ..jump.clone() });
+        assert_eq!(signed, first, "the signature joins the hole without one");
+        assert_eq!(s.wormhole_by_id(first).unwrap().signature.as_deref(), Some("ABC-123"));
+        let far = s.upsert_wormhole(&Wormhole { system_id: b, signature: Some("XYZ-987".into()), dest_system_id: Some(a), ..jump.clone() });
+        assert_eq!(far, first, "written from the far end, it is the same hole");
+        assert_eq!(s.wormhole_by_id(first).unwrap().dest_signature.as_deref(), Some("XYZ-987"));
+        let other = s.upsert_wormhole(&Wormhole { signature: Some("DEF-456".into()), ..jump.clone() });
+        assert_ne!(other, first, "another signature is another hole");
+        assert_eq!(s.wormholes().len(), 2);
+    }
+
+    #[test]
+    fn a_hole_without_a_signature_folds_into_its_signed_twin() {
+        use crate::wormholes::{DestClass, Source, Wormhole};
+        let _guard = crate::disk::test_guard();
+        let s = mem_store();
+        let (a, b) = (30_000_142, 31_000_004);
+        let now = crate::clock::utc().timestamp();
+        let jump = Wormhole { signature: None, dest: DestClass::Unknown, dest_system_id: Some(b), source: Source::Auto, reported_at: now, updated_at: now, ..a_hole(a, "") };
+        let scanned = s.upsert_wormhole(&Wormhole { signature: Some("ABC-123".into()), dest_system_id: None, ..jump.clone() });
+        let jumped = s.upsert_wormhole(&jump);
+        assert_ne!(scanned, jumped, "the scanned one had no far side yet");
+        let mut row = s.wormhole_by_id(scanned).unwrap();
+        row.dest_system_id = Some(b);
+        s.write_wormhole(&row);
+        s.absorb_twins(jumped);
+        assert_eq!(s.wormholes().len(), 1);
+        assert_eq!(s.wormhole_by_id(jumped).unwrap().signature.as_deref(), Some("ABC-123"));
+    }
+
     fn a_hole(system_id: i64, sig: &str) -> crate::wormholes::Wormhole {
         use crate::wormholes::{DestClass, Source, Wormhole};
         Wormhole {
