@@ -839,6 +839,8 @@ pub struct SpaiApp {
     flash_until: f64,
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
+    /// `map::typical_spacing` of `map_draw`, which the dots and labels are sized from.
+    map_spacing: f64,
     map_draw_key: Option<(crate::map::MapView, bool)>,
     map_systems_cache: std::collections::HashMap<crate::map::MapView, Vec<crate::store::MapSystem>>,
     map_draw_cache:
@@ -1757,6 +1759,7 @@ impl SpaiApp {
             flash_until: 0.0,
             map_draw: Vec::new(),
             map_draw_spaced: false,
+            map_spacing: 0.0,
             map_draw_key: None,
             map_systems_cache: std::collections::HashMap::new(),
             map_draw_cache: std::collections::HashMap::new(),

@@ -105,6 +105,56 @@ pub fn ly_to_pixels(ly: f64, b: &Bounds, rect: Rect, zoom: f32) -> f32 {
     (ly * LY_METERS) as f32 * b.base_scale(rect, 30.0) * zoom
 }
 
+/// How far apart neighbouring systems usually sit, in map units: the median distance from each
+/// system to its nearest one. Sizes on the map follow this times the scale, so they look the same
+/// whatever the window, display scaling or layout.
+pub fn typical_spacing(systems: &[MapSystem]) -> f64 {
+    let Some(b) = Bounds::of(systems) else { return 0.0 };
+    let span = (b.max_x - b.min_x).max(b.max_z - b.min_z).max(1.0);
+    let cell = span / (systems.len() as f64).sqrt().max(1.0);
+    let key = |s: &MapSystem| (((s.x - b.min_x) / cell) as i64, ((s.z - b.min_z) / cell) as i64);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+    for (i, s) in systems.iter().enumerate() {
+        grid.entry(key(s)).or_default().push(i);
+    }
+    let mut nearest: Vec<f64> = Vec::with_capacity(systems.len());
+    for (i, s) in systems.iter().enumerate() {
+        let (cx, cz) = key(s);
+        let mut best = f64::INFINITY;
+        // Rings outward until one holds a neighbour, then one ring more: the nearest can sit just
+        // across a cell edge.
+        let mut found_at = None;
+        for r in 0..64i64 {
+            if found_at.is_some_and(|f| r > f + 1) {
+                break;
+            }
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    if dx.abs() != r && dz.abs() != r {
+                        continue;
+                    }
+                    for &j in grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                        if j != i {
+                            best = best.min((systems[j].x - s.x).hypot(systems[j].z - s.z));
+                        }
+                    }
+                }
+            }
+            if best.is_finite() && found_at.is_none() {
+                found_at = Some(r);
+            }
+        }
+        if best.is_finite() {
+            nearest.push(best);
+        }
+    }
+    if nearest.is_empty() {
+        return 0.0;
+    }
+    let mid = nearest.len() / 2;
+    *nearest.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
+}
+
 pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> Pos2 {
     let scale = b.base_scale(rect, 30.0) * zoom;
     let center = rect.center() + pan;
@@ -117,6 +167,16 @@ pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spacing_is_the_usual_gap_to_the_nearest_system() {
+        // A 10-unit grid with one far outlier: the outlier must not stretch the answer.
+        let mut grid: Vec<MapSystem> = (0..20).flat_map(|i| (0..20).map(move |j| sys(i as f64 * 10.0, j as f64 * 10.0))).collect();
+        grid.push(sys(1e6, 1e6));
+        assert!((typical_spacing(&grid) - 10.0).abs() < 1e-9);
+        assert_eq!(typical_spacing(&[]), 0.0);
+        assert_eq!(typical_spacing(&[sys(1.0, 1.0)]), 0.0);
+    }
 
     fn sys(x: f64, z: f64) -> MapSystem {
         MapSystem {
