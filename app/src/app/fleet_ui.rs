@@ -1100,16 +1100,22 @@ impl SpaiApp {
     pub(crate) fn fleet_boss_poll(&mut self, ctx: &egui::Context) {
         let who = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc();
         let Some((character_id, _)) = who else { return };
+        // A failed check right after a rescue ping is the FC still forming up: ask again soon.
+        let failed = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.boss.as_ref().is_some_and(|(id, c)| *id == character_id && !c.verdict().0)
+        };
+        let every = if failed && self.rescue_on() && self.rescue_ping_recent() { BOSS_RETRY } else { BOSS_POLL };
         let due = self
             .fleet_boss_asked
-            .is_none_or(|t| std::time::Instant::now().duration_since(t) >= BOSS_POLL);
+            .is_none_or(|t| std::time::Instant::now().duration_since(t) >= every);
         if !due {
-            ctx.request_repaint_after(BOSS_POLL);
+            ctx.request_repaint_after(every);
             return;
         }
         self.fleet_boss_asked = Some(std::time::Instant::now());
         self.fleet_dispatch(Cmd::CheckBoss { character_id });
-        ctx.request_repaint_after(BOSS_POLL);
+        ctx.request_repaint_after(every);
     }
 
     /// Re-reads the comms tables while either view that picks a channel is on screen.
@@ -2643,6 +2649,7 @@ fn doctrine_line(ping: &str) -> Option<String> {
 }
 
 const BOSS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+const BOSS_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 const ADVERT_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 /// How long the typing has to pause before a character search goes out.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
