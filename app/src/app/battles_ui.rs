@@ -445,13 +445,6 @@ impl SpaiApp {
             )
             .id_salt("battle_edit_pilots")
             .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Purge removes a pilot from this battle: their losses are excluded and their \
-                         attacker entries scrubbed.",
-                    )
-                    .weak(),
-                );
                 let pilots = &data.pilots;
                 for (char_id, pilot) in pilots {
                     if rows.skip(ui, heights[1]) {
@@ -1633,7 +1626,7 @@ impl SpaiApp {
         }
         if !self.settings.battles_enabled {
             ui.label(
-                egui::RichText::new("Battle reports are off. Tick Enabled to compute them.").weak(),
+                egui::RichText::new("Battle reports are off. Turn them on in the \u{22ef} menu.").weak(),
             );
             return;
         }
