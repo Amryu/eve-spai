@@ -1337,8 +1337,9 @@ impl SpaiApp {
         if let Some(lr) = self.loaded_report.as_mut() {
             if lr.sorted_for != Some((sort, condensed)) {
                 let type_names = self.type_names.lock().unwrap();
-                let (sorted, cond) =
+                let (sorted, mut cond) =
                     crate::brview::sorted_detail(&lr.rosters, sort, &self.ship_sizes, &type_names);
+                crate::brview::condensed_damage(lr.shown.as_ref().unwrap_or(&lr.battle), &mut cond);
                 lr.sorted = sorted;
                 lr.condensed_rows = cond;
                 lr.sorted_for = Some((sort, condensed));

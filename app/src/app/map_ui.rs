@@ -749,17 +749,11 @@ impl SpaiApp {
                 } else {
                     0.0
                 };
-                // Where the row sits: 0 above the dot, 1 below, 2 to its right, 3 to its left.
-                let lay_at = |name_w: f32, spot: u8| {
+                // Always above the dot, so a name never jumps around while zooming.
+                let lay_at = |name_w: f32| {
                     let name_span = if name_w > 0.0 { name_w + NAME_GAP } else { 0.0 };
                     let total = (lead + right) * icon_w + name_span;
-                    let side = dot + 4.0;
-                    let (left, mid_y) = match spot {
-                        1 => (p.x - total / 2.0, p.y + dot + 2.0 + icon_h / 2.0),
-                        2 => (p.x + side, p.y),
-                        3 => (p.x - side - total, p.y),
-                        _ => (p.x - total / 2.0, mid_y),
-                    };
+                    let left = p.x - total / 2.0;
                     let name_x = left + lead * icon_w;
                     let rect = egui::Rect::from_min_max(
                         egui::pos2(left, mid_y - icon_h / 2.0),
@@ -771,14 +765,13 @@ impl SpaiApp {
                         icons_x: name_x + name_span,
                         mid_y,
                         name_shown: name_w > 0.0,
+                        crowded: false,
                         rect,
                     }
                 };
-                // A name is never dropped: above the dot when there is room, else below, right or
-                // left, and above regardless when all four are taken.
-                let free = |spot: u8| !placed.iter().any(|r| r.expand(2.0).intersects(lay_at(name_w, spot).rect));
-                let spot = if name_w > 0.0 { (0..4).find(|s| free(*s)).unwrap_or(0) } else { 0 };
-                let row = lay_at(name_w, spot);
+                // A name is never dropped: one that lands on another is drawn over it on a backdrop.
+                let mut row = lay_at(name_w);
+                row.crowded = row.name_shown && placed.iter().any(|r| r.expand(1.0).intersects(row.rect));
                 if row.name_shown {
                     placed.push(row.rect);
                 }
@@ -1324,6 +1317,11 @@ impl SpaiApp {
                 }
                 if row.name_shown {
                     let at = egui::pos2(row.name_x, row.mid_y);
+                    if row.crowded {
+                        let g = painter.layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE);
+                        let r = egui::Rect::from_min_size(at - egui::vec2(0.0, g.size().y / 2.0), g.size()).expand2(egui::vec2(3.0, 1.0));
+                        painter.rect_filled(r, 3.0, ui.visuals().extreme_bg_color.gamma_multiply(0.85));
+                    }
                     // Outlined, so the name survives whatever it lands on: halos, sov icons, routes.
                     for off in OUTLINE {
                         painter.text(

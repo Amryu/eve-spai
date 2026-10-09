@@ -3014,6 +3014,16 @@ impl SpaiApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_battle_condensed(&mut self, on: bool) {
+        self.battle_condensed = on;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_system_flags(&self, id: i64, f: crate::systemstatus::SysFlags) {
+        self.system_status.lock().unwrap().insert(id, f);
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_share_done(&self, id: &str, url: &str) {
         *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Done { id: id.into(), url: url.into() };
     }
@@ -3045,7 +3055,8 @@ impl SpaiApp {
         ship_ids.dedup();
         let inv = b.involvement();
         let rosters: Vec<Vec<br_core::battle::Participant>> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
-        let (rosters, condensed) = crate::brview::sorted_detail(&rosters, Default::default(), &self.ship_sizes, &names);
+        let (rosters, mut condensed) = crate::brview::sorted_detail(&rosters, Default::default(), &self.ship_sizes, &names);
+        crate::brview::condensed_damage(&b, &mut condensed);
         *self.type_names.lock().unwrap() = names;
         *self.battles.lock().unwrap() = vec![b.clone()];
         self.battle_selected = Some(kid);
@@ -5370,6 +5381,8 @@ struct LabelRow {
     /// Vertical centre; row parts draw `*_CENTER` on this y so differing-height name and icons align.
     mid_y: f32,
     name_shown: bool,
+    /// Overlaps a name placed before it, so it gets a backdrop of its own to stay readable.
+    crowded: bool,
     rect: egui::Rect,
 }
 
@@ -6289,7 +6302,7 @@ pub(crate) fn battle_detail(
                                         let top = ui.cursor().top();
                                         let resp = condensed_row(
                                             ui, row_w, r.ship, r.total, r.lost, r.ship_isk,
-                                            r.pod_isk, &name_of, red,
+                                            r.pod_isk, &name_of, red, has_damage.then_some(r.damage),
                                         );
                                         if resp.hovered() {
                                             let hl = egui::Color32::from_rgba_unmultiplied(
@@ -6370,6 +6383,7 @@ pub(crate) fn condensed_row(
     pod_isk: f64,
     name_of: &dyn Fn(i64) -> String,
     red: egui::Color32,
+    damage: Option<i64>,
 ) -> egui::Response {
     let resp = ui
         .horizontal(|ui| {
@@ -6377,6 +6391,11 @@ pub(crate) fn condensed_row(
             hull_badge(ui, ship, 26.0);
             ui.label(egui::RichText::new(name_of(ship)).strong());
             ui.label(egui::RichText::new(format!("\u{00d7}{total}")).weak());
+            if let Some(d) = damage {
+                let t = egui::RichText::new(format!("{} dmg", fmt_count(d)));
+                ui.label(if d > 0 { t.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { t.weak() })
+                    .on_hover_text("Damage dealt by this side's pilots in this hull");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pod_isk > 0.0 {
                     ui.label(egui::RichText::new(format!("+{} pods", fmt_isk(pod_isk))).weak())
@@ -7660,6 +7679,35 @@ pub(crate) fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     hp / (1.0 - avg_resist).max(0.01)
 }
 
+/// A damage type as EVE colours it, with a glyph standing in for the game's icon: EM, Thermal,
+/// Kinetic or Explosive, by name or short name.
+pub(crate) fn damage_type(name: &str) -> Option<(&'static str, egui::Color32, &'static str)> {
+    use egui_phosphor::regular as i;
+    Some(match name.trim().to_lowercase().as_str() {
+        "em" => (i::LIGHTNING, egui::Color32::from_rgb(0x5A, 0xA9, 0xE0), "EM"),
+        "thermal" | "th" => (i::FIRE, egui::Color32::from_rgb(0xD6, 0x45, 0x45), "Thermal"),
+        "kinetic" | "kin" => (i::HAMMER, egui::Color32::from_rgb(0x9A, 0xA3, 0xA8), "Kinetic"),
+        "explosive" | "exp" => (i::ASTERISK, egui::Color32::from_rgb(0xD6, 0xA6, 0x45), "Explosive"),
+        _ => return None,
+    })
+}
+
+/// Damage types as their coloured icons, each named on hover; an unknown name as plain text.
+pub(crate) fn damage_types_ui(ui: &mut egui::Ui, names: &[&str]) {
+    ui.horizontal(|ui| {
+        for n in names {
+            match damage_type(n) {
+                Some((g, c, label)) => {
+                    ui.label(egui::RichText::new(format!("{g} {label}")).color(c)).on_hover_text(label);
+                }
+                None => {
+                    ui.label(*n);
+                }
+            }
+        }
+    });
+}
+
 fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     let dmg_col = [
         egui::Color32::from_rgb(0x5A, 0xA9, 0xE0),
@@ -7678,7 +7726,8 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
         ui.label("");
         ui.label(egui::RichText::new("HP").weak());
         for (i, lbl) in dmg_lbl.iter().enumerate() {
-            ui.label(egui::RichText::new(*lbl).color(dmg_col[i]).strong());
+            let (g, _, full) = damage_type(lbl).unwrap_or(("", dmg_col[i], lbl));
+            ui.label(egui::RichText::new(g).color(dmg_col[i]).size(16.0)).on_hover_text(full);
         }
         ui.label(egui::RichText::new("EHP").strong());
         ui.end_row();

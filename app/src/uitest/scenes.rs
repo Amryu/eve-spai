@@ -82,6 +82,17 @@ fn docked_system_scene(name: &'static str) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.seed_notes(fixtures::notebook());
+            a.seed_system_flags(
+                30_004_759,
+                crate::systemstatus::SysFlags {
+                    sov: Some("The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts".into()),
+                    sov_alliance: Some(99_000_001),
+                    adm: Some(5.4),
+                    ship_kills: 12,
+                    jumps: 340,
+                    ..Default::default()
+                },
+            );
             a
         });
         app.docked_system_ui(ui, 30_004_759);
@@ -659,6 +670,25 @@ fn battle_list_scene(name: &'static str, size: [f32; 2]) -> Scene {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Battles;
             a.seed_battle_list(battles.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
+/// The details tab grouped by hull, with each hull's damage.
+fn battle_report_condensed_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.set_battle_condensed(true);
+            a.seed_battle(b.clone(), names.clone());
+            a.set_battle_tab(crate::app::BrTab::Details);
             a
         });
         a.root_chrome(ui);
@@ -2264,6 +2294,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(battle_report_scene("battle_report_tiles", [1600.0, 1000.0], crate::app::BrTab::Tiles, false));
     v.push(battle_report_scene("battle_report_tiles_narrow", [900.0, 800.0], crate::app::BrTab::Tiles, false));
     v.push(battle_report_scene("battle_report_details", [1600.0, 1000.0], crate::app::BrTab::Details, false));
+    v.push(battle_report_condensed_scene("battle_report_condensed", [1600.0, 1000.0]));
     v.push(battle_report_scene("battle_report_timeline", [1400.0, 900.0], crate::app::BrTab::Timeline, false));
     v.push(battle_report_scene("battle_report_extreme", [1100.0, 900.0], crate::app::BrTab::Tiles, true));
     v.push(battle_report_two_systems_scene("battle_report_two_systems", [1400.0, 900.0]));

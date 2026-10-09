@@ -68,6 +68,8 @@ pub struct CondensedRow {
     pub lost: u32,
     pub ship_isk: f64,
     pub pod_isk: f64,
+    /// Damage dealt by this side's pilots flying this hull, from the kills themselves.
+    pub damage: i64,
 }
 
 #[derive(Clone)]
@@ -294,6 +296,23 @@ fn name_of(id: i64, type_names: &HashMap<i64, String>) -> String {
 
 /// Produce the per-side render data for the current sort/condensed: participant rows sorted for the
 /// normal view, and hull-aggregated rows for the condensed view. Callers render these verbatim.
+/// Fills each condensed row's damage: every attacker in that hull on that side, summed once per kill.
+pub fn condensed_damage(b: &Battle, cond: &mut [Vec<CondensedRow>]) {
+    let mut by: HashMap<(usize, i64), i64> = HashMap::new();
+    for e in &b.engagements {
+        for a in &e.attackers {
+            if let Some(i) = b.side_of(&a.party) {
+                *by.entry((i, a.ship)).or_default() += a.damage;
+            }
+        }
+    }
+    for (i, rows) in cond.iter_mut().enumerate() {
+        for r in rows.iter_mut() {
+            r.damage = by.get(&(i, r.ship)).copied().unwrap_or(0);
+        }
+    }
+}
+
 pub fn sorted_detail(
     rosters: &[Vec<Participant>],
     sort: RosterSort,
@@ -350,7 +369,7 @@ pub fn sorted_detail(
                 .into_iter()
                 .map(|ship| {
                     let (total, lost, ship_isk, pod_isk) = agg[&ship];
-                    CondensedRow { ship, total, lost, ship_isk, pod_isk }
+                    CondensedRow { ship, total, lost, ship_isk, pod_isk, damage: 0 }
                 })
                 .collect(),
         );
@@ -520,8 +539,9 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
             let inv = v.involvement();
             let rosters: Vec<Vec<Participant>> = (0..v.sides.len()).map(|i| v.roster(i)).collect();
             let tiles = ship_tiles(&rosters);
-            let (rosters, condensed) =
+            let (rosters, mut condensed) =
                 sorted_detail(&rosters, inp.sort, &deps.ship_sizes, &type_names);
+            condensed_damage(v, &mut condensed);
             out.detail =
                 Some(Arc::new(BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids, tiles, shown }));
         }
