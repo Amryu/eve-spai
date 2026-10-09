@@ -17,3 +17,4 @@ pub mod memory;
 pub mod gemini;
 pub mod mcp;
 pub mod cli;
+pub mod links;

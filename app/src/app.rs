@@ -927,6 +927,8 @@ pub struct SpaiApp {
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
     rescue_feed_cursor: u64,
     rescue_history_loaded: bool,
+    /// Ship names to type ids for linking the assistant's text, rebuilt when the ship table grows.
+    ai_ship_names: (usize, std::collections::HashMap<String, i64>),
     rescue_history_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
@@ -1740,6 +1742,7 @@ impl SpaiApp {
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             rescue_feed_cursor: 0,
             rescue_history_loaded: false,
+            ai_ship_names: Default::default(),
             rescue_history_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,
@@ -3078,6 +3081,11 @@ impl SpaiApp {
         self.map_route_kind = "gate";
         self.map_route_anchors = anchors;
         self.map_recompute_route();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ship_names_for_test(&mut self, ships: &[(i64, &str)]) {
+        self.ship_by_id = ships.iter().map(|(id, n)| (*id, (*n).to_owned())).collect();
     }
 
     #[cfg(test)]

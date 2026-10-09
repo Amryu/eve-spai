@@ -1325,8 +1325,10 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.ai.enabled = true;
             a.view = View::Assistant;
+            a.systems = Some(fixtures::systems());
+            a.set_ship_names_for_test(&[(12015, "Muninn"), (22456, "Sabre"), (12034, "Hound")]);
             let turn = |user: bool, text: &str| Turn { user, text: text.into(), chips: vec![], cards: vec![], streaming: false, error: None, voice: false };
-            let mut answer = turn(false, "**The Fraternity. gang went south.** Last seen in **QX-LIJ** 4 minutes ago, 6 jumps from you.\n\n- 21:12 killed a Hound in 1DQ1-A (14 of them, Muninns and a Sabre)\n- 21:19 intel in Delve.Imperium: \"frat gang +20 QX-LIJ\"\n\nThe Jove observatory in Y-OMTZ is 3 jumps from QX-LIJ, a likely way out.");
+            let mut answer = turn(false, "**The Fraternity. gang went south.** Last seen in **QX-LIJ** 4 minutes ago, 6 jumps from you.\n\n- 21:12 killed [a Hound](spai:kill/131000001) in 1DQ1-A (14 of them, Muninn and a Sabre)\n- 21:19 intel in Delve.Imperium: \"frat gang +20 QX-LIJ\"\n\nThe Jove observatory in Y-OMTZ is 3 jumps from QX-LIJ, a likely way out.");
             answer.chips = vec![
                 Chip { name: "track_movement".into(), args: "entity: frat, since_minutes: 60".into(), error: None },
                 Chip { name: "jove_systems_near".into(), args: "system: QX-LIJ".into(), error: None },

@@ -6,7 +6,7 @@ use std::fmt::Write;
 
 use super::deps::{AiDeps, AiFacts};
 
-pub fn summary(deps: &AiDeps, facts: &AiFacts, jumps: u32, now: i64) -> String {
+pub fn summary(deps: &AiDeps, facts: &AiFacts, store: Option<&crate::store::Store>, jumps: u32, now: i64) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "Now: {} EVE time (UTC).", super::tools::eve_time(now));
     let scopes: Vec<&str> = [
@@ -60,11 +60,23 @@ pub fn summary(deps: &AiDeps, facts: &AiFacts, jumps: u32, now: i64) -> String {
         }
     }
     if facts.allowed("kills.feed") {
-        let feed = deps.killfeed.lock().unwrap_or_else(|e| e.into_inner());
+        // The live feed is emptied as kill intel takes it in, so the stored kills are the main source.
+        let mut seen = std::collections::HashSet::new();
+        let mut kills: Vec<(i64, i64)> = Vec::new();
+        for e in store.map(|st| st.load_engagements(now - 1800)).unwrap_or_default() {
+            if seen.insert(e.kill_id) {
+                kills.push((e.time, e.system_id));
+            }
+        }
+        for k in deps.killfeed.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if seen.insert(k.killmail_id) {
+                kills.push((k.time, k.system_id));
+            }
+        }
         let mut by_sys: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
-        for k in feed.iter().filter(|k| now - k.time <= 1800) {
-            if let Some(j) = near(k.system_id) {
-                let e = by_sys.entry(geo.info_of(k.system_id).map(|i| i.name.clone()).unwrap_or_default()).or_insert((0, j));
+        for &(_, sys) in kills.iter().filter(|(t, _)| now - t <= 1800) {
+            if let Some(j) = near(sys) {
+                let e = by_sys.entry(geo.info_of(sys).map(|i| i.name.clone()).unwrap_or_default()).or_insert((0, j));
                 e.0 += 1;
             }
         }
@@ -88,10 +100,10 @@ mod tests {
         let deps = AiDeps::for_tests(facts(&[]));
         deps.player.lock().unwrap().locations.insert("Kestrel Vane".into(), (30_004_759, false));
         deps.player.lock().unwrap().active_name = "Kestrel Vane".into();
-        let s = summary(&deps, &deps.facts(), 5, 1_000_000);
+        let s = summary(&deps, &deps.facts(), None, 5, 1_000_000);
         assert!(!s.contains("Kestrel"), "locations were not allowed: {s}");
         let deps2 = AiDeps { facts: std::sync::Arc::new(std::sync::Mutex::new(facts(&["characters.locations"]))), ..deps };
-        let s = summary(&deps2, &deps2.facts(), 5, 1_000_000);
+        let s = summary(&deps2, &deps2.facts(), None, 5, 1_000_000);
         assert!(s.contains("Character Kestrel Vane (active): 1DQ1-A."), "{s}");
     }
 }

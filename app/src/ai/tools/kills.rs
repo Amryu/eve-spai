@@ -131,6 +131,7 @@ fn battles(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         .take(limit)
         .map(|b| {
             json!({
+                "battle_id": b.engagements.iter().map(|e| e.kill_id).max(),
                 "from": eve_time(b.start),
                 "to": eve_time(b.end),
                 "ended": fmt_age(ctx.now, b.end),
