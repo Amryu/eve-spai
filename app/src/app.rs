@@ -332,6 +332,12 @@ pub struct SpaiApp {
     pub(crate) intel_channels_open: bool,
     pub(crate) jump_bridges_open: bool,
     jb_paste: String,
+    /// The bridge being edited (its index, or None for the add row) and its two ends as typed.
+    jb_edit: Option<(Option<usize>, String, String)>,
+    /// The sov upgrade being edited: index (None adds), system, upgrade.
+    sov_edit: Option<(Option<usize>, String, String)>,
+    /// The cyno generator being moved to another system: index and the system typed.
+    cyno_edit: Option<(usize, String)>,
     sov_upgrades_open: bool,
     sov_paste: String,
     pub(crate) coalitions_open: bool,
@@ -1306,6 +1312,9 @@ impl SpaiApp {
             intel_channels_open: false,
             jump_bridges_open: false,
             jb_paste: String::new(),
+            jb_edit: None,
+            sov_edit: None,
+            cyno_edit: None,
             sov_upgrades_open: false,
             sov_paste: String::new(),
             coalitions_open: false,
@@ -3063,6 +3072,16 @@ impl SpaiApp {
         self.map_route_kind = "gate";
         self.map_route_anchors = anchors;
         self.map_recompute_route();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_sov_upgrades_for_test(&mut self) {
+        self.sov_upgrades_open = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_cyno_generators_for_test(&mut self) {
+        self.cyno_generators_open = true;
     }
 
     #[cfg(test)]

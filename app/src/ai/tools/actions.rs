@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use super::{schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE];
+pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE, &MAP_DATA, &EDIT_MAP_DATA];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionKind {
@@ -15,6 +15,45 @@ pub enum ActionKind {
     PlanRoute { from: i64, to: i64 },
     SetDestination { system: i64, character: Option<String> },
     AddAlertRule(Box<crate::settings::AlertRule>),
+    /// Changes to the jump bridges, cyno generators or sov upgrades, all applied together.
+    EditMapData(MapDataEdit),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapDataEdit {
+    pub add_bridges: Vec<crate::settings::JumpBridge>,
+    pub remove_bridges: Vec<crate::settings::JumpBridge>,
+    pub add_cynos: Vec<i64>,
+    pub remove_cynos: Vec<i64>,
+    pub add_upgrades: Vec<crate::settings::SovUpgrade>,
+    pub remove_upgrades: Vec<crate::settings::SovUpgrade>,
+}
+
+impl MapDataEdit {
+    /// Applies the edit to the three lists; returns whether anything changed.
+    pub fn apply(&self, bridges: &mut Vec<crate::settings::JumpBridge>, cynos: &mut Vec<i64>, upgrades: &mut Vec<crate::settings::SovUpgrade>) -> bool {
+        let same = |a: &crate::settings::JumpBridge, b: &crate::settings::JumpBridge| (a.from == b.from && a.to == b.to) || (a.from == b.to && a.to == b.from);
+        let before = (bridges.len(), cynos.len(), upgrades.len(), bridges.clone(), upgrades.clone());
+        bridges.retain(|b| !self.remove_bridges.iter().any(|r| same(r, b)));
+        for b in &self.add_bridges {
+            if !bridges.iter().any(|k| same(k, b)) {
+                bridges.push(b.clone());
+            }
+        }
+        cynos.retain(|c| !self.remove_cynos.contains(c));
+        for c in &self.add_cynos {
+            if !cynos.contains(c) {
+                cynos.push(*c);
+            }
+        }
+        upgrades.retain(|u| !self.remove_upgrades.iter().any(|r| r.system == u.system && (r.upgrade.is_empty() || r.upgrade.eq_ignore_ascii_case(&u.upgrade))));
+        for u in &self.add_upgrades {
+            if !upgrades.contains(u) {
+                upgrades.push(u.clone());
+            }
+        }
+        (bridges.len(), cynos.len(), upgrades.len(), bridges.clone(), upgrades.clone()) != before
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,6 +199,120 @@ fn add_alert_rule(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     queue(ctx, ActionKind::AddAlertRule(Box::new(rule)), format!("Add alert rule \"{name}\": {}", parts.join(", ")))
 }
 
+static MAP_DATA: ToolSpec = ToolSpec {
+    name: "map_data",
+    description: "The user's own map data as it stands: jump bridges (Ansiblexes), friendly cyno generators and sov upgrades.",
+    need: Need::Any(&["actions.settings", "map.cyno"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        Ok(json!({
+            "jump_bridges": ctx.facts.jump_bridges.iter().map(|b| format!("{} <> {}", b.from, b.to)).collect::<Vec<_>>(),
+            "cyno_generators": ctx.facts.cyno_generators.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>(),
+            "sov_upgrades": ctx.facts.sov_upgrades.iter().map(|u| json!({"system": u.system, "upgrade": u.upgrade})).collect::<Vec<_>>(),
+        }))
+    },
+};
+
+static EDIT_MAP_DATA: ToolSpec = ToolSpec {
+    name: "edit_map_data",
+    description: "Proposes changes to the user's jump bridges, cyno generators and sov upgrades in one go: entries to add and                   to remove, read from whatever the user pasted or said (lists, dotlan links, tables, sentences). To change an                   entry, remove the old and add the new. A sov upgrade removal without an upgrade name removes every upgrade                   in that system. The user confirms first. Check map_data for what is there now.",
+    need: Need::All(&["actions.settings"]),
+    kind: Kind::Action,
+    schema: || {
+        let bridge = json!({"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]});
+        let upgrade = json!({"type": "object", "properties": {"system": {"type": "string"}, "upgrade": {"type": "string"}}, "required": ["system"]});
+        let list = |item: Value| json!({"type": "array", "items": item, "maxItems": 200});
+        schema(
+            json!({
+                "add_bridges": list(bridge.clone()), "remove_bridges": list(bridge),
+                "add_cyno_generators": list(json!({"type": "string"})), "remove_cyno_generators": list(json!({"type": "string"})),
+                "add_upgrades": list(upgrade.clone()), "remove_upgrades": list(upgrade),
+            }),
+            &[],
+        )
+    },
+    run: edit_map_data,
+};
+
+fn edit_map_data(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
+    let arr = |k: &str| v.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut unknown: Vec<String> = Vec::new();
+    let mut name = |ctx: &Ctx, n: &str| -> Option<String> {
+        match ctx.system(n) {
+            Ok(id) => Some(ctx.system_name(id)),
+            Err(_) => {
+                unknown.push(n.to_owned());
+                None
+            }
+        }
+    };
+    let mut e = MapDataEdit::default();
+    for (key, out) in [("add_bridges", 0), ("remove_bridges", 1)] {
+        for b in arr(key) {
+            let (f, t) = (b["from"].as_str().unwrap_or_default(), b["to"].as_str().unwrap_or_default());
+            if let (Some(from), Some(to)) = (name(ctx, f), name(ctx, t)) {
+                let jb = crate::settings::JumpBridge { from, to };
+                if out == 0 { e.add_bridges.push(jb) } else { e.remove_bridges.push(jb) }
+            }
+        }
+    }
+    for (key, out) in [("add_cyno_generators", 0), ("remove_cyno_generators", 1)] {
+        for c in arr(key) {
+            if let Some(n) = name(ctx, c.as_str().unwrap_or_default()) {
+                if let Ok(id) = ctx.system(&n) {
+                    if out == 0 { e.add_cynos.push(id) } else { e.remove_cynos.push(id) }
+                }
+            }
+        }
+    }
+    for (key, out) in [("add_upgrades", 0), ("remove_upgrades", 1)] {
+        for u in arr(key) {
+            if let Some(system) = name(ctx, u["system"].as_str().unwrap_or_default()) {
+                let up = crate::settings::SovUpgrade { system, upgrade: u["upgrade"].as_str().unwrap_or_default().trim().to_owned() };
+                if out == 0 && up.upgrade.is_empty() {
+                    continue;
+                }
+                if out == 0 { e.add_upgrades.push(up) } else { e.remove_upgrades.push(up) }
+            }
+        }
+    }
+    drop(name);
+    let mut parts = Vec::new();
+    let mut count = |n: usize, what: &str| {
+        if n > 0 {
+            parts.push(format!("{n} {what}"));
+        }
+    };
+    count(e.add_bridges.len(), "bridges to add");
+    count(e.remove_bridges.len(), "bridges to remove");
+    count(e.add_cynos.len(), "cyno generators to add");
+    count(e.remove_cynos.len(), "cyno generators to remove");
+    count(e.add_upgrades.len(), "upgrades to add");
+    count(e.remove_upgrades.len(), "upgrades to remove");
+    if parts.is_empty() {
+        return Err(if unknown.is_empty() { "nothing to change".into() } else { format!("no known systems among: {}", unknown.join(", ")) });
+    }
+    let mut summary = format!("Map data: {}", parts.join(", "));
+    let detail: Vec<String> = e
+        .add_bridges
+        .iter()
+        .take(6)
+        .map(|b| format!("+ {} <> {}", b.from, b.to))
+        .chain(e.remove_bridges.iter().take(6).map(|b| format!("- {} <> {}", b.from, b.to)))
+        .chain(e.add_upgrades.iter().take(6).map(|u| format!("+ {} {}", u.system, u.upgrade)))
+        .chain(e.remove_upgrades.iter().take(6).map(|u| format!("- {} {}", u.system, if u.upgrade.is_empty() { "(all)" } else { &u.upgrade })))
+        .collect();
+    if !detail.is_empty() {
+        summary.push_str(&format!(" ({})", detail.join("; ")));
+    }
+    let mut out = queue(ctx, ActionKind::EditMapData(e), summary)?;
+    if !unknown.is_empty() {
+        out["skipped_unknown_systems"] = json!(unknown);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::*;
@@ -184,6 +337,29 @@ mod tests {
             ActionKind::AddAlertRule(r) => assert_eq!(r.require, vec!["bubble".to_owned()]),
             k => panic!("{k:?}"),
         }
+    }
+
+    #[test]
+    fn map_data_edits_resolve_names_and_apply_together() {
+        let deps = AiDeps::for_tests(facts(&["actions.settings"]));
+        let f = deps.facts();
+        let mut actions = Vec::new();
+        let mut ctx = Ctx { deps: &deps, facts: &f, store: None, now: 1, actions: &mut actions };
+        let (out, err) = super::super::dispatch(
+            &mut ctx,
+            "edit_map_data",
+            &json!({"add_bridges": [{"from": "1dq1-a", "to": "7-K5EL"}, {"from": "Nowhere", "to": "1DQ1-A"}], "add_upgrades": [{"system": "1DQ1-A", "upgrade": "Cynosural Suppression"}], "remove_upgrades": [{"system": "7-K5EL"}]}),
+        );
+        assert!(!err, "{out}");
+        assert!(out.contains("Nowhere"), "unknown names are reported back: {out}");
+        let ActionKind::EditMapData(e) = &actions[0].kind else { panic!() };
+        assert_eq!(e.add_bridges, vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }]);
+        let mut bridges = vec![crate::settings::JumpBridge { from: "7-K5EL".into(), to: "1DQ1-A".into() }];
+        let mut cynos = vec![];
+        let mut ups = vec![crate::settings::SovUpgrade { system: "7-K5EL".into(), upgrade: "Ore Prospecting 3".into() }];
+        assert!(e.apply(&mut bridges, &mut cynos, &mut ups));
+        assert_eq!(bridges.len(), 1, "the same bridge the other way round is not added twice");
+        assert_eq!(ups, vec![crate::settings::SovUpgrade { system: "1DQ1-A".into(), upgrade: "Cynosural Suppression".into() }]);
     }
 
     #[test]

@@ -33,6 +33,8 @@ pub struct AiFacts {
     pub chat_dir: Option<std::path::PathBuf>,
     pub severity: crate::settings::SeverityRules,
     pub cyno_generators: Vec<i64>,
+    pub jump_bridges: Vec<crate::settings::JumpBridge>,
+    pub sov_upgrades: Vec<crate::settings::SovUpgrade>,
     pub fleet_presets: Vec<crate::settings::FleetPreset>,
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.

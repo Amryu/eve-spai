@@ -2722,6 +2722,19 @@ pub(crate) fn all() -> Vec<Scene> {
             })
             .into();
     }));
+    v.push(dialog_scene("dialog_sov_upgrades", [460.0, 520.0], |a| {
+        a.open_sov_upgrades_for_test();
+        a.systems = Some(fixtures::systems());
+        a.settings.sov_upgrades = vec![
+            crate::settings::SovUpgrade { system: "1DQ1-A".into(), upgrade: "Cynosural Suppression".into() },
+            crate::settings::SovUpgrade { system: "7-K5EL".into(), upgrade: "Major Threat Detection Array 3, Exploration Detector 2, Ore Prospecting Array 1".into() },
+        ];
+    }));
+    v.push(dialog_scene("dialog_cyno_generators", [380.0, 460.0], |a| {
+        a.open_cyno_generators_for_test();
+        a.systems = Some(fixtures::systems());
+        a.settings.cyno_generators = vec![30_004_759, 30_003_704];
+    }));
     // `coal_edit` is the dialog's edit buffer, filled by the settings button that opens it, so the
     // scene has to fill it the same way or the coalition list renders empty.
     v.push(dialog_scene("dialog_coalitions", [520.0, 680.0], |a| {

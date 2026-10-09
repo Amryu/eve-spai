@@ -1423,9 +1423,61 @@ impl SpaiApp {
                     ))
                     .strong(),
                 );
+                // One bridge at a time: the add row, or the one being edited, in place.
+                let resolve = |g: &Option<std::sync::Arc<crate::geo::Systems>>, n: &str| g.as_ref().and_then(|g| g.lookup(n.trim()).map(|i| i.name.clone()));
+                if !matches!(self.jb_edit, Some((Some(_), _, _))) {
+                    let (mut a, mut b) = match self.jb_edit.take() {
+                        Some((None, a, b)) => (a, b),
+                        _ => (String::new(), String::new()),
+                    };
+                    let mut add = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Add");
+                        self.system_input(ui, "jb_new_from", &mut a, "From", 120.0);
+                        ui.label(egui_phosphor::regular::ARROWS_LEFT_RIGHT);
+                        self.system_input(ui, "jb_new_to", &mut b, "To", 120.0);
+                        add = ui.add_enabled(resolve(&graph, &a).is_some() && resolve(&graph, &b).is_some(), egui::Button::new("Add")).clicked();
+                    });
+                    if add {
+                        if let (Some(from), Some(to)) = (resolve(&graph, &a), resolve(&graph, &b)) {
+                            let known = self.settings.jump_bridges.iter().any(|k| (k.from == from && k.to == to) || (k.from == to && k.to == from));
+                            if !known {
+                                self.settings.jump_bridges.push(crate::settings::JumpBridge { from, to });
+                                changed = true;
+                            }
+                        }
+                        a.clear();
+                        b.clear();
+                    }
+                    self.jb_edit = (!a.is_empty() || !b.is_empty()).then_some((None, a, b));
+                }
+                let list = self.settings.jump_bridges.clone();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove = None;
-                    for (i, b) in self.settings.jump_bridges.iter().enumerate() {
+                    let mut save: Option<(usize, String, String)> = None;
+                    for (i, b) in list.iter().enumerate() {
+                        if let Some((Some(ei), ea, eb)) = self.jb_edit.as_mut().filter(|e| e.0 == Some(i)).map(|e| (e.0, std::mem::take(&mut e.1), std::mem::take(&mut e.2))) {
+                            let (mut ea, mut eb) = (ea, eb);
+                            let mut done = None;
+                            ui.horizontal(|ui| {
+                                self.system_input(ui, "jb_edit_from", &mut ea, "From", 120.0);
+                                ui.label(egui_phosphor::regular::ARROWS_LEFT_RIGHT);
+                                self.system_input(ui, "jb_edit_to", &mut eb, "To", 120.0);
+                                let ok = resolve(&graph, &ea).is_some() && resolve(&graph, &eb).is_some();
+                                if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                                    done = Some(true);
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    done = Some(false);
+                                }
+                            });
+                            match done {
+                                Some(true) => save = Some((ei, ea, eb)),
+                                Some(false) => self.jb_edit = None,
+                                None => self.jb_edit = Some((Some(ei), ea, eb)),
+                            }
+                            continue;
+                        }
                         ui.horizontal(|ui| {
                             ui.label(format!("{} » {}", b.from, b.to));
                             if let Some(z) = zone_of(b) {
@@ -1438,13 +1490,26 @@ impl SpaiApp {
                                 ui.label(dir(egui_phosphor::regular::ARROW_LEFT, z.zone_at_a, z.back(max)))
                                     .on_hover_text(format!("{} to {}", b.to, b.from));
                             }
-                            if ui.button(egui_phosphor::regular::X).clicked() {
-                                remove = Some(i);
-                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                    remove = Some(i);
+                                }
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                    self.jb_edit = Some((Some(i), b.from.clone(), b.to.clone()));
+                                }
+                            });
                         });
+                    }
+                    if let Some((i, a, b)) = save {
+                        if let (Some(from), Some(to), Some(slot)) = (resolve(&graph, &a), resolve(&graph, &b), self.settings.jump_bridges.get_mut(i)) {
+                            *slot = crate::settings::JumpBridge { from, to };
+                            changed = true;
+                        }
+                        self.jb_edit = None;
                     }
                     if let Some(i) = remove {
                         self.settings.jump_bridges.remove(i);
+                        self.jb_edit = None;
                         changed = true;
                     }
                 });
@@ -1510,19 +1575,83 @@ impl SpaiApp {
                 });
                 ui.separator();
                 ui.label(egui::RichText::new(format!("{} upgrades", self.settings.sov_upgrades.len())).strong());
+                let graph = self.systems.clone();
+                let resolve = |n: &str| graph.as_ref().and_then(|g| g.lookup(n.trim()).map(|i| i.name.clone()));
+                // The add row, unless an upgrade is being edited in place.
+                if !matches!(self.sov_edit, Some((Some(_), _, _))) {
+                    let (mut sys, mut up) = match self.sov_edit.take() {
+                        Some((None, a, b)) => (a, b),
+                        _ => (String::new(), String::new()),
+                    };
+                    let mut add = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Add");
+                        self.system_input(ui, "sov_new_sys", &mut sys, "System", 110.0);
+                        ui.add(egui::TextEdit::singleline(&mut up).hint_text("Upgrade, e.g. Cynosural Suppression").desired_width(ui.available_width() - 60.0));
+                        add = ui.add_enabled(resolve(&sys).is_some() && !up.trim().is_empty(), egui::Button::new("Add")).clicked();
+                    });
+                    if add {
+                        if let Some(system) = resolve(&sys) {
+                            let u = crate::settings::SovUpgrade { system, upgrade: up.trim().to_owned() };
+                            if !self.settings.sov_upgrades.contains(&u) {
+                                self.settings.sov_upgrades.push(u);
+                                changed = true;
+                            }
+                        }
+                        sys.clear();
+                        up.clear();
+                    }
+                    self.sov_edit = (!sys.is_empty() || !up.is_empty()).then_some((None, sys, up));
+                }
+                let list = self.settings.sov_upgrades.clone();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove = None;
-                    for (i, u) in self.settings.sov_upgrades.iter().enumerate() {
+                    let mut save: Option<(usize, String, String)> = None;
+                    for (i, u) in list.iter().enumerate() {
+                        if let Some((ei, mut es, mut eu)) = self.sov_edit.as_mut().filter(|e| e.0 == Some(i)).map(|e| (i, std::mem::take(&mut e.1), std::mem::take(&mut e.2))) {
+                            let mut done = None;
+                            ui.horizontal(|ui| {
+                                self.system_input(ui, "sov_edit_sys", &mut es, "System", 110.0);
+                                ui.add(egui::TextEdit::singleline(&mut eu).desired_width(ui.available_width() - 130.0));
+                                if ui.add_enabled(resolve(&es).is_some() && !eu.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                                    done = Some(true);
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    done = Some(false);
+                                }
+                            });
+                            match done {
+                                Some(true) => save = Some((ei, es, eu)),
+                                Some(false) => self.sov_edit = None,
+                                None => self.sov_edit = Some((Some(ei), es, eu)),
+                            }
+                            continue;
+                        }
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&u.system).strong());
-                            ui.label(egui::RichText::new(&u.upgrade).weak());
-                            if ui.button(egui_phosphor::regular::X).clicked() {
-                                remove = Some(i);
-                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                    remove = Some(i);
+                                }
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                    self.sov_edit = Some((Some(i), u.system.clone(), u.upgrade.clone()));
+                                }
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.add(egui::Label::new(egui::RichText::new(&u.upgrade).weak()).truncate()).on_hover_text(&u.upgrade);
+                                });
+                            });
                         });
+                    }
+                    if let Some((i, sys, up)) = save {
+                        if let (Some(system), Some(slot)) = (resolve(&sys), self.settings.sov_upgrades.get_mut(i)) {
+                            *slot = crate::settings::SovUpgrade { system, upgrade: up.trim().to_owned() };
+                            changed = true;
+                        }
+                        self.sov_edit = None;
                     }
                     if let Some(i) = remove {
                         self.settings.sov_upgrades.remove(i);
+                        self.sov_edit = None;
                         changed = true;
                     }
                 });
@@ -1631,22 +1760,58 @@ impl SpaiApp {
                     ui.label(egui::RichText::new("(map data still loading…)").weak());
                 }
                 ui.separator();
+                let list = self.settings.cyno_generators.clone();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove: Option<usize> = None;
-                    for (i, id) in self.settings.cyno_generators.iter().enumerate() {
+                    let mut save: Option<(usize, i64)> = None;
+                    for (i, id) in list.iter().enumerate() {
                         let name = systems
                             .as_ref()
                             .and_then(|s| s.info_of(*id).map(|inf| inf.name.clone()))
                             .unwrap_or_else(|| format!("#{id}"));
-                        ui.horizontal(|ui| {
-                            ui.label(name);
-                            if ui.button("Remove").clicked() {
-                                remove = Some(i);
+                        if let Some(mut typed) = self.cyno_edit.as_mut().filter(|e| e.0 == i).map(|e| std::mem::take(&mut e.1)) {
+                            let mut done = None;
+                            ui.horizontal(|ui| {
+                                let picked = self.system_input(ui, "cyno_edit", &mut typed, "System", 160.0);
+                                let id = picked.or_else(|| systems.as_ref().and_then(|s| s.lookup(typed.trim()).map(|x| x.id)));
+                                if ui.add_enabled(id.is_some(), egui::Button::new("Save")).clicked() {
+                                    done = id.map(Some);
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    done = Some(None);
+                                }
+                            });
+                            match done {
+                                Some(Some(id)) => save = Some((i, id)),
+                                Some(None) => self.cyno_edit = None,
+                                None => self.cyno_edit = Some((i, typed)),
                             }
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(name.clone());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                    remove = Some(i);
+                                }
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Move to another system").clicked() {
+                                    self.cyno_edit = Some((i, name.clone()));
+                                }
+                            });
                         });
+                    }
+                    if let Some((i, id)) = save {
+                        if !self.settings.cyno_generators.contains(&id) {
+                            if let Some(slot) = self.settings.cyno_generators.get_mut(i) {
+                                *slot = id;
+                                changed = true;
+                            }
+                        }
+                        self.cyno_edit = None;
                     }
                     if let Some(i) = remove {
                         self.settings.cyno_generators.remove(i);
+                        self.cyno_edit = None;
                         changed = true;
                     }
                 });
