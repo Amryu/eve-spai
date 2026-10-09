@@ -8210,3 +8210,37 @@ fn uitest_the_systems_picker_takes_several_clicks_on_names() {
         "still open for the next pick"
     );
 }
+
+/// A finished share copies its link and says so in a toast over the content, and the report keeps
+/// its layout: no status row is added above it.
+#[test]
+fn uitest_a_finished_share_is_a_toast_not_a_row() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let app = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::app::SpaiApp>));
+    let held = app.clone();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui(move |ui| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+        a.root_dialogs(ui.ctx(), None);
+    });
+    h.run_steps(4);
+    let tiles_top = |h: &egui_kittest::Harness<'_>| {
+        h.root().children_recursive().find(|n| n.accesskit_node().label().unwrap_or_default().contains("Tiles")).map(|n| n.rect().top())
+    };
+    let before = tiles_top(&h);
+    assert!(before.is_some(), "the report's tabs are on screen");
+    app.borrow().as_ref().unwrap().set_share_done("abc", "https://eve-spai.com/br/abc");
+    // The toast asks for a repaint when it runs out, so a plain run would wait for that.
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("link copied").is_some(), "the toast says the link was copied");
+    assert_eq!(tiles_top(&h), before, "nothing pushed the report down");
+}

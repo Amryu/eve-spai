@@ -155,24 +155,28 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
                     affiliation_line(ui, d, &d.victim);
                 });
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(type_name(d.victim.ship)).strong());
-                if let Some((name, region, sec)) = sys {
+            // One line each; what does not fit is cut, the whole on hover.
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(egui::RichText::new(type_name(d.victim.ship)).strong()).wrap_mode(egui::TextWrapMode::Extend));
+                if let Some((name, _, sec)) = sys {
                     ui.label(egui::RichText::new("\u{00b7}").weak());
                     ui.label(security_badge(*sec));
-                    ui.label(name);
-                    ui.label(egui::RichText::new(format!("({region})")).weak());
+                    ui.add(egui::Label::new(name).wrap_mode(egui::TextWrapMode::Extend));
+                }
+                let mut rest = String::new();
+                if let Some((_, region, _)) = sys {
+                    rest.push_str(&format!("({region})"));
                 }
                 if let Some((near, m)) = &d.near {
-                    ui.label(egui::RichText::new(format!("\u{00b7} near {near}, {}", fmt_distance(*m))).weak());
+                    rest.push_str(&format!(" \u{00b7} near {near}, {}", fmt_distance(*m)));
+                }
+                if !rest.is_empty() {
+                    ui.add(egui::Label::new(egui::RichText::new(&rest).weak()).truncate()).on_hover_text(rest.trim());
                 }
             });
-            ui.horizontal_wrapped(|ui| {
-                let at = chrono::DateTime::from_timestamp(d.time, 0).map(|t| t.format("%Y-%m-%d %H:%M EVE").to_string()).unwrap_or_default();
-                ui.label(egui::RichText::new(at).weak());
-                ui.label(egui::RichText::new(format!("\u{00b7} {} damage taken", fmt_int(d.victim.damage))).weak());
-                ui.label(egui::RichText::new(format!("\u{00b7} {} involved", d.attackers.len())).weak());
-            });
+            let at = chrono::DateTime::from_timestamp(d.time, 0).map(|t| t.format("%Y-%m-%d %H:%M:%S EVE").to_string()).unwrap_or_default();
+            let when = format!("{at} \u{00b7} {} damage taken \u{00b7} {} involved", fmt_int(d.victim.damage), d.attackers.len());
+            ui.add(egui::Label::new(egui::RichText::new(&when).weak()).truncate()).on_hover_text(&when);
         });
     });
     ui.add_space(6.0);
@@ -190,7 +194,7 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
             ui.add_space(8.0);
             kill_actions(ui, d.kill_id, Some(d.esi_url()));
         });
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             let item = |ui: &mut egui::Ui, t: egui::RichText| {
                 ui.add(egui::Label::new(t).wrap_mode(egui::TextWrapMode::Extend));
             };
@@ -209,20 +213,39 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
                 tags.push("awox");
             }
             tags.extend(d.zkb.labels.iter().map(String::as_str).filter(|l| !matches!(*l, "solo" | "npc" | "awox")));
-            for t in tags {
+            // As many tags as fit, the rest behind "+N".
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let gap = ui.spacing().item_spacing.x;
+            let chip_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x + 12.0 + 2.0 + gap;
+            let more_w = chip_w("+99");
+            let mut room = ui.available_width();
+            let mut shown = 0;
+            for (i, t) in tags.iter().enumerate() {
+                let w = chip_w(t);
+                let need = if i + 1 < tags.len() { w + more_w } else { w };
+                if need > room {
+                    break;
+                }
+                room -= w;
+                shown += 1;
+            }
+            for t in &tags[..shown] {
                 egui::Frame::new()
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
                     .corner_radius(8.0)
                     .inner_margin(egui::Margin::symmetric(6, 1))
-                    .show(ui, |ui| item(ui, egui::RichText::new(t).weak()));
+                    .show(ui, |ui| item(ui, egui::RichText::new(*t).weak()));
+            }
+            if shown < tags.len() {
+                ui.label(egui::RichText::new(format!("+{}", tags.len() - shown)).weak()).on_hover_text(tags[shown..].join(", "));
             }
         });
+        if let Some(pod) = &d.pod {
+            ui.separator();
+            pod_line(ui, d, pod, &type_name);
+        }
     });
     ui.add_space(6.0);
-    if let Some(pod) = &d.pod {
-        pod_section(ui, d, pod, &type_name);
-        ui.add_space(6.0);
-    }
 
     // The fit and holds beside the attackers, or above them when narrow.
     if wide {
@@ -243,38 +266,42 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
     link
 }
 
-/// The victim's capsule, lost right after: its value, who killed it, how soon, and its implants.
-fn pod_section(ui: &mut egui::Ui, ship: &KillDetail, pod: &KillDetail, type_name: &dyn Fn(i64) -> String) {
+/// The victim's capsule, lost right after, on one line: its value, how soon, its implants by icon
+/// (name and value on hover), and the same actions as the ship.
+fn pod_line(ui: &mut egui::Ui, ship: &KillDetail, pod: &KillDetail, type_name: &dyn Fn(i64) -> String) {
     let red = crate::theme::standing::HOSTILE;
     let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            eve_image(ui, Some(eve_type_icon_url(pod.victim.ship, 32.0)), 32.0);
-            ui.label(egui::RichText::new("Capsule").strong());
-            ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(pod.zkb.total))).color(red).strong().size(18.0));
-            ui.add_space(8.0);
-            kill_actions(ui, pod.kill_id, Some(pod.esi_url()));
-        });
-        ui.horizontal_wrapped(|ui| {
-            let item = |ui: &mut egui::Ui, t: String| {
-                ui.add(egui::Label::new(egui::RichText::new(t).weak()).wrap_mode(egui::TextWrapMode::Extend));
-            };
-            item(ui, format!("{}s after the ship", pod.time - ship.time));
-            if let Some(fb) = pod.attackers.iter().find(|a| a.final_blow) {
-                let who = pod.name(fb.char_id).or(pod.name(fb.corp_id)).map(str::to_owned).unwrap_or_else(|| type_name(fb.ship));
-                item(ui, format!("\u{00b7} final blow {who}"));
-            }
-            item(ui, format!("\u{00b7} {} involved", pod.attackers.len()));
-        });
-        let implants: Vec<&crate::killmail::KillItem> = pod.items.iter().filter(|i| i.depth == 0).collect();
-        if implants.is_empty() {
-            ui.label(egui::RichText::new("No implants").weak());
-        }
-        for it in implants {
+    let implants: Vec<&crate::killmail::KillItem> = pod.items.iter().filter(|i| i.depth == 0).collect();
+    ui.horizontal(|ui| {
+        eve_image(ui, Some(eve_type_icon_url(pod.victim.ship, 24.0)), 24.0);
+        ui.add(egui::Label::new(egui::RichText::new(format!("Capsule {} ISK", fmt_isk(pod.zkb.total))).color(red).strong()).wrap_mode(egui::TextWrapMode::Extend));
+        kill_actions(ui, pod.kill_id, Some(pod.esi_url()));
+        // As many implants as fit beside a little of the text, the rest behind "+N".
+        let step = 26.0 + ui.spacing().item_spacing.x;
+        let fit = (((ui.available_width() - 120.0) / step).floor().max(0.0) as usize).min(implants.len());
+        let fit = if fit < implants.len() { fit.saturating_sub(1) } else { fit };
+        for it in &implants[..fit] {
             let (qty, tint) = if it.dropped > 0 { (it.dropped, green) } else { (it.destroyed, red) };
-            item_row(ui, it.type_id, &type_name(it.type_id), qty, pod.value_of(it, qty), tint, 0);
+            let hover = format!("{}\n{} ISK, {}", type_name(it.type_id), fmt_isk(pod.value_of(it, qty)), if it.dropped > 0 { "dropped" } else { "destroyed" });
+            let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(24.0), egui::Sense::hover());
+            ui.painter().rect_stroke(rect.expand(1.0), 3.0, egui::Stroke::new(1.0, tint.gamma_multiply(0.7)), egui::StrokeKind::Outside);
+            egui::Image::new(eve_type_icon_url(it.type_id, 24.0)).paint_at(ui, rect);
+            resp.on_hover_text(hover);
         }
+        if fit < implants.len() {
+            let rest: Vec<String> = implants[fit..].iter().map(|it| type_name(it.type_id)).collect();
+            ui.label(egui::RichText::new(format!("+{}", rest.len())).weak()).on_hover_text(rest.join("\n"));
+        }
+        let mut info = format!("{}s after the ship", pod.time - ship.time);
+        if implants.is_empty() {
+            info.push_str(" \u{00b7} no implants");
+        }
+        if let Some(fb) = pod.attackers.iter().find(|a| a.final_blow) {
+            let who = pod.name(fb.char_id).or(pod.name(fb.corp_id)).map(str::to_owned).unwrap_or_else(|| type_name(fb.ship));
+            info.push_str(&format!(" \u{00b7} final blow {who}"));
+        }
+        info.push_str(&format!(" \u{00b7} {} involved", pod.attackers.len()));
+        ui.add(egui::Label::new(egui::RichText::new(&info).weak()).truncate()).on_hover_text(&info);
     });
 }
 

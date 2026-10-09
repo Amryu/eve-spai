@@ -304,6 +304,7 @@ pub(crate) use char_rings::*;
 mod alert_engine;
 pub(crate) mod killmail_ui;
 mod br_timeline;
+mod toasts;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
@@ -438,7 +439,11 @@ pub struct SpaiApp {
     pub(crate) battle_selected: Option<i64>,
     pub(crate) battle_detail_cache: Option<std::sync::Arc<crate::brview::BattleDetail>>,
     loaded_report: Option<LoadedReport>,
-    report_msg: Option<String>,
+    toasts: Vec<toasts::Toast>,
+    /// The last report shared to eve-spai.com: (battle, share id, link).
+    br_shared: Option<(Option<i64>, String, String)>,
+    /// A share is being deleted: its outcome comes back as the share status.
+    br_share_deleting: bool,
     build_from_kill: crate::zkill::SharedBuildFromKill,
     build_kill_input: String,
     build_kill_error: Option<String>,
@@ -1423,7 +1428,9 @@ impl SpaiApp {
             show_history: false,
             battle_selected: None,
             loaded_report: None,
-            report_msg: None,
+            toasts: Vec::new(),
+            br_shared: None,
+            br_share_deleting: false,
             build_from_kill: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::zkill::BuildFromKill::Idle,
             )),
@@ -3173,6 +3180,11 @@ impl SpaiApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_share_done(&self, id: &str, url: &str) {
+        *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Done { id: id.into(), url: url.into() };
+    }
+
+    #[cfg(test)]
     pub(crate) fn battle_systems_picked(&self) -> Vec<i64> {
         self.battle_systems.clone()
     }
@@ -3725,6 +3737,9 @@ impl SpaiApp {
     /// [`Self::root_chrome`]: the harness can only reach them without the poll/side-effect
     /// prologue.
     pub(crate) fn root_dialogs(&mut self, ctx: &egui::Context, jframe: Option<&JabberFrame>) {
+        self.share_status_poll(ctx);
+        self.evetools_poll(ctx);
+        self.toasts_ui(ctx);
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);
         self.fleet_migrate_window(ctx);

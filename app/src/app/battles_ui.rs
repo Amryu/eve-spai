@@ -963,74 +963,54 @@ impl SpaiApp {
         }
     }
 
-    pub(crate) fn share_status_ui(&mut self, ui: &mut egui::Ui) {
-        use egui_phosphor::regular as icon;
-        enum Action {
-            None,
-            Dismiss,
-            Delete(String),
-        }
-        let mut action = Action::None;
-        {
-            let state = self.br_share.lock().unwrap();
-            match &*state {
-                crate::brshare::ShareStatus::Idle => return,
-                crate::brshare::ShareStatus::Uploading => {
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Sharing to eve-spai.com…");
-                    });
+    /// Sharing's progress and outcome as notices; a finished share's link goes to the clipboard.
+    pub(crate) fn share_status_poll(&mut self, ctx: &egui::Context) {
+        use crate::brshare::ShareStatus;
+        let status = self.br_share.lock().unwrap().clone();
+        match status {
+            ShareStatus::Idle => {
+                if std::mem::take(&mut self.br_share_deleting) {
+                    self.br_shared = None;
+                    self.toast_keyed("share", "Shared report deleted", false);
                 }
-                crate::brshare::ShareStatus::Done { id, url } => {
-                    ui.add_space(2.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{}  Shared:", icon::SHARE_NETWORK))
-                                .color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)),
-                        );
-                        ui.hyperlink(url);
-                        if ui.button(format!("{} Copy", icon::COPY)).clicked() {
-                            ui.ctx().copy_text(url.clone());
-                        }
-                        if ui.button(format!("{} Open", icon::GLOBE)).clicked() {
-                            let _ = open::that(url);
-                        }
-                        if ui.button(format!("{} Delete", icon::TRASH)).clicked() {
-                            action = Action::Delete(id.clone());
-                        }
-                        if ui.button(icon::X).on_hover_text("Dismiss").clicked() {
-                            action = Action::Dismiss;
-                        }
-                    });
-                }
-                crate::brshare::ShareStatus::Error(e) => {
-                    ui.add_space(2.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(crate::theme::standing::WARNING, e);
-                        if ui.button(icon::X).on_hover_text("Dismiss").clicked() {
-                            action = Action::Dismiss;
-                        }
-                    });
-                }
+            }
+            ShareStatus::Uploading => {
+                let text = if self.br_share_deleting { "Deleting the shared report\u{2026}" } else { "Sharing to eve-spai.com\u{2026}" };
+                self.toast_busy("share", text);
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            ShareStatus::Done { id, url } => {
+                ctx.copy_text(url.clone());
+                self.toast_keyed("share", format!("Shared, link copied: {url}"), false);
+                self.br_shared = Some((self.br_share_kid, id, url));
+                *self.br_share.lock().unwrap() = ShareStatus::Idle;
+            }
+            ShareStatus::Error(e) => {
+                self.br_share_deleting = false;
+                self.toast_keyed("share", e, true);
+                *self.br_share.lock().unwrap() = ShareStatus::Idle;
             }
         }
-        match action {
-            Action::None => {}
-            Action::Dismiss => {
-                *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Idle;
+    }
+
+    /// A br.evetools report made or updated: its link to the clipboard, and a notice.
+    pub(crate) fn evetools_poll(&mut self, ctx: &egui::Context) {
+        let status = self.evetools.lock().unwrap().clone();
+        match status {
+            crate::evetools::Status::Done(url) => {
+                ctx.copy_text(url.clone());
+                self.toast_keyed("evetools", format!("br.evetools link copied: {url}"), false);
+                *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
             }
-            Action::Delete(id) => {
-                if let Some((char_id, path)) = self.share_identity() {
-                    crate::brshare::spawn_delete_share(
-                        path,
-                        char_id,
-                        id,
-                        self.br_share.clone(),
-                        ui.ctx().clone(),
-                    );
-                }
+            crate::evetools::Status::Failed(e) => {
+                self.toast_keyed("evetools", e, true);
+                *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
             }
+            crate::evetools::Status::Working => {
+                self.toast_busy("evetools", "Making the br.evetools report\u{2026}");
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            crate::evetools::Status::Idle => {}
         }
     }
 
@@ -1186,7 +1166,7 @@ impl SpaiApp {
                 });
                 self.show_imported_report(b, title, ctx);
             }
-            Err(e) => self.report_msg = Some(format!("Could not open report: {e}")),
+            Err(e) => self.toast_error(format!("Could not open report: {e}")),
         }
     }
 
@@ -1221,7 +1201,6 @@ impl SpaiApp {
             sorted_for: None,
             hover: None,
         });
-        self.report_msg = None;
     }
 
     pub(crate) fn poll_build_from_kill(&mut self, ctx: &egui::Context) {
@@ -1728,6 +1707,10 @@ impl SpaiApp {
                         let evetools_busy = self.evetools_busy;
                         // `Some(None)` makes a report, `Some(Some(..))` updates the saved one.
                         let mut evetools_click: Option<Option<(i64, crate::evetools::Saved)>> = None;
+                        let mut evetools_copied = false;
+                        let shared = self.br_shared.clone().filter(|(kid, _, _)| *kid == self.battle_selected);
+                        let mut shared_delete: Option<String> = None;
+                        let mut shared_copied = false;
                         let authed = {
                             let _s = crate::frametime::span("br: keyring logins");
                             self.br_authed_chars()
@@ -1802,6 +1785,23 @@ impl SpaiApp {
                                     }
                                     ui.checkbox(&mut self.br_unlisted, "Unlisted")
                                         .on_hover_text("Don't list it in the public directory (reachable only by link)");
+                                    if let Some((_, id, url)) = &shared {
+                                        if ui.button(format!("{}  Open shared report", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}, and copy the link")).clicked() {
+                                            let _ = open::that(url);
+                                            ui.ctx().copy_text(url.clone());
+                                            shared_copied = true;
+                                            ui.close();
+                                        }
+                                        if ui.button(format!("{}  Copy shared link", icon::COPY)).clicked() {
+                                            ui.ctx().copy_text(url.clone());
+                                            shared_copied = true;
+                                            ui.close();
+                                        }
+                                        if ui.button(format!("{}  Delete shared report", icon::TRASH)).clicked() {
+                                            shared_delete = Some(id.clone());
+                                            ui.close();
+                                        }
+                                    }
                                     if ui
                                         .button(format!("{}  My shared BRs", icon::GLOBE))
                                         .on_hover_text("List and manage the reports you've shared")
@@ -1829,12 +1829,15 @@ impl SpaiApp {
                                         }
                                         Some((anchor, saved, changed)) => {
                                             let url = saved.url();
-                                            if ui.button(format!("{}  Open br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}")).clicked() {
+                                            if ui.button(format!("{}  Open br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}, and copy the link")).clicked() {
                                                 let _ = open::that(&url);
+                                                ui.ctx().copy_text(url.clone());
+                                                evetools_copied = true;
                                                 ui.close();
                                             }
                                             if ui.button(format!("{}  Copy br.evetools link", icon::COPY)).clicked() {
                                                 ui.ctx().copy_text(url.clone());
+                                                evetools_copied = true;
                                                 ui.close();
                                             }
                                             if *changed {
@@ -1872,6 +1875,19 @@ impl SpaiApp {
                         if let Some(sid) = open_system {
                             self.open_system(sid);
                         }
+                        if evetools_copied {
+                            self.toast_keyed("evetools", "br.evetools link copied", false);
+                        }
+                        if shared_copied {
+                            self.toast_keyed("share", "Shared link copied", false);
+                        }
+                        if let Some(id) = shared_delete {
+                            if let Some((char_id, path)) = self.share_identity() {
+                                self.br_share_deleting = true;
+                                *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Uploading;
+                                crate::brshare::spawn_delete_share(path, char_id, id, self.br_share.clone(), ui.ctx().clone());
+                            }
+                        }
                         if let Some(target) = evetools_click {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 let anchor = match &target {
@@ -1880,10 +1896,6 @@ impl SpaiApp {
                                 };
                                 crate::evetools::spawn(b, target.map(|(_, s)| s), anchor, self.evetools.clone(), ui.ctx().clone());
                             }
-                        }
-                        if let crate::evetools::Status::Failed(e) = self.evetools.lock().unwrap().clone() {
-                            self.report_msg = Some(e);
-                            *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
                         }
                         if share_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
@@ -1896,21 +1908,14 @@ impl SpaiApp {
                             let ctx = ui.ctx().clone();
                             self.open_my_shared(&ctx);
                         }
-                        if self.battle_selected == self.br_share_kid {
-                            self.share_status_ui(ui);
-                        }
                         if save_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
-                                self.report_msg = match self.save_battle_report(&b) {
-                                    Ok(Some(path)) => Some(format!("Saved report to {}", path.display())),
-                                    Ok(None) => None,
-                                    Err(e) => Some(format!("Could not save report: {e}")),
-                                };
+                                match self.save_battle_report(&b) {
+                                    Ok(Some(path)) => self.toast(format!("Saved report to {}", path.display())),
+                                    Ok(None) => {}
+                                    Err(e) => self.toast_error(format!("Could not save report: {e}")),
+                                }
                             }
-                        }
-                        if let Some(msg) = self.report_msg.clone() {
-                            ui.add_space(2.0);
-                            ui.label(egui::RichText::new(msg).weak());
                         }
                         if go_back {
                             self.battle_selected = None;
@@ -2178,14 +2183,6 @@ impl SpaiApp {
         if let Some(path) = to_load {
             self.load_battle_report(&path, ui.ctx());
             return;
-        }
-        if let Some(msg) = self.report_msg.clone() {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(msg).weak());
-                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).clicked() {
-                    self.report_msg = None;
-                }
-            });
         }
         ui.add_space(4.0);
         let query = self.battle_search.trim().to_lowercase();
