@@ -62,6 +62,10 @@ pub struct Request<'a> {
     pub model: &'a str,
     pub effort: &'a str,
     pub max_tokens: u32,
+    /// Stable for one conversation: the CLI backends resume their own session by it.
+    pub conv: &'a str,
+    /// The app's MCP server (port, token), for backends that call the tools themselves.
+    pub mcp: Option<(u16, &'a str)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

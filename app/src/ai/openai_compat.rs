@@ -213,7 +213,7 @@ mod tests {
             Msg { role: Role::User, blocks: vec![Block::ToolResult { id: "c1".into(), content: "3 jumps".into(), is_error: false }] },
         ];
         let tools = vec![ToolDef { name: "route".into(), description: "d".into(), schema: json!({"type": "object"}) }];
-        let req = Request { system_static: "s", system_dynamic: "d", msgs: &msgs, tools: &tools, model: "m", effort: "", max_tokens: 100 };
+        let req = Request { system_static: "s", system_dynamic: "d", msgs: &msgs, tools: &tools, model: "m", effort: "", max_tokens: 100, conv: "c", mcp: None };
         let b = body(&req, true);
         let m = b["messages"].as_array().unwrap();
         assert_eq!(m[0]["content"], "s\n\nd");

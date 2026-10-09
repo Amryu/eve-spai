@@ -79,7 +79,51 @@ impl SpaiApp {
                         .changed();
                     ui.end_row();
                 }
-                ProviderKind::Gemini | ProviderKind::ClaudeCli | ProviderKind::CodexCli | ProviderKind::Unknown => {
+                ProviderKind::Gemini => {
+                    ui.label("Model");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut a.gemini.model).hint_text("gemini-2.5-flash").desired_width(280.0)).changed();
+                    ui.end_row();
+                    ui.label("Effort").on_hover_text("How much the model thinks before answering: lower answers sooner");
+                    let cur = EFFORTS.iter().find(|(k, _)| *k == a.gemini.effort).map_or("Default", |(_, l)| l);
+                    egui::ComboBox::from_id_salt("ai_gemini_effort").selected_text(cur).width(280.0).show_ui(ui, |ui| {
+                        for (k, l) in EFFORTS {
+                            changed |= ui.menu_value(&mut a.gemini.effort, k.to_owned(), l).changed();
+                        }
+                    });
+                    ui.end_row();
+                }
+                ProviderKind::ClaudeCli | ProviderKind::CodexCli => {
+                    let claude = a.provider == ProviderKind::ClaudeCli;
+                    let cfg = if claude { &mut a.claude_cli } else { &mut a.codex_cli };
+                    let default = if claude { "claude" } else { "codex" };
+                    ui.label("Program");
+                    ui.horizontal(|ui| {
+                        changed |= ui.add(egui::TextEdit::singleline(&mut cfg.path).hint_text(default).desired_width(200.0)).changed();
+                        let prog = if cfg.path.trim().is_empty() { default } else { cfg.path.trim() };
+                        if crate::ai::cli::find(prog).is_some() {
+                            ui.label(egui::RichText::new(format!("{}  Found", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        } else {
+                            ui.label(egui::RichText::new(format!("{}  Not found", icon::WARNING)).color(crate::theme::standing::WARNING))
+                                .on_hover_text(if claude { "Install Claude Code and sign in with `claude` once." } else { "Install Codex and sign in with `codex login` once." });
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Model");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("the program's own default").desired_width(280.0))
+                        .changed();
+                    ui.end_row();
+                    ui.label("");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("Uses your subscription through the program you are signed in to. It reaches only EVE Spai's tools, never files or commands.")
+                                .weak(),
+                        )
+                        .wrap(),
+                    );
+                    ui.end_row();
+                }
+                ProviderKind::Unknown => {
                     ui.label("");
                     ui.label(egui::RichText::new("Not available in this version yet").weak());
                     ui.end_row();

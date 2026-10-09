@@ -272,7 +272,7 @@ mod tests {
             Msg::user("where"),
             Msg { role: Role::Assistant, blocks: vec![Block::Raw { provider: "openai", value: json!({"x": 1}) }, Block::Text("ok".into())] },
         ];
-        let req = Request { system_static: "rules", system_dynamic: "now", msgs: &msgs, tools: &tools, model: "claude-opus-5-5", effort: "low", max_tokens: 1000 };
+        let req = Request { system_static: "rules", system_dynamic: "now", msgs: &msgs, tools: &tools, model: "claude-opus-5-5", effort: "low", max_tokens: 1000, conv: "c", mcp: None };
         let b = body(&req, true);
         assert_eq!(b["tools"][0]["type"], "web_search_20260209", "the server search replaces ours");
         assert_eq!(b["tools"].as_array().unwrap().len(), 2);

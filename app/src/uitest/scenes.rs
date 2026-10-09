@@ -2339,6 +2339,24 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(assistant_scene("assistant", [1280.0, 800.0], false));
     v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false));
     v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true));
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ui("settings_ai_cli", [720.0, 560.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.ai.enabled = true;
+                a.settings.ai.provider = crate::ai::config::ProviderKind::ClaudeCli;
+                a.settings.ai.claude_cli.path = "/opt/a-very-long-install-folder/that-nobody-expects/bin/claude-code-cli".into();
+                a
+            });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    a.assistant_settings_section(ui);
+                });
+            });
+        })
+    });
     v.push(dialog_scene("dialog_ai_glossary", [620.0, 700.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.ai.glossary.overrides.insert("Cyno".into(), "The beacon our capitals jump to".into());

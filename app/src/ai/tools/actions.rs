@@ -65,7 +65,9 @@ pub struct PendingAction {
 }
 
 fn queue(ctx: &mut Ctx, kind: ActionKind, summary: String) -> Result<Value, String> {
-    let id = ctx.now as u64 * 1000 + ctx.actions.len() as u64;
+    // Unique across calls too: the MCP server queues each call's actions on their own.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = ctx.now as u64 * 1000 + SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 1000;
     ctx.actions.push(PendingAction { id, kind, summary: summary.clone() });
     Ok(json!({"status": "waiting for the user to confirm", "action": summary}))
 }
