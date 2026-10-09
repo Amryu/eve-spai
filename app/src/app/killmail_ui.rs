@@ -289,7 +289,9 @@ fn party_url(char_id: i64, corp_id: i64) -> String {
 /// "Corp · Alliance", each with its logo, on one line: each name has half of it and is cut with an
 /// ellipsis past that, the whole on hover.
 fn affiliation_line(ui: &mut egui::Ui, d: &KillDetail, w: &crate::killmail::Who) {
-    let half = ((ui.available_width() - 2.0 * 22.0) / 2.0).max(40.0);
+    // Two logos and the three gaps between the four items come off first.
+    let gap = ui.spacing().item_spacing.x;
+    let half = ((ui.available_width() - 2.0 * 18.0 - 3.0 * gap) / 2.0).floor().max(40.0);
     ui.horizontal(|ui| {
         let name = |ui: &mut egui::Ui, text: &str| {
             ui.scope(|ui| {
@@ -430,13 +432,23 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 let who = d.name(a.char_id).or(d.name(a.corp_id)).map(str::to_owned).unwrap_or_else(|| type_name(a.ship));
-                                if a.char_id != 0 {
-                                    if ui.link(egui::RichText::new(&who).strong()).on_hover_text("Open on zKillboard").clicked() {
-                                        link = Some(party_url(a.char_id, a.corp_id));
+                                // The badges keep their room; a long name is cut, whole on hover.
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let badge_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x + 12.0 + ui.spacing().item_spacing.x;
+                                let badges = if a.final_blow { badge_w("Final blow") } else { 0.0 } + if is_top { badge_w("Top damage") } else { 0.0 };
+                                ui.scope(|ui| {
+                                    ui.set_max_width((ui.available_width() - badges).max(60.0));
+                                    if a.char_id != 0 {
+                                        let text = egui::RichText::new(&who).strong().color(ui.visuals().hyperlink_color);
+                                        let r = ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_text(format!("{who}\nOpen on zKillboard"));
+                                        if r.clicked() {
+                                            link = Some(party_url(a.char_id, a.corp_id));
+                                        }
+                                        r.on_hover_cursor(egui::CursorIcon::PointingHand);
+                                    } else {
+                                        ui.add(egui::Label::new(egui::RichText::new(&who).strong()).truncate()).on_hover_text(&who);
                                     }
-                                } else {
-                                    ui.label(egui::RichText::new(&who).strong());
-                                }
+                                });
                                 if a.final_blow {
                                     badge(ui, "Final blow", crate::theme::standing::HOSTILE);
                                 }

@@ -305,6 +305,9 @@ pub struct Settings {
     /// Whether the wormhole map's legend is unfolded.
     #[serde(default)]
     pub wh_legend_open: bool,
+    /// The wormhole map is tidied by hand only. Off: it tidies itself as the chains change.
+    #[serde(default)]
+    pub wh_manual_tidy: bool,
     /// The wormhole map's layout: "tree" or "layered".
     #[serde(default)]
     pub wh_layout_style: String,
@@ -1518,6 +1521,7 @@ impl Default for Settings {
             scan: ScanSettings::default(),
             wh_share_target: None,
             wh_legend_open: false,
+            wh_manual_tidy: false,
             wh_layout_style: String::new(),
             wh_layout_pack: true,
             wh_minimap: true,
