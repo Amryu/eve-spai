@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// A dot's radius against the usual gap between systems on screen.
+const DOT_PER_SPACING: f32 = 0.1;
+/// The usual gap between systems, in points, from which the universe map names them.
+const LABELS_FROM_SPACING: f32 = 56.0;
+
 impl SpaiApp {
     /// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes.
     pub(crate) fn draw_route_legs(
@@ -287,6 +292,7 @@ impl SpaiApp {
             }
             self.map_draw_spaced = spaced;
             self.map_draw_key = Some(want);
+            self.map_spacing = crate::map::typical_spacing(&self.map_draw);
         }
         let schematic = self.map_draw_spaced;
 
@@ -554,11 +560,15 @@ impl SpaiApp {
             painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
         }
 
-        let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
+        // Sized from how far apart systems sit on screen, not from the zoom: the zoom that shows a
+        // stretch of map depends on the panel's size in points, so a small panel or display
+        // scaling took a higher zoom to the same view and drew dots that swallowed their gaps.
+        let spacing_px = self.map_spacing as f32 * bounds.base_scale(rect, 30.0) * self.map_zoom;
+        let dot = (DOT_PER_SPACING * spacing_px).clamp(0.7, 12.0);
         #[cfg(feature = "fleet")]
         let rescue_active = self.rescue_on();
         let ov = self.map_overlays;
-        let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
+        let zoomed = matches!(self.map_view, MapView::Region(_)) || spacing_px >= LABELS_FROM_SPACING;
         let show_sys_labels = zoomed;
         let cull = rect.expand(8.0);
 
