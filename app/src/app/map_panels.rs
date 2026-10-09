@@ -1122,17 +1122,22 @@ impl SpaiApp {
             return;
         }
         ui.menu_button(icon::DOTS_THREE, |ui| {
-            if !self.map_popped {
-                if ui.button(format!("{}  Pop out the map", icon::ARROW_SQUARE_OUT)).clicked() {
-                    self.map_popped = true;
-                    ui.close();
-                }
-            } else {
+            if !self.map_popped && ui.button(format!("{}  Pop out the map", icon::ARROW_SQUARE_OUT)).clicked() {
+                self.map_popped = true;
+                ui.close();
+            }
+            if self.map_popped && !self.map_overlay_mode {
                 ui.checkbox(&mut self.map_window_on_top, format!("{}  Keep on top", icon::PUSH_PIN));
-                if ui.button(format!("{}  Overlay mode", icon::FRAME_CORNERS)).clicked() {
-                    self.map_overlay_mode = true;
-                    ui.close();
-                }
+            }
+            let label = if self.map_overlay_mode { "Close the overlay" } else { "Overlay over EVE" };
+            if ui
+                .button(format!("{}  {label}", icon::FRAME_CORNERS))
+                .on_hover_text("A borderless, see-through map to lay over the game")
+                .clicked()
+            {
+                self.map_overlay_mode = !self.map_overlay_mode;
+                self.map_popped = self.map_overlay_mode;
+                ui.close();
             }
             let active = self.active_character.clone();
             let others: Vec<String> = {
@@ -1599,38 +1604,39 @@ impl SpaiApp {
             self.map_window_on_top
         };
         let mut keep = true;
+        // The overlay is a window of its own: a window's transparency is fixed when it is made, so
+        // turning the popped-out map into an overlay in place would leave it opaque.
+        let (id, title) = if overlay { ("map_overlay", "EVE Spai - Map overlay") } else { ("map_window", "EVE Spai - Map") };
+        let opacity = self.settings.map_overlay_opacity.clamp(0.2, 1.0);
         ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("map_window"),
+            egui::ViewportId::from_hash_of(id),
             egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title("EVE Spai - Map")
-                .with_inner_size([960.0, 720.0])
+                .with_title(title)
+                .with_inner_size(if overlay { [520.0, 520.0] } else { [960.0, 720.0] })
                 .with_decorations(!overlay)
-                .with_transparent(overlay)
-                .with_resizable(!(overlay && self.map_overlay_locked))
+                .with_transparent(overlay && crate::window_alpha::PER_PIXEL)
+                .with_taskbar(!overlay)
                 .with_window_level(if on_top {
                     egui::WindowLevel::AlwaysOnTop
                 } else {
                     egui::WindowLevel::Normal
                 }),
             |ctx, _class| {
-                let frame = if overlay {
-                    let a = (self.settings.map_overlay_opacity.clamp(0.2, 1.0) * 255.0) as u8;
-                    egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(0x0A, 0x0C, 0x10, a))
+                let frame = if overlay && crate::window_alpha::PER_PIXEL {
+                    egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(0x0A, 0x0C, 0x10, (opacity * 255.0) as u8))
+                } else if overlay {
+                    egui::Frame::new().fill(egui::Color32::from_rgb(0x0A, 0x0C, 0x10))
                 } else {
                     egui::Frame::central_panel(&ctx.style())
                 };
-                let locked = self.map_overlay_locked;
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     self.map_area(ui);
-                    if overlay && !locked {
+                    if overlay && ui.ui_contains_pointer() {
                         resize_grip(ui);
                     }
                 });
-                let want = (!overlay, !(overlay && self.map_overlay_locked));
-                if self.map_vp_props != Some(want) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(want.0));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(want.1));
-                    self.map_vp_props = Some(want);
+                if overlay {
+                    crate::window_alpha::set(title, opacity);
                 }
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
@@ -1640,7 +1646,6 @@ impl SpaiApp {
         if !keep {
             self.map_popped = false;
             self.map_overlay_mode = false;
-            self.map_vp_props = None;
         }
     }
 
