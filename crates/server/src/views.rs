@@ -1335,7 +1335,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 /* Loss bar: full width = all pilots of this hull, red fill = destroyed, centred X/Y (NN%) overlay. */
 .lossbar{position:relative; align-self:stretch; height:15px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; overflow:hidden;}
 .lossbar-fill{position:absolute; left:0; top:0; bottom:0; background:#962828;}
-.lossbar-label{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; color:var(--text); text-shadow:0 1px 2px rgba(0,0,0,0.8); white-space:nowrap;}
+.lossbar-label{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; color:var(--text); text-shadow:-1px 0 #000, 1px 0 #000, 0 -1px #000, 0 1px #000, 0 1px 2px rgba(0,0,0,0.8); white-space:nowrap;}
 
 /* Tiles / Details toggle and layout switching */
 .report-tools{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:14px;}

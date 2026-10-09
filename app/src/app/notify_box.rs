@@ -248,9 +248,9 @@ impl SpaiApp {
         for mut g in groups {
             g.name = self.convo_name(&g.key);
             g.is_room = self.convo_is_room(&g.key);
-            let complete = self.notify_group(ui, &g);
-            // Seen whole: read. Behind "+N more" it waits for that click.
-            if complete && g.new > 0 {
+            self.notify_group(ui, &g);
+            // Shown is read, the ones behind "+N more" too: the box is where they were looked at.
+            if g.new > 0 {
                 self.jabber_mark_read(&g.key);
             }
         }
@@ -295,8 +295,8 @@ impl SpaiApp {
         for mut g in groups {
             g.name = self.convo_name(&g.key);
             g.is_room = self.convo_is_room(&g.key);
-            let complete = self.notify_group(ui, &g);
-            if complete && g.new > 0 {
+            self.notify_group(ui, &g);
+            if g.new > 0 {
                 self.jabber.lock().unwrap().mentions.remove(&g.key);
             }
         }
@@ -348,9 +348,8 @@ impl SpaiApp {
         }
     }
 
-    /// A conversation's header, its messages and a quick reply. Returns whether every message
-    /// was on screen.
-    fn notify_group(&mut self, ui: &mut egui::Ui, g: &Group) -> bool {
+    /// A conversation's header, its messages and a quick reply.
+    fn notify_group(&mut self, ui: &mut egui::Ui, g: &Group) {
         use egui_phosphor::regular as icon;
         let now = crate::clock::utc().timestamp();
         let mut open = false;
@@ -373,7 +372,7 @@ impl SpaiApp {
         });
         let expanded = self.notify_box.expanded.contains(&g.key);
         let more = if expanded { 0 } else { g.msgs.len().saturating_sub(SHOWN) };
-        if more > 0 && ui.link(format!("+{more} more\u{2026}")).on_hover_text("Show them all and mark them read").clicked() {
+        if more > 0 && ui.link(format!("+{more} more\u{2026}")).on_hover_text("Show them all").clicked() {
             self.notify_box.expanded.insert(g.key.clone());
         }
         let names = self.mention_names();
@@ -402,7 +401,6 @@ impl SpaiApp {
             self.view = nav::View::Jabber;
             egui::Popup::close_all(ui.ctx());
         }
-        more == 0
     }
 
     /// One line, Enter sends: the Jabber tab's composer without new lines. The draft is the same

@@ -48,6 +48,8 @@ pub struct Zkb {
     pub awox: bool,
     pub labels: Vec<String>,
     pub location_id: i64,
+    /// zKillboard had no figures yet (a kill only just made), so these are worked out from prices.
+    pub estimated: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -158,6 +160,7 @@ fn fetch(kill_id: i64, hash: Option<String>) -> Result<KillDetail, String> {
     ids.sort_unstable();
     ids.dedup();
     d.prices = prices(&client);
+    estimate_if_missing(&mut d);
     if d.victim.char_id != 0 && !CAPSULES.contains(&d.victim.ship) {
         d.pod = find_pod(&client, &d).map(Box::new);
     }
@@ -171,12 +174,36 @@ fn fetch(kill_id: i64, hash: Option<String>) -> Result<KillDetail, String> {
     if let Some(pod) = d.pod.as_mut() {
         pod.names = d.names.clone();
         pod.prices = d.prices.clone();
+        estimate_if_missing(pod);
     }
     if let (Some(pos), Ok(store)) = (km.get("victim").and_then(|v| v.get("position")), crate::store::Store::open()) {
         let p = |k: &str| pos.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
         d.near = store.nearest_celestial(d.system_id, [p("x"), p("y"), p("z")]);
     }
     Ok(d)
+}
+
+/// zKillboard knows a kill some moments after it happens; until then its values are worked out
+/// from the market prices of the ship and every item, dropped and destroyed.
+fn estimate_if_missing(d: &mut KillDetail) {
+    if d.zkb.total > 0.0 {
+        return;
+    }
+    let ship = d.prices.get(&d.victim.ship).copied().unwrap_or(0.0);
+    let dropped: f64 = d.items.iter().map(|i| d.value_of(i, i.dropped)).sum();
+    let destroyed: f64 = d.items.iter().map(|i| d.value_of(i, i.destroyed)).sum::<f64>() + ship;
+    let fitted: f64 = d
+        .items
+        .iter()
+        .filter(|i| i.depth == 0 && matches!(Hold::of(i.flag), Hold::High | Hold::Mid | Hold::Low | Hold::Rig | Hold::Subsystem | Hold::Service))
+        .map(|i| d.value_of(i, i.dropped + i.destroyed))
+        .sum::<f64>()
+        + ship;
+    d.zkb.total = dropped + destroyed;
+    d.zkb.dropped = dropped;
+    d.zkb.destroyed = destroyed;
+    d.zkb.fitted = fitted;
+    d.zkb.estimated = d.zkb.total > 0.0;
 }
 
 /// The capsule the victim lost right after the ship: among their next few losses on zKillboard, the
@@ -238,6 +265,7 @@ fn parse_zkb(v: &serde_json::Value) -> Zkb {
             .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
             .unwrap_or_default(),
         location_id: v.get("locationID").and_then(|x| x.as_i64()).unwrap_or(0),
+        estimated: false,
     }
 }
 
@@ -436,6 +464,21 @@ mod tests {
         assert!(!is_pod_of(&ship, &pod(670, 10, 30000144, 20)), "somewhere else");
         assert!(!is_pod_of(&ship, &pod(670, 10, 30000142, POD_WITHIN_SECS + 1)), "too long after");
         assert!(!is_pod_of(&ship, &pod(670, 10, 30000142, -5)), "before the ship");
+    }
+
+    #[test]
+    fn a_kill_zkillboard_has_no_figures_for_yet_is_valued_from_prices() {
+        let mut d = parse_killmail(&sample()).unwrap();
+        d.prices = [(587, 1_000_000.0), (2873, 100.0), (3001, 10.0), (4000, 5.0)].into();
+        estimate_if_missing(&mut d);
+        assert!(d.zkb.estimated);
+        assert_eq!(d.zkb.destroyed, 1_000_000.0 + 100.0, "the ship and the blaster");
+        assert_eq!(d.zkb.dropped, 100.0 + 10.0, "the cargo and its contents");
+        assert_eq!(d.zkb.total, d.zkb.dropped + d.zkb.destroyed);
+        let mut known = parse_killmail(&sample()).unwrap();
+        known.zkb.total = 5.0;
+        estimate_if_missing(&mut known);
+        assert!(!known.zkb.estimated, "zKillboard's own figures stand");
     }
 
     #[test]

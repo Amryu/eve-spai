@@ -183,6 +183,10 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
         // The total and the actions first, the rest wrapping below as whole items.
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(d.zkb.total))).color(red).strong().size(22.0));
+            if d.zkb.estimated {
+                ui.label(egui::RichText::new("estimate").weak())
+                    .on_hover_text("zKillboard has no figures for this kill yet; worked out from market prices");
+            }
             ui.add_space(8.0);
             kill_actions(ui, d.kill_id, Some(d.esi_url()));
         });
@@ -282,19 +286,34 @@ fn party_url(char_id: i64, corp_id: i64) -> String {
     }
 }
 
-/// "Corp · Alliance", each with its logo.
+/// "Corp · Alliance", each with its logo, on one line: each name has half of it and is cut with an
+/// ellipsis past that, the whole on hover.
 fn affiliation_line(ui: &mut egui::Ui, d: &KillDetail, w: &crate::killmail::Who) {
-    ui.horizontal_wrapped(|ui| {
+    let half = ((ui.available_width() - 2.0 * 22.0) / 2.0).max(40.0);
+    ui.horizontal(|ui| {
+        let name = |ui: &mut egui::Ui, text: &str| {
+            ui.scope(|ui| {
+                ui.set_max_width(half);
+                ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate()).on_hover_text(text);
+            });
+        };
         if let Some(corp) = d.name(w.corp_id) {
             eve_image(ui, Some(eve_corp_logo_url(w.corp_id, 18.0)), 18.0);
-            ui.add(egui::Label::new(egui::RichText::new(corp).weak()).truncate()).on_hover_text(corp);
+            name(ui, corp);
         }
         if let Some(all) = d.name(w.alliance_id) {
             eve_image(ui, Some(eve_alliance_logo_url(w.alliance_id, 18.0)), 18.0);
-            ui.add(egui::Label::new(egui::RichText::new(all).weak()).truncate()).on_hover_text(all);
+            name(ui, all);
         } else if let Some(f) = d.name(w.faction_id) {
-            ui.label(egui::RichText::new(f).weak());
+            name(ui, f);
         }
+    });
+}
+
+/// A filled label, for what sets one attacker apart.
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    egui::Frame::new().fill(color).corner_radius(4.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+        ui.label(egui::RichText::new(text).color(egui::Color32::BLACK).strong());
     });
 }
 
@@ -379,8 +398,16 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
     let mut body = |ui: &mut egui::Ui| {
         for a in &d.attackers {
             let is_top = top == Some((a.char_id, a.ship, a.damage)) && a.damage > 0;
+            let mark = if a.final_blow {
+                Some(crate::theme::standing::HOSTILE)
+            } else if is_top {
+                Some(crate::theme::standing::WARNING)
+            } else {
+                None
+            };
             egui::Frame::new()
-                .fill(if a.final_blow || is_top { ui.visuals().faint_bg_color } else { egui::Color32::TRANSPARENT })
+                .fill(mark.map_or(egui::Color32::TRANSPARENT, |c| c.gamma_multiply(0.10)))
+                .stroke(mark.map_or(egui::Stroke::NONE, |c| egui::Stroke::new(1.5, c)))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(4, 3))
                 .show(ui, |ui| {
@@ -411,10 +438,10 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
                                     ui.label(egui::RichText::new(&who).strong());
                                 }
                                 if a.final_blow {
-                                    ui.label(egui::RichText::new("final blow").color(crate::theme::standing::HOSTILE));
+                                    badge(ui, "Final blow", crate::theme::standing::HOSTILE);
                                 }
                                 if is_top {
-                                    ui.label(egui::RichText::new("top damage").color(crate::theme::standing::WARNING));
+                                    badge(ui, "Top damage", crate::theme::standing::WARNING);
                                 }
                             });
                             affiliation_line(ui, d, a);
@@ -425,7 +452,8 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
                     ui.painter().rect_filled(bar, 3.0, ui.visuals().extreme_bg_color);
                     ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * share, bar.height())), 3.0, LOSS_BAR);
                     let font = egui::TextStyle::Body.resolve(ui.style());
-                    ui.painter().text(bar.center(), egui::Align2::CENTER_CENTER, format!("{} damage ({:.1}%)", fmt_int(a.damage), share * 100.0), font, ui.visuals().text_color());
+                    let g = ui.painter().layout_no_wrap(format!("{} damage ({:.1}%)", fmt_int(a.damage), share * 100.0), font, ui.visuals().text_color());
+                    outlined_text(ui.painter(), bar.center() - g.size() / 2.0, g, ui.visuals().text_color());
                 });
             ui.add_space(2.0);
         }

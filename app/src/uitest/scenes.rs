@@ -4185,14 +4185,21 @@ fn uitest_bench_intel_bridge_detection() {
 }
 
 /// The setting is only reachable from the alert rules editor unless the intel toolbar carries its
-/// own control. This asserts a labelled, ticked control rather than exact wording: an icon or a
-/// menu entry would pass a looser check while losing the point.
+/// own control: a labelled checkbox in the distance dropdown, beside the jumps it changes.
 #[test]
 fn uitest_intel_toolbar_carries_the_bridge_toggle() {
-    use egui_kittest::kittest::NodeT as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     let mut scene = view_scene("intel_toolbar_probe", View::Intel, [1280.0, 800.0]);
-    let harness = harness::build(&mut scene, false);
+    let mut harness = harness::build(&mut scene, false);
+    // A combo box says what is picked as its value, not its label.
+    let combo = harness
+        .root()
+        .children_recursive()
+        .find(|n| n.accesskit_node().value().unwrap_or_default().contains("Any distance"))
+        .expect("the distance dropdown");
+    combo.click();
+    harness.run();
     let found = harness.root().children_recursive().any(|node| {
         let n = node.accesskit_node();
         n.role() == egui::accesskit::Role::CheckBox
@@ -4223,7 +4230,7 @@ fn uitest_intel_toolbar_leaves_room_for_the_search_field() {
         let Some(b) = n.bounding_box() else { continue };
         nodes.push((
             n.role(),
-            n.label().unwrap_or_default().to_string(),
+            n.label().or_else(|| n.value()).unwrap_or_default().to_string(),
             egui::Rect {
                 min: egui::pos2(b.x0 as f32, b.y0 as f32),
                 max: egui::pos2(b.x1 as f32, b.y1 as f32),
@@ -4232,7 +4239,7 @@ fn uitest_intel_toolbar_leaves_room_for_the_search_field() {
     }
     let first = nodes
         .iter()
-        .find(|(role, label, _)| *role == egui::accesskit::Role::Button && label == "All")
+        .find(|(_, label, _)| label.contains("All intel"))
         .map(|(_, _, r)| *r)
         .expect("no type filter in the intel toolbar");
     let field = nodes
@@ -7895,9 +7902,8 @@ fn picker_holds(name: &str) {
     assert!(right - later.x1 < 60.0 && later.x1 <= right + 0.5, "{name}: the picker does not reach across: {later:?} vs {right}");
 }
 
-/// The notification box marks a conversation read once all its new messages were on screen; one
-/// behind "+N more" stays unread until that is clicked. A quick reply empties the draft the Jabber
-/// tab shares.
+/// The notification box marks every conversation it shows read, the messages behind "+N more"
+/// included; that link only shows them. A quick reply empties the draft the Jabber tab shares.
 #[test]
 fn uitest_the_notification_box_marks_what_was_seen_read() {
     use egui_kittest::kittest::Queryable as _;
@@ -7921,10 +7927,10 @@ fn uitest_the_notification_box_marks_what_was_seen_read() {
         let st = b.as_ref().unwrap().jabber.lock().unwrap();
         st.unread_counts.keys().cloned().collect::<Vec<String>>()
     };
-    assert_eq!(unread(&app), vec![fixtures::JABBER_ROOM.to_owned()], "the DM was seen whole, the room was not");
+    assert!(unread(&app).is_empty(), "shown is read, the room with messages behind +N more too");
     h.get_by_label_contains("+2 more").click();
     h.run();
-    assert!(unread(&app).is_empty(), "+N more read the rest");
+    assert!(unread(&app).is_empty());
     assert!(h.query_by_label_contains("stand down").is_some(), "read ones stay listed while the box is open");
 
     let reply = h.get_all_by_role(egui::accesskit::Role::TextInput).last().unwrap();
@@ -8229,7 +8235,7 @@ fn uitest_a_slow_static_data_download_gives_way_to_a_file() {
     let a = a.as_ref().unwrap();
     assert!(matches!(*a.sde_status.lock().unwrap(), crate::sde::SdeStatus::Failed(_)), "the download is stopped");
     assert!(a.sde_file_dialog);
-    drop(harness.get_by_label_contains("Choose file"));
+    assert!(harness.query_by_label_contains("Choose file").is_some(), "the dialog offers the file picker");
 }
 
 /// A hull tile clicked lists the pilots who flew it: the Details tab, narrowed to that hull.
@@ -8257,4 +8263,48 @@ fn uitest_a_ship_tile_lists_its_pilots() {
     h.run();
     assert_eq!(app.borrow().as_ref().unwrap().battle_view_state(), (crate::app::BrTab::Details, Some(ship)));
     assert!(h.query_all_by_label_contains(&ship_name).count() >= 1, "the filter chip names the hull");
+}
+
+/// The systems picker stays open while systems are picked, and a click on a system's name picks it
+/// like its checkbox does.
+#[test]
+fn uitest_the_systems_picker_takes_several_clicks_on_names() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let mut engs = b.engagements.clone();
+    for e in engs.iter_mut().filter(|e| e.kill_id % 2 == 0) {
+        e.system_id = 30_004_759;
+        e.system_name = "1DQ1-A".into();
+    }
+    let b = br_core::battle::preview_battle(engs, br_core::battle::BATTLE_BREAK_SECS);
+    let app = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::app::SpaiApp>));
+    let held = app.clone();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui(move |ui| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    h.run();
+    h.get_by_label_contains("All 2 systems").click();
+    h.run();
+    // The checkbox's own node spans its label: a click at its far end lands on the name.
+    let row = h
+        .get_all_by_role(egui::accesskit::Role::CheckBox)
+        .find(|n| n.accesskit_node().label().unwrap_or_default().contains("1DQ1-A"))
+        .expect("a row for 1DQ1-A");
+    let at = egui::pos2(row.rect().right() - 6.0, row.rect().center().y);
+    harness::click_at(&h, at);
+    h.run();
+    assert_eq!(app.borrow().as_ref().unwrap().battle_systems_picked(), vec![30_004_759], "the name picked it");
+    assert!(
+        h.get_all_by_role(egui::accesskit::Role::CheckBox).any(|n| n.accesskit_node().label().unwrap_or_default().contains("F-5WYK")),
+        "still open for the next pick"
+    );
 }

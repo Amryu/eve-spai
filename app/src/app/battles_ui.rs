@@ -1309,6 +1309,7 @@ impl SpaiApp {
                 &lr.tiles,
                 self.battle_tab,
                 self.battle_ship_filter,
+                false,
             )
         };
         if out.hover != prev_hover {
@@ -1398,7 +1399,11 @@ impl SpaiApp {
         };
         let filtering = !self.battle_systems.is_empty();
         let text = if filtering { egui::RichText::new(label).color(ui.visuals().hyperlink_color) } else { egui::RichText::new(label) };
-        ui.menu_button(text, |ui| {
+        // Open while systems are ticked, until a click outside: picking several is the point.
+        let menu = egui::containers::menu::MenuButton::new(text)
+            .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+        let (resp, _) = menu.ui(ui, |ui| {
+            ui.set_max_width(280.0);
             if ui.menu_label(!filtering, "All systems").clicked() {
                 self.battle_systems.clear();
             }
@@ -1406,22 +1411,24 @@ impl SpaiApp {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for (id, name, sec) in systems {
                     let mut on = self.battle_systems.contains(id);
-                    ui.horizontal(|ui| {
-                        if ui.checkbox(&mut on, "").changed() {
-                            if on {
-                                self.battle_systems.push(*id);
-                            } else {
-                                self.battle_systems.retain(|s| s != id);
-                            }
+                    // The whole row is the checkbox's label, so a click on the name ticks it too.
+                    let mut job = egui::text::LayoutJob::default();
+                    let badge = security_badge(*sec);
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    job.append(&format!("{} ", badge.text()), 0.0, egui::TextFormat::simple(egui::TextStyle::Monospace.resolve(ui.style()), security_color(*sec)));
+                    job.append(name, 0.0, egui::TextFormat::simple(font, ui.visuals().text_color()));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(240.0);
+                    if ui.checkbox(&mut on, job).on_hover_text(name).changed() {
+                        if on {
+                            self.battle_systems.push(*id);
+                        } else {
+                            self.battle_systems.retain(|s| s != id);
                         }
-                        ui.label(security_badge(*sec));
-                        ui.label(name);
-                    });
+                    }
                 }
             });
-        })
-        .response
-        .on_hover_text("Show only the killmails in some of this fight's systems. Saving and sharing keep every system.");
+        });
+        resp.on_hover_text("Show only the killmails in some of this fight's systems. Saving and sharing keep every system.");
         // Every system picked is the same as none.
         if self.battle_systems.len() == systems.len() {
             self.battle_systems.clear();
@@ -1964,7 +1971,11 @@ impl SpaiApp {
                             &cache.tiles,
                             tab,
                             ship_filter,
+                            true,
                         );
+                        if out.open_sides {
+                            self.battle_sides_open = true;
+                        }
                         if out.hover != prev_hover {
                             self.battle_hover = out.hover;
                             ui.ctx().request_repaint();

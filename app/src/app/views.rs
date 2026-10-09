@@ -18,86 +18,92 @@ impl SpaiApp {
         let rings = self.char_rings();
         let systems = self.systems.clone();
 
+        // One row: what, how far, zKillboard, the rarer settings behind a gear, the count, then the
+        // search taking what is left.
+        let count = self.intel_shown_count;
         toolbar(ui, |ui| {
+            use egui_phosphor::regular as icon;
             use IntelTypeFilter::*;
-            // The five options are one control, so they are grouped tight rather than spaced like
-            // the independent controls that follow.
-            let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 2.0);
-            for (lbl, v) in [
-                ("All", All),
-                ("Hostile", Hostile),
-                ("Clear", Clear),
-                ("Kill", Kill),
-                ("Threat", Threat),
-            ] {
-                if selectable_chip(ui, self.intel_type == v, lbl).clicked() {
-                    self.intel_type = v;
+            let types = [("All intel", All), ("Hostile", Hostile), ("Clear", Clear), ("Kills", Kill), ("Threats", Threat)];
+            let type_label = types.iter().find(|(_, v)| *v == self.intel_type).map_or("All intel", |(l, _)| *l);
+            toolbar_combo(ui, "intel_type", type_label.to_owned(), |ui| {
+                for (l, v) in types {
+                    ui.menu_value(&mut self.intel_type, v, l);
                 }
-            }
-            ui.spacing_mut().item_spacing.x = gap;
+            })
+            .on_hover_text("Which reports to show");
+            let range = match self.intel_max_jumps {
+                0 => "Any distance".to_owned(),
+                1 => "Within 1 jump".to_owned(),
+                n => format!("Within {n} jumps"),
+            };
+            toolbar_combo(ui, "intel_range", range, |ui| {
+                for n in [0u32, 1, 2, 3, 5, 8, 10, 15, 20] {
+                    let l = match n {
+                        0 => "Any distance".to_owned(),
+                        1 => "1 jump".to_owned(),
+                        n => format!("{n} jumps"),
+                    };
+                    ui.menu_value(&mut self.intel_max_jumps, n, l);
+                }
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.settings.intel_count_bridges, "Count jump bridges")
+                    .on_hover_text("Off: gate jumps only, as a hostile would travel.")
+                    .changed()
+                {
+                    self.needs_save = true;
+                }
+            })
+            .on_hover_text("How far from you a report may be");
+            let zkill = if !self.settings.kill_intel {
+                "zKill: off".to_owned()
+            } else {
+                match self.settings.kill_intel_jumps {
+                    0 => "zKill: in range".to_owned(),
+                    1 => "zKill: 1 jump".to_owned(),
+                    n => format!("zKill: {n} jumps"),
+                }
+            };
+            toolbar_combo(ui, "intel_zkill", zkill, |ui| {
+                let mut pick = |ui: &mut egui::Ui, on: bool, jumps: u32, label: &str| {
+                    let current = self.settings.kill_intel == on && (!on || self.settings.kill_intel_jumps == jumps);
+                    if ui.menu_label(current, label).clicked() {
+                        self.settings.kill_intel = on;
+                        if on {
+                            self.settings.kill_intel_jumps = jumps;
+                        }
+                        self.needs_save = true;
+                    }
+                };
+                pick(ui, false, 0, "Off");
+                pick(ui, true, 0, "Within the feed's range");
+                for n in [1u32, 2, 3, 5, 10] {
+                    pick(ui, true, n, &if n == 1 { "Within 1 jump".to_owned() } else { format!("Within {n} jumps") });
+                }
+            })
+            .on_hover_text("Kills from zKillboard, shown as intel cards");
+            ui.menu_button(icon::GEAR_SIX, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Outdated after");
+                    if ui.add(egui::DragValue::new(&mut self.settings.intel_ttl_secs).range(30..=3600).suffix(" s")).changed() {
+                        self.needs_save = true;
+                    }
+                });
+                if ui.button(format!("{}  Severity colours\u{2026}", icon::PALETTE)).clicked() {
+                    self.severity_open = true;
+                    ui.close();
+                }
+                if ui.button(format!("{}  Pilot notes and tags\u{2026}", icon::TAG)).clicked() {
+                    self.open_notes_manager(crate::notes::NoteKind::Pilot);
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text("Intel settings");
             toolbar_sep(ui);
-            ui.add(
-                egui::DragValue::new(&mut self.intel_max_jumps)
-                    .range(0..=50)
-                    .prefix("\u{2264} ")
-                    .custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n}") }),
-            )
-            .on_hover_text(
-                "Hide intel further than this many jumps from you. \"any\" keeps every distance.",
-            );
-            if ui
-                .checkbox(&mut self.settings.intel_count_bridges, "jump bridges")
-                .on_hover_text(
-                    "Count your jump bridges in the card distances and the \u{2264} jumps filter. \
-                     Off = gate-only, how far a hostile, who can't use your bridges, really is.",
-                )
-                .changed()
-            {
-                self.needs_save = true;
-            }
-            toolbar_sep(ui);
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.settings.intel_ttl_secs)
-                        .range(30..=3600)
-                        .prefix(format!("{}  ", egui_phosphor::regular::CLOCK_COUNTDOWN))
-                        .suffix("s"),
-                )
-                .on_hover_text("How long until intel is outdated")
-                .changed()
-            {
-                self.needs_save = true;
-            }
-            toolbar_sep(ui);
-            if ui
-                .button(egui_phosphor::regular::PALETTE)
-                .on_hover_text("Configure intel severity colours")
-                .clicked()
-            {
-                self.severity_open = true;
-            }
-            if ui
-                .button(egui_phosphor::regular::TAG)
-                .on_hover_text("Pilot notes and tags")
-                .clicked()
-            {
-                self.open_notes_manager(crate::notes::NoteKind::Pilot);
-            }
-            toolbar_sep(ui);
-            if ui
-                .checkbox(&mut self.settings.kill_intel, "zKill intel")
-                .on_hover_text("Show zKill killmails within range as intel cards")
-                .changed()
-            {
-                self.needs_save = true;
-            }
-            if self.settings.kill_intel
-                && Self::kill_intel_range(ui, &mut self.settings.kill_intel_jumps).changed()
-            {
-                self.needs_save = true;
-            }
-            toolbar_sep(ui);
-            ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
+            ui.label(egui::RichText::new(format!("{count} report{}", if count == 1 { "" } else { "s" })).weak());
+            ui.label(icon::MAGNIFYING_GLASS);
             ui.add_sized(
                 [
                     ui.available_rect_before_wrap().width().max(Self::INTEL_FILTER_MIN_W),
@@ -132,8 +138,11 @@ impl SpaiApp {
         matches.sort_by(|a, b| b.received.cmp(&a.received));
         let last_ship = build_last_ship(&state.reports);
 
-        ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
-        ui.add_space(4.0);
+        // Shown in the toolbar on the next frame: it is drawn before the reports are counted.
+        if self.intel_shown_count != matches.len() {
+            self.intel_shown_count = matches.len();
+            ui.ctx().request_repaint();
+        }
         let filters_active = !query.is_empty()
             || type_filter != IntelTypeFilter::All
             || max_jumps != 0;
