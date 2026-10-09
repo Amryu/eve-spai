@@ -74,6 +74,8 @@ pub fn spawn(
             buffer.iter().map(|e| e.kill_id).collect();
         let mut backfilled: HashMap<i64, i64> = HashMap::new();
         let backfill_out: SharedBackfill = Arc::new(Mutex::new(Vec::new()));
+        let backfiller = Backfiller::start(client.clone(), systems.clone(), ship_ids.clone(), backfill_out.clone(), ctx.clone());
+        let mut last_trim = std::time::Instant::now();
         let mut battle_cache: HashMap<u64, battle::Battle> = HashMap::new();
         let mut last_ov_gen = overrides_gen.load(std::sync::atomic::Ordering::Relaxed);
         if !buffer.is_empty() && battles_enabled.load(std::sync::atomic::Ordering::Relaxed) {
@@ -135,17 +137,12 @@ pub fn spawn(
                             if anchored {
                                 let now = crate::clock::utc().timestamp();
                                 if should_backfill(&mut backfilled, sys_id, now) {
-                                    spawn_backfill(
-                                        client.clone(),
-                                        sys_id,
-                                        now - BACKFILL_WINDOW_SECS,
-                                        i64::MAX,
-                                        systems.clone(),
-                                        ship_ids.clone(),
-                                        buffer_ids.clone(),
-                                        backfill_out.clone(),
-                                        ctx.clone(),
-                                    );
+                                    backfiller.queue(BackfillJob {
+                                        system_id: sys_id,
+                                        oldest: now - BACKFILL_WINDOW_SECS,
+                                        newest: i64::MAX,
+                                        have: buffer_ids.clone(),
+                                    });
                                 }
                             }
                         }
@@ -279,10 +276,17 @@ pub fn spawn(
                 *battles.lock().unwrap() =
                     clustered.into_iter().filter(|b| b.is_anchored() && b.is_two_sided()).collect();
                 ctx.request_repaint();
+                if last_trim.elapsed() >= TRIM_EVERY {
+                    last_trim = std::time::Instant::now();
+                    crate::memtrim::release();
+                }
             }
         }
     });
 }
+
+/// How often a recluster hands the copies it freed back to the OS.
+const TRIM_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct R2Z2Kill {
@@ -958,7 +962,10 @@ fn backfill_system(
                     return;
                 }
             };
-        let entries = zk.as_array().cloned().unwrap_or_default();
+        let entries = match zk {
+            serde_json::Value::Array(a) => a,
+            _ => Vec::new(),
+        };
         if entries.is_empty() {
             break;
         }
@@ -1007,24 +1014,44 @@ fn backfill_system(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_backfill(
-    client: reqwest::blocking::Client,
+struct BackfillJob {
     system_id: i64,
     oldest: i64,
     newest: i64,
-    systems: Arc<Systems>,
-    ship_ids: Arc<std::collections::HashSet<i64>>,
     have: std::collections::HashSet<i64>,
-    out: SharedBackfill,
-    ctx: egui::Context,
-) {
-    let _ = std::thread::Builder::new().name("zkill-backfill".into()).spawn(move || {
-        backfill_system(&client, system_id, oldest, newest, &systems, &ship_ids, &have, &mut |eng| {
-            out.lock().unwrap().push(eng);
+}
+
+/// One thread for every backfill, a system at a time. A thread per anchored system ran a fight's
+/// worth of page and killmail parses at once, each in its own glibc arena, which kept them all
+/// resident after the threads ended.
+struct Backfiller {
+    jobs: std::sync::mpsc::Sender<BackfillJob>,
+}
+
+impl Backfiller {
+    fn start(
+        client: reqwest::blocking::Client,
+        systems: Arc<Systems>,
+        ship_ids: Arc<std::collections::HashSet<i64>>,
+        out: SharedBackfill,
+        ctx: egui::Context,
+    ) -> Self {
+        let (jobs, rx) = std::sync::mpsc::channel::<BackfillJob>();
+        let _ = std::thread::Builder::new().name("zkill-backfill".into()).spawn(move || {
+            for job in rx {
+                backfill_system(&client, job.system_id, job.oldest, job.newest, &systems, &ship_ids, &job.have, &mut |eng| {
+                    out.lock().unwrap().push(eng);
+                });
+                ctx.request_repaint();
+                crate::memtrim::release();
+            }
         });
-        ctx.request_repaint();
-    });
+        Backfiller { jobs }
+    }
+
+    fn queue(&self, job: BackfillJob) {
+        let _ = self.jobs.send(job);
+    }
 }
 
 fn resolve_names(
