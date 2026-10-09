@@ -8333,3 +8333,31 @@ fn uitest_the_battle_menu_stays_open_for_its_kill_field() {
     h.run_steps(3);
     assert!(h.query_by_label_contains("Open JSON").is_some(), "still open after clicking into the field");
 }
+
+/// The route tab with a planned route and its Avoid section open, rules set and a long sov name.
+fn route_tab_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.route_avoid_camps = true;
+            a.settings.route_sec = [false, true, true];
+            a.settings.route_avoid_sov = vec!["The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts".into()];
+            a.seed_route(fixtures::systems(), vec![30_004_759, 30_003_704]);
+            a
+        });
+        egui::ScrollArea::vertical().show(ui, |ui| a.jump_plan_content(ui));
+    })
+}
+
+#[test]
+#[ignore = "writes a PNG"]
+fn uitest_screenshots_route_tab() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = route_tab_scene("route_tab", [300.0, 700.0]);
+    let mut h = harness::build(&mut scene, true);
+    h.get_by_label_contains("Avoid").click();
+    h.run_steps(3);
+    harness::shot(&mut h, "route_tab");
+}

@@ -3013,6 +3013,15 @@ impl SpaiApp {
         (self.battle_tab, self.battle_ship_filter)
     }
 
+    /// A gate route between `anchors` on the fixture graph, planned.
+    #[cfg(test)]
+    pub(crate) fn seed_route(&mut self, systems: std::sync::Arc<crate::geo::Systems>, anchors: Vec<i64>) {
+        self.systems = Some(systems);
+        self.map_route_kind = "gate";
+        self.map_route_anchors = anchors;
+        self.map_recompute_route();
+    }
+
     #[cfg(test)]
     pub(crate) fn set_battle_condensed(&mut self, on: bool) {
         self.battle_condensed = on;
