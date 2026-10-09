@@ -5654,34 +5654,41 @@ pub(crate) fn battle_row(
                 });
             });
         });
-        ui.horizontal(|ui| {
-            // Each side gets an equal share of the line, its name cut to fit.
-            let n = b.sides.len().clamp(1, 2) as f32;
-            let vs_w = 24.0;
-            let gap = ui.spacing().item_spacing.x;
-            let share = ((ui.available_width() - (vs_w + 2.0 * gap) * (n - 1.0)) / n).floor().max(60.0);
-            for (i, side) in b.sides.iter().take(2).enumerate() {
-                if i > 0 {
-                    ui.add_sized([vs_w, 18.0], egui::Label::new(egui::RichText::new("vs").strong()));
-                }
-                let col = side_color(i);
-                ui.scope(|ui| {
-                    ui.set_max_width(share);
-                    ui.horizontal(|ui| {
-                        if let Some(lead) = side.parties.first() {
-                            party_badge(ui, lead, 18.0, false);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let title = side_title(side);
-                                ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong()).truncate()).on_hover_text(&title);
+        // Every side, as many to a line as fit at a readable width, each cut to its share.
+        const MIN_SIDE: f32 = 170.0;
+        let n = b.sides.len().max(1);
+        let vs_w = 24.0;
+        let gap = ui.spacing().item_spacing.x;
+        let avail = ui.available_width();
+        let per_line = (((avail + vs_w + 2.0 * gap) / (MIN_SIDE + vs_w + 2.0 * gap)).floor() as usize).clamp(1, n);
+        let share = ((avail - (vs_w + 2.0 * gap) * (per_line as f32 - 1.0)) / per_line as f32).floor().max(60.0);
+        for line in b.sides.chunks(per_line).enumerate() {
+            let (li, sides) = line;
+            ui.horizontal(|ui| {
+                for (j, side) in sides.iter().enumerate() {
+                    let i = li * per_line + j;
+                    if j > 0 {
+                        ui.add_sized([vs_w, 18.0], egui::Label::new(egui::RichText::new("vs").strong()));
+                    }
+                    let col = side_color(i);
+                    ui.scope(|ui| {
+                        ui.set_max_width(share);
+                        ui.horizontal(|ui| {
+                            if let Some(lead) = side.parties.first() {
+                                party_badge(ui, lead, 18.0, false);
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let title = side_title(side);
+                                    ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong()).truncate()).on_hover_text(&title);
+                                });
                             });
                         });
                     });
-                });
-            }
-        });
+                }
+            });
+        }
     })
     .response;
     let resp = resp.interact(egui::Sense::click());
@@ -5710,7 +5717,7 @@ pub(crate) fn ship_row(
     highlight: ShipHighlight,
     border: bool,
     open_kill: &std::cell::Cell<Option<i64>>,
-    damage: i64,
+    damage: Option<i64>,
 ) -> egui::Response {
     use egui_phosphor::regular as icon;
     let fill = match highlight {
@@ -5748,9 +5755,10 @@ pub(crate) fn ship_row(
             ui.horizontal_wrapped(|ui| {
                 party_badge(ui, party, 14.0, true);
                 ui.label(egui::RichText::new(pilot).weak());
-                if damage > 0 {
-                    ui.label(egui::RichText::new(format!("{} dmg", fmt_count(damage))).color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)))
-                        .on_hover_text(format!("{damage} damage dealt in this battle"));
+                if let Some(damage) = damage {
+                    let text = egui::RichText::new(format!("{} dmg", fmt_count(damage)));
+                    let text = if damage > 0 { text.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { text.weak() };
+                    ui.label(text).on_hover_text(format!("{damage} damage dealt in this battle"));
                 }
                 if let Some(l) = lost {
                     if ui
@@ -6157,6 +6165,8 @@ pub(crate) fn battle_detail(
         .and_then(|kid| inv.attackers.get(&kid));
     let new_hover = std::cell::Cell::new(None);
     let open_kill = std::cell::Cell::new(None);
+    // Kills stored before damage was kept carry none; a battle of only those shows no figure at all.
+    let has_damage = rosters.iter().flatten().any(|p| p.damage > 0);
 
     let red = crate::theme::standing::HOSTILE;
     let name_of = |id: i64| -> String {
@@ -6315,7 +6325,7 @@ pub(crate) fn battle_detail(
                                         p.char_id != 0 && border_set.is_some_and(|s| s.contains(&p.char_id));
                                     let resp = ship_row(
                                         ui, row_w, &p.party, p.ship, &p.pilot, &name_of,
-                                        p.lost.as_ref(), red, highlight, border, &open_kill, p.damage,
+                                        p.lost.as_ref(), red, highlight, border, &open_kill, has_damage.then_some(p.damage),
                                     );
                                     if p.char_id != 0 && ui.rect_contains_pointer(resp.rect) {
                                         new_hover.set(Some(BattleHover {

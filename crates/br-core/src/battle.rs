@@ -449,9 +449,10 @@ impl Battle {
                 *dealt.entry(a.char_id).or_default() += a.damage;
             }
         }
+        // Every row of a pilot who lost several ships carries their whole total.
         for p in parts.iter_mut() {
-            if let Some(d) = dealt.remove(&p.char_id) {
-                p.damage = d;
+            if let Some(d) = dealt.get(&p.char_id) {
+                p.damage = *d;
             }
         }
 
