@@ -1342,6 +1342,9 @@ impl SpaiApp {
             if ui.menu_label(self.battle_tab == BrTab::Details, format!("{}  Details", icon::LIST_BULLETS)).clicked() {
                 self.battle_tab = BrTab::Details;
             }
+            if ui.menu_label(self.battle_tab == BrTab::Timeline, format!("{}  Timeline", icon::CHART_BAR)).clicked() {
+                self.battle_tab = BrTab::Timeline;
+            }
             if ambiguous {
                 toolbar_sep(ui);
                 let warn = crate::theme::standing::WARNING;

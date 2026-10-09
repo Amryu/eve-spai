@@ -2264,6 +2264,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(battle_report_scene("battle_report_tiles", [1600.0, 1000.0], crate::app::BrTab::Tiles, false));
     v.push(battle_report_scene("battle_report_tiles_narrow", [900.0, 800.0], crate::app::BrTab::Tiles, false));
     v.push(battle_report_scene("battle_report_details", [1600.0, 1000.0], crate::app::BrTab::Details, false));
+    v.push(battle_report_scene("battle_report_timeline", [1400.0, 900.0], crate::app::BrTab::Timeline, false));
     v.push(battle_report_scene("battle_report_extreme", [1100.0, 900.0], crate::app::BrTab::Tiles, true));
     v.push(battle_report_two_systems_scene("battle_report_two_systems", [1400.0, 900.0]));
     // A killmail in its window, wide enough for the fit beside the attackers, and narrow.

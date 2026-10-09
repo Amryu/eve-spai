@@ -307,6 +307,7 @@ mod char_rings;
 pub(crate) use char_rings::*;
 mod alert_engine;
 pub(crate) mod killmail_ui;
+mod br_timeline;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
@@ -5566,6 +5567,18 @@ fn day_text(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
+/// A count as it fits a row: 950, 12.3k, 1.2M.
+fn fmt_count(n: i64) -> String {
+    let f = n as f64;
+    if n.abs() >= 1_000_000 {
+        format!("{:.1}M", f / 1e6)
+    } else if n.abs() >= 10_000 {
+        format!("{:.1}k", f / 1e3)
+    } else {
+        n.to_string()
+    }
+}
+
 fn fmt_isk(isk: f64) -> String {
     crate::intel::format_isk(isk.max(0.0) as u64)
 }
@@ -5938,6 +5951,7 @@ pub(crate) fn ship_row(
     highlight: ShipHighlight,
     border: bool,
     open_kill: &std::cell::Cell<Option<i64>>,
+    damage: i64,
 ) -> egui::Response {
     use egui_phosphor::regular as icon;
     let fill = match highlight {
@@ -5975,6 +5989,10 @@ pub(crate) fn ship_row(
             ui.horizontal_wrapped(|ui| {
                 party_badge(ui, party, 14.0, true);
                 ui.label(egui::RichText::new(pilot).weak());
+                if damage > 0 {
+                    ui.label(egui::RichText::new(format!("{} dmg", fmt_count(damage))).color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)))
+                        .on_hover_text(format!("{damage} damage dealt in this battle"));
+                }
                 if let Some(l) = lost {
                     if ui
                         .button(format!("{} zKill", icon::LINK))
@@ -6094,6 +6112,7 @@ pub(crate) enum BrTab {
     #[default]
     Tiles,
     Details,
+    Timeline,
 }
 
 /// What a click in the report asked for.
@@ -6352,8 +6371,17 @@ pub(crate) fn battle_detail(
     let gap = frame.total_margin().sum().x + 6.0 + ui.spacing().item_spacing.x;
     let n = b.sides.len().max(1) as f32;
     let side_w = ((ui.available_width() - gap * n) / n).floor().max(MIN_SIDE_W);
-    let col_h = (ui.available_height() - 12.0).max(180.0);
-    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+    if tab == BrTab::Timeline {
+        crate::app::br_timeline::timeline_chart(ui, b, 220.0, true);
+        ui.add_space(6.0);
+        out.open_kill = crate::app::br_timeline::timeline_kills(ui, b, type_names);
+        return out;
+    }
+    // Under the tiles, when there is height to spare, the fight over time.
+    let timeline_h = if tab == BrTab::Tiles && ui.available_height() >= TIMELINE_UNDER_TILES_FROM { 120.0 } else { 0.0 };
+    let col_h = (ui.available_height() - 12.0 - if timeline_h > 0.0 { timeline_h + 8.0 } else { 0.0 }).max(180.0);
+    // No taller than the sides: the timeline goes under them.
+    egui::ScrollArea::horizontal().auto_shrink([false, true]).max_height(col_h + 24.0).show(ui, |ui| {
         ui.horizontal_top(|ui| {
             for (i, side) in b.sides.iter().enumerate() {
                 let col = side_color(i);
@@ -6460,7 +6488,7 @@ pub(crate) fn battle_detail(
                                         p.char_id != 0 && border_set.is_some_and(|s| s.contains(&p.char_id));
                                     let resp = ship_row(
                                         ui, row_w, &p.party, p.ship, &p.pilot, &name_of,
-                                        p.lost.as_ref(), red, highlight, border, &open_kill,
+                                        p.lost.as_ref(), red, highlight, border, &open_kill, p.damage,
                                     );
                                     if p.char_id != 0 && ui.rect_contains_pointer(resp.rect) {
                                         new_hover.set(Some(BattleHover {
@@ -6481,10 +6509,17 @@ pub(crate) fn battle_detail(
             }
         });
     });
+    if timeline_h > 0.0 {
+        ui.add_space(4.0);
+        crate::app::br_timeline::timeline_chart(ui, b, timeline_h, false);
+    }
     out.hover = new_hover.get();
     out.open_kill = open_kill.get();
     out
 }
+
+/// The height from which the tiles view also shows the timeline under the sides.
+const TIMELINE_UNDER_TILES_FROM: f32 = 640.0;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn condensed_row(

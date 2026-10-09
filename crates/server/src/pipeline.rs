@@ -171,6 +171,7 @@ mod tests {
                 ship: 588,
                 pilot: format!("Killer {kill_id}"),
                 final_blow: true,
+                damage: 0,
             }],
             isk: 1_000_000.0,
             anchored: true,
