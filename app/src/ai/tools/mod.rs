@@ -11,6 +11,7 @@ mod kills;
 mod map;
 mod memory;
 mod misc;
+mod history;
 mod web;
 
 use serde_json::{json, Value};
@@ -82,6 +83,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(intel::TOOLS);
     v.extend(kills::TOOLS);
     v.extend(misc::TOOLS);
+    v.extend(history::TOOLS);
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);

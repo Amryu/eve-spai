@@ -80,6 +80,17 @@ pub fn character(client: &reqwest::blocking::Client, name: &str) -> Result<Optio
     Ok(best_match(ids.characters.unwrap_or_default(), name))
 }
 
+/// An alliance's id and name, by its full name.
+pub fn alliance(client: &reqwest::blocking::Client, name: &str) -> Option<(i64, String)> {
+    #[derive(serde::Deserialize)]
+    struct Ids {
+        alliances: Option<Vec<NameEntry>>,
+    }
+    let name = name.trim();
+    let ids: Ids = client.post(IDS_URL).json(&[name]).send().ok()?.error_for_status().ok()?.json().ok()?;
+    best_match(ids.alliances.unwrap_or_default(), name)
+}
+
 /// Ids for many character names at once, keyed by the lowercased name asked for. `None` when the
 /// call itself failed, so the caller can tell "no such pilot" from "ask again later". Keep `names`
 /// under ~200: ESI answers 400 or 504 to much larger batches.

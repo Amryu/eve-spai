@@ -6,6 +6,10 @@ use std::time::Duration;
 use crate::geo::Systems;
 use crate::intel::{self, IntelState, Movement};
 
+/// How long reports stay live; older ones are only in the history.
+const INTEL_TTL: i64 = 3600;
+/// How often the live window is written to the history.
+const HISTORY_EVERY: i64 = 60;
 const POLL: Duration = Duration::from_millis(1500);
 const FIRST_SIGHT_BACKLOG: usize = 20;
 const MAX_MOVE_JUMPS: u32 = 15;
@@ -48,6 +52,7 @@ pub fn spawn(
         let db = crate::store::Store::open().ok();
         let known_regions = systems.region_names();
         let mut channel_regions: HashMap<String, Vec<String>> = HashMap::new();
+        let mut kept_at = 0i64;
         loop {
             scan(
                 &chat_dir,
@@ -68,6 +73,14 @@ pub fn spawn(
                 &known_regions,
                 &mut channel_regions,
             );
+            // The live window goes to the history as it stands, so a report later merged or
+            // corrected is kept in its final form once it leaves the window.
+            let now = crate::clock::utc().timestamp();
+            if let Some(store) = db.as_ref().filter(|_| now - kept_at >= HISTORY_EVERY) {
+                kept_at = now;
+                let reports = state.lock().unwrap().reports.clone();
+                store.replace_intel_window(now - INTEL_TTL, &reports);
+            }
             std::thread::sleep(POLL);
         }
     });
@@ -304,7 +317,7 @@ fn scan(
 
                 st.push(report);
             }
-            st.prune(3600, now);
+            st.prune(INTEL_TTL, now);
             drop(st);
             sightings.lock().unwrap().prune(now);
             any_new = true;

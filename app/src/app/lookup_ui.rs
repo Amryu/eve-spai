@@ -365,6 +365,8 @@ impl SpaiApp {
         if let Some(snap) = crate::localscan::snapshot(&self.lookup_table, &self.lookup_current) {
             if let (Some(store), Ok(json)) = (self.store.as_ref(), serde_json::to_string(&snap)) {
                 store.kv_set(KEY, &json);
+                let sys = self.player_system();
+                store.log_local_scan(crate::clock::utc().timestamp(), sys, &json);
             }
             self.lookup_saved_for = self.lookup_current.clone();
         }

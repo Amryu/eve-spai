@@ -150,6 +150,9 @@ pub struct Settings {
     /// The assistant, all of it in one sub-struct: see `ai::config`.
     #[serde(default)]
     pub ai: crate::ai::config::AiSettings,
+    /// How long each kind of history is kept.
+    #[serde(default)]
+    pub retention: Retention,
     #[serde(default = "default_true")]
     pub battles_enabled: bool,
     #[serde(default)]
@@ -1522,6 +1525,7 @@ impl Default for Settings {
             alerts: AlertSettings::default(),
             web: WebSettings::default(),
             ai: Default::default(),
+            retention: Default::default(),
             battles_enabled: true,
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,
@@ -2619,3 +2623,36 @@ mod web_settings_tests {
     }
 }
 
+
+
+/// Days each kind of history is kept. 0 records nothing; [`Retention::FOREVER`] never deletes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Retention {
+    /// Parsed intel reports.
+    pub intel: u32,
+    /// Kills near you or your intel, which battles are built from.
+    pub kills_nearby: u32,
+    /// Every kill in EVE, in short.
+    pub kills_all: u32,
+    /// ESI's hourly kills and jumps per system.
+    pub system_stats: u32,
+    /// Sov holder changes.
+    pub sov: u32,
+    /// Your characters' moves.
+    pub moves: u32,
+    pub local_scans: u32,
+}
+
+impl Retention {
+    pub const FOREVER: u32 = 36_500;
+    /// The choices offered, as (days, label).
+    pub const CHOICES: [(u32, &'static str); 8] =
+        [(0, "Off"), (1, "1 day"), (7, "1 week"), (30, "30 days"), (90, "90 days"), (180, "180 days"), (365, "1 year"), (Self::FOREVER, "Forever")];
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self { intel: 90, kills_nearby: 30, kills_all: 30, system_stats: 30, sov: 365, moves: 365, local_scans: 90 }
+    }
+}

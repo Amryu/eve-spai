@@ -19,6 +19,7 @@ static SEARCH_INTEL: ToolSpec = ToolSpec {
                 "system": {"type": "string"},
                 "within_jumps": {"type": "integer", "minimum": 0, "maximum": 15},
                 "since_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+                "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Look back this many days instead, into the saved history"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 60}
             }),
             &[],
@@ -53,7 +54,7 @@ fn report_json(ctx: &Ctx, r: &crate::intel::IntelReport, jumps: Option<u32>) -> 
 
 fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let q = str_arg(v, "query").map(str::to_lowercase);
-    let since = ctx.now - 60 * u64_arg(v, "since_minutes", 120, 1440) as i64;
+    let since = since_of(ctx, v, 120, 1440);
     let limit = u64_arg(v, "limit", 25, 60) as usize;
     let around = match str_arg(v, "system") {
         Some(n) => {
@@ -62,10 +63,7 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         }
         None => None,
     };
-    let reports: Vec<crate::intel::IntelReport> = {
-        let st = ctx.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
-        st.reports.iter().rev().filter(|r| r.received >= since).take(2000).cloned().collect()
-    };
+    let reports = intel_since(ctx, since, q.as_deref());
     let mut out = Vec::new();
     for r in &reports {
         let mut jumps = None;
@@ -159,7 +157,8 @@ static TRACK: ToolSpec = ToolSpec {
         schema(
             json!({
                 "entity": {"type": "string", "description": "Alliance, corporation or pilot name, or a common shorthand"},
-                "since_minutes": {"type": "integer", "minimum": 5, "maximum": 2880}
+                "since_minutes": {"type": "integer", "minimum": 5, "maximum": 2880},
+                "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Look back this many days instead"}
             }),
             &["entity"],
         )
@@ -184,7 +183,7 @@ fn hit(name: &str, m: &[String]) -> bool {
 fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let entity = str_arg(v, "entity").ok_or("which group or pilot?")?.to_owned();
     let m = matchers(&entity);
-    let since = ctx.now - 60 * u64_arg(v, "since_minutes", 120, 2880) as i64;
+    let since = since_of(ctx, v, 120, 2880);
     // (time, system, what)
     let mut seen: Vec<(i64, i64, String)> = Vec::new();
     if ctx.allowed("kills.feed") || ctx.allowed("kills.history") {
@@ -210,9 +209,23 @@ fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             }
         }
     }
+    if ctx.allowed("kills.history") {
+        if let (Some(store), Some((aid, _))) = (ctx.store, alliance_of(ctx, &entity)) {
+            let names = ship_names(store);
+            let known: std::collections::HashSet<i64> = store.load_engagements(since).iter().map(|e| e.kill_id).collect();
+            for k in store.kill_history(since, &[], Some(aid), 400).into_iter().filter(|k| !known.contains(&k.kill_id)) {
+                let ship = names.get(&k.ship_type_id).cloned().unwrap_or_else(|| format!("type {}", k.ship_type_id));
+                let what = if k.victim_alliance == Some(aid) { format!("lost a {ship}") } else { format!("killed a {ship} ({} attackers)", k.attackers) };
+                seen.push((k.time, k.system_id, what));
+            }
+        }
+    }
     if ctx.allowed("intel.reports") {
-        let st = ctx.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
-        for r in st.reports.iter().filter(|r| r.received >= since && !r.clear) {
+        // Matched on the entity's own words in the store, then exactly here.
+        let word = m.iter().max_by_key(|w| w.len()).cloned().unwrap_or_default();
+        let reports = intel_since(ctx, since, Some(&word));
+        let reports = if reports.is_empty() { intel_since(ctx, since, None) } else { reports };
+        for r in reports.iter().filter(|r| !r.clear) {
             let named = r.pilots.iter().any(|p| hit(p, &m)) || r.alliances.iter().any(|(a, _)| hit(a, &m)) || m.iter().any(|w| w.len() >= 3 && r.text.to_lowercase().contains(w.as_str()));
             if let (true, Some(s)) = (named, r.primary_system()) {
                 seen.push((r.received, s.id, format!("intel in {}: \"{}\"", r.channel, r.text)));
@@ -255,6 +268,41 @@ fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         out["note"] = json!("nothing found; try a longer since_minutes, the full name, or a member pilot");
     }
     Ok(out)
+}
+
+/// Where a lookback starts: `days` when given, else `since_minutes` (default and cap in minutes).
+fn since_of(ctx: &Ctx, v: &Value, default_min: u64, max_min: u64) -> i64 {
+    match v.get("days").and_then(Value::as_u64) {
+        Some(d) => ctx.now - d.clamp(1, 3650) as i64 * 86_400,
+        None => ctx.now - 60 * u64_arg(v, "since_minutes", default_min, max_min) as i64,
+    }
+}
+
+/// Intel since `since`, newest first: the live hour from memory, older from the saved history,
+/// narrowed there to reports holding every word of `words`.
+pub(crate) fn intel_since(ctx: &Ctx, since: i64, words: Option<&str>) -> Vec<crate::intel::IntelReport> {
+    let mut out: Vec<crate::intel::IntelReport> = {
+        let st = ctx.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+        st.reports.iter().rev().filter(|r| r.received >= since).take(2000).cloned().collect()
+    };
+    let live_from = out.iter().map(|r| r.received).min().unwrap_or(ctx.now).min(ctx.now - 3600);
+    if since < live_from {
+        if let Some(store) = ctx.store {
+            out.extend(store.intel_history(since, live_from - 1, &[], None, words, 3000));
+        }
+    }
+    out
+}
+
+/// An alliance by shorthand or full name, as (id, name).
+pub(crate) fn alliance_of(ctx: &Ctx, name: &str) -> Option<(i64, String)> {
+    if let Some((n, id)) = crate::alliances::lookup(name.trim()) {
+        return Some((id, n.to_owned()));
+    }
+    if !ctx.deps.online {
+        return None;
+    }
+    crate::http::client(10).ok().and_then(|c| crate::universe::alliance(&c, name))
 }
 
 pub(crate) fn ship_names(store: &crate::store::Store) -> std::collections::HashMap<i64, String> {

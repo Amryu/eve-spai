@@ -36,8 +36,13 @@ pub fn spawn(status: SharedStatus, ctx: egui::Context) {
             return;
         };
         let mut alliance_names: HashMap<i64, String> = HashMap::new();
+        let store = crate::store::Store::open().ok();
+        let mut sov_known = store.as_ref().map(|s| s.sov_latest()).unwrap_or_default();
         loop {
             if let Some(map) = fetch(&client, &mut alliance_names) {
+                if let Some(store) = &store {
+                    keep_history(store, &map, &mut sov_known, crate::clock::utc().timestamp());
+                }
                 *status.lock().unwrap() = map;
                 ctx.request_repaint();
             }
@@ -184,3 +189,27 @@ fn get<T: for<'de> Deserialize<'de>>(
     client.get(url).send()?.json::<T>()
 }
 
+
+/// Writes the hour's statistics and any sov holder that changed to the history.
+fn keep_history(store: &crate::store::Store, map: &HashMap<i64, SysFlags>, sov_known: &mut HashMap<i64, Option<i64>>, now: i64) {
+    use crate::store::history::HourStats;
+    let clamp = |v: u32| v.min(u16::MAX as u32) as u16;
+    let rows: Vec<HourStats> = map
+        .iter()
+        .filter(|(_, f)| f.ship_kills + f.pod_kills + f.npc_kills + f.jumps > 0)
+        .map(|(id, f)| HourStats { system_id: *id, ship_kills: clamp(f.ship_kills), pod_kills: clamp(f.pod_kills), npc_kills: clamp(f.npc_kills), jumps: clamp(f.jumps) })
+        .collect();
+    store.log_system_stats(now / 3600, &rows);
+    // A failed sov fetch leaves every holder empty, which is not every system losing its sov.
+    if map.values().filter(|f| f.sov_alliance.is_some()).count() < 100 {
+        return;
+    }
+    for (id, f) in map {
+        let holder = f.sov_alliance;
+        let was = sov_known.get(id).copied();
+        if was != Some(holder) && (was.is_some() || holder.is_some()) {
+            store.log_sov(now, *id, holder);
+            sov_known.insert(*id, holder);
+        }
+    }
+}

@@ -448,6 +448,30 @@ fn poll(
             .ship_type_id
             .is_some_and(|s| camp_types.bubble.contains(&s));
         camps.lock().unwrap().record(pkg.killmail.solar_system_id, t, on_gate, equip);
+        if let Some(store) = store {
+            let km = &pkg.killmail;
+            let mut alliances: Vec<i64> = km.attackers.iter().filter_map(|a| a.alliance_id).collect();
+            alliances.sort_unstable();
+            alliances.dedup();
+            let mut ships: Vec<i64> = km.attackers.iter().filter_map(|a| a.ship_type_id).filter(|&s| s > 0).collect();
+            ships.sort_unstable();
+            ships.dedup();
+            store.log_kill(&crate::store::history::KillRow {
+                kill_id: pkg.kill_id,
+                time: t,
+                system_id: km.solar_system_id,
+                ship_type_id: km.victim.ship_type_id.unwrap_or(0),
+                value: pkg.zkb.total_value,
+                victim_char: km.victim.character_id,
+                victim_corp: km.victim.corporation_id,
+                victim_alliance: km.victim.alliance_id,
+                attackers: km.attackers.len() as u32,
+                attacker_alliances: alliances,
+                attacker_ships: ships,
+                on_gate,
+                camp_gear: equip,
+            });
+        }
         if let Some(ship) = pkg.killmail.victim.ship_type_id {
             let mut info = kill_info(&pkg);
             if let (Some(store), Some(p)) = (store, pkg.killmail.victim.position.as_ref()) {

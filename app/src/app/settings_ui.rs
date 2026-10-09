@@ -1716,6 +1716,46 @@ impl SpaiApp {
         }
     }
 
+    /// How long each kind of history is kept.
+    pub(crate) fn history_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.label(egui::RichText::new("History").strong());
+        let size = self.store.as_ref().and_then(|s| std::fs::metadata(s.path()).ok()).map(|m| m.len());
+        ui.label(
+            egui::RichText::new(match size {
+                Some(b) => format!("What the app saw, kept for the assistant and for looking back. The database is {} now; older data is cleared every few hours.", super::fmt_bytes(b)),
+                None => "What the app saw, kept for the assistant and for looking back. Older data is cleared every few hours.".to_owned(),
+            })
+            .weak(),
+        );
+        let r = &mut self.settings.retention;
+        let rows: [(&str, &str, &mut u32, bool); 7] = [
+            ("Intel reports", "Every parsed intel line from your channels", &mut r.intel, true),
+            ("Kills near you", "Kills near you or your intel, which battle reports are built from", &mut r.kills_nearby, false),
+            ("All kills in EVE", "A short line per kill anywhere in EVE, about 3 MB a day", &mut r.kills_all, true),
+            ("System statistics", "ESI's hourly kills and jumps per system, about 1.5 MB a day", &mut r.system_stats, true),
+            ("Sov changes", "Each time a system changes hands", &mut r.sov, true),
+            ("Your moves", "Where your characters went, and in what", &mut r.moves, true),
+            ("Local scans", "The pilots of each local you looked up", &mut r.local_scans, true),
+        ];
+        egui::Grid::new("retention_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            for (label, hint, days, can_off) in rows {
+                ui.label(label).on_hover_text(hint);
+                let cur = crate::settings::Retention::CHOICES.iter().find(|(d, _)| d == days).map_or_else(|| format!("{days} days"), |(_, l)| (*l).to_owned());
+                egui::ComboBox::from_id_salt(("retention", label)).selected_text(cur).width(140.0).show_ui(ui, |ui| {
+                    for (d, l) in crate::settings::Retention::CHOICES {
+                        if d == 0 && !can_off {
+                            continue;
+                        }
+                        changed |= ui.menu_value(days, d, l).changed();
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        changed
+    }
+
     pub(crate) fn cyno_generators_window(&mut self, ctx: &egui::Context) {
         if !self.cyno_generators_open {
             return;
@@ -2083,6 +2123,9 @@ impl SpaiApp {
 
                     ui.separator();
                     changed |= self.assistant_settings_section(ui);
+
+                    ui.separator();
+                    changed |= self.history_settings_section(ui);
 
                     ui.separator();
 

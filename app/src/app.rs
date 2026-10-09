@@ -1025,6 +1025,7 @@ impl SpaiApp {
         let notes_view = std::sync::Arc::new(notes.view_with(&settings.notes_folder, &settings.tag_colors));
 
         settings.theme.apply(ctx);
+        crate::store::history::set_retention(&settings.retention);
 
         if !settings.alerts.seeded {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
@@ -3363,6 +3364,7 @@ impl SpaiApp {
         };
         match store.save_settings(&self.settings) {
             Ok(()) => {
+                crate::store::history::set_retention(&self.settings.retention);
                 self.persist_retry_at = None;
                 self.needs_save = false;
             }

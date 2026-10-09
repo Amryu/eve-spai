@@ -2359,6 +2359,23 @@ pub(crate) fn all() -> Vec<Scene> {
             });
         })
     });
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ui("settings_history", [460.0, 420.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.retention.kills_all = 0;
+                a.settings.retention.moves = crate::settings::Retention::FOREVER;
+                a
+            });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    a.history_settings_section(ui);
+                });
+            });
+        })
+    });
     v.push(dialog_scene("dialog_ai_glossary", [620.0, 700.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.ai.glossary.overrides.insert("Cyno".into(), "The beacon our capitals jump to".into());
