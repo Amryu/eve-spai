@@ -121,6 +121,8 @@ webkit2gtk = { version = "=2.0.1", optional = true }
 # so every platform renders with it; main.rs also pins the Windows renderer.
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.34", features = ["wgpu"] }
+# The map overlay fades as a whole window there (see `window_alpha.rs`).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 # System tray on Windows + macOS (Linux uses ksni above). Created on the main thread and
 # driven through the winit/eframe event loop.

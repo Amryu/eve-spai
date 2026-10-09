@@ -316,9 +316,6 @@ impl SpaiApp {
         if self.map_layout.is_threat() {
             let rect = ui.available_rect_before_wrap();
             self.map_last_rect = Some(rect);
-            if self.map_overlay_mode {
-                ui.set_opacity(self.settings.map_overlay_opacity.clamp(0.2, 1.0));
-            }
             self.draw_threat_view(ui, rect, player_sys);
             self.map_chrome(ui, rect);
             return;
@@ -380,9 +377,6 @@ impl SpaiApp {
             return;
         };
 
-        if self.map_overlay_mode {
-            ui.set_opacity(self.settings.map_overlay_opacity.clamp(0.2, 1.0));
-        }
         let rect = ui.available_rect_before_wrap();
         if let Some(prev) = self.map_last_rect {
             let d = prev.size() - rect.size();
@@ -415,12 +409,9 @@ impl SpaiApp {
                 self.ensure_jump_systems();
             }
         }
-        if resp.dragged() && !self.map_overlay_drag && self.map_link.is_none() {
+        if resp.dragged() && self.map_link.is_none() {
             self.map_pan += resp.drag_delta();
             self.map_follow = false;
-        }
-        if !resp.dragged() {
-            self.map_overlay_drag = false;
         }
         if !self.map_overlay_mode {
             self.map_keys(ui, 0.7..=60.0);
@@ -455,17 +446,6 @@ impl SpaiApp {
             if let Some(s) = self.map_draw.iter().find(|s| s.id == fid) {
                 let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
                 self.map_pan = rect.center() - base;
-            }
-        }
-
-        if self.map_overlay_mode && !self.map_overlay_locked && resp.drag_started() {
-            let on_obj = ui
-                .input(|i| i.pointer.press_origin())
-                .and_then(|p| nearest_system(p, &pos, 10.0))
-                .is_some();
-            if !on_obj {
-                self.map_overlay_drag = true;
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
         }
 
@@ -2156,57 +2136,52 @@ impl SpaiApp {
         self.wormhole_section(ui, id);
     }
 
+    /// The overlay's strip, shown while the pointer is over it: a handle to move the window, follow,
+    /// opacity, staying above EVE only while it is active, and the way out. Dragging the map pans it.
     pub(crate) fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
+        if !ui.ui_contains_pointer() {
+            return;
+        }
         egui::Area::new(ui.id().with("map_overlay_bar"))
-            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+            .fixed_pos(rect.left_top() + egui::vec2(6.0, 6.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if self.map_overlay_locked {
-                            if ui.button(icon::LOCK).on_hover_text("Unlock").clicked() {
-                                self.map_overlay_locked = false;
-                            }
-                            if ui
-                                .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
-                                .on_hover_text("Follow active character")
-                                .clicked()
-                            {
-                                self.map_follow = !self.map_follow;
-                            }
-                            return;
-                        }
-                        if ui.button(icon::FRAME_CORNERS).on_hover_text("Exit overlay mode").clicked() {
-                            self.map_overlay_mode = false;
-                        }
-                        if ui.button(icon::LOCK_OPEN).on_hover_text("Lock (no move/resize)").clicked() {
-                            self.map_overlay_locked = true;
+                        let grip = ui
+                            .add(egui::Button::new(icon::ARROWS_OUT_CARDINAL).sense(egui::Sense::click_and_drag()))
+                            .on_hover_text("Drag to move the overlay");
+                        if grip.drag_started() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                         if ui
                             .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
-                            .on_hover_text("Follow active character")
+                            .on_hover_text("Follow your character")
                             .clicked()
                         {
                             self.map_follow = !self.map_follow;
                         }
+                        ui.spacing_mut().slider_width = 80.0;
                         if ui
-                            .add(egui::Button::new(icon::CPU).selected(self.settings.map_overlay_smart))
-                            .on_hover_text("Smart on-top (above only while EVE is active)")
-                            .clicked()
-                        {
-                            self.settings.map_overlay_smart = !self.settings.map_overlay_smart;
-                            self.needs_save = true;
-                        }
-                        ui.label("Opacity");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.2..=1.0)
-                                    .show_value(false),
-                            )
+                            .add(egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.2..=1.0).show_value(false))
+                            .on_hover_text("Opacity")
                             .changed()
                         {
                             self.needs_save = true;
+                        }
+                        ui.menu_button(icon::DOTS_THREE, |ui| {
+                            if ui
+                                .checkbox(&mut self.settings.map_overlay_smart, "Above EVE only while it is active")
+                                .on_hover_text("Otherwise above every window")
+                                .changed()
+                            {
+                                self.needs_save = true;
+                            }
+                        });
+                        if ui.button(icon::SIGN_OUT).on_hover_text("Close the overlay").clicked() {
+                            self.map_overlay_mode = false;
+                            self.map_popped = false;
                         }
                     });
                 });

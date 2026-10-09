@@ -77,6 +77,7 @@ mod universe;
 mod update;
 mod watcher;
 mod web;
+mod window_alpha;
 mod wormholes;
 mod zkill;
 #[cfg(test)]

@@ -683,9 +683,6 @@ pub struct SpaiApp {
     map_window_on_top: bool,
     map_controls_hidden: bool,
     map_overlay_mode: bool,
-    map_overlay_locked: bool,
-    map_vp_props: Option<(bool, bool)>,
-    map_overlay_drag: bool,
     /// A route drag in flight: the system it started on.
     map_link: Option<i64>,
     /// Where the last frame put each system, so a drag can be hit-tested against where the user
@@ -1545,9 +1542,6 @@ impl SpaiApp {
             map_window_on_top: false,
             map_controls_hidden: false,
             map_overlay_mode: false,
-            map_vp_props: None,
-            map_overlay_locked: false,
-            map_overlay_drag: false,
             map_link: None,
             map_pos_prev: std::collections::HashMap::new(),
             map_link_menu: None,
