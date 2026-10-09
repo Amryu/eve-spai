@@ -189,6 +189,17 @@ fn acquire_single_instance_lock() -> bool {
 }
 
 fn main() -> eframe::Result<()> {
+    // A model CLI that only starts MCP servers as commands talks to the running app through this.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--mcp-stdio") {
+        let port = args.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(0);
+        let token = std::env::var(crate::ai::cli::TOKEN_ENV).unwrap_or_default();
+        if let Err(e) = crate::ai::mcp::stdio_bridge(port, &token) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // Installed per role, because both processes run this function and would otherwise append to
     // one crash.log, racing each other's rotation.
     let overlay_child = std::env::args().any(|a| a == "--overlay");

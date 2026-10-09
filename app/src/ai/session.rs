@@ -99,11 +99,14 @@ pub struct Session {
     notes: Vec<String>,
     calls: VecDeque<i64>,
     tokens_today: (i64, u64),
+    conv: String,
+    /// Started the first time a backend that runs its own tools asks for one.
+    mcp: Option<super::mcp::McpServer>,
 }
 
 impl Session {
     pub fn new(deps: AiDeps, view: SharedView, cancel: Arc<AtomicBool>, make: ProviderFactory, repaint: Option<egui::Context>) -> Self {
-        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0) }
+        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0), conv: super::mcp::new_token(), mcp: None }
     }
 
     fn update(&self, f: impl FnOnce(&mut AiView)) {
@@ -117,6 +120,7 @@ impl Session {
         match cmd {
             Command::NewChat => {
                 self.history.clear();
+                self.conv = super::mcp::new_token();
                 self.notes.clear();
                 self.update(|v| {
                     v.turns.clear();
@@ -198,6 +202,10 @@ impl Session {
             let dynamic = super::situation::summary(&self.deps, &facts, facts.ai.situation_jumps as u32, now);
             let static_prompt = static_prompt(&facts, &self.deps.memories.lock().unwrap_or_else(|e| e.into_inner()).prompt());
             let (model, effort) = model_of(&facts);
+            if caps.hosts_own_tools && self.mcp.is_none() {
+                self.mcp = Some(super::mcp::start(self.deps.clone()).map_err(|e| format!("Could not start the tool server: {e}"))?);
+            }
+            let mcp = self.mcp.as_ref().filter(|_| caps.hosts_own_tools).map(|m| (m.port, m.token.as_str()));
             let req = Request {
                 system_static: &static_prompt,
                 system_dynamic: &dynamic,
@@ -206,6 +214,8 @@ impl Session {
                 model: &model,
                 effort: &effort,
                 max_tokens: 16_000,
+                conv: &self.conv,
+                mcp,
             };
             let mut blocks: Vec<Block> = Vec::new();
             let mut calls: Vec<(String, String, serde_json::Value, Option<String>)> = Vec::new();
@@ -268,11 +278,17 @@ impl Session {
             }
             // A provider that runs its own tool loop only reports the calls it made.
             if caps.hosts_own_tools {
+                let queued: Vec<PendingAction> = self.mcp.as_ref().map(|m| std::mem::take(&mut *m.actions.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();
                 self.update(|v| {
                     if let Some(t) = v.turns.get_mut(turn_ix) {
                         t.chips.extend(calls.iter().map(|(_, name, input, _)| Chip { name: name.clone(), args: short_args(input), error: None }));
+                        t.cards.extend(queued.into_iter().map(|action| ActionCard { action, state: CardState::Pending }));
                     }
                 });
+                // The CLI keeps the conversation itself: only the question and answer stay here.
+                if let Some(Msg { blocks, .. }) = self.history.last_mut().filter(|m| m.role == Role::Assistant) {
+                    blocks.retain(|b| matches!(b, Block::Text(_)));
+                }
                 return Ok(());
             }
             if calls.is_empty() {
@@ -377,7 +393,12 @@ pub fn provider_for(facts: &AiFacts, secrets: &dyn SecretStore) -> Result<Box<dy
             }
             Ok(Box::new(super::openai_compat::OpenAiCompat { base, key, tools: a.openai.tools }))
         }
-        Gemini | ClaudeCli | CodexCli => Err(format!("{} is not available yet", a.provider.label())),
+        Gemini => {
+            let key = secrets.get("gemini").ok_or("No Gemini API key yet: add one in Settings, Assistant")?;
+            Ok(Box::new(super::gemini::Gemini { key }))
+        }
+        ClaudeCli => Ok(Box::new(super::cli::Cli::new(super::cli::Which::Claude, &a.claude_cli))),
+        CodexCli => Ok(Box::new(super::cli::Cli::new(super::cli::Which::Codex, &a.codex_cli))),
         Unknown => Err("Pick a provider in Settings, Assistant".into()),
     }
 }

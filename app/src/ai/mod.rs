@@ -14,3 +14,6 @@ pub mod session;
 pub mod situation;
 pub mod glossary;
 pub mod memory;
+pub mod gemini;
+pub mod mcp;
+pub mod cli;
