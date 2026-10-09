@@ -140,9 +140,8 @@ Add a scene by appending to `scenes::all()`. Check the census afterwards: a scen
 ~12-target chrome baseline is not being inspected in any meaningful sense.
 
 Size a scene to its whole subject. A scene that crops what it is meant to show is worse than no
-scene, because it reads as coverage. Two tickets in the first round attached `before/` screenshots
-that did not contain the bug: UI-009's chip never rendered in the scene at all, and UI-011's footer
-sat 350px below the frame. Both were caught by the agent doing the fix, not by the review.
+scene, because it reads as coverage: screenshots have been taken that did not contain the bug at
+all, a chip that never rendered in the scene and a footer 350px below the frame.
 
 `SpaiApp::build(ctx, headless: true)` skips the image loaders, the control socket, all
 background threads, the tray and the overlay subprocess, and refuses to open a store unless
@@ -150,8 +149,7 @@ background threads, the tray and the overlay subprocess, and refuses to open a s
 async-populated views show permanent loading states.
 
 **Never render real data. Every scene uses fixtures, never the live profile.** Screenshots get
-committed to `ui-tickets/*/before|after/` and pushed to a public repo, and alliance chat is
-operational information: room names, contact JIDs, fleet pings and intel must not leave the
+shared and can end up in a public repo, and alliance chat is operational information: room names, contact JIDs, fleet pings and intel must not leave the
 machine in a PNG. `harness::build` and `harness::shot` both call `assert_no_live_profile`, which
 fails the test unless `EVE_SPAI_DATA_DIR` (and `store::data_dir()` through it) resolves to
 `target/uitest-profile`. Do not weaken that guard to "just get a real-looking screenshot", and do
@@ -161,7 +159,7 @@ the fixtures do not have, add it to `fixtures.rs`.
 ## Web view screenshots
 
 The web view (`app/src/web/`) is HTML in a browser, so the egui harness cannot render it and
-`checks.rs` cannot see it. `GAP-011` records what that leaves uncovered. What stands in for it:
+`checks.rs` cannot see it. What stands in for it:
 
 - `app/src/uitest/webshot.sh` shoots the fixture demo at 1440 and 390 into `target/webshots`.
 - It always restarts `cargo test --bin eve-spai webdemo -- --ignored --nocapture` on port 6799,
@@ -182,17 +180,8 @@ test binary also matches the shell that ran it, which kills the session (exit 14
 
 ## UI issue workflow
 
-UI defects go through the `ui-tickets` skill: `.claude/skills/ui-tickets/SKILL.md`. Read it before
-filing, fixing, reviewing or landing one, and before dispatching a fix agent.
-
-The shape, so it is recognisable without loading the skill: one folder per ticket under
-`ui-tickets/UI-NNN-slug/` holding `ticket.md`, `before/`, `after/` and `review.md`; `GAP-NNN` for
-what the harness cannot reach; at most two agents at once and never in the same region; one branch
-per ticket merged `--no-ff` so `git revert -m 1` backs the whole thing out.
-
-The skill carries the ticket and review templates, the agent brief, the harness traps and the
-incident log behind every rule. It is meant to grow: when a round teaches something, add the rule
-and the incident in the same commit as the work that taught it.
+No ticket process is required. For a larger UI round it still helps to render the subject before
+and after the change and to keep each fix in its own commit, so it can be reverted alone.
 
 ## Writing and comments (stop slop)
 
