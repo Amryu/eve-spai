@@ -9,6 +9,7 @@ mod actions;
 mod intel;
 mod kills;
 mod map;
+mod memory;
 mod misc;
 mod web;
 
@@ -83,6 +84,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(misc::TOOLS);
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
+    v.extend(memory::TOOLS);
     v
 }
 

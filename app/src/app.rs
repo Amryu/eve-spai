@@ -604,10 +604,20 @@ pub struct SpaiApp {
     /// The assistant's session, started the first time it is used.
     pub(crate) ai: Option<crate::ai::session::AiHandle>,
     pub(crate) ai_facts: std::sync::Arc<std::sync::Mutex<crate::ai::deps::AiFacts>>,
+    /// What the assistant remembers; read on first use.
+    pub(crate) ai_memories: crate::ai::memory::SharedMemories,
+    ai_memories_loaded: bool,
     ai_facts_at: Option<std::time::Instant>,
     pub(crate) ai_secrets: std::sync::Arc<dyn crate::ai::secrets::SecretStore>,
     pub(crate) ai_input: String,
     pub(crate) ai_perms_open: bool,
+    pub(crate) ai_memories_open: bool,
+    pub(crate) ai_glossary_open: bool,
+    /// The memory being edited: its id (0 for a new one), kind and text.
+    pub(crate) ai_mem_edit: Option<(u64, crate::ai::memory::MemKind, String)>,
+    pub(crate) ai_glossary_filter: String,
+    pub(crate) ai_glossary_new: (String, String),
+    pub(crate) ai_glossary_reset_all: bool,
     pub(crate) ai_key_input: String,
     /// Systems the assistant marked on the map, once the user applied it.
     pub(crate) ai_highlight: Vec<i64>,
@@ -1480,6 +1490,8 @@ impl SpaiApp {
             lookup_saved_for: Vec::new(),
             ai: None,
             ai_facts: Default::default(),
+            ai_memories: Default::default(),
+            ai_memories_loaded: false,
             ai_facts_at: None,
             // Tests and renders never touch the real keychain.
             ai_secrets: if headless {
@@ -1489,6 +1501,12 @@ impl SpaiApp {
             },
             ai_input: String::new(),
             ai_perms_open: false,
+            ai_memories_open: false,
+            ai_glossary_open: false,
+            ai_mem_edit: None,
+            ai_glossary_filter: String::new(),
+            ai_glossary_new: (String::new(), String::new()),
+            ai_glossary_reset_all: false,
             ai_key_input: String::new(),
             ai_highlight: Vec::new(),
             lookup_sort: Some(lookup_ui::Col::Danger),
@@ -3636,6 +3654,7 @@ impl SpaiApp {
         self.evetools_poll(ctx);
         self.toasts_ui(ctx);
         self.ai_perms_window(ctx);
+        self.ai_glossary_window(ctx);
         self.ai_push_facts(false);
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);

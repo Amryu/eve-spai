@@ -1342,6 +1342,15 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
             let mut live = turn(false, "Checking kills near ");
             live.streaming = true;
             if !empty {
+                {
+                    use crate::ai::memory::MemKind;
+                    let mut m = a.ai_memories.lock().unwrap();
+                    m.add(MemKind::About, "Stages in 1DQ1-A with Goonswarm Federation, flies Muninns and Eagles", false, 0);
+                    m.add(MemKind::Preference, "Wants answers in two sentences, distances in jumps", true, 0);
+                    m.add(MemKind::Pilot, "Xenuria Thrax, a cyno pilot for The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts", false, 0);
+                    m.add(MemKind::Place, "QX-LIJ is a common way out for Fraternity. gangs", false, 0);
+                }
+                a.ai_memories_open = true;
                 crate::app::ai_ui::seed_ai_view(
                     &mut a,
                     ui.ctx(),
@@ -2330,6 +2339,13 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(assistant_scene("assistant", [1280.0, 800.0], false));
     v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false));
     v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true));
+    v.push(dialog_scene("dialog_ai_glossary", [620.0, 700.0], |a| {
+        a.settings.ai.enabled = true;
+        a.settings.ai.glossary.overrides.insert("Cyno".into(), "The beacon our capitals jump to".into());
+        a.settings.ai.glossary.overrides.insert("Frat".into(), String::new());
+        a.settings.ai.glossary.custom.push(crate::ai::glossary::Entry { term: "GSOL".into(), meaning: "The holding corporation that owns the staging keepstar".into() });
+        a.ai_glossary_open = true;
+    }));
     v.push(dialog_scene("dialog_ai_perms", [460.0, 640.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.intel_channels = vec!["Delve.Imperium".into(), "Querious.Imperium".into()];

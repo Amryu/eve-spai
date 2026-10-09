@@ -196,9 +196,10 @@ impl Session {
             let caps = provider.caps();
             let tool_defs = if caps.tools && !caps.hosts_own_tools { tools::tools_for(&facts) } else { Vec::new() };
             let dynamic = super::situation::summary(&self.deps, &facts, facts.ai.situation_jumps as u32, now);
+            let static_prompt = static_prompt(&facts, &self.deps.memories.lock().unwrap_or_else(|e| e.into_inner()).prompt());
             let (model, effort) = model_of(&facts);
             let req = Request {
-                system_static: SYSTEM_PROMPT,
+                system_static: &static_prompt,
                 system_dynamic: &dynamic,
                 msgs: &self.history,
                 tools: &tool_defs,
@@ -309,6 +310,22 @@ impl Session {
         }
         Err("Gave up after too many lookups without an answer".into())
     }
+}
+
+/// The instructions that change rarely, in the cached part of the prompt: the assistant's own, the
+/// language, the glossary, what it remembers, and the user's own instructions last.
+pub fn static_prompt(facts: &AiFacts, memories: &str) -> String {
+    let a = &facts.ai;
+    let mut s = format!("{SYSTEM_PROMPT}\n- {}\n- Save a memory with remember when you learn something about the user that will matter later; keep memories correct with update_memory and forget.\n\n", a.language_rule());
+    s.push_str(&super::glossary::prompt(&a.glossary));
+    s.push('\n');
+    s.push_str(memories);
+    let own = a.instructions.trim();
+    if !own.is_empty() {
+        s.push_str("\n\nThe user's own instructions, which win over the above where they differ:\n");
+        s.push_str(own);
+    }
+    s
 }
 
 /// The model and effort the configured provider uses.
@@ -463,6 +480,22 @@ mod tests {
         s.handle(Command::ActionResult { id, applied: true, note: "The user applied: Show 1DQ1-A on the map".into() }, None);
         assert_eq!(s.view.lock().unwrap().turns[1].cards[0].state, CardState::Applied);
         assert_eq!(s.notes.len(), 1);
+    }
+
+    #[test]
+    fn the_fixed_prompt_carries_language_glossary_memories_and_the_users_own() {
+        let mut f = facts(&[]);
+        f.ai.language = "de".into();
+        f.ai.instructions = "I fly for Goonswarm.".into();
+        f.ai.glossary.custom.push(crate::ai::glossary::Entry { term: "GSOL".into(), meaning: "a holding corp".into() });
+        let p = static_prompt(&f, "- 3: Stages in 1DQ1-A");
+        assert!(p.contains("Always answer in German"));
+        assert!(p.contains("- GSOL: a holding corp"));
+        assert!(p.contains("- Cyno: A cynosural field"));
+        assert!(p.contains("- 3: Stages in 1DQ1-A"));
+        assert!(p.trim_end().ends_with("I fly for Goonswarm."), "the user's own come last");
+        f.ai.language = "auto".into();
+        assert!(static_prompt(&f, "").contains("language the user writes in"));
     }
 
     #[test]

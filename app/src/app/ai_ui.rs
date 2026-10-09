@@ -17,6 +17,13 @@ impl SpaiApp {
         if let Some(h) = &self.ai {
             return h.clone();
         }
+        if !std::mem::replace(&mut self.ai_memories_loaded, true) {
+            let loaded = crate::ai::memory::Memories::load(self.store.as_ref());
+            let mut mems = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner());
+            if !loaded.list.is_empty() || mems.list.is_empty() {
+                *mems = loaded;
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let view: crate::ai::session::SharedView = Default::default();
         let cancel: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
@@ -35,6 +42,7 @@ impl SpaiApp {
                 fleet: self.fleet.clone(),
                 lookup_table: self.lookup_table.clone(),
                 facts: self.ai_facts.clone(),
+                memories: self.ai_memories.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -115,6 +123,14 @@ impl SpaiApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let n = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner()).list.len();
+                    if ui
+                        .add(egui::Button::new(format!("{}  Memories ({n})", icon::BRAIN)).selected(self.ai_memories_open))
+                        .on_hover_text("What the assistant remembers between conversations")
+                        .clicked()
+                    {
+                        self.ai_memories_open = !self.ai_memories_open;
+                    }
                     if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
                         self.ai_perms_open = true;
                     }
@@ -164,17 +180,33 @@ impl SpaiApp {
             ui.add_space(6.0);
         });
 
+        if self.ai_memories_open {
+            // Never more than half the tab, so the conversation keeps its room in a small window.
+            let max = (ui.available_width() * 0.5).max(220.0);
+            egui::Panel::right("ai_memories")
+                .resizable(true)
+                .default_size(320.0_f32.min(max))
+                .size_range(220.0..=max.max(221.0))
+                .show_inside(ui, |ui| self.ai_memories_ui(ui));
+        }
+
         let mut card_click: Option<(u64, bool)> = None;
         egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show_inside(ui, |ui| {
             if turns.is_empty() {
                 self.ai_empty_state(ui);
                 return;
             }
+            // One width for every turn, measured outside the scroll area and short of its bar, so
+            // frames and wrapped lines all end at the same edge.
+            let w = (ui.available_width() - 28.0).max(120.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
                 for t in &turns {
-                    if let Some(c) = turn_ui(ui, t) {
-                        card_click = Some(c);
-                    }
+                    ui.allocate_ui_with_layout(egui::vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(w);
+                        if let Some(c) = turn_ui(ui, t, w) {
+                            card_click = Some(c);
+                        }
+                    });
                     ui.add_space(8.0);
                 }
             });
@@ -216,7 +248,7 @@ impl SpaiApp {
 }
 
 /// One turn. Returns an action card's Apply (true) or Dismiss (false), by the card's id.
-fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
+fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32) -> Option<(u64, bool)> {
     use egui_phosphor::regular as icon;
     let mut click = None;
     if t.user {
@@ -234,32 +266,55 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
         return None;
     }
     if !t.chips.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for c in &t.chips {
-                let action = crate::ai::tools::kind_of(&c.name) == Some(crate::ai::tools::Kind::Action);
-                let (glyph, col) = match &c.error {
-                    Some(_) => (icon::WARNING, crate::theme::standing::WARNING),
-                    None if action => (icon::PLAY, ui.visuals().hyperlink_color),
-                    None => (icon::MAGNIFYING_GLASS, ui.visuals().weak_text_color()),
-                };
-                let r = egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(6, 1))
-                    .show(ui, |ui| ui.label(egui::RichText::new(format!("{glyph} {}", c.name.replace('_', " "))).color(col)))
-                    .response;
-                let mut tip = if c.args.is_empty() { "No filters".to_owned() } else { c.args.clone() };
-                if let Some(e) = &c.error {
-                    tip.push_str(&format!("\n{e}"));
-                }
-                r.on_hover_text(tip);
+        // Rows filled by measured width: a frame cannot wrap inside `horizontal_wrapped`.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let gap = 4.0;
+        let mut rows: Vec<Vec<(&crate::ai::session::Chip, String, f32)>> = vec![Vec::new()];
+        let mut used = 0.0;
+        for c in &t.chips {
+            let action = crate::ai::tools::kind_of(&c.name) == Some(crate::ai::tools::Kind::Action);
+            let glyph = match &c.error {
+                Some(_) => icon::WARNING,
+                None if action => icon::PLAY,
+                None => icon::MAGNIFYING_GLASS,
+            };
+            let text = format!("{glyph} {}", c.name.replace('_', " "));
+            let cw = ui.painter().layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE).size().x + 14.0;
+            if used > 0.0 && used + cw > w {
+                rows.push(Vec::new());
+                used = 0.0;
             }
-        });
+            used += cw + gap;
+            rows.last_mut().unwrap().push((c, text, cw));
+        }
+        for row in rows {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (c, text, _) in row {
+                    let action = crate::ai::tools::kind_of(&c.name) == Some(crate::ai::tools::Kind::Action);
+                    let col = match &c.error {
+                        Some(_) => crate::theme::standing::WARNING,
+                        None if action => ui.visuals().hyperlink_color,
+                        None => ui.visuals().weak_text_color(),
+                    };
+                    let r = egui::Frame::new()
+                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(text).color(col)).extend()))
+                        .response;
+                    let mut tip = if c.args.is_empty() { "No filters".to_owned() } else { c.args.clone() };
+                    if let Some(e) = &c.error {
+                        tip.push_str(&format!("\n{e}"));
+                    }
+                    r.on_hover_text(tip);
+                }
+            });
+        }
         ui.add_space(4.0);
     }
     if !t.text.is_empty() {
-        render_text(ui, &t.text);
+        render_text(ui, &t.text, w);
     }
     if t.streaming && t.text.is_empty() {
         ui.horizontal(|ui| {
@@ -271,9 +326,10 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
     }
     for c in &t.cards {
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let inner = w - 16.0;
+            ui.set_width(inner);
+            ui.allocate_ui_with_layout(egui::vec2(inner, 0.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                {
                     match c.state {
                         CardState::Pending => {
                             if ui.button("Dismiss").clicked() {
@@ -293,7 +349,7 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.add(egui::Label::new(&c.action.summary).wrap());
                     });
-                });
+                }
             });
         });
     }
@@ -304,7 +360,7 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
 }
 
 /// The model's text with the little markdown it uses: headings, bullets and **bold**.
-fn render_text(ui: &mut egui::Ui, text: &str) {
+fn render_text(ui: &mut egui::Ui, text: &str, w: f32) {
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
@@ -330,8 +386,8 @@ fn render_text(ui: &mut egui::Ui, text: &str) {
             let col = if i % 2 == 1 { strong } else { normal };
             job.append(&part.replace('`', ""), 0.0, egui::TextFormat::simple(font.clone(), col));
         }
-        job.wrap.max_width = ui.available_width();
-        ui.label(job);
+        job.wrap.max_width = w;
+        ui.add(egui::Label::new(job));
     }
 }
 
@@ -339,4 +395,102 @@ fn render_text(ui: &mut egui::Ui, text: &str) {
 pub(crate) fn seed_ai_view(app: &mut SpaiApp, ctx: &egui::Context, turns: Vec<Turn>) {
     let h = app.ai_handle(ctx);
     h.view.lock().unwrap().turns = turns;
+}
+
+impl SpaiApp {
+    /// What the assistant remembers, by kind, each one editable and deletable.
+    fn ai_memories_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::ai::memory::MemKind;
+        use egui_phosphor::regular as icon;
+        let now = crate::clock::utc().timestamp();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Memories").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(format!("{}  Add", icon::PLUS)).on_hover_text("Tell it something to keep").clicked() {
+                    self.ai_mem_edit = Some((0, MemKind::About, String::new()));
+                }
+            });
+        });
+        ui.label(egui::RichText::new("Kept between conversations. It saves them as it learns; you can change or delete any.").weak());
+        ui.separator();
+        let list = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
+        let mut delete: Option<u64> = None;
+        let mut save: Option<(u64, MemKind, String)> = None;
+        let mut cancel = false;
+        let edit_ui = |ui: &mut egui::Ui, e: &mut (u64, MemKind, String), save: &mut Option<(u64, MemKind, String)>, cancel: &mut bool| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ComboBox::from_id_salt(("mem_kind", e.0)).selected_text(e.1.label()).show_ui(ui, |ui| {
+                    for k in MemKind::CHOICES {
+                        ui.menu_value(&mut e.1, k, k.label());
+                    }
+                });
+                ui.add(egui::TextEdit::multiline(&mut e.2).desired_rows(2).desired_width(f32::INFINITY).hint_text("e.g. I stage in 1DQ1-A and fly Eagles"));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!e.2.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                        *save = Some(e.clone());
+                    }
+                    if ui.button("Cancel").clicked() {
+                        *cancel = true;
+                    }
+                });
+            });
+        };
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(e) = self.ai_mem_edit.as_mut().filter(|e| e.0 == 0) {
+                edit_ui(ui, e, &mut save, &mut cancel);
+            }
+            if list.is_empty() && self.ai_mem_edit.is_none() {
+                ui.label(egui::RichText::new("Nothing yet.").weak());
+            }
+            for k in MemKind::CHOICES {
+                let of: Vec<&crate::ai::memory::Memory> = list.iter().filter(|m| MemKind::from_code(m.kind.code()) == k).collect();
+                if of.is_empty() {
+                    continue;
+                }
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(format!("{} ({})", k.label(), of.len())).weak());
+                for m in of {
+                    if let Some(e) = self.ai_mem_edit.as_mut().filter(|e| e.0 == m.id) {
+                        edit_ui(ui, e, &mut save, &mut cancel);
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                                delete = Some(m.id);
+                            }
+                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                self.ai_mem_edit = Some((m.id, m.kind, m.text.clone()));
+                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                                let who = if m.by_user { "you" } else { "the assistant" };
+                                ui.add(egui::Label::new(&m.text).wrap()).on_hover_text(format!("Saved by {who}, {}", crate::ai::tools::fmt_age(now, m.updated)));
+                            });
+                        });
+                    });
+                }
+            }
+        });
+        let store = self.store.as_ref();
+        let mut mems = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = delete {
+            mems.remove(id);
+            mems.save(store);
+        }
+        if let Some((id, kind, text)) = save {
+            if id == 0 {
+                mems.add(kind, &text, true, now);
+            } else {
+                mems.update(id, Some(kind), &text, true, now);
+            }
+            mems.save(store);
+            cancel = true;
+        }
+        drop(mems);
+        if cancel {
+            self.ai_mem_edit = None;
+        }
+    }
 }

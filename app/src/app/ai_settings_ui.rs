@@ -122,9 +122,35 @@ impl SpaiApp {
                 .changed();
             ui.end_row();
         });
-        if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
-            self.ai_perms_open = true;
-        }
+        egui::Grid::new("ai_settings_lang").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+            let a = &mut self.settings.ai;
+            ui.label("Language");
+            let cur = crate::ai::config::LANGUAGES.iter().find(|(c, _, _)| *c == a.language).map_or("Same as the question", |(_, l, _)| l);
+            egui::ComboBox::from_id_salt("ai_language").selected_text(cur).width(280.0).show_ui(ui, |ui| {
+                for (code, label, _) in crate::ai::config::LANGUAGES {
+                    changed |= ui.menu_value(&mut a.language, code.to_owned(), label).changed();
+                }
+            });
+            ui.end_row();
+            ui.label("Your instructions").on_hover_text("Added to the assistant's own; yours win where they differ");
+            changed |= ui
+                .add(
+                    egui::TextEdit::multiline(&mut a.instructions)
+                        .desired_rows(3)
+                        .desired_width(280.0)
+                        .hint_text("e.g. I fly with Goonswarm out of 1DQ1-A. Keep answers to two sentences."),
+                )
+                .changed();
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
+                self.ai_perms_open = true;
+            }
+            if ui.button(format!("{}  Glossary\u{2026}", icon::BOOK_OPEN)).on_hover_text("How the assistant reads EVE terms").clicked() {
+                self.ai_glossary_open = true;
+            }
+        });
         if changed {
             self.ai_push_facts(true);
         }
@@ -227,4 +253,130 @@ fn perm_node(
             }
         });
     changed
+}
+
+impl SpaiApp {
+    /// The glossary: every base entry editable and resettable, the user's own entries, and a way
+    /// back to the shipped list.
+    pub(crate) fn ai_glossary_window(&mut self, ctx: &egui::Context) {
+        use crate::ai::glossary::{rows, Entry};
+        use egui_phosphor::regular as icon;
+        if !self.ai_glossary_open {
+            return;
+        }
+        let mut changed = false;
+        let mut edits = std::mem::take(&mut self.settings.ai.glossary);
+        let mut filter = std::mem::take(&mut self.ai_glossary_filter);
+        let mut new = std::mem::take(&mut self.ai_glossary_new);
+        let mut reset_all = self.ai_glossary_reset_all;
+        let keep = Self::dialog_viewport(ctx, "ai_glossary", "EVE Spai - Assistant glossary", [620.0, 700.0], |ui| {
+            ui.label(egui::RichText::new("How the assistant reads EVE terms. Change any meaning, clear one to hide it, or add your own.").weak());
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(icon::MAGNIFYING_GLASS);
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Find a term").desired_width(200.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if reset_all {
+                        if ui.button("Cancel").clicked() {
+                            reset_all = false;
+                        }
+                        if ui.button(egui::RichText::new("Reset all").color(crate::theme::standing::WARNING)).clicked() {
+                            edits.overrides.clear();
+                            reset_all = false;
+                            changed = true;
+                        }
+                        ui.label("Put every base entry back?");
+                    } else if ui
+                        .add_enabled(!edits.overrides.is_empty(), egui::Button::new(format!("{}  Reset all", icon::ARROW_COUNTER_CLOCKWISE)))
+                        .on_hover_text("Every base entry back to the shipped meaning; your own entries stay")
+                        .clicked()
+                    {
+                        reset_all = true;
+                    }
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut new.0).hint_text("New term").desired_width(140.0));
+                ui.add(egui::TextEdit::singleline(&mut new.1).hint_text("What it means").desired_width(ui.available_width() - 70.0));
+                if ui.add_enabled(!new.0.trim().is_empty() && !new.1.trim().is_empty(), egui::Button::new(format!("{}  Add", icon::PLUS))).clicked() {
+                    edits.custom.push(Entry { term: new.0.trim().to_owned(), meaning: new.1.trim().to_owned() });
+                    new = Default::default();
+                    changed = true;
+                }
+            });
+            ui.add_space(4.0);
+            let f = filter.trim().to_lowercase();
+            let mut remove_custom: Option<usize> = None;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let mut custom_i = 0usize;
+                for r in rows(&edits) {
+                    let ci = if r.custom {
+                        custom_i += 1;
+                        Some(custom_i - 1)
+                    } else {
+                        None
+                    };
+                    if !f.is_empty() && !r.term.to_lowercase().contains(&f) && !r.meaning.to_lowercase().contains(&f) {
+                        continue;
+                    }
+                    let hidden = r.meaning.trim().is_empty();
+                    ui.horizontal(|ui| {
+                        let term = if r.custom { egui::RichText::new(&r.term).strong().color(ui.visuals().hyperlink_color) } else { egui::RichText::new(&r.term).strong() };
+                        ui.scope(|ui| {
+                            ui.set_width(120.0);
+                            ui.add(egui::Label::new(term).truncate()).on_hover_text(if r.custom { "Your own entry" } else { "From the shipped glossary" });
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(i) = ci {
+                                if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                                    remove_custom = Some(i);
+                                }
+                            } else if r.changed() || hidden {
+                                if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(format!("Back to: {}", r.base.unwrap_or_default())).clicked() {
+                                    edits.overrides.remove(&r.term);
+                                    changed = true;
+                                }
+                            } else if ui.button(icon::EYE_SLASH).on_hover_text("Hide this term from the assistant").clicked() {
+                                edits.overrides.insert(r.term.clone(), String::new());
+                                changed = true;
+                            }
+                            let mut meaning = r.meaning.clone();
+                            let edit = egui::TextEdit::singleline(&mut meaning)
+                                .desired_width(ui.available_width())
+                                .hint_text("Hidden: the assistant does not get this term");
+                            if ui.add(edit).on_hover_text(&r.meaning).changed() {
+                                match ci {
+                                    Some(i) => edits.custom[i].meaning = meaning.clone(),
+                                    None if Some(meaning.as_str()) == r.base => {
+                                        edits.overrides.remove(&r.term);
+                                    }
+                                    None => {
+                                        edits.overrides.insert(r.term.clone(), meaning.clone());
+                                    }
+                                }
+                                changed = true;
+                            }
+                        });
+                    });
+                }
+            });
+            if let Some(i) = remove_custom {
+                edits.custom.remove(i);
+                changed = true;
+            }
+        });
+        self.settings.ai.glossary = edits;
+        self.ai_glossary_filter = filter;
+        self.ai_glossary_new = new;
+        self.ai_glossary_reset_all = reset_all;
+        if changed {
+            self.needs_save = true;
+            self.ai_push_facts(true);
+        }
+        if !keep {
+            self.ai_glossary_open = false;
+            self.ai_glossary_reset_all = false;
+        }
+    }
 }
