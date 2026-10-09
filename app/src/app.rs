@@ -222,6 +222,7 @@ mod alert_engine;
 pub(crate) mod killmail_ui;
 mod br_timeline;
 pub(crate) mod ai_ui;
+pub(crate) mod ai_voice_in;
 mod ai_settings_ui;
 mod toasts;
 pub(crate) mod wh_prompt;
@@ -938,6 +939,11 @@ pub struct SpaiApp {
     ai_voice_cfg_at: Option<std::time::Instant>,
     ai_voice_key_input: String,
     pub(crate) ai_piper_progress: crate::ai::voice::models::SharedProgress,
+    ai_ptt: Option<crate::ai::ptt::Ptt>,
+    pub(crate) ai_listen: crate::app::ai_voice_in::Listen,
+    /// Microphones, listed when the settings first show them.
+    ai_mics: Option<Vec<String>>,
+    ai_stt_key_input: String,
     rescue_history_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
@@ -1760,6 +1766,10 @@ impl SpaiApp {
             ai_voice_cfg_at: None,
             ai_voice_key_input: String::new(),
             ai_piper_progress: Default::default(),
+            ai_ptt: None,
+            ai_listen: Default::default(),
+            ai_mics: None,
+            ai_stt_key_input: String::new(),
             rescue_history_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,
@@ -3720,6 +3730,7 @@ impl SpaiApp {
         self.ai_push_facts(false);
         self.ai_watch_news();
         self.ai_voice_tick();
+        self.ai_listen_tick();
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);
         self.fleet_migrate_window(ctx);

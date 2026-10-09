@@ -51,7 +51,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 xmpp = { version = "0.7", default-features = false, features = ["ring", "starttls", "rustls-native-certs", "escape-hatch"] }
 sasl = "0.5"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "webpki-roots", "json", "form"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "webpki-roots", "json", "form", "multipart"] }
 csv = "1"
 tiny_http = "0.12"
 open = "5"
@@ -103,6 +103,8 @@ tao = { version = "0.34", optional = true }
 # async-io (not tokio) to match accesskit/zbus in the rest of the tree — avoids
 # forcing zbus into tokio mode (which breaks keyring/notify-rust at runtime).
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+# Push-to-talk: XInput2 raw key events reach us while the game's XWayland window has focus.
+x11rb = { version = "0.13", features = ["xinput"] }
 # The Unity LauncherEntry broadcast that puts the unread count on the taskbar entry (see
 # `launcher.rs`). Already in the tree via accesskit and ashpd with exactly these features, so this
 # changes no resolution — in particular it does not pull zbus into tokio mode, which is what breaks
@@ -123,9 +125,11 @@ webkit2gtk = { version = "=2.0.1", optional = true }
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.34", features = ["wgpu"] }
 # The map overlay fades as a whole window there (see `window_alpha.rs`).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse"] }
 
 # System tray on Windows + macOS (Linux uses ksni above). Created on the main thread and
 # driven through the winit/eframe event loop.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.19"
+# Microphone for voice questions; Linux records through PipeWire/PulseAudio instead.
+cpal = "0.16"

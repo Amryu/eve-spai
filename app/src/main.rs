@@ -191,6 +191,13 @@ fn acquire_single_instance_lock() -> bool {
 fn main() -> eframe::Result<()> {
     // A model CLI that only starts MCP servers as commands talks to the running app through this.
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == instance::PTT_FLAG) {
+        if !instance::signal_ptt() {
+            eprintln!("EVE Spai is not running");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(i) = args.iter().position(|a| a == "--mcp-stdio") {
         let port = args.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(0);
         let token = std::env::var(crate::ai::cli::TOKEN_ENV).unwrap_or_default();
