@@ -745,7 +745,6 @@ fn attacker_ship(a: &Combatant, ship_ids: &std::collections::HashSet<i64>) -> i6
 #[derive(Deserialize)]
 struct ZkApiEntry {
     #[serde(default)]
-    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
     killmail_id: i64,
     zkb: ZkApiZkb,
 }
@@ -757,14 +756,12 @@ struct ZkApiZkb {
 }
 
 /// zKillboard looks back at most this far from now.
-#[cfg(feature = "fleet")]
 const ZKILL_LOOKBACK: i64 = 7 * 86_400;
 
 /// The kills and losses of a closed fleet's `pilots` during its run, `start` to `end`, for a fleet
 /// whose fights were not recorded live. zKillboard lists each pilot's recent mails; each one is
 /// read from ESI once and kept when it falls in the run. Nothing when the run is older than
 /// zKillboard looks back.
-#[cfg(feature = "fleet")]
 pub fn fleet_history_kills(
     fleet_id: &str,
     pilots: &std::collections::HashSet<i64>,
@@ -851,7 +848,6 @@ pub fn fleet_history_kills(
 
 /// The first of `n` time-ordered entries at or after `t`, reading `time_at` about log2(n) times. An
 /// entry that cannot be read counts as early, which at worst widens the stretch a little.
-#[cfg(feature = "fleet")]
 fn first_at_or_after(n: usize, t: i64, time_at: &mut dyn FnMut(usize) -> Option<i64>) -> usize {
     let (mut a, mut b) = (0usize, n);
     while a < b {
@@ -1154,7 +1150,6 @@ mod tests {
     use super::*;
 
     /// The run's edges come from a handful of reads, not a read of every mail.
-    #[cfg(feature = "fleet")]
     #[test]
     fn the_run_is_found_by_bisection() {
         let times: Vec<i64> = (0..1000).map(|i| i * 60).collect();

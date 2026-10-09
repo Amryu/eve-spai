@@ -336,9 +336,7 @@ pub struct Settings {
     #[serde(default)]
     pub fleet_ping_window_size: Option<(f32, f32)>,
 
-    // --- Fleet dashboard (off by default; Imperium-specific, behind the `fleet` build feature) ---
-    // Not cfg-gated, like the rescue fields below: settings are rewritten whole on save, so a build
-    // without the feature still has to round-trip a config written by one with it.
+    // --- Fleet dashboard (off by default; Imperium-specific, locked until the dashboard unlocks it) ---
     #[serde(default)]
     pub fleet_enabled: bool,
     /// Labelled fleet presets, the app's own copy of what the site keeps in localStorage.
@@ -354,9 +352,7 @@ pub struct Settings {
     #[serde(default)]
     pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
     /// The rescue doctrines an FC configured before a rescue ran on a fleet preset, and which one
-    /// was picked. Migration inputs only: `seed_rescue_preset` consumes and clears them. Not
-    /// feature-gated, like every other field here: a build without `fleet` rewrites the whole
-    /// file on save and would otherwise drop the migration before it ever ran.
+    /// was picked. Migration inputs only: `seed_rescue_preset` consumes and clears them.
     #[serde(default)]
     pub rescue_doctrines: Vec<LegacyRescueDoctrine>,
     #[serde(default)]
@@ -1159,8 +1155,8 @@ where
 
 /// A labelled fleet preset: one click fills the whole start-fleet form.
 ///
-/// Plain scalars rather than the `fleets::` id newtypes, and it lives here rather than in `fleets`,
-/// because a build without the `fleet` feature still has to parse and rewrite this.
+/// Plain scalars rather than the `fleets::` id newtypes, so an older or newer version still parses
+/// and rewrites it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FleetPreset {
@@ -1195,7 +1191,6 @@ pub struct FleetPreset {
 
 /// The secondary tag that marks a preset as one a capital rescue runs on. A rescue picks from
 /// these and nothing else, so an FC under pressure is not scrolling past every roam they saved.
-#[cfg(feature = "fleet")]
 pub const CAPITAL_SAVE_TAG: i32 = 28;
 
 /// A rescue doctrine as the rescue tab used to keep them, before a rescue ran on a fleet preset.
@@ -1211,13 +1206,11 @@ pub struct LegacyRescueDoctrine {
 
 /// Separates a preset's folder from its name in a key. A control character, so nothing typed into
 /// a name or folder field can contain it and a key never splits in the wrong place.
-#[cfg(feature = "fleet")]
 const PRESET_KEY_SEP: char = '\u{1f}';
 
 /// A preset is its folder and its name together: the same name may be used in two folders. The
 /// top level keys as the bare name, which is also what every key saved before folders took part
 /// in a preset's identity looks like.
-#[cfg(feature = "fleet")]
 pub fn preset_key(folder: &str, label: &str) -> String {
     let folder = folder.trim();
     if folder.is_empty() {
@@ -1227,7 +1220,6 @@ pub fn preset_key(folder: &str, label: &str) -> String {
     }
 }
 
-#[cfg(feature = "fleet")]
 impl FleetPreset {
     pub fn key(&self) -> String {
         preset_key(&self.folder, &self.label)
@@ -1235,7 +1227,6 @@ impl FleetPreset {
 }
 
 /// A key the way a person reads it: "Rescue / FNIs", or the name alone at the top level.
-#[cfg(feature = "fleet")]
 pub fn preset_key_label(key: &str) -> String {
     match key.split_once(PRESET_KEY_SEP) {
         Some((folder, label)) => format!("{folder} / {label}"),
@@ -1248,7 +1239,6 @@ pub fn preset_key_label(key: &str) -> String {
 /// A key saved before folders were part of a preset's identity is a bare name. It still finds its
 /// preset: the exact key first, which is a top-level one, then the first preset with that name in
 /// any folder, which is the one it meant for as long as names were unique.
-#[cfg(feature = "fleet")]
 pub fn find_preset<'a>(presets: &'a [FleetPreset], key: &str) -> Option<&'a FleetPreset> {
     presets.iter().find(|p| p.key() == key).or_else(|| presets.iter().find(|p| p.label == key))
 }
@@ -1258,7 +1248,6 @@ pub fn find_preset<'a>(presets: &'a [FleetPreset], key: &str) -> Option<&'a Flee
 /// The template already carried everything a preset does: a name, a formup location, a comms
 /// channel and a doctrine line. It only lacked somewhere to live. `setups` is the dashboard's
 /// setup list, so an old doctrine can be matched back to the real one rather than pinging `?`.
-#[cfg(feature = "fleet")]
 pub fn seed_rescue_preset(s: &mut Settings, setups: &[(i32, String)]) -> bool {
     if s.rescue_preset_seeded
         || s.fleet_presets.iter().any(|p| p.tag_ids.contains(&CAPITAL_SAVE_TAG))
@@ -1293,7 +1282,6 @@ pub fn seed_rescue_preset(s: &mut Settings, setups: &[(i32, String)]) -> bool {
     true
 }
 
-#[cfg(feature = "fleet")]
 fn rescue_preset(op: u8, label: &str, setup_id: i32, notes: String) -> FleetPreset {
     FleetPreset {
         label: label.to_owned(),
@@ -1315,7 +1303,6 @@ fn rescue_preset(op: u8, label: &str, setup_id: i32, notes: String) -> FleetPres
 /// The old doctrine descriptions were the setup's own name followed by a preference order, e.g.
 /// `Alpha Fleet (XYZ) (Boosters > Hull > Support)`. Longest name wins, so a setup whose name is a
 /// prefix of another does not steal the match.
-#[cfg(feature = "fleet")]
 fn match_setup(description: &str, setups: &[(i32, String)]) -> (i32, String) {
     let d = description.trim();
     let mut best: Option<(i32, usize)> = None;
@@ -1358,8 +1345,8 @@ pub struct FleetHull {
 /// One boost a doctrine wants, and how badly, so the tracking view can say what to put on next.
 ///
 /// `priority` is a string rather than an enum for the same reason `FleetPreset` uses plain scalars:
-/// a build without the `fleet` feature rewrites this file whole, and an unknown value written by a
-/// later version must not fail the parse and reset every other setting.
+/// an unknown value written by a later version must not fail the parse and reset every other
+/// setting.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FleetBoostRequirement {
@@ -2024,9 +2011,8 @@ mod window_geometry_tests {
         assert_eq!(s.fleet_ping_window_size, None);
     }
 
-    /// The fleet fields are not feature-gated, so a config written by a `fleet` build has to load
-    /// and save unchanged in a build without it. Settings are rewritten whole, so losing them here
-    /// would silently drop every preset the moment the user ran a stock binary.
+    /// Settings are rewritten whole, so a fleet field lost on the way through would silently drop
+    /// every preset.
     #[test]
     fn a_fleet_config_round_trips_in_any_build() {
         let mut s = Settings::default();
@@ -2076,7 +2062,6 @@ mod window_geometry_tests {
     }
 
     /// The cap-save template becomes a preset once, and never overwrites one that exists.
-    #[cfg(feature = "fleet")]
     #[test]
     fn the_rescue_template_becomes_a_preset_once() {
         let mut s = Settings::default();
@@ -2109,7 +2094,6 @@ mod window_geometry_tests {
 
     /// An FC who had rescue doctrines configured keeps them: one preset each, each pointing at the
     /// real setup, so the first ping after the upgrade still names a doctrine.
-    #[cfg(feature = "fleet")]
     #[test]
     fn old_rescue_doctrines_become_presets_pointing_at_their_setup() {
         let setups = vec![
@@ -2243,13 +2227,11 @@ mod window_geometry_tests {
     }
 
 
-    #[cfg(feature = "fleet")]
     fn preset(folder: &str, label: &str) -> FleetPreset {
         FleetPreset { label: label.to_owned(), folder: folder.to_owned(), ..Default::default() }
     }
 
     /// The same name in two folders is two presets, each found by its own key.
-    #[cfg(feature = "fleet")]
     #[test]
     fn a_name_can_be_used_in_two_folders() {
         let all = vec![preset("Rescue", "FNIs"), preset("", "FNIs"), preset("Roams", "FNIs")];
@@ -2265,7 +2247,6 @@ mod window_geometry_tests {
     /// A key saved before folders were part of a preset's identity is the bare name. It has to go
     /// on finding the preset it meant, wherever that preset lives, or an upgrade quietly switches
     /// the rescue to another one.
-    #[cfg(feature = "fleet")]
     #[test]
     fn a_bare_name_saved_earlier_still_finds_its_preset() {
         let all = vec![preset("Rescue", "FNIs"), preset("Rescue", "Harpy")];

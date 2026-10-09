@@ -73,7 +73,6 @@ impl SpaiApp {
     /// room's messages are dropped before they are stored, so losing either one breaks capital
     /// rescue with no error anywhere. Both are pinned: always joined, never removable.
     pub(crate) fn jabber_rescue_rooms(&self) -> Vec<String> {
-        #[cfg(feature = "fleet")]
         if self.rescue_on() {
             return [
                 goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"),
@@ -2216,7 +2215,6 @@ impl SpaiApp {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
-                #[cfg(feature = "fleet")]
                 if self.settings.fc_rescue_enabled
                     && ui
                         .button(egui_phosphor::regular::WARNING_OCTAGON)

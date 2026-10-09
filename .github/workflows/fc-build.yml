@@ -1,17 +1,17 @@
 name: FC build
 
-# The same binaries as release.yml, built with the FC features on, for handing to FCs directly.
-# Manual only, and never a release: releases are built without `fleet` so a public download never
-# carries fleet command. The binaries land as workflow artifacts that expire.
+# The same binaries as release.yml, built with the dashboard sign-in in the app itself, for handing
+# to FCs directly. Manual only, and never a release. The binaries land as workflow artifacts that
+# expire.
 #
 # Run it from the Actions tab, or: gh workflow run fc-build.yml -f features=fleet-auth
 on:
   workflow_dispatch:
     inputs:
       features:
-        description: "fleet-auth signs in to the dashboard from the app; fleet is everything else without the sign-in webview (and on Linux, without the webkit runtime dependency)"
+        description: "fleet-auth signs in to the dashboard from the app itself"
         type: choice
-        options: [fleet-auth, fleet]
+        options: [fleet-auth]
         default: fleet-auth
       retention:
         description: "Days to keep the binaries"

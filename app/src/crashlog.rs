@@ -26,7 +26,6 @@ std::thread_local! {
 pub(crate) enum Role {
     Main,
     Overlay,
-    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
     FleetLogin,
 }
 

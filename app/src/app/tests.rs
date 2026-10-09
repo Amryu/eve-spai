@@ -468,7 +468,6 @@ mod wh_route_tests {
     }
 }
 
-#[cfg(feature = "fleet")]
 #[cfg(test)]
 mod comms_link_tests {
     use super::*;
@@ -750,7 +749,6 @@ mod msg_row_tests {
         }
     }
 
-    #[cfg(feature = "fleet")]
     #[test]
     fn rescue_grouping_follows_sender_and_gap() {
         assert!(!rescue_grouped("a", 100, None, 0));
@@ -761,7 +759,6 @@ mod msg_row_tests {
         assert!(!rescue_grouped("a", 50, Some("a"), 100));
     }
 
-    #[cfg(feature = "fleet")]
     #[test]
     fn rescue_feed_renders_every_grouping_shape() {
         let msg = |who: &str, body: &str, out: bool, t: i64| {
@@ -1232,7 +1229,7 @@ mod chat_window_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod rescue_range_tests {
     use crate::geo::{SystemInfo, Systems};
     use crate::map::LY_METERS;
@@ -1978,7 +1975,7 @@ mod eve_time_label_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod jabber_rescue_room_tests {
     use super::*;
 
@@ -2405,7 +2402,6 @@ mod jabber_force_join_tests {
 
     /// Pinning is not a force-join: the rescue rooms are added to `jabber_rooms` by the healing
     /// step before the branch runs, so enabling Rescue Mode must not go through this path twice.
-    #[cfg(feature = "fleet")]
     #[test]
     fn enabling_rescue_mode_is_not_a_force_join() {
         let (_ctx, mut a) = app();
@@ -3347,7 +3343,7 @@ mod battle_report_inputs_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod rescue_route_tests {
     use super::*;
 

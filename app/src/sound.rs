@@ -23,14 +23,7 @@ struct Tone {
 const BLIP: &[f32] = &[1.0, 0.3];
 const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 
-/// The tones a build can actually play.
-///
-/// `siren` is the delve911 scramble callout and its `preset` arm is behind `fleet`. A stock
-/// build that listed it would resolve it to `None` and play silence, with nothing telling the user.
-#[cfg(not(feature = "fleet"))]
-pub const PRESETS: &[&str] =
-    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "mention"];
-#[cfg(feature = "fleet")]
+/// The tones that can be picked. `siren` is the delve911 scramble callout.
 pub const PRESETS: &[&str] =
     &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "mention", "siren"];
 
@@ -77,7 +70,6 @@ fn preset(name: &str) -> Option<Tone> {
         // Scramble siren for delve911: three rising sweeps, the last climbing higher and held
         // longer. Rising pitch is what reads as "go now" rather than "something happened"; `sweep`
         // is the same gesture once, quietly, which is a notification, not a callout.
-        #[cfg(feature = "fleet")]
         "siren" => Tone {
             segs: vec![
                 s(420.0, 1250.0, 420),
@@ -122,7 +114,6 @@ pub fn play_prio(spec: &str, prio: u8, volume: f32) {
 /// so it stands out by being different rather than louder. Rate-limited so a burst of messages only
 /// alerts once. The gate is refreshed on every message, so it re-arms only after 5 minutes of quiet
 /// (the next message after a lull alerts again). Independent of the global 2s gate.
-#[cfg(feature = "fleet")]
 pub fn play_delve911_alert(spec: &str, volume: f32) {
     const DELVE911_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
     static GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
@@ -461,7 +452,6 @@ mod tests {
         (voiced.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / voiced.len().max(1) as f64).sqrt()
     }
 
-    #[cfg(feature = "fleet")]
     fn render(name: &str) -> Vec<i16> {
         wav(&preset(name).unwrap())[44..]
             .chunks_exact(2)
@@ -469,7 +459,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(feature = "fleet")]
     #[test]
     fn siren_is_three_rising_sweeps() {
         let tone = preset("siren").unwrap();
@@ -500,7 +489,6 @@ mod tests {
 
     /// The delve911 callout has to stand out by being different, not by being louder than
     /// everything else.
-    #[cfg(feature = "fleet")]
     #[test]
     fn siren_loudness_matches_the_alert_tones() {
         let siren = rms(&render("siren"));

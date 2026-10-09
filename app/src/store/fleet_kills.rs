@@ -62,7 +62,6 @@ impl Store {
         found
     }
 
-    #[cfg(feature = "fleet")]
     pub fn fleet_kills(&self, fleet_id: &str) -> Vec<FleetKill> {
         let Ok(mut st) = self.conn.prepare(
             "SELECT kill_id, at, system_id, loss, victim_char, victim_name, ship_type_id, value, members, pod_of
@@ -90,7 +89,6 @@ impl Store {
         .unwrap_or_default()
     }
 
-    #[cfg(feature = "fleet")]
     pub fn set_fleet_br(&self, fleet_id: &str, url: &str, edit_key: &str, at: i64) {
         let _ = self.exec_essential(
             "INSERT INTO fleet_brs (fleet_id, url, edit_key, created_at) VALUES (?1, ?2, ?3, ?4)
@@ -99,7 +97,6 @@ impl Store {
         );
     }
 
-    #[cfg(feature = "fleet")]
     pub fn fleet_br(&self, fleet_id: &str) -> Option<String> {
         self.conn
             .query_row("SELECT url FROM fleet_brs WHERE fleet_id = ?1", params![fleet_id], |r| r.get(0))

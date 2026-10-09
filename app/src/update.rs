@@ -252,7 +252,7 @@ pub fn install_helper(api_url: &str) -> anyhow::Result<std::path::PathBuf> {
 
 /// The sign-in helper of the release this binary is, for an install that predates it: an older
 /// updater replaced only the main binary.
-#[cfg_attr(any(feature = "fleet-auth", not(feature = "fleet")), allow(dead_code))]
+#[cfg_attr(feature = "fleet-auth", allow(dead_code))]
 pub fn fetch_helper_for_current() -> anyhow::Result<std::path::PathBuf> {
     let client = http().ok_or_else(|| anyhow::anyhow!("couldn't start the HTTP client"))?;
     let mut req = client

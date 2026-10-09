@@ -3,7 +3,6 @@
 use super::*;
 
 /// What an op's comms channel is doing, for the rescue's op picker.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OpUsage {
     Free,
@@ -16,13 +15,11 @@ pub(crate) enum OpUsage {
 }
 
 /// How long a failed dashboard ping render is left alone before asking again.
-#[cfg(feature = "fleet")]
 const PREVIEW_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SpaiApp {
     /// Parse new delve911 XMPP messages into rescue events. The in-game chat-log watcher covers the
     /// EVE channel of the same name; the real pings come through the MUC, so both feed `rescue`.
-    #[cfg(feature = "fleet")]
     pub(crate) fn ingest_delve911_jabber(&mut self) {
         if !self.rescue_on() {
             return;
@@ -85,7 +82,6 @@ impl SpaiApp {
 
     /// Move newly-parsed delve911 ping events into the fleet-ping feed exactly once each.
     /// Runs on the UI thread so it can take the jabber lock (the watcher only writes `rescue`).
-    #[cfg(feature = "fleet")]
     pub(crate) fn drain_rescue_feed(&mut self, ctx: &egui::Context) {
         let mut fresh: Vec<crate::rescue::RescueEvent> = Vec::new();
         {
@@ -145,7 +141,6 @@ impl SpaiApp {
     }
 
     /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.heading("FC / Rescue (delve911)");
@@ -206,7 +201,6 @@ impl SpaiApp {
 
     /// Recompute the titan-range check only when staging or the target changes: it scans every
     /// system for the nearest in-range jump-off point, which is far too much for every frame.
-    #[cfg(feature = "fleet")]
     pub(crate) fn update_rescue_range(&mut self) {
         let target = self.rescue.lock().unwrap().capital_system;
         let (Some(systems), Some(coords), Some(target)) =
@@ -259,7 +253,6 @@ impl SpaiApp {
     ///
     /// The dashboard is the authority on what a ping looks like, and its format changes without
     /// telling us. The template is what keeps a rescue possible with no session or no dashboard.
-    #[cfg(feature = "fleet")]
     pub(crate) fn build_rescue_ping(&self) -> String {
         if let Some(p) = self
             .fleet
@@ -276,7 +269,6 @@ impl SpaiApp {
 
     /// Build the ping text from the template and current rescue state. `{doctrine}` expands to the
     /// selected doctrine's full description line.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_ping_from_template(&self) -> String {
         let r = self.rescue.lock().unwrap();
         let sys = r.capital_system_name.clone().unwrap_or_default();
@@ -332,7 +324,6 @@ impl SpaiApp {
 
     /// Asks the dashboard to render the rescue's ping, no more often than the preset and op
     /// channel actually change.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_preview_poll(&mut self) {
         let (want, op) = {
             let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
@@ -374,7 +365,6 @@ impl SpaiApp {
 
     /// Hands the rescue over to the fleet tab: the preset fills the start form, the comms channel
     /// follows whatever the rescue settled on, and the user lands on the form ready to track.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_start_tracking(&mut self) {
         let (want, op) = {
             let r = self.rescue.lock().unwrap();
@@ -398,7 +388,6 @@ impl SpaiApp {
     }
 
     /// The presets a rescue can run on: the ones tagged Capital Save, and nothing else.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_presets(&self) -> Vec<crate::settings::FleetPreset> {
         self.settings
             .fleet_presets
@@ -409,7 +398,6 @@ impl SpaiApp {
     }
 
     /// The comms channel an op number names, out of the dashboard's own list.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_mumble_for_op(
         &self,
         op: u8,
@@ -419,7 +407,6 @@ impl SpaiApp {
 
     /// What the dashboard calls the channel this op number lands on, for showing the FC before
     /// anything is sent.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_op_channel_name(&self, op: u8) -> Option<String> {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
         let id = st.seed.mumble_channel_for_op(op)?;
@@ -427,7 +414,6 @@ impl SpaiApp {
     }
 
     /// Whether an op's comms channel is free, per the dashboard's channel list.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_op_usage(&self, op: u8) -> OpUsage {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
         let Some(id) = st.seed.mumble_channel_for_op(op) else { return OpUsage::NoChannel };
@@ -446,7 +432,6 @@ impl SpaiApp {
     }
 
     /// A setup's name out of the fleet seed, for the doctrine line of a ping.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_setup_name(&self, setup_id: i32) -> String {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
         st.seed
@@ -502,7 +487,6 @@ impl SpaiApp {
 
     /// Last `n` messages of a jabber room/conversation as (sender, body, outgoing, time), oldest
     /// first. Only the rescue window reads this today.
-    #[cfg(feature = "fleet")]
     pub(crate) fn jabber_room_tail(&self, jid: &str, n: usize) -> Vec<(String, String, bool, i64)> {
         if jid.is_empty() {
             return Vec::new();
@@ -523,10 +507,8 @@ impl SpaiApp {
             .unwrap_or_default()
     }
 
-    #[cfg(feature = "fleet")]
     /// The rescue tab. Without the feature it is not in the rail at all, so this only says so for
     /// the case where someone reaches the view some other way.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
         if self.settings.rescue_popped {
             ui.add_space(10.0);
@@ -542,7 +524,6 @@ impl SpaiApp {
 
     /// The rescue tab in its own window, compact: the ping and its buttons on top, the delve911
     /// and skirmish chat below, and a pin to keep it over EVE.
-    #[cfg(feature = "fleet")]
     #[allow(deprecated)]
     pub(crate) fn rescue_popout_window(&mut self, ctx: &egui::Context) {
         let mut builder = egui::ViewportBuilder::default()
@@ -591,19 +572,12 @@ impl SpaiApp {
         }
     }
 
-    #[cfg(not(feature = "fleet"))]
-    pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("This build has no rescue mode.").weak());
-    }
-
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_window_body(&mut self, ui: &mut egui::Ui) {
         self.rescue_body(ui, false);
     }
 
     /// The rescue view. `compact` is the popped-out window: the ops column becomes a band over
     /// the chat, with its buttons sharing rows.
-    #[cfg(feature = "fleet")]
     pub(crate) fn rescue_body(&mut self, ui: &mut egui::Ui, compact: bool) {
         // This viewport is the only one on screen while a rescue runs, and the fleet tab is where
         // worker results are normally taken off the channel. Without this the dashboard's ping
@@ -1510,7 +1484,6 @@ impl SpaiApp {
 
 /// What the rescue map draws: the titan route from staging to the capital and the regions around
 /// it, laid flat as the map tab lays New Eden.
-#[cfg(feature = "fleet")]
 pub(crate) struct RescueMap {
     graph: std::sync::Arc<crate::geo::Systems>,
     subset: Vec<crate::store::MapSystem>,
@@ -1523,12 +1496,10 @@ pub(crate) struct RescueMap {
 }
 
 /// Zoom, pan, and the systems the view was last fitted to.
-#[cfg(feature = "fleet")]
 pub(crate) type RescueMapView = (f32, egui::Vec2, Vec<i64>);
 
 /// `[ label | ▾ ]` for the rescue route: the button sends it to the FC's character, the arrow to any
 /// signed-in character. Returns who to send it to.
-#[cfg(feature = "fleet")]
 fn rescue_route_button(
     ui: &mut egui::Ui,
     label: String,
@@ -1565,10 +1536,8 @@ fn rescue_route_button(
 
 /// How recent a ping must be for its route to go in the game by itself: an old one selected at
 /// start-up is history, not a rescue to fly to.
-#[cfg(feature = "fleet")]
 const AUTO_ROUTE_FRESH_SECS: i64 = 600;
 
-#[cfg(feature = "fleet")]
 impl SpaiApp {
     /// The FC's character among those signed in here that may set waypoints: the dashboard's FC by
     /// name, else the active character.
@@ -1665,7 +1634,6 @@ impl SpaiApp {
 
 /// The titan route to the tackled capital over the regions it crosses, with staging and the capital
 /// marked. Drag to pan, scroll to zoom.
-#[cfg(feature = "fleet")]
 pub(crate) fn rescue_map_ui(ui: &mut egui::Ui, m: &RescueMap, view: &mut RescueMapView) {
     use std::collections::HashMap;
     let rect = ui.available_rect_before_wrap();
@@ -1731,7 +1699,6 @@ pub(crate) fn rescue_map_ui(ui: &mut egui::Ui, m: &RescueMap, view: &mut RescueM
 }
 
 /// Seconds as a stopwatch, because a rescue is counted in minutes and the seconds matter.
-#[cfg(feature = "fleet")]
 pub(crate) fn since_ping(secs: i64) -> String {
     let s = secs.max(0);
     if s < 3600 {
@@ -1746,7 +1713,6 @@ pub(crate) fn since_ping(secs: i64) -> String {
 /// The pilot calls PANIC and pings at the same moment, near enough, so this is also roughly how much
 /// of the PANIC has gone. It counts up rather than down: the module's length depends on the hull and
 /// the pilot's skills, and a countdown that is wrong is worse than a clock that is not.
-#[cfg(feature = "fleet")]
 /// Whether it drew anything, so a caller does not rule off an empty space.
 fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) -> bool {
     let Some(at) = r.selected_ping.and_then(|seq| r.ping_time(seq)) else { return false };
@@ -1758,7 +1724,6 @@ fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) -> bool {
 }
 
 /// The row itself, given the seconds, so it can be rendered at a fixed time.
-#[cfg(feature = "fleet")]
 pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
     let secs = secs.max(0);
     // Amber at five minutes, red at ten: past that the PANIC is over on any hull and the question is
@@ -1779,7 +1744,7 @@ pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
     );
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod tests {
     use super::since_ping;
 

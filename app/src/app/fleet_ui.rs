@@ -2,7 +2,6 @@
 
 use super::*;
 
-#[cfg(feature = "fleet")]
 use crate::fleets::{
     backend::Action,
     model::{FleetRow, Perm, TagItem},
@@ -10,19 +9,12 @@ use crate::fleets::{
 };
 
 impl SpaiApp {
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_view(&mut self, ui: &mut egui::Ui) {
         self.fleet_body(ui);
     }
 
-    #[cfg(not(feature = "fleet"))]
-    pub(crate) fn fleet_view(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("This build has no fleet dashboard.").weak());
-    }
-
     /// Hands one command to a worker. Off the UI thread even against the dry run, so the path the
     /// real backend will take is the one used every day.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_dispatch(&mut self, cmd: Cmd) {
         let (gen, backend, tx, ctx) = (
             self.fleet_gen,
@@ -48,7 +40,6 @@ impl SpaiApp {
 
     /// Takes whatever the workers finished. Never blocks: a frame that waits on a worker is a
     /// frozen app.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_collect(&mut self) {
         while let Ok(at) = self.fleet_mumble_rx.try_recv() {
             self.fleet_mumble_at = at;
@@ -143,7 +134,6 @@ impl SpaiApp {
     ///
     /// The advert is toggled in game, so nothing on the dashboard says when it changes. Only a
     /// running fleet is asked about: a closed one has no advert, and ESI would only refuse.
-    #[cfg(feature = "fleet")]
     fn fleet_advert_poll(&mut self, ctx: &egui::Context) {
         // Like the boost read: a headless render must not go asking ESI about a real fleet.
         if self.headless {
@@ -179,7 +169,6 @@ impl SpaiApp {
     /// statistics after the close, so that first read finds a null report and builds an empty
     /// participant list. The hub says when the report is ready; this is the answer for a build or
     /// a session with no hub, and it stops either way once the roster has someone in it.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_reopen_poll(&mut self, ctx: &egui::Context) {
         let Some((id, due, left)) = self.fleet_reopen.clone() else { return };
         ctx.request_repaint_after(REOPEN_WAIT);
@@ -202,7 +191,6 @@ impl SpaiApp {
 
     /// Reloads a page the user has just navigated to, as opposed to asking for the same one
     /// again. Everything on screen belongs to where they were and has to go.
-    #[cfg(feature = "fleet")]
     fn fleet_refresh_fresh(&mut self, page: &Page) {
         if let Page::Tracking(id) | Page::Historic(id) = page {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -220,7 +208,6 @@ impl SpaiApp {
     }
 
     /// Loads what a page shows, on first sight and whenever it changes.
-    #[cfg(feature = "fleet")]
     fn fleet_refresh(&mut self, page: &Page) {
         match page {
             Page::Fleets => {
@@ -256,7 +243,6 @@ impl SpaiApp {
     }
 
     /// What the comms buttons on the open fleet point at.
-    #[cfg(feature = "fleet")]
     fn fleet_comms_targets(&mut self) -> CommsTargets {
         use crate::fleets::comms;
         self.comms_remember_resolved();
@@ -292,7 +278,6 @@ impl SpaiApp {
     }
 
     /// Copies what background fetches resolved into the settings, so the next run starts with it.
-    #[cfg(feature = "fleet")]
     fn comms_remember_resolved(&mut self) {
         let fresh: Vec<(String, String)> = self
             .comms_resolved
@@ -314,7 +299,6 @@ impl SpaiApp {
     /// A known `mumble://` link goes straight to Mumble. Without one the short link is resolved on
     /// a thread and the result handed to Mumble, so a click before the background fetch finished
     /// still ends in Mumble; only if that fails too does the short link go to the browser.
-    #[cfg(feature = "fleet")]
     fn comms_join(&self, links: crate::fleets::comms::Links) {
         if let Some(m) = links.mumble {
             crate::mumble::open_url(&m);
@@ -344,14 +328,12 @@ impl SpaiApp {
     }
 
     /// The short link for a comms channel, from pings, the built-in table or the user's settings.
-    #[cfg(feature = "fleet")]
     pub(crate) fn comms_short_link(&self, channel_name: &str) -> Option<String> {
         crate::fleets::comms::short_link(channel_name, &self.settings.op_channel_links)
     }
 
     /// The `mumble://` link a short link resolves to, once it has been fetched. Starts the fetch
     /// the first time it is asked, so the answer is usually there by the time anyone clicks.
-    #[cfg(feature = "fleet")]
     pub(crate) fn comms_resolve(&self, short: &str) -> Option<String> {
         if self.headless {
             return None;
@@ -386,7 +368,6 @@ impl SpaiApp {
     ///
     /// One per keystroke was a request per letter, each on its own thread, and the only one that
     /// matters is the last. "Looking" shows straight away so the wait reads as a wait.
-    #[cfg(feature = "fleet")]
     fn fleet_search_soon(&mut self, value: String) {
         self.fleet.lock().unwrap_or_else(|e| e.into_inner()).found_characters.begin();
         self.fleet_search_pending = Some((value, std::time::Instant::now() + SEARCH_DEBOUNCE));
@@ -394,7 +375,6 @@ impl SpaiApp {
     }
 
     /// Sends the queued search once its pause is up.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_search_poll(&mut self) {
         let Some((value, due)) = self.fleet_search_pending.clone() else { return };
         if std::time::Instant::now() < due {
@@ -413,7 +393,6 @@ impl SpaiApp {
     /// the flag the thread watches, so leaving the page stops it.
     ///
     /// A backend with no hub (the spoof, and every test) says so once and is not asked again.
-    #[cfg(feature = "fleet")]
     fn fleet_hub_once(&mut self) {
         use crate::fleets::hub::Event;
 
@@ -482,7 +461,6 @@ impl SpaiApp {
         });
     }
 
-    #[cfg(feature = "fleet")]
     fn fleet_hub_stop(&mut self) {
         if let Some((_, alive)) = self.fleet_hub.take() {
             alive.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -490,7 +468,6 @@ impl SpaiApp {
     }
 
     /// The SDE's hull names and groups, which the hub does not send.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_ship_types(&self) -> std::collections::HashMap<i64, (String, String)> {
         match crate::store::Store::open() {
             Ok(s) => s.all_ships().into_iter().map(|(id, n, g)| (id, (n, g))).collect(),
@@ -503,7 +480,6 @@ impl SpaiApp {
     /// It waits for the fleet itself because the channel is never configured: the fleet carries the
     /// id, the reference table names it and that name is the log file's own prefix. A fleet with no
     /// boost channel, or one whose log has not reached this machine, reads nothing and says so.
-    #[cfg(feature = "fleet")]
     fn fleet_read_boosts(&mut self) {
         // A screenshot must never read the machine's real chat logs.
         if self.headless {
@@ -561,7 +537,6 @@ impl SpaiApp {
     ///
     /// A session-bus round trip is fast until the bus is busy or Mumble is wedged, and a frame
     /// that waits on one is a frame that stutters.
-    #[cfg(feature = "fleet")]
     fn fleet_poll_mumble(&mut self, ctx: &egui::Context) {
         if self.headless {
             return;
@@ -580,7 +555,6 @@ impl SpaiApp {
 
     /// The systems the formup field offers, resolved out of the app's own map rather than the
     /// dashboard's reference list, which carries only a handful.
-    #[cfg(feature = "fleet")]
     fn fleet_places(&self) -> Places {
         let named = |name: &str| {
             self.systems
@@ -612,7 +586,6 @@ impl SpaiApp {
     }
 
     /// Everything the docked chat needs, read before the state lock the pages hold.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_chat_state(&self) -> ChatDock {
         let rooms = [
             crate::app::goon_jid(
@@ -636,7 +609,6 @@ impl SpaiApp {
     }
 
     /// Puts back what the dock changed, once the lock is gone.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_chat_apply(&mut self, dock: ChatDock) {
         self.fleet_chat_open = dock.open;
         self.fleet_chat_tab = dock.tab;
@@ -650,7 +622,6 @@ impl SpaiApp {
 
     /// Everything that could carry this fleet's ping: what we posted to skirmish_commanders, and
     /// what directorbot broadcast.
-    #[cfg(feature = "fleet")]
     fn fleet_ping_history(&self) -> Vec<(String, String, bool, i64)> {
         let room = crate::app::goon_jid(
             &self.settings.rescue_skirmish_jid,
@@ -663,13 +634,9 @@ impl SpaiApp {
 
     /// Fills the reference tables once, whatever view is on screen.
     ///
-    /// NOTE: this gate is load-bearing. Without it the whole `fleet` module is referenced from a
-    /// build that does not compile it.
-    ///
     /// Not on first render of the fleet tab: the ping window and the rescue view read the same
     /// tables, and until this has run they show the invented placeholder names instead of the
     /// alliance's own. Boot is nine reads and happens once per run.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boot_once(&mut self) {
         if self.fleet_booted || !self.fleet_on() {
             return;
@@ -680,7 +647,6 @@ impl SpaiApp {
         self.fleet_refresh(&page);
     }
 
-    #[cfg(feature = "fleet")]
     fn fleet_body(&mut self, ui: &mut egui::Ui) {
         self.fleet_collect();
         // A login started from settings can land while this tab is the one on screen.
@@ -958,7 +924,6 @@ impl SpaiApp {
     }
 
     /// Applies what the start form asked for once the state lock is gone.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_apply_form(&mut self, mut act: FormAct) {
         if let Some(id) = act.open_fleet.take() {
             let page = Page::Tracking(id);
@@ -1118,7 +1083,6 @@ impl SpaiApp {
     }
 
     /// Whether enough time has passed to ask the dashboard again whether the FC is fleet boss.
-    #[cfg(feature = "fleet")]
     fn fleet_boss_may_ask(&mut self) -> bool {
         let now = std::time::Instant::now();
         if self.fleet_boss_asked.is_some_and(|t| now.duration_since(t) < BOSS_RECHECK) {
@@ -1133,7 +1097,6 @@ impl SpaiApp {
     /// Whether a character is boss of a fleet changes in game without the app being told, so an
     /// answer from five minutes ago is not an answer. A manual refresh restarts the clock, so
     /// asking by hand does not put a second request right behind it.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boss_poll(&mut self, ctx: &egui::Context) {
         let who = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc();
         let Some((character_id, _)) = who else { return };
@@ -1156,7 +1119,6 @@ impl SpaiApp {
     /// time the view opened, so a tab reopened after a long spell refreshes on its first frame
     /// rather than showing stale flags for another minute. Nothing polls while both views are
     /// closed, because nothing is reading the answer.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_channel_poll(&mut self, ctx: &egui::Context) {
         // Headless renders seed the channel list themselves; a refresh would replace it with the
         // backend's, the way the boost and advert polls are kept out for the same reason.
@@ -1180,7 +1142,6 @@ impl SpaiApp {
     ///
     /// The same ping to the same group twice inside `PING_REPEAT` is a double click, not a second
     /// ping, and a ping that goes out twice is an FC's mistake broadcast to everyone.
-    #[cfg(feature = "fleet")]
     fn fleet_send_ping(&mut self, group: &str) {
         let rendered = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -1214,7 +1175,6 @@ impl SpaiApp {
     ///
     /// The same template the rescue uses: a rescue ping and a fleet ping say the same things, and
     /// an FC who cannot reach the dashboard still has to be able to call a fleet.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_local_ping(&self) -> String {
         let (setup_id, mumble_id, formup, fc) = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -1245,7 +1205,6 @@ impl SpaiApp {
     }
 
     /// A mumble channel's name out of the fleet seed, for the comms line of a ping.
-    #[cfg(feature = "fleet")]
     fn fleet_channel_name(&self, id: Option<crate::fleets::model::ChannelId>) -> String {
         let Some(id) = id else { return String::new() };
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -1261,7 +1220,6 @@ impl SpaiApp {
     ///
     /// It is the one piece of a ping this app cannot rebuild on its own, so the last one the
     /// dashboard rendered is what the local template falls back to.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_cache_doctrine_line(&mut self) {
         // The rescue lock is taken and dropped before the fleet one, never nested: two mutexes
         // taken in two orders is a hang.
@@ -1294,7 +1252,6 @@ impl SpaiApp {
     }
 
     /// Asks for a fresh preview, superseding any in flight.
-    #[cfg(feature = "fleet")]
     fn fleet_preview_now(&mut self) {
         self.fleet_gen.preview += 1;
         let req = {
@@ -1308,7 +1265,6 @@ impl SpaiApp {
     /// Asks the dashboard whether the stored session is a commander's: at start, after each
     /// sign-in, and every few hours. A lower rank locks fleet command at once; an expired session
     /// or an unreachable dashboard leaves the last unlock to run out on its own.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_unlock_tick(&mut self, ctx: &egui::Context) {
         use crate::fleets::unlock::{self, Check};
         if self.headless {
@@ -1355,7 +1311,6 @@ impl SpaiApp {
     }
 
     /// Settings before the dashboard has confirmed a commander: only the sign-in.
-    #[cfg(feature = "fleet")]
     fn fleet_locked_section(&mut self, ui: &mut egui::Ui) -> bool {
         ui.heading("Fleet command");
         ui.label(
@@ -1375,7 +1330,6 @@ impl SpaiApp {
         self.fleet_sign_in_row(ui)
     }
 
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = self.fleet_apply_login();
         if !self.fleet_unlocked() {
@@ -1429,7 +1383,6 @@ impl SpaiApp {
     /// Puts preset `src` just before preset `dst`, joining `dst`'s folder. Refused when that
     /// folder already has another preset by the same name. A folder change goes through the same
     /// path as a move, so the rescue still follows its preset.
-    #[cfg(feature = "fleet")]
     fn fleet_preset_reorder(&mut self, src: usize, dst: usize) {
         let (Some(from), Some(to)) =
             (self.settings.fleet_presets.get(src), self.settings.fleet_presets.get(dst))
@@ -1448,7 +1401,6 @@ impl SpaiApp {
     }
 
     /// Whether another preset already has this folder and name, which is what identifies one.
-    #[cfg(feature = "fleet")]
     fn fleet_preset_taken(&self, i: usize, label: &str, folder: &str) -> bool {
         let key = crate::settings::preset_key(folder, label);
         self.settings.fleet_presets.iter().enumerate().any(|(j, p)| j != i && p.key() == key)
@@ -1458,7 +1410,6 @@ impl SpaiApp {
     ///
     /// The rescue remembers its preset by key, so it follows a preset that moves: otherwise moving
     /// the one it runs on would quietly switch it to whichever came first.
-    #[cfg(feature = "fleet")]
     fn fleet_preset_relabel(&mut self, i: usize, label: &str, folder: &str) {
         if label.is_empty() || self.fleet_preset_taken(i, label, folder) {
             return;
@@ -1482,7 +1433,6 @@ impl SpaiApp {
     }
 
     /// Renames a saved fleet, or moves it to another folder without dragging.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_preset_rename_window(&mut self, ctx: &egui::Context) {
         let Some((i, mut label, mut folder)) = self.fleet_preset_rename.clone() else { return };
         let folders = preset_folders(&self.settings.fleet_presets);
@@ -1563,7 +1513,6 @@ impl SpaiApp {
     ///
     /// The posts are the point: coverage is read out of chat, so the only way to tell a misread
     /// line from a pilot who posted the wrong charge is to see the line.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boost_detail_window(&mut self, ctx: &egui::Context) {
         let Some(what) = self.fleet_boost_detail.clone() else { return };
         let (cover, lines, ships) = {
@@ -1700,7 +1649,6 @@ impl SpaiApp {
     }
 
     /// Who gets named in the ping. Its own window, so the form does not reflow as pilots are added.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_snowflakes_window(&mut self, ctx: &egui::Context) {
         let Some(target) = self.fleet_snowflakes_open else { return };
         self.fleet_search_poll();
@@ -1725,7 +1673,6 @@ impl SpaiApp {
     }
 
     /// The full text of a failed fleet-boss check, which is too long for the form.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boss_detail_window(&mut self, ctx: &egui::Context) {
         let Some(text) = self.fleet_boss_detail.clone() else { return };
         let mut open = true;
@@ -1768,7 +1715,6 @@ impl SpaiApp {
 
     /// Signing in to the dashboard, and how much of what the tab does actually goes out.
     /// Sign in, sign out, and where the login stands.
-    #[cfg(feature = "fleet")]
     fn fleet_sign_in_row(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::fleets::login::LoginStatus;
         let mut changed = false;
@@ -1806,7 +1752,6 @@ impl SpaiApp {
         changed
     }
 
-    #[cfg(feature = "fleet")]
     fn fleet_sign_in_ui(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::fleets::backend::Mode;
 
@@ -1827,7 +1772,6 @@ impl SpaiApp {
     }
 
     /// Rebuilds the backend from the current settings, after a toggle or a fresh session.
-    #[cfg(feature = "fleet")]
     fn fleet_reload_backend(&mut self) {
         let next = crate::fleets::live_backend(&self.settings).unwrap_or_else(|| {
             std::sync::Arc::new(crate::fleets::spoof::SpoofBackend::seeded())
@@ -1836,7 +1780,6 @@ impl SpaiApp {
     }
 
     /// Picks up a finished login. Returns whether settings changed.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_apply_login(&mut self) -> bool {
         use crate::fleets::login::LoginStatus;
         let done = {
@@ -1862,7 +1805,6 @@ impl SpaiApp {
     ///
     /// Its own window rather than a row in settings: there are two dozen doctrines and nine
     /// charges each, which is a page of its own however it is folded into this one.
-    #[cfg(feature = "fleet")]
     fn fleet_boost_rules(&mut self, ui: &mut egui::Ui) -> bool {
         let n = self.settings.fleet_boost_requirements.len();
         ui.horizontal(|ui| {
@@ -1887,7 +1829,6 @@ impl SpaiApp {
     }
 
     /// Writes every doctrine's configuration to a file the user picks.
-    #[cfg(feature = "fleet")]
     fn fleet_export_doctrines(&self, names: &dyn Fn(i32) -> Option<String>) -> Option<String> {
         let bundle = crate::fleets::config::export(&self.settings, names);
         let path = rfd::FileDialog::new()
@@ -1902,7 +1843,6 @@ impl SpaiApp {
 
     /// Reads one back. A doctrine the file names replaces that doctrine and nothing else, so one
     /// can be shared without taking the rest of somebody's configuration with it.
-    #[cfg(feature = "fleet")]
     fn fleet_import_doctrines(&mut self) -> Option<String> {
         let path = rfd::FileDialog::new()
             .add_filter("EVE Spai doctrines", &["json"])
@@ -1921,7 +1861,6 @@ impl SpaiApp {
     }
 
     /// The editor window. Doctrines on the left, that doctrine's boosts on the right.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boost_editor(&mut self, ctx: &egui::Context) -> bool {
         use crate::fleets::boosts::{self, Priority, CHARGES, COMBAT_BURSTS};
         if !self.fleet_boost_editor {
@@ -2399,15 +2338,9 @@ impl SpaiApp {
         changed
     }
 
-    #[cfg(not(feature = "fleet"))]
-    pub(crate) fn fleet_boost_editor(&mut self, _ctx: &egui::Context) -> bool {
-        false
-    }
-
 }
 
 /// Active fleets by kind, then the FC's own history.
-#[cfg(feature = "fleet")]
 fn fleets_page(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -2511,7 +2444,6 @@ fn fleets_page(
 }
 
 /// One list of active fleets.
-#[cfg(feature = "fleet")]
 fn section(ui: &mut egui::Ui, title: &str, slot: &Slot<Vec<FleetRow>>, goto: &mut Option<Page>) {
     let count = slot.value.as_ref().map(Vec::len).unwrap_or(0);
     let heading = if count > 0 { format!("{title}   {count}") } else { title.to_owned() };
@@ -2519,7 +2451,6 @@ fn section(ui: &mut egui::Ui, title: &str, slot: &Slot<Vec<FleetRow>>, goto: &mu
 }
 
 /// A heading and its rows, with whatever the slot has to say about how fresh they are.
-#[cfg(feature = "fleet")]
 fn rows<T>(
     ui: &mut egui::Ui,
     heading: &str,
@@ -2555,7 +2486,6 @@ fn rows<T>(
 }
 
 /// One fleet, as a clickable card. Returns whether it was clicked.
-#[cfg(feature = "fleet")]
 fn fleet_row(ui: &mut egui::Ui, row: &FleetRow, now: i64) -> bool {
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 2))
@@ -2588,14 +2518,12 @@ fn fleet_row(ui: &mut egui::Ui, row: &FleetRow, now: i64) -> bool {
 }
 
 /// A tag in its own colour, mapping the server's class names onto the app's palette.
-#[cfg(feature = "fleet")]
 fn fleet_tag_chip(ui: &mut egui::Ui, tag: &TagItem) {
     ui.label(egui::RichText::new(tag.name.trim()).color(tag_colour(ui, tag)));
 }
 
 /// A tag's colour. The two that say what kind of fleet it is are fixed, because the seed carries
 /// no colour class for them and grey is the wrong answer for both.
-#[cfg(feature = "fleet")]
 fn tag_colour(ui: &egui::Ui, tag: &TagItem) -> egui::Color32 {
     use crate::theme::standing;
     match tag.name.trim().to_uppercase().as_str() {
@@ -2614,7 +2542,6 @@ fn tag_colour(ui: &egui::Ui, tag: &TagItem) -> egui::Color32 {
 
 /// What kind of fleet a preset starts, from its primary tag: S for the STRATEGIC tag, P for any
 /// other primary tag, coloured the way those tags are. Nothing for a preset with no primary tag.
-#[cfg(feature = "fleet")]
 fn preset_kind(
     p: &crate::settings::FleetPreset,
     tags: &[TagItem],
@@ -2636,10 +2563,8 @@ fn preset_kind(
 }
 
 /// The P or S in a fixed cell, so names line up whether or not a preset has one.
-#[cfg(feature = "fleet")]
 const KIND_W: f32 = 14.0;
 
-#[cfg(feature = "fleet")]
 fn preset_kind_cell(ui: &mut egui::Ui, kind: Option<(&'static str, egui::Color32, &'static str)>) {
     ui.allocate_ui_with_layout(
         egui::vec2(KIND_W, ui.spacing().interact_size.y),
@@ -2657,26 +2582,20 @@ fn preset_kind_cell(ui: &mut egui::Ui, kind: Option<(&'static str, egui::Color32
 }
 
 /// How long the form waits after the last edit before rendering the ping again.
-#[cfg(feature = "fleet")]
 const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// How often Mumble is asked where it is. Someone moving channel mid-fleet is rare, and the
 /// answer only drives a pulse.
-#[cfg(feature = "fleet")]
 const MUMBLE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often the boost channel is re-read. Boosters post once and then argue, so this is about
 /// picking up a swap, not about latency.
-#[cfg(feature = "fleet")]
 const BOOST_REREAD: std::time::Duration = std::time::Duration::from_secs(20);
 /// How long a short link that failed to resolve is left before it is fetched again.
-#[cfg(feature = "fleet")]
 const COMMS_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long to leave the dashboard to write a freshly closed fleet's report before asking again.
-#[cfg(feature = "fleet")]
 const REOPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// How many times. A fleet that closed with nobody in it never fills, so this has to stop.
-#[cfg(feature = "fleet")]
 const REOPEN_TRIES: u8 = 6;
 /// When a fleet's boost charges start counting.
 ///
@@ -2687,7 +2606,6 @@ const REOPEN_TRIES: u8 = 6;
 ///
 /// Either way the window opens `BOOST_GRACE` early, for the pilots who set their charges while the
 /// FC was still making the fleet.
-#[cfg(feature = "fleet")]
 fn boost_window_start(
     pings: &[(String, String, bool, i64)],
     fleet_name: &str,
@@ -2704,24 +2622,19 @@ fn boost_window_start(
 
 /// How long before a fleet was created its boost charges still count. Pilots set them while the FC
 /// is still making the fleet, so a window that opens at `startedAt` misses the ones who were ready.
-#[cfg(feature = "fleet")]
 const BOOST_GRACE: i64 = 5 * 60;
 
 /// How long the same ping to the same group is treated as a double click rather than a new ping.
 /// Long enough to cover an impatient re-click, short enough that a real second ping is not blocked.
-#[cfg(feature = "fleet")]
 const PING_REPEAT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The fleet-boss check is a round trip per click, so the refresh button has a floor.
-#[cfg(feature = "fleet")]
 const BOSS_RECHECK: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// How often the start form re-asks on its own. The answer goes stale the moment the FC forms up
 /// in game, and nothing tells the app when that happens.
-#[cfg(feature = "fleet")]
 /// The text after `Doctrine:` on its own line, which is where the dashboard puts the hull priority
 /// order. Anything it appends after that (the FC's notes) is on later lines and stays out.
-#[cfg(feature = "fleet")]
 fn doctrine_line(ping: &str) -> Option<String> {
     ping.lines()
         .find_map(|l| l.trim().strip_prefix("Doctrine:"))
@@ -2729,18 +2642,13 @@ fn doctrine_line(ping: &str) -> Option<String> {
         .filter(|l| !l.is_empty())
 }
 
-#[cfg(feature = "fleet")]
 const BOSS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
-#[cfg(feature = "fleet")]
 const ADVERT_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 /// How long the typing has to pause before a character search goes out.
-#[cfg(feature = "fleet")]
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
-#[cfg(feature = "fleet")]
 const CHANNEL_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What the start form asked for, applied once the state lock is gone.
-#[cfg(feature = "fleet")]
 #[derive(Default)]
 pub(crate) struct FormAct {
     /// (dragged preset, the preset it was dropped on): it goes just before that one.
@@ -2779,7 +2687,6 @@ pub(crate) struct FormAct {
 }
 
 /// The start form on the left, the ping it would send on the right.
-#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn start_page(
     ui: &mut egui::Ui,
@@ -2952,7 +2859,6 @@ fn start_page(
 
 /// An action strip sits against the edge of the view, so it keeps the panel's side margins and
 /// trims the vertical ones to the gap the buttons already carry.
-#[cfg(feature = "fleet")]
 fn bar_frame(ui: &egui::Ui) -> egui::Frame {
     let f = egui::Frame::side_top_panel(ui.style());
     // More above than below: the panel draws its separator on the top edge, and flush against the
@@ -2962,7 +2868,6 @@ fn bar_frame(ui: &egui::Ui) -> egui::Frame {
 
 /// Naming the current form and keeping it. Lives in the action strip so the form can scroll past
 /// it without taking the controls along.
-#[cfg(feature = "fleet")]
 fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) {
     let id = ui.id().with("preset_name");
     let mut label: String = ui.data(|d| d.get_temp(id).unwrap_or_default());
@@ -3024,7 +2929,6 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
 ///
 /// Not sorted: the preset list's own order is the order the FC arranged, folders included, so one
 /// list holds it and nothing else has to be kept in step with it.
-#[cfg(feature = "fleet")]
 fn preset_folders(presets: &[crate::settings::FleetPreset]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for p in presets {
@@ -3038,7 +2942,6 @@ fn preset_folders(presets: &[crate::settings::FleetPreset]) -> Vec<String> {
 
 /// Moves preset `src` to just before preset `dst`, in `dst`'s folder. The caller has already
 /// checked the folder has no other preset by that name.
-#[cfg(feature = "fleet")]
 fn reorder_preset(presets: &mut Vec<crate::settings::FleetPreset>, src: usize, dst: usize) {
     if src == dst || src >= presets.len() || dst >= presets.len() {
         return;
@@ -3053,7 +2956,6 @@ fn reorder_preset(presets: &mut Vec<crate::settings::FleetPreset>, src: usize, d
 
 /// Moves every preset in folder `dragged` to just before the first preset in folder `before`,
 /// keeping their order among themselves. That is the whole of a folder's position.
-#[cfg(feature = "fleet")]
 fn reorder_folder(presets: &mut Vec<crate::settings::FleetPreset>, dragged: &str, before: &str) {
     if dragged == before || dragged.is_empty() {
         return;
@@ -3067,20 +2969,16 @@ fn reorder_folder(presets: &mut Vec<crate::settings::FleetPreset>, dragged: &str
 
 /// Width every control in the form shares, so the column reads as one edge rather than a ragged
 /// one.
-#[cfg(feature = "fleet")]
 const FIELD_W: f32 = 260.0;
 /// Label gutter beside it.
-#[cfg(feature = "fleet")]
 const LABEL_W: f32 = 110.0;
 /// What one labelled field costs across, grid spacing included.
-#[cfg(feature = "fleet")]
 const FORM_COL_W: f32 = LABEL_W + 8.0 + FIELD_W;
 
 /// The fields themselves, in two columns when there is room for two.
 ///
 /// The split is what the fleet is on the left and how it runs on the right, so a narrow window
 /// stacking them still reads in a sensible order.
-#[cfg(feature = "fleet")]
 fn form_grid(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -3116,7 +3014,6 @@ fn form_grid(
 /// `FIELD_W` is what a field wants; in a pane narrower than a whole row it has to give way, or the
 /// form draws past its panel and lands on whatever is beside it. Called from inside a grid cell,
 /// where the label gutter has already been taken out of `available_width`.
-#[cfg(feature = "fleet")]
 fn field_w(ui: &egui::Ui) -> f32 {
     // Minus the room a combo box puts its arrow in: asking for the whole cell made those wider
     // than the cell and they ran into whatever was docked beside the form.
@@ -3125,7 +3022,6 @@ fn field_w(ui: &egui::Ui) -> f32 {
 
 /// The systems the formup field offers: the app's staging, the last few chosen instead of it, and
 /// whatever the typed query turned up.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Places {
     pub staging: Option<(i64, String)>,
@@ -3134,7 +3030,6 @@ pub(crate) struct Places {
 }
 
 /// What the fleet is: its name, what it flies, who it is for, where it forms.
-#[cfg(feature = "fleet")]
 fn form_identity(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -3261,7 +3156,6 @@ fn form_identity(
 }
 
 /// How it runs: comms, when it closes itself, and the switches.
-#[cfg(feature = "fleet")]
 fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     let seed = st.seed.clone();
     let auto = st.draft.auto;
@@ -3362,7 +3256,6 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
 ///
 /// Only the account's own characters can be checked, which is the same set the picker offers, so
 /// there is nothing here to guard against.
-#[cfg(feature = "fleet")]
 fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAct) {
     let Some((id, _)) = st.fc() else { return };
     ui.horizontal(|ui| {
@@ -3410,7 +3303,6 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
 ///
 /// The field is a search box rather than a list: the dashboard takes a system id, and there are
 /// five thousand of them.
-#[cfg(feature = "fleet")]
 fn formup_field(
     ui: &mut egui::Ui,
     draft: &mut crate::fleets::state::Draft,
@@ -3499,7 +3391,6 @@ fn formup_field(
 }
 
 /// One comms combo, marking what is taken and what was picked for you.
-#[cfg(feature = "fleet")]
 fn channel_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -3544,7 +3435,6 @@ fn channel_row(
 }
 
 /// Primary and secondary tags, as two rows of chips.
-#[cfg(feature = "fleet")]
 fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     let tags = st.seed.tags.clone();
     egui::Grid::new("fleet_form_tags")
@@ -3576,18 +3466,15 @@ fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut 
 }
 
 /// The two primary tags every fleet is one of, in the order they belong in.
-#[cfg(feature = "fleet")]
 const HEADLINE_TAGS: [&str; 2] = ["PEACETIME", "STRATEGIC"];
 
 /// Sort key that floats the headline tags to the top of the primary list.
-#[cfg(feature = "fleet")]
 fn headline_rank(name: &str) -> usize {
     HEADLINE_TAGS.iter().position(|h| h.eq_ignore_ascii_case(name.trim())).unwrap_or(HEADLINE_TAGS.len())
 }
 
 /// Peacetime or strategic, one click apart, since it is the first thing an FC sets and the thing
 /// most often set wrong.
-#[cfg(feature = "fleet")]
 fn headline_tags(
     ui: &mut egui::Ui,
     pool: &[TagItem],
@@ -3618,7 +3505,6 @@ fn headline_tags(
 ///
 /// Every word has to appear somewhere in the name, so "struct bash" finds "Structure Bash" without
 /// the words being adjacent or in that order.
-#[cfg(feature = "fleet")]
 fn tag_matches(name: &str, query: &str) -> bool {
     let name = name.to_lowercase();
     query.split_whitespace().all(|w| name.contains(&w.to_lowercase()))
@@ -3628,7 +3514,6 @@ fn tag_matches(name: &str, query: &str) -> bool {
 ///
 /// `single` is the primary row, where picking one replaces whatever was there: the dashboard takes
 /// exactly one, so the field enforces it rather than letting the request be refused later.
-#[cfg(feature = "fleet")]
 fn tag_field(
     ui: &mut egui::Ui,
     salt: &str,
@@ -3750,7 +3635,6 @@ fn tag_field(
 }
 
 /// The pilots called out in the ping.
-#[cfg(feature = "fleet")]
 fn snowflake_summary(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAct) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new("Snowflakes").strong());
@@ -3779,7 +3663,6 @@ fn snowflake_summary(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mu
 
 /// Which list of snowflakes is being edited: the one on the start form, or the one on a fleet that
 /// already exists. Both use the same editor and must not share widget ids.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum SnowflakeTarget {
     #[default]
@@ -3787,7 +3670,6 @@ pub(crate) enum SnowflakeTarget {
     Fleet,
 }
 
-#[cfg(feature = "fleet")]
 impl SnowflakeTarget {
     fn salt(self) -> &'static str {
         match self {
@@ -3807,7 +3689,6 @@ impl SnowflakeTarget {
 /// The snowflake editor, in a window rather than in the form: it grows by a row per pilot plus a
 /// suggestion strip, and a form that reflows while you are filling it in is a form you lose your
 /// place in.
-#[cfg(feature = "fleet")]
 fn snowflake_rows(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -3943,25 +3824,20 @@ fn snowflake_rows(
 /// What the roster needs across: the badge, its columns and the lock gutter, none of which wrap.
 /// It scrolls sideways now, but scrolling to reach a kick button is not a layout, so anything
 /// docked beside it still has to leave the table its width.
-#[cfg(feature = "fleet")]
 const MEMBER_TABLE_W: f32 = BADGE_W + COL[0] + COL[1] + COL[2] + COL[3] + 120.0;
 
 /// Room for the scroll bar, which is drawn over the content rect rather than beside it.
-#[cfg(feature = "fleet")]
 const SCROLLBAR_W: f32 = 10.0;
 
 /// What the docked chat asks for. Narrow enough that the form still gets two columns beside it
 /// and the preview pane, which is what keeps the form short enough not to run under its own
 /// action bar.
-#[cfg(feature = "fleet")]
 const DOCK_W: f32 = 270.0;
 
 /// The least it is worth being: narrower than this and a message is one word per line.
-#[cfg(feature = "fleet")]
 const NARROW_DOCK_W: f32 = 190.0;
 
 /// The two rooms a fleet is run from, docked beside the form.
-#[cfg(feature = "fleet")]
 pub(crate) struct ChatDock {
     pub open: bool,
     pub tab: u8,
@@ -3976,7 +3852,6 @@ pub(crate) struct ChatDock {
 ///
 /// The feed is the rescue tab's own renderer, so grouping, timestamps and per-name colours are the
 /// same by construction rather than by being kept in step.
-#[cfg(feature = "fleet")]
 fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
     const LABELS: [&str; 2] = ["skirmish", "delve911"];
     // Expanded it needs its own width and whatever it docks beside. Below that it would take the
@@ -4089,7 +3964,6 @@ fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
 }
 
 /// The start form's right-hand side: presets, a search over them, and the ping underneath.
-#[cfg(feature = "fleet")]
 fn side_pane(
     ui: &mut egui::Ui,
     st: &crate::fleets::FleetState,
@@ -4158,7 +4032,6 @@ fn side_pane(
 }
 
 /// One of the two half-width panes at the top of the sidebar.
-#[cfg(feature = "fleet")]
 fn pane_tab(ui: &mut egui::Ui, w: f32, on: bool, label: &str) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::click());
@@ -4186,7 +4059,6 @@ fn pane_tab(ui: &mut egui::Ui, w: f32, on: bool, label: &str) -> egui::Response 
 ///
 /// Filtering hides rows, never folders that still have one: the folder is half of what tells an
 /// FC which preset this is, so a filtered list without them is a list of ambiguous names.
-#[cfg(feature = "fleet")]
 fn preset_tree(
     ui: &mut egui::Ui,
     presets: &[crate::settings::FleetPreset],
@@ -4300,7 +4172,6 @@ fn preset_tree(
 
 /// A character search that failed, said where the name is being typed. The dashboard's error
 /// body is on the hover, since it is usually a scrap of HTML with nothing in it.
-#[cfg(feature = "fleet")]
 fn search_failed_note(ui: &mut egui::Ui, why: &str) {
     ui.label(
         egui::RichText::new("search failed, keep typing to retry")
@@ -4311,12 +4182,10 @@ fn search_failed_note(ui: &mut egui::Ui, why: &str) {
 
 /// What a folder heading carries while it is dragged, kept apart from a preset's `usize` so a drop
 /// target can tell the two apart.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Debug)]
 struct FolderDrag(String);
 
 /// One saved fleet: the whole row loads it, draggable into a folder, with rename and delete.
-#[cfg(feature = "fleet")]
 fn preset_row(
     ui: &mut egui::Ui,
     presets: &[crate::settings::FleetPreset],
@@ -4421,7 +4290,6 @@ fn preset_row(
 }
 
 /// The ping and MOTD the dashboard would render, refreshed as the form changes.
-#[cfg(feature = "fleet")]
 fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -4475,7 +4343,6 @@ fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &
 }
 
 /// What this tab would have sent, newest first.
-#[cfg(feature = "fleet")]
 fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new("Recorded requests").strong());
@@ -4511,7 +4378,6 @@ fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
 }
 
 /// The question a destructive action asks before it is recorded, or nothing when it is harmless.
-#[cfg(feature = "fleet")]
 fn confirm_question(action: &Action) -> Option<&'static str> {
     Some(match action {
         Action::Close => "Close this fleet?",
@@ -4524,7 +4390,6 @@ fn confirm_question(action: &Action) -> Option<&'static str> {
 }
 
 /// How much damage an action does if it was not meant.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Danger {
     None,
@@ -4534,7 +4399,6 @@ enum Danger {
     Severe,
 }
 
-#[cfg(feature = "fleet")]
 fn danger(action: &Action) -> Danger {
     match action {
         Action::Close | Action::KickAll | Action::KickMany { .. } => Danger::Severe,
@@ -4544,7 +4408,6 @@ fn danger(action: &Action) -> Danger {
 }
 
 /// What a severe action costs, spelled out rather than implied.
-#[cfg(feature = "fleet")]
 fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
     match action {
         Action::Close => Some(format!(
@@ -4562,7 +4425,7 @@ fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod confirm_tests {
     use super::*;
 
@@ -4654,7 +4517,6 @@ mod confirm_tests {
 
 /// The fleet's battle report beside its dashboard link, laid out right to left: made with one click
 /// from the fleet's kills, then opened or copied. The same fight in the Battles tab sits with it.
-#[cfg(feature = "fleet")]
 fn br_buttons(
     ui: &mut egui::Ui,
     br: &crate::app::fleet_map::BrView,
@@ -4711,7 +4573,6 @@ fn br_buttons(
 }
 
 /// Which half of a fleet's page is showing.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum DetailTab {
     /// Who is in the fleet, by wing and squad, the way the dashboard lists them.
@@ -4724,7 +4585,6 @@ pub(crate) enum DetailTab {
 }
 
 /// A tracked fleet, or a closed one read back.
-#[cfg(feature = "fleet")]
 fn tracking_page(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -5009,7 +4869,6 @@ fn tracking_page(
 }
 
 /// Where a comms button sends the FC, worked out where the app's links are in reach.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommsTargets {
     /// The fleet's own channel, both ways in.
@@ -5025,7 +4884,6 @@ pub(crate) struct CommsTargets {
 /// On the FC's own fleet the buttons also say whether Mumble is actually there: a fleet running
 /// with its commander in the wrong channel is a fleet nobody can reach, and it is the kind of
 /// mistake that goes unnoticed until it matters.
-#[cfg(feature = "fleet")]
 fn comms_buttons(
     ui: &mut egui::Ui,
     seed: &crate::fleets::seed::Seed,
@@ -5100,7 +4958,6 @@ fn comms_buttons(
 ///
 /// The dashboard hands over no hulls at all, so without this list every ship in the fleet reads as
 /// out of doctrine.
-#[cfg(feature = "fleet")]
 fn hull_editor(
     ui: &mut egui::Ui,
     setup_id: i32,
@@ -5243,7 +5100,6 @@ fn hull_editor(
 
 /// How a doctrine tanks. One answer for the whole fleet, which is what decides whether its logi
 /// can actually rep it.
-#[cfg(feature = "fleet")]
 fn tank_row(ui: &mut egui::Ui, setup_id: i32, tanks: &mut Vec<(i32, String)>) -> bool {
     use crate::fleets::doctrine::Tank;
     let mut changed = false;
@@ -5274,7 +5130,6 @@ fn tank_row(ui: &mut egui::Ui, setup_id: i32, tanks: &mut Vec<(i32, String)>) ->
 }
 
 /// Where a doctrine is written up, ready to paste into a ping.
-#[cfg(feature = "fleet")]
 fn doctrine_link_row(ui: &mut egui::Ui, setup_id: i32, urls: &mut Vec<(i32, String)>) -> bool {
     let mut changed = false;
     let mut url = urls
@@ -5323,7 +5178,6 @@ fn doctrine_link_row(ui: &mut egui::Ui, setup_id: i32, urls: &mut Vec<(i32, Stri
 ///
 /// The groups are built in and not worth a list to maintain; anything else is named here, and a
 /// hull that only suits one kind of fleet carries its tank.
-#[cfg(feature = "fleet")]
 fn always_allowed(
     ui: &mut egui::Ui,
     hulls: &mut Vec<crate::settings::FleetHull>,
@@ -5348,7 +5202,6 @@ fn always_allowed(
 }
 
 /// Shortens a label so a long one cannot widen the panel it sits in.
-#[cfg(feature = "fleet")]
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
@@ -5358,7 +5211,6 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 /// One colour per burst, so shield, armor, information and skirmish read apart at a glance.
-#[cfg(feature = "fleet")]
 fn burst_colour(ui: &egui::Ui, burst: crate::fleets::boosts::Burst) -> egui::Color32 {
     use crate::fleets::boosts::Burst;
     use crate::theme::{chip, standing};
@@ -5375,7 +5227,6 @@ fn burst_colour(ui: &egui::Ui, burst: crate::fleets::boosts::Burst) -> egui::Col
 ///
 /// The numbers are the point: "Logi danger" on its own is an argument, "3 of 40, two Guardians in
 /// a shield fleet" is something to act on.
-#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn readiness_pane(
     ui: &mut egui::Ui,
@@ -5555,7 +5406,6 @@ fn readiness_pane(
 
 /// One boost nobody is on. The important ones carry a filled background, since a colour alone on
 /// a red or amber theme is not much of a difference.
-#[cfg(feature = "fleet")]
 fn gap_chip(ui: &mut egui::Ui, g: &crate::fleets::boosts::Wanted) -> egui::Response {
     use crate::fleets::boosts::Priority;
     let colour = priority_colour(g.priority);
@@ -5575,7 +5425,6 @@ fn gap_chip(ui: &mut egui::Ui, g: &crate::fleets::boosts::Wanted) -> egui::Respo
 }
 
 /// One check as a coloured headline plus its reason.
-#[cfg(feature = "fleet")]
 fn status_line(ui: &mut egui::Ui, check: &crate::fleets::checks::Check) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(level_icon(check.level)).color(level_colour(check.level)));
@@ -5585,7 +5434,6 @@ fn status_line(ui: &mut egui::Ui, check: &crate::fleets::checks::Check) {
 }
 
 /// An indented line under a status, optionally led by a coloured name.
-#[cfg(feature = "fleet")]
 fn detail_line(ui: &mut egui::Ui, text: String, lead: Option<(String, egui::Color32)>) {
     ui.horizontal_wrapped(|ui| {
         ui.add_space(14.0);
@@ -5601,7 +5449,6 @@ fn detail_line(ui: &mut egui::Ui, text: String, lead: Option<(String, egui::Colo
 
 /// Which way the fleet tanks, taken from the boosts its doctrine asks for. The user maintains that
 /// list, so it beats guessing from the doctrine's name.
-#[cfg(feature = "fleet")]
 fn wanted_tank(wanted: &[crate::fleets::boosts::Wanted]) -> Option<crate::fleets::logi::Tank> {
     use crate::fleets::boosts::{burst_of, Burst};
     use crate::fleets::logi::Tank;
@@ -5625,7 +5472,6 @@ fn wanted_tank(wanted: &[crate::fleets::boosts::Wanted]) -> Option<crate::fleets
 ///
 /// Staged rather than live, because every field here is a request: changing the setup three times
 /// while making up your mind would be three PUTs and three MOTDs.
-#[cfg(feature = "fleet")]
 fn fleet_sidebar(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
@@ -5803,7 +5649,6 @@ fn fleet_sidebar(
     }
 }
 
-#[cfg(feature = "fleet")]
 fn level_colour(level: crate::fleets::checks::Level) -> egui::Color32 {
     use crate::fleets::checks::Level;
     match level {
@@ -5814,7 +5659,6 @@ fn level_colour(level: crate::fleets::checks::Level) -> egui::Color32 {
     }
 }
 
-#[cfg(feature = "fleet")]
 fn level_icon(level: crate::fleets::checks::Level) -> &'static str {
     use crate::fleets::checks::Level;
     use egui_phosphor::regular as icon;
@@ -5825,7 +5669,6 @@ fn level_icon(level: crate::fleets::checks::Level) -> &'static str {
     }
 }
 
-#[cfg(feature = "fleet")]
 fn priority_colour(p: crate::fleets::boosts::Priority) -> egui::Color32 {
     use crate::fleets::boosts::Priority;
     match p {
@@ -5836,7 +5679,6 @@ fn priority_colour(p: crate::fleets::boosts::Priority) -> egui::Color32 {
 }
 
 /// What can be done to the fleet, and what this account may not do.
-#[cfg(feature = "fleet")]
 fn action_bar(
     ui: &mut egui::Ui,
     st: &crate::fleets::FleetState,
@@ -5949,7 +5791,6 @@ fn action_bar(
 }
 
 /// Who is in the fleet, by wing and squad.
-#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn members_view(
     ui: &mut egui::Ui,
@@ -6073,7 +5914,6 @@ fn members_view(
 }
 
 /// One commander seat. Holds at most one pilot, which is what makes it a seat rather than a list.
-#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn commander_seat(
     ui: &mut egui::Ui,
@@ -6112,7 +5952,6 @@ fn commander_seat(
 }
 
 /// A pilot in flight between two squads.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct DragPilot {
     character_id: i64,
@@ -6126,27 +5965,20 @@ struct DragPilot {
 /// The group column is sized to that same name, which measures 150px: at 120 it overflowed by 29
 /// and every kick button on a hictor row sat out of line with the rest. Measured, not guessed, by
 /// `uitest_closed_fleet_rows_keep_their_columns`.
-#[cfg(feature = "fleet")]
 const COL: [f32; 4] = [190.0, 210.0, 160.0, 90.0];
 /// The participation column, wide enough for "no PAP" and a two-digit count.
-#[cfg(feature = "fleet")]
 const PAP_W: f32 = 70.0;
 /// The FC / WC / SC column, present on every roster row so the names align.
-#[cfg(feature = "fleet")]
 const BADGE_W: f32 = 36.0;
 /// The name column at the top of the tree. Nesting comes out of this one.
-#[cfg(feature = "fleet")]
 const NAME_W: f32 = 230.0;
 /// Ship icon beside a hull name.
-#[cfg(feature = "fleet")]
 const SHIP_ICON: f32 = 18.0;
 /// The padlock column, held open on every row so the kick buttons stay in a line.
-#[cfg(feature = "fleet")]
 const LOCK_W: f32 = 30.0;
 
 /// A wing or squad heading. The count is spelled out: "Squad 1  17" reads as a name with a number
 /// stuck to it, which is not what it is.
-#[cfg(feature = "fleet")]
 fn headcount(name: &str, n: usize) -> String {
     match n {
         0 => format!("{name}  ·  empty"),
@@ -6156,7 +5988,6 @@ fn headcount(name: &str, n: usize) -> String {
 }
 
 /// Which seat a roster row is, when it is one.
-#[cfg(feature = "fleet")]
 fn seat_badge(ui: &mut egui::Ui, title: &str, seat: crate::fleets::model::Seat) {
     cell(ui, BADGE_W, |ui| {
         ui.add_space(6.0);
@@ -6166,7 +5997,6 @@ fn seat_badge(ui: &mut egui::Ui, title: &str, seat: crate::fleets::model::Seat) 
 }
 
 /// Lays out one cell of a fleet table at a fixed width.
-#[cfg(feature = "fleet")]
 fn cell<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ui.spacing().interact_size.y),
@@ -6180,10 +6010,8 @@ fn cell<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) 
 }
 
 /// One pilot: draggable by the name, with a kick of their own.
-#[cfg(feature = "fleet")]
 /// What every roster row needs besides the pilot: what the account may do, who is confirmed, and
 /// somewhere to put a confirmation.
-#[cfg(feature = "fleet")]
 struct RowCtx<'a> {
     locked: &'a crate::fleets::doctrine::Locked,
     can_move: bool,
@@ -6194,7 +6022,6 @@ struct RowCtx<'a> {
     toggle_lock: &'a mut Option<i64>,
 }
 
-#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn member_row(
     ui: &mut egui::Ui,
@@ -6344,7 +6171,6 @@ fn member_row(
 }
 
 /// What the fleet is flying, and whether the doctrine asked for it.
-#[cfg(feature = "fleet")]
 fn composition_view(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
@@ -6423,7 +6249,6 @@ fn composition_view(
 /// A capital that is only in the fleet because capitals are always allowed is there to bridge or
 /// light a cyno, not to shoot, so it counts as support rather than as the DPS a doctrine capital
 /// would be. Everything else goes by what the hull does.
-#[cfg(feature = "fleet")]
 fn composition_role(
     l: &crate::fleets::doctrine::ShipLine,
     doctrine: Option<&crate::fleets::doctrine::Doctrine>,
@@ -6437,7 +6262,6 @@ fn composition_role(
 }
 
 /// The heading over one composition table.
-#[cfg(feature = "fleet")]
 fn section_head(
     ui: &mut egui::Ui,
     title: &str,
@@ -6451,7 +6275,6 @@ fn section_head(
 }
 
 /// One row of a composition table: what, how many, what share, and what it is made of.
-#[cfg(feature = "fleet")]
 fn share_row(
     ui: &mut egui::Ui,
     type_id: i64,
@@ -6490,7 +6313,6 @@ fn share_row(
 }
 
 /// Who has been in the wrong ship long enough that it was not a mistake on undock.
-#[cfg(feature = "fleet")]
 fn off_doctrine_report(
     ui: &mut egui::Ui,
     rows: &[crate::fleets::doctrine::OffDoctrine],
@@ -6577,7 +6399,6 @@ fn off_doctrine_report(
 }
 
 /// Doctrine reads as normal, support as a quiet aside, anything else as a problem.
-#[cfg(feature = "fleet")]
 fn standing_colour(ui: &egui::Ui, standing: crate::fleets::doctrine::Standing) -> egui::Color32 {
     use crate::fleets::doctrine::Standing;
     match standing {
@@ -6592,7 +6413,6 @@ impl SpaiApp {
     ///
     /// A window rather than a menu, because there are enough presets across enough folders that
     /// the search is the point.
-    #[cfg(feature = "fleet")]
     pub(crate) fn quick_fleet_window(
         &mut self,
         ctx: &egui::Context,
@@ -6689,7 +6509,6 @@ impl SpaiApp {
     }
 
     /// Asks before anything that cannot be taken back.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {
         let Some((id, action, question, pilots)) = self.fleet_confirm.clone() else { return };
         let mut decided: Option<bool> = None;
@@ -6735,7 +6554,6 @@ impl SpaiApp {
 }
 
 /// The chip the sub-nav shows for a backend that is not fully live, and why.
-#[cfg(feature = "fleet")]
 fn mode_banner(mode: crate::fleets::backend::Mode) -> Option<(&'static str, &'static str)> {
     use crate::fleets::backend::Mode;
     match mode {
@@ -6751,7 +6569,6 @@ fn mode_banner(mode: crate::fleets::backend::Mode) -> Option<(&'static str, &'st
     }
 }
 
-#[cfg(feature = "fleet")]
 fn journal_hint(mode: crate::fleets::backend::Mode) -> &'static str {
     use crate::fleets::backend::Mode;
     match mode {
@@ -6760,7 +6577,7 @@ fn journal_hint(mode: crate::fleets::backend::Mode) -> &'static str {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod doctrine_line_tests {
     use super::doctrine_line;
 
@@ -6782,7 +6599,7 @@ mod doctrine_line_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod boost_window_tests {
     use super::{boost_window_start, BOOST_GRACE};
 
@@ -6822,7 +6639,6 @@ mod boost_window_tests {
     }
 }
 
-#[cfg(feature = "fleet")]
 impl SpaiApp {
     /// Hands the fleet to another FC.
     ///
@@ -6989,7 +6805,7 @@ impl SpaiApp {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod composition_role_tests {
     use super::composition_role;
     use crate::fleets::doctrine::{Category, Role, ShipLine, Standing};
@@ -7033,7 +6849,7 @@ mod composition_role_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod preset_kind_tests {
     use super::preset_kind;
 
@@ -7056,7 +6872,7 @@ mod preset_kind_tests {
     }
 }
 
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 mod preset_order_tests {
     use super::{preset_folders, reorder_folder, reorder_preset};
     use crate::settings::FleetPreset;

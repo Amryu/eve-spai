@@ -17,15 +17,13 @@ mirror itself to a local web view. It uses only EVE's public static data.
   build, but a slowdown that also shows in release is a real regression.
 - `cargo test` does NOT rebuild the `eve-spai` binary. Run `cargo build` before relaunching the
   app, or you run a stale binary and a fix looks like it did nothing.
-- **`fleet` is a default Cargo feature, locked at runtime.** It gates fleet command: the GSF
-  dashboard mirror (`fleets/`, `app/fleet_ui.rs`) and the FC-only delve911 capital rescue that runs
-  on it (`rescue.rs`, `app/rescue_ui.rs`, the ESI fleet poller, the delve911 sound). `fc-rescue`
-  survives only as an alias for `fleet`. Every build carries it, but it stays locked until the
-  fleet dashboard confirms a skirmish commander or above (`fleets/unlock.rs`: `startFleet` plus a
+- **Fleet command is in every build, locked at runtime.** The GSF dashboard mirror (`fleets/`,
+  `app/fleet_ui.rs`) and the FC-only delve911 capital rescue that runs on it (`rescue.rs`,
+  `app/rescue_ui.rs`, the ESI fleet poller, the delve911 sound) stay locked until the fleet
+  dashboard confirms a skirmish commander or above (`fleets/unlock.rs`: `startFleet` plus a
   command group of SC, FC, TC, CC, Coord or GB/PP; 30-day grace offline). Before that, settings
   show only the dashboard sign-in and the Fleet and Rescue tabs are hidden: gate new fleet code on
-  `fleet_on()` / `rescue_on()`, never on the raw settings flags. `--no-default-features` builds
-  without it; CI tests with and without it.
+  `fleet_on()` / `rescue_on()`, never on the raw settings flags.
   `fleet-auth` adds the sign-in webview. Windows (WebView2) and macOS (WKWebView) releases are
   built with it, since the engine ships with the OS. On Linux it needs gtk3 and webkit2gtk-4.1 and
   a binary linked with it will not start without them, so the Linux release ships the app without
@@ -36,8 +34,6 @@ mirror itself to a local web view. It uses only EVE's public static data.
   need a C compiler): point `CC_x86_64_pc_windows_gnu` at a wrapper that drops cc-rs's
   `--target=<rust triple>` and passes `-target x86_64-windows-gnu`, then
   `cargo check --target x86_64-pc-windows-gnu --all-features`. macOS is only checked by CI.
-  The `Settings` fleet and rescue fields are deliberately not gated: settings are rewritten whole on
-  save, so a feature-off build must still round-trip a feature-on config.
 - The version lives once in the root `Cargo.toml` `[workspace.package]`; `app` inherits it.
 
 ## Release process

@@ -400,7 +400,6 @@ fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// `bind` opens the advanced part with an address being typed, which is where the field says whether
 /// it is bound, waiting or holding something that is not an address.
 /// The whole settings column, with fleet command locked or unlocked.
-#[cfg(feature = "fleet")]
 fn fleet_lock_scene(name: &'static str, unlocked: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1385,7 +1384,6 @@ fn jabber_sidebar_scene_cfg(
 }
 
 /// A tracked fleet whose boss is one of this machine's characters, with its advert off.
-#[cfg(feature = "fleet")]
 fn fleet_advert_scene(name: &'static str, size: [f32; 2], up: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1446,7 +1444,6 @@ fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
 
 /// The rescue feed on its own. The rescue window itself has no scene, so this renders the chat the
 /// way `uitest_rescue_chat_lines_are_one_line_tall` drives it.
-#[cfg(feature = "fleet")]
 fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
     let base = fixtures::now();
     let msgs = vec![
@@ -1462,7 +1459,6 @@ fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// The clock over the checklist, at a fixed time so the render is the same every run, with the
 /// checklist under it the way the ops column stacks them.
-#[cfg(feature = "fleet")]
 fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
     harness::scratch_profile();
     let mut state: Option<crate::rescue::RescueState> = None;
@@ -1476,7 +1472,6 @@ fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
 ///
 /// Headless starts no workers, so the state is filled from the dry-run backend here rather than
 /// left on a permanent loading state.
-#[cfg(feature = "fleet")]
 fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1496,14 +1491,12 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// The start form, filled from a preset so every control has something in it, with the ping the
 /// dry run renders beside it.
-#[cfg(feature = "fleet")]
 fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
     fleet_start_scene_with(name, size, false)
 }
 
 /// `tracked` leaves the fixture's FC boss of an active fleet, which is what the double-track
 /// guard is for. Off, the form is in its normal ready-to-track state.
-#[cfg(feature = "fleet")]
 fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1534,7 +1527,6 @@ fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> 
 }
 
 /// A tracked fleet, in either of its two halves: who is in it, and what they are flying.
-#[cfg(feature = "fleet")]
 fn fleet_detail_scene(
     name: &'static str,
     size: [f32; 2],
@@ -1544,7 +1536,6 @@ fn fleet_detail_scene(
 }
 
 /// `closed` swaps the tree for the flat participant list a finished fleet leaves behind.
-#[cfg(feature = "fleet")]
 fn fleet_detail_scene_with(
     name: &'static str,
     size: [f32; 2],
@@ -1556,7 +1547,6 @@ fn fleet_detail_scene_with(
 
 /// `via_history` decides whether the page was reached through the history or closed underneath the
 /// tracking page. Both have to render the same.
-#[cfg(feature = "fleet")]
 fn fleet_detail_scene_closed(
     name: &'static str,
     size: [f32; 2],
@@ -1593,13 +1583,11 @@ fn fleet_detail_scene_closed(
 
 /// The Map tab: pilots per system and the FC. `cap_save` tags the fleet and adds two capital pings,
 /// so the titan route and the ping switch render.
-#[cfg(feature = "fleet")]
 fn fleet_map_scene(name: &'static str, size: [f32; 2], cap_save: bool) -> Scene {
     fleet_map_scene_at(name, size, cap_save, None, false, false)
 }
 
 /// `at` is seconds after the record starts, `focus` follows the first pilot.
-#[cfg(feature = "fleet")]
 fn fleet_map_scene_at(
     name: &'static str,
     size: [f32; 2],
@@ -1662,7 +1650,6 @@ fn fleet_map_scene_at(
 
 /// The composition of a fleet that is short of everything, so every check renders in its own
 /// colour instead of the quiet line.
-#[cfg(feature = "fleet")]
 fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1689,7 +1676,6 @@ fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// The dialog behind the worst button on the page, which has to be typed out rather than clicked
 /// through. On its own, because a modal painted over the page reads to the overlap check as text
 /// on top of text.
-#[cfg(feature = "fleet")]
 fn fleet_confirm_scene(
     name: &'static str,
     size: [f32; 2],
@@ -1717,27 +1703,23 @@ fn fleet_confirm_scene(
 }
 
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
-#[cfg(feature = "fleet")]
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
     rescue_panel_scene_with(name, size, None, false, false)
 }
 
 /// The docked rescue tab with the titan route on a map: beside the chat when wide, a chat tab when
 /// not.
-#[cfg(feature = "fleet")]
 fn rescue_map_scene(name: &'static str, size: [f32; 2]) -> Scene {
     rescue_panel_scene_with(name, size, None, false, true)
 }
 
 /// The rescue tab popped out: the ping and its buttons in a band over the chat.
-#[cfg(feature = "fleet")]
 fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
     rescue_panel_scene_with(name, size, None, true, false)
 }
 
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
 /// and picks it. The invented table's "Comms N" names resolve to no op at all.
-#[cfg(feature = "fleet")]
 fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1777,7 +1759,6 @@ fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8
 }
 
 /// The Quick Fleet picker, which is the whole of what the button does.
-#[cfg(feature = "fleet")]
 fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1798,7 +1779,6 @@ fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
 }
 
 /// The same window on its Ships tab, which is what stops every hull reading as out of doctrine.
-#[cfg(feature = "fleet")]
 fn fleet_hull_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1823,7 +1803,6 @@ fn fleet_hull_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
 }
 
 /// The per-doctrine boost editor, filled for one doctrine so both halves have something in them.
-#[cfg(feature = "fleet")]
 fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1854,7 +1833,6 @@ fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
 }
 
 /// The two dialogs the start form and readiness pane now open instead of growing inline.
-#[cfg(feature = "fleet")]
 fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1918,7 +1896,6 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
 }
 
 /// The start form's sidebar on its Search tab, which the Presets scene never reaches.
-#[cfg(feature = "fleet")]
 fn fleet_side_search_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1941,7 +1918,6 @@ fn fleet_side_search_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// The fleet settings section on its own: the whole settings page would need a canvas thousands of
 /// pixels tall to reach it.
-#[cfg(feature = "fleet")]
 fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1965,7 +1941,6 @@ fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
 }
 
 /// The journal, with the requests a dry run recorded rather than sent.
-#[cfg(feature = "fleet")]
 fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -1987,7 +1962,6 @@ fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// Clicking a fleet has to open it: the rows are painted frames, so nothing but a real click
 /// through the tree proves they are reachable.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_rows_open_the_fleet() {
     use egui_kittest::kittest::Queryable as _;
@@ -2009,7 +1983,6 @@ fn uitest_fleet_rows_open_the_fleet() {
 
 /// The tag field is a badge field plus a dropdown, so nothing about the list is on screen until
 /// the caret is clicked. Only a real click through the tree proves it opens and filters.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_tag_field_opens_and_filters() {
     use egui_kittest::kittest::Queryable as _;
@@ -2527,102 +2500,64 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::jabber_state_long,
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list", [1280.0, 800.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_start_scene("fleet_start_form", [1440.0, 820.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
-    #[cfg(feature = "fleet")]
     v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
-    #[cfg(feature = "fleet")]
     v.push(fleet_dialog_scene("fleet_migrate", [700.0, 460.0], 2));
-    #[cfg(feature = "fleet")]
     v.push(fleet_dialog_scene("fleet_boost_detail", [760.0, 560.0], 1));
-    #[cfg(feature = "fleet")]
     v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene("fleet_map", [1280.0, 800.0], false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene("fleet_map_capsave", [1280.0, 800.0], true));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene_at("fleet_map_history", [1280.0, 800.0], false, Some(500), false, false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene_at("fleet_map_pilot", [1280.0, 800.0], false, None, true, false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene_at("fleet_map_closed", [1280.0, 800.0], false, None, false, true));
-    #[cfg(feature = "fleet")]
     v.push(fleet_map_scene_at("fleet_map_stranger", [1280.0, 800.0], false, None, false, false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene("fleet_members", [1280.0, 1420.0], crate::app::fleet_ui::DetailTab::Members));
-    #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene_with(
         "fleet_members_closed",
         [1280.0, 1000.0],
         crate::app::fleet_ui::DetailTab::Members,
         true,
     ));
-    #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene(
         "fleet_composition",
         [1280.0, 1120.0],
         crate::app::fleet_ui::DetailTab::Composition,
     ));
-    #[cfg(feature = "fleet")]
     v.push(fleet_thin_scene("fleet_composition_thin", [1280.0, 820.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_boost_editor_scene("fleet_boost_editor", [860.0, 660.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
-    #[cfg(feature = "fleet")]
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_map_scene("rescue_panel_map_wide", [1500.0, 760.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_map_scene("rescue_panel_map_tab", [1000.0, 700.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
-    #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
         [560.0, 340.0],
         crate::fleets::backend::Action::KickAll,
         "Kick everyone out of the fleet?",
     ));
-    #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_pods",
         [560.0, 300.0],
         crate::fleets::backend::Action::KickCapsules,
         "Kick every pod out of the fleet?",
     ));
-    #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
-    #[cfg(feature = "fleet")]
     v.push(rescue_timer_scene("rescue_ping_timer", 372));
-    #[cfg(feature = "fleet")]
     v.push(rescue_timer_scene("rescue_ping_timer_late", 931));
     // With Rescue Mode on, delve911's remove button is disabled while every other room
     // keeps its own. Only meaningful in a build that has the feature.
-    #[cfg(feature = "fleet")]
     v.push(jabber_sidebar_scene_cfg("jabber_sidebar_rescue_pinned", [900.0, 560.0], true, true));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
@@ -3429,7 +3364,6 @@ fn uitest_wormhole_map_side_panel_lists_the_selected_system() {
 
 /// Fleet command stays out of sight until the dashboard confirms a commander: settings offer only
 /// the sign-in, and the Fleet tab is not in the rail. Unlocked, the dashboard's own settings show.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_command_is_locked_until_the_dashboard_confirms_a_commander() {
     use egui_kittest::kittest::Queryable as _;
@@ -5092,7 +5026,6 @@ fn uitest_jabber_blank_body_keeps_its_row() {
 
 /// The rescue window's chat lines stand one line tall too. That window has no scene, so this drives
 /// the feed directly rather than through the window around it.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_rescue_chat_lines_are_one_line_tall() {
     let (line, spacing) = (theme_body_line(), theme_spacing());
@@ -6003,7 +5936,6 @@ fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
 
 /// With no session there is no rendered preview, and an FC still has to be able to ping. The
 /// fallback renders the same template the rescue uses, from the form.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_ping_falls_back_to_the_local_template() {
     harness::scratch_profile();
@@ -6037,7 +5969,6 @@ fn uitest_the_ping_falls_back_to_the_local_template() {
 
 /// The boss-check window must not grow because of what is in it, the same feedback loop the
 /// Doctrines window had: a scroll area claiming `available_height` with a button underneath.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_boss_detail_window_height_settles() {
     harness::scratch_profile();
@@ -6076,7 +6007,6 @@ fn uitest_boss_detail_window_height_settles() {
 /// A permanent tripwire. The uitest guard redirects `EVE_SPAI_DATA_DIR`, but the keychain sits
 /// outside it, so a developer with a live dashboard session in their keyring must still never get
 /// an `HttpBackend` under test. The headless arm of `SpaiApp::build` is what prevents it.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_headless_never_gets_a_live_fleet_backend() {
     use crate::fleets::backend::Mode;
@@ -6207,7 +6137,6 @@ fn uitest_map_layers_offers_the_jove_observatory_filter() {
 /// The Doctrines window must not grow because of what is in it. It did: the doctrine list sized
 /// itself to `available_height`, the window sized itself to that content, and every frame added a
 /// little more.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_doctrines_window_height_settles() {
     let mut scene = fleet_boost_editor_scene("doctrines_growth_probe", [1100.0, 760.0]);
@@ -6297,7 +6226,6 @@ fn uitest_selectable_toggles_do_not_resize_on_hover() {
 /// row because the row before it had widened the container, and the whole column grew every frame
 /// because that widening fed back in. Measured, not eyeballed: a screenshot of one frame shows
 /// neither.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_preset_rows_are_one_width_and_stay_put() {
     use egui_kittest::kittest::Queryable as _;
@@ -6358,7 +6286,6 @@ fn uitest_preset_rows_are_one_width_and_stay_put() {
 
 
 /// A closed fleet is read to settle participation, so the list leads with who got paid most.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_closed_fleet_sorts_by_participation() {
     let mut scene = fleet_detail_scene_with(
@@ -6394,7 +6321,6 @@ fn uitest_closed_fleet_sorts_by_participation() {
 /// They did not: a 150px group name in a 120px cell pushed every column after it 29px right, so
 /// on a fleet of hictors the ship, role and kick columns stepped out of line row by row. A
 /// screenshot reads that as an indent rather than as an overflow, which is why this measures.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_closed_fleet_rows_keep_their_columns() {
     use egui_kittest::kittest::NodeT as _;
@@ -6444,7 +6370,6 @@ fn uitest_closed_fleet_rows_keep_their_columns() {
 /// A fleet can close on the dashboard's own auto-close timer while this tab is still sitting on
 /// the tracking page. Every button there would act on a fleet that no longer exists, so the page
 /// has to follow the fleet's own record rather than the route the user took to it.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_fleet_that_closes_under_the_page_goes_read_only() {
     use egui_kittest::kittest::Queryable as _;
@@ -6481,7 +6406,6 @@ fn uitest_a_fleet_that_closes_under_the_page_goes_read_only() {
 /// It did not: the write was recorded and the page stayed on the live one, still offering to kick
 /// pilots out of an in-game fleet that no longer existed. This drives the app's own backend and
 /// its own dispatcher, so it covers the whole path rather than any one piece of it.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_closing_a_fleet_lands_on_the_closed_view() {
     use crate::fleets::state::Page;
@@ -6553,7 +6477,6 @@ fn uitest_closing_a_fleet_lands_on_the_closed_view() {
 /// The fleet's named roles belong to the fleet, not to the ping that started it, so the settings
 /// panel lists them and can edit them. A closed fleet still shows who was on it: that record is
 /// what a participation correction is made against.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_settings_panel_lists_the_snowflakes() {
     use egui_kittest::kittest::Queryable as _;
@@ -6594,7 +6517,6 @@ fn uitest_the_settings_panel_lists_the_snowflakes() {
 /// The first version put that row after the right-to-left button group. That group claims the
 /// panel's whole height, so the row grew the action bar over the form and left one line of it on
 /// screen. The form's last control has to stay visible with the warning up.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_an_already_tracked_fc_cannot_start_again() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -6632,7 +6554,6 @@ fn uitest_an_already_tracked_fc_cannot_start_again() {
 /// Tags and snowflakes stay live, because they describe what the fleet was and who led it. Setup
 /// and comms are disabled rather than left editable behind an Apply that refuses them, and the
 /// MOTD checkbox is gone, since there is no in-game fleet left to carry one.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_closed_fleet_offers_only_its_record() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -6781,7 +6702,6 @@ fn uitest_an_empty_convos_list_still_offers_both_starts() {
 
 /// The Fleet Finder advert sits in the title row, green when it is up and yellow when it is off,
 /// and never pushes the title onto a second line. Nothing at all when it cannot be read.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_advert_shows_in_the_title_row() {
     use egui_kittest::kittest::Queryable as _;
@@ -6833,7 +6753,6 @@ fn uitest_the_advert_shows_in_the_title_row() {
 
 /// The rescue's op picker says when the chosen op's channel is taken, before anything is pinged
 /// onto it. A channel held by the fleet this app is running is expected, and says so quietly.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
     use egui_kittest::kittest::Queryable as _;
@@ -6905,7 +6824,6 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
 }
 
 /// Presets are identified by folder and name together, through the same actions the buttons use.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_preset_name_can_repeat_across_folders() {
     use crate::app::fleet_ui::FormAct;
@@ -6952,7 +6870,6 @@ fn uitest_a_preset_name_can_repeat_across_folders() {
 /// The rescue lists every preset tagged Capital Save, whatever folder it is in, and tells two with
 /// the same name apart by folder. Picking one sets the op from its channel's name: the channel id
 /// the preset stores is not the op number.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_rescue_lists_every_capital_save_preset() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -7034,7 +6951,6 @@ fn uitest_the_rescue_lists_every_capital_save_preset() {
 
 /// Presets and folders are ordered by dragging: a preset dropped on another goes just before it,
 /// and a folder dropped on another folder's heading goes just before that folder.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_presets_and_folders_reorder_by_dragging() {
     use egui_kittest::kittest::Queryable as _;
@@ -7140,7 +7056,6 @@ fn uitest_presets_and_folders_reorder_by_dragging() {
 ///
 /// It did neither: the draft was rebuilt from the rendering still held for the old op, and when
 /// the new one arrived nothing rebuilt it, so the old comms stayed until something else changed.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
     let draft = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -7218,7 +7133,6 @@ fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
 
 /// Starting a fleet has to land on that fleet, loaded. It set the page and asked for nothing, so
 /// the view sat on "Loading the fleet." until the FC opened it again from the list.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_starting_a_fleet_opens_it() {
     use crate::fleets::state::Page;
@@ -7256,7 +7170,6 @@ fn uitest_starting_a_fleet_opens_it() {
 
 /// "Join comms" is for someone else's fleet. On a fleet bossed by one of the account's own
 /// characters, alts included, the FC set those comms and is already in them.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_join_comms_is_not_offered_on_your_own_fleet() {
     use egui_kittest::kittest::Queryable as _;
@@ -7307,7 +7220,6 @@ fn uitest_join_comms_is_not_offered_on_your_own_fleet() {
 /// The off-doctrine clock counts on while no new snapshot arrives. It was measured against the
 /// snapshot's own time, so every pilot first seen in it read "just seen" until the dashboard next
 /// pushed, which on a quiet fleet is never.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
     use egui_kittest::kittest::Queryable as _;
@@ -7345,7 +7257,6 @@ fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
 
 /// Typing a name sends one search, for what was typed last, once the typing pauses. It sent one
 /// per keystroke, each on its own thread.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_name_search_waits_for_the_typing_to_pause() {
     use crate::app::fleet_ui::FormAct;
@@ -7613,7 +7524,6 @@ fn uitest_room_rows_offer_a_leave_button() {
     assert_eq!(leaves, 5, "expected one leave button per room row");
 
     // With Rescue Mode on, delve911 and skirmish_commanders are held open and offer no way out.
-    #[cfg(feature = "fleet")]
     {
     let mut pinned = all().into_iter().find(|s| s.name == "jabber_sidebar_rescue_pinned").expect("scene");
     let harness = harness::build(&mut pinned, false);
@@ -7698,7 +7608,6 @@ fn uitest_leave_buttons_hold_their_column_without_unread_counts() {
 
 /// The ping chips on the fleet map pick the capital the route goes to, the same selection the rescue
 /// panel works from.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_ping_chips_switch_the_route() {
     use egui_kittest::kittest::Queryable as _;
@@ -7716,7 +7625,6 @@ fn uitest_fleet_map_ping_chips_switch_the_route() {
 
 /// A closed fleet is its record: it opens on the last moment anyone was in it, not on the close
 /// when everyone had left, and has no Live button.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_closed_fleet_replays_its_record() {
     use egui_kittest::kittest::Queryable as _;
@@ -7730,7 +7638,6 @@ fn uitest_a_closed_fleet_replays_its_record() {
 
 /// A followed pilot the fleet never had is not a filter: the map falls back to the whole fleet
 /// and its timeline, rather than drawing nothing under a picker that reads "Whole fleet".
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_a_pilot_from_another_fleet_is_not_followed() {
     use egui_kittest::kittest::Queryable as _;
@@ -7743,7 +7650,6 @@ fn uitest_a_pilot_from_another_fleet_is_not_followed() {
 
 /// The sidebar's two tabs share its width evenly, and a system under Locations opens a dialog of
 /// who was there rather than expanding in place.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_tabs_and_system_dialog() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -7766,7 +7672,6 @@ fn uitest_fleet_map_tabs_and_system_dialog() {
 }
 
 /// Stepping back leaves Live for the last recorded change, and stepping on returns.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_steps_through_the_record() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -7783,7 +7688,6 @@ fn uitest_fleet_map_steps_through_the_record() {
 }
 
 /// A loss shows in the timeline with its pod on the same line, and a kill beside it.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_lists_kills_and_losses() {
     use egui_kittest::kittest::Queryable as _;
@@ -7861,7 +7765,6 @@ fn uitest_jabber_resize_keeps_the_bottom_message() {
 
 /// The pilot picker fills the sidebar without pushing it wider: sized from the panel exactly, the
 /// panel grew to fit it every frame until it reached its maximum.
-#[cfg(feature = "fleet")]
 #[test]
 fn uitest_fleet_map_picker_fills_the_sidebar_and_holds() {
     for name in ["fleet_map", "fleet_map_pilot"] {
@@ -7870,7 +7773,6 @@ fn uitest_fleet_map_picker_fills_the_sidebar_and_holds() {
 }
 
 /// `fleet_map_pilot` follows a pilot, which puts a ✕ beside the picker: the row that grew.
-#[cfg(feature = "fleet")]
 fn picker_holds(name: &str) {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 

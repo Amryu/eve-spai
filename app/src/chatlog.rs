@@ -13,7 +13,6 @@ pub struct ChatMessage {
 }
 
 /// The whole log: channel header and every message.
-#[cfg(feature = "fleet")]
 pub fn read(path: &Path) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     let (meta, messages, _) = read_tail(path, 0)?;
     Some((meta?, messages))
