@@ -339,6 +339,8 @@ struct Combatant {
     #[serde(default)]
     final_blow: bool,
     #[serde(default)]
+    damage_done: i64,
+    #[serde(default)]
     position: Option<Position>,
 }
 
@@ -724,6 +726,7 @@ fn attackers_of(
             ship: attacker_ship(a, ship_ids),
             pilot: pilot_of(a, names),
             final_blow: a.final_blow,
+            damage: a.damage_done,
         })
         .collect()
 }

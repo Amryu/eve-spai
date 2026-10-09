@@ -114,6 +114,7 @@ fn eng(kill_id: i64, time: i64, victim: (i64, &str), killer: (i64, &str)) -> Eng
             ship: 588,
             pilot: format!("Killer {kill_id}"),
             final_blow: true,
+            damage: 0,
         }],
         isk: 1_000_000.0,
         anchored: true,

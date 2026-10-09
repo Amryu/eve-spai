@@ -139,6 +139,9 @@ pub struct Attacker {
     pub ship: i64,
     pub pilot: String,
     pub final_blow: bool,
+    /// Damage done to the victim. 0 on kills stored before it was kept.
+    #[serde(default)]
+    pub damage: i64,
 }
 
 /// Capsule (pod) ship type ids: regular and the Genolution variant. A pod kill is folded
@@ -241,6 +244,9 @@ pub struct Participant {
     pub pilot: String,
     pub ship: i64,
     pub lost: Option<Lost>,
+    /// Damage the pilot did across the battle, on their first row only. 0 when unknown.
+    #[serde(default)]
+    pub damage: i64,
 }
 
 #[derive(Default, Clone)]
@@ -411,6 +417,7 @@ impl Battle {
                     pod_value: l.pod_value,
                     pod_ship: l.pod_ship,
                 }),
+                damage: 0,
             })
             .collect();
 
@@ -430,8 +437,21 @@ impl Battle {
                         pilot: a.pilot.clone(),
                         ship: a.ship,
                         lost: None,
+                        damage: 0,
                     });
                 }
+            }
+        }
+
+        let mut dealt: HashMap<i64, i64> = HashMap::new();
+        for e in &self.engagements {
+            for a in e.attackers.iter().filter(|a| a.char_id != 0) {
+                *dealt.entry(a.char_id).or_default() += a.damage;
+            }
+        }
+        for p in parts.iter_mut() {
+            if let Some(d) = dealt.remove(&p.char_id) {
+                p.damage = d;
             }
         }
 
@@ -1115,7 +1135,7 @@ mod tests {
     }
 
     fn atk(p: Party) -> Attacker {
-        Attacker { char_id: p.id, pilot: p.name.clone(), party: p, ship: 0, final_blow: false }
+        Attacker { char_id: p.id, pilot: p.name.clone(), party: p, ship: 0, final_blow: false, damage: 0 }
     }
 
     fn eng(kill: i64, time: i64, sys: i64, victim: &str, attacker: &str) -> Engagement {
@@ -1160,6 +1180,23 @@ mod tests {
         // Moves for another battle leave this one alone.
         let other = Overrides { side_moves: [(999, vec![(pid("Green"), 0)])].into(), ..Default::default() };
         assert_eq!(arranged(b.clone(), &other), b);
+    }
+
+    #[test]
+    fn a_pilots_damage_adds_up_across_the_battle_once() {
+        let mut e1 = eng(1, 0, 10, "Red", "Blue");
+        e1.attackers[0].damage = 300;
+        let mut e2 = eng(2, 30, 10, "Red", "Blue");
+        e2.kill_id = 2;
+        e2.victim_char = 77;
+        e2.attackers[0].damage = 200;
+        let b = preview_battle(vec![e1, e2], BATTLE_BREAK_SECS);
+        let blue = b.sides.iter().position(|s| s.parties[0].name == "Blue").unwrap();
+        let rows = b.roster(blue);
+        let dmg: i64 = rows.iter().map(|p| p.damage).sum();
+        assert_eq!(dmg, 500, "both kills' damage, counted once");
+        let old: Attacker = serde_json::from_str(r#"{"party":{"id":1,"name":"A","kind":"Alliance"},"char_id":1,"ship":0,"pilot":"a","final_blow":false}"#).unwrap();
+        assert_eq!(old.damage, 0, "kills stored before damage was kept still load");
     }
 
     #[test]
@@ -1210,6 +1247,7 @@ mod tests {
             party: party(pid(alliance), alliance),
             ship: 0,
             final_blow: false,
+            damage: 0,
         }
     }
 
