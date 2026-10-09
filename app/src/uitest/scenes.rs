@@ -8314,3 +8314,17 @@ fn uitest_merge_picks_cards_by_clicking_them() {
     assert!(merge_enabled(&h), "two picked, Merge ready");
     assert!(h.query_by_label_contains("Pick the battles").is_some(), "still merging, nothing opened");
 }
+
+/// The battle list's menu holds a text field: typing into it must not close the menu.
+#[test]
+fn uitest_the_battle_menu_stays_open_for_its_kill_field() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = battle_list_scene("battle_menu_probe", [1280.0, 800.0]);
+    let mut h = harness::build(&mut scene, false);
+    h.get_by_label("\u{e1fe}").click();
+    h.run_steps(3);
+    let field = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.accesskit_node().placeholder().unwrap_or_default().contains("zKill")).expect("the kill field");
+    field.click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Open JSON").is_some(), "still open after clicking into the field");
+}

@@ -2091,7 +2091,10 @@ impl SpaiApp {
             use egui_phosphor::regular as icon;
             // The scope, the filters and the menu claim their room first; the search takes the rest.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button(icon::DOTS_THREE, |ui| {
+                // Open until a click outside: it holds a text field and value fields.
+                let more = egui::containers::menu::MenuButton::new(icon::DOTS_THREE)
+                    .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+                let (more_resp, _) = more.ui(ui, |ui| {
                     if ui.button(format!("{}  Open JSON\u{2026}", icon::FOLDER_OPEN)).on_hover_text("Open a saved battle report").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("EVE Spai battle report", &["json"]).pick_file() {
                             to_load = Some(path);
@@ -2145,9 +2148,8 @@ impl SpaiApp {
                         self.battles_enabled_shared.store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
                         self.needs_save = true;
                     }
-                })
-                .response
-                .on_hover_text("Open, share, build and settings");
+                });
+                more_resp.on_hover_text("Open, share, build and settings");
                 let active = self.battle_filters_active();
                 let label = if active > 0 { format!("{}  Filters ({active})", icon::FUNNEL) } else { format!("{}  Filters", icon::FUNNEL) };
                 let menu = egui::containers::menu::MenuButton::new(label)
