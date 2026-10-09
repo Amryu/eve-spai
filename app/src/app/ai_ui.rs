@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ai::session::{AiHandle, CardState, Command, Turn};
+use crate::ai::links::{Link, Names};
 use crate::ai::tools::ActionKind;
 
 /// How often the tools' copy of the UI-thread state is refreshed when nothing else asks for it.
@@ -200,6 +201,13 @@ impl SpaiApp {
         }
 
         let mut card_click: Option<(u64, bool)> = None;
+        let mut link_click: Option<Link> = None;
+        if self.ai_ship_names.0 != self.ship_by_id.len() {
+            self.ai_ship_names = (self.ship_by_id.len(), self.ship_by_id.iter().map(|(id, n)| (n.clone(), *id)).collect());
+        }
+        let systems = self.systems.clone();
+        let ship_names = std::mem::take(&mut self.ai_ship_names);
+        let names = AppNames { systems: systems.as_deref(), ships: &ship_names.1 };
         egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show_inside(ui, |ui| {
             if turns.is_empty() {
                 self.ai_empty_state(ui);
@@ -212,7 +220,7 @@ impl SpaiApp {
                 for t in &turns {
                     ui.allocate_ui_with_layout(egui::vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(w);
-                        if let Some(c) = turn_ui(ui, t, w) {
+                        if let Some(c) = turn_ui(ui, t, w, &names, &mut link_click) {
                             card_click = Some(c);
                         }
                     });
@@ -221,6 +229,10 @@ impl SpaiApp {
             });
         });
 
+        self.ai_ship_names = ship_names;
+        if let Some(l) = link_click {
+            self.ai_open_link(l, ui.ctx());
+        }
         if let Some(text) = send.filter(|t| !t.trim().is_empty()) {
             handle.send(Command::Send { text, voice: false });
         }
@@ -230,6 +242,28 @@ impl SpaiApp {
                 let note = if applied { self.ai_apply(&card.action.kind, &card.action.summary) } else { format!("The user dismissed: {}", card.action.summary) };
                 handle.send(Command::ActionResult { id, applied, note });
             }
+        }
+    }
+
+    fn ai_open_link(&mut self, l: Link, ctx: &egui::Context) {
+        match l {
+            Link::System(id) => self.open_system(id),
+            Link::Ship(id) => self.open_ship(id),
+            Link::Pilot(name) => self.open_pilot(name, ctx),
+            Link::Kill(id) => self.open_killmail(id, None),
+            Link::Battle(kid) => {
+                self.battle_select_pending = Some((vec![kid], std::time::Instant::now()));
+                self.view = View::Battles;
+            }
+            Link::Fleet(id) if self.fleet_on() => self.fleet_show(crate::fleets::model::FleetId(id)),
+            Link::Fleet(_) => {}
+            Link::Chat(jid) => self.jabber_open(&jid, super::chat_tabs::ChatWinKey::Main),
+            Link::Pings => self.jabber_open(crate::jabber::PING_FEED_KEY, super::chat_tabs::ChatWinKey::Main),
+            Link::Wormholes(id) => {
+                self.wh_info = Some(id);
+                self.view = View::Wormholes;
+            }
+            Link::Url(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
         }
     }
 
@@ -257,7 +291,7 @@ impl SpaiApp {
 }
 
 /// One turn. Returns an action card's Apply (true) or Dismiss (false), by the card's id.
-fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32) -> Option<(u64, bool)> {
+fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Option<Link>) -> Option<(u64, bool)> {
     use egui_phosphor::regular as icon;
     let mut click = None;
     if t.user {
@@ -323,7 +357,9 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32) -> Option<(u64, bool)> {
         ui.add_space(4.0);
     }
     if !t.text.is_empty() {
-        render_text(ui, &t.text, w);
+        if let Some(l) = render_text(ui, &t.text, w, names) {
+            *link = Some(l);
+        }
     }
     if t.streaming && t.text.is_empty() {
         ui.horizontal(|ui| {
@@ -368,35 +404,91 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32) -> Option<(u64, bool)> {
     click
 }
 
-/// The model's text with the little markdown it uses: headings, bullets and **bold**.
-fn render_text(ui: &mut egui::Ui, text: &str, w: f32) {
+/// The model's text with the little markdown it uses (headings, bullets, **bold**), and its
+/// systems, ships and the things it linked made clickable. Returns the link clicked.
+fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Option<Link> {
+    let mut clicked = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
             ui.add_space(4.0);
             continue;
         }
-        if let Some(h) = trimmed.strip_prefix("### ").or_else(|| trimmed.strip_prefix("## ")).or_else(|| trimmed.strip_prefix("# ")) {
-            ui.label(egui::RichText::new(h).strong());
-            continue;
-        }
-        let (bullet, body) = match trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            Some(b) => (true, b),
+        let (heading, body) = match trimmed.strip_prefix("### ").or_else(|| trimmed.strip_prefix("## ")).or_else(|| trimmed.strip_prefix("# ")) {
+            Some(h) => (true, h),
             None => (false, trimmed),
         };
-        let mut job = egui::text::LayoutJob::default();
+        let (bullet, body) = match body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")) {
+            Some(b) if !heading => (true, b),
+            _ => (false, body),
+        };
         let font = egui::TextStyle::Body.resolve(ui.style());
         let normal = ui.visuals().text_color();
         let strong = ui.visuals().strong_text_color();
+        let link_col = ui.visuals().hyperlink_color;
+        let mut job = egui::text::LayoutJob::default();
         if bullet {
             job.append("\u{2022}  ", 0.0, egui::TextFormat::simple(font.clone(), normal));
         }
-        for (i, part) in body.split("**").enumerate() {
-            let col = if i % 2 == 1 { strong } else { normal };
-            job.append(&part.replace('`', ""), 0.0, egui::TextFormat::simple(font.clone(), col));
+        // Char ranges of the links, for finding the one under the pointer.
+        let mut ranges: Vec<(std::ops::Range<usize>, Link)> = Vec::new();
+        let mut chars = job.text.chars().count();
+        for sp in crate::ai::links::spans(body, names) {
+            let n = sp.text.chars().count();
+            let mut fmt = egui::TextFormat::simple(font.clone(), if sp.bold || heading { strong } else { normal });
+            if let Some(l) = sp.link {
+                fmt.color = link_col;
+                ranges.push((chars..chars + n, l));
+            }
+            job.append(&sp.text, 0.0, fmt);
+            chars += n;
         }
         job.wrap.max_width = w;
-        ui.add(egui::Label::new(job));
+        let sense = if ranges.is_empty() { egui::Sense::hover() } else { egui::Sense::click() };
+        let (pos, galley, resp) = egui::Label::new(job).sense(sense).layout_in_ui(ui);
+        let under = resp
+            .hover_pos()
+            .map(|p| galley.cursor_from_pos(p - pos).index)
+            .and_then(|i| ranges.iter().find(|(r, _)| r.contains(&i)).map(|(_, l)| l.clone()));
+        ui.painter().galley(pos, galley, normal);
+        if let Some(l) = under {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let resp = resp.on_hover_text(link_hint(&l));
+            if resp.clicked() {
+                clicked = Some(l);
+            }
+        }
+    }
+    clicked
+}
+
+fn link_hint(l: &Link) -> &'static str {
+    match l {
+        Link::System(_) => "Open system info",
+        Link::Ship(_) => "Open ship info",
+        Link::Pilot(_) => "Open pilot",
+        Link::Kill(_) => "Open the killmail",
+        Link::Battle(_) => "Open the battle report",
+        Link::Fleet(_) => "Open the fleet",
+        Link::Chat(_) => "Open the conversation",
+        Link::Pings => "Open the ping feed",
+        Link::Wormholes(_) => "Show its wormholes",
+        Link::Url(_) => "Open in the browser",
+    }
+}
+
+/// System and ship names as the game spells them.
+pub(crate) struct AppNames<'a> {
+    pub systems: Option<&'a crate::geo::Systems>,
+    pub ships: &'a std::collections::HashMap<String, i64>,
+}
+
+impl Names for AppNames<'_> {
+    fn system(&self, name: &str) -> Option<i64> {
+        self.systems?.lookup(name).filter(|i| i.name == name).map(|i| i.id)
+    }
+    fn ship(&self, name: &str) -> Option<i64> {
+        self.ships.get(name).copied()
     }
 }
 

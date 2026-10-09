@@ -163,6 +163,20 @@ impl SpaiApp {
         ctx.request_repaint_after(ADVERT_POLL);
     }
 
+    /// Shows one fleet in the Fleet tab, followed live while it runs.
+    pub(crate) fn fleet_show(&mut self, id: crate::fleets::model::FleetId) {
+        let running = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            let running = [&st.active_strat.value, &st.active_pct.value].into_iter().flatten().flatten().any(|r| r.id == id);
+            running
+        };
+        let page = if running { Page::Tracking(id) } else { Page::Historic(id) };
+        self.fleet_gen.page += 1;
+        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).page = page.clone();
+        self.fleet_refresh_fresh(&page);
+        self.view = View::Fleet;
+    }
+
     /// Re-reads a fleet that opened with nothing in it.
     ///
     /// A fleet closed from this app is opened again immediately, and the dashboard generates its
