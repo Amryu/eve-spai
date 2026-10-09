@@ -253,7 +253,7 @@ pub fn delete(base: &str, bearer: &str, id: &str) -> DeleteOutcome {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub enum ShareStatus {
     #[default]
     Idle,

@@ -122,6 +122,8 @@ pub enum Status {
     #[default]
     Idle,
     Working,
+    /// Made or updated: its link.
+    Done(String),
     Failed(String),
 }
 
@@ -141,7 +143,7 @@ pub fn spawn(b: Battle, saved: Option<Saved>, anchor: i64, status: Shared, ctx: 
                 if let Ok(store) = crate::store::Store::open() {
                     store.evetools_save(anchor, &s);
                 }
-                Status::Idle
+                Status::Done(s.url())
             }
             Err(e) => Status::Failed(e),
         };
