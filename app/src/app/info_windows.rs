@@ -71,57 +71,66 @@ impl SpaiApp {
                 }
             };
             let mut edit_notes = false;
+            // The name gives way to the icons on its right, cut with an ellipsis, whole on hover.
             ui.horizontal(|ui| {
-                ui.label(security_badge(info.security));
-                ui.heading(&info.name);
-                let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
-                let marked = self.settings.bookmarks.contains(&id);
-                let icon = egui::RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
-                    .size(18.0)
-                    .color(if marked { teal } else { ui.visuals().weak_text_color() });
-                if ui
-                    .add(egui::Button::new(icon).frame(false))
-                    .on_hover_text(if marked { "Remove bookmark" } else { "Bookmark this system" })
-                    .clicked()
-                {
-                    if marked {
-                        self.settings.bookmarks.retain(|&b| b != id);
-                    } else {
-                        self.settings.bookmarks.push(id);
-                    }
-                    self.needs_save = true;
-                }
-                let noted = self.notes_view.system(id).is_some();
-                let pencil = egui::RichText::new(egui_phosphor::regular::NOTE_PENCIL)
-                    .size(18.0)
-                    .color(if noted { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() });
-                if ui.add(egui::Button::new(pencil).frame(false)).on_hover_text("Notes and tags").clicked() {
-                    edit_notes = true;
-                }
-                if docked {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if docked {
                         if ui.button(egui_phosphor::regular::X).on_hover_text("Close").clicked() {
                             close = true;
                         }
                         if ui.button(egui_phosphor::regular::ARROW_SQUARE_OUT).on_hover_text("Open in its own window").clicked() {
                             pop_out = true;
                         }
-                        if let Some(adm) = flags.adm {
-                            ui.label(
-                                egui::RichText::new(format!("ADM {adm:.1}")).color(adm_color(adm)).strong(),
-                            )
-                            .on_hover_text("Activity Defense Multiplier");
+                    }
+                    let noted = self.notes_view.system(id).is_some();
+                    let pencil = egui::RichText::new(egui_phosphor::regular::NOTE_PENCIL)
+                        .size(18.0)
+                        .color(if noted { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() });
+                    if ui.add(egui::Button::new(pencil).frame(false)).on_hover_text("Notes and tags").clicked() {
+                        edit_notes = true;
+                    }
+                    let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
+                    let marked = self.settings.bookmarks.contains(&id);
+                    let icon = egui::RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
+                        .size(18.0)
+                        .color(if marked { teal } else { ui.visuals().weak_text_color() });
+                    if ui
+                        .add(egui::Button::new(icon).frame(false))
+                        .on_hover_text(if marked { "Remove bookmark" } else { "Bookmark this system" })
+                        .clicked()
+                    {
+                        if marked {
+                            self.settings.bookmarks.retain(|&b| b != id);
+                        } else {
+                            self.settings.bookmarks.push(id);
                         }
-                        if let Some(aid) = flags.sov_alliance {
-                            let url = eve_alliance_logo_url(aid, 28.0);
-                            let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
-                            if let Some(sov) = &flags.sov {
-                                r.on_hover_text(sov);
-                            }
-                        }
+                        self.needs_save = true;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(security_badge(info.security));
+                        ui.add(egui::Label::new(egui::RichText::new(&info.name).heading()).truncate()).on_hover_text(&info.name);
                     });
-                }
+                });
             });
+            // Who holds it and how hard, on a line of its own so the name keeps its room.
+            if flags.sov_alliance.is_some() || flags.adm.is_some() {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(adm) = flags.adm {
+                            ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(adm_color(adm)).strong())
+                                .on_hover_text("Activity Defense Multiplier (ESI gives only the total)");
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if let Some(aid) = flags.sov_alliance {
+                                ui.add(egui::Image::new(eve_alliance_logo_url(aid, 24.0)).fit_to_exact_size(egui::Vec2::splat(24.0)));
+                            }
+                            if let Some(sov) = &flags.sov {
+                                ui.add(egui::Label::new(egui::RichText::new(sov).weak()).truncate()).on_hover_text(sov);
+                            }
+                        });
+                    });
+                });
+            }
             if edit_notes {
                 self.note_editor_pending = Some(crate::notes::Subject::System(id));
             }
@@ -135,38 +144,6 @@ impl SpaiApp {
                         }
                     });
                 }
-            }
-            if !docked && (flags.sov_alliance.is_some() || flags.adm.is_some()) {
-                egui::Area::new(egui::Id::new("sys_sov"))
-                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
-                    .order(egui::Order::Foreground)
-                    .show(ui.ctx(), |ui| {
-                        ui.vertical_centered(|ui| {
-                            if let Some(aid) = flags.sov_alliance {
-                                let url = eve_alliance_logo_url(aid, 64.0);
-                                let r = ui.add(
-                                    egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(64.0)),
-                                );
-                                if let Some(sov) = &flags.sov {
-                                    r.on_hover_text(sov);
-                                }
-                            }
-                            if let Some(adm) = flags.adm {
-                                let col = if adm >= 5.0 {
-                                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
-                                } else if adm >= 3.0 {
-                                    crate::theme::standing::WARNING
-                                } else {
-                                    crate::theme::standing::HOSTILE
-                                };
-                                ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
-                                    .on_hover_text(
-                                        "Activity Defense Multiplier (ESI gives only the \
-                                         total, not the military/industry/strategic split)",
-                                    );
-                            }
-                        });
-                    });
             }
             system_chips_ex(ui, &self.systems, &status, id, false, false);
             ui.horizontal_wrapped(|ui| {
@@ -256,21 +233,25 @@ impl SpaiApp {
                 self.camp_line(ui, info.id);
                 if let Some(rp) = crate::rats::rat_profile(&info.region) {
                     ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
-                        ui.label(egui::RichText::new(rp.faction).strong());
+                    ui.label(egui::RichText::new(format!("{}  Rats", egui_phosphor::regular::SKULL)).weak())
+                        .on_hover_text("Tank against what they deal, shoot what they are weak to");
+                    egui::Grid::new("sys_rats").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+                        let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                            ui.label(egui::RichText::new(k).weak());
+                            ui.add(egui::Label::new(&v).truncate()).on_hover_text(&v);
+                            ui.end_row();
+                        };
+                        row(ui, "Faction", rp.faction.to_string());
+                        ui.label(egui::RichText::new("Deal").weak());
+                        damage_types_ui(ui, &rp.deal);
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Weak to").weak());
+                        damage_types_ui(ui, &rp.weak);
+                        ui.end_row();
+                        if rp.ewar != "None" {
+                            row(ui, "EWAR", rp.ewar.to_string());
+                        }
                     });
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Deals {} / {}   ·   weak to {} / {}",
-                            rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
-                        ))
-                        .weak(),
-                    )
-                    .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
-                    if rp.ewar != "None" {
-                        ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
-                    }
                 }
                 self.wormhole_section(ui, id);
                 let upgrades: Vec<&str> = self
@@ -312,7 +293,8 @@ impl SpaiApp {
                 }
                 drop(state);
 
-                ui.label(egui::RichText::new("Neighbours").strong());
+                ui.separator();
+                ui.label(egui::RichText::new("Neighbours").weak());
                 ui.horizontal_wrapped(|ui| {
                     for &nid in graph.neighbors(id) {
                         if let Some(ni) = graph.info_of(nid) {
