@@ -117,7 +117,6 @@ fn overlay_on() -> bool {
 /// delve911 covers a titan bridge out of staging. Past this the fleet can't be dropped on the
 /// target at all, which changes the answer from "form up" to "sorry".
 /// Titan base jump range is 3.0 ly (live SDE), doubled by Jump Drive Calibration V.
-#[cfg(feature = "fleet")]
 const DELVE911_RANGE_LY: f64 = 6.0;
 
 /// The jump-off system a titan can bridge to from `stage_pos` that leaves the fleet the fewest
@@ -128,7 +127,6 @@ const DELVE911_RANGE_LY: f64 = 6.0;
 /// Falls back to the lightyear-nearest candidate when nothing in range can reach the target within
 /// `max_jumps`, so the out-of-range warning still names a system and reports no route rather than
 /// disappearing.
-#[cfg(feature = "fleet")]
 fn best_jump_off<'a>(
     systems: &crate::geo::Systems,
     coords: &'a [crate::store::MapSystem],
@@ -159,7 +157,6 @@ fn best_jump_off<'a>(
 }
 
 /// Target sits outside titan range of staging: how far out, and the best jump-off system.
-#[cfg(feature = "fleet")]
 struct RangeWarning {
     ly_from_staging: f64,
     closest_name: String,
@@ -288,10 +285,9 @@ mod sig_browser;
 mod scanner;
 mod battles_ui;
 pub(crate) mod fleet_ui;
-#[cfg(feature = "fleet")]
 pub(crate) mod fleet_map;
 mod rescue_ui;
-#[cfg(all(test, feature = "fleet"))]
+#[cfg(test)]
 pub(crate) use rescue_ui::ping_timer_row;
 pub(crate) use settings_ui::TestIntel;
 mod jabber_ui;
@@ -826,14 +822,10 @@ pub struct SpaiApp {
     /// creation, so it is asked for once the window is back on its monitor.
     main_maximize: Option<u32>,
     /// The rescue window: whether its saved geometry went to the builder yet, and its position fix.
-    #[cfg(feature = "fleet")]
     rescue_geom_applied: bool,
-    #[cfg(feature = "fleet")]
     rescue_pos_fix: Option<alert_window::PosFix>,
     /// How far the tackled capital is from staging, once worked out.
-    #[cfg(feature = "fleet")]
     rescue_ly: Option<f64>,
-    #[cfg(feature = "fleet")]
     rescue_map_view: rescue_ui::RescueMapView,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
@@ -926,153 +918,103 @@ pub struct SpaiApp {
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
     revivals: crate::watcher::SharedRevivals,
-    #[cfg(feature = "fleet")]
     fleet: std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>>,
     /// Answers the tab's questions. A dry run today, an HTTP client later, same trait.
-    #[cfg(feature = "fleet")]
     fleet_backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
-    #[cfg(feature = "fleet")]
     fleet_login: crate::fleets::login::SharedLogin,
     /// The last answer to "is this account a commander", from the share thread's check.
-    #[cfg(feature = "fleet")]
     fleet_unlock_check: std::sync::Arc<std::sync::Mutex<Option<crate::fleets::unlock::Check>>>,
-    #[cfg(feature = "fleet")]
     fleet_unlock_asked: Option<std::time::Instant>,
     /// Why fleet command is still locked, or that its session ran out.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_unlock_note: Option<String>,
     /// The server's full text behind a failed fleet-boss check, while its dialog is open.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_boss_detail: Option<String>,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_snowflakes_open: Option<crate::app::fleet_ui::SnowflakeTarget>,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_migrate_open: bool,
     /// The fleet whose push stream is open, and the flag that stops its thread.
-    #[cfg(feature = "fleet")]
     fleet_hub: Option<(crate::fleets::model::FleetId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     /// Set once a backend has said it has no hub, so the app stops trying and keeps polling.
-    #[cfg(feature = "fleet")]
     fleet_hub_unavailable_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// A fleet to re-read, when to try next and how many tries are left.
-    #[cfg(feature = "fleet")]
     fleet_reopen: Option<(crate::fleets::model::FleetId, std::time::Instant, u8)>,
     /// When the open fleet's Fleet Finder advert was last asked about.
-    #[cfg(feature = "fleet")]
     fleet_advert_at: Option<(crate::fleets::model::FleetId, std::time::Instant)>,
     /// A character search waiting for the typing to pause, and when it is due.
-    #[cfg(feature = "fleet")]
     fleet_search_pending: Option<(String, std::time::Instant)>,
     /// Short link to the `mumble://` link its page points at, filled in the background, with when
     /// it was last asked. `None` is one in flight or one that failed; a failure is retried after
     /// `COMMS_RETRY`, because gnf.lt answers some requests with an empty 400 and the next one fine.
-    #[cfg(feature = "fleet")]
     pub(crate) comms_resolved: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<String, (Option<String>, std::time::Instant)>>,
     >,
     /// Which boost's breakdown is open, by charge name.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_boost_detail: Option<String>,
     /// `preset/op` the rescue last asked the dashboard to render, so it asks once per change.
-    #[cfg(feature = "fleet")]
     pub(crate) rescue_preview_key: Option<String>,
-    #[cfg(feature = "fleet")]
     pub(crate) rescue_preview_at: Option<std::time::Instant>,
     /// `(index, label, folder)` of the preset being renamed.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_preset_rename: Option<(usize, String, String)>,
     /// Whether the docked chat beside the fleet form is expanded, and which room it shows.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_chat_open: bool,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_chat_tab: u8,
     /// What the FC has typed into the docked chat, per room.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_chat_draft: [String; 2],
     /// The last ping posted to Jabber: (group, body, when). Guards against a double click
     /// putting the same ping into skirmish_commanders twice.
-    #[cfg(feature = "fleet")]
     fleet_last_ping: Option<(String, String, std::time::Instant)>,
     /// When the fleet-boss check was last asked for, so the refresh button cannot be held down.
-    #[cfg(feature = "fleet")]
     fleet_boss_asked: Option<std::time::Instant>,
-    #[cfg(feature = "fleet")]
     fleet_channels_at: Option<std::time::Instant>,
     /// One channel for the whole tab: several commands are in flight at once, so a single slot the
     /// way the web server's start does it would not do.
-    #[cfg(feature = "fleet")]
     fleet_tx: std::sync::mpsc::Sender<(crate::fleets::state::Gen, crate::fleets::state::Outcome)>,
-    #[cfg(feature = "fleet")]
     fleet_rx: std::sync::mpsc::Receiver<(crate::fleets::state::Gen, crate::fleets::state::Outcome)>,
     /// Bumped on every navigation, so a result for a page the user has left is dropped.
-    #[cfg(feature = "fleet")]
     fleet_gen: crate::fleets::state::Gen,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_booted: bool,
     /// When the form's next preview is due, so typing does not spawn a worker per keystroke.
-    #[cfg(feature = "fleet")]
     fleet_preview_at: Option<std::time::Instant>,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_journal_open: bool,
     /// When the tracked fleet's boost channel was last read off disk.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_boosts_read: Option<std::time::Instant>,
     /// Built for a screenshot or an assertion, so nothing may reach the real profile or its logs.
-    #[cfg(feature = "fleet")]
     pub(crate) headless: bool,
     /// The per-doctrine boost editor window is open.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_boost_editor: bool,
     /// The tracked fleet's settings sidebar is open.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_sidebar_open: bool,
     /// The Quick Fleet preset picker is open.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_quick_open: bool,
     /// Where Mumble last said it was, as a `mumble://` URL.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_mumble_at: Option<String>,
-    #[cfg(feature = "fleet")]
     fleet_mumble_asked: Option<std::time::Instant>,
-    #[cfg(feature = "fleet")]
     fleet_mumble_tx: std::sync::mpsc::Sender<Option<String>>,
-    #[cfg(feature = "fleet")]
     fleet_mumble_rx: std::sync::mpsc::Receiver<Option<String>>,
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_map: fleet_map::FleetMapView,
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_br: fleet_map::FleetBr,
     /// Fleets whose movement is being recorded, each on its own thread.
-    #[cfg(feature = "fleet")]
     fleet_trackers: std::collections::HashMap<
         crate::fleets::model::FleetId,
         (std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>),
     >,
-    #[cfg(feature = "fleet")]
     fleet_tracks_resumed: bool,
     /// A destructive action waiting to be confirmed: which fleet, what, and how much of the fleet
     /// it takes with it.
-    #[cfg(feature = "fleet")]
     pub(crate) fleet_confirm: Option<(
         crate::fleets::model::FleetId,
         crate::fleets::backend::Action,
         &'static str,
         usize,
     )>,
-    #[cfg(feature = "fleet")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
-    #[cfg(feature = "fleet")]
     rescue_feed_cursor: u64,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
     /// can resolve a hull named in a ping without rebuilding the map.
-    #[cfg(feature = "fleet")]
     ship_groups: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
     /// Timestamp of the newest delve911 jabber message already parsed into `rescue`.
-    #[cfg(feature = "fleet")]
     delve911_cursor: i64,
     notes: std::sync::Arc<crate::notes::NoteBook>,
     /// What `notes` means right now, rebuilt on every edit and shared with the alert engine.
@@ -1084,23 +1026,18 @@ pub struct SpaiApp {
     /// Set where `self` is still borrowed; opened on the next frame.
     note_editor_pending: Option<crate::notes::Subject>,
     /// Every system's 3D position, for the titan-range check. Loaded once with the SDE.
-    #[cfg(feature = "fleet")]
     map_coords: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
     /// (staging, target) the cached range check was computed for.
-    #[cfg(feature = "fleet")]
     rescue_range_for: Option<(i64, i64)>,
     /// Set when the target sits outside titan range of staging.
-    #[cfg(feature = "fleet")]
     rescue_range: Option<RangeWarning>,
     /// The ping and capital whose route last went to the FC's character by itself, so each goes
     /// once.
-    #[cfg(feature = "fleet")]
     rescue_routed_for: Option<(u64, i64)>,
     /// Cyno-generator list editing. Not rescue-gated: the generator map overlay is useful on its own.
     rescue_cyno_input: String,
     cyno_generators_open: bool,
     /// Set true to arm rescue mode (a delve911 ping arrived); the banner offers 1-click entry.
-    #[cfg(feature = "fleet")]
     rescue_armed: bool,
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
@@ -1135,9 +1072,7 @@ impl SpaiApp {
     /// state still runs, so the resulting app renders the same as a live one.
     pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
         crate::theme::install_fonts(ctx);
-        #[cfg(feature = "fleet")]
         let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
-        #[cfg(feature = "fleet")]
         let fleet_mumble = std::sync::mpsc::channel();
 
         if !headless {
@@ -1437,7 +1372,6 @@ impl SpaiApp {
         let popouts = popouts_from_cfg(&settings.jabber_popout_windows);
         // Read out before `settings` moves into the struct below.
         let (main_tabs, main_active) = restored_main_tabs(&settings);
-        #[cfg(feature = "fleet")]
         let fleet_backend_at_start = crate::fleets::choose_backend(headless, &settings);
         // Put back where it was even when it was maximized, so it maximizes on that monitor.
         let main_pos_fix_at =
@@ -1774,13 +1708,9 @@ impl SpaiApp {
             map_leg_kinds: Vec::new(),
             main_pos_fix: main_pos_fix_at,
             main_maximize: main_maximize_at,
-            #[cfg(feature = "fleet")]
             rescue_geom_applied: false,
-            #[cfg(feature = "fleet")]
             rescue_pos_fix: None,
-            #[cfg(feature = "fleet")]
             rescue_ly: None,
-            #[cfg(feature = "fleet")]
             rescue_map_view: Default::default(),
             map_route_zone: None,
             scan_route: Default::default(),
@@ -1859,107 +1789,57 @@ impl SpaiApp {
             activity,
             sightings,
             revivals,
-            #[cfg(feature = "fleet")]
             fleet: std::sync::Arc::new(std::sync::Mutex::new(crate::fleets::FleetState::default())),
-            #[cfg(feature = "fleet")]
             fleet_backend: fleet_backend_at_start,
-            #[cfg(feature = "fleet")]
             fleet_login: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_unlock_check: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_unlock_asked: None,
-            #[cfg(feature = "fleet")]
             fleet_unlock_note: None,
-            #[cfg(feature = "fleet")]
             fleet_boss_detail: None,
-            #[cfg(feature = "fleet")]
             fleet_snowflakes_open: None,
-            #[cfg(feature = "fleet")]
             fleet_migrate_open: false,
-            #[cfg(feature = "fleet")]
             fleet_hub: None,
-            #[cfg(feature = "fleet")]
             fleet_hub_unavailable_flag: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_reopen: None,
-            #[cfg(feature = "fleet")]
             fleet_advert_at: None,
-            #[cfg(feature = "fleet")]
             fleet_search_pending: None,
-            #[cfg(feature = "fleet")]
             comms_resolved: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_boost_detail: None,
-            #[cfg(feature = "fleet")]
             rescue_preview_key: None,
-            #[cfg(feature = "fleet")]
             rescue_preview_at: None,
-            #[cfg(feature = "fleet")]
             fleet_preset_rename: None,
-            #[cfg(feature = "fleet")]
             fleet_chat_open: true,
-            #[cfg(feature = "fleet")]
             fleet_chat_tab: 0,
-            #[cfg(feature = "fleet")]
             fleet_chat_draft: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_last_ping: None,
-            #[cfg(feature = "fleet")]
             fleet_boss_asked: None,
-            #[cfg(feature = "fleet")]
             fleet_channels_at: None,
-            #[cfg(feature = "fleet")]
             fleet_tx,
-            #[cfg(feature = "fleet")]
             fleet_rx,
-            #[cfg(feature = "fleet")]
             fleet_gen: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_booted: false,
-            #[cfg(feature = "fleet")]
             fleet_preview_at: None,
-            #[cfg(feature = "fleet")]
             fleet_journal_open: false,
-            #[cfg(feature = "fleet")]
             fleet_boosts_read: None,
-            #[cfg(feature = "fleet")]
             headless,
-            #[cfg(feature = "fleet")]
             fleet_boost_editor: false,
             // Open by default: what a fleet flies and where it talks is the first thing checked
             // on a fleet that is already up.
-            #[cfg(feature = "fleet")]
             fleet_sidebar_open: true,
-            #[cfg(feature = "fleet")]
             fleet_quick_open: false,
-            #[cfg(feature = "fleet")]
             fleet_mumble_at: None,
-            #[cfg(feature = "fleet")]
             fleet_mumble_asked: None,
-            #[cfg(feature = "fleet")]
             fleet_mumble_tx: fleet_mumble.0,
-            #[cfg(feature = "fleet")]
             fleet_mumble_rx: fleet_mumble.1,
-            #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_map: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_br: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_trackers: Default::default(),
-            #[cfg(feature = "fleet")]
             fleet_tracks_resumed: false,
-            #[cfg(feature = "fleet")]
             fleet_confirm: None,
-            #[cfg(feature = "fleet")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
-            #[cfg(feature = "fleet")]
             rescue_feed_cursor: 0,
-            #[cfg(feature = "fleet")]
             ship_groups: None,
-            #[cfg(feature = "fleet")]
             delve911_cursor: 0,
             notes_view,
             notes,
@@ -1967,17 +1847,12 @@ impl SpaiApp {
             note_editor: None,
             notes_manager: None,
             note_editor_pending: None,
-            #[cfg(feature = "fleet")]
             map_coords: None,
-            #[cfg(feature = "fleet")]
             rescue_range_for: None,
-            #[cfg(feature = "fleet")]
             rescue_range: None,
-            #[cfg(feature = "fleet")]
             rescue_routed_for: None,
             rescue_cyno_input: String::new(),
             cyno_generators_open: false,
-            #[cfg(feature = "fleet")]
             rescue_armed: false,
         };
         app.tab_set().normalize();
@@ -1985,16 +1860,10 @@ impl SpaiApp {
     }
 
     /// Fleet command is compiled in everywhere, but only for dashboard-confirmed commanders.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_unlocked(&self) -> bool {
         self.settings.fleet_unlock.as_ref().is_some_and(|u| {
                 crate::clock::utc().timestamp() - u.verified_at < crate::fleets::unlock::GRACE_SECS
             })
-    }
-
-    #[cfg(not(feature = "fleet"))]
-    pub(crate) fn fleet_unlocked(&self) -> bool {
-        false
     }
 
     /// The fleet dashboard: unlocked and switched on.
@@ -2353,7 +2222,6 @@ impl SpaiApp {
 
         // Seed the rescue selectors from persisted settings before the window reads them, and turn
         // the old cap-save template into a fleet preset the first time this build runs.
-        #[cfg(feature = "fleet")]
         {
             // Straight off disk rather than out of `FleetState`, whose seed is still the
             // invented one this early: the migration matches old doctrine names against the real
@@ -2376,7 +2244,6 @@ impl SpaiApp {
         // SDE ship name (lowercased) -> group, so a ping naming a specific hull resolves to a
         // capital class (e.g. "Phoenix Navy Issue" -> Dreadnought). Built outside the chat-log
         // branch: the jabber delve911 ingest needs it even with no EVE log directory configured.
-        #[cfg(feature = "fleet")]
         let ship_groups = std::sync::Arc::new(
             store
                 .all_ships()
@@ -2384,7 +2251,6 @@ impl SpaiApp {
                 .map(|(_, name, group)| (name.to_lowercase(), group))
                 .collect::<std::collections::HashMap<String, String>>(),
         );
-        #[cfg(feature = "fleet")]
         {
             self.ship_groups = Some(ship_groups.clone());
             if self.map_coords.is_none() {
@@ -3189,7 +3055,7 @@ impl SpaiApp {
     /// The only staging system the app knows is rescue mode's, which a build without it cannot
     /// configure, so its default must not surface there.
     fn staging_system(&self) -> Option<&str> {
-        (cfg!(feature = "fleet") && self.settings.fc_rescue_enabled)
+        (true && self.settings.fc_rescue_enabled)
             .then_some(self.settings.rescue_staging_system.as_str())
     }
 
@@ -3352,7 +3218,6 @@ impl SpaiApp {
     ///
     /// The generation bump orphans every read still in flight from the old backend, and the state
     /// is rebuilt so the journal cannot carry a dry-run record into a live session.
-    #[cfg(feature = "fleet")]
     pub(crate) fn fleet_set_backend(
         &mut self,
         backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
@@ -3367,14 +3232,14 @@ impl SpaiApp {
         self.fleet_booted = false;
     }
 
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_mode_for_test(&self) -> crate::fleets::backend::Mode {
         self.fleet_backend.mode()
     }
 
     /// The backend the app itself would call, so a test can drive the real path instead of
     /// standing up a second one beside it.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_backend_for_test(
         &self,
     ) -> &std::sync::Arc<dyn crate::fleets::backend::FleetBackend> {
@@ -3382,33 +3247,33 @@ impl SpaiApp {
     }
 
     /// Sends one action against whatever fleet the page is on, the way a button would.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_act_for_test(&mut self, action: crate::fleets::backend::Action) {
         let page = self.fleet.lock().unwrap().page.clone();
         let id = page.fleet().cloned().expect("no fleet on this page");
         self.fleet_dispatch(crate::fleets::state::Cmd::Act(id, action));
     }
 
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_collect_for_test(&mut self) {
         self.fleet_collect();
     }
 
     /// The re-read a freshly closed fleet needs, which the fleet tab normally drives per frame.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_reopen_poll_for_test(&mut self) {
         let ctx = self.ui_ctx.clone();
         self.fleet_reopen_poll(&ctx);
     }
 
     /// Applies a start-form action the way a click would, for a test of what it does.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_apply_form_for_test(&mut self, act: crate::app::fleet_ui::FormAct) {
         self.fleet_apply_form(act);
     }
 
     /// The character search waiting for the typing to pause, if any.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_search_pending_for_test(&self) -> Option<String> {
         self.fleet_search_pending.as_ref().map(|(v, _)| v.clone())
     }
@@ -3420,7 +3285,7 @@ impl SpaiApp {
     }
 
     /// The fleet tab's shared state, so a scene can fill it the way the workers would.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn fleet_state_for_test(
         &self,
     ) -> &std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>> {
@@ -3428,14 +3293,14 @@ impl SpaiApp {
     }
 
     /// A map graph and its coordinates, as the SDE load would leave them.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn seed_map_world(&mut self, systems: crate::geo::Systems, coords: Vec<crate::store::MapSystem>) {
         self.systems = Some(std::sync::Arc::new(systems));
         self.map_coords = Some(std::sync::Arc::new(coords));
     }
 
     /// The rescue panel's shared state, so a scene can put a ping in it the way the watcher would.
-    #[cfg(all(test, feature = "fleet"))]
+    #[cfg(test)]
     pub(crate) fn rescue_state_for_test(
         &self,
     ) -> &std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>> {
@@ -3860,15 +3725,10 @@ impl SpaiApp {
     /// [`Self::root_chrome`]: the harness can only reach them without the poll/side-effect
     /// prologue.
     pub(crate) fn root_dialogs(&mut self, ctx: &egui::Context, jframe: Option<&JabberFrame>) {
-        #[cfg(feature = "fleet")]
         self.fleet_boss_detail_window(ctx);
-        #[cfg(feature = "fleet")]
         self.fleet_snowflakes_window(ctx);
-        #[cfg(feature = "fleet")]
         self.fleet_migrate_window(ctx);
-        #[cfg(feature = "fleet")]
         self.fleet_boost_detail_window(ctx);
-        #[cfg(feature = "fleet")]
         self.fleet_preset_rename_window(ctx);
         self.intel_channels_window(ctx);
         self.jump_bridges_window(ctx);
@@ -3909,11 +3769,9 @@ impl SpaiApp {
             self.jabber_popout_windows(ctx, f);
         }
         self.cyno_generators_window(ctx);
-        #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled && self.settings.rescue_popped && self.rescue_on() {
             self.rescue_popout_window(ctx);
         }
-        #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled {
             // The feature being on is the mode. `active` still gates the pollers, and nothing else
             // sets it, so the fleet poller would otherwise wait forever.
@@ -3964,13 +3822,10 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut ft = crate::frametime::FrameTimer::start();
         let ctx = ui.ctx().clone();
-        #[cfg(feature = "fleet")]
         self.fleet_boot_once();
         ft.mark("fleet_boot_once");
-        #[cfg(feature = "fleet")]
         self.fleet_track_poll();
         ft.mark("fleet_track_poll");
-        #[cfg(feature = "fleet")]
         self.fleet_backfill_poll();
         ft.mark("fleet_backfill_poll");
 
@@ -4042,7 +3897,6 @@ impl eframe::App for SpaiApp {
             }
         }
 
-        #[cfg(feature = "fleet")]
         if self.settings.fc_rescue_enabled {
             self.ingest_delve911_jabber();
             self.drain_rescue_feed(&ctx);
@@ -4134,7 +3988,6 @@ impl eframe::App for SpaiApp {
         ft.mark("poll_kill_fetches");
         self.dscan_dialog(&ctx);
         ft.mark("dscan_dialog");
-        #[cfg(feature = "fleet")]
         self.fleet_unlock_tick(&ctx);
         ft.mark("fleet_unlock_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
@@ -4487,7 +4340,6 @@ fn assign_fracs(
     }
 }
 
-#[cfg(feature = "fleet")]
 use spai_ui::star_map::is_kspace;
 #[cfg(test)]
 use spai_ui::star_map::is_jspace;
@@ -6918,7 +6770,6 @@ fn route_item_row(
 /// Direct Mumble deep-link for a command-comms channel (op 1-12). Channels 9-12 carry a "- SC"
 /// suffix. Opened locally by the rescue window's Command Comms button; never posted, because a
 /// `mumble://` URL is dead on clients with no protocol handler.
-#[cfg(feature = "fleet")]
 fn command_mumble_url(ch: u8) -> String {
     let ch = ch.clamp(1, 12);
     let chan = if ch >= 9 {
@@ -6933,7 +6784,6 @@ fn command_mumble_url(ch: u8) -> String {
 
 /// Goonfleet gnf.lt short link for an op channel's regular comms. Verified to redirect to
 /// `mumble://.../Ops/Op Channels/OP <n> - ...`, not Command Sector Alpha.
-#[cfg(feature = "fleet")]
 fn op_comms_short_link(ch: u8) -> Option<&'static str> {
     crate::fleets::comms::builtin_op_link(ch)
 }
@@ -6941,7 +6791,6 @@ fn op_comms_short_link(ch: u8) -> Option<&'static str> {
 /// Comms link for anything we POST. Always the gnf.lt short link, never a raw `mumble://` URL:
 /// those silently fail on clients and OSes that have no handler registered. Empty when the op has
 /// no short link (only op 8, which the op picker doesn't offer).
-#[cfg(feature = "fleet")]
 fn op_comms_url(ch: u8) -> String {
     op_comms_short_link(ch).unwrap_or_default().to_owned()
 }
@@ -6965,7 +6814,6 @@ pub(crate) fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// One chat line, jabber-style: the sender's name in its per-name colour, then the message body.
-#[cfg(feature = "fleet")]
 fn rescue_chat_line(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -6992,14 +6840,12 @@ fn rescue_chat_line(
 }
 
 /// Consecutive lines from one sender inside five minutes share a header, as on the Jabber page.
-#[cfg(feature = "fleet")]
 fn rescue_grouped(sender: &str, time: i64, prev_sender: Option<&str>, prev_time: i64) -> bool {
     prev_sender == Some(sender) && time >= prev_time && time - prev_time < 300
 }
 
 /// The rescue window's chat feed. Returns the action the user clicked plus the nick and the raw
 /// body of the message it came from.
-#[cfg(feature = "fleet")]
 pub(crate) fn rescue_chat_feed(
     ui: &mut egui::Ui,
     msgs: &[(String, String, bool, i64)],
@@ -7033,14 +6879,12 @@ pub(crate) fn rescue_chat_feed(
 
 /// The directorbot posts under a per-room nick ("DelveBot" in delve911) and echoes every ping back.
 /// Matched exactly, not by a "bot" suffix, so a pilot named like a bot still gets rescued.
-#[cfg(feature = "fleet")]
 fn is_ping_bot(nick: &str) -> bool {
     ["delvebot", "directorbot"].contains(&nick.to_ascii_lowercase().as_str())
 }
 
 /// Soft amber pulse marking an action the FC hasn't taken yet. `None` once done, so the button
 /// falls back to its normal styling.
-#[cfg(feature = "fleet")]
 fn pulse_fill(ui: &egui::Ui, pending: bool) -> Option<egui::Color32> {
     if !pending {
         return None;
@@ -7055,7 +6899,6 @@ fn pulse_fill(ui: &egui::Ui, pending: bool) -> Option<egui::Color32> {
 ///
 /// The link ends the message with nothing after it: a trailing `)` (or any punctuation) gets
 /// swallowed into the URL by the receiving client's auto-linker and breaks the link.
-#[cfg(feature = "fleet")]
 fn rescue_comms_invite(author: Option<&str>, op: u8) -> Option<String> {
     let author = author.map(str::trim).filter(|a| !a.is_empty())?;
     let link = op_comms_short_link(op)?;
@@ -7063,7 +6906,6 @@ fn rescue_comms_invite(author: Option<&str>, op: u8) -> Option<String> {
 }
 
 /// Empty setting -> the goonfleet default room the app already joins.
-#[cfg(feature = "fleet")]
 /// A room from its configured name: empty is `default`, a bare name is on the Goonfleet
 /// conference server, and anything with an `@` is taken as a full JID.
 pub(crate) fn goon_jid(cfg: &str, default: &str) -> String {

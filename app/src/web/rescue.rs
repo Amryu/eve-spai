@@ -1,9 +1,6 @@
 //! The rescue pane: what the FC-only capital rescue mode is looking at.
 //!
 //! Read-only, because a socket on the LAN should not be able to broadcast to an alliance.
-//!
-//! The types are unconditional; a build without `fleet` never publishes the pane, which keeps
-//! `cfg` out of the snapshot and the page.
 
 use serde::Serialize;
 

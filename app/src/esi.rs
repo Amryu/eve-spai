@@ -728,7 +728,6 @@ pub(crate) fn access_token(
 ///
 /// `wing_id` and `squad_id` are `-1` for anyone not in a squad, which is the same sentinel the
 /// dashboard uses, so they pass straight through.
-#[cfg(feature = "fleet")]
 #[derive(Deserialize)]
 pub(crate) struct FleetMemberRow {
     pub character_id: i64,
@@ -744,12 +743,10 @@ pub(crate) struct FleetMemberRow {
     pub solar_system_id: i64,
 }
 
-#[cfg(feature = "fleet")]
 fn minus_one() -> i64 {
     -1
 }
 
-#[cfg(feature = "fleet")]
 #[derive(Deserialize)]
 pub(crate) struct FleetWingRow {
     pub id: i64,
@@ -759,7 +756,6 @@ pub(crate) struct FleetWingRow {
     pub squads: Vec<FleetSquadRow>,
 }
 
-#[cfg(feature = "fleet")]
 #[derive(Deserialize)]
 pub(crate) struct FleetSquadRow {
     pub id: i64,
@@ -769,14 +765,12 @@ pub(crate) struct FleetSquadRow {
 
 /// The scope the fleet endpoints need. A character authorised before it was added to
 /// `DEFAULT_SCOPES` carries a refresh token that does not have it, and refreshing will not add it.
-#[cfg(feature = "fleet")]
 pub(crate) const FLEET_SCOPE: &str = "esi-fleets.read_fleet.v1";
 
 /// The member list and the wing names of an in-game fleet.
 ///
 /// ESI answers both only for the fleet boss's own token, so a stale or backup commander on the
 /// dashboard is a 403 and the caller falls back to the roster.
-#[cfg(feature = "fleet")]
 pub(crate) fn fleet_tree(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -813,7 +807,6 @@ pub(crate) fn fleet_tree(
 }
 
 /// What `GET /fleets/{id}/` says about a fleet. `is_registered` is the Fleet Finder advert.
-#[cfg(feature = "fleet")]
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub(crate) struct FleetInfo {
     #[serde(default)]
@@ -829,7 +822,6 @@ pub(crate) struct FleetInfo {
 /// `None` for every reason it cannot be known: the boss is not one of this machine's characters,
 /// their token lacks the fleet scope, or ESI refuses because they are no longer boss. Only the
 /// boss may read a fleet's details, so there is no other token to try.
-#[cfg(feature = "fleet")]
 pub(crate) fn fleet_advert(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -859,7 +851,6 @@ mod tests {
     use super::{access_token, AccessCache};
 
     /// The shape ESI documents for `GET /fleets/{fleet_id}/`, with the advert on and off.
-    #[cfg(feature = "fleet")]
     #[test]
     fn fleet_info_reads_the_advert() {
         let on: super::FleetInfo = serde_json::from_str(

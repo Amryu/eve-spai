@@ -573,7 +573,6 @@ impl SpaiApp {
         // scaling took a higher zoom to the same view and drew dots that swallowed their gaps.
         let spacing_px = self.map_spacing as f32 * bounds.base_scale(rect, 30.0) * self.map_zoom;
         let dot = (DOT_PER_SPACING * spacing_px).clamp(0.7, 12.0);
-        #[cfg(feature = "fleet")]
         let rescue_active = self.rescue_on();
         let ov = self.map_overlays;
         let zoomed = matches!(self.map_view, MapView::Region(_)) || spacing_px >= LABELS_FROM_SPACING;
@@ -1384,7 +1383,6 @@ impl SpaiApp {
                     }
                 }
             }
-            #[cfg(feature = "fleet")]
             if rescue_active {
                 if let Some(sid) = self.systems.as_ref().and_then(|g| {
                     g.lookup(&self.settings.rescue_staging_system).map(|i| i.id)
@@ -1812,7 +1810,6 @@ impl SpaiApp {
             });
         }
 
-        #[cfg(feature = "fleet")]
         if self.rescue_on() {
             ui.separator();
             ui.label(egui::RichText::new("delve911 rescue").strong());

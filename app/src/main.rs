@@ -48,11 +48,9 @@ mod lookup;
 mod map;
 // Only the fleet tab talks to Mumble today; the rest of the app opens links through the desktop
 // handler.
-#[cfg(feature = "fleet")]
 mod mumble;
 mod pickers;
 mod pilot;
-#[cfg(feature = "fleet")]
 mod fleets;
 mod nav;
 mod notes;
@@ -61,7 +59,6 @@ mod pings;
 mod procstat;
 mod push;
 mod rats;
-#[cfg(feature = "fleet")]
 mod rescue;
 mod routeforce;
 mod scanroute;
@@ -193,14 +190,10 @@ fn main() -> eframe::Result<()> {
     // Installed per role, because both processes run this function and would otherwise append to
     // one crash.log, racing each other's rotation.
     let overlay_child = std::env::args().any(|a| a == "--overlay");
-    #[cfg(feature = "fleet")]
     let fleet_login_child =
         std::env::args().any(|a| a == crate::fleets::login::FLAG);
-    #[cfg(not(feature = "fleet"))]
-    let fleet_login_child = false;
     crashlog::install(match (overlay_child, fleet_login_child) {
         (true, _) => crashlog::Role::Overlay,
-        #[cfg(feature = "fleet")]
         (_, true) => crashlog::Role::FleetLogin,
         _ => crashlog::Role::Main,
     });
@@ -216,7 +209,6 @@ fn main() -> eframe::Result<()> {
     // Same shape, same reason: the sign-in webview needs a GTK main loop, which cannot share a
     // process with eframe's winit one. Before the single-instance guard, or the child would block
     // behind the parent that spawned it.
-    #[cfg(feature = "fleet")]
     if fleet_login_child {
         return crate::fleets::login::run_child();
     }

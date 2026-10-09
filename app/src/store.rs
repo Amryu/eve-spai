@@ -486,7 +486,6 @@ mod share;
 
 mod characters;
 
-#[cfg(feature = "fleet")]
 mod fleet_moves;
 
 mod fleet_kills;

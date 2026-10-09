@@ -1338,7 +1338,6 @@ fn handle_event(
             let own = nick.eq_ignore_ascii_case(my_nick);
             // Read before the body is stored: "he is safe" ends a rescue, so it is the one delve911
             // line that must not sound the siren.
-            #[cfg(feature = "fleet")]
             let stand_down = crate::rescue::is_safe_call(&body);
             push_msg(
                 state,
@@ -1351,7 +1350,6 @@ fn handle_event(
             // delve911 is a priority channel: its own ship-horn sound, rate-limited so a burst
             // alerts once (the 5-min gate resets on every message, re-arming only after 5 min of
             // quiet).
-            #[cfg(feature = "fleet")]
             if !delayed && !own && !stand_down {
                 let local = room.split('@').next().unwrap_or(&room);
                 if local.eq_ignore_ascii_case("delve911") {

@@ -2007,13 +2007,11 @@ impl SpaiApp {
                     if ui.button("Configure cyno generators…").clicked() {
                         self.cyno_generators_open = true;
                     }
-                    #[cfg(feature = "fleet")]
                     {
                         ui.add_space(12.0);
                         ui.separator();
                         changed |= self.fleet_settings_section(ui);
                     }
-                    #[cfg(feature = "fleet")]
                     if self.fleet_unlocked() {
                         ui.add_space(12.0);
                         ui.separator();

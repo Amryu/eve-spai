@@ -825,7 +825,6 @@ mod tests {
 ///
 /// The seat ids are the `-1` sentinel the dashboard uses, because there is nothing left to address
 /// and a move posted against a real-looking seat would be refused by the server.
-#[cfg(feature = "fleet")]
 fn flatten(comp: Composition) -> Composition {
     let members: Vec<crate::fleets::model::Member> = comp.members().cloned().collect();
     Composition {

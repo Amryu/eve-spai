@@ -10,18 +10,7 @@ name = "eve-spai"
 path = "src/main.rs"
 
 [features]
-# Fleet command is compiled into every build, and unlocks at runtime only for accounts the fleet
-# dashboard confirms as skirmish commanders or above (`fleets::unlock`).
-default = ["fleet"]
-# Kept as an alias so `--features fc-rescue` in anyone's muscle memory, scripts or CI still works.
-# The rescue is not a separate feature any more: a rescue is a fleet, its ping comes from a fleet
-# preset and its tracking hands over to the fleet tab, so nothing gates on this name.
-fc-rescue = ["fleet"]
-# Fleet command: the GSF dashboard mirror, and the FC-only delve911 capital rescue that runs on it.
-# On by default, locked at runtime until the dashboard confirms a commander. Writes are a dry run
-# until the user signs in and turns them on. `--no-default-features` builds without it.
-fleet = []
-# Signing in to that dashboard for real. Separate from `fleet`, and its crates optional, because on
+# Signing in to the fleet dashboard for real. Its crates are optional because on
 # Linux it is the only dependency in this file that needs system libraries (gtk3 and
 # webkit2gtk-4.1): the dashboard authenticates with a session cookie minted by an OIDC redirect
 # that lands on its own origin, so the cookie has to come out of a browser engine we drive. Windows
@@ -30,7 +19,7 @@ fleet = []
 # Release builds turn it on for Windows and macOS. Linux releases ship it as a second binary,
 # `eve-spai-fleet-login`, so the app itself starts without WebKitGTK installed.
 # Build with `cargo build --features fleet-auth`.
-fleet-auth = ["fleet", "dep:wry", "dep:tao", "dep:webkit2gtk"]
+fleet-auth = ["dep:wry", "dep:tao", "dep:webkit2gtk"]
 
 # Embed the Windows application icon into the .exe (build.rs). winresource is pure Rust and
 # compiles on every host; build.rs only invokes it for a Windows *target*, so non-Windows builds
