@@ -68,6 +68,7 @@ notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # gzip the battle-report JSON before uploading to the sharing server (Content-Encoding: gzip).
 flate2 = "1"
+tar = { version = "0.4", default-features = false }
 arboard = { version = "3", default-features = false }
 # Native open/save file dialogs for the battle-report JSON import/export. xdg-portal backend
 # (pure Rust, via the XDG desktop portal) so Linux needs no GTK system libs; matches the tree's

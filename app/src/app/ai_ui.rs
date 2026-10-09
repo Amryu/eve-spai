@@ -148,6 +148,26 @@ impl SpaiApp {
                     {
                         self.ai_memories_open = !self.ai_memories_open;
                     }
+                    if !matches!(self.settings.ai.voice.tts, crate::ai::config::TtsKind::Off | crate::ai::config::TtsKind::Unknown) {
+                        let speaking = self.ai_speaker.as_ref().is_some_and(|s| s.speaking.load(std::sync::atomic::Ordering::Relaxed));
+                        let on = self.settings.ai.voice.speak_replies;
+                        let (glyph, tip) = match (speaking, on) {
+                            (true, _) => (icon::STOP, "Stop speaking"),
+                            (false, true) => (icon::SPEAKER_HIGH, "Answers are spoken; click to turn that off"),
+                            (false, false) => (icon::SPEAKER_SLASH, "Answers are not spoken; click to speak them"),
+                        };
+                        if ui.button(glyph).on_hover_text(tip).clicked() {
+                            if speaking {
+                                self.ai_voice_stop();
+                            } else {
+                                self.settings.ai.voice.speak_replies = !on;
+                                self.needs_save = true;
+                            }
+                        }
+                        if speaking {
+                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                        }
+                    }
                     if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
                         self.ai_perms_open = true;
                     }
@@ -174,6 +194,7 @@ impl SpaiApp {
                     if busy {
                         if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
                             handle.stop();
+                            self.ai_voice_stop();
                         }
                     } else if ui
                         .add_enabled(!self.ai_input.trim().is_empty(), egui::Button::new(format!("{}  Ask", icon::PAPER_PLANE_RIGHT)))
@@ -258,15 +279,110 @@ impl SpaiApp {
         }
     }
 
-    /// Watch news shown as a toast when the user is not looking at the chat.
+    /// Watch news: spoken when answers are, and a toast when the user is not looking at the chat.
     pub(crate) fn ai_watch_news(&mut self) {
         let Some(h) = &self.ai else { return };
         let news = std::mem::take(&mut h.view.lock().unwrap_or_else(|e| e.into_inner()).watch_news);
-        if self.view == View::Assistant {
+        for n in news {
+            if self.settings.ai.voice.speak_replies {
+                if let Some(sp) = self.ai_voice() {
+                    sp.say(crate::ai::voice::sentences::speakable(&n));
+                }
+            }
+            if self.view != View::Assistant {
+                self.toast(format!("{}  {n}", egui_phosphor::regular::BINOCULARS));
+            }
+        }
+    }
+
+    /// The voice as the settings and keychain have it now.
+    fn ai_voice_cfg(&self) -> crate::ai::voice::speaker::VoiceCfg {
+        let v = &self.settings.ai.voice;
+        crate::ai::voice::speaker::VoiceCfg {
+            kind: v.tts,
+            openai_key: (v.tts == crate::ai::config::TtsKind::Openai).then(|| self.ai_secrets.get("openai:openai")).flatten(),
+            openai_voice: v.cloud_voice.clone(),
+            elevenlabs_key: (v.tts == crate::ai::config::TtsKind::Elevenlabs).then(|| self.ai_secrets.get("elevenlabs")).flatten(),
+            elevenlabs_voice: v.elevenlabs_voice.clone(),
+            piper_voices: v.piper_voices.clone(),
+            volume: v.volume,
+            language: self.settings.ai.language.clone(),
+        }
+    }
+
+    /// The speaker, started on first use and kept in step with the settings. None when speech is
+    /// off, and in a headless build.
+    fn ai_voice(&mut self) -> Option<crate::ai::voice::speaker::Speaker> {
+        if self.headless || matches!(self.settings.ai.voice.tts, crate::ai::config::TtsKind::Off | crate::ai::config::TtsKind::Unknown) {
+            return None;
+        }
+        let stale = self.ai_voice_cfg_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5));
+        if self.ai_speaker.is_none() {
+            self.ai_speaker = Some(crate::ai::voice::speaker::Speaker::spawn(self.ai_voice_cfg()));
+            self.ai_voice_cfg_at = Some(std::time::Instant::now());
+        } else if stale {
+            let cfg = self.ai_voice_cfg();
+            if let Some(sp) = &self.ai_speaker {
+                sp.configure(cfg);
+            }
+            self.ai_voice_cfg_at = Some(std::time::Instant::now());
+        }
+        self.ai_speaker.clone()
+    }
+
+    /// Stops speaking at once.
+    pub(crate) fn ai_voice_stop(&mut self) {
+        if let Some(sp) = &self.ai_speaker {
+            sp.stop();
+        }
+    }
+
+    pub(crate) fn ai_voice_test(&mut self, lang: &str) {
+        let line = match lang {
+            "de" => "Die Frat-Gang ist in QX-LIJ, sechs Sprünge von dir, vor vier Minuten gesehen.",
+            "es" => "La flota de Frat está en QX-LIJ, a seis saltos de ti, vista hace cuatro minutos.",
+            "ru" => "Флот Frat в QX-LIJ, в шести прыжках от тебя, замечен четыре минуты назад.",
+            "zh" => "Frat舰队在QX-LIJ，离你六跳，四分钟前出现。",
+            _ => "The Frat gang is in QX-LIJ, six jumps from you, seen four minutes ago.",
+        };
+        self.ai_voice_cfg_at = None;
+        if let Some(sp) = self.ai_voice() {
+            sp.stop();
+            sp.say(line.to_owned());
+        }
+    }
+
+    /// Feeds the answer being written to the voice, sentence by sentence, when it is to be spoken.
+    pub(crate) fn ai_voice_tick(&mut self) {
+        let Some(h) = self.ai.clone() else { return };
+        if let Some(e) = self.ai_speaker.as_ref().and_then(|s| s.error.lock().unwrap_or_else(|e| e.into_inner()).take()) {
+            self.toast_error(format!("Voice: {e}"));
+        }
+        let (turn, text, voice_turn, finished) = {
+            let mut v = h.view.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(i) = v.speak_turn else { return };
+            let text = std::mem::take(&mut v.speak);
+            let t = v.turns.get(i);
+            (i, text, t.is_some_and(|t| t.voice), !v.busy && t.is_none_or(|t| !t.streaming))
+        };
+        if self.ai_speak_turn.map(|(i, _)| i) != Some(turn) {
+            // A new answer cuts off whatever was still being said.
+            self.ai_voice_stop();
+            self.ai_chunker = Default::default();
+            self.ai_speak_turn = Some((turn, false));
+        }
+        if !(self.settings.ai.voice.speak_replies || voice_turn) {
             return;
         }
-        for n in news {
-            self.toast(format!("{}  {n}", egui_phosphor::regular::BINOCULARS));
+        let Some(sp) = self.ai_voice() else { return };
+        for s in self.ai_chunker.push(&text) {
+            sp.say(s);
+        }
+        if finished && self.ai_speak_turn.is_some_and(|(_, done)| !done) {
+            if let Some(rest) = self.ai_chunker.finish() {
+                sp.say(rest);
+            }
+            self.ai_speak_turn = Some((turn, true));
         }
     }
 

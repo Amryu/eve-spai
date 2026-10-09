@@ -195,8 +195,159 @@ impl SpaiApp {
                 self.ai_glossary_open = true;
             }
         });
+        changed |= self.ai_voice_settings(ui);
         if changed {
             self.ai_push_facts(true);
+        }
+        changed
+    }
+
+    /// Spoken replies: which voice, how loud, and what each engine needs.
+    fn ai_voice_settings(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::ai::config::TtsKind;
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Voice").strong());
+        let label = |k: TtsKind| match k {
+            TtsKind::Off => "Off",
+            TtsKind::Piper => "Piper, on this computer",
+            TtsKind::Openai => "OpenAI",
+            TtsKind::Elevenlabs => "ElevenLabs",
+            TtsKind::Unknown => "Unknown",
+        };
+        let secrets = self.ai_secrets.clone();
+        let mut note: Option<Result<String, String>> = None;
+        let mut reread = false;
+        egui::Grid::new("ai_voice_settings").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+            let key_input = &mut self.ai_voice_key_input;
+            let v = &mut self.settings.ai.voice;
+            let mut key_row = |ui: &mut egui::Ui, acc: &str| {
+                ui.label("API key");
+                ui.horizontal(|ui| {
+                    if secrets.has(acc) {
+                        ui.label(egui::RichText::new(format!("{}  Stored in the keychain", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        if ui.button("Remove").clicked() {
+                            secrets.delete(acc);
+                            reread = true;
+                        }
+                    } else {
+                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text("Paste the key").desired_width(200.0));
+                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                            note = Some(secrets.set(acc, key_input.trim()).map(|_| "Key stored in the keychain".to_owned()).map_err(|e| format!("Could not store the key: {e}")));
+                            key_input.clear();
+                            reread = true;
+                        }
+                    }
+                });
+                ui.end_row();
+            };
+            ui.label("Speech");
+            egui::ComboBox::from_id_salt("ai_tts").selected_text(label(v.tts)).width(280.0).show_ui(ui, |ui| {
+                for k in [TtsKind::Off, TtsKind::Piper, TtsKind::Openai, TtsKind::Elevenlabs] {
+                    changed |= ui.menu_value(&mut v.tts, k, label(k)).changed();
+                }
+            });
+            ui.end_row();
+            if v.tts == TtsKind::Off {
+                return;
+            }
+            ui.label("");
+            changed |= ui
+                .checkbox(&mut v.speak_replies, "Speak every answer")
+                .on_hover_text("Answers to a push-to-talk question are spoken either way, and so are watch matches when this is on")
+                .changed();
+            ui.end_row();
+            ui.label("Volume");
+            changed |= ui.add(egui::Slider::new(&mut v.volume, 0.0..=1.0).show_value(false)).changed();
+            ui.end_row();
+            match v.tts {
+                TtsKind::Openai => {
+                    ui.label("Voice");
+                    let voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
+                    egui::ComboBox::from_id_salt("ai_openai_voice").selected_text(v.cloud_voice.clone()).width(280.0).show_ui(ui, |ui| {
+                        for n in voices {
+                            changed |= ui.menu_value(&mut v.cloud_voice, n.to_owned(), n).changed();
+                        }
+                    });
+                    ui.end_row();
+                    key_row(ui, "openai:openai");
+                }
+                TtsKind::Elevenlabs => {
+                    ui.label("Voice id");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut v.elevenlabs_voice).hint_text("a stock voice when empty").desired_width(280.0))
+                        .on_hover_text("From your ElevenLabs voice library. The multilingual model speaks every answer language.")
+                        .changed();
+                    ui.end_row();
+                    key_row(ui, "elevenlabs");
+                }
+                _ => {}
+            }
+        });
+        if self.settings.ai.voice.tts == crate::ai::config::TtsKind::Off {
+            return changed;
+        }
+        match note {
+            Some(Ok(m)) => self.toast(m),
+            Some(Err(m)) => self.toast_error(m),
+            None => {}
+        }
+        if reread {
+            self.ai_voice_cfg_at = None;
+        }
+        if self.settings.ai.voice.tts == crate::ai::config::TtsKind::Piper {
+            changed |= self.ai_piper_voices_ui(ui);
+        }
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Try it", icon::SPEAKER_HIGH)).on_hover_text("Says a sample answer in the answer language").clicked() {
+                let lang = self.settings.ai.language.clone();
+                self.ai_voice_test(&lang);
+            }
+        });
+        changed
+    }
+
+    /// One row per answer language: its Piper voice and whether it is installed.
+    fn ai_piper_voices_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::ai::voice::models;
+        let mut changed = false;
+        let progress = self.ai_piper_progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut fetch: Vec<String> = Vec::new();
+        let program = models::has_program();
+        egui::Grid::new("ai_piper_voices").num_columns(3).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+            for (code, name, _) in crate::ai::config::LANGUAGES.iter().filter(|(c, _, _)| *c != "auto") {
+                let chosen = self.settings.ai.voice.piper_voices.get(*code).cloned().or_else(|| models::default_voice(code).map(|v| v.id.to_owned())).unwrap_or_default();
+                ui.label(*name);
+                let shown = models::voice(&chosen).map_or(chosen.clone(), |v| v.label.to_owned());
+                egui::ComboBox::from_id_salt(("piper_voice", *code)).selected_text(shown).width(200.0).show_ui(ui, |ui| {
+                    let mut pick = chosen.clone();
+                    for v in models::CATALOG.iter().filter(|v| v.lang == *code) {
+                        if ui.menu_value(&mut pick, v.id.to_owned(), v.label).changed() {
+                            self.settings.ai.voice.piper_voices.insert((*code).to_owned(), pick.clone());
+                            changed = true;
+                        }
+                    }
+                });
+                if models::has_voice(&chosen) && program {
+                    ui.label(egui::RichText::new("Installed").weak());
+                } else if ui.add_enabled(!progress.busy, egui::Button::new(format!("{}  Get, 63 MB", egui_phosphor::regular::DOWNLOAD_SIMPLE))).clicked() {
+                    fetch.push(chosen);
+                }
+                ui.end_row();
+            }
+        });
+        if progress.busy {
+            let frac = if progress.total > 0 { progress.done as f32 / progress.total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(frac).text(format!("{}  {}", progress.what, super::fmt_bytes(progress.done))));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        } else if let Some(e) = &progress.error {
+            ui.label(egui::RichText::new(e).color(crate::theme::standing::WARNING));
+        } else if !program {
+            ui.label(egui::RichText::new("Piper itself (about 25 MB) comes with the first voice.").weak());
+        }
+        if !fetch.is_empty() {
+            models::install_missing(fetch, self.ai_piper_progress.clone(), Some(self.ui_ctx.clone()));
         }
         changed
     }

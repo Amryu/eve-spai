@@ -223,7 +223,12 @@ pub struct VoiceSettings {
     pub tts: TtsKind,
     pub whisper_model: String,
     pub piper_voice: String,
+    /// The Piper voice per answer language, by voice id; a language left out takes its default.
+    pub piper_voices: std::collections::BTreeMap<String, String>,
+    /// The OpenAI voice.
     pub cloud_voice: String,
+    /// The ElevenLabs voice id; empty takes a stock one.
+    pub elevenlabs_voice: String,
     /// Speak replies aloud. Answers to a push-to-talk question are spoken regardless.
     pub speak_replies: bool,
     pub volume: f32,
@@ -241,7 +246,9 @@ impl Default for VoiceSettings {
             tts: TtsKind::Off,
             whisper_model: "base.en".into(),
             piper_voice: "en_US-lessac-medium".into(),
+            piper_voices: Default::default(),
             cloud_voice: "alloy".into(),
+            elevenlabs_voice: String::new(),
             speak_replies: false,
             volume: 1.0,
             input_device: String::new(),

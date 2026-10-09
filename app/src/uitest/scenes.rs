@@ -2393,6 +2393,27 @@ pub(crate) fn all() -> Vec<Scene> {
             });
         })
     });
+    for (name, tts) in [("settings_ai_voice_piper", crate::ai::config::TtsKind::Piper), ("settings_ai_voice_openai", crate::ai::config::TtsKind::Openai)] {
+        v.push({
+            harness::scratch_profile();
+            let mut app: Option<crate::app::SpaiApp> = None;
+            Scene::ui(name, [720.0, 760.0], move |ui| {
+                let a = app.get_or_insert_with(|| {
+                    let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                    a.settings.ai.enabled = true;
+                    a.settings.ai.voice.tts = tts;
+                    a.settings.ai.voice.speak_replies = true;
+                    *a.ai_piper_progress.lock().unwrap() = crate::ai::voice::models::Progress { what: "Deutsch, Thorsten".into(), done: 21_000_000, total: 63_201_294, busy: true, error: None };
+                    a
+                });
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        a.assistant_settings_section(ui);
+                    });
+                });
+            })
+        });
+    }
     v.push(dialog_scene("dialog_ai_glossary", [620.0, 700.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.ai.glossary.overrides.insert("Cyno".into(), "The beacon our capitals jump to".into());
