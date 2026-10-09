@@ -19,3 +19,4 @@ pub mod mcp;
 pub mod cli;
 pub mod links;
 pub mod watch;
+pub mod voice;

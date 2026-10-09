@@ -151,7 +151,7 @@ pub fn set_master(volume: f32, muted: bool) {
     MUTED.store(muted, Relaxed);
 }
 
-fn master() -> f32 {
+pub(crate) fn master() -> f32 {
     use std::sync::atomic::Ordering::Relaxed;
     if MUTED.load(Relaxed) {
         0.0

@@ -930,6 +930,14 @@ pub struct SpaiApp {
     /// Ship names to type ids for linking the assistant's text, rebuilt when the ship table grows.
     ai_ship_names: (usize, std::collections::HashMap<String, i64>),
     pub(crate) ai_watches: crate::ai::watch::SharedWatches,
+    ai_speaker: Option<crate::ai::voice::speaker::Speaker>,
+    ai_chunker: crate::ai::voice::sentences::Chunker,
+    /// The answer being spoken, and whether its last words have gone to the voice.
+    ai_speak_turn: Option<(usize, bool)>,
+    /// When the voice settings and keys were last read, so the keychain is not asked every frame.
+    ai_voice_cfg_at: Option<std::time::Instant>,
+    ai_voice_key_input: String,
+    pub(crate) ai_piper_progress: crate::ai::voice::models::SharedProgress,
     rescue_history_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
@@ -1746,6 +1754,12 @@ impl SpaiApp {
             rescue_history_loaded: false,
             ai_ship_names: Default::default(),
             ai_watches: Default::default(),
+            ai_speaker: None,
+            ai_chunker: Default::default(),
+            ai_speak_turn: None,
+            ai_voice_cfg_at: None,
+            ai_voice_key_input: String::new(),
+            ai_piper_progress: Default::default(),
             rescue_history_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,
@@ -3705,6 +3719,7 @@ impl SpaiApp {
         self.ai_glossary_window(ctx);
         self.ai_push_facts(false);
         self.ai_watch_news();
+        self.ai_voice_tick();
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);
         self.fleet_migrate_window(ctx);
