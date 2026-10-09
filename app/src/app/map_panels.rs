@@ -196,16 +196,25 @@ impl SpaiApp {
 
         ui.add_space(4.0);
         let mut replan = false;
-        ui.horizontal(|ui| {
-            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("mixed", "Mixed"), ("scan", "Scan")] {
-                if ui.menu_label(self.map_route_kind == kind, label).clicked()
-                    && self.map_route_kind != kind
-                {
-                    self.map_set_route_mode(kind);
-                    replan = true;
+        const KINDS: [(&str, &str, &str); 4] = [
+            ("gate", "By gate", "Gates, bridges and holes"),
+            ("jump", "By jump drive", "Capital jumps between cyno systems"),
+            ("mixed", "Mixed", "Each leg flown by gate or jumped, switched per leg"),
+            ("scan", "Scan sweep", "A sweep through the systems around a centre, for scouts"),
+        ];
+        let current = KINDS.iter().find(|k| k.0 == self.map_route_kind).map_or("By gate", |k| k.1);
+        let mut pick: Option<&str> = None;
+        egui::ComboBox::from_id_salt("route_kind").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            for (kind, label, hint) in KINDS {
+                if ui.menu_label(self.map_route_kind == kind, label).on_hover_text(hint).clicked() {
+                    pick = Some(kind);
                 }
             }
         });
+        if let Some(kind) = pick.filter(|k| *k != self.map_route_kind) {
+            self.map_set_route_mode(kind);
+            replan = true;
+        }
         if self.map_route_kind == "scan" {
             if replan {
                 self.scan_replan();
