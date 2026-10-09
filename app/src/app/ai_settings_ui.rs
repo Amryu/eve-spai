@@ -196,6 +196,7 @@ impl SpaiApp {
             }
         });
         changed |= self.ai_voice_settings(ui);
+        changed |= self.ai_voice_in_settings(ui);
         if changed {
             self.ai_push_facts(true);
         }
@@ -305,6 +306,137 @@ impl SpaiApp {
                 self.ai_voice_test(&lang);
             }
         });
+        changed
+    }
+
+    /// Asking by voice: who turns speech into text, the talk key, the microphone.
+    fn ai_voice_in_settings(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::ai::config::SttKind;
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Voice questions").strong());
+        let label = |k: SttKind| match k {
+            SttKind::Off => "Off",
+            SttKind::Local => "A speech server on this computer",
+            SttKind::Openai => "OpenAI",
+            SttKind::Groq => "Groq",
+            SttKind::Unknown => "Unknown",
+        };
+        let secrets = self.ai_secrets.clone();
+        let mut note: Option<Result<String, String>> = None;
+        let binding = self.ai_ptt_binding();
+        let mut bind = false;
+        let problem = self.ai_ptt_problem();
+        if self.ai_mics.is_none() && self.settings.ai.voice.stt != SttKind::Off && !self.headless {
+            self.ai_mics = Some(crate::ai::voice::capture::devices());
+        }
+        let mics = self.ai_mics.clone().unwrap_or_default();
+        egui::Grid::new("ai_voice_in").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+            let key_input = &mut self.ai_stt_key_input;
+            let v = &mut self.settings.ai.voice;
+            ui.label("Recognition");
+            egui::ComboBox::from_id_salt("ai_stt").selected_text(label(v.stt)).width(280.0).show_ui(ui, |ui| {
+                for k in [SttKind::Off, SttKind::Local, SttKind::Openai, SttKind::Groq] {
+                    changed |= ui.menu_value(&mut v.stt, k, label(k)).changed();
+                }
+            });
+            ui.end_row();
+            if v.stt == SttKind::Off {
+                return;
+            }
+            let account = match v.stt {
+                SttKind::Local => {
+                    ui.label("Address");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut v.stt_url).hint_text("http://localhost:8000/v1").desired_width(280.0))
+                        .on_hover_text("Any server with OpenAI's transcription API: speaches, faster-whisper-server, LocalAI")
+                        .changed();
+                    ui.end_row();
+                    ui.label("Model");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut v.whisper_model).hint_text("Systran/faster-whisper-small").desired_width(280.0)).changed();
+                    ui.end_row();
+                    None
+                }
+                SttKind::Openai => Some("openai:openai"),
+                SttKind::Groq => Some("openai:groq"),
+                _ => None,
+            };
+            if let Some(acc) = account {
+                ui.label("API key");
+                ui.horizontal(|ui| {
+                    if secrets.has(acc) {
+                        ui.label(egui::RichText::new(format!("{}  Stored in the keychain", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        if ui.button("Remove").clicked() {
+                            secrets.delete(acc);
+                        }
+                    } else {
+                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text("Paste the key").desired_width(200.0));
+                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                            note = Some(secrets.set(acc, key_input.trim()).map(|_| "Key stored in the keychain".to_owned()).map_err(|e| format!("Could not store the key: {e}")));
+                            key_input.clear();
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            ui.label("Talk key");
+            ui.horizontal(|ui| {
+                if !crate::ai::ptt::SUPPORTED {
+                    ui.label(egui::RichText::new("Bind `eve-spai --ptt` to a system shortcut to start and stop listening").weak());
+                    return;
+                }
+                let shown = if binding {
+                    "Press a key or a side mouse button\u{2026}".to_owned()
+                } else {
+                    v.ptt.as_ref().filter(|k| k.platform == std::env::consts::OS).map_or("Not set".to_owned(), |k| k.label.clone())
+                };
+                if ui.button(format!("{}  {shown}", icon::KEYBOARD)).on_hover_text("Click, then press the key to hold while you talk").clicked() {
+                    bind = true;
+                }
+                if v.ptt.is_some() && ui.button(icon::X).on_hover_text("No talk key").clicked() {
+                    v.ptt = None;
+                    changed = true;
+                }
+            });
+            ui.end_row();
+            if crate::ai::ptt::SUPPORTED {
+                ui.label("");
+                changed |= ui
+                    .checkbox(&mut v.ptt_exclusive, "Keep the key from the game")
+                    .on_hover_text("Off: the game sees the key too, handy when it is also your voice chat key")
+                    .changed();
+                ui.end_row();
+            }
+            ui.label("Microphone");
+            let cur = if v.input_device.is_empty() { "System default".to_owned() } else { v.input_device.clone() };
+            egui::ComboBox::from_id_salt("ai_mic").selected_text(cur).width(280.0).truncate().show_ui(ui, |ui| {
+                changed |= ui.menu_value(&mut v.input_device, String::new(), "System default").changed();
+                for m in &mics {
+                    changed |= ui.menu_value(&mut v.input_device, m.clone(), m).changed();
+                }
+            });
+            ui.end_row();
+        });
+        if self.settings.ai.voice.stt == SttKind::Off {
+            return changed;
+        }
+        if let Some(p) = problem {
+            ui.label(egui::RichText::new(p).color(crate::theme::standing::WARNING));
+        } else if cfg!(target_os = "linux") && crate::ai::ptt::SUPPORTED {
+            ui.label(egui::RichText::new("The talk key works while the game or another X11 window has focus; in EVE Spai, hold the mic button.").weak());
+        }
+        match note {
+            Some(Ok(m)) => self.toast(m),
+            Some(Err(m)) => self.toast_error(m),
+            None => {}
+        }
+        if bind {
+            self.ai_ptt_bind();
+        }
+        if binding {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        }
         changed
     }
 

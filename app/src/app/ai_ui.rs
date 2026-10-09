@@ -202,6 +202,26 @@ impl SpaiApp {
                     {
                         send = Some(std::mem::take(&mut self.ai_input));
                     }
+                    if self.ai_stt_on() {
+                        let rec = self.ai_listen.recording();
+                        let glyph = if self.ai_listen.transcribing() { icon::DOTS_THREE } else { icon::MICROPHONE };
+                        let mut b = egui::Button::new(egui::RichText::new(glyph).color(if rec { crate::theme::standing::HOSTILE } else { ui.visuals().text_color() }))
+                            .sense(egui::Sense::click_and_drag());
+                        if rec {
+                            b = b.selected(true);
+                        }
+                        let tip = match self.settings.ai.voice.ptt.as_ref().filter(|_| crate::ai::ptt::SUPPORTED) {
+                            Some(k) => format!("Hold to talk, or hold {} anywhere", k.label),
+                            None => "Hold to talk".to_owned(),
+                        };
+                        let r = ui.add(b).on_hover_text(tip);
+                        let held = r.is_pointer_button_down_on();
+                        if held && !rec {
+                            self.ai_listen_start(super::ai_voice_in::Source::Button);
+                        } else if !held && rec {
+                            self.ai_listen_stop(super::ai_voice_in::Source::Button);
+                        }
+                    }
                     let edit = egui::TextEdit::multiline(&mut self.ai_input)
                         .id(egui::Id::new("ai_input"))
                         .desired_rows(2)

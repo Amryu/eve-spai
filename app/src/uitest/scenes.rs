@@ -2397,11 +2397,13 @@ pub(crate) fn all() -> Vec<Scene> {
         v.push({
             harness::scratch_profile();
             let mut app: Option<crate::app::SpaiApp> = None;
-            Scene::ui(name, [720.0, 760.0], move |ui| {
+            Scene::ui(name, [720.0, 1000.0], move |ui| {
                 let a = app.get_or_insert_with(|| {
                     let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                     a.settings.ai.enabled = true;
                     a.settings.ai.voice.tts = tts;
+                    a.settings.ai.voice.stt = if tts == crate::ai::config::TtsKind::Piper { crate::ai::config::SttKind::Local } else { crate::ai::config::SttKind::Groq };
+                    a.settings.ai.voice.ptt = Some(crate::ai::config::KeyBind { code: 0x1_0009, label: "Mouse button 9".into(), platform: std::env::consts::OS.into() });
                     a.settings.ai.voice.speak_replies = true;
                     *a.ai_piper_progress.lock().unwrap() = crate::ai::voice::models::Progress { what: "Deutsch, Thorsten".into(), done: 21_000_000, total: 63_201_294, busy: true, error: None };
                     a

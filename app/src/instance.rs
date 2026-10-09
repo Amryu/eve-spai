@@ -8,6 +8,23 @@ pub const CONTROL_PORT: u16 = 52389;
 pub const RAISE_BYTE: u8 = b'R';
 /// Followed by an `eve-spai://` link a click just launched, for the running app to take.
 pub const JOIN_BYTE: u8 = b'J';
+/// `eve-spai --ptt`: start or stop listening, for a desktop shortcut where no global key works.
+pub const PTT_BYTE: u8 = b'T';
+pub const PTT_FLAG: &str = "--ptt";
+
+static PTT_TOGGLES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// How many push-to-talk toggles arrived since last asked.
+pub fn take_ptt_toggles() -> u32 {
+    PTT_TOGGLES.swap(0, Ordering::AcqRel)
+}
+
+pub fn signal_ptt() -> bool {
+    let Ok(mut stream) = TcpStream::connect_timeout(&control_addr(), Duration::from_millis(500)) else {
+        return false;
+    };
+    stream.write_all(&[PTT_BYTE]).and_then(|()| stream.flush()).is_ok()
+}
 
 pub fn control_addr() -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, CONTROL_PORT))
@@ -58,7 +75,10 @@ pub fn start_control_listener(ctx: egui::Context) {
                 Ok(_) => Some(buf[0]),
                 Err(_) => None,
             };
-            if first == Some(JOIN_BYTE) {
+            if first == Some(PTT_BYTE) {
+                PTT_TOGGLES.fetch_add(1, Ordering::AcqRel);
+                ctx.request_repaint();
+            } else if first == Some(JOIN_BYTE) {
                 let mut link = String::new();
                 if (&mut stream).take(4096).read_to_string(&mut link).is_ok() && link.starts_with("eve-spai://") {
                     set_link(link);

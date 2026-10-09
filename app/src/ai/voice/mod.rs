@@ -6,3 +6,5 @@ pub mod playback;
 pub mod sentences;
 pub mod speaker;
 pub mod tts;
+pub mod capture;
+pub mod stt;
