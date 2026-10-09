@@ -23,6 +23,31 @@ pub struct AiSettings {
     pub situation_jumps: u8,
     pub voice: VoiceSettings,
     pub caps: Caps,
+    /// The user's own instructions, added to the assistant's.
+    pub instructions: String,
+    /// The language answers come in; "auto" follows the user's.
+    pub language: String,
+    pub glossary: super::glossary::Edits,
+}
+
+/// Languages the assistant can be asked to answer in: (code, name as shown, name in English).
+pub const LANGUAGES: [(&str, &str, &str); 6] = [
+    ("auto", "Same as the question", ""),
+    ("en", "English", "English"),
+    ("de", "Deutsch", "German"),
+    ("es", "Español", "Spanish"),
+    ("ru", "Русский", "Russian"),
+    ("zh", "中文", "Chinese (Simplified)"),
+];
+
+impl AiSettings {
+    /// The instruction telling the model which language to answer in.
+    pub fn language_rule(&self) -> String {
+        match LANGUAGES.iter().find(|(c, _, _)| *c == self.language).filter(|(c, _, _)| *c != "auto") {
+            Some((_, _, en)) => format!("Always answer in {en}, whatever language the question or the data is in. Keep EVE names (systems, ships, pilots) as the game spells them."),
+            None => "Answer in the language the user writes in. Keep EVE names (systems, ships, pilots) as the game spells them.".into(),
+        }
+    }
 }
 
 impl Default for AiSettings {
@@ -40,6 +65,9 @@ impl Default for AiSettings {
             situation_jumps: 8,
             voice: VoiceSettings::default(),
             caps: Caps::default(),
+            instructions: String::new(),
+            language: "auto".into(),
+            glossary: Default::default(),
         }
     }
 }

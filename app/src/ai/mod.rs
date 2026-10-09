@@ -12,3 +12,5 @@ pub mod openai_compat;
 pub mod sse;
 pub mod session;
 pub mod situation;
+pub mod glossary;
+pub mod memory;
