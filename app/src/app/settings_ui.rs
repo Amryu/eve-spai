@@ -523,150 +523,174 @@ impl SpaiApp {
         i: usize,
         notes: &crate::notes::NotesView,
     ) -> (bool, Option<crate::pickers::PickerKind>) {
+        use crate::pickers::PickerKind;
         use crate::settings::Severity::*;
         let mut changed = false;
-        let mut open_picker: Option<crate::pickers::PickerKind> = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("if severity ≥");
-            egui::ComboBox::from_id_salt(("rsev", i))
-                .selected_text(format!("{:?}", ru.min_severity))
-                .show_ui(ui, |ui| {
-                    for lvl in [Info, Warning, Danger, Critical] {
-                        changed |= ui
-                            .menu_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
-                            .changed();
-                    }
-                });
-            ui.label("within");
-            let mut mj = ru.max_jumps.unwrap_or(0);
+        let mut want: Option<PickerKind> = None;
+        // A condition's current value is the button that edits it: one line, cut to fit.
+        let summary = |ui: &mut egui::Ui, list: &[String], any: &str| -> bool {
+            let text = if list.is_empty() { any.to_owned() } else { list.join(", ") };
+            let w = ui.available_width().min(420.0);
+            ui.add(egui::Button::new((egui::RichText::new(&text), egui::Atom::grow(), egui_phosphor::regular::PENCIL_SIMPLE)).truncate().min_size(egui::vec2(w, 0.0)))
+                .on_hover_text(if list.is_empty() { "Click to choose".to_owned() } else { text.clone() })
+                .clicked()
+        };
+        let row = |ui: &mut egui::Ui, label: &str, hint: &str| {
+            ui.label(label).on_hover_text(hint);
+        };
+        let grid = |ui: &mut egui::Ui, id: (&str, usize), f: &mut dyn FnMut(&mut egui::Ui)| {
+            egui::Grid::new(id).num_columns(2).spacing([16.0, 8.0]).min_col_width(110.0).show(ui, |ui| f(ui));
+        };
+
+        ui.label(egui::RichText::new("When").strong());
+        ui.add_space(2.0);
+        grid(ui, ("rule_when", i), &mut |ui| {
+            row(ui, "Severity", "The least severe report that counts");
+            egui::ComboBox::from_id_salt(("rsev", i)).selected_text(format!("{:?} or worse", ru.min_severity)).show_ui(ui, |ui| {
+                for lvl in [Info, Warning, Danger, Critical] {
+                    changed |= ui.menu_value(&mut ru.min_severity, lvl, format!("{lvl:?} or worse")).changed();
+                }
+            });
+            ui.end_row();
+
+            row(ui, "Distance", "Jumps from the rule's characters, or from any of yours when it names none");
+            ui.horizontal(|ui| {
+                let mut mj = ru.max_jumps.unwrap_or(0);
+                if ui
+                    .add(egui::DragValue::new(&mut mj).range(0..=50).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("within {n} jumps") }))
+                    .changed()
+                {
+                    ru.max_jumps = if mj == 0 { None } else { Some(mj) };
+                    changed = true;
+                }
+                changed |= ui
+                    .add_enabled(ru.max_jumps.is_some(), egui::Checkbox::new(&mut ru.count_bridges, "Count jump bridges"))
+                    .on_hover_text("Off: gates only, as far as a hostile who cannot use your bridges really is")
+                    .changed();
+            });
+            ui.end_row();
+
+            row(ui, "Hostiles", "The number in the report, such as \"+5\" or \"10 reds\"");
+            let mut mc = ru.min_count.unwrap_or(0);
             if ui
-                .add(egui::DragValue::new(&mut mj).range(0..=50).custom_formatter(|n, _| {
-                    if n == 0.0 { "any".into() } else { format!("{n}j") }
-                }))
+                .add(egui::DragValue::new(&mut mc).range(0..=999).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("at least {n}") }))
                 .changed()
             {
-                ru.max_jumps = if mj == 0 { None } else { Some(mj) };
-                changed = true;
-            }
-            if ru.max_jumps.is_some() {
-                changed |= ui
-                    .checkbox(&mut ru.count_bridges, "bridges")
-                    .on_hover_text(
-                        "Count jump bridges in the range. Off = gate-only \
-                         (how far a hostile, who can't use your bridges, really is).",
-                    )
-                    .changed();
-            }
-            ui.label("count ≥");
-            let mut mc = ru.min_count.unwrap_or(0);
-            if ui.add(egui::DragValue::new(&mut mc).range(0..=999)).changed() {
                 ru.min_count = if mc == 0 { None } else { Some(mc) };
                 changed = true;
             }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("requires:");
-            for tag in [
-                "bubble", "camp", "cyno", "dropper", "captackled", "kill", "ess", "spike",
-                "wormhole", "help",
-            ] {
-                let label = if tag == "captackled" { "cap tackled" } else { tag };
-                let mut on = ru.require.iter().any(|t| t == tag);
-                if selectable_chip(ui, on, label).clicked() {
-                    on = !on;
-                    ru.require.retain(|t| t != tag);
-                    if on {
-                        ru.require.push(tag.to_owned());
+            ui.end_row();
+
+            row(ui, "Mentions", "The report has to mention one of these");
+            const KINDS: [(&str, &str); 10] = [
+                ("bubble", "Bubble"),
+                ("camp", "Camp"),
+                ("cyno", "Cyno"),
+                ("dropper", "Dropper"),
+                ("captackled", "Capital tackled"),
+                ("kill", "Kill"),
+                ("ess", "ESS"),
+                ("spike", "Spike"),
+                ("wormhole", "Wormhole"),
+                ("help", "Help"),
+            ];
+            let picked: Vec<String> = KINDS.iter().filter(|(k, _)| ru.require.iter().any(|t| t == k)).map(|(_, l)| (*l).to_owned()).collect();
+            let text = if picked.is_empty() { "Anything".to_owned() } else { picked.join(", ") };
+            let w = ui.available_width().min(420.0);
+            let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), egui_phosphor::regular::CARET_DOWN)).truncate().min_size(egui::vec2(w, 0.0)))
+                .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+            menu.ui(ui, |ui| {
+                for (tag, label) in KINDS {
+                    let mut on = ru.require.iter().any(|t| t == tag);
+                    if ui.checkbox(&mut on, label).changed() {
+                        ru.require.retain(|t| t != tag);
+                        if on {
+                            ru.require.push(tag.to_owned());
+                        }
+                        changed = true;
                     }
-                    changed = true;
                 }
-            }
-        });
-        {
-            use crate::pickers::PickerKind;
-            let row = |ui: &mut egui::Ui, label: &str, list: &[String], any_hint: &str| -> bool {
-                let mut clicked = false;
-                ui.horizontal(|ui| {
-                    ui.label(label);
-                    if ui.button("Edit").clicked() {
-                        clicked = true;
-                    }
-                    let s = if list.is_empty() {
-                        any_hint.to_owned()
-                    } else if list.len() <= 3 {
-                        list.join(", ")
-                    } else {
-                        format!("{} selected", list.len())
-                    };
-                    ui.label(egui::RichText::new(s).weak());
-                });
-                clicked
-            };
-            let mut want: Option<PickerKind> = None;
-            ui.horizontal(|ui| {
-                ui.label("location:");
-                if ui.button("Edit").clicked() {
-                    want = Some(PickerKind::Systems);
-                }
-                let total = ru.regions.len() + ru.constellations.len() + ru.systems.len();
-                let s = if total == 0 { "any".to_owned() } else { format!("{total} selected") };
-                ui.label(egui::RichText::new(s).weak());
             });
-            if row(ui, "channels:", &ru.channels, "any") {
+            ui.end_row();
+
+            row(ui, "Where", "Regions, constellations and systems the report is about");
+            let places: Vec<String> = ru.regions.iter().chain(&ru.constellations).chain(&ru.systems).cloned().collect();
+            if summary(ui, &places, "Anywhere") {
+                want = Some(PickerKind::Systems);
+            }
+            ui.end_row();
+
+            row(ui, "Channels", "The intel channels the report came from");
+            if summary(ui, &ru.channels, "Any channel") {
                 want = Some(PickerKind::Channels);
             }
-            if row(ui, "ships:", &ru.ships, "any") {
+            ui.end_row();
+
+            row(ui, "Ships", "Ships the report names");
+            if summary(ui, &ru.ships, "Any ship") {
                 want = Some(PickerKind::Ships);
             }
-            if row(ui, "characters:", &ru.characters, "any enabled") {
+            ui.end_row();
+
+            row(ui, "Characters", "Whose distance counts; also who the alert is for");
+            if summary(ui, &ru.characters, "Any of yours") {
                 want = Some(PickerKind::Characters);
             }
-            changed |= rule_tag_row(ui, ("pilot_tags", i), "pilot tags:", notes, crate::notes::NoteKind::Pilot, &mut ru.pilot_tags);
-            changed |= rule_tag_row(ui, ("system_tags", i), "system tags:", notes, crate::notes::NoteKind::System, &mut ru.system_tags);
-            if let Some(kind) = want {
-                open_picker = Some(kind);
-            }
-        }
-        ui.horizontal_wrapped(|ui| {
-            ui.label("then:");
-            changed |= ui.checkbox(&mut ru.suppress, "suppress").changed();
-            if !ru.suppress {
-                changed |= ui.checkbox(&mut ru.system_notification, "notify").changed();
-                changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
-                changed |= ui.checkbox(&mut ru.push, "push").changed();
-                ui.label(egui::RichText::new("sound: under Settings, Sounds").weak());
-                ui.label("severity");
+            ui.end_row();
+
+            row(ui, "Pilot tags", "A reported pilot carries one of these tags");
+            changed |= rule_tag_menu(ui, ("pilot_tags", i), notes, crate::notes::NoteKind::Pilot, &mut ru.pilot_tags);
+            ui.end_row();
+
+            row(ui, "System tags", "A reported system carries one of these tags");
+            changed |= rule_tag_menu(ui, ("system_tags", i), notes, crate::notes::NoteKind::System, &mut ru.system_tags);
+            ui.end_row();
+        });
+
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Then").strong());
+        ui.add_space(2.0);
+        grid(ui, ("rule_then", i), &mut |ui| {
+            row(ui, "Action", "Stay quiet keeps later rules from alerting on it too");
+            egui::ComboBox::from_id_salt(("raction", i)).selected_text(if ru.suppress { "Stay quiet" } else { "Alert" }).show_ui(ui, |ui| {
+                changed |= ui.menu_value(&mut ru.suppress, false, "Alert").changed();
+                changed |= ui.menu_value(&mut ru.suppress, true, "Stay quiet").changed();
+            });
+            ui.end_row();
+
+            row(ui, "Show in", "Sounds are set per rule under Settings, Sounds");
+            ui.add_enabled_ui(!ru.suppress, |ui| {
+                ui.horizontal(|ui| {
+                    changed |= ui.checkbox(&mut ru.custom_window, "Alert window").changed();
+                    changed |= ui.checkbox(&mut ru.system_notification, "Desktop notification").changed();
+                    changed |= ui.checkbox(&mut ru.push, "Push").on_hover_text("To your phone, when push is set up").changed();
+                });
+            });
+            ui.end_row();
+
+            row(ui, "As severity", "Changes the alert's colour and sound; Info shows it silently");
+            ui.add_enabled_ui(!ru.suppress, |ui| {
                 egui::ComboBox::from_id_salt(("rsevover", i))
                     .selected_text(match ru.severity_override {
-                        None => "keep".to_owned(),
+                        None => "As reported".to_owned(),
                         Some(s) => format!("{s:?}"),
                     })
                     .show_ui(ui, |ui| {
-                        changed |= ui
-                            .menu_value(&mut ru.severity_override, None, "keep")
-                            .changed();
+                        changed |= ui.menu_value(&mut ru.severity_override, None, "As reported").changed();
                         for lvl in [Info, Warning, Danger, Critical] {
-                            changed |= ui
-                                .menu_value(
-                                    &mut ru.severity_override,
-                                    Some(lvl),
-                                    format!("{lvl:?}"),
-                                )
-                                .changed();
+                            changed |= ui.menu_value(&mut ru.severity_override, Some(lvl), format!("{lvl:?}")).changed();
                         }
-                    })
-                    .response
-                    .on_hover_text(
-                        "Override the alert's severity (sound + colour). Leave 'keep' \
-                         to use the event's own severity. Set Info to show it silently.",
-                    );
-            }
-            ui.label("cooldown");
+                    });
+            });
+            ui.end_row();
+
+            row(ui, "Quiet for", "After an alert, the same rule stays quiet this long");
             changed |= ui
-                .add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).suffix("s"))
+                .add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "no pause".into() } else { format!("{n}s") }))
                 .changed();
+            ui.end_row();
         });
-        (changed, open_picker)
+        (changed, want)
     }
 
     pub(crate) fn alert_rules_editor(&mut self, ui: &mut egui::Ui) {
@@ -714,16 +738,6 @@ impl SpaiApp {
             }
         });
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Top rule wins. A matching rule's actions apply (or it suppresses the alert). \
-                 Empty condition fields mean \"any\". Jumps are measured from the rule's \
-                 characters (or any enabled character). Drag a rule's handle to reorder it, or \
-                 select it and use the arrows under the list.",
-            )
-            .weak(),
-        );
-        ui.add_space(4.0);
         ui.separator();
 
         // Keep the selection valid (first rule by default, cleared rules fall back).
@@ -768,6 +782,8 @@ impl SpaiApp {
                     });
                     ui.add_space(4.0);
                 });
+                ui.label(egui::RichText::new("The first rule that matches decides").weak())
+                    .on_hover_text("Drag a rule by its handle, or select it and use the arrows below, to change the order");
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("alert_rule_list")
@@ -806,11 +822,12 @@ impl SpaiApp {
                                         };
                                         if ui
                                             .add(
-                                                egui::Button::new(txt)
+                                                egui::Button::new((txt, egui::Atom::grow()))
                                                     .selected(selected)
                                                     .frame_when_inactive(selected)
                                                     .stroke(egui::Stroke::NONE)
-                                                    .truncate(),
+                                                    .truncate()
+                                                    .min_size(egui::vec2(ui.available_width(), 0.0)),
                                             )
                                             .on_hover_text(label)
                                             .clicked()
@@ -842,14 +859,15 @@ impl SpaiApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut en = self.settings.alerts.rules[idx].enabled;
-                        if ui.checkbox(&mut en, "").changed() {
+                        if ui.checkbox(&mut en, "").on_hover_text("Rule on").changed() {
                             self.settings.alerts.rules[idx].enabled = en;
                             changed = true;
                         }
                         changed |= ui
                             .add(
                                 egui::TextEdit::singleline(&mut self.settings.alerts.rules[idx].name)
-                                    .desired_width(240.0),
+                                    .hint_text("Rule name")
+                                    .desired_width((ui.available_width() - 110.0).clamp(160.0, 420.0)),
                             )
                             .changed();
                         ui.with_layout(
@@ -2192,4 +2210,60 @@ impl SpaiApp {
         });
         changed
     }
+}
+
+/// A tag condition as a dropdown of the tags of that kind, its button showing which are picked.
+fn rule_tag_menu(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    notes: &crate::notes::NotesView,
+    kind: crate::notes::NoteKind,
+    list: &mut Vec<String>,
+) -> bool {
+    use crate::notes::ANY_TAG;
+    let mut changed = false;
+    let name_of = |id: &str| -> String {
+        if id == ANY_TAG {
+            "Any tag".to_owned()
+        } else {
+            notes.tag(id).map(|t| t.name.clone()).unwrap_or_else(|| "deleted tag".to_owned())
+        }
+    };
+    let text = if list.is_empty() { "Not needed".to_owned() } else { list.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ") };
+    ui.push_id(salt, |ui| {
+        let w = ui.available_width().min(420.0);
+        let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), egui_phosphor::regular::CARET_DOWN)).truncate().min_size(egui::vec2(w, 0.0)))
+            .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+        menu.ui(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                let mut toggle = |ui: &mut egui::Ui, id: &str, text: egui::RichText| {
+                    let mut on = list.iter().any(|x| x == id);
+                    if ui.checkbox(&mut on, text).changed() {
+                        list.retain(|x| x != id);
+                        if on {
+                            list.push(id.to_owned());
+                        }
+                        changed = true;
+                    }
+                };
+                toggle(ui, ANY_TAG, egui::RichText::new("Any tag"));
+                ui.separator();
+                for t in notes.tags(kind) {
+                    toggle(ui, &t.id, egui::RichText::new(&t.name).color(crate::notes::color32(t.color)));
+                }
+                let dangling: Vec<String> = list.iter().filter(|id| *id != ANY_TAG && notes.tag(id).is_none()).cloned().collect();
+                if !dangling.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Deleted, matching nothing:").weak());
+                    for id in dangling {
+                        if ui.button(format!("{}  Remove", egui_phosphor::regular::X)).clicked() {
+                            list.retain(|x| *x != id);
+                            changed = true;
+                        }
+                    }
+                }
+            });
+        });
+    });
+    changed
 }
