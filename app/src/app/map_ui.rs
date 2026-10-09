@@ -5,7 +5,7 @@ use super::*;
 /// A dot's radius against the usual gap between systems on screen.
 const DOT_PER_SPACING: f32 = 0.1;
 /// The usual gap between systems, in points, from which the universe map names them.
-const LABELS_FROM_SPACING: f32 = 56.0;
+const LABELS_FROM_SPACING: f32 = 40.0;
 
 impl SpaiApp {
     /// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes.
@@ -188,6 +188,84 @@ impl SpaiApp {
         move |sev| highlight_window(sev, normal, critical)
     }
 
+    /// The map's keys, while no text field has focus: arrows or WASD pan, +/- or PgUp/PgDn zoom
+    /// about the middle, Home or 0 resets, F follows the character, U shows the universe, Alt+arrows
+    /// or Backspace go back and forward, Ctrl+F searches. `zoom` is the view's zoom range.
+    pub(crate) fn map_keys(&mut self, ui: &egui::Ui, zoom: std::ops::RangeInclusive<f32>) {
+        use egui::Key;
+        if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::F))) {
+            ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("map_search_input")));
+            return;
+        }
+        if ui.ctx().memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ui.ctx()) {
+            return;
+        }
+        let (pan, zoom_by, reset, follow, universe, back, fwd) = ui.input(|i| {
+            let held = |a: Key, b: Key| i.key_down(a) || i.key_down(b);
+            let step = 700.0 * i.stable_dt.min(0.1);
+            let mut pan = egui::Vec2::ZERO;
+            if !i.modifiers.alt {
+                if held(Key::ArrowLeft, Key::A) {
+                    pan.x += step;
+                }
+                if held(Key::ArrowRight, Key::D) {
+                    pan.x -= step;
+                }
+            }
+            if held(Key::ArrowUp, Key::W) {
+                pan.y += step;
+            }
+            if held(Key::ArrowDown, Key::S) {
+                pan.y -= step;
+            }
+            let mut z = 1.0f32;
+            if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) || i.key_pressed(Key::PageUp) {
+                z *= 1.25;
+            }
+            if i.key_pressed(Key::Minus) || i.key_pressed(Key::PageDown) {
+                z /= 1.25;
+            }
+            (
+                pan,
+                z,
+                i.key_pressed(Key::Home) || i.key_pressed(Key::Num0),
+                i.key_pressed(Key::F) && i.modifiers.is_none(),
+                i.key_pressed(Key::U) && i.modifiers.is_none(),
+                (i.modifiers.alt && i.key_pressed(Key::ArrowLeft)) || i.key_pressed(Key::Backspace),
+                i.modifiers.alt && i.key_pressed(Key::ArrowRight),
+            )
+        });
+        if pan != egui::Vec2::ZERO {
+            self.map_pan += pan;
+            self.map_follow = false;
+            ui.ctx().request_repaint();
+        }
+        if zoom_by != 1.0 {
+            let old = self.map_zoom;
+            let new = (old * zoom_by).clamp(*zoom.start(), *zoom.end());
+            // About the middle of the view: the pan scales with the zoom.
+            self.map_pan *= new / old;
+            self.map_zoom = new;
+        }
+        if reset {
+            self.map_pan = egui::Vec2::ZERO;
+            self.map_zoom = 1.0;
+            self.map_follow = false;
+        }
+        if follow {
+            self.map_follow = !self.map_follow;
+        }
+        if universe {
+            self.map_go(crate::map::MapView::Universe);
+        }
+        if back {
+            self.map_back();
+        }
+        if fwd {
+            self.map_forward_nav();
+        }
+    }
+
     pub(crate) fn draw_map(&mut self, ui: &mut egui::Ui) {
         use crate::map::MapView;
         if self.map_regions.is_empty() {
@@ -343,6 +421,9 @@ impl SpaiApp {
         }
         if !resp.dragged() {
             self.map_overlay_drag = false;
+        }
+        if !self.map_overlay_mode {
+            self.map_keys(ui, 0.7..=60.0);
         }
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
@@ -600,7 +681,8 @@ impl SpaiApp {
             Default::default()
         };
         let hole_slots = |id: i64| hole_marks.get(&id).map_or(0.0, |(m, _)| hole_mark_slots(m));
-        if ov.jove {
+        // Zoomed out a tower per system is clutter: a glow under the dot says it until names show.
+        if ov.jove && show_sys_labels {
             for s in &self.map_draw {
                 if crate::jove::has(s.id) {
                     lead_icons
@@ -679,7 +761,7 @@ impl SpaiApp {
                 }
                 // Extra lift without a name, to clear the halos that ring the bare dot.
                 let mid_y = p.y - dot - if show_sys_labels { 2.0 } else { 8.0 } - icon_h / 2.0;
-                let mut name_w = if show_sys_labels {
+                let name_w = if show_sys_labels {
                     painter
                         .layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE)
                         .size()
@@ -687,10 +769,17 @@ impl SpaiApp {
                 } else {
                     0.0
                 };
-                let lay = |name_w: f32| {
+                // Where the row sits: 0 above the dot, 1 below, 2 to its right, 3 to its left.
+                let lay_at = |name_w: f32, spot: u8| {
                     let name_span = if name_w > 0.0 { name_w + NAME_GAP } else { 0.0 };
                     let total = (lead + right) * icon_w + name_span;
-                    let left = p.x - total / 2.0;
+                    let side = dot + 4.0;
+                    let (left, mid_y) = match spot {
+                        1 => (p.x - total / 2.0, p.y + dot + 2.0 + icon_h / 2.0),
+                        2 => (p.x + side, p.y),
+                        3 => (p.x - side - total, p.y),
+                        _ => (p.x - total / 2.0, mid_y),
+                    };
                     let name_x = left + lead * icon_w;
                     let rect = egui::Rect::from_min_max(
                         egui::pos2(left, mid_y - icon_h / 2.0),
@@ -705,13 +794,11 @@ impl SpaiApp {
                         rect,
                     }
                 };
-                if name_w > 0.0 && placed.iter().any(|r| r.expand(2.0).intersects(lay(name_w).rect))
-                {
-                    // No room for the name. The icons stay, and re-centre on the dot as if the name
-                    // had never been there.
-                    name_w = 0.0;
-                }
-                let row = lay(name_w);
+                // A name is never dropped: above the dot when there is room, else below, right or
+                // left, and above regardless when all four are taken.
+                let free = |spot: u8| !placed.iter().any(|r| r.expand(2.0).intersects(lay_at(name_w, spot).rect));
+                let spot = if name_w > 0.0 { (0..4).find(|s| free(*s)).unwrap_or(0) } else { 0 };
+                let row = lay_at(name_w, spot);
                 if row.name_shown {
                     placed.push(row.rect);
                 }
@@ -920,6 +1007,14 @@ impl SpaiApp {
             self.route_destination = None;
         }
 
+        if ov.jove && !show_sys_labels {
+            for s in &self.map_draw {
+                if let Some(p) = pos.get(&s.id).filter(|p| cull.contains(**p) && crate::jove::has(s.id)) {
+                    painter.circle_filled(*p, dot + 4.0, JOVE_COLOR.gamma_multiply(0.18));
+                    painter.circle_filled(*p, dot + 2.0, JOVE_COLOR.gamma_multiply(0.22));
+                }
+            }
+        }
         // The campfire itself rides the label row (see `lead_icons`); only its glow stays on the dot.
         if ov.camps {
             for (id, level) in &self.camped_cache {
@@ -1430,6 +1525,7 @@ impl SpaiApp {
         if resp.dragged() {
             self.map_pan += resp.drag_delta();
         }
+        self.map_keys(ui, 0.3..=6.0);
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {

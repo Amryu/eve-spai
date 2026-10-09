@@ -1663,10 +1663,11 @@ impl SpaiApp {
         if hits.is_empty() {
             sel = 0;
         } else {
-            if down {
+            // The list grows upwards from the field, the first hit nearest it: Up moves away.
+            if up {
                 sel = (sel + 1).min(hits.len() - 1);
             }
-            if up {
+            if down {
                 sel = sel.saturating_sub(1);
             }
             sel = sel.min(hits.len() - 1);
@@ -1802,13 +1803,15 @@ impl SpaiApp {
                                     }
                                 }
                             });
-                        ui.label(icon::MAGNIFYING_GLASS);
+                        ui.label(icon::MAGNIFYING_GLASS).on_hover_text("Ctrl+F");
+                        let w = (ui.available_width() - if has_query { 30.0 } else { 0.0 }).max(60.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
                                 .id(egui::Id::new("map_search_input"))
-                                .hint_text("Search system / constellation / region")
-                                .desired_width(240.0),
-                        );
+                                .hint_text("Find (Ctrl+F)")
+                                .desired_width(w),
+                        )
+                        .on_hover_text("A system, constellation, region or sov upgrade");
                         if has_query && ui.button(icon::X).clicked() {
                             clear_search = true;
                         }
