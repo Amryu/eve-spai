@@ -140,6 +140,97 @@ impl SpaiApp {
         }
     }
 
+    /// Loads the saved rescue history once, then saves it whenever it changes.
+    pub(crate) fn rescue_history_persist(&mut self) {
+        let Some(store) = self.store.as_ref() else { return };
+        let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.rescue_history_loaded {
+            self.rescue_history_loaded = true;
+            let saved = store
+                .kv_get(crate::rescue::HISTORY_KEY)
+                .and_then(|j| serde_json::from_str::<Vec<crate::rescue::RescueRecord>>(&j).ok())
+                .unwrap_or_default();
+            r.load_history(saved);
+        }
+        r.sync_history();
+        if r.history_dirty {
+            r.history_dirty = false;
+            if let Ok(json) = serde_json::to_string(&r.history) {
+                store.kv_set(crate::rescue::HISTORY_KEY, &json);
+            }
+        }
+    }
+
+    pub(crate) fn rescue_history_window(&mut self, ctx: &egui::Context) {
+        if !self.rescue_history_open {
+            return;
+        }
+        let mut filter = std::mem::take(&mut self.rescue_history_filter);
+        let mut delete: Option<(i64, String)> = None;
+        let rescue = self.rescue.clone();
+        let keep = Self::dialog_viewport(ctx, "rescue_history_window", "EVE Spai - Past rescues", [620.0, 560.0], |ui| {
+            let r = rescue.lock().unwrap_or_else(|e| e.into_inner());
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter by system, pilot, ship or text").desired_width(ui.available_width() - 120.0));
+                ui.label(egui::RichText::new(format!("{} pings", r.history.len())).weak());
+            });
+            ui.separator();
+            let f = filter.trim().to_lowercase();
+            let rows: Vec<&crate::rescue::RescueRecord> = r
+                .history
+                .iter()
+                .rev()
+                .filter(|h| {
+                    f.is_empty()
+                        || [Some(&h.raw), Some(&h.author), h.system.as_ref(), h.pilot.as_ref(), h.class.as_ref(), h.cyno.as_ref()]
+                            .into_iter()
+                            .flatten()
+                            .any(|x| x.to_lowercase().contains(&f))
+                })
+                .collect();
+            if rows.is_empty() {
+                ui.label(egui::RichText::new(if r.history.is_empty() { "No delve911 pings yet. Each one is kept here with what was done about it." } else { "Nothing matches." }).weak());
+            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for h in rows {
+                    let when = chrono::DateTime::from_timestamp(h.received, 0).map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(when).weak());
+                        let what = [h.system.clone(), h.class.clone(), h.pilot.clone()].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                delete = Some((h.received, h.raw.clone()));
+                            }
+                            let done: Vec<&str> = [(h.coord_pinged, "coord"), (h.invited, "invited"), (h.comms, "comms")]
+                                .into_iter()
+                                .filter_map(|(on, l)| on.then_some(l))
+                                .collect();
+                            let status = match h.resolved_at {
+                                Some(_) => format!("{}  Resolved", egui_phosphor::regular::CHECK_CIRCLE),
+                                None if h.worked => format!("{}  Worked", egui_phosphor::regular::PLAY),
+                                None => "Not worked".to_owned(),
+                            };
+                            ui.label(egui::RichText::new(status).weak()).on_hover_text(if done.is_empty() { "No pings or invites sent".to_owned() } else { format!("Done: {}", done.join(", ")) });
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let text = if what.is_empty() { h.raw.clone() } else { what };
+                                ui.add(egui::Label::new(text).truncate()).on_hover_text(format!("{}: {}", h.author, h.raw));
+                            });
+                        });
+                    });
+                }
+            });
+        });
+        if let Some((at, raw)) = delete {
+            let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+            r.history.retain(|h| !(h.received == at && h.raw == raw));
+            r.history_dirty = true;
+        }
+        self.rescue_history_filter = filter;
+        if !keep {
+            self.rescue_history_open = false;
+        }
+    }
+
     /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
     pub(crate) fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
@@ -662,6 +753,7 @@ impl SpaiApp {
         let in_range_ly = self.rescue_ly.filter(|_| self.rescue_range.is_none());
         let staging_name = self.settings.rescue_staging_system.clone();
         let mut pop_out = false;
+        let mut open_history = false;
         let range_warning = self.rescue_range.as_ref().map(|w| {
             let jumps = |n: Option<u32>, unit: &str| match n {
                 Some(j) => format!("{j} {unit}"),
@@ -852,6 +944,12 @@ impl SpaiApp {
                         .clicked()
                     {
                         pop_out = true;
+                    }
+                    if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CLOCK_COUNTER_CLOCKWISE)
+                        .on_hover_text("Past rescues")
+                        .clicked()
+                    {
+                        open_history = true;
                     }
                     if !compact {
                         chips(ui);
@@ -1486,6 +1584,9 @@ impl SpaiApp {
             if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
                 self.raise_main = true;
             }
+        }
+        if open_history {
+            self.rescue_history_open = true;
         }
         if pop_out {
             self.settings.rescue_popped = true;

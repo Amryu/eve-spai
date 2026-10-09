@@ -2748,6 +2748,25 @@ pub(crate) fn all() -> Vec<Scene> {
             crate::settings::SovUpgrade { system: "7-K5EL".into(), upgrade: "Major Threat Detection Array 3, Exploration Detector 2, Ore Prospecting Array 1".into() },
         ];
     }));
+    v.push(dialog_scene("dialog_rescue_history", [620.0, 560.0], |a| {
+        a.open_rescue_history_for_test();
+        let t0 = crate::clock::utc().timestamp();
+        let mut r = a.rescue_for_test().lock().unwrap();
+        let rec = |ago: i64, sys: Option<&str>, class: Option<&str>, pilot: Option<&str>, raw: &str| crate::rescue::RescueRecord {
+            received: t0 - ago,
+            author: "Some Linemember".into(),
+            raw: raw.into(),
+            system: sys.map(Into::into),
+            class: class.map(Into::into),
+            pilot: pilot.map(Into::into),
+            ..Default::default()
+        };
+        r.history = vec![
+            crate::rescue::RescueRecord { worked: true, coord_pinged: true, invited: true, comms: true, resolved_at: Some(t0 - 86_000), ..rec(86_400 * 3, Some("1DQ1-A"), Some("Rorqual"), Some("Rorq Owner"), "rorq tackled 1DQ1-A help") },
+            rec(86_400, None, None, None, "anyone around? something tackled somewhere near the big station, not sure which system, please send help fast"),
+            crate::rescue::RescueRecord { worked: true, coord_pinged: true, ..rec(600, Some("7-K5EL"), Some("Dreadnought"), Some("Xenuria Thrax The Exceptionally Long Named"), "dread tackled 7-K5EL cyno up") },
+        ];
+    }));
     v.push(dialog_scene("dialog_cyno_generators", [380.0, 460.0], |a| {
         a.open_cyno_generators_for_test();
         a.systems = Some(fixtures::systems());

@@ -12,6 +12,40 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::geo::Systems;
 
 const EVENTS_CAP: usize = 200;
+/// Past pings kept on disk.
+pub const HISTORY_CAP: usize = 1000;
+pub const HISTORY_KEY: &str = "rescue_history";
+
+/// One delve911 ping as it went: what was asked and what the FC did about it. Outlives the session,
+/// unlike [`RescueEvent`].
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RescueRecord {
+    /// Links the record to this session's event; gone after a restart, when the record is final.
+    #[serde(skip)]
+    pub seq: Option<u64>,
+    pub received: i64,
+    pub author: String,
+    pub raw: String,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub pilot: Option<String>,
+    #[serde(default)]
+    pub cyno: Option<String>,
+    #[serde(default)]
+    pub class: Option<String>,
+    /// Picked as the ping being worked at some point.
+    #[serde(default)]
+    pub worked: bool,
+    #[serde(default)]
+    pub coord_pinged: bool,
+    #[serde(default)]
+    pub invited: bool,
+    #[serde(default)]
+    pub comms: bool,
+    #[serde(default)]
+    pub resolved_at: Option<i64>,
+}
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 fn next_seq() -> u64 {
@@ -183,6 +217,10 @@ pub struct RescueState {
     /// coord ping, see [`fc_ping_wait`].
     pub coord_pinged_at: Option<i64>,
     pub bpinged_at: Option<i64>,
+    /// Every real ping, newest last, kept on disk under [`HISTORY_KEY`].
+    pub history: Vec<RescueRecord>,
+    /// The history changed since it was last saved.
+    pub history_dirty: bool,
 }
 
 impl RescueState {
@@ -196,6 +234,25 @@ impl RescueState {
             return;
         }
         let fresh_ping = ev.is_ping;
+        // A test scenario is a rehearsal, not a rescue.
+        if fresh_ping && !self.test_mode {
+            self.history.push(RescueRecord {
+                seq: Some(ev.seq),
+                received: ev.received,
+                author: ev.author.clone(),
+                raw: ev.raw.clone(),
+                system: ev.system_name.clone(),
+                pilot: ev.pilot.clone(),
+                cyno: ev.cyno.clone(),
+                class: ev.cap_class.map(|c| c.label().to_owned()),
+                ..Default::default()
+            });
+            if self.history.len() > HISTORY_CAP {
+                let drop = self.history.len() - HISTORY_CAP;
+                self.history.drain(0..drop);
+            }
+            self.history_dirty = true;
+        }
         self.events.push(ev);
         if self.events.len() > EVENTS_CAP {
             let drop = self.events.len() - EVENTS_CAP;
@@ -225,6 +282,11 @@ impl RescueState {
     /// Dismiss a ping. If it was the one being worked, fall through to the next newest.
     pub fn resolve_ping(&mut self, seq: u64) {
         self.resolved.insert(seq);
+        let now = crate::clock::utc().timestamp();
+        if let Some(r) = self.history.iter_mut().find(|r| r.seq == Some(seq)) {
+            r.resolved_at = Some(now);
+            self.history_dirty = true;
+        }
         if self.selected_ping == Some(seq) {
             self.select_newest();
         }
@@ -241,6 +303,27 @@ impl RescueState {
 
     pub fn actions_mut(&mut self, seq: u64) -> &mut PingActions {
         self.actions.entry(seq).or_default()
+    }
+
+    /// Copies what the FC did on each ping of this session into its record.
+    pub fn sync_history(&mut self) {
+        for r in self.history.iter_mut() {
+            let Some(a) = r.seq.and_then(|s| self.actions.get(&s)) else { continue };
+            let (coord, invited, comms) = (a.coord_pinged, a.invited_op.is_some(), a.command_comms_op.is_some());
+            if (r.coord_pinged, r.invited, r.comms) != (coord, invited, comms) {
+                (r.coord_pinged, r.invited, r.comms) = (coord, invited, comms);
+                self.history_dirty = true;
+            }
+        }
+    }
+
+    /// Puts the saved history in front of whatever this session recorded before it was loaded.
+    pub fn load_history(&mut self, saved: Vec<RescueRecord>) {
+        let mut all = saved;
+        all.append(&mut self.history);
+        let over = all.len().saturating_sub(HISTORY_CAP);
+        all.drain(0..over);
+        self.history = all;
     }
 
     pub fn select_newest(&mut self) {
@@ -264,6 +347,10 @@ impl RescueState {
             self.cap_class = None;
             return;
         };
+        if let Some(r) = self.history.iter_mut().find(|r| r.seq == Some(ev.seq) && !r.worked) {
+            r.worked = true;
+            self.history_dirty = true;
+        }
         self.ping_author = Some(ev.author);
         self.capital_system = ev.system_id;
         self.capital_system_name = ev.system_name;
@@ -729,6 +816,61 @@ pub fn parse_raw_dscan(text: &str) -> Vec<(String, u32)> {
     let mut out: Vec<(String, u32)> = counts.into_iter().collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn ping(seq: u64, raw: &str) -> RescueEvent {
+        RescueEvent {
+            seq,
+            received: 1_000 + seq as i64,
+            author: "Some Pilot".into(),
+            raw: raw.into(),
+            is_ping: true,
+            system_id: None,
+            system_name: Some("1DQ1-A".into()),
+            pilot: Some("Rorq Owner".into()),
+            cyno: None,
+            anomaly: None,
+            cap_class: Some(CapClass::Rorqual),
+        }
+    }
+
+    #[test]
+    fn pings_are_kept_with_what_the_fc_did_and_survive_a_restart() {
+        let mut r = RescueState::default();
+        r.push_event(ping(1, "rorq tackled 1DQ1-A"));
+        r.push_event(ping(2, "dread tackled 1DQ1-A"));
+        assert_eq!(r.history.len(), 2);
+        assert!(r.history[0].worked, "the first ping is selected and so worked");
+        r.actions_mut(1).coord_pinged = true;
+        r.actions_mut(1).invited_op = Some(3);
+        r.sync_history();
+        r.resolve_ping(1);
+        let first = &r.history[0];
+        assert!(first.coord_pinged && first.invited && !first.comms && first.resolved_at.is_some());
+        let json = serde_json::to_string(&r.history).unwrap();
+        let mut next = RescueState::default();
+        next.push_event(ping(1, "a new session's first ping"));
+        next.load_history(serde_json::from_str(&json).unwrap());
+        assert_eq!(next.history.len(), 3);
+        assert_eq!(next.history[2].raw, "a new session's first ping", "saved ones go first");
+        assert!(next.history[0].seq.is_none(), "an old record is not linked to this session's seq 1");
+        next.actions_mut(2).coord_pinged = true;
+        next.actions_mut(1).coord_pinged = true;
+        next.sync_history();
+        assert!(!next.history[1].coord_pinged, "the old seq 2 record does not take this session's actions");
+        assert!(next.history[2].coord_pinged);
+    }
+
+    #[test]
+    fn a_test_scenario_leaves_no_history() {
+        let mut r = RescueState { test_mode: true, ..Default::default() };
+        r.push_event(ping(1, "rorq tackled"));
+        assert!(r.history.is_empty() && !r.history_dirty);
+    }
 }
 
 #[cfg(test)]

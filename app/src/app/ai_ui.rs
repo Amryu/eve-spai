@@ -74,6 +74,7 @@ impl SpaiApp {
             jump_bridges: s.jump_bridges.clone(),
             sov_upgrades: s.sov_upgrades.clone(),
             fleet_presets: s.fleet_presets.clone(),
+            fleet_backend: self.fleet_on().then(|| self.fleet_backend.clone()),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
         };

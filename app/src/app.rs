@@ -926,6 +926,9 @@ pub struct SpaiApp {
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
     rescue_feed_cursor: u64,
+    rescue_history_loaded: bool,
+    rescue_history_open: bool,
+    rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
     /// can resolve a hull named in a ping without rebuilding the map.
     ship_groups: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
@@ -1736,6 +1739,9 @@ impl SpaiApp {
             fleet_confirm: None,
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             rescue_feed_cursor: 0,
+            rescue_history_loaded: false,
+            rescue_history_open: false,
+            rescue_history_filter: String::new(),
             ship_groups: None,
             delve911_cursor: 0,
             notes_view,
@@ -3075,6 +3081,17 @@ impl SpaiApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn rescue_for_test(&self) -> &std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>> {
+        &self.rescue
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_rescue_history_for_test(&mut self) {
+        self.rescue_history_open = true;
+        self.rescue_history_loaded = true;
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_sov_upgrades_for_test(&mut self) {
         self.sov_upgrades_open = true;
     }
@@ -3718,6 +3735,7 @@ impl SpaiApp {
             self.jabber_popout_windows(ctx, f);
         }
         self.cyno_generators_window(ctx);
+        self.rescue_history_window(ctx);
         if self.settings.fc_rescue_enabled && self.settings.rescue_popped && self.rescue_on() {
             self.rescue_popout_window(ctx);
         }
@@ -3850,6 +3868,7 @@ impl eframe::App for SpaiApp {
         if self.settings.fc_rescue_enabled {
             self.ingest_delve911_jabber();
             self.drain_rescue_feed(&ctx);
+            self.rescue_history_persist();
         }
 
         let cur_sys = self.player_system().unwrap_or(0);
