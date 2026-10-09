@@ -89,6 +89,14 @@ pub fn spawn_location_poller(
                 }
                 if let Some((sys, docked, ship)) = location_for(&client, &store, &client_id, &ch.name) {
                     if let Some(was) = seen.get(&ch.name).filter(|w| w.system != sys) {
+                        store.log_move(&crate::store::history::MoveRow {
+                            time: now,
+                            character: ch.name.clone(),
+                            from: was.system,
+                            to: sys,
+                            ship,
+                            docked,
+                        });
                         let moved = Moved {
                             character: ch.name.clone(),
                             from: was.system,

@@ -480,6 +480,8 @@ mod ships;
 
 mod battles;
 
+pub mod history;
+
 mod wormholes;
 
 mod share;
@@ -527,6 +529,7 @@ impl Store {
     pub(crate) fn mem() -> Self {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(history::SCHEMA).unwrap();
         migrate_share(&conn);
         Store {
             conn,
@@ -546,6 +549,7 @@ impl Store {
         owner_only(&dir, &path);
         apply_pragmas(&conn);
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(history::SCHEMA)?;
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN faction_id INTEGER", []);
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN x2d REAL", []);
@@ -763,7 +767,8 @@ impl Store {
     pub fn prune_kill_intel(&self, before: i64) {
         let _ = self.conn.execute("DELETE FROM kill_intel WHERE time < ?1", params![before]);
         let _ = self.conn.execute(
-            "DELETE FROM kill_details WHERE kill_id NOT IN (SELECT killmail_id FROM kill_intel)",
+            // Battle cards keep the details of their engagements, which outlive kill intel.
+            "DELETE FROM kill_details WHERE kill_id NOT IN (SELECT killmail_id FROM kill_intel) AND kill_id NOT IN (SELECT kill_id FROM engagements)",
             [],
         );
     }
@@ -1213,8 +1218,10 @@ pub fn run_maintenance(level: crate::disk::Level) {
     let Ok(store) = Store::open() else { return };
     let now = crate::clock::utc().timestamp();
 
-    let deleted = store.prune_engagements(now - ENGAGEMENT_RETENTION_SECS);
-    store.prune_kill_intel(now - 3600);
+    let retention = store.load_settings().map(|s| s.retention).unwrap_or_default();
+    let engagements_before = if retention.kills_nearby >= crate::settings::Retention::FOREVER { 0 } else { now - retention.kills_nearby.max(1) as i64 * 86_400 };
+    let deleted = store.prune_engagements(engagements_before) + store.prune_history(&retention, now);
+    store.prune_kill_intel(now - 86_400);
     crate::image_cache::prune_for_level(level);
     crate::lookup::prune_cache(level);
 
