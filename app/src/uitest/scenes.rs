@@ -5938,26 +5938,25 @@ fn uitest_character_row_buttons_match_the_view() {
     }
 }
 
-/// The condition `Edit` buttons are labelled controls in a form whose every other control is
-/// floored at `interact_size.y`. The `requires:` chips are the nearest peer.
+/// The rule form's condition buttons line up: one left edge and one width, so the form reads as
+/// two columns.
 #[test]
-fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
+fn uitest_alert_rule_conditions_line_up() {
     let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0], None);
     let harness = harness::build(&mut scene, false);
-    let chip = buttons_labelled(&harness, "bubble").first().expect("no requires chip").1;
-    let edits = buttons_labelled(&harness, "Edit");
-    assert_eq!(edits.len(), 6, "expected six Edit buttons: {edits:?}");
-    for (_, r) in edits {
-        assert!(
-            (r.height() - chip.height()).abs() < 1.0,
-            "Edit is {:.1}px tall against {:.1}px for the bubble chip",
-            r.height(),
-            chip.height()
-        );
+    let mut rects = Vec::new();
+    for label in ["Anything", "Anywhere", "Any channel", "Any ship", "Any of yours", "Not needed"] {
+        // The label carries the trailing edit or caret icon.
+        let found: Vec<(String, egui::Rect)> = button_rects(&harness).into_iter().filter(|(l, _)| l.starts_with(label)).collect();
+        assert!(!found.is_empty(), "no {label} button");
+        rects.extend(found.into_iter().map(|(_, r)| r));
+    }
+    assert_eq!(rects.len(), 7, "five conditions and two tag conditions: {rects:?}");
+    let first = rects[0];
+    for r in &rects {
+        assert!((r.left() - first.left()).abs() < 1.0 && (r.width() - first.width()).abs() < 1.0, "{r:?} against {first:?}");
     }
 }
-
-
 
 /// With no session there is no rendered preview, and an FC still has to be able to ping. The
 /// fallback renders the same template the rescue uses, from the form.
