@@ -1489,7 +1489,13 @@ pub(crate) fn real_battle() -> (br_core::battle::Battle, HashMap<i64, String>) {
     }
     let mut json = String::new();
     std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&include_bytes!("data/battle.json.gz")[..]), &mut json).expect("battle fixture");
-    let raw: Raw = serde_json::from_str(&json).expect("battle fixture");
+    let mut raw: Raw = serde_json::from_str(&json).expect("battle fixture");
+    // The recorded kills predate damage being kept: give each attacker a steady, made-up share.
+    for e in raw.engagements.iter_mut() {
+        for a in e.attackers.iter_mut() {
+            a.damage = (a.char_id.rem_euclid(9_973) * 7 + 100) % 40_000;
+        }
+    }
     let one_system = |a: i64, b: i64| (a == b).then_some(0);
     let biggest = battle::cluster(&raw.engagements, battle::BATTLE_WINDOW_SECS, battle::BATTLE_MAX_JUMPS, battle::BATTLE_BREAK_SECS, &Default::default(), one_system)
         .into_iter()
