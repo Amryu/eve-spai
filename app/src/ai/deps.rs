@@ -36,6 +36,8 @@ pub struct AiFacts {
     pub jump_bridges: Vec<crate::settings::JumpBridge>,
     pub sov_upgrades: Vec<crate::settings::SovUpgrade>,
     pub fleet_presets: Vec<crate::settings::FleetPreset>,
+    /// The fleet dashboard, while it is unlocked. Tools only ever read through it.
+    pub fleet_backend: Option<Arc<dyn crate::fleets::backend::FleetBackend>>,
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
