@@ -1,0 +1,342 @@
+//! The Assistant tab: the conversation, its tool calls and the actions waiting for the user.
+
+use super::*;
+use crate::ai::session::{AiHandle, CardState, Command, Turn};
+use crate::ai::tools::ActionKind;
+
+/// How often the tools' copy of the UI-thread state is refreshed when nothing else asks for it.
+const FACTS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl SpaiApp {
+    pub(crate) fn ai_on(&self) -> bool {
+        self.settings.ai.enabled
+    }
+
+    /// The session, started on first use. Headless builds get one with no thread behind it.
+    pub(crate) fn ai_handle(&mut self, ctx: &egui::Context) -> AiHandle {
+        if let Some(h) = &self.ai {
+            return h.clone();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let view: crate::ai::session::SharedView = Default::default();
+        let cancel: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let handle = AiHandle { tx, view: view.clone(), cancel: cancel.clone() };
+        self.ai_push_facts(true);
+        if !self.headless {
+            let deps = crate::ai::deps::AiDeps {
+                intel_state: self.intel_state.clone(),
+                player: self.player.clone(),
+                system_status: self.system_status.clone(),
+                jabber: self.jabber.clone(),
+                killfeed: self.killfeed.clone(),
+                battles: self.battles.clone(),
+                camps: self.camps.clone(),
+                rescue: self.rescue.clone(),
+                fleet: self.fleet.clone(),
+                lookup_table: self.lookup_table.clone(),
+                facts: self.ai_facts.clone(),
+                online: true,
+            };
+            let secrets = self.ai_secrets.clone();
+            let make: crate::ai::session::ProviderFactory = Box::new(move |f| crate::ai::session::provider_for(f, secrets.as_ref()));
+            let session = crate::ai::session::Session::new(deps, view, cancel, make, Some(ctx.clone()));
+            crate::ai::session::spawn(session, rx);
+        }
+        self.ai = Some(handle.clone());
+        handle
+    }
+
+    /// Copies what the tools need from the UI thread, every couple of seconds or when `now`.
+    pub(crate) fn ai_push_facts(&mut self, now: bool) {
+        if !self.ai_on() {
+            return;
+        }
+        if !now && self.ai_facts_at.is_some_and(|t| t.elapsed() < FACTS_EVERY) {
+            return;
+        }
+        self.ai_facts_at = Some(std::time::Instant::now());
+        let s = &self.settings;
+        let facts = crate::ai::deps::AiFacts {
+            systems: self.systems.clone(),
+            perms: s.ai.perms.clone(),
+            unlocked: crate::ai::perms::Unlocked { fleet: self.fleet_on(), rescue: self.rescue_on() },
+            chat_dir: self.chat_dir.clone(),
+            severity: s.severity.clone(),
+            cyno_generators: s.cyno_generators.clone(),
+            fleet_presets: s.fleet_presets.clone(),
+            notes_view: Some(self.notes_view.clone()),
+            ai: s.ai.clone(),
+        };
+        *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
+    }
+
+    /// Carries out an action card the user applied. Returns the note the model gets about it.
+    fn ai_apply(&mut self, kind: &ActionKind, summary: &str) -> String {
+        match kind {
+            ActionKind::Highlight(ids) => {
+                self.ai_highlight = ids.clone();
+                self.view = View::Map;
+            }
+            ActionKind::Focus(id) => {
+                self.focus_map_on_select(*id);
+                self.view = View::Map;
+            }
+            ActionKind::PlanRoute { from, to } => {
+                self.map_set_route_mode("gate");
+                self.map_route_anchors = vec![*from, *to];
+                self.map_replan_route();
+                self.view = View::Map;
+            }
+            ActionKind::SetDestination { system, character } => {
+                let who = character.clone().unwrap_or_else(|| self.active_character.clone());
+                self.set_destination_for(&[who], *system);
+            }
+            ActionKind::AddAlertRule(rule) => {
+                self.settings.alerts.rules.push((**rule).clone());
+                crate::settings::ensure_rule_ids(&mut self.settings.alerts.rules);
+                self.needs_save = true;
+            }
+        }
+        format!("The user applied: {summary}")
+    }
+
+    pub(crate) fn assistant_view(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let handle = self.ai_handle(ui.ctx());
+        self.ai_push_facts(false);
+        let (turns, busy, usage) = {
+            let v = handle.view.lock().unwrap_or_else(|e| e.into_inner());
+            (v.turns.clone(), v.busy, v.usage)
+        };
+        let (model, _) = crate::ai::session::model_of(&self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()));
+        let provider = self.settings.ai.provider.label();
+
+        egui::Panel::top("ai_top").show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
+                        self.ai_perms_open = true;
+                    }
+                    if ui.add_enabled(!turns.is_empty(), egui::Button::new(format!("{}  New chat", icon::PLUS))).clicked() {
+                        handle.send(Command::NewChat);
+                    }
+                    let used = format!("{} in \u{00b7} {} out", fmt_count(usage.input as i64), fmt_count(usage.output as i64));
+                    ui.label(egui::RichText::new(used).weak()).on_hover_text(format!("Tokens this session; {} read from cache", fmt_count(usage.cached as i64)));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let what = if model.is_empty() { provider.to_owned() } else { format!("{provider} \u{00b7} {model}") };
+                        ui.add(egui::Label::new(egui::RichText::new(format!("{}  {what}", icon::SPARKLE)).strong()).truncate())
+                            .on_hover_text("Change it in Settings, Assistant");
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        });
+
+        let mut send: Option<String> = None;
+        egui::Panel::bottom("ai_input").show_inside(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                    if busy {
+                        if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
+                            handle.stop();
+                        }
+                    } else if ui
+                        .add_enabled(!self.ai_input.trim().is_empty(), egui::Button::new(format!("{}  Ask", icon::PAPER_PLANE_RIGHT)))
+                        .clicked()
+                    {
+                        send = Some(std::mem::take(&mut self.ai_input));
+                    }
+                    let edit = egui::TextEdit::multiline(&mut self.ai_input)
+                        .id(egui::Id::new("ai_input"))
+                        .desired_rows(2)
+                        .desired_width(ui.available_width())
+                        .hint_text("Ask about intel, kills, routes, wormholes\u{2026} (Enter sends, Shift+Enter for a new line)");
+                    let r = ui.add(edit);
+                    let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                    if enter && !busy && !self.ai_input.trim().is_empty() {
+                        send = Some(std::mem::take(&mut self.ai_input).trim_end_matches('\n').to_owned());
+                        ui.ctx().memory_mut(|m| m.request_focus(r.id));
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        });
+
+        let mut card_click: Option<(u64, bool)> = None;
+        egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show_inside(ui, |ui| {
+            if turns.is_empty() {
+                self.ai_empty_state(ui);
+                return;
+            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+                for t in &turns {
+                    if let Some(c) = turn_ui(ui, t) {
+                        card_click = Some(c);
+                    }
+                    ui.add_space(8.0);
+                }
+            });
+        });
+
+        if let Some(text) = send.filter(|t| !t.trim().is_empty()) {
+            handle.send(Command::Send { text, voice: false });
+        }
+        if let Some((id, applied)) = card_click {
+            let card = turns.iter().flat_map(|t| t.cards.iter()).find(|c| c.action.id == id).cloned();
+            if let Some(card) = card {
+                let note = if applied { self.ai_apply(&card.action.kind, &card.action.summary) } else { format!("The user dismissed: {}", card.action.summary) };
+                handle.send(Command::ActionResult { id, applied, note });
+            }
+        }
+    }
+
+    fn ai_empty_state(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(520.0);
+            ui.label(egui::RichText::new("Ask about what is going on around you.").heading());
+            ui.add_space(8.0);
+            for ex in ["Where did the Frat gang go?", "Anything hostile within 5 jumps of me?", "Fastest safe route to Jita?", "Which wormholes are near 1DQ1-A?"] {
+                if ui.link(ex).clicked() {
+                    self.ai_input = ex.to_owned();
+                }
+            }
+            ui.add_space(12.0);
+            let shown = self.settings.ai.perms.values().filter(|v| **v).count();
+            if shown == 0 {
+                ui.label(egui::RichText::new("It can only read static game data until you give it access to more.").weak());
+                if ui.button(format!("{}  Data access\u{2026}", egui_phosphor::regular::KEY)).clicked() {
+                    self.ai_perms_open = true;
+                }
+            }
+        });
+    }
+}
+
+/// One turn. Returns an action card's Apply (true) or Dismiss (false), by the card's id.
+fn turn_ui(ui: &mut egui::Ui, t: &Turn) -> Option<(u64, bool)> {
+    use egui_phosphor::regular as icon;
+    let mut click = None;
+    if t.user {
+        egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if t.voice {
+                    ui.label(egui::RichText::new(icon::MICROPHONE).weak());
+                }
+                ui.add(egui::Label::new(&t.text).wrap());
+            });
+        return None;
+    }
+    if !t.chips.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for c in &t.chips {
+                let action = crate::ai::tools::kind_of(&c.name) == Some(crate::ai::tools::Kind::Action);
+                let (glyph, col) = match &c.error {
+                    Some(_) => (icon::WARNING, crate::theme::standing::WARNING),
+                    None if action => (icon::PLAY, ui.visuals().hyperlink_color),
+                    None => (icon::MAGNIFYING_GLASS, ui.visuals().weak_text_color()),
+                };
+                let r = egui::Frame::new()
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(6, 1))
+                    .show(ui, |ui| ui.label(egui::RichText::new(format!("{glyph} {}", c.name.replace('_', " "))).color(col)))
+                    .response;
+                let mut tip = if c.args.is_empty() { "No filters".to_owned() } else { c.args.clone() };
+                if let Some(e) = &c.error {
+                    tip.push_str(&format!("\n{e}"));
+                }
+                r.on_hover_text(tip);
+            }
+        });
+        ui.add_space(4.0);
+    }
+    if !t.text.is_empty() {
+        render_text(ui, &t.text);
+    }
+    if t.streaming && t.text.is_empty() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(egui::RichText::new("Thinking\u{2026}").weak());
+        });
+    } else if t.streaming {
+        ui.spinner();
+    }
+    for c in &t.cards {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match c.state {
+                        CardState::Pending => {
+                            if ui.button("Dismiss").clicked() {
+                                click = Some((c.action.id, false));
+                            }
+                            if ui.button(format!("{}  Apply", icon::CHECK)).clicked() {
+                                click = Some((c.action.id, true));
+                            }
+                        }
+                        CardState::Applied => {
+                            ui.label(egui::RichText::new(format!("{}  Applied", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        }
+                        CardState::Dismissed => {
+                            ui.label(egui::RichText::new("Dismissed").weak());
+                        }
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(&c.action.summary).wrap());
+                    });
+                });
+            });
+        });
+    }
+    if let Some(e) = &t.error {
+        ui.label(egui::RichText::new(format!("{}  {e}", icon::WARNING)).color(crate::theme::standing::WARNING));
+    }
+    click
+}
+
+/// The model's text with the little markdown it uses: headings, bullets and **bold**.
+fn render_text(ui: &mut egui::Ui, text: &str) {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        if let Some(h) = trimmed.strip_prefix("### ").or_else(|| trimmed.strip_prefix("## ")).or_else(|| trimmed.strip_prefix("# ")) {
+            ui.label(egui::RichText::new(h).strong());
+            continue;
+        }
+        let (bullet, body) = match trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            Some(b) => (true, b),
+            None => (false, trimmed),
+        };
+        let mut job = egui::text::LayoutJob::default();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let normal = ui.visuals().text_color();
+        let strong = ui.visuals().strong_text_color();
+        if bullet {
+            job.append("\u{2022}  ", 0.0, egui::TextFormat::simple(font.clone(), normal));
+        }
+        for (i, part) in body.split("**").enumerate() {
+            let col = if i % 2 == 1 { strong } else { normal };
+            job.append(&part.replace('`', ""), 0.0, egui::TextFormat::simple(font.clone(), col));
+        }
+        job.wrap.max_width = ui.available_width();
+        ui.label(job);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_ai_view(app: &mut SpaiApp, ctx: &egui::Context, turns: Vec<Turn>) {
+    let h = app.ai_handle(ctx);
+    h.view.lock().unwrap().turns = turns;
+}
