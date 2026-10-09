@@ -46,6 +46,8 @@ impl SpaiApp {
         let region_loc = self.store.as_ref().and_then(|s| s.region_of_system(id));
         let mut open_const: Option<i64> = None;
         let mut open_region: Option<i64> = None;
+        let mut pop_out = false;
+        let mut close = false;
 
         let Some(graph) = self.systems.clone() else {
             ui.label("SDE not ready.");
@@ -98,6 +100,12 @@ impl SpaiApp {
                 }
                 if docked {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(egui_phosphor::regular::X).on_hover_text("Close").clicked() {
+                            close = true;
+                        }
+                        if ui.button(egui_phosphor::regular::ARROW_SQUARE_OUT).on_hover_text("Open in its own window").clicked() {
+                            pop_out = true;
+                        }
                         if let Some(adm) = flags.adm {
                             ui.label(
                                 egui::RichText::new(format!("ADM {adm:.1}")).color(adm_color(adm)).strong(),
@@ -174,158 +182,174 @@ impl SpaiApp {
                     }
                 }
             });
-            let region_ids: Vec<i64> = self
-                .store
-                .as_ref()
-                .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
-                .map(|v| v.into_iter().map(|m| m.id).collect())
-                .unwrap_or_default();
-            let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
-                if region_ids.is_empty() {
-                    return 0.0;
-                }
-                let sum: u64 = region_ids.iter().filter_map(|s| status.get(s)).map(|f| sel(f) as u64).sum();
-                sum as f64 / region_ids.len() as f64
-            };
-            let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Last hour:").weak());
-                let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
-                    let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
-                        crate::theme::standing::HOSTILE
-                    } else if avg > 0.0 && v as f64 > avg {
-                        crate::theme::standing::WARNING
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.label(egui::RichText::new(format!("{v} {label}")).color(col));
-                };
-                stat(ui, "jumps", flags.jumps, aj);
-                stat(ui, "ship kills", flags.ship_kills, ak);
-                stat(ui, "pod kills", flags.pod_kills, ak);
-                stat(ui, "NPC kills", flags.npc_kills, an);
-            });
-        }
-        self.camp_line(ui, info.id);
-        if let Some(rp) = crate::rats::rat_profile(&info.region) {
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
-                ui.label(egui::RichText::new(rp.faction).strong());
-            });
-            ui.label(
-                egui::RichText::new(format!(
-                    "Deals {} / {}   ·   weak to {} / {}",
-                    rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
-                ))
-                .weak(),
-            )
-            .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
-            if rp.ewar != "None" {
-                ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
-            }
-        }
-        self.wormhole_section(ui, id);
-        let upgrades: Vec<&str> = self
-            .settings
-            .sov_upgrades
-            .iter()
-            .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
-            .flat_map(|u| split_upgrade_label(&u.upgrade))
-            .collect();
-        if !upgrades.is_empty() {
-            ui.label(egui::RichText::new("Sov upgrades").weak());
-            for u in upgrades {
-                let (kind, level) = upgrade_info(u);
-                let lcol = level_color(level);
-                ui.horizontal(|ui| {
-                    match kind {
-                        UpgradeIcon::Glyph(g) => {
-                            ui.label(egui::RichText::new(g).color(lcol).size(16.0));
-                        }
-                        UpgradeIcon::Mineral(tid) => {
-                            let url = eve_type_icon_url(tid, 18.0);
-                            ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0)));
-                        }
-                    }
-                    ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
-                });
-            }
         }
         let has_char = self.active_character != "No character";
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         let cname = self.active_character.clone();
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Show on map").clicked() {
-                show_on_map = true;
-            }
-            if let Some(names) = self.destination_split_button(ui, "Set Destination", has_char) {
+        ui.horizontal(|ui| {
+            if let Some(names) = self.destination_split_button(ui, "Destination", has_char) {
                 self.set_destination_for(&names, id);
             }
-            if ui.add_enabled(has_char, egui::Button::new("Add Waypoint")).clicked() {
+            if ui
+                .add_enabled(has_char, egui::Button::new(egui_phosphor::regular::PLUS))
+                .on_hover_text("Add as a waypoint in game")
+                .on_disabled_hover_text("Log a character in to route in game")
+                .clicked()
+            {
                 crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
             }
+            if !docked && ui.button(egui_phosphor::regular::MAP_TRIFOLD).on_hover_text("Show on the map").clicked() {
+                show_on_map = true;
+            }
         });
         ui.separator();
 
-        let state = self.intel_state.lock().unwrap();
-        let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
-        for r in &state.reports {
-            if r.clear || state.is_stale(r) {
-                continue;
-            }
-            for s in &r.systems {
-                *counts.entry(s.id).or_default() += 1;
-            }
-        }
-        drop(state);
-
-        ui.label(egui::RichText::new("Neighbours").strong());
-        ui.horizontal_wrapped(|ui| {
-            for &nid in graph.neighbors(id) {
-                if let Some(ni) = graph.info_of(nid) {
-                    let cnt = counts.get(&nid).copied().unwrap_or(0);
-                    let sec = (ni.security * 10.0).round() / 10.0;
-                    let mut label = format!("{sec:.1} {}", ni.name);
-                    if cnt > 0 {
-                        label.push_str(&format!(" ({cnt})"));
+        ui.horizontal(|ui| {
+            ui.menu_value(&mut self.system_kills_tab, 0u8, "Overview");
+            let n = sys_reports.len();
+            ui.menu_value(&mut self.system_kills_tab, 1u8, if n > 0 { format!("Intel ({n})") } else { "Intel".to_owned() });
+            ui.menu_value(&mut self.system_kills_tab, 2u8, "Kills");
+        });
+        ui.separator();
+        // Each tab scrolls in the room left under the header, so the header and tabs stay put.
+        let list_h = ui.available_height().max(120.0);
+        if self.system_kills_tab == 0 {
+            egui::ScrollArea::vertical().id_salt("sysoverview").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                {
+                    let status = self.system_status.lock().unwrap();
+                    let flags = status.get(&id).cloned().unwrap_or_default();
+                let region_ids: Vec<i64> = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
+                    .map(|v| v.into_iter().map(|m| m.id).collect())
+                    .unwrap_or_default();
+                let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
+                    if region_ids.is_empty() {
+                        return 0.0;
                     }
-                    let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
-                    let mut btn = egui::Button::new(text);
-                    let cross_region = ni.region != info.region && !ni.region.is_empty();
-                    let cross_const = ni.constellation != info.constellation;
-                    if cross_region {
-                        btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.22));
-                    } else if cross_const {
-                        btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
-                    }
-                    let mut resp = ui.add(btn);
-                    let arrow = egui_phosphor::regular::ARROW_RIGHT;
-                    if cross_region {
-                        resp = resp.on_hover_text(format!("{arrow} {} ({})", ni.constellation, ni.region));
-                    } else if cross_const {
-                        resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
-                    }
-                    if cnt > 0 {
-                        resp = resp.on_hover_text(format!("{cnt} active intel"));
-                    }
-                    if resp.clicked() {
-                        nav = Some(nid);
+                    let sum: u64 = region_ids.iter().filter_map(|s| status.get(s)).map(|f| sel(f) as u64).sum();
+                    sum as f64 / region_ids.len() as f64
+                };
+                let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
+                ui.label(egui::RichText::new("Last hour").weak()).on_hover_text("Red at twice the region's average, amber above it");
+                egui::Grid::new("sys_hour").num_columns(4).spacing([10.0, 2.0]).show(ui, |ui| {
+                    let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
+                        let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
+                            crate::theme::standing::HOSTILE
+                        } else if avg > 0.0 && v as f64 > avg {
+                            crate::theme::standing::WARNING
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        ui.label(egui::RichText::new(label).weak());
+                        ui.label(egui::RichText::new(v.to_string()).color(col).strong());
+                    };
+                    stat(ui, "Jumps", flags.jumps, aj);
+                    stat(ui, "Ship kills", flags.ship_kills, ak);
+                    ui.end_row();
+                    stat(ui, "Pod kills", flags.pod_kills, ak);
+                    stat(ui, "NPC kills", flags.npc_kills, an);
+                    ui.end_row();
+                });
+                }
+                self.camp_line(ui, info.id);
+                if let Some(rp) = crate::rats::rat_profile(&info.region) {
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
+                        ui.label(egui::RichText::new(rp.faction).strong());
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Deals {} / {}   ·   weak to {} / {}",
+                            rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
+                        ))
+                        .weak(),
+                    )
+                    .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
+                    if rp.ewar != "None" {
+                        ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
                     }
                 }
-            }
-        });
+                self.wormhole_section(ui, id);
+                let upgrades: Vec<&str> = self
+                    .settings
+                    .sov_upgrades
+                    .iter()
+                    .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
+                    .flat_map(|u| split_upgrade_label(&u.upgrade))
+                    .collect();
+                if !upgrades.is_empty() {
+                    ui.label(egui::RichText::new("Sov upgrades").weak());
+                    for u in upgrades {
+                        let (kind, level) = upgrade_info(u);
+                        let lcol = level_color(level);
+                        ui.horizontal(|ui| {
+                            match kind {
+                                UpgradeIcon::Glyph(g) => {
+                                    ui.label(egui::RichText::new(g).color(lcol).size(16.0));
+                                }
+                                UpgradeIcon::Mineral(tid) => {
+                                    let url = eve_type_icon_url(tid, 18.0);
+                                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0)));
+                                }
+                            }
+                            ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
+                        });
+                    }
+                }
 
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.menu_value(&mut self.system_kills_tab, false, "Intel");
-            ui.menu_value(&mut self.system_kills_tab, true, "Recent kills");
-        });
-        ui.separator();
-        // The window's list takes the rest of the window so it is never left half empty; the dock
-        // already scrolls as a whole, where an unbounded list would push everything else away.
-        let list_h = if docked { 280.0 } else { ui.available_height().max(120.0) };
-        if self.system_kills_tab {
+                let state = self.intel_state.lock().unwrap();
+                let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+                for r in &state.reports {
+                    if r.clear || state.is_stale(r) {
+                        continue;
+                    }
+                    for s in &r.systems {
+                        *counts.entry(s.id).or_default() += 1;
+                    }
+                }
+                drop(state);
+
+                ui.label(egui::RichText::new("Neighbours").strong());
+                ui.horizontal_wrapped(|ui| {
+                    for &nid in graph.neighbors(id) {
+                        if let Some(ni) = graph.info_of(nid) {
+                            let cnt = counts.get(&nid).copied().unwrap_or(0);
+                            let sec = (ni.security * 10.0).round() / 10.0;
+                            let mut label = format!("{sec:.1} {}", ni.name);
+                            if cnt > 0 {
+                                label.push_str(&format!(" ({cnt})"));
+                            }
+                            let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
+                            let mut btn = egui::Button::new(text);
+                            let cross_region = ni.region != info.region && !ni.region.is_empty();
+                            let cross_const = ni.constellation != info.constellation;
+                            if cross_region {
+                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.22));
+                            } else if cross_const {
+                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
+                            }
+                            let mut resp = ui.add(btn);
+                            let arrow = egui_phosphor::regular::ARROW_RIGHT;
+                            if cross_region {
+                                resp = resp.on_hover_text(format!("{arrow} {} ({})", ni.constellation, ni.region));
+                            } else if cross_const {
+                                resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
+                            }
+                            if cnt > 0 {
+                                resp = resp.on_hover_text(format!("{cnt} active intel"));
+                            }
+                            if resp.clicked() {
+                                nav = Some(nid);
+                            }
+                        }
+                    }
+                });
+            });
+        } else
+ if self.system_kills_tab == 2 {
             let feed = self
                 .system_kills_cache
                 .entry(id)
@@ -378,7 +402,7 @@ impl SpaiApp {
                 }
             });
         }
-        SystemInfoOut { nav, show_on_map, intel_click, open_const, open_region }
+        SystemInfoOut { nav, show_on_map, intel_click, open_const, open_region, pop_out, close }
     }
 
     pub(crate) fn apply_system_info_out(
@@ -388,6 +412,14 @@ impl SpaiApp {
         ctx: &egui::Context,
         docked: bool,
     ) {
+        if docked && out.pop_out {
+            self.map_docked_system = None;
+            self.system_window = Some(id);
+            self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
+        }
+        if docked && out.close {
+            self.map_docked_system = None;
+        }
         if let Some(nid) = out.nav {
             if docked {
                 self.map_docked_system = Some(nid);

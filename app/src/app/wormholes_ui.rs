@@ -380,11 +380,10 @@ impl SpaiApp {
         self.reload_wormholes();
     }
 
-    /// Redoes every route after the holes they may use changed: the travel route, the map's
-    /// planned route and the one in the game. `was` is the game route's hole waypoints from before;
+    /// Redoes every route after the holes they may use changed: the map's planned route and the one
+    /// in the game. `was` is the game route's hole waypoints from before;
     /// the game is only sent the route again when they differ. `None` sends it anyway.
     pub(crate) fn wh_routes_refresh(&mut self, was: Option<Option<Vec<i64>>>) {
-        self.plan_route();
         if !self.map_route_anchors.is_empty() {
             self.map_recompute_route();
         }
@@ -429,7 +428,6 @@ impl SpaiApp {
     /// Re-run every route that could depend on the hole graph: the planned map route, and the
     /// destination we last pushed to the client.
     pub(crate) fn replan_routes(&mut self) {
-        self.plan_route();
         if let Some(dest) = self.route_destination {
             if self.active_character != "No character" {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);

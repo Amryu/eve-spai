@@ -850,9 +850,6 @@ impl SpaiApp {
             if let Some(o) = self.map_route_opts.get(self.map_route_at) {
                 route_pairs(&o.hops.iter().map(|h| h.id).collect::<Vec<_>>(), &mut routed);
             }
-            if let Some(r) = &self.travel_route {
-                route_pairs(r, &mut routed);
-            }
             // And the in-game destination route, which walks the same graph a few lines below.
             if let (Some(ps), Some(dest), Some(g)) =
                 (player_sys, self.set_route_shown(), self.systems.as_ref())
@@ -1029,96 +1026,6 @@ impl SpaiApp {
             }
         }
 
-        if self.map_mode == MapMode::Travel {
-            let cyan = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
-            if let Some(direct) = &self.travel_direct_route {
-                let gray = egui::Color32::from_rgb(0x9E, 0x9E, 0x9E);
-                for w in direct.windows(2) {
-                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, gray));
-                    }
-                }
-            }
-            if let Some(base) = self.travel_live.then_some(self.travel_live_base.as_ref()).flatten() {
-                let purple = egui::Color32::from_rgb(0x95, 0x75, 0xCD);
-                for w in base.windows(2) {
-                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, purple));
-                    }
-                }
-            }
-            if let Some(route) = &self.travel_route {
-                // A leg through J-space has no position on the k-space map, so it is drawn as one
-                // dashed hop between the k-space systems on either side of the hole.
-                let mut last: Option<(i64, egui::Pos2)> = None;
-                let mut jumped_hole = false;
-                for &id in route {
-                    let Some(&p) = pos.get(&id) else {
-                        jumped_hole = true;
-                        continue;
-                    };
-                    if let Some((prev_id, prev_p)) = last {
-                        match self.leg_kind(prev_id, id, jumped_hole) {
-                            Leg::Gate => {
-                                painter.line_segment([prev_p, p], egui::Stroke::new(2.5, cyan));
-                            }
-                            // A bridge leg follows the same arch the bridge itself is drawn as, in
-                            // the route colour, so the route overrides it rather than crossing it
-                            // with a second line of a different shape.
-                            Leg::Bridge => {
-                                let (ca, cb) = self.bridge_colors(prev_id, id, Leg::Bridge.color());
-                                gradient_polyline(&painter, &arc_polyline(prev_p, p, BRIDGE_BOW), ca, cb, 2.5);
-                            }
-                            kind => {
-                                painter.extend(egui::Shape::dashed_line(
-                                    &[prev_p, p],
-                                    egui::Stroke::new(2.5, kind.color()),
-                                    7.0,
-                                    5.0,
-                                ));
-                            }
-                        }
-                    }
-                    last = Some((id, p));
-                    jumped_hole = false;
-                }
-            }
-            let mark = |p: egui::Pos2, color: egui::Color32| {
-                let r = egui::Rect::from_center_size(p, egui::vec2(14.0, 14.0));
-                let st = egui::Stroke::new(2.0, color);
-                painter.line_segment([r.left_top(), r.right_top()], st);
-                painter.line_segment([r.right_top(), r.right_bottom()], st);
-                painter.line_segment([r.right_bottom(), r.left_bottom()], st);
-                painter.line_segment([r.left_bottom(), r.left_top()], st);
-            };
-            for wp in &self.travel_waypoints {
-                if let Some(p) = pos.get(wp) {
-                    mark(*p, cyan);
-                }
-            }
-            if let Some(p) = self.travel_start.and_then(|s| pos.get(&s)) {
-                mark(*p, egui::Color32::from_rgb(0x66, 0xBB, 0x6A));
-            }
-            if let Some(p) = self.travel_end.and_then(|e| pos.get(&e)) {
-                mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26));
-            }
-            if let Some(at) = self.travel_changed_at {
-                if crate::clock::utc().timestamp() - at < 6 {
-                    let blink = ((crate::clock::anim(ui) * 5.0).sin() * 0.5 + 0.5) as f32;
-                    let warn = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
-                    for id in &self.travel_changed {
-                        if let Some(p) = pos.get(id) {
-                            painter.circle_stroke(
-                                *p,
-                                11.0,
-                                egui::Stroke::new(2.5, warn.gamma_multiply(blink)),
-                            );
-                        }
-                    }
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-                }
-            }
-        }
 
 
         // Where a capital can sit, while a capital route is being planned.
@@ -1767,7 +1674,7 @@ impl SpaiApp {
                         });
                     });
             }
-            if (self.map_mode != MapMode::Standard || self.map_docked_system.is_some())
+            if (self.map_layout.is_threat() || self.map_docked_system.is_some() || !self.map_route_anchors.is_empty())
                 && !self.right_dock_open
             {
                 egui::Area::new(ui.id().with("reopen_right"))
@@ -1787,123 +1694,287 @@ impl SpaiApp {
 
     pub(crate) fn map_layers_content(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
-        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
-        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
-        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
-        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
-        ui.separator();
-        ui.label(egui::RichText::new(format!("{}  Intel highlight", icon::CLOCK_COUNTDOWN)).strong());
-        ui.label(
-            egui::RichText::new("How long a report keeps its system lit.").weak(),
-        );
-        let mut changed = false;
-        egui::Grid::new("map_highlight_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Normal");
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut self.settings.map_highlight_secs)
-                        .range(0..=3600)
-                        .suffix("s"),
-                )
-                .on_hover_text("0 turns the highlight off entirely.")
-                .changed();
-            ui.end_row();
-            ui.label("Critical");
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut self.settings.map_highlight_critical_secs)
-                        .range(0..=3600)
-                        .suffix("s"),
-                )
-                .on_hover_text("Critical reports are worth watching for longer.")
-                .changed();
-            ui.end_row();
-        });
-        if changed {
-            self.needs_save = true;
-        }
-        ui.separator();
-        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
-        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
-        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
-        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
-        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
-        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
-        ui.separator();
-        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
-        ui.checkbox(&mut self.map_overlays.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
-        ui.checkbox(&mut self.map_overlays.cyno_gen, format!("{}  Cyno generators", icon::CROSSHAIR_SIMPLE));
-        ui.checkbox(&mut self.map_overlays.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
-        if self.map_overlays.upgrades {
-            ui.indent("upgrade_kinds", |ui| {
-                ui.checkbox(&mut self.upgrade_kinds[0], "Ratting");
-                ui.checkbox(&mut self.upgrade_kinds[1], "Exploration");
-                ui.checkbox(&mut self.upgrade_kinds[2], "Mining");
-                ui.checkbox(&mut self.upgrade_kinds[3], "Other");
+        // One line per layer; a layer with settings or data of its own carries a gear for them.
+        let gear_menu = |ui: &mut egui::Ui, tip: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+            let menu = egui::containers::menu::MenuButton::new(icon::GEAR_SIX)
+                .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+            menu.ui(ui, |ui| add(ui)).0.on_hover_text(tip);
+        };
+        let group = |ui: &mut egui::Ui, title: &str| {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(title).weak());
+        };
+        let row = |ui: &mut egui::Ui, gear: &mut dyn FnMut(&mut egui::Ui), main: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    gear(ui);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| main(ui));
+                });
+            });
+        };
+        let mut open_coalitions = false;
+        let mut open_upgrades = false;
+        let mut open_bridges = false;
+        let mut open_cynos = false;
+        let mut open_notes = false;
+        let mut open_wh = false;
+        let mut wh_route_changed = false;
+        let mut via_wh_changed = false;
+        let mut highlight_changed = false;
+
+        group(ui, "Sovereignty");
+        {
+            let ov = &mut self.map_overlays;
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "Coalitions", &mut |ui| {
+                        if ui.button(format!("{}  Edit coalitions\u{2026}", icon::USERS_THREE)).clicked() {
+                            open_coalitions = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.label(format!("{}  Holder", icon::FLAG));
+                    let text = match ov.sov {
+                        SovMode::Off => "Off",
+                        SovMode::Alliance => "Alliance",
+                        SovMode::Coalition => "Coalition",
+                    };
+                    egui::ComboBox::from_id_salt("map_sov_mode").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                        ui.menu_value(&mut ov.sov, SovMode::Off, "Off");
+                        ui.menu_value(&mut ov.sov, SovMode::Alliance, "Alliance");
+                        ui.menu_value(&mut ov.sov, SovMode::Coalition, "Coalition");
+                    });
+                },
+            );
+            row(ui, &mut |_| {}, &mut |ui| {
+                ui.checkbox(&mut ov.adm, format!("{}  ADM", icon::SHIELD_CHECK));
             });
         }
-        let ov = &mut self.map_overlays;
-        if ui.checkbox(&mut ov.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE)).changed()
-            && ov.jump_range
         {
-            ov.ansiblex_zones = false;
+            let kinds = &mut self.upgrade_kinds;
+            let ov = &mut self.map_overlays;
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "Which upgrades, and what the icons mean", &mut |ui| {
+                        ui.checkbox(&mut kinds[0], format!("{}  Ratting", icon::SKULL));
+                        ui.checkbox(&mut kinds[1], format!("{}  Exploration", icon::BROADCAST));
+                        ui.checkbox(&mut kinds[2], "Mining (ore icon)");
+                        ui.checkbox(&mut kinds[3], format!("{}  Other", icon::GEAR));
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}  Cyno", icon::RADIOACTIVE));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Level");
+                            ui.colored_label(level_color(1), "1");
+                            ui.colored_label(level_color(2), "2");
+                            ui.colored_label(level_color(3), "3\u{2013}5");
+                        });
+                        ui.separator();
+                        if ui.button(format!("{}  Edit sov upgrades\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
+                            open_upgrades = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.checkbox(&mut ov.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
+                },
+            );
         }
-        if ui
-            .checkbox(&mut ov.ansiblex_zones, format!("{}  Ansiblex zones", icon::CIRCLES_THREE))
-            .on_hover_text("Distance bands from the alliance capital set in the jump bridge settings")
-            .changed()
-            && ov.ansiblex_zones
+
+        group(ui, "Navigation");
         {
-            ov.jump_range = false;
-        }
-        ui.separator();
-        ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
-        if self.map_overlays.wormholes {
-            ui.indent("wh_hubs", |ui| {
-                ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
-                ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
+            let ov = &mut self.map_overlays;
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "Jump bridges", &mut |ui| {
+                        if ui.button(format!("{}  Edit jump bridges\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
+                            open_bridges = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.checkbox(&mut ov.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
+                },
+            );
+            row(ui, &mut |_| {}, &mut |ui| {
+                if ui
+                    .checkbox(&mut ov.ansiblex_zones, format!("{}  Ansiblex zones", icon::CIRCLES_THREE))
+                    .on_hover_text("Distance bands from the alliance capital set with the jump bridges")
+                    .changed()
+                    && ov.ansiblex_zones
+                {
+                    ov.jump_range = false;
+                }
             });
+            row(ui, &mut |_| {}, &mut |ui| {
+                if ui
+                    .checkbox(&mut ov.jump_range, format!("{}  Jump range", icon::CROSSHAIR_SIMPLE))
+                    .on_hover_text("Jump range around the system under the pointer")
+                    .changed()
+                    && ov.jump_range
+                {
+                    ov.ansiblex_zones = false;
+                }
+            });
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "Cyno generators", &mut |ui| {
+                        if ui.button(format!("{}  Edit cyno generators\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
+                            open_cynos = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.checkbox(&mut ov.cyno_gen, format!("{}  Cyno generators", icon::CROSSHAIR_SIMPLE));
+                },
+            );
         }
-        ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
-        ui.checkbox(&mut self.map_overlays.jove, format!("{}  Jove observatories", icon::CELL_TOWER))
-            .on_hover_text("Marks systems that hold a Jove Observatory");
-        ui.checkbox(&mut self.map_overlays.notes, format!("{}  Notes and tags", icon::TAG))
-            .on_hover_text("Marks systems you tagged or wrote a note on, in online folders");
-        if ui
-            .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
-            .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each hole entrance")
-            .changed()
         {
-            self.needs_save = true;
-            // Toggling this changes what the current destination should be, so re-send it.
-            self.replan_routes();
-        }
-        if self.settings.route_via_wormholes {
-            let changed = ui.indent("wh_route_opts", |ui| self.wh_route_options_ui(ui)).inner;
-            if changed {
-                self.wh_routing_changed();
+            let route_via = self.settings.route_via_wormholes;
+            let mut via = route_via;
+            let mut thera = self.map_overlays.thera;
+            let mut turnur = self.map_overlays.turnur;
+            let mut on = self.map_overlays.wormholes;
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "Wormholes on the map and in routes", &mut |ui| {
+                        ui.checkbox(&mut thera, format!("{}  Thera", icon::PLANET));
+                        ui.checkbox(&mut turnur, format!("{}  Turnur", icon::PLANET));
+                        ui.separator();
+                        via_wh_changed |= ui
+                            .checkbox(&mut via, "Route through them")
+                            .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each entrance")
+                            .changed();
+                        if via {
+                            wh_route_changed |= self.wh_route_options_ui(ui);
+                        }
+                        ui.separator();
+                        if ui.button(format!("{}  Open the wormhole tab", icon::SPIRAL)).clicked() {
+                            open_wh = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.checkbox(&mut on, format!("{}  Wormholes", icon::SPIRAL));
+                },
+            );
+            self.map_overlays.thera = thera;
+            self.map_overlays.turnur = turnur;
+            self.map_overlays.wormholes = on;
+            if via != route_via {
+                self.settings.route_via_wormholes = via;
             }
         }
-        if self.map_overlays.upgrades {
-            ui.separator();
-            ui.label(egui::RichText::new("Upgrade icons").strong());
-            let mut row = |g: &str, txt: &str| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(g).size(16.0));
-                    ui.label(txt);
+
+        group(ui, "Activity");
+        {
+            let ov = &mut self.map_overlays;
+            row(ui, &mut |_| {}, &mut |ui| {
+                ui.label(format!("{}  Last hour", icon::FIRE));
+                let text = match ov.activity {
+                    ActivityMode::Off => "Off",
+                    ActivityMode::ShipKills => "Ship kills",
+                    ActivityMode::PodKills => "Pod kills",
+                    ActivityMode::NpcKills => "NPC kills",
+                    ActivityMode::Jumps => "Jumps",
+                };
+                egui::ComboBox::from_id_salt("map_activity").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                    ui.menu_value(&mut ov.activity, ActivityMode::Off, "Off");
+                    ui.menu_value(&mut ov.activity, ActivityMode::ShipKills, "Ship kills");
+                    ui.menu_value(&mut ov.activity, ActivityMode::PodKills, "Pod kills");
+                    ui.menu_value(&mut ov.activity, ActivityMode::NpcKills, "NPC kills");
+                    ui.menu_value(&mut ov.activity, ActivityMode::Jumps, "Jumps");
                 });
-            };
-            row(icon::SKULL, "Ratting / threat detection");
-            row(icon::BROADCAST, "Exploration / scanning");
-            row(icon::RADIOACTIVE, "Cyno");
-            row(icon::GEAR, "Other upgrade");
-            ui.label(egui::RichText::new("Mining shows the ore icon").weak());
-            ui.horizontal(|ui| {
-                ui.label("Level:");
-                ui.colored_label(level_color(1), "1");
-                ui.colored_label(level_color(2), "2");
-                ui.colored_label(level_color(3), "3\u{2013}5");
             });
+            row(ui, &mut |_| {}, &mut |ui| {
+                ui.checkbox(&mut ov.camps, format!("{}  Gate camps", icon::CAMPFIRE));
+            });
+        }
+        {
+            let st = &mut self.settings;
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "How long a report keeps its system lit", &mut |ui| {
+                        egui::Grid::new("map_highlight_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                            ui.label("Normal");
+                            highlight_changed |= ui
+                                .add(egui::DragValue::new(&mut st.map_highlight_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "off".into() } else { format!("{n}s") }))
+                                .changed();
+                            ui.end_row();
+                            ui.label("Critical");
+                            highlight_changed |= ui
+                                .add(egui::DragValue::new(&mut st.map_highlight_critical_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "off".into() } else { format!("{n}s") }))
+                                .changed();
+                            ui.end_row();
+                        });
+                    })
+                },
+                &mut |ui| {
+                    ui.label(format!("{}  Intel highlight", icon::CLOCK_COUNTDOWN)).on_hover_text("Systems light up when intel names them");
+                },
+            );
+        }
+
+        group(ui, "Markers");
+        {
+            let ov = &mut self.map_overlays;
+            row(ui, &mut |_| {}, &mut |ui| {
+                ui.checkbox(&mut ov.jove, format!("{}  Jove observatories", icon::CELL_TOWER));
+            });
+            row(
+                ui,
+                &mut |ui| {
+                    gear_menu(ui, "System notes and tags", &mut |ui| {
+                        if ui.button(format!("{}  Manage notes and tags\u{2026}", icon::TAG)).clicked() {
+                            open_notes = true;
+                            ui.close();
+                        }
+                    })
+                },
+                &mut |ui| {
+                    ui.checkbox(&mut ov.notes, format!("{}  Notes and tags", icon::TAG)).on_hover_text("Systems you tagged or wrote a note on");
+                },
+            );
+        }
+        if highlight_changed {
+            self.needs_save = true;
+        }
+        if via_wh_changed {
+            self.needs_save = true;
+            self.replan_routes();
+        }
+        if wh_route_changed {
+            self.wh_routing_changed();
+        }
+        if open_coalitions {
+            self.coalitions_open = true;
+        }
+        if open_upgrades {
+            self.sov_upgrades_open = true;
+        }
+        if open_bridges {
+            self.jump_bridges_open = true;
+        }
+        if open_cynos {
+            self.cyno_generators_open = true;
+        }
+        if open_notes {
+            self.open_notes_manager(crate::notes::NoteKind::System);
+        }
+        if open_wh {
+            self.view = nav::View::Wormholes;
         }
 
         if self.rescue_on() {

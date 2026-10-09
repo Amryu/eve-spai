@@ -41,6 +41,146 @@ impl SpaiApp {
         changed
     }
 
+    /// What a gate route keeps out of, and whether it keeps itself current. Returns whether any of it
+    /// changed.
+    pub(crate) fn route_rules_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+        let st = &self.settings;
+        let mut n = st.route_avoid_camps as usize + (st.route_sec != [true; 3]) as usize + (st.route_max_kills > 0) as usize;
+        n += (!st.route_avoid_sov.is_empty()) as usize + (!st.route_region_gates) as usize;
+        let head = if n > 0 { format!("{}  Avoid ({n})", icon::PROHIBIT) } else { format!("{}  Avoid", icon::PROHIBIT) };
+        egui::CollapsingHeader::new(head).id_salt("route_rules").show(ui, |ui| {
+            let st = &mut self.settings;
+            changed |= ui.checkbox(&mut st.route_avoid_camps, "Gate camps").on_hover_text("Systems with a likely or possible camp").changed();
+            ui.horizontal(|ui| {
+                ui.label("Allow");
+                changed |= ui.checkbox(&mut st.route_sec[0], "High").changed();
+                changed |= ui.checkbox(&mut st.route_sec[1], "Low").changed();
+                changed |= ui.checkbox(&mut st.route_sec[2], "Null").changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Kills last hour");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut st.route_max_kills).range(0..=500).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("at most {n}") }))
+                    .on_hover_text("Ship kills in the system in the last hour")
+                    .changed();
+            });
+            changed |= ui.checkbox(&mut st.route_region_gates, "Cross regions by gate").changed();
+            ui.horizontal(|ui| {
+                ui.label("Sov held by");
+                let text = if st.route_avoid_sov.is_empty() { "nobody".to_owned() } else { st.route_avoid_sov.join(", ") };
+                let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), icon::CARET_DOWN)).truncate().min_size(egui::vec2(ui.available_width(), 0.0)))
+                    .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+                menu.ui(ui, |ui| {
+                    ui.set_width(240.0);
+                    let mut remove = None;
+                    for (i, a) in st.route_avoid_sov.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(icon::X).clicked() {
+                                    remove = Some(i);
+                                }
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.add(egui::Label::new(a).truncate()).on_hover_text(a);
+                                });
+                            });
+                        });
+                    }
+                    if let Some(i) = remove {
+                        st.route_avoid_sov.remove(i);
+                        changed = true;
+                    }
+                    let id = egui::Id::new("route_sov_input");
+                    let mut q = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                    let resp = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Alliance").desired_width(f32::INFINITY));
+                    let ql = q.trim().to_lowercase();
+                    let mut holders: Vec<String> = self
+                        .system_status
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .values()
+                        .filter_map(|f| f.sov.clone())
+                        .filter(|h| !ql.is_empty() && h.to_lowercase().contains(&ql))
+                        .collect();
+                    holders.sort();
+                    holders.dedup();
+                    holders.retain(|h| !st.route_avoid_sov.contains(h));
+                    let mut add = None;
+                    for h in holders.iter().take(6) {
+                        if ui.add(egui::Button::new(format!("{}  {h}", icon::PLUS)).frame(false).truncate()).clicked() {
+                            add = Some(h.clone());
+                        }
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ql.is_empty() {
+                        add = Some(holders.first().cloned().unwrap_or_else(|| q.trim().to_owned()));
+                    }
+                    if let Some(h) = add {
+                        st.route_avoid_sov.push(h);
+                        q.clear();
+                        changed = true;
+                    }
+                    ui.data_mut(|d| d.insert_temp(id, q));
+                });
+            });
+            ui.separator();
+            changed |= ui
+                .checkbox(&mut st.route_live, "Keep current")
+                .on_hover_text("Replan as intel and kills come in, with a sound when the route grows by more than four jumps")
+                .changed();
+            if st.route_live {
+                changed |= ui.checkbox(&mut st.travel_auto_dest, "Update the route in game").changed();
+            }
+        });
+        changed
+    }
+
+    /// Replans a kept-current route every few seconds when what it avoids has changed.
+    pub(crate) fn route_live_tick(&mut self, ctx: &egui::Context) {
+        if !self.settings.route_live || self.map_route_anchors.len() < 2 || self.map_route_kind == "scan" {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if now < self.route_live_next {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(self.route_live_next - now));
+            return;
+        }
+        self.route_live_next = now + 5.0;
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut rules: Vec<i64> = self.route_rule_avoid().into_iter().collect();
+            rules.sort_unstable();
+            rules.hash(&mut h);
+            let mut danger: Vec<i64> = self.route_danger().into_keys().collect();
+            danger.sort_unstable();
+            danger.hash(&mut h);
+            h.finish()
+        };
+        if sig == self.route_live_sig {
+            return;
+        }
+        self.route_live_sig = sig;
+        let before = self.map_route_opts.get(self.map_route_at).map(|o| o.jumps);
+        let was = self.map_route_opts.get(self.map_route_at).map(|o| crate::web::route::ingame_waypoints(o, self.player_system()));
+        self.map_recompute_route();
+        let after = self.map_route_opts.first().map(|o| o.jumps);
+        let now_wp = self.map_route_opts.first().map(|o| crate::web::route::ingame_waypoints(o, self.player_system()));
+        if was.is_some() && now_wp != was {
+            if let (Some(b), Some(a)) = (before, after) {
+                if a > b + 4 {
+                    crate::sound::play_prio(&self.settings.sound_reroute, 2, self.settings.sound_reroute_volume);
+                }
+            }
+            if self.settings.travel_auto_dest && self.active_character != "No character" {
+                if let Some(wp) = now_wp.filter(|w| !w.is_empty()) {
+                    let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                    crate::esi::set_route(cid, self.active_character.clone(), wp);
+                }
+            }
+        }
+    }
+
     pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
@@ -144,6 +284,10 @@ impl SpaiApp {
             replan = true;
         }
         if gating && self.settings.route_via_wormholes && self.wh_route_options_ui(ui) {
+            self.needs_save = true;
+            replan = true;
+        }
+        if gating && self.route_rules_ui(ui) {
             self.needs_save = true;
             replan = true;
         }
@@ -730,319 +874,8 @@ impl SpaiApp {
     }
 
 
-    pub(crate) fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
-        let name_of = |id: Option<i64>| -> Option<String> {
-            id.and_then(|i| self.systems.as_ref().and_then(|g| g.info_of(i)).map(|s| s.name.clone()))
-        };
-        let start_name = name_of(self.travel_start);
-        let end_name = name_of(self.travel_end);
-        let key = (
-            self.travel_start_q.clone(),
-            self.travel_start,
-            self.travel_end_q.clone(),
-            self.travel_end,
-        );
-        if key != self.travel_sugg_key {
-            let s0 = self.travel_suggestions(&self.travel_start_q);
-            let s1 = self.travel_suggestions(&self.travel_end_q);
-            self.travel_sugg = (s0, s1);
-            self.travel_sugg_key = key;
-        }
-        let start_suggestions = self.travel_sugg.0.clone();
-        let end_suggestions = self.travel_sugg.1.clone();
-        if self.travel_wp_q != self.travel_wp_sugg_key {
-            self.travel_wp_sugg = self.travel_suggestions(&self.travel_wp_q);
-            self.travel_wp_sugg_key = self.travel_wp_q.clone();
-        }
-        let wp_suggestions = self.travel_wp_sugg.clone();
-        // An empty From means "where I am". Skipped while a field is focused, so it cannot overwrite
-        // a box the user has just cleared to type into.
-        if self.travel_start.is_none()
-            && self.travel_start_q.trim().is_empty()
-            && ui.memory(|m| m.focused()).is_none()
-        {
-            if let Some(me) = self.player_system() {
-                self.travel_set_start(me);
-            }
-        }
-        let mut wp_pick: Option<i64> = None;
-        let mut set_dest: Option<Vec<String>> = None;
-        let name_id = |id: i64| -> (i64, String) {
-            (
-                id,
-                self.systems
-                    .as_ref()
-                    .and_then(|g| g.info_of(id))
-                    .map(|i| i.name.clone())
-                    .unwrap_or_else(|| id.to_string()),
-            )
-        };
-        let wp_names: Vec<(i64, String)> = self.travel_waypoints.iter().map(|&id| name_id(id)).collect();
-        let avoid_names: Vec<(i64, String)> = self.travel_avoid.iter().map(|&id| name_id(id)).collect();
-        let mut remove_wp: Option<i64> = None;
-        let mut remove_avoid: Option<i64> = None;
-        let summary = self.travel_route.as_ref().map(|r| {
-            let planned = r.len().saturating_sub(1);
-            let holes = self
-                .systems
-                .as_ref()
-                .map(|g| r.windows(2).filter(|w| g.is_hole_step(w[0], w[1])).count())
-                .unwrap_or(0);
-            let mut s = match self.travel_direct_route.as_ref().map(|d| d.len().saturating_sub(1)) {
-                Some(direct) if planned > direct => {
-                    format!("{planned} jumps \u{2022} direct {direct} (+{})", planned - direct)
-                }
-                _ => format!("{planned} jumps"),
-            };
-            if holes > 0 {
-                s.push_str(&format!(" \u{2022} {holes} via wormhole"));
-                if holes > 1 {
-                    s.push('s');
-                }
-            }
-            s
-        });
-        let mut clear = false;
-        let mut start_pick: Option<i64> = None;
-        let mut end_pick: Option<i64> = None;
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Travel route").strong().size(15.0));
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.label("From");
-            if let Some(id) = system_field(
-                ui,
-                &mut self.travel_start_q,
-                &mut self.travel_start_sel,
-                start_name.as_deref().unwrap_or("system"),
-                ui.available_width(),
-                &start_suggestions,
-            ) {
-                start_pick = Some(id);
-            }
-            ui.add_space(2.0);
-            ui.label("To");
-            if let Some(id) = system_field(
-                ui,
-                &mut self.travel_end_q,
-                &mut self.travel_end_sel,
-                end_name.as_deref().unwrap_or("system"),
-                ui.available_width(),
-                &end_suggestions,
-            ) {
-                end_pick = Some(id);
-            }
-            ui.label(egui::RichText::new("\u{2026}or right-click a system on the map.").weak());
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("Waypoints").strong());
-            for (id, name) in &wp_names {
-                ui.horizontal(|ui| {
-                    if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
-                        remove_wp = Some(*id);
-                    }
-                    ui.label(name);
-                });
-            }
-            if let Some(id) = system_field(
-                ui,
-                &mut self.travel_wp_q,
-                &mut self.travel_wp_sel,
-                "+ add waypoint",
-                ui.available_width(),
-                &wp_suggestions,
-            ) {
-                wp_pick = Some(id);
-            }
-            if !avoid_names.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Avoid").strong());
-                for (id, name) in &avoid_names {
-                    ui.horizontal(|ui| {
-                        if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
-                            remove_avoid = Some(*id);
-                        }
-                        ui.label(name);
-                    });
-                }
-            }
-            ui.add_space(4.0);
-            ui.checkbox(&mut self.travel_live, "Live mode").on_hover_text(
-                "Track your position; continuously re-plan and re-route in-game on changes",
-            );
-            if ui
-                .checkbox(&mut self.settings.travel_auto_dest, "Auto-set destination in EVE")
-                .on_hover_text("When off, Live mode tracks + re-plans but never writes the route into the game")
-                .changed()
-            {
-                self.needs_save = true;
-            }
-            if ui
-                .button(format!("{}  Saved routes\u{2026}", egui_phosphor::regular::FOLDER))
-                .on_hover_text("Save, organise and load named routes")
-                .clicked()
-            {
-                self.routes_dialog_open = true;
-            }
-            ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
-            ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
-            ui.checkbox(&mut self.travel_avoid_camps, "Avoid gate camps");
-            ui.horizontal(|ui| {
-                ui.label("Sec");
-                ui.checkbox(&mut self.travel_sec[0], "Hi");
-                ui.checkbox(&mut self.travel_sec[1], "Lo");
-                ui.checkbox(&mut self.travel_sec[2], "Null");
-            });
-            let metric_before = self.travel_metric;
-            ui.horizontal(|ui| {
-                ui.label("Max");
-                ui.add(
-                    egui::DragValue::new(&mut self.travel_max_ship_kills)
-                        .range(0..=20000)
-                        .custom_formatter(|n, _| {
-                            if n <= 0.0 { "any".to_owned() } else { format!("{n}") }
-                        }),
-                );
-                egui::ComboBox::from_id_salt(ui.id().with("travel_metric"))
-                    .selected_text(self.travel_metric.label())
-                    .show_ui(ui, |ui| {
-                        for m in [
-                            ActivityMode::ShipKills,
-                            ActivityMode::PodKills,
-                            ActivityMode::NpcKills,
-                            ActivityMode::Jumps,
-                        ] {
-                            ui.menu_value(&mut self.travel_metric, m, m.label());
-                        }
-                    });
-                ui.label("/h");
-            });
-            if self.travel_metric != metric_before {
-                self.map_overlays.activity = self.travel_metric;
-            }
-            if ui
-                .button(format!("Avoid sov held by\u{2026} ({})", self.travel_avoid_sov.len()))
-                .clicked()
-            {
-                self.travel_sov_dialog_open = true;
-            }
-            ui.add_space(4.0);
-            let has_route = self.travel_start.is_some()
-                || self.travel_end.is_some()
-                || !self.travel_waypoints.is_empty();
-            ui.horizontal(|ui| {
-                if self.travel_route.is_some() {
-                    let has_char = self.active_character != "No character";
-                    if let Some(names) = self.destination_split_button(ui, "Set destination", has_char) {
-                        set_dest = Some(names);
-                    }
-                }
-                if has_route && ui.button("Clear route").clicked() {
-                    clear = true;
-                }
-            });
-            match &summary {
-                Some(s) => {
-                    ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)).strong());
-                }
-                None => {
-                    ui.label(
-                        egui::RichText::new("Set a from / to. The route updates automatically.")
-                            .weak(),
-                    );
-                }
-            }
-        });
-        if let Some(id) = start_pick {
-            self.travel_start = Some(id);
-            self.travel_start_q =
-                self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
-            self.travel_start_sel = 0;
-            self.plan_route();
-        }
-        if let Some(id) = end_pick {
-            self.travel_end = Some(id);
-            self.travel_end_q =
-                self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
-            self.travel_end_sel = 0;
-            self.plan_route();
-        }
-        if let Some(id) = wp_pick {
-            if !self.travel_waypoints.contains(&id) {
-                self.travel_waypoints.push(id);
-            }
-            self.travel_avoid.retain(|&a| a != id);
-            self.travel_wp_q.clear();
-            self.travel_wp_sel = 0;
-        }
-        if let Some(names) = set_dest {
-            if let Some(route) = self.travel_route.clone() {
-                let mut seen = std::collections::HashSet::new();
-                let unique: Vec<i64> = route.into_iter().filter(|s| seen.insert(*s)).collect();
-                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                for n in names {
-                    crate::esi::set_route(cid.clone(), n, unique.clone());
-                }
-            }
-        }
-        if let Some(id) = remove_wp {
-            self.travel_waypoints.retain(|&w| w != id);
-            self.plan_route();
-        }
-        if let Some(id) = remove_avoid {
-            self.travel_avoid.retain(|&a| a != id);
-            self.plan_route();
-        }
-        if clear {
-            self.clear_travel();
-        }
-        if self.travel_live {
-            let now_t = ui.input(|i| i.time);
-            if let Some(me) = self.player_system() {
-                if self.travel_start != Some(me) {
-                    self.travel_start = Some(me);
-                    self.travel_start_q = self
-                        .systems
-                        .as_ref()
-                        .and_then(|g| g.info_of(me))
-                        .map(|i| i.name.clone())
-                        .unwrap_or_default();
-                }
-            }
-            if now_t >= self.travel_live_next {
-                self.travel_live_next = now_t + 4.0;
-                self.plan_route();
-                if self.travel_live_base.is_none() {
-                    self.travel_live_base = self.travel_route.clone();
-                }
-            }
-            if self.settings.travel_auto_dest {
-                self.push_ingame_dest();
-            }
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(900));
-        } else {
-            self.travel_live_base = None;
-            self.travel_ingame_dest = None;
-        }
-        let now = ui.input(|i| i.time);
-        let h = self.travel_input_hash();
-        if h != self.travel_planned_hash {
-            if h != self.travel_pending_hash {
-                self.travel_pending_hash = h;
-                self.travel_dirty_at = Some(now);
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(380));
-            } else if let Some(t) = self.travel_dirty_at {
-                if now - t >= 0.35 {
-                    self.plan_route();
-                    self.travel_pending_hash = self.travel_planned_hash;
-                } else {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
-                }
-            }
-        }
-    }
-
     pub(crate) fn safety_watch(&mut self, ctx: &egui::Context) {
-        if self.map_mode != MapMode::Safety {
+        if !(self.map_layout.is_threat() && self.settings.map_threat_alarm) {
             self.safety_prev = None;
             return;
         }
@@ -1106,32 +939,15 @@ impl SpaiApp {
         ctx.request_repaint();
     }
 
-    pub(crate) fn threat_board(&mut self, ui: &mut egui::Ui, hunting: bool) {
+    pub(crate) fn threat_board(&mut self, ui: &mut egui::Ui) {
         let red = egui::Color32::from_rgb(0xEF, 0x53, 0x50);
         let orange = egui::Color32::from_rgb(0xFF, 0xA7, 0x26);
         let yellow = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
         let green = egui::Color32::from_rgb(0x66, 0xBB, 0x6A);
         let prox = |j: u32| if j <= 1 { red } else if j <= 3 { orange } else { yellow };
 
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(if hunting { "Hunting board" } else { "Safety watch" })
-                .strong()
-                .size(15.0),
-        );
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Range");
-            ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
-        });
-        ui.label(
-            egui::RichText::new(if hunting {
-                "Targets and activity nearby, nearest first."
-            } else {
-                "Alarms when a new threat enters range."
-            })
-            .weak(),
-        );
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("Within {} jumps, nearest first", self.map_threat_jumps)).weak());
 
         let me_sys = self.player_system();
         let range = self.map_threat_jumps;
@@ -1213,127 +1029,6 @@ impl SpaiApp {
         }
     }
 
-    pub(crate) fn travel_sov_dialog(&mut self, ctx: &egui::Context) {
-        if !self.travel_sov_dialog_open {
-            return;
-        }
-        let coalitions: Vec<(String, Vec<String>)> = self
-            .settings
-            .coalitions
-            .iter()
-            .map(|c| (c.name.clone(), c.alliances.clone()))
-            .collect();
-        let in_coalition: std::collections::HashSet<String> =
-            coalitions.iter().flat_map(|(_, m)| m.iter().cloned()).collect();
-        let mut others: Vec<String> = self
-            .settings
-            .alliances
-            .iter()
-            .map(|a| a.name.clone())
-            .filter(|n| !in_coalition.contains(n))
-            .collect();
-        others.sort();
-        let npc: Vec<String> = {
-            let status = self.system_status.lock().unwrap();
-            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            for f in status.values() {
-                if f.sov_alliance.is_none() {
-                    if let Some(h) = &f.sov {
-                        set.insert(h.clone());
-                    }
-                }
-            }
-            set.into_iter().collect()
-        };
-        let mut clear = false;
-        let keep = Self::dialog_viewport(
-            ctx,
-            "travel_sov_dialog",
-            "EVE Spai \u{2014} Avoid sov",
-            [420.0, 600.0],
-            |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Tick coalitions or alliances whose sovereign space the route should \
-                         avoid. Manage the groups in Settings \u{2192} Coalitions.",
-                    )
-                    .weak(),
-                );
-                if ui.button("Clear all").clicked() {
-                    clear = true;
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.label(egui::RichText::new("Player alliances").strong().size(14.0));
-                    for (cname, members) in &coalitions {
-                        egui::CollapsingHeader::new(egui::RichText::new(cname).strong())
-                            .id_salt(cname)
-                            .show(ui, |ui| {
-                                let all = !members.is_empty()
-                                    && members.iter().all(|m| self.travel_avoid_sov.contains(m));
-                                let mut all_mut = all;
-                                if ui.checkbox(&mut all_mut, "Avoid entire coalition").changed() {
-                                    for m in members {
-                                        if all_mut {
-                                            self.travel_avoid_sov.insert(m.clone());
-                                        } else {
-                                            self.travel_avoid_sov.remove(m);
-                                        }
-                                    }
-                                }
-                                ui.separator();
-                                for m in members {
-                                    let mut on = self.travel_avoid_sov.contains(m);
-                                    if ui.checkbox(&mut on, m).changed() {
-                                        if on {
-                                            self.travel_avoid_sov.insert(m.clone());
-                                        } else {
-                                            self.travel_avoid_sov.remove(m);
-                                        }
-                                    }
-                                }
-                            });
-                    }
-                    if !others.is_empty() {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Independent").weak());
-                        for a in &others {
-                            let mut on = self.travel_avoid_sov.contains(a);
-                            if ui.checkbox(&mut on, a).changed() {
-                                if on {
-                                    self.travel_avoid_sov.insert(a.clone());
-                                } else {
-                                    self.travel_avoid_sov.remove(a);
-                                }
-                            }
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("NPC sov").strong().size(14.0));
-                    if npc.is_empty() {
-                        ui.label(egui::RichText::new("none in the current sov data").weak());
-                    }
-                    for n in &npc {
-                        let mut on = self.travel_avoid_sov.contains(n);
-                        if ui.checkbox(&mut on, n).changed() {
-                            if on {
-                                self.travel_avoid_sov.insert(n.clone());
-                            } else {
-                                self.travel_avoid_sov.remove(n);
-                            }
-                        }
-                    }
-                });
-            },
-        );
-        if clear {
-            self.travel_avoid_sov.clear();
-        }
-        if !keep {
-            self.travel_sov_dialog_open = false;
-        }
-    }
-
     pub(crate) fn map_area(&mut self, ui: &mut egui::Ui) {
         if !self.map_overlay_mode {
             if self.left_dock_open {
@@ -1343,33 +1038,34 @@ impl SpaiApp {
                     .size_range(170.0..=300.0)
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("\u{00AB}").on_hover_text("Minimize panel").clicked() {
+                            if ui.button("\u{00AB}").on_hover_text("Hide the panel").clicked() {
                                 self.left_dock_open = false;
                             }
                             ui.label(egui::RichText::new("Map").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.map_window_menu(ui));
                         });
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                             self.map_controls_content(ui);
                         });
                     });
             }
-            let has_mode = self.map_mode != MapMode::Standard;
+            let has_nearby = self.map_layout.is_threat();
             let has_route = !self.map_route_anchors.is_empty();
-            if self.right_dock_open && (has_mode || has_route || self.map_docked_system.is_some()) {
+            if self.right_dock_open && (has_nearby || has_route || self.map_docked_system.is_some()) {
                 use egui_phosphor::regular as icon;
                 let mut pending: Option<(SystemInfoOut, i64)> = None;
                 egui::Panel::right("map_mode_dock")
                     .resizable(true)
-                    .default_size(260.0)
-                    .size_range(190.0..=380.0)
+                    .default_size(280.0)
+                    .size_range(220.0..=420.0)
                     .show_inside(ui, |ui| {
                         let has_system = self.map_docked_system.is_some();
                         // Fall back to whatever this dock actually has, in that order, rather than
                         // showing an empty tab because the thing it was on has gone.
                         let tabs = [
-                            (RightDockTab::Route, has_route),
                             (RightDockTab::System, has_system),
-                            (RightDockTab::Mode, has_mode),
+                            (RightDockTab::Route, has_route),
+                            (RightDockTab::Nearby, has_nearby),
                         ];
                         if !tabs.iter().any(|(t, ok)| *ok && *t == self.right_dock_tab) {
                             if let Some((t, _)) = tabs.iter().find(|(_, ok)| *ok) {
@@ -1377,70 +1073,26 @@ impl SpaiApp {
                             }
                         }
                         ui.horizontal(|ui| {
-                            if ui.button("\u{00BB}").on_hover_text("Minimize panel").clicked() {
+                            if ui.button("\u{00BB}").on_hover_text("Hide the panel").clicked() {
                                 self.right_dock_open = false;
                             }
-                            if has_mode {
-                                let label = match self.map_mode {
-                                    MapMode::Travel => "Travel",
-                                    MapMode::Safety | MapMode::Hunting => "Threat",
-                                    MapMode::Standard => "",
-                                };
-                                if ui
-                                    .menu_label(self.right_dock_tab == RightDockTab::Mode, label)
-                                    .clicked()
-                                {
-                                    self.right_dock_tab = RightDockTab::Mode;
-                                }
-                            }
-                            if has_route
-                                && ui
-                                    .menu_label(
-                                        self.right_dock_tab == RightDockTab::Route,
-                                        "Route",
-                                    )
-                                    .clicked()
-                            {
-                                self.right_dock_tab = RightDockTab::Route;
-                            }
-                            if has_system {
-                                let name = self
-                                    .map_docked_system
-                                    .and_then(|sid| {
-                                        self.systems.as_ref().and_then(|g| g.info_of(sid).map(|i| i.name.clone()))
-                                    })
-                                    .unwrap_or_else(|| "System".to_string());
-                                if ui
-                                    .menu_label(self.right_dock_tab == RightDockTab::System, name)
-                                    .clicked()
-                                {
-                                    self.right_dock_tab = RightDockTab::System;
-                                }
-                                if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Pop out to window").clicked() {
-                                    if let Some(sid) = self.map_docked_system.take() {
-                                        self.system_window = Some(sid);
-                                        self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
-                                    }
-                                }
-                                if ui.button(icon::X).on_hover_text("Close").clicked() {
-                                    self.map_docked_system = None;
+                            for (tab, ok, label) in [
+                                (RightDockTab::System, has_system, format!("{}  System", icon::INFO)),
+                                (RightDockTab::Route, has_route, format!("{}  Route", icon::PATH)),
+                                (RightDockTab::Nearby, has_nearby, format!("{}  Nearby", icon::WARNING)),
+                            ] {
+                                if ok && ui.menu_label(self.right_dock_tab == tab, label).clicked() {
+                                    self.right_dock_tab = tab;
                                 }
                             }
                         });
                         ui.separator();
                         match self.right_dock_tab {
                             RightDockTab::Route => self.jump_plan_content(ui),
-                            RightDockTab::Mode => match self.map_mode {
-                                MapMode::Travel => self.travel_panel_content(ui),
-                                MapMode::Safety => self.threat_board(ui, false),
-                                MapMode::Hunting => self.threat_board(ui, true),
-                                MapMode::Standard => {}
-                            },
+                            RightDockTab::Nearby => self.threat_board(ui),
                             RightDockTab::System => {
                                 if let Some(sid) = self.map_docked_system {
-                                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                                        pending = Some((self.system_info_body(ui, sid, true), sid));
-                                    });
+                                    pending = Some((self.system_info_body(ui, sid, true), sid));
                                 }
                             }
                         }
@@ -1454,127 +1106,111 @@ impl SpaiApp {
         ui.push_id("map:main", |ui| self.draw_map(ui));
     }
 
+    /// The map's window actions: popping it or a character's map out, keeping it on top, overlay.
+    pub(crate) fn map_window_menu(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        if self.map_in_popout {
+            return;
+        }
+        ui.menu_button(icon::DOTS_THREE, |ui| {
+            if !self.map_popped {
+                if ui.button(format!("{}  Pop out the map", icon::ARROW_SQUARE_OUT)).clicked() {
+                    self.map_popped = true;
+                    ui.close();
+                }
+            } else {
+                ui.checkbox(&mut self.map_window_on_top, format!("{}  Keep on top", icon::PUSH_PIN));
+                if ui.button(format!("{}  Overlay mode", icon::FRAME_CORNERS)).clicked() {
+                    self.map_overlay_mode = true;
+                    ui.close();
+                }
+            }
+            let active = self.active_character.clone();
+            let others: Vec<String> = {
+                let p = self.player.lock().unwrap();
+                let mut v: Vec<String> = p.locations.keys().filter(|n| !n.eq_ignore_ascii_case(&active)).cloned().collect();
+                v.sort();
+                v
+            };
+            if !others.is_empty() {
+                ui.menu_button(format!("{}  A character's own map", icon::USERS_THREE), |ui| {
+                    for n in &others {
+                        let mut open = self.map_char_popouts.contains(n);
+                        if ui.checkbox(&mut open, n).changed() {
+                            if open {
+                                self.map_char_popouts.push(n.clone());
+                            } else {
+                                self.map_char_popouts.retain(|x| x != n);
+                                self.map_char_view.remove(n);
+                            }
+                        }
+                    }
+                });
+            }
+        })
+        .response
+        .on_hover_text("Map windows");
+    }
+
     pub(crate) fn map_controls_content(&mut self, ui: &mut egui::Ui) {
         use crate::map::{MapLayout, MapView};
         use egui_phosphor::regular as icon;
 
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Mode");
-            let mut mode = self.map_mode;
-            egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
-                .selected_text(mode.label())
-                .show_ui(ui, |ui| {
-                    for m in [
-                        MapMode::Standard,
-                        MapMode::Travel,
-                        MapMode::Hunting,
-                        MapMode::Safety,
-                    ] {
-                        ui.menu_value(&mut mode, m, m.label());
-                    }
-                });
-            if mode != self.map_mode {
-                self.set_map_mode(mode);
-            }
-        });
-        ui.separator();
-
-        ui.label(egui::RichText::new("View").strong());
-        if ui.button(format!("{}  Universe map", icon::GLOBE_HEMISPHERE_WEST)).clicked() {
-            self.map_go(MapView::Universe);
-        }
+        let label = |l: MapLayout| match l {
+            MapLayout::Geographic => "3D, as in space",
+            MapLayout::Spaced => "2D, as in game",
+            MapLayout::Radial => "Rings of jumps around you",
+            MapLayout::Tree => "Tree of jumps from you",
+        };
         egui::ComboBox::from_id_salt(ui.id().with("map_layout"))
-            .selected_text(match self.map_layout {
-                MapLayout::Geographic => "3D (geographic)",
-                MapLayout::Spaced => "2D (in-game layout)",
-                MapLayout::Radial => "Radial (jumps)",
-                MapLayout::Tree => "Tree (jumps)",
-            })
+            .selected_text(label(self.map_layout))
+            .width(ui.available_width() - 8.0)
             .show_ui(ui, |ui| {
-                ui.menu_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
-                ui.menu_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
-                ui.menu_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
-                ui.menu_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
-            });
+                for l in [MapLayout::Geographic, MapLayout::Spaced, MapLayout::Radial, MapLayout::Tree] {
+                    ui.menu_value(&mut self.map_layout, l, label(l));
+                }
+            })
+            .response
+            .on_hover_text("The last two centre on you and list threats in range under Nearby");
         if self.map_layout.is_threat() {
             ui.horizontal(|ui| {
-                ui.label("Max jumps");
-                ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
+                ui.label("Range");
+                ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix(" jumps"));
             });
-            ui.checkbox(&mut self.threat_include_bridges, "Include jump bridges");
-        }
-        if ui
-            .add(egui::Button::new(format!("{}  Follow character", icon::CROSSHAIR)).selected(self.map_follow))
-            .clicked()
-        {
-            self.map_follow = !self.map_follow;
-        }
-        if ui.button(format!("{}  Reset view", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
-            self.map_pan = egui::Vec2::ZERO;
-            self.map_zoom = 1.0;
-            self.map_follow = false;
-        }
-        if (self.route_destination.is_some() || self.ingame_route)
-            && ui.button(format!("{}  Clear route", icon::X)).clicked()
-        {
-            self.clear_route();
-        }
-
-        if !self.map_in_popout {
-            ui.separator();
-            ui.label(egui::RichText::new("Window").strong());
-            let active = self.active_character.clone();
-            let others: Vec<String> = {
-                let p = self.player.lock().unwrap();
-                let mut v: Vec<String> =
-                    p.locations.keys().filter(|n| !n.eq_ignore_ascii_case(&active)).cloned().collect();
-                v.sort();
-                v
-            };
-            if !others.is_empty() {
-                ui.menu_button(format!("{}  Pop out character map", icon::USERS_THREE), |ui| {
-                    for n in &others {
-                        let open = self.map_char_popouts.contains(n);
-                        if ui.menu_label(open, n).clicked() {
-                            if open {
-                                self.map_char_popouts.retain(|x| x != n);
-                                self.map_char_view.remove(n);
-                            } else {
-                                self.map_char_popouts.push(n.clone());
-                            }
-                            ui.close();
-                        }
-                    }
-                });
-            }
-            if !self.map_popped {
-                if ui.button(format!("{}  Pop out map window", icon::ARROW_SQUARE_OUT)).clicked() {
-                    self.map_popped = true;
-                }
-            } else {
-                if ui
-                    .add(egui::Button::new(format!("{}  Keep on top", icon::PUSH_PIN)).selected(self.map_window_on_top))
-                    .clicked()
-                {
-                    self.map_window_on_top = !self.map_window_on_top;
-                }
-                if ui.button(format!("{}  Overlay mode", icon::FRAME_CORNERS)).clicked() {
-                    self.map_overlay_mode = true;
-                }
+            ui.checkbox(&mut self.threat_include_bridges, "Count jump bridges");
+            if ui
+                .checkbox(&mut self.settings.map_threat_alarm, "Alarm on a new threat")
+                .on_hover_text("A sound and a red flash when a report or kill turns up in range")
+                .changed()
+            {
+                self.needs_save = true;
             }
         }
-
-        ui.separator();
-        if ui.button(format!("{}  System notes and tags", icon::TAG)).clicked() {
-            self.open_notes_manager(crate::notes::NoteKind::System);
-        }
+        ui.add_space(4.0);
+        // One row of same-sized icon buttons for moving the view.
+        ui.horizontal(|ui| {
+            if ui.button(icon::GLOBE_HEMISPHERE_WEST).on_hover_text("Universe (U)").clicked() {
+                self.map_go(MapView::Universe);
+            }
+            let follow = egui::Button::new(icon::CROSSHAIR).selected(self.map_follow);
+            if ui.add(follow).on_hover_text("Follow your character (F)").clicked() {
+                self.map_follow = !self.map_follow;
+            }
+            if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Reset the view (Home)").clicked() {
+                self.map_pan = egui::Vec2::ZERO;
+                self.map_zoom = 1.0;
+                self.map_follow = false;
+            }
+            if (self.route_destination.is_some() || self.ingame_route) && ui.button(icon::X).on_hover_text("Clear the route").clicked() {
+                self.clear_route();
+            }
+        });
 
         if !self.map_layout.is_threat() {
+            ui.add_space(2.0);
             ui.separator();
-            egui::CollapsingHeader::new(format!("{}  Layers", icon::STACK_SIMPLE))
-                .default_open(true)
-                .show(ui, |ui| self.map_layers_content(ui));
+            self.map_layers_content(ui);
         }
     }
 

@@ -22,6 +22,7 @@ pub fn is_no_transit(id: i64) -> bool {
     id == ZARZAKH
 }
 
+#[derive(Clone)]
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
     by_id: HashMap<i64, SystemInfo>,
@@ -116,6 +117,34 @@ impl Systems {
             adjacency: self.gate_adjacency.clone(),
             gate_adjacency: self.gate_adjacency.clone(),
             reverse_adjacency: self.gate_adjacency.clone(),
+            stargates: self.stargates.clone(),
+            positions: self.positions.clone(),
+        }
+    }
+
+    pub fn all_ids(&self) -> impl Iterator<Item = i64> + '_ {
+        self.by_id.keys().copied()
+    }
+
+    /// This graph without the gates that cross from one region into another.
+    pub fn without_region_gates(&self) -> Self {
+        let region = |id: &i64| self.by_id.get(id).map(|i| i.region.clone());
+        let keep = |a: i64, list: &Vec<i64>| -> Vec<i64> {
+            list.iter()
+                .copied()
+                .filter(|b| {
+                    let gate = self.gate_adjacency.get(&a).is_some_and(|g| g.contains(b));
+                    !gate || region(&a) == region(b)
+                })
+                .collect()
+        };
+        let map = |m: &HashMap<i64, Vec<i64>>| m.iter().map(|(a, l)| (*a, keep(*a, l))).collect();
+        Self {
+            by_name: self.by_name.clone(),
+            by_id: self.by_id.clone(),
+            adjacency: map(&self.adjacency),
+            gate_adjacency: map(&self.gate_adjacency),
+            reverse_adjacency: map(&self.reverse_adjacency),
             stargates: self.stargates.clone(),
             positions: self.positions.clone(),
         }

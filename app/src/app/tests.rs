@@ -2954,13 +2954,14 @@ mod wh_routing_tests {
         let (_ctx, mut a) = app();
         a.settings.route_via_wormholes = true;
         a.wh_cache = vec![hole("j", 30_004_759, 30_000_142)];
-        (a.travel_start, a.travel_end) = (Some(30_004_759), Some(30_000_142));
-        a.plan_route();
-        assert!(a.travel_route.is_some(), "Jita is reached only through the hole");
+        a.map_route_kind = "gate".into();
+        a.map_route_anchors = vec![30_004_759, 30_000_142];
+        a.map_recompute_route();
+        assert!(!a.map_route_opts.is_empty(), "Jita is reached only through the hole");
         a.toggle_wh_hole("j");
-        assert!(a.travel_route.is_none(), "the route still runs through a hole switched off");
+        assert!(a.map_route_opts.is_empty(), "the route still runs through a hole switched off");
         a.toggle_wh_hole("j");
-        assert!(a.travel_route.is_some());
+        assert!(!a.map_route_opts.is_empty());
     }
 
     #[test]
