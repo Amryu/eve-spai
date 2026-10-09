@@ -1684,6 +1684,8 @@ impl SpaiApp {
                 .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
             menu.ui(ui, |ui| add(ui)).0.on_hover_text(tip);
         };
+        // A layer with a single thing to open gets a plain button straight to it.
+        let gear_button = |ui: &mut egui::Ui, tip: &str| ui.button(icon::GEAR_SIX).on_hover_text(tip).clicked();
         let group = |ui: &mut egui::Ui, title: &str| {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(title).weak());
@@ -1711,14 +1713,7 @@ impl SpaiApp {
             let ov = &mut self.map_overlays;
             row(
                 ui,
-                &mut |ui| {
-                    gear_menu(ui, "Coalitions", &mut |ui| {
-                        if ui.button(format!("{}  Edit coalitions\u{2026}", icon::USERS_THREE)).clicked() {
-                            open_coalitions = true;
-                            ui.close();
-                        }
-                    })
-                },
+                &mut |ui| open_coalitions |= gear_button(ui, "Edit coalitions"),
                 &mut |ui| {
                     ui.label(format!("{}  Holder", icon::FLAG));
                     let text = match ov.sov {
@@ -1775,14 +1770,7 @@ impl SpaiApp {
             let ov = &mut self.map_overlays;
             row(
                 ui,
-                &mut |ui| {
-                    gear_menu(ui, "Jump bridges", &mut |ui| {
-                        if ui.button(format!("{}  Edit jump bridges\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
-                            open_bridges = true;
-                            ui.close();
-                        }
-                    })
-                },
+                &mut |ui| open_bridges |= gear_button(ui, "Edit jump bridges"),
                 &mut |ui| {
                     ui.checkbox(&mut ov.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
                 },
@@ -1809,14 +1797,7 @@ impl SpaiApp {
             });
             row(
                 ui,
-                &mut |ui| {
-                    gear_menu(ui, "Cyno generators", &mut |ui| {
-                        if ui.button(format!("{}  Edit cyno generators\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
-                            open_cynos = true;
-                            ui.close();
-                        }
-                    })
-                },
+                &mut |ui| open_cynos |= gear_button(ui, "Edit cyno generators"),
                 &mut |ui| {
                     ui.checkbox(&mut ov.cyno_gen, format!("{}  Cyno generators", icon::CROSSHAIR_SIMPLE));
                 },
@@ -1919,14 +1900,7 @@ impl SpaiApp {
             });
             row(
                 ui,
-                &mut |ui| {
-                    gear_menu(ui, "System notes and tags", &mut |ui| {
-                        if ui.button(format!("{}  Manage notes and tags\u{2026}", icon::TAG)).clicked() {
-                            open_notes = true;
-                            ui.close();
-                        }
-                    })
-                },
+                &mut |ui| open_notes |= gear_button(ui, "Manage system notes and tags"),
                 &mut |ui| {
                     ui.checkbox(&mut ov.notes, format!("{}  Notes and tags", icon::TAG)).on_hover_text("Systems you tagged or wrote a note on");
                 },

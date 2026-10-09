@@ -71,6 +71,8 @@ impl SpaiApp {
             chat_dir: self.chat_dir.clone(),
             severity: s.severity.clone(),
             cyno_generators: s.cyno_generators.clone(),
+            jump_bridges: s.jump_bridges.clone(),
+            sov_upgrades: s.sov_upgrades.clone(),
             fleet_presets: s.fleet_presets.clone(),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
@@ -98,6 +100,12 @@ impl SpaiApp {
             ActionKind::SetDestination { system, character } => {
                 let who = character.clone().unwrap_or_else(|| self.active_character.clone());
                 self.set_destination_for(&[who], *system);
+            }
+            ActionKind::EditMapData(e) => {
+                let s = &mut self.settings;
+                if e.apply(&mut s.jump_bridges, &mut s.cyno_generators, &mut s.sov_upgrades) {
+                    self.needs_save = true;
+                }
             }
             ActionKind::AddAlertRule(rule) => {
                 self.settings.alerts.rules.push((**rule).clone());
