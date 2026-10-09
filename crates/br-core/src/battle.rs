@@ -15,6 +15,40 @@ pub struct Overrides {
     pub tag: HashMap<i64, i64>,
     pub excluded: HashSet<i64>,
     pub scrubs: HashSet<(i64, i64)>,
+    /// Sides rearranged by hand, per battle: keyed by a kill of the battle (its first when the move
+    /// was made), each move puts a party on the side of another party, or on a side of its own
+    /// when that is 0. Applied in order after the sides are inferred.
+    #[serde(default)]
+    pub side_moves: BTreeMap<i64, Vec<(i64, i64)>>,
+}
+
+/// `b` with the sides moved by hand for it, and the sides' figures counted again.
+pub fn arranged(mut b: Battle, ov: &Overrides) -> Battle {
+    let moves: Vec<(i64, i64)> = ov
+        .side_moves
+        .iter()
+        .filter(|(anchor, _)| b.engagements.iter().any(|e| e.kill_id == **anchor))
+        .flat_map(|(_, m)| m.iter().copied())
+        .collect();
+    if moves.is_empty() {
+        return b;
+    }
+    for (party, with) in moves {
+        let Some(from) = b.sides.iter().position(|s| s.parties.iter().any(|p| p.id == party)) else { continue };
+        let to = if with == 0 { None } else { b.sides.iter().position(|s| s.parties.iter().any(|p| p.id == with)) };
+        if to == Some(from) {
+            continue;
+        }
+        let pos = b.sides[from].parties.iter().position(|p| p.id == party).unwrap_or(0);
+        let moved = b.sides[from].parties.remove(pos);
+        match to {
+            Some(t) => b.sides[t].parties.push(moved),
+            None => b.sides.push(Side { parties: vec![moved], coalition: None, kills: 0, losses: 0, isk_lost: 0.0, isk_destroyed: 0.0 }),
+        }
+    }
+    b.sides.retain(|s| !s.parties.is_empty());
+    b.recount_sides();
+    b
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +279,49 @@ impl Battle {
 }
 
 impl Battle {
+    /// The same fight seen through some of its systems only: the killmails there, each side's
+    /// figures counted again from them, the sides themselves kept so they read the same.
+    pub fn in_systems(&self, ids: &[i64]) -> Battle {
+        let engagements: Vec<Engagement> = self.engagements.iter().filter(|e| ids.contains(&e.system_id)).cloned().collect();
+        let mut b = Battle {
+            kills: engagements.len(),
+            isk: engagements.iter().map(|e| e.isk).sum(),
+            systems: self.systems.iter().filter(|(id, _, _)| ids.contains(id)).cloned().collect(),
+            sides: self.sides.clone(),
+            start: engagements.iter().map(|e| e.time).min().unwrap_or(self.start),
+            end: engagements.iter().map(|e| e.time).max().unwrap_or(self.end),
+            ambiguous: false,
+            suggested_splits: Vec::new(),
+            engagements,
+        };
+        b.recount_sides();
+        b
+    }
+
+    /// Each side's kills, losses and ISK counted from the killmails, as `infer_sides` counts them:
+    /// a loss to the victim's side, a kill once to every other side with an attacker on it.
+    pub fn recount_sides(&mut self) {
+        let mut sides: Vec<Side> =
+            self.sides.iter().map(|s| Side { kills: 0, losses: 0, isk_lost: 0.0, isk_destroyed: 0.0, ..s.clone() }).collect();
+        for e in &self.engagements {
+            let victim = self.side_of(&e.victim);
+            if let Some(v) = victim {
+                sides[v].losses += 1;
+                sides[v].isk_lost += e.isk;
+            }
+            let mut scored: BTreeSet<usize> = BTreeSet::new();
+            for a in &e.attackers {
+                if let Some(si) = self.side_of(&a.party).filter(|&si| Some(si) != victim) {
+                    if scored.insert(si) {
+                        sides[si].kills += 1;
+                        sides[si].isk_destroyed += e.isk;
+                    }
+                }
+            }
+        }
+        self.sides = sides;
+    }
+
     pub fn side_of(&self, p: &Party) -> Option<usize> {
         self.sides.iter().position(|s| {
             s.parties.iter().any(|q| if p.id != 0 { q.id == p.id } else { q.name == p.name })
@@ -382,7 +459,7 @@ pub fn cluster(
         partition_battles(engagements, window, max_jumps, break_gap, overrides, &dist);
     let mut battles: Vec<Battle> = groups
         .into_iter()
-        .map(|idxs| build_battle(idxs.iter().map(|&i| filtered[i].clone()).collect(), break_gap))
+        .map(|idxs| arranged(build_battle(idxs.iter().map(|&i| filtered[i].clone()).collect(), break_gap), overrides))
         .collect();
     battles.sort_by(|a, b| b.end.cmp(&a.end));
     battles
@@ -409,11 +486,12 @@ pub fn cluster_cached(
             let mut h = std::collections::hash_map::DefaultHasher::new();
             kids.hash(&mut h);
             let sig = h.finish();
-            let b = cache.get(&sig).cloned().unwrap_or_else(|| {
+            // Taken out of the old cache, not copied: it is rebuilt whole every pass.
+            let b = cache.remove(&sig).unwrap_or_else(|| {
                 build_battle(idxs.iter().map(|&i| filtered[i].clone()).collect(), break_gap)
             });
             next.insert(sig, b.clone());
-            b
+            arranged(b, overrides)
         })
         .collect();
     *cache = next;
@@ -1055,6 +1133,67 @@ mod tests {
             isk: 1.0,
             anchored: true,
         }
+    }
+
+    #[test]
+    fn a_party_moved_by_hand_changes_side_and_the_figures_follow() {
+        let engs = vec![
+            eng_multi(1, 0, 10, "Red", &["Blue", "Green"]),
+            eng(2, 30, 10, "Blue", "Red"),
+            eng(3, 60, 10, "Green", "Red"),
+        ];
+        let b = preview_battle(engs, BATTLE_BREAK_SECS);
+        let side_of = |b: &Battle, name: &str| b.sides.iter().position(|s| s.parties.iter().any(|p| p.name == name));
+        assert_eq!(side_of(&b, "Blue"), side_of(&b, "Green"), "Blue and Green fought together");
+        let mut ov = Overrides::default();
+        ov.side_moves.insert(1, vec![(pid("Green"), 0)]);
+        let moved = arranged(b.clone(), &ov);
+        assert_eq!(moved.sides.len(), b.sides.len() + 1, "Green on a side of its own");
+        assert_ne!(side_of(&moved, "Blue"), side_of(&moved, "Green"));
+        let green = &moved.sides[side_of(&moved, "Green").unwrap()];
+        assert_eq!((green.kills, green.losses), (1, 1), "its kill of Red and its own loss go with it");
+        let blue = &moved.sides[side_of(&moved, "Blue").unwrap()];
+        assert_eq!((blue.kills, blue.losses), (1, 1));
+        // Back with Red: Red's kill of Green is now a loss on the same side, as the game counts it.
+        ov.side_moves.insert(1, vec![(pid("Green"), pid("Red"))]);
+        assert_eq!(side_of(&arranged(b.clone(), &ov), "Green"), side_of(&arranged(b.clone(), &ov), "Red"));
+        // Moves for another battle leave this one alone.
+        let other = Overrides { side_moves: [(999, vec![(pid("Green"), 0)])].into(), ..Default::default() };
+        assert_eq!(arranged(b.clone(), &other), b);
+    }
+
+    #[test]
+    fn overrides_saved_before_side_moves_still_load() {
+        let old: Overrides = serde_json::from_str(r#"{"tag":{},"excluded":[],"scrubs":[]}"#).unwrap();
+        assert!(old.side_moves.is_empty());
+        let ov = Overrides { side_moves: [(5, vec![(7, 0)])].into(), ..Default::default() };
+        let back: Overrides = serde_json::from_str(&serde_json::to_string(&ov).unwrap()).unwrap();
+        assert_eq!(back, ov);
+    }
+
+    #[test]
+    fn a_battle_seen_through_some_systems_counts_only_their_kills() {
+        let engs = vec![
+            eng(1, 0, 10, "Red", "Blue"),
+            eng(2, 30, 10, "Blue", "Red"),
+            eng(3, 60, 20, "Red", "Blue"),
+            Engagement { isk: 5.0, ..eng(4, 90, 20, "Red", "Blue") },
+        ];
+        let b = preview_battle(engs, BATTLE_BREAK_SECS);
+        let all = b.in_systems(&[10, 20]);
+        assert_eq!(all.sides, b.sides, "every system: the same figures");
+        assert_eq!((all.kills, all.isk), (b.kills, b.isk));
+        let one = b.in_systems(&[20]);
+        assert_eq!(one.kills, 2);
+        assert_eq!(one.systems.iter().map(|s| s.0).collect::<Vec<_>>(), vec![20]);
+        assert_eq!((one.start, one.end), (60, 90));
+        let names: Vec<_> = one.sides.iter().map(|s| s.parties[0].name.as_str()).collect();
+        assert_eq!(names, b.sides.iter().map(|s| s.parties[0].name.as_str()).collect::<Vec<_>>(), "the sides stay put");
+        let red = one.sides.iter().find(|s| s.parties[0].name == "Red").unwrap();
+        let blue = one.sides.iter().find(|s| s.parties[0].name == "Blue").unwrap();
+        assert_eq!((red.losses, red.isk_lost, red.kills), (2, 6.0, 0));
+        assert_eq!((blue.kills, blue.isk_destroyed, blue.losses), (2, 6.0, 0));
+        assert_eq!(b.in_systems(&[]).kills, 0, "no systems, no kills");
     }
 
     fn eng_multi(kill: i64, time: i64, sys: i64, victim: &str, attackers: &[&str]) -> Engagement {

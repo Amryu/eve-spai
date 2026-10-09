@@ -594,6 +594,54 @@ fn intel_feed_scene(
 /// The battle detail view, which carries the second wrapping toolbar. Its cache is normally
 /// filled by the brview worker, and headless starts no worker, so the scene seeds the selection
 /// and the cache itself.
+/// A fight across two systems, which offers the systems picker.
+fn battle_report_two_systems_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let mut engs = b.engagements.clone();
+    for e in engs.iter_mut().filter(|e| e.kill_id % 2 == 0) {
+        e.system_id = 30_004_759;
+        e.system_name = "1DQ1-A".into();
+    }
+    let b = br_core::battle::preview_battle(engs, br_core::battle::BATTLE_BREAK_SECS);
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
+fn battle_report_scene(name: &'static str, size: [f32; 2], tab: crate::app::BrTab, extreme: bool) -> Scene {
+    harness::scratch_profile();
+    let (mut b, mut names) = if extreme { fixtures::big_battle(4) } else { fixtures::real_battle() };
+    if extreme {
+        if let Some(side) = b.sides.first_mut() {
+            side.coalition = Some("The Exceptionally Long-Named Coalition of Assorted Spaceship Enthusiasts".into());
+        }
+        if let Some(e) = b.engagements.first() {
+            names.insert(e.victim_ship, "Imperial Navy Issue Extended Range Logistics Prototype".into());
+        }
+    }
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a.set_battle_tab(tab);
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
 fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
     use br_core::battle::{Battle, Engagement, Party, PartyKind};
     harness::scratch_profile();
@@ -635,6 +683,8 @@ fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
                 rosters: vec![],
                 condensed: vec![],
                 ship_ids: vec![],
+                tiles: Default::default(),
+                shown: None,
             }));
             a
         });
@@ -2209,6 +2259,36 @@ pub(crate) fn all() -> Vec<Scene> {
     // 1440 is a break point where the throttle picker lands last on its row with the least space
     // left, next to the panel edge.
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
+    // A real fight's report: hull tiles and the pilot list, at desktop and narrow widths, and the
+    // fight four times over with a long side and hull name for counts and labels at their extremes.
+    v.push(battle_report_scene("battle_report_tiles", [1600.0, 1000.0], crate::app::BrTab::Tiles, false));
+    v.push(battle_report_scene("battle_report_tiles_narrow", [900.0, 800.0], crate::app::BrTab::Tiles, false));
+    v.push(battle_report_scene("battle_report_details", [1600.0, 1000.0], crate::app::BrTab::Details, false));
+    v.push(battle_report_scene("battle_report_extreme", [1100.0, 900.0], crate::app::BrTab::Tiles, true));
+    v.push(battle_report_two_systems_scene("battle_report_two_systems", [1400.0, 900.0]));
+    // A killmail in its window, wide enough for the fit beside the attackers, and narrow.
+    for (name, size) in [("dialog_killmail", [960.0, 820.0]), ("dialog_killmail_narrow", [560.0, 820.0])] {
+        v.push(dialog_scene(name, size, |a| {
+            let (d, types) = fixtures::killmail();
+            a.seed_killmail(d, types);
+        }));
+    }
+    // The sides of the real fight, to move one to another side.
+    v.push({
+        harness::scratch_profile();
+        let (b, names) = fixtures::real_battle();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ctx("dialog_battle_sides", [700.0, 640.0], move |ctx| {
+            let app = app.get_or_insert_with(|| {
+                harness::render_dialogs_on_the_root(ctx);
+                let mut a = crate::app::SpaiApp::build(ctx, true);
+                a.seed_battle(b.clone(), names.clone());
+                a.open_battle_sides();
+                a
+            });
+            app.battle_sides_window_for_test(ctx);
+        })
+    });
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     // 720 is the app's minimum window width (main.rs), where the intel toolbar has to wrap.
     v.push(view_scene("view_intel_narrow", View::Intel, [720.0, 800.0]));
@@ -7956,6 +8036,7 @@ fn uitest_a_big_battle_roster_scrolls_to_its_last_pilot() {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Battles;
             a.seed_battle(b.clone(), names.clone());
+            a.set_battle_tab(crate::app::BrTab::Details);
             a
         });
         a.root_chrome(ui);
@@ -8148,4 +8229,31 @@ fn uitest_a_slow_static_data_download_gives_way_to_a_file() {
     assert!(matches!(*a.sde_status.lock().unwrap(), crate::sde::SdeStatus::Failed(_)), "the download is stopped");
     assert!(a.sde_file_dialog);
     drop(harness.get_by_label_contains("Choose file"));
+}
+
+/// A hull tile clicked lists the pilots who flew it: the Details tab, narrowed to that hull.
+#[test]
+fn uitest_a_ship_tile_lists_its_pilots() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let (ship, ship_name) = names.iter().find(|(_, n)| n.as_str() == "Typhoon").map(|(id, n)| (*id, n.clone())).expect("a Typhoon in the fight");
+    let app = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::app::SpaiApp>));
+    let held = app.clone();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui(move |ui| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    h.run();
+    h.get_all_by_label(&ship_name).next().expect("the Typhoon tile").click();
+    h.run();
+    assert_eq!(app.borrow().as_ref().unwrap().battle_view_state(), (crate::app::BrTab::Details, Some(ship)));
+    assert!(h.query_all_by_label_contains(&ship_name).count() >= 1, "the filter chip names the hull");
 }

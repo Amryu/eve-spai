@@ -400,8 +400,8 @@ impl SpaiApp {
                                             .width(80.0)
                                             .selected_text(if *v { "as Viewer" } else { "as Member" })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(v, false, "as Member").on_hover_text("Sees and shares");
-                                                ui.selectable_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
+                                                ui.menu_value(v, false, "as Member").on_hover_text("Sees and shares");
+                                                ui.menu_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
                                             });
                                     } else {
                                         ui.label(egui::RichText::new("as Viewer").weak());

@@ -1056,6 +1056,7 @@ mod chat_window_tests {
                 focused: true,
                 outer: Some(egui::Rect::EVERYTHING),
                 inner: Some(egui::Rect::EVERYTHING),
+                ..Default::default()
             },
             ChatWindow { id: 9, tabs: v(&["c@x"]), ..Default::default() },
         ];
@@ -3242,5 +3243,174 @@ mod notify_count_tests {
         assert_eq!(a.notify_count(), 1, "window not focused");
         a.jabber_frame(true);
         assert_eq!(a.notify_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod jabber_popout_raise_tests {
+    use super::*;
+    use crate::app::chat_tabs::{ChannelRow, ChatWinKey, Raise};
+
+    const ROOM: &str = "fleet@conference.goonfleet.com";
+    const OTHER: &str = "corp@conference.goonfleet.com";
+
+    fn app_with_popout() -> SpaiApp {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.jabber_popouts = vec![ChatWindow {
+            id: 3,
+            tabs: vec![OTHER.to_owned(), ROOM.to_owned()],
+            active: Some(OTHER.to_owned()),
+            ..Default::default()
+        }];
+        a
+    }
+
+    /// Opening a conversation a pop-out holds selects its tab there and raises that window.
+    #[test]
+    fn opening_a_popped_out_conversation_raises_its_window_on_its_tab() {
+        let mut a = app_with_popout();
+        a.jabber_open(ROOM, ChatWinKey::Main);
+        let w = &a.jabber_popouts[0];
+        assert_eq!(w.active.as_deref(), Some(ROOM));
+        assert_eq!(w.raise, Raise::Requested);
+        assert!(w.flash_until.is_some());
+        assert!(a.jabber_tabs.is_empty(), "the conversation stays in the pop-out");
+    }
+
+    /// The sidebar marks the conversation open in the chat window used last, pop-out or main.
+    #[test]
+    fn the_sidebar_highlight_follows_the_last_used_window() {
+        let mut a = app_with_popout();
+        a.jabber_chat = Some("dm@goonfleet.com".to_owned());
+        assert_eq!(a.jabber_highlighted().as_deref(), Some("dm@goonfleet.com"));
+        a.win_set_active(ChatWinKey::Popout(3), Some(ROOM.to_owned()));
+        assert_eq!(a.jabber_highlighted().as_deref(), Some(ROOM), "a tab switch in the pop-out");
+        a.win_set_active(ChatWinKey::Main, Some("dm@goonfleet.com".to_owned()));
+        assert_eq!(a.jabber_highlighted().as_deref(), Some("dm@goonfleet.com"), "back in the main window");
+        a.win_set_active(ChatWinKey::Popout(3), Some(OTHER.to_owned()));
+        a.jabber_popouts.clear();
+        assert_eq!(a.jabber_highlighted().as_deref(), Some("dm@goonfleet.com"), "the pop-out closed");
+    }
+
+    /// The MOTD opens in the window it was asked for in, not in the main window.
+    #[test]
+    fn the_motd_opens_in_the_window_that_asked_for_it() {
+        let mut a = app_with_popout();
+        a.jabber_motd_window = Some(ROOM.to_owned());
+        a.jabber_motd_in = ChatWinKey::Popout(3);
+        let channels = vec![ChannelRow {
+            jid: ROOM.to_owned(),
+            name: "fleet".into(),
+            unread: false,
+            unread_count: 0,
+            mention: false,
+            last_at: 0,
+            inaccessible: false,
+            motd: "Fleet comms: Mumble".into(),
+        }];
+        let shown = |a: &mut SpaiApp, win: ChatWinKey| {
+            let mut h = egui_kittest::Harness::new_ui(|ui| a.jabber_motd_dialog(ui.ctx(), &channels, win));
+            h.run();
+            use egui_kittest::kittest::Queryable as _;
+            h.query_by_label_contains("Fleet comms").is_some()
+        };
+        assert!(!shown(&mut a, ChatWinKey::Main), "drawn in the main window");
+        assert!(shown(&mut a, ChatWinKey::Popout(3)), "missing from the pop-out");
+    }
+}
+
+#[cfg(test)]
+mod battle_report_inputs_tests {
+    use super::*;
+
+    /// An open report's system pick, sort and condensing reach the worker: they were only handed
+    /// over by the battle list, which an open report never reaches.
+    #[test]
+    #[allow(deprecated)]
+    fn an_open_reports_choices_reach_the_worker() {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        let (b, names) = crate::uitest::fixtures::real_battle();
+        a.view = View::Battles;
+        a.seed_battle(b, names);
+        a.battle_view_for = a.battle_selected;
+        a.battle_systems = vec![30_000_142];
+        a.battle_condensed = true;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| a.battles_view(ui));
+        });
+        let inp = a.br_inputs.lock().unwrap();
+        assert_eq!(inp.systems, vec![30_000_142]);
+        assert!(inp.condensed);
+        assert_eq!(inp.selected_kid, a.battle_selected);
+    }
+}
+
+#[cfg(all(test, feature = "fleet"))]
+mod rescue_route_tests {
+    use super::*;
+
+    fn app() -> SpaiApp {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.settings.fleet_enabled = true;
+        a.settings.fc_rescue_enabled = true;
+        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+        a
+    }
+
+    fn ping(a: &SpaiApp, seq: u64, age: i64, test_mode: bool) {
+        let mut r = a.rescue.lock().unwrap();
+        r.test_mode = test_mode;
+        r.events.push(crate::rescue::RescueEvent {
+            seq,
+            received: crate::clock::utc().timestamp() - age,
+            author: "scout".into(),
+            raw: "tackled".into(),
+            is_ping: true,
+            system_id: Some(30_004_759),
+            system_name: Some("1DQ1-A".into()),
+            pilot: None,
+            cyno: None,
+            anomaly: None,
+            cap_class: None,
+        });
+        r.selected_ping = Some(seq);
+        r.capital_system = Some(30_004_759);
+    }
+
+    /// The FC's character is the active one when the dashboard names none, and only one that may set
+    /// waypoints.
+    #[test]
+    fn the_route_goes_to_a_character_that_may_set_waypoints() {
+        let mut a = app();
+        a.characters = vec![
+            crate::store::CharacterRow { id: 1, name: "Scout".into(), expires_at: 0, scopes: String::new() },
+            crate::store::CharacterRow { id: 2, name: "Boss".into(), expires_at: 0, scopes: "esi-ui.write_waypoint.v1".into() },
+        ];
+        a.active_character = "Scout".into();
+        assert_eq!(a.rescue_fc_character(), None, "the active one cannot take a route");
+        a.active_character = "Boss".into();
+        assert_eq!(a.rescue_fc_character().as_deref(), Some("Boss"));
+        assert_eq!(a.waypoint_characters(), vec!["Boss".to_owned()]);
+    }
+
+    /// A ping is routed once; an old one selected at start-up, or a test scenario, never reaches the
+    /// game.
+    #[test]
+    fn a_ping_is_routed_once_and_never_from_history_or_a_test() {
+        let mut a = app();
+        ping(&a, 1, 3600, false);
+        a.rescue_auto_route();
+        assert_eq!(a.rescue_routed_for, Some((1, 30_004_759)), "looked at once");
+        assert!(!a.ingame_route, "an hour-old ping is not flown to");
+        ping(&a, 2, 5, true);
+        a.rescue_auto_route();
+        assert!(!a.ingame_route, "a test scenario never leaves the app");
+        a.rescue_routed_for = Some((3, 30_004_759));
+        ping(&a, 3, 5, false);
+        a.rescue_auto_route();
+        assert!(!a.ingame_route, "the same ping and capital again: already done");
     }
 }

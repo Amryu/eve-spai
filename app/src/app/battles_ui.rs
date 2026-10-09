@@ -533,6 +533,7 @@ impl SpaiApp {
     pub(crate) fn battle_review_panels(&mut self, ctx: &egui::Context) {
         use egui_phosphor::regular as icon;
         let now = crate::clock::utc().timestamp();
+        self.battle_sides_window(ctx);
 
         if self.battle_excluded_open {
             let list = self.store.as_ref().map(|s| s.list_excluded_engagements()).unwrap_or_default();
@@ -765,7 +766,8 @@ impl SpaiApp {
         else {
             return Ok(None);
         };
-        let overrides = self.battle_overrides.lock().unwrap().clone();
+        let mut overrides = self.battle_overrides.lock().unwrap().clone();
+        overrides.side_moves.retain(|anchor, _| battle.engagements.iter().any(|e| e.kill_id == *anchor));
         let now = crate::clock::utc().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
@@ -909,7 +911,10 @@ impl SpaiApp {
     }
 
     pub(crate) fn build_share_doc(&self, battle: &br_core::battle::Battle) -> br_core::battle::BattleReportDoc {
-        let overrides = self.battle_overrides.lock().unwrap().clone();
+        let mut overrides = self.battle_overrides.lock().unwrap().clone();
+        // The battle already carries its rearranged sides; its own moves go along so they can be
+        // read back, not every other battle's.
+        overrides.side_moves.retain(|anchor, _| battle.engagements.iter().any(|e| e.kill_id == *anchor));
         let now = crate::clock::utc().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
@@ -1200,7 +1205,13 @@ impl SpaiApp {
         let inv = b.involvement();
         let rosters: Vec<Vec<br_core::battle::Participant>> =
             (0..b.sides.len()).map(|i| b.roster(i)).collect();
+        let tiles = crate::brview::ship_tiles(&rosters);
+        self.battle_systems.clear();
+        self.battle_ship_filter = None;
         self.loaded_report = Some(LoadedReport {
+            shown: None,
+            systems_for: Vec::new(),
+            tiles,
             title,
             battle: b,
             inv,
@@ -1244,27 +1255,34 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let Some(lr) = self.loaded_report.as_ref() else { return };
         let mut go_back = false;
-        ui.horizontal(|ui| {
-            if ui.button(format!("{}  Back to battles", icon::ARROW_LEFT)).clicked() {
+        let mut open_system = None;
+        report_header(ui, |_| {}, |ui| {
+            if ui.button(icon::ARROW_LEFT).on_hover_text("Back to battles").clicked() {
                 go_back = true;
             }
-            ui.separator();
-            ui.label(egui::RichText::new(&lr.title).strong());
-            ui.label(
-                egui::RichText::new(format!("{}  Imported", icon::DOWNLOAD_SIMPLE))
-                    .color(crate::theme::standing::WARNING),
-            );
-            ui.separator();
-            ui.checkbox(&mut self.battle_condensed, "Condensed");
-        });
+            ui.add(egui::Label::new(egui::RichText::new(&lr.title).strong()).truncate()).on_hover_text(&lr.title);
+            ui.label(egui::RichText::new(format!("{}  Imported", icon::DOWNLOAD_SIMPLE)).color(crate::theme::standing::WARNING));
+            open_system = battle_summary(ui, lr.shown.as_ref().unwrap_or(&lr.battle));
+        }, |ui| side_chips(ui, lr.shown.as_ref().unwrap_or(&lr.battle)));
         if go_back {
             self.loaded_report = None;
             return;
         }
-        ui.add_space(6.0);
+        let all_systems = self.loaded_report.as_ref().map(|lr| lr.battle.systems.clone()).unwrap_or_default();
+        self.report_tabs(ui, &all_systems, false);
         let condensed = self.battle_condensed;
         let sort = self.battle_roster_sort;
-        // A single static report: (re)sort only when the toggle changes, then render pre-sorted.
+        // A single static report: worked out again only when the systems picked change.
+        if let Some(lr) = self.loaded_report.as_mut().filter(|lr| lr.systems_for != self.battle_systems) {
+            lr.systems_for = self.battle_systems.clone();
+            lr.shown = (!lr.systems_for.is_empty()).then(|| lr.battle.in_systems(&lr.systems_for));
+            let v = lr.shown.as_ref().unwrap_or(&lr.battle);
+            lr.inv = v.involvement();
+            lr.rosters = (0..v.sides.len()).map(|i| v.roster(i)).collect();
+            lr.tiles = crate::brview::ship_tiles(&lr.rosters);
+            lr.sorted_for = None;
+        }
+        // (Re)sort only when the toggle changes, then render pre-sorted.
         if let Some(lr) = self.loaded_report.as_mut() {
             if lr.sorted_for != Some((sort, condensed)) {
                 let type_names = self.type_names.lock().unwrap();
@@ -1276,28 +1294,259 @@ impl SpaiApp {
             }
         }
         let prev_hover = self.loaded_report.as_ref().and_then(|lr| lr.hover);
-        let (clicked_system, hover) = {
+        let out = {
             let lr = self.loaded_report.as_ref().unwrap();
             let type_names = self.type_names.lock().unwrap();
             battle_detail(
                 ui,
-                &lr.battle,
+                lr.shown.as_ref().unwrap_or(&lr.battle),
                 &type_names,
                 &lr.inv,
                 &lr.sorted,
                 &lr.condensed_rows,
                 condensed,
                 prev_hover,
+                &lr.tiles,
+                self.battle_tab,
+                self.battle_ship_filter,
             )
         };
-        if hover != prev_hover {
+        if out.hover != prev_hover {
             if let Some(lr) = self.loaded_report.as_mut() {
-                lr.hover = hover;
+                lr.hover = out.hover;
             }
             ui.ctx().request_repaint();
         }
-        if let Some(sid) = clicked_system {
+        self.report_show_ship(out.show_ship);
+        if let Some(kid) = out.open_kill {
+            self.open_killmail(kid, None);
+        }
+        if let Some(sid) = open_system.or(out.open_system) {
             self.open_system(sid);
+        }
+    }
+
+    /// Tiles or Details, and for the pilot list its own controls and the hull it is narrowed to.
+    /// `ambiguous`: the fight may be several, which the row says at its end with a way to split it.
+    fn report_tabs(&mut self, ui: &mut egui::Ui, systems: &[(i64, String, f64)], ambiguous: bool) {
+        use egui_phosphor::regular as icon;
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if systems.len() > 1 {
+                self.report_systems_picker(ui, systems);
+                toolbar_sep(ui);
+            }
+            if ui.menu_label(self.battle_tab == BrTab::Tiles, format!("{}  Tiles", icon::SQUARES_FOUR)).clicked() {
+                self.battle_tab = BrTab::Tiles;
+            }
+            if ui.menu_label(self.battle_tab == BrTab::Details, format!("{}  Details", icon::LIST_BULLETS)).clicked() {
+                self.battle_tab = BrTab::Details;
+            }
+            if ambiguous {
+                toolbar_sep(ui);
+                let warn = crate::theme::standing::WARNING;
+                ui.label(egui::RichText::new(format!("{}  Possible separate engagements", icon::WARNING)).color(warn))
+                    .on_hover_text("Kills here look like more than one fight. Review / split shows where it could be cut.");
+                if ui.button(format!("{}  Review / split", icon::SCISSORS)).clicked() {
+                    self.battle_edit_mode = true;
+                }
+            }
+            if self.battle_tab != BrTab::Details {
+                return;
+            }
+            toolbar_sep(ui);
+            ui.checkbox(&mut self.battle_condensed, "Condensed")
+                .on_hover_text("Stack each side's ships by hull (count + losses)");
+            ui.label("Sort");
+            let sort_label = match self.battle_roster_sort {
+                RosterSort::Value => "ISK loss",
+                RosterSort::Hull => "Hull size",
+            };
+            toolbar_combo(ui, "battle_roster_sort", sort_label.to_owned(), |ui| {
+                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Value, "ISK loss");
+                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Hull, "Hull size");
+            });
+            if let Some(ship) = self.battle_ship_filter.filter(|_| !self.battle_condensed) {
+                let name = self.type_names.lock().unwrap().get(&ship).cloned().unwrap_or_else(|| format!("Type {ship}"));
+                if ui
+                    .button(format!("{name}  {}", icon::X_CIRCLE))
+                    .on_hover_text("Only pilots in this hull are listed. Click to list everyone.")
+                    .clicked()
+                {
+                    self.battle_ship_filter = None;
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+
+    /// Which of a report's systems to look at: a dropdown of them, all by default. For viewing only;
+    /// the report saved or shared stays whole.
+    fn report_systems_picker(&mut self, ui: &mut egui::Ui, systems: &[(i64, String, f64)]) {
+        use egui_phosphor::regular as icon;
+        self.battle_systems.retain(|id| systems.iter().any(|s| s.0 == *id));
+        let label = match self.battle_systems.len() {
+            0 => format!("{}  All {} systems", icon::FUNNEL, systems.len()),
+            1 => {
+                let name = systems.iter().find(|s| s.0 == self.battle_systems[0]).map_or("", |s| s.1.as_str());
+                format!("{}  {name}", icon::FUNNEL)
+            }
+            n => format!("{}  {n} of {} systems", icon::FUNNEL, systems.len()),
+        };
+        let filtering = !self.battle_systems.is_empty();
+        let text = if filtering { egui::RichText::new(label).color(ui.visuals().hyperlink_color) } else { egui::RichText::new(label) };
+        ui.menu_button(text, |ui| {
+            if ui.menu_label(!filtering, "All systems").clicked() {
+                self.battle_systems.clear();
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (id, name, sec) in systems {
+                    let mut on = self.battle_systems.contains(id);
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut on, "").changed() {
+                            if on {
+                                self.battle_systems.push(*id);
+                            } else {
+                                self.battle_systems.retain(|s| s != id);
+                            }
+                        }
+                        ui.label(security_badge(*sec));
+                        ui.label(name);
+                    });
+                }
+            });
+        })
+        .response
+        .on_hover_text("Show only the killmails in some of this fight's systems. Saving and sharing keep every system.");
+        // Every system picked is the same as none.
+        if self.battle_systems.len() == systems.len() {
+            self.battle_systems.clear();
+        }
+    }
+
+    /// Hands the worker what the view asks for, and wakes it when that changed. Every frame of the
+    /// Battles view, the open report's included: its sort, condensing and systems are inputs too.
+    fn br_publish_inputs(&mut self) -> u64 {
+        // All filtering/roster work runs on the brview worker; the UI only publishes inputs and
+        // reads results, showing a spinner while the worker catches up.
+        {
+            let mut inp = self.br_inputs.lock().unwrap();
+            inp.query = self.battle_search.trim().to_owned();
+            inp.min_isk = self.settings.min_battle_isk;
+            inp.show_history = self.show_history;
+            inp.break_secs = self.settings.battle_break_secs;
+            inp.player_sys = self.player_system().unwrap_or(0);
+            inp.selected_kid = self.battle_selected;
+            inp.sort = self.battle_roster_sort;
+            inp.condensed = self.battle_condensed;
+            inp.systems = self.battle_systems.clone();
+        }
+        let want_sig = {
+            let _s = crate::frametime::span("br: signature (battles + intel locks)");
+            let inp = self.br_inputs.lock().unwrap();
+            crate::brview::ui_signature(
+                &self.battles,
+                &self.battle_history,
+                &self.battle_filter_gen_shared,
+                &self.battle_overrides_gen_shared,
+                &self.intel_state,
+                &inp,
+            )
+        };
+        if want_sig != self.br_last_sent_sig {
+            self.br_last_sent_sig = want_sig;
+            crate::brview::poke(&self.br_wake);
+        }
+        want_sig
+    }
+
+    /// The open report's sides with who is on each, and a way to move any of them to another side or
+    /// a side of its own. Kept per battle and carried into a shared report.
+    #[cfg(test)]
+    pub(crate) fn battle_sides_window_for_test(&mut self, ctx: &egui::Context) {
+        self.battle_sides_window(ctx);
+    }
+
+    fn battle_sides_window(&mut self, ctx: &egui::Context) {
+        use egui_phosphor::regular as icon;
+        if !self.battle_sides_open {
+            return;
+        }
+        let Some(cache) = self.battle_detail_cache.clone() else {
+            self.battle_sides_open = false;
+            return;
+        };
+        let b = &cache.battle;
+        // The battle's first kill names it for the moves: it stays a kill of the battle as it grows.
+        let anchor = b.engagements.iter().min_by_key(|e| (e.time, e.kill_id)).map_or(0, |e| e.kill_id);
+        let mut open = true;
+        let mut moved: Option<(i64, i64)> = None;
+        let mut reset = false;
+        egui::Window::new(format!("{}  Rearrange sides", icon::ARROWS_LEFT_RIGHT))
+            .id(egui::Id::new("battle_sides"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Kept for this battle, and sent along when it is shared.").weak());
+                if ui.button(format!("{}  Reset to the sides found", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                    reset = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for (i, side) in b.sides.iter().enumerate() {
+                        ui.label(egui::RichText::new(side_title(side)).color(side_color(i)).strong());
+                        for p in &side.parties {
+                            ui.horizontal(|ui| {
+                                party_badge(ui, p, 18.0, false);
+                                // The picker first, from the right: a long name gives way to it.
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    egui::ComboBox::from_id_salt(("side_move", p.id))
+                                        .width(150.0)
+                                        .selected_text(format!("Side {}", i + 1))
+                                        .show_ui(ui, |ui| {
+                                            for (j, other) in b.sides.iter().enumerate() {
+                                                if j == i {
+                                                    continue;
+                                                }
+                                                let lead = other.parties.first().map_or(0, |q| q.id);
+                                                if ui.menu_label(false, format!("Side {}: {}", j + 1, side_title(other))).clicked() {
+                                                    moved = Some((p.id, lead));
+                                                }
+                                            }
+                                            if side.parties.len() > 1 && ui.menu_label(false, "A side of its own").clicked() {
+                                                moved = Some((p.id, 0));
+                                            }
+                                        });
+                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                        ui.add(egui::Label::new(&p.name).truncate()).on_hover_text(&p.name);
+                                    });
+                                });
+                            });
+                        }
+                        ui.add_space(6.0);
+                    }
+                });
+            });
+        let kills: Vec<i64> = b.engagements.iter().map(|e| e.kill_id).collect();
+        if let Some((party, with)) = moved {
+            self.apply_battle_edit(ctx, |s| s.add_side_move(anchor, party, with));
+        }
+        if reset {
+            self.apply_battle_edit(ctx, |s| s.clear_side_moves(&kills));
+        }
+        self.battle_sides_open = open;
+    }
+
+    /// A tile clicked: its pilots, in the pilot list.
+    fn report_show_ship(&mut self, ship: Option<i64>) {
+        if let Some(ship) = ship {
+            self.battle_ship_filter = Some(ship);
+            self.battle_tab = BrTab::Details;
+            self.battle_condensed = false;
         }
     }
 
@@ -1358,6 +1607,12 @@ impl SpaiApp {
     }
 
     pub(crate) fn battles_view(&mut self, ui: &mut egui::Ui) {
+        if self.battle_view_for != self.battle_selected {
+            self.battle_view_for = self.battle_selected;
+            self.battle_systems.clear();
+            self.battle_ship_filter = None;
+        }
+        self.br_publish_inputs();
         crate::brview::want(&self.br_demand);
         self.my_shared_window(&ui.ctx().clone());
         self.poll_build_from_kill(&ui.ctx().clone());
@@ -1456,143 +1711,157 @@ impl SpaiApp {
                         let mut save_clicked = false;
                         let mut share_clicked = false;
                         let mut mine_clicked = false;
-                        let evetools_saved = self.evetools_for_open();
+                        let evetools_saved = {
+                            let _s = crate::frametime::span("br: evetools lookup");
+                            self.evetools_for_open()
+                        };
                         let evetools_busy = self.evetools_busy;
                         // `Some(None)` makes a report, `Some(Some(..))` updates the saved one.
                         let mut evetools_click: Option<Option<(i64, crate::evetools::Saved)>> = None;
-                        toolbar(ui, |ui| {
-                            if ui
-                                .button(format!("{}  Back to battles", icon::ARROW_LEFT))
-                                .clicked()
-                            {
-                                go_back = true;
-                            }
-                            toolbar_sep(ui);
-                            ui.toggle_value(&mut self.battle_edit_mode, format!("{}  Edit", icon::PENCIL))
-                                .on_hover_text("Split off kills, remove kills/pilots, add a kill");
-                            toolbar_sep(ui);
-                            ui.checkbox(&mut self.battle_condensed, "Condensed")
-                                .on_hover_text("Stack each side's ships by hull (count + losses)");
-                            toolbar_sep(ui);
-                            ui.label("Sort");
-                            let sort_label = match self.battle_roster_sort {
-                                RosterSort::Value => "ISK loss",
-                                RosterSort::Hull => "Hull size",
-                            };
-                            toolbar_combo(
-                                ui,
-                                "battle_roster_sort",
-                                sort_label.to_owned(),
-                                |ui| {
-                                    ui.menu_value(
-                                        &mut self.battle_roster_sort,
-                                        RosterSort::Value,
-                                        "ISK loss",
-                                    );
-                                    ui.menu_value(
-                                        &mut self.battle_roster_sort,
-                                        RosterSort::Hull,
-                                        "Hull size",
-                                    );
-                                },
-                            );
-                            toolbar_sep(ui);
-                            if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
-                                self.battle_add_open = true;
-                            }
-                            if ui.button(format!("{} Excluded ({excl_n})", icon::TRASH)).clicked() {
-                                self.battle_excluded_open = true;
-                            }
-                            if ui.button(format!("{} Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
-                                self.battle_scrubs_open = true;
-                            }
-                            toolbar_sep(ui);
-                            if ui
-                                .button(format!("{}  Save JSON", icon::FLOPPY_DISK))
-                                .on_hover_text("Save this battle report as a JSON file you can re-open or share")
-                                .clicked()
-                            {
-                                save_clicked = true;
-                            }
-                            toolbar_sep(ui);
-                            let authed = self.br_authed_chars();
-                            if authed.len() > 1 {
-                                let current = self.share_identity().map(|(id, _)| id);
-                                let sel_name = current
-                                    .and_then(|id| {
-                                        authed.iter().find(|(a, _)| *a == id).map(|(_, n)| n.clone())
-                                    })
-                                    .unwrap_or_else(|| "Select character".to_owned());
-                                ui.label("Manage as:");
-                                toolbar_combo(ui, "br_manage_as", sel_name, |ui| {
-                                    for (id, name) in &authed {
-                                        if ui
-                                            .menu_label(self.br_character == Some(*id), name)
-                                            .clicked()
-                                        {
-                                            self.br_character = Some(*id);
+                        let authed = {
+                            let _s = crate::frametime::span("br: keyring logins");
+                            self.br_authed_chars()
+                        };
+                        let sharing = matches!(*self.br_share.lock().unwrap(), crate::brshare::ShareStatus::Uploading);
+                        let mut open_system = None;
+                        let summary = self.battle_detail_cache.clone();
+                        report_header(
+                            ui,
+                            |ui| {
+                                if ui
+                                    .menu_label(self.battle_edit_mode, format!("{}  Edit", icon::PENCIL_SIMPLE))
+                                    .on_hover_text("Split off kills, remove kills/pilots, add a kill")
+                                    .clicked()
+                                {
+                                    self.battle_edit_mode = !self.battle_edit_mode;
+                                }
+                                ui.menu_button(icon::DOTS_THREE, |ui| {
+                                    if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
+                                        self.battle_add_open = true;
+                                        ui.close();
+                                    }
+                                    if ui.button(format!("{}  Excluded ({excl_n})", icon::TRASH)).clicked() {
+                                        self.battle_excluded_open = true;
+                                        ui.close();
+                                    }
+                                    if ui.button(format!("{}  Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
+                                        self.battle_scrubs_open = true;
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .button(format!("{}  Rearrange sides\u{2026}", icon::ARROWS_LEFT_RIGHT))
+                                        .on_hover_text("Move an alliance or corporation to another side. Kept, and sent along when the report is shared.")
+                                        .clicked()
+                                    {
+                                        self.battle_sides_open = true;
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui
+                                        .button(format!("{}  Save JSON", icon::FLOPPY_DISK))
+                                        .on_hover_text("Save this battle report as a JSON file you can re-open or share")
+                                        .clicked()
+                                    {
+                                        save_clicked = true;
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if authed.len() > 1 {
+                                        let current = self.share_identity().map(|(id, _)| id);
+                                        let sel_name = current
+                                            .and_then(|id| authed.iter().find(|(a, _)| *a == id).map(|(_, n)| n.clone()))
+                                            .unwrap_or_else(|| "Select character".to_owned());
+                                        ui.menu_button(format!("{}  Manage as: {sel_name}", icon::USER), |ui| {
+                                            for (id, name) in &authed {
+                                                if ui.menu_label(self.br_character == Some(*id), name).clicked() {
+                                                    self.br_character = Some(*id);
+                                                    ui.close();
+                                                }
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
+                                    }
+                                    if ui
+                                        .add_enabled(!sharing, egui::Button::new(format!("{}  Share to eve-spai.com", icon::SHARE_NETWORK)))
+                                        .on_hover_text("Upload this battle report to eve-spai.com and get a shareable link")
+                                        .clicked()
+                                    {
+                                        share_clicked = true;
+                                        ui.close();
+                                    }
+                                    ui.checkbox(&mut self.br_unlisted, "Unlisted")
+                                        .on_hover_text("Don't list it in the public directory (reachable only by link)");
+                                    if ui
+                                        .button(format!("{}  My shared BRs", icon::GLOBE))
+                                        .on_hover_text("List and manage the reports you've shared")
+                                        .clicked()
+                                    {
+                                        mine_clicked = true;
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    match &evetools_saved {
+                                        None => {
+                                            let label = if evetools_busy {
+                                                format!("{}  br.evetools\u{2026}", icon::GLOBE_HEMISPHERE_WEST)
+                                            } else {
+                                                format!("{}  br.evetools", icon::GLOBE_HEMISPHERE_WEST)
+                                            };
+                                            if ui
+                                                .add_enabled(!evetools_busy, egui::Button::new(label))
+                                                .on_hover_text("Make a report on br.evetools.org from this battle's systems and times. The link is kept for this battle.")
+                                                .clicked()
+                                            {
+                                                evetools_click = Some(None);
+                                                ui.close();
+                                            }
+                                        }
+                                        Some((anchor, saved, changed)) => {
+                                            let url = saved.url();
+                                            if ui.button(format!("{}  Open br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}")).clicked() {
+                                                let _ = open::that(&url);
+                                                ui.close();
+                                            }
+                                            if ui.button(format!("{}  Copy br.evetools link", icon::COPY)).clicked() {
+                                                ui.ctx().copy_text(url.clone());
+                                                ui.close();
+                                            }
+                                            if *changed {
+                                                let label = egui::RichText::new(format!("{}  Update br.evetools", icon::ARROWS_CLOCKWISE))
+                                                    .color(crate::theme::standing::WARNING);
+                                                if ui
+                                                    .add_enabled(!evetools_busy, egui::Button::new(label))
+                                                    .on_hover_text("The battle's systems or times changed since the br.evetools report was made: send them again")
+                                                    .clicked()
+                                                {
+                                                    evetools_click = Some(Some((*anchor, saved.clone())));
+                                                    ui.close();
+                                                }
+                                            }
                                         }
                                     }
                                 })
-                                .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
-                                toolbar_sep(ui);
-                            }
-                            let sharing = matches!(
-                                *self.br_share.lock().unwrap(),
-                                crate::brshare::ShareStatus::Uploading
-                            );
-                            if ui
-                                .add_enabled(
-                                    !sharing,
-                                    egui::Button::new(format!("{}  Share to eve-spai.com", icon::SHARE_NETWORK)),
-                                )
-                                .on_hover_text("Upload this battle report to eve-spai.com and get a shareable link")
-                                .clicked()
-                            {
-                                share_clicked = true;
-                            }
-                            ui.checkbox(&mut self.br_unlisted, "Unlisted")
-                                .on_hover_text("Don't list it in the public directory (reachable only by link)");
-                            if ui
-                                .button(format!("{}  My shared BRs", icon::GLOBE))
-                                .on_hover_text("List and manage the reports you've shared")
-                                .clicked()
-                            {
-                                mine_clicked = true;
-                            }
-                            toolbar_sep(ui);
-                            match &evetools_saved {
-                                None => {
-                                    let label = if evetools_busy { format!("{}  br.evetools\u{2026}", icon::GLOBE_HEMISPHERE_WEST) } else { format!("{}  br.evetools", icon::GLOBE_HEMISPHERE_WEST) };
-                                    if ui
-                                        .add_enabled(!evetools_busy, egui::Button::new(label))
-                                        .on_hover_text("Make a report on br.evetools.org from this battle's systems and times. The link is kept for this battle.")
-                                        .clicked()
-                                    {
-                                        evetools_click = Some(None);
-                                    }
+                                .response
+                                .on_hover_text("Add, review, save and share");
+                            },
+                            |ui| {
+                                if ui.button(icon::ARROW_LEFT).on_hover_text("Back to battles").clicked() {
+                                    go_back = true;
                                 }
-                                Some((anchor, saved, changed)) => {
-                                    let url = saved.url();
-                                    if ui.button(format!("{}  br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}")).clicked() {
-                                        let _ = open::that(&url);
-                                    }
-                                    if ui.button(icon::COPY).on_hover_text("Copy the br.evetools link").clicked() {
-                                        ui.ctx().copy_text(url.clone());
-                                    }
-                                    if *changed {
-                                        let label = egui::RichText::new(format!("{}  Update", icon::ARROWS_CLOCKWISE)).color(crate::theme::standing::WARNING);
-                                        if ui
-                                            .add_enabled(!evetools_busy, egui::Button::new(label))
-                                            .on_hover_text("The battle's systems or times changed since the br.evetools report was made: send them again")
-                                            .clicked()
-                                        {
-                                            evetools_click = Some(Some((*anchor, saved.clone())));
-                                        }
-                                    }
+                                if let Some(c) = &summary {
+                                    open_system = battle_summary(ui, c.view());
                                 }
-                            }
-                        });
+                            },
+                            |ui| {
+                                if let Some(c) = &summary {
+                                    side_chips(ui, c.view());
+                                }
+                            },
+                        );
+                        if let Some(sid) = open_system {
+                            self.open_system(sid);
+                        }
                         if let Some(target) = evetools_click {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 let anchor = match &target {
@@ -1642,40 +1911,25 @@ impl SpaiApp {
                             return;
                         }
                         ui.add_space(6.0);
-                        self.battle_review_panels(ui.ctx());
-                        if ambiguous && !self.battle_edit_mode {
-                            egui::Frame::new()
-                                .fill(crate::theme::standing::WARNING.gamma_multiply(0.14))
-                                .inner_margin(egui::Margin::symmetric(8, 5))
-                                .corner_radius(4.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{}  Possible separate engagements",
-                                                icon::WARNING
-                                            ))
-                                            .color(crate::theme::standing::WARNING)
-                                            .strong(),
-                                        );
-                                        if ui.button(format!("{} Review / split", icon::SCISSORS)).clicked() {
-                                            self.battle_edit_mode = true;
-                                        }
-                                    });
-                                });
-                            ui.add_space(6.0);
+                        {
+                            let _s = crate::frametime::span("br: review panels");
+                            self.battle_review_panels(ui.ctx());
                         }
                         if self.battle_edit_mode {
                             self.battle_edit_view(ui, now);
                             return;
                         }
+                        let all_systems = self.battle_detail_cache.as_ref().map(|c| c.battle.systems.clone()).unwrap_or_default();
+                        self.report_tabs(ui, &all_systems, ambiguous);
                         let prev_hover = self.battle_hover;
                         let condensed = self.battle_condensed;
+                        let (tab, ship_filter) = (self.battle_tab, self.battle_ship_filter);
                         let cache = self.battle_detail_cache.as_ref().unwrap();
                         // Snapshot only the type names this battle needs, so the render loop
                         // (hundreds of rows) does not hold the shared type_names lock and stall
                         // the brview worker. 670 = the default capsule pod fallback.
                         let names = {
+                            let _s = crate::frametime::span("br: type names (lock wait)");
                             let t = self.type_names.lock().unwrap();
                             let key = (cache.kid, self.battle_detail_out_sig, t.len());
                             match &self.battle_names {
@@ -1694,21 +1948,29 @@ impl SpaiApp {
                                 }
                             }
                         };
-                        let (clicked_system, hover) = battle_detail(
+                        let _detail_span = crate::frametime::span("br: detail");
+                        let out = battle_detail(
                             ui,
-                            &cache.battle,
+                            cache.view(),
                             &names,
                             &cache.inv,
                             &cache.rosters,
                             &cache.condensed,
                             condensed,
                             prev_hover,
+                            &cache.tiles,
+                            tab,
+                            ship_filter,
                         );
-                        if hover != prev_hover {
-                            self.battle_hover = hover;
+                        if out.hover != prev_hover {
+                            self.battle_hover = out.hover;
                             ui.ctx().request_repaint();
                         }
-                        if let Some(sid) = clicked_system {
+                        self.report_show_ship(out.show_ship);
+                        if let Some(kid) = out.open_kill {
+                            self.open_killmail(kid, None);
+                        }
+                        if let Some(sid) = out.open_system {
                             self.open_system(sid);
                         }
                         return;
@@ -1915,34 +2177,7 @@ impl SpaiApp {
         let query = self.battle_search.trim().to_lowercase();
         let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
 
-        // All filtering/roster work runs on the brview worker; the UI only publishes inputs and
-        // reads results, showing a spinner while the worker catches up.
-        {
-            let mut inp = self.br_inputs.lock().unwrap();
-            inp.query = self.battle_search.trim().to_owned();
-            inp.min_isk = self.settings.min_battle_isk;
-            inp.show_history = self.show_history;
-            inp.break_secs = self.settings.battle_break_secs;
-            inp.player_sys = self.player_system().unwrap_or(0);
-            inp.selected_kid = self.battle_selected;
-            inp.sort = self.battle_roster_sort;
-            inp.condensed = self.battle_condensed;
-        }
-        let want_sig = {
-            let inp = self.br_inputs.lock().unwrap();
-            crate::brview::ui_signature(
-                &self.battles,
-                &self.battle_history,
-                &self.battle_filter_gen_shared,
-                &self.battle_overrides_gen_shared,
-                &self.intel_state,
-                &inp,
-            )
-        };
-        if want_sig != self.br_last_sent_sig {
-            self.br_last_sent_sig = want_sig;
-            crate::brview::poke(&self.br_wake);
-        }
+        let want_sig = self.br_publish_inputs();
         {
             let out = self.br_outputs.lock().unwrap();
             if out.sig != self.battle_cards_out_sig {
@@ -1998,11 +2233,13 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(count_txt).weak());
             ui.separator();
-            ui.toggle_value(
-                &mut self.battle_edit_mode,
-                format!("{}  Merge", egui_phosphor::regular::ARROWS_MERGE),
-            )
-            .on_hover_text("Tick two or more battles to merge them into one");
+            if ui
+                .menu_label(self.battle_edit_mode, format!("{}  Merge", egui_phosphor::regular::ARROWS_MERGE))
+                .on_hover_text("Tick two or more battles to merge them into one")
+                .clicked()
+            {
+                self.battle_edit_mode = !self.battle_edit_mode;
+            }
             if self.battle_edit_mode {
                 let n = self.battle_merge_sel.len();
                 if n >= 2
@@ -2022,6 +2259,7 @@ impl SpaiApp {
         let edit = self.battle_edit_mode;
         let mut merge_sel = std::mem::take(&mut self.battle_merge_sel);
         let cards = &self.battle_cards;
+        let _cards_span = crate::frametime::span("br: card list");
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (kid, from_you, b) in cards {
                 if edit {

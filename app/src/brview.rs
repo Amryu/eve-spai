@@ -29,6 +29,8 @@ pub struct BrInputs {
     pub selected_kid: Option<i64>,
     pub sort: RosterSort,
     pub condensed: bool,
+    /// The open report's systems to show, all of them when empty.
+    pub systems: Vec<i64>,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,53 @@ pub struct BattleDetail {
     pub rosters: Vec<Vec<Participant>>,
     pub condensed: Vec<Vec<CondensedRow>>,
     pub ship_ids: Vec<i64>,
+    pub tiles: SideTiles,
+    /// The fight through the systems picked, which everything shown is worked out from; `None`
+    /// when all of them are. `battle` stays whole for saving, sharing and editing.
+    pub shown: Option<Battle>,
+}
+
+impl BattleDetail {
+    /// The battle as it is shown.
+    pub fn view(&self) -> &Battle {
+        self.shown.as_ref().unwrap_or(&self.battle)
+    }
+}
+
+/// One hull type a side flew, as the report's tile shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShipTile {
+    pub ship: i64,
+    pub lost: u32,
+    pub total: u32,
+}
+
+/// Per side: its pilots, and its hulls with how many of each were lost.
+#[derive(Clone, Debug, Default)]
+pub struct SideTiles {
+    pub pilots: Vec<usize>,
+    pub tiles: Vec<Vec<ShipTile>>,
+}
+
+/// The tiles of each side, as the web report groups them: one per hull, capsules left out, the
+/// heaviest-hit hulls first, then the most flown.
+pub fn ship_tiles(rosters: &[Vec<Participant>]) -> SideTiles {
+    let mut out = SideTiles::default();
+    for roster in rosters {
+        let mut by_ship: HashMap<i64, (u32, u32)> = HashMap::new();
+        for p in roster.iter().filter(|p| !br_core::battle::POD_TYPES.contains(&p.ship)) {
+            let e = by_ship.entry(p.ship).or_default();
+            e.1 += 1;
+            if p.lost.is_some() {
+                e.0 += 1;
+            }
+        }
+        let mut tiles: Vec<ShipTile> = by_ship.into_iter().map(|(ship, (lost, total))| ShipTile { ship, lost, total }).collect();
+        tiles.sort_by(|a, b| b.lost.cmp(&a.lost).then(b.total.cmp(&a.total)).then(a.ship.cmp(&b.ship)));
+        out.pilots.push(tiles.iter().map(|t| t.total as usize).sum());
+        out.tiles.push(tiles);
+    }
+    out
 }
 
 #[derive(Default)]
@@ -72,8 +121,38 @@ pub fn poke(wake: &Wake) {
     cv.notify_one();
 }
 
-fn jumps_to(systems: &Systems, player_sys: Option<i64>, target: i64) -> Option<u32> {
-    systems.jumps(target, player_sys?, 50)
+/// How far a card's systems may be from you and still say so.
+const FROM_YOU_JUMPS: u32 = 50;
+
+/// The distances the card filter asks about, walked once a pass. A walk per battle (and one per
+/// battle and intel system for the tracked area) took seconds in a busy day, on every selection.
+struct Reach {
+    /// Jumps from each system to you.
+    to_me: HashMap<i64, u32>,
+    /// Systems within `ANCHOR_JUMPS` of somewhere intel named.
+    area: std::collections::HashSet<i64>,
+}
+
+impl Reach {
+    fn new(systems: &Systems, intel_sys: &[i64], player_sys: Option<i64>, max_jumps: u32) -> Self {
+        let to_me = player_sys.map(|p| systems.jumps_to(p, max_jumps)).unwrap_or_default();
+        let mut named = intel_sys.to_vec();
+        named.sort_unstable();
+        named.dedup();
+        let mut area = std::collections::HashSet::new();
+        for s in named {
+            area.extend(systems.jumps_to(s, ANCHOR_JUMPS).into_keys());
+        }
+        Reach { to_me, area }
+    }
+
+    fn in_area(&self, b: &Battle) -> bool {
+        b.systems.iter().any(|(id, _, _)| self.area.contains(id))
+    }
+
+    fn from_me(&self, b: &Battle, max_jumps: u32) -> Option<u32> {
+        b.systems.iter().filter_map(|(id, _, _)| self.to_me.get(id).copied()).filter(|&d| d <= max_jumps).min()
+    }
 }
 
 fn intel_systems(intel: &Arc<Mutex<IntelState>>) -> Vec<i64> {
@@ -86,20 +165,13 @@ fn intel_systems(intel: &Arc<Mutex<IntelState>>) -> Vec<i64> {
         .collect()
 }
 
-fn in_tracked_area(b: &Battle, systems: &Systems, intel_sys: &[i64]) -> bool {
-    b.systems
-        .iter()
-        .any(|(id, _, _)| intel_sys.iter().any(|&s| systems.jumps(*id, s, ANCHOR_JUMPS).is_some()))
-}
-
 fn match_data(
     b: &Battle,
     max_jumps: Option<u32>,
     systems: &Systems,
     type_names: &HashMap<i64, String>,
     ship_sizes: &HashMap<i64, ShipSize>,
-    intel_sys: &[i64],
-    player_sys: Option<i64>,
+    reach: &Reach,
 ) -> MatchData {
     let mut d = MatchData { total_isk: Some(b.isk), ..Default::default() };
     for (id, name, _) in &b.systems {
@@ -154,10 +226,9 @@ fn match_data(
         }
     }
     d.max_size = max;
-    d.in_intel_area = in_tracked_area(b, systems, intel_sys);
-    if let (Some(maxj), Some(me)) = (max_jumps, player_sys) {
-        d.min_jumps_from_me =
-            b.systems.iter().filter_map(|(id, _, _)| systems.jumps(*id, me, maxj)).min();
+    d.in_intel_area = reach.in_area(b);
+    if let Some(maxj) = max_jumps {
+        d.min_jumps_from_me = reach.from_me(b, maxj);
     }
     d
 }
@@ -168,18 +239,16 @@ fn shown(
     systems: &Systems,
     type_names: &HashMap<i64, String>,
     ship_sizes: &HashMap<i64, ShipSize>,
-    intel_sys: &[i64],
-    player_sys: Option<i64>,
+    reach: &Reach,
 ) -> bool {
     if rules.is_default_only() {
-        return in_tracked_area(b, systems, intel_sys);
+        return reach.in_area(b);
     }
-    let data =
-        match_data(b, rules.max_jumps_condition(), systems, type_names, ship_sizes, intel_sys, player_sys);
+    let data = match_data(b, rules.max_jumps_condition(), systems, type_names, ship_sizes, reach);
     match battle_decision(&rules.rules, &data) {
         Some(RuleAction::Include) => true,
         Some(RuleAction::Exclude) => false,
-        None => in_tracked_area(b, systems, intel_sys),
+        None => reach.in_area(b),
     }
 }
 
@@ -310,6 +379,7 @@ pub fn ui_signature(
     inp.selected_kid.hash(&mut h);
     inp.sort.hash(&mut h);
     inp.condensed.hash(&mut h);
+    inp.systems.hash(&mut h);
     h.finish()
 }
 
@@ -343,17 +413,20 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
 
     let intel_sys = intel_systems(&deps.intel);
     let query = inp.query.trim().to_lowercase();
+    // A copy, not the lock: the UI thread reads the same names every frame to draw ship names, and
+    // waited out the whole filter and roster build below when it was held throughout.
+    let type_names = deps.type_names.lock().unwrap().clone();
 
     {
-        let type_names = deps.type_names.lock().unwrap();
         let rules = deps.filter.lock().unwrap();
+        let reach = Reach::new(&systems, &intel_sys, player, FROM_YOU_JUMPS.max(rules.max_jumps_condition().unwrap_or(0)));
         let mut cands: Vec<(i64, Option<u32>, f64, Battle)> = Vec::new();
         for b in battles.iter() {
             let vis = inp.show_history
-                || shown(b, &rules, &systems, &type_names, &deps.ship_sizes, &intel_sys, player);
+                || shown(b, &rules, &systems, &type_names, &deps.ship_sizes, &reach);
             if b.kills >= 2 && b.matches(&query) && vis {
                 let from_you =
-                    b.systems.iter().filter_map(|(id, _, _)| jumps_to(&systems, player, *id)).min();
+                    reach.from_me(b, FROM_YOU_JUMPS);
                 let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
                 let light = Battle {
                     engagements: Vec::new(),
@@ -397,13 +470,16 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
                 .collect();
             ship_ids.sort_unstable();
             ship_ids.dedup();
-            let inv = b.involvement();
-            let rosters: Vec<Vec<Participant>> = (0..b.sides.len()).map(|i| b.roster(i)).collect();
-            let type_names = deps.type_names.lock().unwrap();
+            let shown = (!inp.systems.is_empty() && b.systems.iter().any(|s| !inp.systems.contains(&s.0)))
+                .then(|| b.in_systems(&inp.systems));
+            let v = shown.as_ref().unwrap_or(&b);
+            let inv = v.involvement();
+            let rosters: Vec<Vec<Participant>> = (0..v.sides.len()).map(|i| v.roster(i)).collect();
+            let tiles = ship_tiles(&rosters);
             let (rosters, condensed) =
                 sorted_detail(&rosters, inp.sort, &deps.ship_sizes, &type_names);
             out.detail =
-                Some(Arc::new(BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids }));
+                Some(Arc::new(BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids, tiles, shown }));
         }
     }
     out
@@ -467,4 +543,49 @@ pub fn spawn(
             ctx.request_repaint();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real fight, half of it moved to a second system, open in the worker.
+    fn two_system_fight() -> (Deps, i64, i64, usize) {
+        let (b, _) = crate::uitest::fixtures::real_battle();
+        let mut engs = b.engagements.clone();
+        for e in engs.iter_mut().filter(|e| e.kill_id % 2 == 0) {
+            e.system_id = 30_004_759;
+            e.system_name = "1DQ1-A".into();
+        }
+        let in_second = engs.iter().filter(|e| e.system_id == 30_004_759).count();
+        let b = br_core::battle::preview_battle(engs, br_core::battle::BATTLE_BREAK_SECS);
+        let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap();
+        let deps = Deps {
+            systems: Some(crate::uitest::fixtures::systems()),
+            intel: Arc::new(Mutex::new(IntelState::default())),
+            battles: Arc::new(Mutex::new(vec![b])),
+            history: Arc::new(Mutex::new(Vec::new())),
+            filter: Arc::new(Mutex::new(Default::default())),
+            ship_sizes: Arc::new(HashMap::new()),
+            type_names: Arc::new(Mutex::new(HashMap::new())),
+            overrides_gen: Arc::new(AtomicU64::new(0)),
+            filter_gen: Arc::new(AtomicU64::new(0)),
+        };
+        (deps, kid, 30_004_759, in_second)
+    }
+
+    /// Picking a system shows that system's killmails only, and leaves the battle itself whole.
+    #[test]
+    fn an_open_report_narrows_to_the_systems_picked() {
+        let (deps, kid, second, in_second) = two_system_fight();
+        let all = compute(&deps, &BrInputs { selected_kid: Some(kid), ..Default::default() }, 1).detail.unwrap();
+        assert!(all.shown.is_none());
+        assert_eq!(all.view().systems.len(), 2);
+        let one = compute(&deps, &BrInputs { selected_kid: Some(kid), systems: vec![second], ..Default::default() }, 2).detail.unwrap();
+        assert_eq!(one.view().kills, in_second);
+        assert_eq!(one.view().systems.iter().map(|s| s.0).collect::<Vec<_>>(), vec![second]);
+        assert_eq!(one.battle.kills, all.battle.kills, "the battle saved or shared stays whole");
+        let pilots: usize = one.tiles.pilots.iter().sum();
+        assert!(pilots > 0 && pilots < all.tiles.pilots.iter().sum::<usize>(), "the tiles count the systems picked");
+    }
 }

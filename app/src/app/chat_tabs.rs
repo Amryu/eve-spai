@@ -70,6 +70,20 @@ pub(crate) struct ChatWindow {
     /// Last known focus of this viewport, read one frame later by `jabber_frame` so a conversation
     /// you are staring at in a pop-out clears its unread marker like the main window's does.
     pub(crate) focused: bool,
+    /// Brought to the front over the next frames: see `Raise`.
+    pub(crate) raise: Raise,
+    /// Until when the window's border pulses, to show which window a conversation opened in.
+    pub(crate) flash_until: Option<std::time::Instant>,
+}
+
+/// A plain focus request loses to the window manager's focus-stealing prevention, so a pop-out is
+/// raised the way the main window is: put on top for one frame, then back to normal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Raise {
+    #[default]
+    None,
+    Requested,
+    OnTop,
 }
 
 /// A tab being dragged, tracked by its source window because the OS gives the pressing window an

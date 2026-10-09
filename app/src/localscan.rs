@@ -358,6 +358,8 @@ pub struct Table {
     org_queue: VecDeque<(i64, bool)>,
     org_workers: usize,
     orgs_wanted: HashSet<i64>,
+    /// Blues left out, by lowercased name: their id and name, to look them up once shown.
+    blue_ids: HashMap<String, (i64, String)>,
 }
 
 pub type SharedTable = Arc<Mutex<Table>>;
@@ -394,17 +396,21 @@ pub fn similar(old: &[String], new: &[String]) -> bool {
 /// Standing from which a pilot counts as blue.
 pub const BLUE: f32 = 5.0;
 
-/// Queues `names` for lookup, skipping pilots already known this session. With `blues` (standings
-/// by character, corporation or alliance id), pilots at [`BLUE`] or better are left out.
-pub fn request(table: &SharedTable, names: &[String], blues: Option<HashMap<i64, f32>>, ctx: &egui::Context) {
+/// A list at least this long has its blues looked up last: in a big local the ones worth knowing
+/// about first are the others.
+pub const LARGE_LIST: usize = 50;
+
+/// Queues `names` for lookup, skipping pilots already known this session. `standings` are by
+/// character, corporation or alliance id; pilots at [`BLUE`] or better are left out while `hide`
+/// is on, to be looked up when shown (see [`wake`]), and go to the back of a large list otherwise.
+pub fn request(table: &SharedTable, names: &[String], standings: HashMap<i64, f32>, hide: bool, ctx: &egui::Context) {
     let fresh: Vec<String> = {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         names
             .iter()
             .filter(|n| match t.rows.get(&n.to_lowercase()) {
-                Some(Row::Pending | Row::Done(_) | Row::Missing) => false,
-                // Looked up after all once blues are no longer left out.
-                Some(Row::Blue(_)) => blues.is_none(),
+                // A blue left out is looked up when it is shown, one at a time.
+                Some(Row::Pending | Row::Done(_) | Row::Missing | Row::Blue(_)) => false,
                 _ => true,
             })
             .cloned()
@@ -420,10 +426,51 @@ pub fn request(table: &SharedTable, names: &[String], blues: Option<HashMap<i64,
     }
     let table = table.clone();
     let ctx = ctx.clone();
-    std::thread::spawn(move || resolve_and_fetch(table, fresh, blues, ctx));
+    let large = names.len() >= LARGE_LIST;
+    std::thread::spawn(move || resolve_and_fetch(table, fresh, standings, hide, large, ctx));
 }
 
-fn resolve_and_fetch(table: SharedTable, names: Vec<String>, blues: Option<HashMap<i64, f32>>, ctx: egui::Context) {
+/// A blue left out, now on screen: looked up ahead of everything queued.
+pub fn wake(table: &SharedTable, name: &str, ctx: &egui::Context) {
+    if wake_row(&mut table.lock().unwrap_or_else(|e| e.into_inner()), name) {
+        spawn_workers(table, ctx);
+    }
+}
+
+/// [`wake`] on the table alone: whether a blue was queued.
+fn wake_row(t: &mut Table, name: &str) -> bool {
+    let lc = name.to_lowercase();
+    if !matches!(t.rows.get(&lc), Some(Row::Blue(_))) {
+        return false;
+    }
+    let Some((id, canonical)) = t.blue_ids.remove(&lc) else { return false };
+    t.rows.insert(lc, Row::Pending);
+    t.queue.push_front(Job { name: canonical, id, tries: 0 });
+    true
+}
+
+/// Starts workers for what is queued, up to [`WORKERS`].
+fn spawn_workers(table: &SharedTable, ctx: &egui::Context) {
+    let spawn = {
+        let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
+        let spawn = WORKERS.saturating_sub(t.stat_workers).min(t.queue.len());
+        t.stat_workers += spawn;
+        spawn
+    };
+    if spawn == 0 {
+        return;
+    }
+    let Ok(client) = crate::http::client(ZKILL_TIMEOUT_SECS) else {
+        table.lock().unwrap_or_else(|e| e.into_inner()).stat_workers -= spawn;
+        return;
+    };
+    for _ in 0..spawn {
+        let (table, ctx, client) = (table.clone(), ctx.clone(), client.clone());
+        std::thread::spawn(move || worker(table, client, ctx));
+    }
+}
+
+fn resolve_and_fetch(table: SharedTable, names: Vec<String>, standings: HashMap<i64, f32>, hide: bool, large: bool, ctx: egui::Context) {
     let Ok(client) = crate::http::client(ZKILL_TIMEOUT_SECS) else {
         let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
         for n in &names {
@@ -439,7 +486,7 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, blues: Option<HashM
             None => failed = true,
         }
     }
-    let blue: HashMap<i64, f32> = match blues.filter(|b| !b.is_empty()) {
+    let blue: HashMap<i64, f32> = match Some(standings).filter(|b| !b.is_empty() && (hide || large)) {
         Some(standings) => {
             let all: Vec<i64> = ids.values().map(|(id, _)| *id).collect();
             crate::affiliation::lookup(&client, &all)
@@ -452,14 +499,33 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, blues: Option<HashM
         }
         None => HashMap::new(),
     };
-    let spawn = {
-        let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
+    place(&mut table.lock().unwrap_or_else(|e| e.into_inner()), &names, &ids, &blue, hide, failed);
+    ctx.request_repaint();
+    spawn_workers(&table, &ctx);
+}
+
+/// Where each resolved name goes: the queue's front, a blue's lazy slot or the queue's back, or a
+/// row saying it could not be found.
+fn place(
+    t: &mut Table,
+    names: &[String],
+    ids: &HashMap<String, (i64, String)>,
+    blue: &HashMap<i64, f32>,
+    hide: bool,
+    failed: bool,
+) {
+    {
         // Newest paste first: its pilots go ahead of anything still queued from an older one.
+        // Its blues, shown, go behind everything.
         for n in names.iter().rev() {
             let lc = n.to_lowercase();
             match ids.get(&lc) {
-                Some((id, _)) if blue.contains_key(id) => {
-                    t.rows.insert(lc, Row::Blue(blue[id]));
+                Some((id, canonical)) if blue.contains_key(id) && hide => {
+                    t.rows.insert(lc.clone(), Row::Blue(blue[id]));
+                    t.blue_ids.insert(lc, (*id, canonical.clone()));
+                }
+                Some((id, canonical)) if blue.contains_key(id) => {
+                    t.queue.push_back(Job { name: canonical.clone(), id: *id, tries: 0 });
                 }
                 Some((id, canonical)) => t.queue.push_front(Job { name: canonical.clone(), id: *id, tries: 0 }),
                 None if failed => {
@@ -470,14 +536,6 @@ fn resolve_and_fetch(table: SharedTable, names: Vec<String>, blues: Option<HashM
                 }
             }
         }
-        let spawn = WORKERS.saturating_sub(t.stat_workers).min(t.queue.len());
-        t.stat_workers += spawn;
-        spawn
-    };
-    ctx.request_repaint();
-    for _ in 0..spawn {
-        let (table, ctx, client) = (table.clone(), ctx.clone(), client.clone());
-        std::thread::spawn(move || worker(table, client, ctx));
     }
 }
 
@@ -730,6 +788,37 @@ pub(crate) fn sample_stats() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resolved(names: &[&str]) -> (Vec<String>, HashMap<String, (i64, String)>) {
+        let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        let ids = names.iter().enumerate().map(|(i, n)| (n.to_lowercase(), (i as i64 + 1, n.clone()))).collect();
+        (names, ids)
+    }
+
+    #[test]
+    fn in_a_large_list_blues_are_looked_up_last() {
+        let (names, ids) = resolved(&["Blue One", "Red One", "Blue Two", "Red Two"]);
+        let blue: HashMap<i64, f32> = [(1, 10.0), (3, 5.0)].into();
+        let mut t = Table::default();
+        place(&mut t, &names, &ids, &blue, false, false);
+        let order: Vec<&str> = t.queue.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(order, vec!["Red One", "Red Two", "Blue Two", "Blue One"], "the others first, the blues behind");
+    }
+
+    #[test]
+    fn hidden_blues_are_looked_up_when_shown() {
+        let (names, ids) = resolved(&["Blue One", "Red One"]);
+        let blue: HashMap<i64, f32> = [(1, 10.0)].into();
+        let mut t = Table::default();
+        place(&mut t, &names, &ids, &blue, true, false);
+        assert_eq!(t.queue.iter().map(|j| j.name.as_str()).collect::<Vec<_>>(), vec!["Red One"]);
+        assert_eq!(t.rows.get("blue one"), Some(&Row::Blue(10.0)));
+        assert!(wake_row(&mut t, "Blue One"), "shown: queued");
+        assert_eq!(t.queue.front().map(|j| j.name.as_str()), Some("Blue One"), "ahead of the rest");
+        assert_eq!(t.rows.get("blue one"), Some(&Row::Pending));
+        assert!(!wake_row(&mut t, "Blue One"), "once");
+        assert!(!wake_row(&mut t, "Red One"), "only blues wait to be shown");
+    }
 
     #[test]
     fn stats_fill_every_column() {

@@ -1518,3 +1518,83 @@ pub(crate) fn real_battle() -> (br_core::battle::Battle, HashMap<i64, String>) {
         .expect("a battle");
     (biggest, raw.names.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect())
 }
+
+/// A Vexor lost in Jita: a full fit, drones, a container with something in it, four attackers with
+/// one an NPC, and a long alliance name and a big stack to push the layout.
+pub(crate) fn killmail() -> (crate::killmail::KillDetail, HashMap<i64, String>) {
+    use crate::killmail::{KillDetail, KillItem, Who, Zkb};
+    let item = |type_id: i64, flag: i64, destroyed: i64, dropped: i64, depth: u8| KillItem { type_id, flag, destroyed, dropped, singleton: false, depth };
+    let d = KillDetail {
+        kill_id: 128_431_979,
+        hash: "0123456789abcdef".into(),
+        time: 1_791_316_856,
+        system_id: 30_000_142,
+        victim: Who { char_id: 2_112_000_001, corp_id: 98_000_001, alliance_id: 99_000_001, ship: 626, damage: 18_442, ..Default::default() },
+        attackers: vec![
+            Who { char_id: 2_112_000_002, corp_id: 98_000_002, alliance_id: 99_000_002, ship: 24_696, weapon: 2_961, damage: 9_120, final_blow: true, security: -3.2, ..Default::default() },
+            Who { char_id: 2_112_000_003, corp_id: 98_000_002, alliance_id: 99_000_002, ship: 11_393, weapon: 3_170, damage: 6_002, security: 1.1, ..Default::default() },
+            Who { char_id: 2_112_000_004, corp_id: 98_000_003, ship: 621, weapon: 621, damage: 3_320, ..Default::default() },
+            Who { corp_id: 1_000_125, ship: 34_317, damage: 0, ..Default::default() },
+        ],
+        items: vec![
+            item(3_170, 27, 1, 0, 0),
+            item(3_170, 28, 0, 1, 0),
+            item(2_048, 19, 1, 0, 0),
+            item(5_973, 20, 0, 1, 0),
+            item(1_999, 11, 1, 0, 0),
+            item(2_605, 12, 1, 0, 0),
+            item(31_360, 92, 1, 0, 0),
+            item(2_456, 87, 3, 2, 0),
+            item(3_467, 5, 0, 1, 0),
+            item(24_478, 0, 1_200, 300, 1),
+            item(12_608, 5, 0, 1_500, 0),
+        ],
+        zkb: Zkb { total: 98_123_456.0, fitted: 61_000_000.0, dropped: 21_456_000.0, destroyed: 76_667_456.0, points: 7, solo: false, npc: false, awox: false, labels: vec!["pvp".into(), "loc:highsec".into()], location_id: 0 },
+        names: [
+            (2_112_000_001, "Victim Pilot"),
+            (98_000_001, "Victim Corp"),
+            (99_000_001, "The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts"),
+            (2_112_000_002, "Final Blow Pilot"),
+            (2_112_000_003, "Second Pilot"),
+            (98_000_002, "Hunting Corp"),
+            (99_000_002, "Hunting Alliance"),
+            (2_112_000_004, "Third Pilot"),
+            (98_000_003, "Lone Corp"),
+            (1_000_125, "CONCORD"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k, v.to_owned()))
+        .collect(),
+        prices: [(626, 24_000_000.0), (3_170, 1_200_000.0), (2_048, 900_000.0), (5_973, 1_400_000.0), (1_999, 2_000_000.0), (2_605, 800_000.0), (31_360, 3_000_000.0), (2_456, 450_000.0), (3_467, 30_000.0), (24_478, 250.0), (12_608, 1_000.0)].into(),
+        near: Some(("Jita IV - Moon 4 - Caldari Navy Assembly Plant".into(), 18_500_000.0)),
+        pod: None,
+    };
+    // The capsule, 40 s later to the same hunter, with three implants in it.
+    let pod = KillDetail {
+        kill_id: 128_431_985,
+        hash: "fedcba9876543210".into(),
+        time: d.time + 40,
+        system_id: d.system_id,
+        victim: Who { ship: 670, ..d.victim.clone() },
+        attackers: vec![d.attackers[0].clone()],
+        items: vec![item(10_212, 89, 1, 0, 0), item(10_213, 89, 1, 0, 0), item(27_102, 89, 0, 1, 0)],
+        zkb: Zkb { total: 312_000_000.0, ..Default::default() },
+        names: d.names.clone(),
+        prices: [(10_212, 120_000_000.0), (10_213, 140_000_000.0), (27_102, 50_000_000.0)].into(),
+        ..Default::default()
+    };
+    let mut d = d;
+    d.pod = Some(Box::new(pod));
+    let types: HashMap<i64, String> = [
+        (626, "Vexor"), (24_696, "Harbinger"), (11_393, "Retribution"), (621, "Caracal"), (34_317, "CONCORD Police Battleship"),
+        (2_961, "Mega Pulse Laser II"), (3_170, "Light Neutron Blaster II"), (2_048, "Damage Control II"),
+        (5_973, "5MN Y-T8 Compact Microwarpdrive"), (1_999, "Tracking Enhancer II"), (2_605, "Nanofiber Internal Structure II"),
+        (31_360, "Medium Hybrid Burst Aerator I"), (2_456, "Hobgoblin II"), (3_467, "Small Secure Container"),
+        (24_478, "Null S"), (12_608, "Antimatter Charge M"), (670, "Capsule"),
+        (10_212, "Snake Alpha"), (10_213, "Snake Beta"), (27_102, "Inherent Implants 'Squire' Capacitor Management EM-802"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k, v.to_owned()))
+    .collect();
+    (d, types)
+}

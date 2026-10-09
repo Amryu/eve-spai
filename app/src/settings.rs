@@ -2233,6 +2233,9 @@ mod window_geometry_tests {
         assert_eq!(geometry_update(Some((100.0, 100.0)), (101.0, 100.5), 2.0), None);
         assert_eq!(geometry_update(Some((100.0, 100.0)), (100.0, 100.0), 0.0), None);
         assert_eq!(geometry_update(Some((100.0, 100.0)), (-32001.0, -32001.0), 0.0), None);
+        // The same sentinel under 125% and 150% display scaling, in points.
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (-25600.0, -25600.0), 0.0), None);
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (-21333.3, -21333.3), 0.0), None);
     }
 
 

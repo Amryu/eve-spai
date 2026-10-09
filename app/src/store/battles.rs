@@ -115,7 +115,33 @@ impl Store {
                 }
             }
         }
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT anchor, party, with_party FROM battle_side_moves ORDER BY anchor, seq")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+                for (anchor, party, with) in rows.flatten() {
+                    o.side_moves.entry(anchor).or_default().push((party, with));
+                }
+            }
+        }
         o
+    }
+
+    /// Moves `party` to the side `with` is on (a side of its own when 0) in the battle `anchor` is a
+    /// kill of. Kept in order: later moves apply over earlier ones.
+    pub fn add_side_move(&self, anchor: i64, party: i64, with: i64) {
+        let _ = self.conn.execute(
+            "INSERT INTO battle_side_moves (anchor, seq, party, with_party)
+             VALUES (?1, COALESCE((SELECT MAX(seq) + 1 FROM battle_side_moves WHERE anchor = ?1), 0), ?2, ?3)",
+            rusqlite::params![anchor, party, with],
+        );
+    }
+
+    /// Puts the battle `anchor` is a kill of back to the sides it was inferred with.
+    pub fn clear_side_moves(&self, anchors: &[i64]) {
+        for a in anchors {
+            let _ = self.conn.execute("DELETE FROM battle_side_moves WHERE anchor = ?1", rusqlite::params![a]);
+        }
     }
 
     pub fn list_excluded_engagements(&self) -> Vec<br_core::battle::Engagement> {

@@ -679,10 +679,13 @@ impl SpaiApp {
         let jabber_set_up = !self.settings.jabber_jid.trim().is_empty();
         let mut open_jabber = false;
         let mut retry_click = false;
-        let mut set_dest: Option<i64> = None;
+        // Who the route button sends to, and who else it may: worked out before the closures, which
+        // hold the rescue lock and so cannot ask.
+        let mut set_dest: Option<(i64, Vec<String>)> = None;
+        let fc_char = self.rescue_fc_character();
+        let route_choices = self.destination_choices();
         let mut start_tracking = false;
         let mut chat_dm: Option<String> = None;
-        let has_char = self.active_character != "No character";
         let in_range_ly = self.rescue_ly.filter(|_| self.rescue_range.is_none());
         let staging_name = self.settings.rescue_staging_system.clone();
         let mut pop_out = false;
@@ -847,14 +850,8 @@ impl SpaiApp {
                         super::ontop_pin_ui(ui, "rescue_window");
                         // The destination and range rows, folded into this one as icons.
                         let target = r.capital_system.zip(r.capital_system_name.clone());
-                        let resp = ui.add_enabled(target.is_some() && has_char, egui::Button::new(egui_phosphor::regular::MAP_PIN_LINE));
-                        let resp = match &target {
-                            None => resp.on_disabled_hover_text("This ping has no system to route to"),
-                            Some(_) if !has_char => resp.on_disabled_hover_text("No active character to route"),
-                            Some((_, name)) => resp.on_hover_text(format!("Set Destination: {name}")),
-                        };
-                        if resp.clicked() {
-                            set_dest = target.map(|(id, _)| id);
+                        if let Some(pick) = rescue_route_button(ui, egui_phosphor::regular::MAP_PIN_LINE.to_owned(), target.as_ref(), fc_char.as_deref(), &route_choices) {
+                            set_dest = target.as_ref().map(|(id, _)| (*id, pick));
                         }
                         if let Some(ly) = in_range_ly {
                             ui.label(egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE).color(crate::theme::standing::FRIENDLY))
@@ -907,24 +904,11 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 let target = r.capital_system.zip(r.capital_system_name.clone());
                 let label = match &target {
-                    Some((_, name)) => {
-                        format!("{}  Set Destination: {name}", egui_phosphor::regular::MAP_PIN_LINE)
-                    }
+                    Some((_, name)) => format!("{}  {name}", egui_phosphor::regular::MAP_PIN_LINE),
                     None => format!("{}  Set Destination", egui_phosphor::regular::MAP_PIN_LINE),
                 };
-                let resp = ui.add_enabled(
-                    target.is_some() && has_char,
-                    egui::Button::new(label),
-                );
-                let resp = if target.is_none() {
-                    resp.on_disabled_hover_text("This ping has no system to route to")
-                } else if !has_char {
-                    resp.on_disabled_hover_text("No active character to route")
-                } else {
-                    resp.on_hover_text("Route this character to the tackled capital")
-                };
-                if resp.clicked() {
-                    set_dest = target.map(|(id, _)| id);
+                if let Some(pick) = rescue_route_button(ui, label, target.as_ref(), fc_char.as_deref(), &route_choices) {
+                    set_dest = target.as_ref().map(|(id, _)| (*id, pick));
                 }
                 if let Some(ly) = in_range_ly {
                     ui.label(
@@ -1486,8 +1470,8 @@ impl SpaiApp {
         if retry_click {
             self.jabber_retry();
         }
-        if let Some(sid) = set_dest {
-            self.rescue_push_destination(sid);
+        if let Some((sid, names)) = set_dest {
+            self.rescue_send_route(&names, sid);
         }
         if let Some(nick) = chat_dm {
             let dm = self.full_user_jid(&nick);
@@ -1542,8 +1526,112 @@ pub(crate) struct RescueMap {
 #[cfg(feature = "fleet")]
 pub(crate) type RescueMapView = (f32, egui::Vec2, Vec<i64>);
 
+/// `[ label | ▾ ]` for the rescue route: the button sends it to the FC's character, the arrow to any
+/// signed-in character. Returns who to send it to.
+#[cfg(feature = "fleet")]
+fn rescue_route_button(
+    ui: &mut egui::Ui,
+    label: String,
+    target: Option<&(i64, String)>,
+    fc: Option<&str>,
+    choices: &[(String, Option<String>)],
+) -> Option<Vec<String>> {
+    let mut picked = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.0;
+        let resp = ui.add_enabled(target.is_some() && fc.is_some(), egui::Button::new(label));
+        let resp = match (target, fc) {
+            (None, _) => resp.on_disabled_hover_text("This ping has no system to route to"),
+            (_, None) => resp.on_disabled_hover_text("No signed-in character may set waypoints"),
+            (Some((_, name)), Some(fc)) => resp.on_hover_text(format!(
+                "Set Destination for {fc}: {name}, by the titan's landing system when it is out of range"
+            )),
+        };
+        if resp.clicked() {
+            picked = fc.map(|f| vec![f.to_owned()]);
+        }
+        ui.add_enabled_ui(target.is_some(), |ui| {
+            ui.menu_button(egui_phosphor::regular::CARET_DOWN, |ui| {
+                if let Some(p) = super::wormholes_ui::pick_characters_menu(ui, choices) {
+                    picked = Some(p);
+                }
+            })
+            .response
+            .on_hover_text("Set it for other characters");
+        });
+    });
+    picked
+}
+
+/// How recent a ping must be for its route to go in the game by itself: an old one selected at
+/// start-up is history, not a rescue to fly to.
+#[cfg(feature = "fleet")]
+const AUTO_ROUTE_FRESH_SECS: i64 = 600;
+
 #[cfg(feature = "fleet")]
 impl SpaiApp {
+    /// The FC's character among those signed in here that may set waypoints: the dashboard's FC by
+    /// name, else the active character.
+    pub(crate) fn rescue_fc_character(&self) -> Option<String> {
+        let chars = self.waypoint_characters();
+        let fc = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc().map(|(_, name)| name);
+        fc.filter(|n| chars.iter().any(|c| c.eq_ignore_ascii_case(n)))
+            .and_then(|n| chars.iter().find(|c| c.eq_ignore_ascii_case(&n)).cloned())
+            .or_else(|| chars.iter().find(|c| **c == self.active_character).cloned())
+    }
+
+    /// The waypoints that take `name` to the capital in `target`: out of the titan's range, its
+    /// landing system first and then the gates on; staging ahead of it all when the character is
+    /// not there yet. Just the capital's system when there is no titan route.
+    pub(crate) fn rescue_waypoints(&mut self, name: &str, target: i64) -> Vec<i64> {
+        let (Some(graph), Some(coords)) = (self.systems.clone(), self.map_coords.clone()) else { return vec![target] };
+        let Some(staging) = self.rescue_staging_id(&graph) else { return vec![target] };
+        let from = self.char_system(name);
+        match self.fleet_map_route(&graph, &coords, staging, target) {
+            Some(opt) => {
+                let wp = crate::web::route::ingame_waypoints(&opt, from);
+                if wp.is_empty() { vec![target] } else { wp }
+            }
+            None => vec![target],
+        }
+    }
+
+    /// Puts the rescue route in the game for each of `names`, each from where they are.
+    pub(crate) fn rescue_send_route(&mut self, names: &[String], target: i64) {
+        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        for n in names {
+            let wp = self.rescue_waypoints(n, target);
+            match wp.as_slice() {
+                [only] => crate::esi::set_waypoint(cid.clone(), n.clone(), *only, true),
+                _ => crate::esi::set_route(cid.clone(), n.clone(), wp),
+            }
+        }
+        if names.contains(&self.active_character) {
+            self.note_ingame_route();
+        }
+    }
+
+    /// A fresh ping picked: its route goes to the FC's character once, without a click.
+    pub(crate) fn rescue_auto_route(&mut self) {
+        let (seq, target, received, test) = {
+            let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+            let (Some(seq), Some(target)) = (r.selected_ping, r.capital_system) else { return };
+            let received = r.events.iter().find(|e| e.seq == seq).map_or(0, |e| e.received);
+            (seq, target, received, r.test_mode)
+        };
+        if self.rescue_routed_for == Some((seq, target)) || !self.rescue_on() {
+            return;
+        }
+        self.rescue_routed_for = Some((seq, target));
+        // A test scenario never reaches the game, and neither does an old ping.
+        if test || crate::clock::utc().timestamp() - received > AUTO_ROUTE_FRESH_SECS {
+            return;
+        }
+        if let Some(fc) = self.rescue_fc_character() {
+            self.rescue_send_route(&[fc], target);
+        }
+    }
+
     pub(crate) fn rescue_map_data(&mut self) -> Option<RescueMap> {
         let graph = self.systems.clone()?;
         let coords = self.map_coords.clone()?;
