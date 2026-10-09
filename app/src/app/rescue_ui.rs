@@ -811,14 +811,23 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 let big = |t: egui::RichText| if compact { t.strong() } else { t.heading() };
                 ui.label(big(egui::RichText::new(egui_phosphor::regular::WARNING_OCTAGON)));
+                // Who, where and in what as one line that gives way to the buttons: cut, whole on hover.
                 let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
                 let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
-                ui.label(big(egui::RichText::new(pilot).strong()));
-                ui.label("in");
-                ui.label(big(egui::RichText::new(sys).strong()));
-                if let Some(class) = r.cap_class {
-                    ui.label(format!("[{}]", class.label()));
-                }
+                let class = r.cap_class.map(|c| format!("  [{}]", c.label())).unwrap_or_default();
+                let head = {
+                    let big_font = if compact { egui::TextStyle::Body } else { egui::TextStyle::Heading }.resolve(ui.style());
+                    let body = egui::TextStyle::Body.resolve(ui.style());
+                    let strong = ui.visuals().strong_text_color();
+                    let text = ui.visuals().text_color();
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(&pilot, 0.0, egui::TextFormat::simple(big_font.clone(), strong));
+                    job.append(" in ", 0.0, egui::TextFormat::simple(body.clone(), text));
+                    job.append(&sys, 0.0, egui::TextFormat::simple(big_font, strong));
+                    job.append(&class, 0.0, egui::TextFormat::simple(body, text));
+                    job
+                };
+                let whole = format!("{pilot} in {sys}{class}");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if compact {
@@ -849,6 +858,9 @@ impl SpaiApp {
                     if !compact {
                         chips(ui);
                     }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(head).truncate()).on_hover_text(&whole);
+                    });
                 });
             });
             if compact {
