@@ -21,6 +21,7 @@ pub struct AiDeps {
     pub facts: Arc<Mutex<AiFacts>>,
     pub memories: crate::ai::memory::SharedMemories,
     pub watches: crate::ai::watch::SharedWatches,
+    pub feeds: crate::ai::feeds::SharedFeeds,
     /// Whether tools may reach ESI and the web. Off in tests.
     pub online: bool,
 }
@@ -71,6 +72,7 @@ impl AiDeps {
             facts: Arc::new(Mutex::new(facts)),
             memories: Default::default(),
             watches: Default::default(),
+            feeds: Default::default(),
             online: false,
         }
     }

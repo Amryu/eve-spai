@@ -45,6 +45,7 @@ pub struct Watch {
     /// Items newer than these have not been looked at yet.
     pub seen_intel: i64,
     pub seen_kills: i64,
+    pub seen_feeds: i64,
 }
 
 pub type SharedWatches = Arc<Mutex<Vec<Watch>>>;
@@ -74,6 +75,7 @@ impl Watch {
             hits: 0,
             seen_intel: now,
             seen_kills: now,
+            seen_feeds: now,
         }
     }
 

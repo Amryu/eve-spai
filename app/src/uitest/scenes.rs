@@ -2423,12 +2423,37 @@ pub(crate) fn all() -> Vec<Scene> {
         a.settings.ai.glossary.custom.push(crate::ai::glossary::Entry { term: "GSOL".into(), meaning: "The holding corporation that owns the staging keepstar".into() });
         a.ai_glossary_open = true;
     }));
+    for (name, editing) in [("dialog_ai_feeds", false), ("dialog_ai_feeds_edit", true)] {
+        v.push(dialog_scene(name, [560.0, 600.0], move |a| {
+            use crate::ai::feeds::{FeedDef, FeedItem, FeedKind};
+            a.settings.ai.enabled = true;
+            a.settings.ai.feeds = vec![
+                FeedDef { id: 1, name: "Alliance timers board".into(), url: "https://example.invalid/timers.rss".into(), ..Default::default() },
+                FeedDef { id: 2, name: "The Exceptionally Long-Named Coalition Broadcast Relay For Assorted Spaceship Enthusiasts".into(), url: "https://example.invalid/api/broadcasts".into(), kind: FeedKind::Json, items_path: "data.items".into(), enabled: false, ..Default::default() },
+                FeedDef { id: 3, name: "Status page".into(), url: "https://example.invalid/status.txt".into(), kind: FeedKind::Text, ..Default::default() },
+            ];
+            {
+                let mut st = a.ai_feeds.lock().unwrap();
+                st.add((0..12).map(|i| FeedItem { feed: 1, key: i.to_string(), time: 0, seen: 0, title: String::new(), text: String::new(), link: String::new() }).collect());
+                st.errors.insert(3, "the server answered 503 Service Unavailable".into());
+            }
+            if editing {
+                a.ai_feed_edit = Some(a.settings.ai.feeds[1].clone());
+            }
+            a.ai_feeds_open = true;
+        }));
+    }
     v.push(dialog_scene("dialog_ai_perms", [460.0, 640.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.intel_channels = vec!["Delve.Imperium".into(), "Querious.Imperium".into()];
         a.settings.ai.perms.insert("intel".into(), true);
         a.settings.ai.perms.insert(crate::ai::perms::channel_key("Querious.Imperium"), false);
         a.settings.ai.perms.insert("kills.feed".into(), true);
+        a.settings.ai.feeds = vec![
+            crate::ai::feeds::FeedDef { id: 1, name: "Alliance timers board".into(), ..Default::default() },
+            crate::ai::feeds::FeedDef { id: 2, name: "The Exceptionally Long-Named Coalition Broadcast Relay For Assorted Spaceship Enthusiasts".into(), ..Default::default() },
+        ];
+        a.settings.ai.perms.insert("feeds.1".into(), true);
         a.ai_perms_open = true;
     }));
     v.push(battle_list_scene("battle_list_narrow", [720.0, 800.0]));

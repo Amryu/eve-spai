@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 use crate::ai::watch::{Watch, MAX_WATCHES};
 
-pub static TOOLS: &[&ToolSpec] = &[&START, &STOP, &RESUME, &LIST];
+pub static TOOLS: &[&ToolSpec] = &[&START, &STOP, &RESUME, &LIST, &FEED_ITEMS];
 
 const NEED: Need = Need::Any(&["intel.reports", "kills.feed"]);
 
@@ -123,6 +123,46 @@ static LIST: ToolSpec = ToolSpec {
     },
 };
 
+static FEED_ITEMS: ToolSpec = ToolSpec {
+    name: "feed_items",
+    description: "Items from the outside feeds the user added (news, timers, alliance broadcasts, anything with a feed), \
+                  newest first. Narrow by feed name, words, and age.",
+    need: Need::AnyUnder("feeds"),
+    kind: Kind::Read,
+    schema: || schema(json!({"feed": {"type": "string"}, "query": {"type": "string"}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 100_000}, "limit": {"type": "integer", "minimum": 1, "maximum": 40}}), &[]),
+    run: |ctx, v| {
+        let since = ctx.now - 60 * u64_arg(v, "since_minutes", 1440, 100_000) as i64;
+        let want = str_arg(v, "feed").map(str::to_lowercase);
+        let words: Vec<String> = str_arg(v, "query").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
+        let defs: Vec<&crate::ai::feeds::FeedDef> = ctx
+            .facts
+            .ai
+            .feeds
+            .iter()
+            .filter(|d| ctx.facts.allowed(&d.perm_key()))
+            .filter(|d| want.as_ref().is_none_or(|w| d.name.to_lowercase().contains(w.as_str())))
+            .collect();
+        if defs.is_empty() {
+            return Err("no feed allowed by that name".into());
+        }
+        let st = ctx.deps.feeds.lock().unwrap_or_else(|e| e.into_inner());
+        let out: Vec<Value> = st
+            .items
+            .iter()
+            .rev()
+            .filter(|i| i.time >= since)
+            .filter_map(|i| defs.iter().find(|d| d.id == i.feed).map(|d| (d, i)))
+            .filter(|(_, i)| {
+                let hay = format!("{} {}", i.title, i.text).to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .take(u64_arg(v, "limit", 15, 40) as usize)
+            .map(|(d, i)| json!({"feed": d.name, "when": super::eve_time(i.time), "age": super::fmt_age(ctx.now, i.time), "title": i.title, "text": i.text, "link": i.link}))
+            .collect();
+        Ok(json!({"items": out}))
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::*;
@@ -150,5 +190,22 @@ mod tests {
         assert!(deps.watches.lock().unwrap()[0].running());
         let (none, err) = run(&AiDeps::for_tests(facts(&[])), "start_watch", json!({"goal": "x", "words": ["y"]}));
         assert!(err, "{none}");
+    }
+
+    #[test]
+    fn feed_items_follow_each_feeds_own_permission() {
+        use crate::ai::feeds::{FeedDef, FeedItem};
+        let mut f = facts(&["feeds.1"]);
+        f.ai.feeds = vec![FeedDef { id: 1, name: "Timers".into(), ..Default::default() }, FeedDef { id: 2, name: "Secret".into(), ..Default::default() }];
+        let deps = AiDeps::for_tests(f);
+        let now = crate::clock::utc().timestamp();
+        let it = |feed: u64, text: &str| FeedItem { feed, key: text.into(), time: now - 60, seen: now, title: String::new(), text: text.into(), link: String::new() };
+        deps.feeds.lock().unwrap().add(vec![it(1, "Keepstar armor timer in 1DQ1-A"), it(2, "hidden")]);
+        let (out, err) = run(&deps, "feed_items", json!({"query": "timer"}));
+        assert!(!err, "{out}");
+        assert_eq!(out["items"].as_array().unwrap().len(), 1);
+        assert!(!out.to_string().contains("hidden"));
+        let (_, err) = run(&deps, "feed_items", json!({"feed": "secret"}));
+        assert!(err);
     }
 }

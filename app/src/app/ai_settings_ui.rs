@@ -194,6 +194,9 @@ impl SpaiApp {
             if ui.button(format!("{}  Glossary\u{2026}", icon::BOOK_OPEN)).on_hover_text("How the assistant reads EVE terms").clicked() {
                 self.ai_glossary_open = true;
             }
+            if ui.button(format!("{}  Feeds\u{2026}", icon::RSS)).on_hover_text("Outside sources for the assistant to read and watch").clicked() {
+                self.ai_feeds_open = true;
+            }
         });
         changed |= self.ai_voice_settings(ui);
         changed |= self.ai_voice_in_settings(ui);
@@ -490,11 +493,13 @@ impl SpaiApp {
         }
         let unlocked = perms::Unlocked { fleet: self.fleet_on(), rescue: self.rescue_on() };
         let channels = self.settings.intel_channels.clone();
+        let feeds: Vec<(String, String)> = self.settings.ai.feeds.iter().map(|f| (f.perm_key(), f.name.clone())).collect();
+        let feed_keys: Vec<String> = feeds.iter().map(|(k, _)| k.clone()).collect();
         let dynamic = move |key: &str| -> Vec<String> {
-            if key == "intel.chatlogs" {
-                channels.iter().map(|c| perms::channel_key(c)).collect()
-            } else {
-                Vec::new()
+            match key {
+                "intel.chatlogs" => channels.iter().map(|c| perms::channel_key(c)).collect(),
+                "feeds" => feed_keys.clone(),
+                _ => Vec::new(),
             }
         };
         let mut changed = false;
@@ -505,7 +510,7 @@ impl SpaiApp {
             ui.add_space(4.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for node in perms::TREE {
-                    changed |= perm_node(ui, node, &mut perms_map, unlocked, &dynamic, &channels);
+                    changed |= perm_node(ui, node, &mut perms_map, unlocked, &dynamic, &channels, &feeds);
                 }
             });
         });
@@ -528,6 +533,7 @@ fn perm_node(
     u: perms::Unlocked,
     dynamic: &dyn Fn(&str) -> Vec<String>,
     channels: &[String],
+    feeds: &[(String, String)],
 ) -> bool {
     if !perms::visible(node, u) {
         return false;
@@ -563,18 +569,23 @@ fn perm_node(
         })
         .body(|ui| {
             for c in node.children {
-                changed |= perm_node(ui, c, map, u, dynamic, channels);
+                changed |= perm_node(ui, c, map, u, dynamic, channels, feeds);
             }
-            if node.key == "intel.chatlogs" {
-                for ch in channels {
-                    let key = perms::channel_key(ch);
+            let extra: Vec<(String, String)> = match node.key {
+                "intel.chatlogs" => channels.iter().map(|ch| (perms::channel_key(ch), ch.clone())).collect(),
+                "feeds" => feeds.to_vec(),
+                _ => Vec::new(),
+            };
+            {
+                for (key, ch) in extra {
                     let mut on = perms::allowed(map, &key, u);
                     ui.horizontal(|ui| {
                         ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x * 0.5);
-                        if ui.checkbox(&mut on, ch).changed() {
-                            map.insert(key, on);
+                        if ui.checkbox(&mut on, "").changed() {
+                            map.insert(key.clone(), on);
                             changed = true;
                         }
+                        ui.add(egui::Label::new(&ch).truncate()).on_hover_text(&ch);
                     });
                 }
             }
@@ -583,6 +594,160 @@ fn perm_node(
 }
 
 impl SpaiApp {
+    /// Outside feeds: the list with their state, and one at a time being added or edited.
+    pub(crate) fn ai_feeds_window(&mut self, ctx: &egui::Context) {
+        use crate::ai::feeds::{FeedDef, FeedKind, MIN_INTERVAL};
+        use egui_phosphor::regular as icon;
+        if !self.ai_feeds_open {
+            return;
+        }
+        let mut changed = false;
+        let mut feeds = std::mem::take(&mut self.settings.ai.feeds);
+        let mut edit = self.ai_feed_edit.take();
+        let mut secret = std::mem::take(&mut self.ai_feed_secret);
+        let secrets = self.ai_secrets.clone();
+        let (errors, counts) = {
+            let st = self.ai_feeds.lock().unwrap_or_else(|e| e.into_inner());
+            let mut counts: std::collections::HashMap<u64, usize> = Default::default();
+            for i in &st.items {
+                *counts.entry(i.feed).or_default() += 1;
+            }
+            (st.errors.clone(), counts)
+        };
+        let mut note: Option<String> = None;
+        let keep = Self::dialog_viewport(ctx, "ai_feeds", "EVE Spai - Assistant feeds", [560.0, 600.0], |ui| {
+            ui.label(egui::RichText::new("News, timers, broadcasts: anything with a feed. The assistant reads the ones allowed under Data access and watches them for you.").weak());
+            ui.add_space(4.0);
+            if let Some(e) = edit.as_mut() {
+                egui::Grid::new("ai_feed_form").num_columns(2).spacing([12.0, 6.0]).min_col_width(100.0).show(ui, |ui| {
+                    ui.label("Name");
+                    ui.add(egui::TextEdit::singleline(&mut e.name).hint_text("Timers board").desired_width(360.0));
+                    ui.end_row();
+                    ui.label("Address");
+                    ui.add(egui::TextEdit::singleline(&mut e.url).hint_text("https://\u{2026}").desired_width(360.0));
+                    ui.end_row();
+                    ui.label("Kind");
+                    egui::ComboBox::from_id_salt("ai_feed_kind").selected_text(e.kind.label()).width(200.0).show_ui(ui, |ui| {
+                        for k in FeedKind::CHOICES {
+                            ui.menu_value(&mut e.kind, k, k.label());
+                        }
+                    });
+                    ui.end_row();
+                    if e.kind == FeedKind::Json {
+                        ui.label("Items at").on_hover_text("Where the list is, as dot-separated keys; empty when the answer is the list");
+                        ui.add(egui::TextEdit::singleline(&mut e.items_path).hint_text("data.items").desired_width(200.0));
+                        ui.end_row();
+                        for (label, f) in [("Text field", &mut e.text_field), ("Title field", &mut e.title_field), ("Time field", &mut e.time_field), ("Link field", &mut e.link_field)] {
+                            ui.label(label);
+                            ui.add(egui::TextEdit::singleline(f).desired_width(200.0));
+                            ui.end_row();
+                        }
+                    }
+                    ui.label("Check every");
+                    ui.add(egui::DragValue::new(&mut e.interval).range(MIN_INTERVAL..=86_400).suffix(" s"));
+                    ui.end_row();
+                    ui.label("Header").on_hover_text("For feeds that want a key: the header name here, its value goes to the keychain");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut e.auth_header).hint_text("none, or e.g. Authorization").desired_width(160.0));
+                        if !e.auth_header.trim().is_empty() {
+                            if secrets.has(&e.secret_account()) {
+                                ui.label(egui::RichText::new(format!("{}  Value stored", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                            } else {
+                                ui.add(egui::TextEdit::singleline(&mut secret).password(true).hint_text("its value").desired_width(150.0));
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
+                let ok = !e.name.trim().is_empty() && (e.url.starts_with("https://") || e.url.starts_with("http://"));
+                let mut done = None;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(ok, egui::Button::new(format!("{}  Save", icon::CHECK))).clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = Some(false);
+                    }
+                });
+                match done {
+                    Some(true) => {
+                        let e = edit.take().expect("editing");
+                        if !secret.trim().is_empty() {
+                            if let Err(err) = secrets.set(&e.secret_account(), secret.trim()) {
+                                note = Some(format!("Could not store the header value: {err}"));
+                            }
+                            secret.clear();
+                        }
+                        match feeds.iter_mut().find(|f| f.id == e.id) {
+                            Some(slot) => *slot = e,
+                            None => feeds.push(e),
+                        }
+                        changed = true;
+                    }
+                    Some(false) => {
+                        edit = None;
+                        secret.clear();
+                    }
+                    None => {}
+                }
+                ui.separator();
+            } else if ui.button(format!("{}  Add a feed", icon::PLUS)).clicked() {
+                let id = feeds.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+                edit = Some(FeedDef { id, ..Default::default() });
+            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if feeds.is_empty() {
+                    ui.label(egui::RichText::new("No feeds yet.").weak());
+                }
+                let mut remove = None;
+                for f in feeds.iter_mut() {
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut f.enabled, "").on_hover_text("Checked: polled").changed();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                                remove = Some(f.id);
+                            }
+                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                edit = Some(f.clone());
+                            }
+                            match errors.get(&f.id) {
+                                Some(e) => {
+                                    ui.label(egui::RichText::new(icon::WARNING).color(crate::theme::standing::WARNING)).on_hover_text(e);
+                                }
+                                None => {
+                                    ui.label(egui::RichText::new(format!("{} items", counts.get(&f.id).copied().unwrap_or(0))).weak());
+                                }
+                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(&f.name).strong()).truncate()).on_hover_text(format!("{}\n{}", f.name, f.url));
+                            });
+                        });
+                    });
+                }
+                if let Some(id) = remove {
+                    if let Some(f) = feeds.iter().find(|f| f.id == id) {
+                        secrets.delete(&f.secret_account());
+                    }
+                    feeds.retain(|f| f.id != id);
+                    changed = true;
+                }
+            });
+        });
+        self.settings.ai.feeds = feeds;
+        self.ai_feed_edit = edit;
+        self.ai_feed_secret = secret;
+        if let Some(n) = note {
+            self.toast_error(n);
+        }
+        if changed {
+            self.needs_save = true;
+            self.ai_push_facts(true);
+        }
+        if !keep {
+            self.ai_feeds_open = false;
+        }
+    }
+
     /// The glossary: every base entry editable and resettable, the user's own entries, and a way
     /// back to the shipped list.
     pub(crate) fn ai_glossary_window(&mut self, ctx: &egui::Context) {
