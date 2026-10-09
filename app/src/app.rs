@@ -221,6 +221,8 @@ pub(crate) use char_rings::*;
 mod alert_engine;
 pub(crate) mod killmail_ui;
 mod br_timeline;
+pub(crate) mod ai_ui;
+mod ai_settings_ui;
 mod toasts;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
@@ -599,6 +601,16 @@ pub struct SpaiApp {
     lookup_saved_read: bool,
     /// The names last saved, so a finished lookup is written once.
     lookup_saved_for: Vec<String>,
+    /// The assistant's session, started the first time it is used.
+    pub(crate) ai: Option<crate::ai::session::AiHandle>,
+    pub(crate) ai_facts: std::sync::Arc<std::sync::Mutex<crate::ai::deps::AiFacts>>,
+    ai_facts_at: Option<std::time::Instant>,
+    pub(crate) ai_secrets: std::sync::Arc<dyn crate::ai::secrets::SecretStore>,
+    pub(crate) ai_input: String,
+    pub(crate) ai_perms_open: bool,
+    pub(crate) ai_key_input: String,
+    /// Systems the assistant marked on the map, once the user applied it.
+    pub(crate) ai_highlight: Vec<i64>,
     /// `None` sorts by name.
     lookup_sort: Option<lookup_ui::Col>,
     lookup_sort_desc: bool,
@@ -1466,6 +1478,19 @@ impl SpaiApp {
             lookup_current: Vec::new(),
             lookup_saved_read: false,
             lookup_saved_for: Vec::new(),
+            ai: None,
+            ai_facts: Default::default(),
+            ai_facts_at: None,
+            // Tests and renders never touch the real keychain.
+            ai_secrets: if headless {
+                std::sync::Arc::new(crate::ai::secrets::MemSecrets::default())
+            } else {
+                std::sync::Arc::new(crate::ai::secrets::Keychain)
+            },
+            ai_input: String::new(),
+            ai_perms_open: false,
+            ai_key_input: String::new(),
+            ai_highlight: Vec::new(),
             lookup_sort: Some(lookup_ui::Col::Danger),
             lookup_sort_desc: true,
             lookup_note: None,
@@ -3454,6 +3479,7 @@ impl SpaiApp {
                     .copied()
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
+                    .filter(|v| *v != nav::View::Assistant || self.ai_on())
                     .collect();
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows);
                 if selected != self.view {
@@ -3609,6 +3635,8 @@ impl SpaiApp {
         self.share_status_poll(ctx);
         self.evetools_poll(ctx);
         self.toasts_ui(ctx);
+        self.ai_perms_window(ctx);
+        self.ai_push_facts(false);
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);
         self.fleet_migrate_window(ctx);
@@ -3691,6 +3719,7 @@ impl SpaiApp {
             // second place to look and a second thing to lose behind the game client.
             View::Fleet => self.fleet_view(ui),
             View::Rescue => self.rescue_view(ui),
+            View::Assistant => self.assistant_view(ui),
             View::Settings => self.settings_view(ui),
         });
         // Its own window, opened from settings and from a tracked fleet, so it cannot live inside

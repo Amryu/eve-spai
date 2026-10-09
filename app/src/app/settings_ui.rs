@@ -1917,6 +1917,9 @@ impl SpaiApp {
                     changed |= self.web_settings_section(ui);
 
                     ui.separator();
+                    changed |= self.assistant_settings_section(ui);
+
+                    ui.separator();
 
                     ui.label(egui::RichText::new("Battle reports").strong());
                     if ui

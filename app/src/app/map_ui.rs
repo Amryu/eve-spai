@@ -985,6 +985,12 @@ impl SpaiApp {
                 }
             }
         }
+        // Systems the assistant marked, once the user applied it.
+        for id in &self.ai_highlight {
+            if let Some(p) = pos.get(id).filter(|p| cull.contains(**p)) {
+                painter.circle_stroke(*p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)));
+            }
+        }
         // The campfire itself rides the label row (see `lead_icons`); only its glow stays on the dot.
         if ov.camps {
             for (id, level) in &self.camped_cache {

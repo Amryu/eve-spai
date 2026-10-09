@@ -18,6 +18,8 @@ pub enum View {
     /// FC-only capital rescue. Present in the enum unconditionally so the rest of the rail needs no
     /// `cfg`; the caller leaves it out of the list when the build or the setting says so.
     Rescue,
+    /// The AI assistant, shown only while it is switched on.
+    Assistant,
     Settings,
 }
 
@@ -35,6 +37,7 @@ impl View {
             View::Jabber,
             View::Fleet,
             View::Rescue,
+            View::Assistant,
         ]
     }
 
@@ -51,6 +54,7 @@ impl View {
             View::Jabber => "Jabber",
             View::Fleet => "Fleet",
             View::Rescue => "Rescue",
+            View::Assistant => "Assistant",
             View::Settings => "Settings",
         }
     }
@@ -68,6 +72,7 @@ impl View {
             View::Jabber => icon::CHAT_TEXT,
             View::Fleet => icon::ROCKET_LAUNCH,
             View::Rescue => icon::WARNING_OCTAGON,
+            View::Assistant => icon::SPARKLE,
             View::Settings => icon::GEAR_SIX,
         }
     }

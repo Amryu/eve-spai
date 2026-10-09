@@ -147,6 +147,9 @@ pub struct Settings {
     pub alerts: AlertSettings,
     #[serde(default = "default_web")]
     pub web: WebSettings,
+    /// The assistant, all of it in one sub-struct: see `ai::config`.
+    #[serde(default)]
+    pub ai: crate::ai::config::AiSettings,
     #[serde(default = "default_true")]
     pub battles_enabled: bool,
     #[serde(default)]
@@ -1518,6 +1521,7 @@ impl Default for Settings {
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
             web: WebSettings::default(),
+            ai: Default::default(),
             battles_enabled: true,
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,

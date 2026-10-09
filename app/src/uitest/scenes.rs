@@ -1313,6 +1313,48 @@ fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) 
 /// onto the root drops the stub. Turning embedding off then keeps the two always-on deferred
 /// viewports (the alert and fleet-ping overlays) out, which would each open a second `CentralPanel`
 /// on the same context and paint egui's "double use of widget ID" error over the dialog.
+/// The Assistant tab with a conversation: a finished answer with its lookups and an action card,
+/// an error, and a turn still being written. Empty shows the first-use page instead.
+fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
+    use crate::ai::session::{ActionCard, CardState, Chip, Turn};
+    use crate::ai::tools::{ActionKind, PendingAction};
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.ai.enabled = true;
+            a.view = View::Assistant;
+            let turn = |user: bool, text: &str| Turn { user, text: text.into(), chips: vec![], cards: vec![], streaming: false, error: None, voice: false };
+            let mut answer = turn(false, "**The Fraternity. gang went south.** Last seen in **QX-LIJ** 4 minutes ago, 6 jumps from you.\n\n- 21:12 killed a Hound in 1DQ1-A (14 of them, Muninns and a Sabre)\n- 21:19 intel in Delve.Imperium: \"frat gang +20 QX-LIJ\"\n\nThe Jove observatory in Y-OMTZ is 3 jumps from QX-LIJ, a likely way out.");
+            answer.chips = vec![
+                Chip { name: "track_movement".into(), args: "entity: frat, since_minutes: 60".into(), error: None },
+                Chip { name: "jove_systems_near".into(), args: "system: QX-LIJ".into(), error: None },
+                Chip { name: "wormholes_near".into(), args: "system: QX-LIJ".into(), error: Some("wormholes is not allowed".into()) },
+                Chip { name: "highlight_systems".into(), args: "systems: [1DQ1-A, QX-LIJ]".into(), error: None },
+            ];
+            answer.cards = vec![ActionCard {
+                action: PendingAction { id: 1, kind: ActionKind::Highlight(vec![30_004_759]), summary: "Highlight 1DQ1-A, QX-LIJ on the map".into() },
+                state: CardState::Pending,
+            }];
+            let mut failed = turn(false, "");
+            failed.error = Some("The API key was not accepted (invalid x-api-key)".into());
+            let mut live = turn(false, "Checking kills near ");
+            live.streaming = true;
+            if !empty {
+                crate::app::ai_ui::seed_ai_view(
+                    &mut a,
+                    ui.ctx(),
+                    vec![turn(true, "Where did the Frat gang go?"), answer, turn(true, "and the route home?"), failed, turn(true, "anything near me now?"), live],
+                );
+            }
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
 fn dialog_scene(
     name: &'static str,
     size: [f32; 2],
@@ -2285,6 +2327,17 @@ pub(crate) fn all() -> Vec<Scene> {
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
     v.push(battle_list_scene("battle_list", [1280.0, 800.0]));
+    v.push(assistant_scene("assistant", [1280.0, 800.0], false));
+    v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false));
+    v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true));
+    v.push(dialog_scene("dialog_ai_perms", [460.0, 640.0], |a| {
+        a.settings.ai.enabled = true;
+        a.settings.intel_channels = vec!["Delve.Imperium".into(), "Querious.Imperium".into()];
+        a.settings.ai.perms.insert("intel".into(), true);
+        a.settings.ai.perms.insert(crate::ai::perms::channel_key("Querious.Imperium"), false);
+        a.settings.ai.perms.insert("kills.feed".into(), true);
+        a.ai_perms_open = true;
+    }));
     v.push(battle_list_scene("battle_list_narrow", [720.0, 800.0]));
     // 1440 is a break point where the throttle picker lands last on its row with the least space
     // left, next to the panel edge.

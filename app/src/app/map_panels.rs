@@ -1219,6 +1219,9 @@ impl SpaiApp {
             if (self.route_destination.is_some() || self.ingame_route) && ui.button(icon::X).on_hover_text("Clear the route").clicked() {
                 self.clear_route();
             }
+            if !self.ai_highlight.is_empty() && ui.button(icon::ERASER).on_hover_text("Clear the assistant's marks").clicked() {
+                self.ai_highlight.clear();
+            }
         });
 
         if !self.map_layout.is_threat() {
