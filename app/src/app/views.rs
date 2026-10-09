@@ -267,14 +267,11 @@ impl SpaiApp {
                 ui.heading("Uncertain pilot (?)");
                 ui.add_space(4.0);
                 ui.label(
-                    "A \"?\" means this name matched a real EVE character, but that character looks \
-                     inactive (no recent kills, corp move, or wide roaming). It may be a real but \
-                     rarely-used pilot, or a chat word that happens to match a character name.",
+                    "A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word that happens to be a name.",
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    "Mark it \"Real pilot\" to keep it (the ? clears), or \"Not a pilot\" to hide it. \
-                     Your choice is remembered.",
+                    "Real pilot keeps it, Not a pilot hides it. Remembered.",
                 );
                 ui.add_space(8.0);
                 if ui.button("Got it").clicked() {

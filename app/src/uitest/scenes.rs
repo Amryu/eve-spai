@@ -3400,7 +3400,7 @@ fn uitest_fleet_command_is_locked_until_the_dashboard_confirms_a_commander() {
     use egui_kittest::kittest::Queryable as _;
     let mut locked = fleet_lock_scene("fleet_settings_locked", false);
     let h = harness::build(&mut locked, false);
-    assert!(h.query_by_label_contains("Sign in to the fleet dashboard to unlock them").is_some());
+    assert!(h.query_by_label_contains("Sign in to the fleet dashboard to unlock").is_some());
     assert!(h.query_by_label_contains("Enable the fleet dashboard").is_none(), "no fleet options before unlocking");
     assert!(h.query_by_label("Fleet").is_none(), "no Fleet tab in the rail");
     drop(h);

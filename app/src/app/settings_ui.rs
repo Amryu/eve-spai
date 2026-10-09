@@ -95,8 +95,7 @@ impl SpaiApp {
                     S::Welcome => {
                         ui.heading("Welcome to EVE Spai");
                         ui.label(
-                            "A quick setup to get intel flowing. Everything here can be changed \
-                             later in Settings, and you can re-run this wizard from there.",
+                            "Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again.",
                         );
                     }
                     S::Logs => {
@@ -222,9 +221,7 @@ impl SpaiApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(
-                                    "The data lives in a formatted list linked inside the alliance \
-                                     forum post, not on the forum page itself. Open the post, follow \
-                                     that link, and copy the list.",
+                                    "Copy the formatted list linked inside the alliance forum post, not the forum page.",
                                 )
                                 .weak(),
                             );
@@ -1122,9 +1119,7 @@ impl SpaiApp {
             |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Group alliances into coalitions for the map's sovereignty overlay. \
-                         Alliance names must match the sov holder exactly (some end with a \
-                         period). Unlisted alliances are shown as independent.",
+                        "Coalitions for the sov layer. Names must match the sov holder exactly, some end with a period; unlisted alliances show on their own.",
                     )
                     .weak(),
                 );
@@ -1607,8 +1602,7 @@ impl SpaiApp {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Systems with a friendly cyno generator. ESI can't list these, so add them \
-                         by name. Shown as the Cyno generators map layer.",
+                        "Friendly cyno generators, by system name: ESI does not list them. Shown by the Cyno generators layer.",
                     )
                     .weak(),
                 );
