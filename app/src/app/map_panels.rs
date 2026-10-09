@@ -68,9 +68,10 @@ impl SpaiApp {
             });
             changed |= ui.checkbox(&mut st.route_region_gates, "Cross regions by gate").changed();
             ui.horizontal(|ui| {
+                ui.set_max_width(ui.available_width());
                 ui.label("Sov held by");
                 let text = if st.route_avoid_sov.is_empty() { "nobody".to_owned() } else { st.route_avoid_sov.join(", ") };
-                let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), icon::CARET_DOWN)).truncate().min_size(egui::vec2(ui.available_width(), 0.0)))
+                let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), icon::CARET_DOWN)).truncate().min_size(egui::vec2(ui.available_width() - 2.0, 0.0)))
                     .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
                 menu.ui(ui, |ui| {
                     ui.set_width(240.0);
