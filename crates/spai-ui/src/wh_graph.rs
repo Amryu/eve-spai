@@ -303,6 +303,8 @@ pub struct WhGraphView {
     pub layout_cache: Option<(u64, Vec<(i64, Option<i64>, egui::Pos2)>)>,
     /// The pinned systems the layout was last made with, to notice one being added.
     pub pins_seen: Option<Vec<i64>>,
+    /// The chains changed while a box was held: tidy once it is let go.
+    pub tidy_due: bool,
     /// Systems picked with a shift-drag box, moved together by dragging any one of them.
     pub multi: HashSet<i64>,
     /// The shift-drag box being drawn: where it started and where the pointer is, on screen.

@@ -500,6 +500,7 @@ impl spai_ui::wh_tab::WhHost for SpaiApp {
             layout_pack: s.wh_layout_pack,
             minimap: s.wh_minimap,
             legend_open: s.wh_legend_open,
+            manual_tidy: s.wh_manual_tidy,
         }
     }
 
@@ -511,6 +512,7 @@ impl spai_ui::wh_tab::WhHost for SpaiApp {
         s.wh_layout_pack = p.layout_pack;
         s.wh_minimap = p.minimap;
         s.wh_legend_open = p.legend_open;
+        s.wh_manual_tidy = p.manual_tidy;
         self.needs_save = true;
     }
 

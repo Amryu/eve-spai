@@ -342,6 +342,34 @@ impl SpaiApp {
         crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, ctx);
     }
 
+    /// The last finished lookup comes back after a restart without asking zKillboard again.
+    fn lookup_keep_last(&mut self) {
+        const KEY: &str = "lookup_last";
+        // Tests share one scratch store: one scene's lookup would turn up in the next.
+        if cfg!(test) {
+            return;
+        }
+        if !std::mem::replace(&mut self.lookup_saved_read, true) {
+            let saved = self.store.as_ref().and_then(|s| s.kv_get(KEY)).and_then(|j| serde_json::from_str::<crate::localscan::SavedLookup>(&j).ok());
+            if let Some(saved) = saved {
+                let names = crate::localscan::restore(&self.lookup_table, saved);
+                self.lookup_saved_for = names.clone();
+                if self.lookup_current.is_empty() {
+                    self.lookup_current = names;
+                }
+            }
+        }
+        if self.lookup_current.is_empty() || self.lookup_current == self.lookup_saved_for {
+            return;
+        }
+        if let Some(snap) = crate::localscan::snapshot(&self.lookup_table, &self.lookup_current) {
+            if let (Some(store), Ok(json)) = (self.store.as_ref(), serde_json::to_string(&snap)) {
+                store.kv_set(KEY, &json);
+            }
+            self.lookup_saved_for = self.lookup_current.clone();
+        }
+    }
+
     /// Standings to tell blues by: left out while hidden, looked up last in a large list.
     fn lookup_standings(&self) -> std::collections::HashMap<i64, f32> {
         self.standings.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -417,6 +445,7 @@ impl SpaiApp {
     }
 
     pub(crate) fn lookup_view(&mut self, ui: &mut egui::Ui) {
+        self.lookup_keep_last();
         use egui_phosphor::regular as icon;
         let ctx = ui.ctx().clone();
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());

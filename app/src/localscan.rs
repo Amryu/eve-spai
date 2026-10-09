@@ -36,13 +36,13 @@ pub const SPACE: [(&str, &str); 6] = [
 pub const ISK: [(&str, &str); 4] =
     [("isk:under1b", "under 1b"), ("isk:1b+", "1b-5b"), ("isk:5b+", "5b-10b"), ("isk:10b+", "10b+")];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bar {
     pub kills: u32,
     pub losses: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Ship {
     pub type_id: i64,
     pub group_id: i64,
@@ -52,7 +52,7 @@ pub struct Ship {
 
 /// zKillboard's character labels, as its profile page shows them. zKillboard works these out from
 /// full killmails over their own windows (90 days or a year); the app only reads them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tag {
     Blops,
     Logi,
@@ -128,14 +128,14 @@ impl Tag {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cyno {
     pub standard: u32,
     pub covert: u32,
     pub industrial: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Fc {
     pub level: String,
     pub score: u32,
@@ -144,13 +144,13 @@ pub struct Fc {
     pub large_fleet: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bait {
     pub level: String,
     pub count: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Summary {
     pub id: i64,
     pub name: String,
@@ -331,7 +331,7 @@ impl Summary {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Row {
     Pending,
     Done(Box<Summary>),
@@ -342,7 +342,7 @@ pub enum Row {
     Failed(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Org {
     pub name: String,
     pub ticker: String,
@@ -363,6 +363,52 @@ pub struct Table {
 }
 
 pub type SharedTable = Arc<Mutex<Table>>;
+
+/// The last lookup, kept across restarts: its names and what was found for them.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SavedLookup {
+    pub names: Vec<String>,
+    pub rows: Vec<(String, Row)>,
+    pub orgs: Vec<(i64, Org)>,
+    pub blue_ids: Vec<(String, (i64, String))>,
+}
+
+/// What `names` has in the table now, when nothing of it is still being looked up.
+pub fn snapshot(table: &SharedTable, names: &[String]) -> Option<SavedLookup> {
+    let t = table.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rows = Vec::new();
+    for n in names {
+        let lc = n.to_lowercase();
+        match t.rows.get(&lc) {
+            Some(Row::Pending) | None => return None,
+            Some(r) => rows.push((lc, r.clone())),
+        }
+    }
+    Some(SavedLookup {
+        names: names.to_vec(),
+        rows,
+        orgs: t.orgs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        blue_ids: t.blue_ids.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    })
+}
+
+/// Puts a saved lookup back, so its pilots are not asked for again. A failure is left out to be
+/// tried again, and anything already in the table wins.
+pub fn restore(table: &SharedTable, saved: SavedLookup) -> Vec<String> {
+    let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
+    for (lc, row) in saved.rows {
+        if !matches!(row, Row::Failed(_) | Row::Pending) {
+            t.rows.entry(lc).or_insert(row);
+        }
+    }
+    for (k, v) in saved.orgs {
+        t.orgs.entry(k).or_insert(v);
+    }
+    for (k, v) in saved.blue_ids {
+        t.blue_ids.entry(k).or_insert(v);
+    }
+    saved.names
+}
 
 struct Job {
     name: String,
@@ -793,6 +839,30 @@ mod tests {
         let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
         let ids = names.iter().enumerate().map(|(i, n)| (n.to_lowercase(), (i as i64 + 1, n.clone()))).collect();
         (names, ids)
+    }
+
+    #[test]
+    fn a_finished_lookup_is_saved_and_comes_back() {
+        let table: SharedTable = Default::default();
+        let names = vec!["Red One".to_owned(), "Blue One".to_owned(), "Nobody".to_owned()];
+        assert!(snapshot(&table, &names).is_none(), "not saved while being looked up");
+        {
+            let mut t = table.lock().unwrap();
+            t.rows.insert("red one".into(), Row::Done(Box::new(Summary { id: 1, name: "Red One".into(), ..Default::default() })));
+            t.rows.insert("blue one".into(), Row::Blue(10.0));
+            t.blue_ids.insert("blue one".into(), (2, "Blue One".into()));
+            t.rows.insert("nobody".into(), Row::Failed("timeout".into()));
+        }
+        let saved = snapshot(&table, &names).unwrap();
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SavedLookup = serde_json::from_str(&json).unwrap();
+        let fresh: SharedTable = Default::default();
+        assert_eq!(restore(&fresh, back), names);
+        let t = fresh.lock().unwrap();
+        assert!(matches!(t.rows.get("red one"), Some(Row::Done(s)) if s.id == 1));
+        assert_eq!(t.rows.get("blue one"), Some(&Row::Blue(10.0)));
+        assert!(t.blue_ids.contains_key("blue one"), "a blue can still be looked up when shown");
+        assert!(t.rows.get("nobody").is_none(), "a failure is tried again");
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct WhPrefs {
     pub layout_pack: bool,
     pub minimap: bool,
     pub legend_open: bool,
+    /// Tidied with the button only. Off by default: the map tidies itself, clusters kept in place.
+    #[serde(default)]
+    pub manual_tidy: bool,
 }
 
 /// What the map needs from the app around it.
@@ -257,6 +260,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             _ => {
                 let a = crate::wh_layout::layout(&edges, &alone, &score, opts);
                 view.layout_cache = Some((key, a.clone()));
+                view.tidy_due = !p0.manual_tidy;
                 a
             }
         }
@@ -270,8 +274,13 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     pins_now.sort_unstable();
     let pin_added = view.pins_seen.as_ref().is_some_and(|was| pins_now.iter().any(|p| !was.contains(p)));
     view.pins_seen = Some(pins_now);
-    if pin_added && focus.is_none() {
-        let kept = keep_clusters(&auto, view.dragged.as_ref().unwrap());
+    // Waits while a box is held or one system is in focus.
+    let auto_tidy = view.tidy_due && !p0.manual_tidy && view.drag.is_none() && focus.is_none();
+    if auto_tidy {
+        view.tidy_due = false;
+    }
+    if (pin_added || auto_tidy) && focus.is_none() {
+        let kept = separate_clusters(&auto, keep_clusters(&auto, view.dragged.as_ref().unwrap()));
         host.clear_layout();
         for (id, p) in &kept {
             host.save_layout(*id, *p);
@@ -343,10 +352,11 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                     if ui.button(format!("{}  Fit", icon::CORNERS_OUT)).on_hover_text("Show everything").clicked() {
                         view.fit_pending = true;
                     }
-                    if ui
-                        .button(format!("{}  Tidy", icon::TREE_STRUCTURE))
-                        .on_hover_text("Lay the whole map out afresh, forgetting where systems were dragged")
-                        .clicked()
+                    if prefs.manual_tidy
+                        && ui
+                            .button(format!("{}  Tidy", icon::TREE_STRUCTURE))
+                            .on_hover_text("Lay the whole map out afresh, forgetting where systems were dragged")
+                            .clicked()
                     {
                         tidy = true;
                     }
@@ -375,6 +385,13 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                             tidy = true;
                         }
                         ui.separator();
+                        let mut auto = !prefs.manual_tidy;
+                        if ui.checkbox(&mut auto, "Auto-tidy").on_hover_text("Tidy the chains as they change, each cluster kept where it is").changed() {
+                            prefs.manual_tidy = !auto;
+                            if auto {
+                                view.tidy_due = true;
+                            }
+                        }
                         ui.checkbox(&mut prefs.minimap, "Minimap");
                         if tidy {
                             ui.close();
@@ -1389,9 +1406,63 @@ pub fn keep_clusters(auto: &[(i64, Option<i64>, egui::Pos2)], was: &HashMap<i64,
     out
 }
 
+/// Pushes clusters that [`keep_clusters`] left overlapping apart: each, taken top to bottom, moves
+/// down or right, whichever is shorter, until it is clear of those before it.
+pub fn separate_clusters(auto: &[(i64, Option<i64>, egui::Pos2)], mut at: HashMap<i64, egui::Pos2>) -> HashMap<i64, egui::Pos2> {
+    let gap = crate::wh_layout::CHAIN_GAP;
+    let mut root_of: HashMap<i64, i64> = HashMap::new();
+    for (n, parent, _) in auto {
+        let r = parent.and_then(|p| root_of.get(&p).copied()).unwrap_or(*n);
+        root_of.insert(*n, r);
+    }
+    let mut members: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (n, _, _) in auto {
+        if at.contains_key(n) {
+            members.entry(root_of[n]).or_default().push(*n);
+        }
+    }
+    let bounds = |at: &HashMap<i64, egui::Pos2>, ids: &[i64]| {
+        ids.iter().fold(egui::Rect::NOTHING, |r, id| r.union(egui::Rect::from_min_size(at[id], node_size(*id))))
+    };
+    let mut order: Vec<(i64, egui::Rect)> = members.iter().map(|(r, ids)| (*r, bounds(&at, ids))).collect();
+    order.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()).then(a.1.left().total_cmp(&b.1.left())).then(a.0.cmp(&b.0)));
+    let mut placed: Vec<egui::Rect> = Vec::new();
+    for (root, mut r) in order {
+        let mut shift = egui::Vec2::ZERO;
+        for _ in 0..placed.len() * 2 + 1 {
+            let Some(o) = placed.iter().find(|o| o.expand(gap / 2.0).intersects(r.expand(gap / 2.0))) else { break };
+            let down = o.bottom() + gap - r.top();
+            let right = o.right() + gap - r.left();
+            let step = if down <= right { egui::vec2(0.0, down) } else { egui::vec2(right, 0.0) };
+            r = r.translate(step);
+            shift += step;
+        }
+        if shift != egui::Vec2::ZERO {
+            for id in &members[&root] {
+                *at.get_mut(id).unwrap() += shift;
+            }
+        }
+        placed.push(r);
+    }
+    at
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cluster grown into its neighbour is pushed clear of it; one already clear stays put.
+    #[test]
+    fn grown_clusters_are_pushed_apart_and_others_stay() {
+        let p = egui::pos2;
+        let auto = [(1, None, p(0.0, 0.0)), (2, Some(1), p(0.0, 60.0)), (10, None, p(0.0, 0.0)), (20, None, p(0.0, 0.0))];
+        let at = HashMap::from([(1, p(0.0, 0.0)), (2, p(0.0, 60.0)), (10, p(0.0, 40.0)), (20, p(2000.0, 0.0))]);
+        let out = separate_clusters(&auto, at);
+        assert_eq!(out[&1], p(0.0, 0.0), "the first stays");
+        assert_eq!(out[&20], p(2000.0, 0.0), "one already clear stays");
+        let r = |id: i64| egui::Rect::from_min_size(out[&id], node_size(id));
+        assert!(!r(10).intersects(r(1)) && !r(10).intersects(r(2)), "the overlapping one moved clear");
+    }
 
     /// A new layout moves a cluster back to where its systems were, and leaves a new one alone.
     #[test]

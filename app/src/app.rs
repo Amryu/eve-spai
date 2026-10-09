@@ -668,6 +668,10 @@ pub struct SpaiApp {
     lookup_table: crate::localscan::SharedTable,
     /// The pilots on show, in paste order.
     lookup_current: Vec<String>,
+    /// The saved lookup was read back this run.
+    lookup_saved_read: bool,
+    /// The names last saved, so a finished lookup is written once.
+    lookup_saved_for: Vec<String>,
     /// `None` sorts by name.
     lookup_sort: Option<lookup_ui::Col>,
     lookup_sort_desc: bool,
@@ -1635,6 +1639,8 @@ impl SpaiApp {
             kill_tx,
             lookup_table: Default::default(),
             lookup_current: Vec::new(),
+            lookup_saved_read: false,
+            lookup_saved_for: Vec::new(),
             lookup_sort: Some(lookup_ui::Col::Danger),
             lookup_sort_desc: true,
             lookup_note: None,
