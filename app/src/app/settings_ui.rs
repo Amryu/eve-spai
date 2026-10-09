@@ -947,7 +947,7 @@ impl SpaiApp {
                             .selected_text(t.channel.clone())
                             .show_ui(ui, |ui| {
                                 for c in channels {
-                                    ui.selectable_value(&mut t.channel, c.clone(), c);
+                                    ui.menu_value(&mut t.channel, c.clone(), c);
                                 }
                             });
                     }
@@ -1379,7 +1379,7 @@ impl SpaiApp {
                         .selected_text(crate::ansiblex::zone_label(*max))
                         .show_ui(ui, |ui| {
                             for z in 1..=crate::ansiblex::MAX_ZONE {
-                                changed |= ui.selectable_value(max, z, crate::ansiblex::zone_label(z)).changed();
+                                changed |= ui.menu_value(max, z, crate::ansiblex::zone_label(z)).changed();
                             }
                         });
                 });

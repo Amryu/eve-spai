@@ -299,13 +299,14 @@ mod note_widgets;
 pub(crate) use note_widgets::*;
 mod intel_card;
 pub(crate) use intel_card::*;
-mod alert_window;
+pub(crate) mod alert_window;
 pub(crate) use alert_window::*;
 mod chat_tabs;
 pub(crate) use chat_tabs::*;
 mod char_rings;
 pub(crate) use char_rings::*;
 mod alert_engine;
+pub(crate) mod killmail_ui;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
@@ -328,6 +329,8 @@ pub enum IntelClick {
     Annotate(crate::notes::Subject),
     /// A quick edit from a chip's menu, applied as is.
     Notes(crate::notes::NotesOp),
+    /// A killmail to open in its window, with its hash when known.
+    Kill(i64, Option<String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -461,6 +464,13 @@ pub struct SpaiApp {
     battle_search: String,
     battle_hover: Option<BattleHover>,
     battle_condensed: bool,
+    /// Tiles or pilots, and the hull the pilot list is narrowed to after a tile click.
+    battle_tab: BrTab,
+    battle_ship_filter: Option<i64>,
+    /// The open report's systems picked to show; all when empty.
+    battle_systems: Vec<i64>,
+    /// The report `battle_systems` and `battle_ship_filter` were picked in; another resets them.
+    battle_view_for: Option<i64>,
     battle_roster_sort: RosterSort,
     battle_filter: crate::zkill::SharedBattleFilter,
     ship_sizes: crate::zkill::ShipSizes,
@@ -492,6 +502,12 @@ pub struct SpaiApp {
     battle_add_open: bool,
     battle_add_link: String,
     battle_excluded_open: bool,
+    /// The open report's sides, to rearrange by hand.
+    battle_sides_open: bool,
+    /// Killmails open in windows of their own.
+    pub(crate) killmail_windows: Vec<crate::app::killmail_ui::KillWindow>,
+    /// For work started outside a frame that has to ask for one when it is done.
+    pub(crate) egui_ctx: egui::Context,
     battle_scrubs_open: bool,
     br_inputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrInputs>>,
     br_outputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrOutputs>>,
@@ -608,6 +624,10 @@ pub struct SpaiApp {
     jabber_sticky: std::collections::BTreeSet<String>,
     /// The room whose MOTD is open in its own window, if any.
     jabber_motd_window: Option<String>,
+    /// The chat window the MOTD was asked for in, which is where it opens.
+    jabber_motd_in: crate::app::chat_tabs::ChatWinKey,
+    /// The chat window used last, whose open conversation the sidebar highlights.
+    jabber_last_win: crate::app::chat_tabs::ChatWinKey,
     jabber_collapsed: std::collections::HashSet<String>,
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
@@ -795,6 +815,9 @@ pub struct SpaiApp {
     map_leg_kinds: Vec<&'static str>,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
+    /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
+    /// creation, so it is asked for once the window is back on its monitor.
+    main_maximize: Option<u32>,
     /// The rescue window: whether its saved geometry went to the builder yet, and its position fix.
     #[cfg(feature = "fleet")]
     rescue_geom_applied: bool,
@@ -1062,6 +1085,10 @@ pub struct SpaiApp {
     /// Set when the target sits outside titan range of staging.
     #[cfg(feature = "fleet")]
     rescue_range: Option<RangeWarning>,
+    /// The ping and capital whose route last went to the FC's character by itself, so each goes
+    /// once.
+    #[cfg(feature = "fleet")]
+    rescue_routed_for: Option<(u64, i64)>,
     /// Cyno-generator list editing. Not rescue-gated: the generator map overlay is useful on its own.
     rescue_cyno_input: String,
     cyno_generators_open: bool,
@@ -1405,7 +1432,10 @@ impl SpaiApp {
         let (main_tabs, main_active) = restored_main_tabs(&settings);
         #[cfg(feature = "fleet")]
         let fleet_backend_at_start = crate::fleets::choose_backend(headless, &settings);
-        let main_pos_fix_at = alert_window::PosFix::new(settings.main_window_pos.filter(|_| !settings.main_window_maximized && !headless));
+        // Put back where it was even when it was maximized, so it maximizes on that monitor.
+        let main_pos_fix_at =
+            alert_window::PosFix::new(settings.main_window_pos.filter(|p| !headless && !alert_window::off_screen_sentinel(*p)));
+        let main_maximize_at = (cfg!(target_os = "linux") && settings.main_window_maximized && !headless).then_some(0);
         let mut app = Self {
             web_facts,
             web,
@@ -1470,6 +1500,10 @@ impl SpaiApp {
             br_unlisted: false,
             br_character: None,
             battle_condensed: false,
+            battle_tab: BrTab::Tiles,
+            battle_ship_filter: None,
+            battle_systems: Vec::new(),
+            battle_view_for: None,
             battle_roster_sort: RosterSort::default(),
             battle_search: String::new(),
             battle_hover: None,
@@ -1500,6 +1534,9 @@ impl SpaiApp {
             battle_add_open: false,
             battle_add_link: String::new(),
             battle_excluded_open: false,
+            battle_sides_open: false,
+            killmail_windows: Vec::new(),
+            egui_ctx: ctx.clone(),
             battle_scrubs_open: false,
             battle_detail_cache: None,
             br_inputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrInputs::default())),
@@ -1566,6 +1603,8 @@ impl SpaiApp {
             taskbar_badge: None,
             jabber_sticky: Default::default(),
             jabber_motd_window: None,
+            jabber_motd_in: crate::app::chat_tabs::ChatWinKey::Main,
+            jabber_last_win: crate::app::chat_tabs::ChatWinKey::Main,
             jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
@@ -1724,6 +1763,7 @@ impl SpaiApp {
             map_route_anchors: Vec::new(),
             map_leg_kinds: Vec::new(),
             main_pos_fix: main_pos_fix_at,
+            main_maximize: main_maximize_at,
             #[cfg(feature = "fleet")]
             rescue_geom_applied: false,
             #[cfg(feature = "fleet")]
@@ -1923,6 +1963,8 @@ impl SpaiApp {
             rescue_range_for: None,
             #[cfg(feature = "fleet")]
             rescue_range: None,
+            #[cfg(feature = "fleet")]
+            rescue_routed_for: None,
             rescue_cyno_input: String::new(),
             cyno_generators_open: false,
             #[cfg(feature = "fleet")]
@@ -3034,6 +3076,7 @@ impl SpaiApp {
             IntelClick::LocalScan(url) => self.open_local_scan(url, ctx),
             IntelClick::PilotVerdict(name) => self.open_pilot_verdict(name),
             c @ (IntelClick::Annotate(_) | IntelClick::Notes(_)) => self.notes_click(c),
+            IntelClick::Kill(id, hash) => self.open_killmail(id, hash),
         }
     }
 
@@ -3238,6 +3281,21 @@ impl SpaiApp {
         self.map_overlays.bridges = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_battle_tab(&mut self, tab: BrTab) {
+        self.battle_tab = tab;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_battle_sides(&mut self) {
+        self.battle_sides_open = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn battle_view_state(&self) -> (BrTab, Option<i64>) {
+        (self.battle_tab, self.battle_ship_filter)
+    }
+
     /// Known holes, drawn on the map with the wormhole layer on.
     #[cfg(test)]
     pub(crate) fn seed_holes(&mut self, holes: Vec<crate::wormholes::Wormhole>) {
@@ -3264,7 +3322,8 @@ impl SpaiApp {
         *self.type_names.lock().unwrap() = names;
         *self.battles.lock().unwrap() = vec![b.clone()];
         self.battle_selected = Some(kid);
-        self.battle_detail_cache = Some(std::sync::Arc::new(crate::brview::BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids }));
+        let tiles = crate::brview::ship_tiles(&rosters);
+        self.battle_detail_cache = Some(std::sync::Arc::new(crate::brview::BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids, tiles, shown: None }));
     }
 
     #[cfg(test)]
@@ -3522,6 +3581,9 @@ impl SpaiApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
+                        // In the corner, where a notification bell is looked for.
+                        self.notify_button(ui);
+                        ui.separator();
                         let now = crate::clock::utc();
                         let clock = if self.settings.use_eve_time {
                             format!("{} EVE", now.format("%H:%M"))
@@ -3541,8 +3603,6 @@ impl SpaiApp {
                             (egui_phosphor::regular::PLUGS, "ESI offline", ui.visuals().weak_text_color())
                         };
                         ui.label(egui::RichText::new(format!("{icon}  {text}")).color(col));
-                        ui.separator();
-                        self.notify_button(ui);
                     });
                 });
             });
@@ -3813,6 +3873,7 @@ impl SpaiApp {
         self.map_alts_window(ctx);
         self.map_route_store_windows(ctx);
         self.pilot_window(ctx);
+        self.killmail_windows_ui(ctx);
         self.fit_window(ctx);
         self.battle_filter_dialog(ctx);
         self.filter_picker_dialog(ctx);
@@ -3849,6 +3910,7 @@ impl SpaiApp {
                 }
             }
             self.update_rescue_range();
+            self.rescue_auto_route();
         }
     }
 
@@ -3884,14 +3946,18 @@ impl SpaiApp {
 }
 
 impl eframe::App for SpaiApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let mut ft = crate::frametime::FrameTimer::start();
         let ctx = ui.ctx().clone();
         #[cfg(feature = "fleet")]
         self.fleet_boot_once();
+        ft.mark("fleet_boot_once");
         #[cfg(feature = "fleet")]
         self.fleet_track_poll();
+        ft.mark("fleet_track_poll");
         #[cfg(feature = "fleet")]
         self.fleet_backfill_poll();
+        ft.mark("fleet_backfill_poll");
 
         // Cached here rather than in the `cumulative_pass_nr() > 30` block below, which would
         // starve cross-window drop hit-testing for the first 30 frames.
@@ -3990,6 +4056,7 @@ impl eframe::App for SpaiApp {
         // often behind something else when a message lands.
         let unread = self.jabber_unread_total();
         self.sync_taskbar_badge(&ctx, unread);
+        ft.mark("sync_taskbar_badge");
         if ctx.input(|i| i.viewport().close_requested())
             && !self.really_exit
             && self.settings.minimize_to_tray
@@ -4013,43 +4080,71 @@ impl eframe::App for SpaiApp {
         self.settings.theme.apply(&ctx);
 
         self.refresh_characters();
+        ft.mark("refresh_characters");
         self.disk_level = crate::disk::level();
         self.disk_free = crate::disk::available();
         self.disk_saw_failure = crate::disk::saw_failure();
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
+        ft.mark("maybe_start_watcher");
         self.maybe_start_jabber(&ctx);
+        ft.mark("maybe_start_jabber");
         self.load_persisted_kills();
+        ft.mark("load_persisted_kills");
         self.reload_wormholes();
+        ft.mark("reload_wormholes");
         self.poll_update_check(&ctx);
+        ft.mark("poll_update_check");
         self.update_dialog(&ctx);
+        ft.mark("update_dialog");
         self.update_check_dialog(&ctx);
+        ft.mark("update_check_dialog");
         self.store_warning_dialog(&ctx);
+        ft.mark("store_warning_dialog");
         if !self.wizard_checked {
             self.wizard_checked = true;
             self.wizard_open = !self.settings.wizard_done;
         }
         self.setup_wizard(&ctx);
+        ft.mark("setup_wizard");
         self.poll_dscan_clipboard(&ctx);
+        ft.mark("poll_dscan_clipboard");
         self.poll_local_scan(&ctx);
+        ft.mark("poll_local_scan");
         self.maybe_refresh_standings(&ctx);
+        ft.mark("maybe_refresh_standings");
         self.poll_jabber_notify(&ctx);
+        ft.mark("poll_jabber_notify");
         self.poll_kill_fetches();
+        ft.mark("poll_kill_fetches");
         self.dscan_dialog(&ctx);
+        ft.mark("dscan_dialog");
         #[cfg(feature = "fleet")]
         self.fleet_unlock_tick(&ctx);
+        ft.mark("fleet_unlock_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);
+        ft.mark("wh_share_tick");
         self.wh_share_window(&ctx);
+        ft.mark("wh_share_window");
         self.wh_detect_poll();
+        ft.mark("wh_detect_poll");
         self.wh_prompt_window(&ctx);
+        ft.mark("wh_prompt_window");
         self.wh_gone_window(&ctx);
+        ft.mark("wh_gone_window");
         self.ping_rules_dialog(&ctx);
+        ft.mark("ping_rules_dialog");
         self.maybe_rebuild_graph(&ctx);
+        ft.mark("maybe_rebuild_graph");
         self.persist_view_options();
+        ft.mark("persist_view_options");
         self.discover_sov_alliances(&ctx);
+        ft.mark("discover_sov_alliances");
         self.drain_alerts();
+        ft.mark("drain_alerts");
         self.root_chrome(ui);
+        ft.mark("root_chrome");
 
         // Reconciliation runs once per frame, before any chat window renders: per-window it would
         // let one window re-add a tab another one owns.
@@ -4059,15 +4154,26 @@ impl eframe::App for SpaiApp {
             self.jabber_reconcile(f);
         }
         self.sync_popout_settings();
+        ft.mark("sync_popout_settings");
 
         self.root_central(ui, jframe.as_ref());
+        ft.mark("root_central");
 
         self.root_dialogs(&ctx, jframe.as_ref());
+        ft.mark("root_dialogs");
 
         alert_window::apply_pos_fix(&ctx, &mut self.main_pos_fix);
+        if let (Some(frames), None) = (self.main_maximize, &self.main_pos_fix) {
+            if frames == 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+            let done = ctx.input(|i| i.viewport().maximized == Some(true)) || frames > 120;
+            self.main_maximize = (!done).then_some(frames + 1);
+            ctx.request_repaint();
+        }
         // Remember the main window's location + size across restarts. Skip the first passes, where
-        // the window can briefly report a pre-restore rect, and the position fix.
-        if ctx.cumulative_pass_nr() > 30 && self.main_pos_fix.is_none() {
+        // the window can briefly report a pre-restore rect, and the position fix and maximize.
+        if ctx.cumulative_pass_nr() > 30 && self.main_pos_fix.is_none() && self.main_maximize.is_none() {
             let (pos, maximized, minimized) = ctx.input(|i| {
                 let vp = i.viewport();
                 (
@@ -4083,6 +4189,8 @@ impl eframe::App for SpaiApp {
             }
         }
 
+        ft.mark("rest");
+        ft.finish(&format!("{:?}", self.view), frame.info().cpu_usage);
         if self.needs_save {
             self.persist();
         }
@@ -5829,6 +5937,7 @@ pub(crate) fn ship_row(
     red: egui::Color32,
     highlight: ShipHighlight,
     border: bool,
+    open_kill: &std::cell::Cell<Option<i64>>,
 ) -> egui::Response {
     use egui_phosphor::regular as icon;
     let fill = match highlight {
@@ -5869,10 +5978,10 @@ pub(crate) fn ship_row(
                 if let Some(l) = lost {
                     if ui
                         .button(format!("{} zKill", icon::LINK))
-                        .on_hover_text("Open on zKillboard")
+                        .on_hover_text("Open the killmail")
                         .clicked()
                     {
-                        let _ = open::that(format!("https://zkillboard.com/kill/{}/", l.kill_id));
+                        open_kill.set(Some(l.kill_id));
                     }
                 }
             });
@@ -5973,8 +6082,235 @@ struct LoadedReport {
     condensed_rows: Vec<Vec<crate::brview::CondensedRow>>,
     sorted_for: Option<(RosterSort, bool)>,
     hover: Option<BattleHover>,
+    tiles: crate::brview::SideTiles,
+    /// The report through the systems picked, and which pick it was worked out for.
+    shown: Option<br_core::battle::Battle>,
+    systems_for: Vec<i64>,
 }
 
+/// Which half of a report is up: the hulls each side flew, or every pilot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum BrTab {
+    #[default]
+    Tiles,
+    Details,
+}
+
+/// What a click in the report asked for.
+#[derive(Default)]
+pub(crate) struct BattleDetailOut {
+    pub(crate) open_system: Option<i64>,
+    pub(crate) hover: Option<BattleHover>,
+    /// A ship tile clicked: show its pilots.
+    pub(crate) show_ship: Option<i64>,
+    /// A loss's killmail to open.
+    pub(crate) open_kill: Option<i64>,
+}
+
+/// The report's one-line summary: its systems, when, how many kills and how much ISK, and whether it
+/// is still taking kills. Returns a system clicked.
+pub(crate) fn battle_summary(ui: &mut egui::Ui, b: &br_core::battle::Battle) -> Option<i64> {
+    use egui_phosphor::regular as icon;
+    let mut open_system = None;
+    for (id, name, sec) in &b.systems {
+        ui.label(security_badge(*sec));
+        if ui.link(egui::RichText::new(name).strong()).on_hover_text("Open system info").clicked() {
+            open_system = Some(*id);
+        }
+    }
+    let at = |t: i64| chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default();
+    let span_min = ((b.end - b.start) / 60).max(0);
+    let span = if span_min >= 60 { format!("{}h {}m", span_min / 60, span_min % 60) } else { format!("{span_min}m") };
+    ui.label(egui::RichText::new(format!("{}\u{2013}{} EVE \u{00b7} {span}", at(b.start), at(b.end))).weak());
+    ui.label(format!("{} kills", b.kills));
+    ui.label(egui::RichText::new(format!("{} ISK lost", fmt_isk(b.isk))).color(egui::Color32::from_rgb(0x4f, 0xc3, 0xf7)).strong().size(18.0));
+    let now = crate::clock::utc().timestamp();
+    let remaining = br_core::battle::BATTLE_WINDOW_SECS - (now - b.end);
+    if remaining > 0 {
+        let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
+        ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
+            .on_hover_text(format!("Still accepting new kills for ~{}m. The view updates live.", remaining / 60 + 1));
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
+    open_system
+}
+
+/// A report's head as one card: actions on the right, the summary wrapping beside them, then the
+/// sides.
+pub(crate) fn report_header(
+    ui: &mut egui::Ui,
+    right: impl FnOnce(&mut egui::Ui),
+    left: impl FnOnce(&mut egui::Ui),
+    chips: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // The actions keep their width, measured the frame before; the summary wraps in the rest.
+            let right_id = ui.id().with("report_header_right_w");
+            let right_w: f32 = ui.data(|d| d.get_temp(right_id)).unwrap_or(120.0);
+            ui.horizontal_top(|ui| {
+                let left_w = (ui.available_width() - right_w - 12.0).max(160.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_w, 0.0),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.set_max_width(left_w);
+                        left(ui);
+                    },
+                );
+                ui.add_space((ui.available_width() - right_w).max(0.0));
+                let start = ui.cursor().left();
+                right(ui);
+                let used = ui.cursor().left() - start;
+                if (used - right_w).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(right_id, used));
+                    ui.ctx().request_discard("report header actions measured");
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(chips);
+        });
+}
+
+/// The widest a side chip grows before its name is cut.
+const CHIP_MAX_W: f32 = 240.0;
+
+/// The sides as chips, "vs" between them.
+pub(crate) fn side_chips(ui: &mut egui::Ui, b: &br_core::battle::Battle) {
+    for (i, side) in b.sides.iter().enumerate() {
+        if i > 0 {
+            ui.label(egui::RichText::new("vs").weak());
+        }
+        egui::Frame::new()
+            .fill(side_color(i).gamma_multiply(0.10))
+            .stroke(egui::Stroke::new(1.0, side_color(i).gamma_multiply(0.35)))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(6, 2))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_max_width(CHIP_MAX_W);
+                    if let Some(lead) = side.parties.first() {
+                        party_badge(ui, lead, 18.0, false);
+                    }
+                    let title = side_title(side);
+                    ui.add(egui::Label::new(egui::RichText::new(&title).color(side_color(i)).strong()).truncate())
+                        .on_hover_text(&title);
+                });
+            });
+    }
+}
+
+/// A side's head: who, what it lost in its own colour, the other figures on one line, and the
+/// efficiency bar.
+fn side_head(ui: &mut egui::Ui, side: &br_core::battle::Side, i: usize, pilots: usize, width: f32) {
+    let col = side_color(i);
+    let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
+    ui.horizontal(|ui| {
+        if let Some(lead) = side.parties.first() {
+            party_badge(ui, lead, 22.0, true);
+        }
+        let title = side_title(side);
+        // The count first: a long name gives way to it, cut with an ellipsis, the whole on hover.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if side.parties.len() > 1 {
+                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak()).on_hover_ui(|ui| {
+                    ui.label(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+                });
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong().size(15.0)).truncate())
+                    .on_hover_text(&title);
+            });
+        });
+    });
+    ui.add_space(4.0);
+    let eff = side.isk_efficiency();
+    // What the side lost leads, large; the rest follows on one quieter line.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(fmt_isk(side.isk_lost)).color(col).strong().size(24.0));
+        ui.label(egui::RichText::new("ISK lost").color(col.gamma_multiply(0.8)));
+    });
+    // Each figure moves to the next line whole when the side is narrow, never broken inside.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let item = |ui: &mut egui::Ui, t: egui::RichText| {
+            ui.add(egui::Label::new(t).wrap_mode(egui::TextWrapMode::Extend));
+        };
+        let dot = || egui::RichText::new("\u{00b7}").weak();
+        item(ui, egui::RichText::new(format!("{pilots} pilots")).weak());
+        item(ui, dot());
+        item(ui, egui::RichText::new(format!("{} kills", side.kills)).weak());
+        item(ui, dot());
+        item(ui, egui::RichText::new(format!("{} losses", side.losses)).weak());
+        item(ui, dot());
+        item(ui, egui::RichText::new(format!("{} destroyed", fmt_isk(side.isk_destroyed))).color(green));
+        item(ui, dot());
+        item(ui, egui::RichText::new(eff.map_or("-".to_owned(), |e| format!("{e:.0}% efficiency"))).weak());
+    });
+    ui.add_space(2.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 4.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+    let fill = eff.unwrap_or(0.0).clamp(0.0, 100.0) as f32 / 100.0;
+    ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fill, rect.height())), 2.0, col);
+    ui.add_space(6.0);
+}
+
+/// The loss share in a tile's bar: deep enough that the count printed over it stays readable.
+const LOSS_BAR: egui::Color32 = egui::Color32::from_rgb(150, 40, 40);
+
+/// `text` on one line no wider than `width`, cut with an ellipsis when it does not fit.
+fn one_line(text: &str, font: egui::FontId, color: egui::Color32, width: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: width, max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
+    job
+}
+
+/// One hull a side flew: its icon and name, and a bar of how many of them died. Clicked, it asks for
+/// those pilots.
+fn ship_tile(ui: &mut egui::Ui, t: &crate::brview::ShipTile, name: &str, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 86.0), egui::Sense::click());
+    // Named only while wholly in view: a third side scrolled past the edge must not leave buttons
+    // outside the window.
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    if ui.clip_rect().contains_rect(rect) {
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    }
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let icon = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 22.0), egui::Vec2::splat(40.0));
+    let url = if crate::intel::structure_name_by_type(t.ship).is_some() { eve_type_render_url(t.ship, 40.0) } else { eve_type_icon_url(t.ship, 40.0) };
+    egui::Image::new(url).paint_at(ui, icon);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let text = ui.visuals().text_color();
+    let galley = ui.painter().layout_job(one_line(name, font.clone(), text, width - 6.0));
+    let at = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.top() + 46.0);
+    ui.painter().galley(at, galley, text);
+    let bar = egui::Rect::from_min_size(egui::pos2(rect.left() + 4.0, rect.bottom() - 18.0), egui::vec2(width - 8.0, 16.0));
+    ui.painter().rect_filled(bar, 3.0, ui.visuals().faint_bg_color);
+    let pct = if t.total > 0 { t.lost as f32 / t.total as f32 } else { 0.0 };
+    if pct > 0.0 {
+        ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * pct, bar.height())), 3.0, LOSS_BAR);
+    }
+    // The share drops out first when a big count leaves no room for it, then the count is cut.
+    let full = format!("{}/{} ({:.0}%)", t.lost, t.total, pct * 100.0);
+    let label = if ui.painter().layout_no_wrap(full.clone(), font.clone(), text).size().x <= bar.width() - 4.0 {
+        full
+    } else {
+        format!("{}/{}", t.lost, t.total)
+    };
+    let g = ui.painter().layout_job(one_line(&label, font, text, bar.width() - 4.0));
+    ui.painter().galley(bar.center() - g.size() / 2.0, g, text);
+    resp.on_hover_text(format!("{name}: {} of {} destroyed\nClick to list these pilots", t.lost, t.total))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn battle_detail(
     ui: &mut egui::Ui,
     b: &br_core::battle::Battle,
@@ -5984,45 +6320,20 @@ pub(crate) fn battle_detail(
     condensed_rows: &[Vec<crate::brview::CondensedRow>],
     condensed: bool,
     prev_hover: Option<BattleHover>,
-) -> (Option<i64>, Option<BattleHover>) {
-    use egui_phosphor::regular as icon;
+    tiles: &crate::brview::SideTiles,
+    tab: BrTab,
+    ship_filter: Option<i64>,
+) -> BattleDetailOut {
     use std::collections::HashSet;
-    let mut open_system: Option<i64> = None;
+    let mut out = BattleDetailOut::default();
     // Borrow (never clone) the hover-highlight sets: this runs every frame while a row is hovered.
     let killed: Option<&HashSet<i64>> = prev_hover.and_then(|h| inv.killed.get(&h.char_id));
     let border_set: Option<&HashSet<i64>> = prev_hover
         .and_then(|h| h.kill_id)
         .and_then(|kid| inv.attackers.get(&kid));
     let new_hover = std::cell::Cell::new(None);
-    let span_min = ((b.end - b.start) / 60).max(0);
-    ui.horizontal_wrapped(|ui| {
-        for (id, name, sec) in &b.systems {
-            ui.label(security_badge(*sec));
-            if ui.link(egui::RichText::new(name).strong()).on_hover_text("Open system info").clicked() {
-                open_system = Some(*id);
-            }
-        }
-        ui.separator();
-        ui.label(format!("{} kills", b.kills));
-        ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
-        if span_min > 0 {
-            ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
-        }
-        let now = crate::clock::utc().timestamp();
-        let remaining = br_core::battle::BATTLE_WINDOW_SECS - (now - b.end);
-        if remaining > 0 {
-            let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
-            ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
-                .on_hover_text(format!(
-                    "Still accepting new kills for ~{}m. The view updates live.",
-                    remaining / 60 + 1
-                ));
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-        }
-    });
-    ui.add_space(6.0);
+    let open_kill = std::cell::Cell::new(None);
 
-    let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
     let red = crate::theme::standing::HOSTILE;
     let name_of = |id: i64| -> String {
         if id == 0 {
@@ -6034,9 +6345,14 @@ pub(crate) fn battle_detail(
             .unwrap_or_else(|| format!("Type {id}"))
     };
 
-    const SIDE_W: f32 = 360.0;
+    // The sides share the width, none narrower than a pilot row; past that they scroll sideways.
+    const MIN_SIDE_W: f32 = 340.0;
+    // Each panel adds its frame's margin and stroke, the space after it, and the item spacing.
+    let frame = egui::Frame::group(ui.style());
+    let gap = frame.total_margin().sum().x + 6.0 + ui.spacing().item_spacing.x;
+    let n = b.sides.len().max(1) as f32;
+    let side_w = ((ui.available_width() - gap * n) / n).floor().max(MIN_SIDE_W);
     let col_h = (ui.available_height() - 12.0).max(180.0);
-    let list_h = (col_h - 60.0).max(120.0);
     egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal_top(|ui| {
             for (i, side) in b.sides.iter().enumerate() {
@@ -6044,36 +6360,48 @@ pub(crate) fn battle_detail(
                 let roster = &rosters[i];
                 egui::Frame::group(ui.style()).fill(col.gamma_multiply(0.05)).show(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(SIDE_W);
-                        ui.set_min_width(SIDE_W);
+                        ui.set_width(side_w);
+                        ui.set_min_width(side_w);
                         ui.set_min_height(col_h);
-                        ui.horizontal_wrapped(|ui| {
-                            if let Some(lead) = side.parties.first() {
-                                party_badge(ui, lead, 22.0, true);
-                            }
-                            ui.label(egui::RichText::new(side_title(side)).color(col).strong().size(15.0));
-                            if side.parties.len() > 1 {
-                                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak()).on_hover_ui(|ui| {
-                                    ui.label(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+                        let top = ui.cursor().top();
+                        side_head(ui, side, i, tiles.pilots.get(i).copied().unwrap_or(roster.len()), side_w);
+                        let list_h = (col_h - (ui.cursor().top() - top) - 8.0).max(120.0);
+                        if tab == BrTab::Tiles {
+                            // As many tiles a row as fit at the narrowest, then stretched to fill it.
+                            const MIN_TILE_W: f32 = 96.0;
+                            let room = side_w - 16.0;
+                            let per_row = ((room + 4.0) / (MIN_TILE_W + 4.0)).floor().max(1.0) as usize;
+                            let tile_w = ((room - 4.0 * (per_row as f32 - 1.0)) / per_row as f32).floor();
+                            egui::ScrollArea::vertical()
+                                .id_salt(("battle_tiles", b.start, i))
+                                .max_height(list_h)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    let side_tiles = tiles.tiles.get(i).map(Vec::as_slice).unwrap_or_default();
+                                    for row in side_tiles.chunks(per_row) {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            for t in row {
+                                                if ship_tile(ui, t, &name_of(t.ship), tile_w).clicked() {
+                                                    out.show_ship = Some(t.ship);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    if side_tiles.is_empty() {
+                                        ui.label(egui::RichText::new("No ships").weak());
+                                    }
                                 });
+                            return;
+                        }
+                        let filtered: Vec<br_core::battle::Participant>;
+                        let roster: &[br_core::battle::Participant] = match ship_filter {
+                            Some(ship) => {
+                                filtered = roster.iter().filter(|p| p.ship == ship).cloned().collect();
+                                &filtered
                             }
-                        });
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} {}  {} {}", icon::SWORD, side.kills, icon::SKULL, side.losses)).weak(),
-                            );
-                            if let Some(eff) = side.isk_efficiency() {
-                                let tint = if eff >= 50.0 { green } else { red };
-                                ui.label(egui::RichText::new(format!("{eff:.0}% eff")).color(tint).strong())
-                                    .on_hover_text(format!(
-                                        "{} destroyed / {} lost",
-                                        fmt_isk(side.isk_destroyed),
-                                        fmt_isk(side.isk_lost)
-                                    ));
-                            }
-                            ui.label(egui::RichText::new(format!("{} lost", fmt_isk(side.isk_lost))).weak());
-                        });
-                        ui.add_space(4.0);
+                            None => roster,
+                        };
                         // Only rows in view are laid out: a big fight has thousands, each with images.
                         // A row's height depends on its kind alone (a loss has a second line of
                         // links), learned from the rows drawn, so the rest stand in as blank space.
@@ -6084,8 +6412,8 @@ pub(crate) fn battle_detail(
                             .max_height(list_h)
                             .auto_shrink([false, true])
                             .show_viewport(ui, |ui, viewport| {
-                                ui.set_width(SIDE_W - 16.0);
-                                let row_w = SIDE_W - 16.0;
+                                ui.set_width(side_w - 16.0);
+                                let row_w = side_w - 16.0;
                                 let rows = RowSkipper::new(ui, viewport);
                                 let skip = |ui: &mut egui::Ui, h: f32| rows.skip(ui, h);
                                 if condensed {
@@ -6132,7 +6460,7 @@ pub(crate) fn battle_detail(
                                         p.char_id != 0 && border_set.is_some_and(|s| s.contains(&p.char_id));
                                     let resp = ship_row(
                                         ui, row_w, &p.party, p.ship, &p.pilot, &name_of,
-                                        p.lost.as_ref(), red, highlight, border,
+                                        p.lost.as_ref(), red, highlight, border, &open_kill,
                                     );
                                     if p.char_id != 0 && ui.rect_contains_pointer(resp.rect) {
                                         new_hover.set(Some(BattleHover {
@@ -6153,7 +6481,9 @@ pub(crate) fn battle_detail(
             }
         });
     });
-    (open_system, new_hover.get())
+    out.hover = new_hover.get();
+    out.open_kill = open_kill.get();
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

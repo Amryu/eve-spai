@@ -241,6 +241,13 @@ CREATE TABLE IF NOT EXISTS battle_overrides (
     excluded  INTEGER NOT NULL DEFAULT 0
 );
 -- Per-kill characters marked as scrubs (non-combatants / pod-only) in a battle.
+CREATE TABLE IF NOT EXISTS battle_side_moves (
+    anchor     INTEGER NOT NULL,
+    seq        INTEGER NOT NULL,
+    party      INTEGER NOT NULL,
+    with_party INTEGER NOT NULL,
+    PRIMARY KEY (anchor, seq)
+);
 CREATE TABLE IF NOT EXISTS battle_scrubs (
     kill_id INTEGER NOT NULL,
     char_id INTEGER NOT NULL,
@@ -1767,6 +1774,22 @@ mod tests {
         s.absorb_twins(jumped);
         assert_eq!(s.wormholes().len(), 1);
         assert_eq!(s.wormhole_by_id(jumped).unwrap().signature.as_deref(), Some("ABC-123"));
+    }
+
+    #[test]
+    fn side_moves_are_kept_in_order_and_reset() {
+        let _guard = crate::disk::test_guard();
+        let s = mem_store();
+        s.add_side_move(10, 100, 0);
+        s.add_side_move(10, 100, 200);
+        s.add_side_move(20, 300, 0);
+        let ov = s.load_battle_overrides();
+        assert_eq!(ov.side_moves.get(&10), Some(&vec![(100, 0), (100, 200)]), "later moves apply over earlier ones");
+        assert_eq!(ov.side_moves.get(&20), Some(&vec![(300, 0)]));
+        s.clear_side_moves(&[10, 11]);
+        let ov = s.load_battle_overrides();
+        assert!(ov.side_moves.get(&10).is_none());
+        assert!(ov.side_moves.contains_key(&20), "another battle's moves stay");
     }
 
     fn a_hole(system_id: i64, sig: &str) -> crate::wormholes::Wormhole {

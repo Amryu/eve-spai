@@ -778,7 +778,17 @@ impl SpaiApp {
         }
     }
 
+    /// The conversation the sidebar marks: the one open in the chat window used last, main or
+    /// pop-out, so the list follows a tab switch in either.
+    pub(crate) fn jabber_highlighted(&self) -> Option<String> {
+        match self.jabber_last_win {
+            ChatWinKey::Popout(id) if self.popout(id).is_some() => self.win_active(self.jabber_last_win),
+            _ => self.jabber_chat.clone(),
+        }
+    }
+
     pub(crate) fn win_set_active(&mut self, win: ChatWinKey, jid: Option<String>) {
+        self.jabber_last_win = win;
         match win {
             ChatWinKey::Main => self.jabber_chat = jid,
             ChatWinKey::Popout(id) => {
@@ -802,7 +812,7 @@ impl SpaiApp {
         };
         self.win_set_active(win, Some(jid.to_owned()));
         if let ChatWinKey::Popout(id) = win {
-            self.focus_window = Some(popout_viewport(id));
+            self.raise_popout(id);
         }
     }
 
@@ -897,6 +907,14 @@ impl SpaiApp {
         let id = self.tab_set().detach_to_new(jid, at.map(|p| (p.x, p.y)))?;
         self.focus_window = Some(popout_viewport(id));
         Some(id)
+    }
+
+    /// Bring pop-out `id` to the front, ask the OS to flag it, and pulse its border.
+    pub(crate) fn raise_popout(&mut self, id: u64) {
+        if let Some(w) = self.popout_mut(id) {
+            w.raise = super::chat_tabs::Raise::Requested;
+            w.flash_until = Some(std::time::Instant::now() + POPOUT_FLASH);
+        }
     }
 
     /// A pop-out closed with the native X: its conversations come back to the main bar, unmarked.
@@ -996,6 +1014,9 @@ impl SpaiApp {
     /// collected up front and every mutation is applied after the loop.
     #[allow(deprecated)]
     pub(crate) fn jabber_popout_windows(&mut self, ctx: &egui::Context, f: &JabberFrame) {
+        if ctx.input(|i| i.focused) {
+            self.jabber_last_win = ChatWinKey::Main;
+        }
         if self.jabber_popouts.is_empty() || !f.configured || !f.ever_online {
             // Skipping the call destroys the viewports, so re-arm the one-shot: when jabber comes
             // back the windows must reopen where the user left them, not at the default size.
@@ -1035,11 +1056,28 @@ impl SpaiApp {
             let mut rects: (Option<egui::Rect>, Option<egui::Rect>) = (None, None);
             let mut focused = false;
             let mut pos_fix = self.popout(id).and_then(|w| w.pos_fix);
+            let raise = self.popout(id).map(|w| w.raise).unwrap_or_default();
+            let flash = self.popout(id).and_then(|w| w.flash_until).filter(|t| *t > std::time::Instant::now());
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(&vp_id),
                 builder,
                 |ctx, _class| {
                     super::alert_window::apply_pos_fix(ctx, &mut pos_fix);
+                    match raise {
+                        super::chat_tabs::Raise::Requested => {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                                egui::UserAttentionType::Informational,
+                            ));
+                            ctx.request_repaint();
+                        }
+                        super::chat_tabs::Raise::OnTop => {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                        }
+                        super::chat_tabs::Raise::None => {}
+                    }
                     let (visible, inner, outer, foc) = ctx.input(|i| {
                         let vp = i.viewport();
                         (vp.visible() != Some(false), vp.inner_rect, vp.outer_rect, i.focused)
@@ -1050,6 +1088,10 @@ impl SpaiApp {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             self.jabber_window_body(ui, win, f, &mut out);
                         });
+                        self.jabber_motd_dialog(ctx, &f.channels, win);
+                    }
+                    if let Some(until) = flash {
+                        paint_flash(ctx, until);
                     }
                     let sz = ctx.content_rect().size();
                     if sz.x > 100.0 && sz.y > 100.0 {
@@ -1060,8 +1102,18 @@ impl SpaiApp {
                     }
                 },
             );
+            if focused {
+                self.jabber_last_win = win;
+            }
             if let Some(w) = self.popout_mut(id) {
                 w.pos_fix = pos_fix;
+                w.raise = match raise {
+                    super::chat_tabs::Raise::Requested => super::chat_tabs::Raise::OnTop,
+                    _ => super::chat_tabs::Raise::None,
+                };
+                if flash.is_none() {
+                    w.flash_until = None;
+                }
                 w.outer = rects.0;
                 w.inner = rects.1;
                 w.focused = focused;
@@ -1086,7 +1138,10 @@ impl SpaiApp {
     ///
     /// Selectable, because a MOTD is where the fleet ping format, the comms details and the forum
     /// link live and those get copied out. Scrolled rather than grown: some of them are very long.
-    pub(crate) fn jabber_motd_dialog(&mut self, ctx: &egui::Context, channels: &[ChannelRow]) {
+    pub(crate) fn jabber_motd_dialog(&mut self, ctx: &egui::Context, channels: &[ChannelRow], win: ChatWinKey) {
+        if self.jabber_motd_in != win {
+            return;
+        }
         let Some(jid) = self.jabber_motd_window.clone() else {
             return;
         };
@@ -1505,6 +1560,7 @@ impl SpaiApp {
         }
         if let Some(jid) = motd {
             self.jabber_motd_window = Some(jid);
+            self.jabber_motd_in = ChatWinKey::Main;
         }
         if let Some(rooms) = start {
             self.jabber_dm_error.clear();
@@ -1619,7 +1675,7 @@ impl SpaiApp {
         inaccessible: bool,
         action_space: bool,
     ) -> egui::Response {
-        let selected = self.jabber_chat.as_deref() == Some(jid);
+        let selected = self.jabber_highlighted().as_deref() == Some(jid);
         // Reserved now, filled in once the row's own height is known: painting a background after
         // the content would paint over it.
         let bg = ui.painter().add(egui::Shape::Noop);
@@ -2012,7 +2068,7 @@ impl SpaiApp {
         self.jabber_join_open = true;
         self.jabber_join_rooms = rooms;
         self.jabber_join_dialog(ctx, &f.convos, &f.channels);
-        self.jabber_motd_dialog(ctx, &f.channels);
+        self.jabber_motd_dialog(ctx, &f.channels, ChatWinKey::Main);
     }
 
     pub(crate) fn jabber_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
@@ -2349,7 +2405,7 @@ impl SpaiApp {
                             continue;
                         }
                         for c in members {
-                            let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
+                            let sel = self.jabber_highlighted().as_deref() == Some(c.jid.as_str());
                             let (r, g, b) = c.presence.color();
                             let disp = truncate_to(
                                 &c.name,
@@ -2426,7 +2482,7 @@ impl SpaiApp {
         let mut out: Vec<TabAction> = Vec::new();
         self.jabber_window_body(ui, ChatWinKey::Main, f, &mut out);
         self.jabber_join_dialog(ui.ctx(), &f.convos, &f.channels);
-        self.jabber_motd_dialog(ui.ctx(), &f.channels);
+        self.jabber_motd_dialog(ui.ctx(), &f.channels, ChatWinKey::Main);
         self.apply_tab_actions(out);
     }
 
@@ -2933,6 +2989,7 @@ impl SpaiApp {
         });
         if show_motd {
             self.jabber_motd_window = Some(jid.clone());
+            self.jabber_motd_in = win;
         }
         ui.separator();
         let body_h = ui.available_height();
@@ -3226,7 +3283,7 @@ impl SpaiApp {
                     self.tab_set().move_tab(&jid, to, index);
                     if let ChatWinKey::Popout(id) = to {
                         if from != Some(to) {
-                            self.focus_window = Some(popout_viewport(id));
+                            self.raise_popout(id);
                         }
                     }
                 }
@@ -3318,4 +3375,18 @@ mod tab_bar_tests {
         let widths = [100.0, 100.0, 100.0];
         assert_eq!(plan_tab_bar(&widths, 250.0, 40.0, Some(1)), plan_tab_bar(&widths, 250.0, 40.0, None));
     }
+}
+
+/// How long a raised pop-out's border pulses.
+const POPOUT_FLASH: std::time::Duration = std::time::Duration::from_millis(900);
+
+/// A border around the whole window that pulses twice and fades, drawn over everything.
+fn paint_flash(ctx: &egui::Context, until: std::time::Instant) {
+    let left = until.saturating_duration_since(std::time::Instant::now()).as_secs_f32();
+    let t = 1.0 - left / POPOUT_FLASH.as_secs_f32();
+    let pulse = (t * std::f32::consts::PI * 2.0).sin().abs() * (1.0 - t);
+    let color = ctx.global_style().visuals.selection.bg_fill.gamma_multiply(pulse.clamp(0.0, 1.0));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popout_flash")));
+    painter.rect_stroke(ctx.content_rect().shrink(2.0), 4.0, egui::Stroke::new(4.0, color), egui::StrokeKind::Inside);
+    ctx.request_repaint();
 }

@@ -429,6 +429,14 @@ impl SpaiApp {
                 self.ingame_route = true;
                 ui.close();
             }
+            if self.plain_destination_offered() {
+                let mut picked = None;
+                ui.menu_button("Set Destination for", |ui| picked = self.destination_characters_menu(ui));
+                if let Some(names) = picked {
+                    self.set_destination_for(&names, sid);
+                    ui.close();
+                }
+            }
             if (self.route_destination.is_some() || self.ingame_route) && self.map_route_anchors.is_empty() {
                 if ui
                     .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))

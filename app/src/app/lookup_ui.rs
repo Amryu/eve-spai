@@ -339,12 +339,12 @@ impl SpaiApp {
         }
         self.needs_save = true;
         self.lookup_current = names;
-        crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), ctx);
+        crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, ctx);
     }
 
-    /// Standings to leave blues out by, when the user has that on.
-    fn lookup_blues(&self) -> Option<std::collections::HashMap<i64, f32>> {
-        self.settings.lookup_hide_blues.then(|| self.standings.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    /// Standings to tell blues by: left out while hidden, looked up last in a large list.
+    fn lookup_standings(&self) -> std::collections::HashMap<i64, f32> {
+        self.standings.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub(crate) fn lookup_from_clipboard(&mut self, ctx: &egui::Context) {
@@ -456,7 +456,7 @@ impl SpaiApp {
             });
             if let Some(names) = pick {
                 self.lookup_current = names;
-                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), &ctx);
+                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, &ctx);
             }
             ui.menu_button(format!("{}  Columns", icon::COLUMNS), |ui| {
                 for col in Col::ALL {
@@ -481,7 +481,7 @@ impl SpaiApp {
             {
                 self.needs_save = true;
                 // Turned off, the blues left out get looked up now.
-                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), &ctx);
+                crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, &ctx);
             }
             if let Some(n) = &self.lookup_note {
                 ui.label(egui::RichText::new(n).weak());
@@ -558,7 +558,7 @@ impl SpaiApp {
         let failed = pending.iter().filter(|(_, r)| matches!(r, Row::Failed(_))).count();
         if self.lookup_summary_header(ui, &done, &orgs, rows.len(), loading, failed) {
             // Failed rows count as not looked up yet, so asking again takes exactly them.
-            crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_blues(), ui.ctx());
+            crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, ui.ctx());
         }
 
         let cols: Vec<Col> = Col::ALL.into_iter().filter(|c| self.lookup_column_shown(*c)).collect();
@@ -726,7 +726,9 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(e).weak());
                 }
                 Row::Blue(v) => {
-                    ui.label(egui::RichText::new(format!("Blue ({v:+.0}), not looked up")).weak());
+                    // Drawn means shown: looked up now, not with the rest.
+                    crate::localscan::wake(&self.lookup_table, name, ui.ctx());
+                    ui.label(egui::RichText::new(format!("Blue ({v:+.0}), looking up\u{2026}")).weak());
                 }
                 Row::Done(_) => {}
             }

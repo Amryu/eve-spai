@@ -15,6 +15,18 @@ pub fn release() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub fn release() {}
 
+/// Every thread frees into its own arena and only the busiest ones trim after their work, so the
+/// rest is trimmed here once a minute.
+pub fn spawn_periodic() {
+    if cfg!(not(all(target_os = "linux", target_env = "gnu"))) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("mem-trim".into()).spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        release();
+    });
+}
+
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 mod tests {
     fn rss_mb() -> f64 {

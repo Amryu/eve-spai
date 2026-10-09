@@ -724,6 +724,7 @@ impl SpaiApp {
         }
         let now = crate::clock::utc().timestamp();
         let mut clicked: Option<crate::lookup::Loss> = None;
+        let mut open_kill: Option<(i64, String)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for l in list {
                 let det = self.ship_details_cached(l.ship_type_id);
@@ -752,9 +753,8 @@ impl SpaiApp {
                     // and drags the whole side panel wider as the list loads.
                     let mut hit = img.on_hover_text("Show fit").clicked();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("\u{2197}").on_hover_text("Open on zKillboard").clicked() {
-                            let _ =
-                                open::that(format!("https://zkillboard.com/kill/{}/", l.killmail_id));
+                        if ui.button("\u{2197}").on_hover_text("Open the killmail").clicked() {
+                            open_kill = Some((l.killmail_id, l.hash.clone()));
                         }
                         ui.label(egui::RichText::new(age_s).weak());
                         if l.value > 0.0 {
@@ -782,6 +782,9 @@ impl SpaiApp {
                 });
             }
         });
+        if let Some((id, hash)) = open_kill {
+            self.open_killmail(id, Some(hash));
+        }
         if let Some(l) = clicked {
             self.fit_loss = Some(l);
         }

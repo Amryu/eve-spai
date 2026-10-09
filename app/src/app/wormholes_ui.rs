@@ -438,20 +438,79 @@ impl SpaiApp {
         }
     }
 
-    /// Push the rescue capital's system to the active character as an ESI autopilot destination.
-    /// No-op without an active character.
-    #[cfg(feature = "fleet")]
-    pub(crate) fn rescue_push_destination(&mut self, sid: i64) {
-        if self.active_character == "No character" {
-            return;
-        }
+    /// Where a signed-in character is, by name.
+    pub(crate) fn char_system(&self, name: &str) -> Option<i64> {
+        let p = self.player.lock().unwrap();
+        p.locations.get(name).map(|(s, _)| *s).or_else(|| (name == self.active_character).then_some(p.system_id).flatten())
+    }
+
+    /// Characters a route can be sent to: signed in, with the scope to set waypoints.
+    pub(crate) fn waypoint_characters(&self) -> Vec<String> {
+        self.characters
+            .iter()
+            .filter(|c| c.scopes.split_whitespace().any(|s| s == "esi-ui.write_waypoint.v1"))
+            .map(|c| c.name.clone())
+            .collect()
+    }
+
+    /// Routes each of `names` to `dest`, each from where that character is. The app's own route
+    /// follows only when the active character is among them.
+    pub(crate) fn set_destination_for(&mut self, names: &[String], dest: i64) {
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-        self.set_destination_esi(cid, self.active_character.clone(), sid);
+        for n in names {
+            self.set_destination_esi(cid.clone(), n.clone(), dest);
+        }
+        if names.contains(&self.active_character) {
+            self.route_destination = Some(dest);
+            // The planner's own route would hide this one, holes and all.
+            self.map_route_clear();
+            self.note_ingame_route();
+        }
+    }
+
+    /// The menu of characters a route may also go to: all of them, then each one. Returns who was
+    /// picked.
+    pub(crate) fn destination_characters_menu(&self, ui: &mut egui::Ui) -> Option<Vec<String>> {
+        pick_characters_menu(ui, &self.destination_choices())
+    }
+
+    /// The characters a route may go to, each with the system it is in when known.
+    pub(crate) fn destination_choices(&self) -> Vec<(String, Option<String>)> {
+        self.waypoint_characters()
+            .into_iter()
+            .map(|n| {
+                let here = self.char_system(&n).and_then(|s| self.systems.as_ref()?.info_of(s).map(|i| i.name.clone()));
+                (n, here)
+            })
+            .collect()
+    }
+
+    /// `[ label | ▾ ]`: the button sends to the active character, the arrow to any of them. Returns
+    /// who to send to.
+    pub(crate) fn destination_split_button(&self, ui: &mut egui::Ui, label: impl Into<egui::WidgetText>, enabled: bool) -> Option<Vec<String>> {
+        let mut picked = None;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            if ui
+                .add_enabled(enabled, egui::Button::new(label))
+                .on_disabled_hover_text("Log a character in to route in the game")
+                .clicked()
+            {
+                picked = Some(vec![self.active_character.clone()]);
+            }
+            let r = ui.menu_button(egui_phosphor::regular::CARET_DOWN, |ui| {
+                if let Some(p) = self.destination_characters_menu(ui) {
+                    picked = Some(p);
+                }
+            });
+            r.response.on_hover_text("Set it for other characters");
+        });
+        picked
     }
 
     pub(crate) fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
+        let from = self.char_system(&cname);
         if self.settings.route_via_wormholes {
-            let from = self.player_system();
             if let Some(from) = from {
                 if let Some(wp) = self.wh_route_waypoints(from, dest) {
                     if wp.len() > 1 {
@@ -461,7 +520,7 @@ impl SpaiApp {
                 }
             }
         }
-        if self.force_ansiblex_route(&cid, &cname, dest) {
+        if self.force_ansiblex_route(&cid, &cname, from, dest) {
             return;
         }
         crate::esi::set_waypoint(cid, cname, dest, true);
@@ -470,12 +529,12 @@ impl SpaiApp {
     /// The client's route planner ignores Ansiblex zones, so a route that avoids the costly ones
     /// is pinned with waypoints. Returns whether it took over; the work happens off the UI thread,
     /// since it walks the whole map a few times.
-    fn force_ansiblex_route(&self, cid: &str, cname: &str, dest: i64) -> bool {
+    fn force_ansiblex_route(&self, cid: &str, cname: &str, from: Option<i64>, dest: i64) -> bool {
         let bridges = self.settings.jump_bridges.clone();
         if bridges.is_empty() {
             return false;
         }
-        let (Some(from), Some(graph)) = (self.player_system(), self.systems.clone()) else {
+        let (Some(from), Some(graph)) = (from, self.systems.clone()) else {
             return false;
         };
         if from == dest {
@@ -914,3 +973,27 @@ pub(crate) use spai_core::wormholes::dest_class;
 
 
 
+
+/// All of `choices`, then each one by name and where it is. Returns who was picked.
+pub(crate) fn pick_characters_menu(ui: &mut egui::Ui, choices: &[(String, Option<String>)]) -> Option<Vec<String>> {
+    let mut picked = None;
+    if choices.is_empty() {
+        ui.label(egui::RichText::new("No character may set waypoints. Sign one in again to allow it.").weak());
+        return None;
+    }
+    if choices.len() > 1 && ui.button(format!("{}  All characters", egui_phosphor::regular::USERS)).clicked() {
+        picked = Some(choices.iter().map(|(n, _)| n.clone()).collect());
+        ui.close();
+    }
+    for (n, here) in choices {
+        let label = match here {
+            Some(sys) => format!("{n}  ({sys})"),
+            None => n.clone(),
+        };
+        if ui.button(label).clicked() {
+            picked = Some(vec![n.clone()]);
+            ui.close();
+        }
+    }
+    picked
+}

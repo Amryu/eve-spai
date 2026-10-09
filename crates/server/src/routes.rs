@@ -375,9 +375,16 @@ async fn directory(
     Ok(views::directory_page(&cards, &q, page, has_next))
 }
 
+#[derive(serde::Deserialize)]
+pub struct ViewerParams {
+    /// Comma-separated system ids to narrow the report to, for viewing.
+    systems: Option<String>,
+}
+
 async fn viewer(
     State(st): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<ViewerParams>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let row = sqlx::query("SELECT doc, uploader_name, views FROM battle_reports WHERE id = $1")
@@ -407,7 +414,8 @@ async fn viewer(
         uploader: row.get("uploader_name"),
         views: row.get("views"),
     };
-    Ok(views::viewer_page(&data).into_response())
+    let systems: Vec<i64> = q.systems.unwrap_or_default().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    Ok(views::viewer_page(&data, &systems).into_response())
 }
 
 async fn mine(

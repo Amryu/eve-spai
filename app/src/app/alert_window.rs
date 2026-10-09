@@ -46,13 +46,20 @@ pub(crate) fn geometry_update(
     // Allow negative coords: a monitor left of / above the primary has negative virtual-desktop
     // coordinates, and dropping them loses which monitor a window was on. Only reject winit garbage
     // (minimized-window sentinels report values around -32000).
-    if new.0.abs() > 32000.0 || new.1.abs() > 32000.0 {
+    if new.0.abs() > 32000.0 || new.1.abs() > 32000.0 || off_screen_sentinel(new) {
         return None;
     }
     match prev {
         Some((a, b)) if (a - new.0).abs() <= min_delta && (b - new.1).abs() <= min_delta => None,
         _ => Some(new),
     }
+}
+
+/// Windows parks a minimized window at -32000 pixels, which display scaling turns into -25600 points
+/// at 125% or -21333 at 150%: past the plain bound, and saved, it reopened the window off screen.
+/// No real monitor layout puts a window that far up and left at once.
+pub(crate) fn off_screen_sentinel(p: (f32, f32)) -> bool {
+    p.0 <= -10_000.0 && p.1 <= -10_000.0
 }
 
 /// Puts a reopened window back where it was saved, on Linux. Under KWin on X11 the position a

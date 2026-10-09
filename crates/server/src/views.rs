@@ -448,6 +448,11 @@ fn detail_cell(
     }
 }
 
+/// A side's colour, the same four the app gives its sides.
+fn side_color(i: usize) -> &'static str {
+    ["#4fc3f7", "#e04c4c", "#9ccc65", "#b0b0b0"].get(i).copied().unwrap_or("#b0b0b0")
+}
+
 fn side_panel(
     battle: &Battle,
     side_idx: usize,
@@ -499,13 +504,19 @@ fn side_panel(
                     div .coalition-members aria-hidden="true" { (PreEscaped("&nbsp;")) }
                 }
             }
+            // What the side lost leads; the rest follows on one quieter line.
             div .side-stats {
-                div .stat { span .stat-num { (pilots) } span .stat-label { "pilots" } }
-                div .stat { span .stat-num { (side.kills) } span .stat-label { "kills" } }
-                div .stat { span .stat-num { (side.losses) } span .stat-label { "losses" } }
-                div .stat { span .stat-num .isk-destroyed { (fmt_isk(side.isk_destroyed)) } span .stat-label .isk-destroyed { "ISK destroyed" } }
-                div .stat { span .stat-num .isk-lost { (fmt_isk(side.isk_lost)) } span .stat-label .isk-lost { "ISK lost" } }
-                div .stat { span .stat-num { (fmt_eff(side)) } span .stat-label { "efficiency" } }
+                div .side-lost style=(format!("color:{}", side_color(side_idx))) {
+                    span .stat-num .isk-lost data-stat="lost" { (fmt_isk(side.isk_lost)) }
+                    span .stat-label .isk-lost { "ISK lost" }
+                }
+                div .side-sub {
+                    span .stat { span .stat-num data-stat="pilots" { (pilots) } " " span .stat-label { "pilots" } }
+                    span .stat { span .stat-num data-stat="kills" { (side.kills) } " " span .stat-label { "kills" } }
+                    span .stat { span .stat-num data-stat="losses" { (side.losses) } " " span .stat-label { "losses" } }
+                    span .stat { span .stat-num .isk-destroyed data-stat="destroyed" { (fmt_isk(side.isk_destroyed)) } " " span .stat-label .isk-destroyed { "destroyed" } }
+                    span .stat { span .stat-num data-stat="eff" { (fmt_eff(side)) } " " span .stat-label { "efficiency" } }
+                }
             }
             div .bar { div .bar-fill style=(format!("width:{:.0}%", side.isk_efficiency().unwrap_or(0.0))) {} }
             div .roster {
@@ -696,8 +707,55 @@ fn sides_data_json(doc: &BattleReportDoc) -> String {
     js_safe_json(&v.to_string())
 }
 
-pub fn viewer_page(data: &CardData) -> Markup {
-    let b = &data.doc.battle;
+/// The systems of a report as toggles: each one adds itself to or drops itself from the systems
+/// shown, all of them shown when none is picked. For viewing; the download stays whole.
+fn systems_filter(full: &Battle, picked: &[i64], id: &str) -> Markup {
+    let link = |set: &[i64]| {
+        if set.is_empty() || set.len() == full.systems.len() {
+            format!("/br/{id}")
+        } else {
+            let ids: Vec<String> = set.iter().map(|s| s.to_string()).collect();
+            format!("/br/{id}?systems={}", ids.join(","))
+        }
+    };
+    html! {
+        div .sys-filter role="group" aria-label="Systems shown" {
+            a .sys-chip .on[picked.is_empty()] href=(link(&[])) { "All systems" }
+            @for (sid, name, sec) in &full.systems {
+                @let on = picked.contains(sid);
+                @let next: Vec<i64> = if on {
+                    picked.iter().copied().filter(|p| p != sid).collect()
+                } else {
+                    picked.iter().copied().chain(std::iter::once(*sid)).collect()
+                };
+                a .sys-chip .on[on] href=(link(&next)) title=(if on { "Stop showing this system" } else { "Show this system too" }) {
+                    span .sec style=(format!("color:{}", sec_color(*sec))) { (format!("{sec:.1}")) }
+                    " "
+                    (name)
+                }
+            }
+        }
+    }
+}
+
+pub fn viewer_page(data: &CardData, systems: &[i64]) -> Markup {
+    let full = &data.doc.battle;
+    let picked: Vec<i64> = systems.iter().copied().filter(|id| full.systems.iter().any(|s| s.0 == *id)).collect();
+    let picked: Vec<i64> = if picked.len() == full.systems.len() { Vec::new() } else { picked };
+    // A narrowed report is the same document seen through its systems, so everything below and
+    // the page's own scripts read it as they would a whole one.
+    let narrowed;
+    let doc = if picked.is_empty() {
+        &data.doc
+    } else {
+        narrowed = BattleReportDoc {
+            battle: full.in_systems(&picked),
+            engagements: data.doc.engagements.iter().filter(|e| picked.contains(&e.system_id)).cloned().collect(),
+            ..data.doc.clone()
+        };
+        &narrowed
+    };
+    let b = &doc.battle;
     let json_href = format!("/api/br/{}.json", data.id);
     let inv = involvement_json(b);
     let pod_kills = pod_kill_ids(b);
@@ -714,13 +772,17 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 }
                 a .back-link href="/br" { "← All battle reports" }
                 h2 { (display_title(&data.doc)) }
-                (systems_chips(b))
+                @if full.systems.len() > 1 {
+                    (systems_filter(full, &picked, &data.id))
+                } @else {
+                    (systems_chips(b))
+                }
                 div .v-meta {
                     span { (fmt_time(b.start)) " to " (fmt_time(b.end)) }
                     span .dot-sep { "·" }
                     span { (fmt_duration(b.end - b.start)) }
                     span .dot-sep { "·" }
-                    span .isk { (fmt_isk(b.isk)) " ISK destroyed" }
+                    span .isk { (fmt_isk(b.isk)) " ISK lost" }
                     span .dot-sep { "·" }
                     span { (b.kills) " kills" }
                 }
@@ -744,12 +806,12 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 }
                 div .panels {
                     @for i in 0..b.sides.len() {
-                        (side_panel(b, i, &data.doc.ship_names, &pod_kills, &data.doc.affiliations))
+                        (side_panel(b, i, &doc.ship_names, &pod_kills, &doc.affiliations))
                     }
                 }
             }
             script type="application/json" #inv-data { (PreEscaped(inv)) }
-            script type="application/json" #sides-data { (PreEscaped(sides_data_json(&data.doc))) }
+            script type="application/json" #sides-data { (PreEscaped(sides_data_json(doc))) }
             div .modal #breakdown-modal hidden {
                 div .modal-overlay {}
                 div .modal-panel role="dialog" aria-modal="true" aria-label="Edit sides" {
@@ -1051,14 +1113,13 @@ const VIEWER_JS: &str = r#"
   }
 
   function setStats(sp,c){
-    var nums=sp.querySelectorAll('.side-stats .stat .stat-num');
-    if(nums.length<6) return;
-    nums[0].textContent=c.pilots;
-    nums[1].textContent=c.kills;
-    nums[2].textContent=c.losses;
-    nums[3].textContent=fmtIsk(c.destroyed);
-    nums[4].textContent=fmtIsk(c.iskLost);
-    nums[5].textContent=(c.eff==null?'-':Math.round(c.eff)+'%');
+    function put(k,v){ var n=sp.querySelector('.side-stats [data-stat="'+k+'"]'); if(n) n.textContent=v; }
+    put('pilots',c.pilots);
+    put('kills',c.kills);
+    put('losses',c.losses);
+    put('destroyed',fmtIsk(c.destroyed));
+    put('lost',fmtIsk(c.iskLost));
+    put('eff',(c.eff==null?'-':Math.round(c.eff)+'%'));
     var bar=sp.querySelector('.bar .bar-fill'); if(bar){ bar.style.width=(c.eff==null?0:Math.round(c.eff))+'%'; }
   }
 
@@ -1210,9 +1271,15 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .systems{display:block; margin:6px 0; color:var(--muted); font-size:13px;}
 .systems .sec{font-family:var(--mono); font-weight:600;}
 .systems .sep{color:var(--line);}
+.sys-filter{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0;}
+.sys-chip{display:inline-flex; align-items:center; gap:4px; max-width:100%; padding:3px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.sys-chip:hover{text-decoration:none; border-color:var(--blue-dim); color:var(--text);}
+.sys-chip.on{background:var(--blue-dim); border-color:var(--blue-dim); color:var(--text);}
+.sys-chip .sec{font-family:var(--mono); font-weight:600;}
 .card-meta, .v-meta{display:flex; flex-wrap:wrap; gap:6px; color:var(--muted); font-size:13px; margin:6px 0;}
 .dot-sep{color:var(--line);}
 .isk{color:var(--blue); font-family:var(--mono);}
+.v-meta .isk{font-size:18px; font-weight:700;}
 .sides{margin:10px 0 6px;}
 .side-row{display:flex; align-items:center; gap:8px; margin:4px 0; font-size:13px;}
 .side-name{flex:0 0 38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -1243,15 +1310,21 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 /* Always occupies one line (an nbsp placeholder fills it when there is no coalition) so
    both side headers are the same height and the stats/rosters below line up. */
 .coalition-members{color:var(--muted); font-size:12.5px; min-height:1.6em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.side-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0;}
-.stat{display:flex; flex-direction:column;}
-.stat-num{font-size:16px; font-weight:600; font-family:var(--mono);}
-.stat-label{color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.4px;}
+.side-stats{margin:12px 0;}
+.side-lost{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;}
+.side-lost .stat-num{font-size:28px; font-weight:700; color:inherit;}
+.side-lost .stat-label{font-size:14px; color:inherit; opacity:0.8;}
+.side-sub{display:flex; flex-wrap:wrap; gap:2px 12px; margin-top:4px; color:var(--muted); font-size:13px;}
+.side-sub .stat-num{font-size:13px;}
+.side-sub .stat-label{font-size:13px;}
+.stat-num{font-weight:600; font-family:var(--mono);}
+.stat-label{color:var(--muted);}
 /* ISK destroyed reads green, ISK lost reads red (number + label). */
 .stat-num.isk-destroyed{color:var(--green);}
 .stat-label.isk-destroyed{color:var(--green);}
 .stat-num.isk-lost{color:var(--red);}
 .stat-label.isk-lost{color:var(--red);}
+.side-lost .stat-num.isk-lost, .side-lost .stat-label.isk-lost{color:inherit;}
 .roster{display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr)); gap:10px; margin-top:14px;}
 .ship{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0; padding:4px; border-radius:8px; cursor:pointer;}
 .ship:hover{background:var(--panel-2);}
@@ -1261,7 +1334,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .ship-counts{display:flex; flex-direction:column; align-items:center; gap:3px; width:100%; font-size:11px; line-height:1.3;}
 /* Loss bar: full width = all pilots of this hull, red fill = destroyed, centred X/Y (NN%) overlay. */
 .lossbar{position:relative; align-self:stretch; height:15px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; overflow:hidden;}
-.lossbar-fill{position:absolute; left:0; top:0; bottom:0; background:var(--red);}
+.lossbar-fill{position:absolute; left:0; top:0; bottom:0; background:#962828;}
 .lossbar-label{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; color:var(--text); text-shadow:0 1px 2px rgba(0,0,0,0.8); white-space:nowrap;}
 
 /* Tiles / Details toggle and layout switching */
@@ -1447,6 +1520,37 @@ mod tests {
         )
     }
 
+    fn viewer_page_t(d: &CardData) -> Markup {
+        viewer_page(d, &[])
+    }
+
+    /// The test report with its third kill moved to a second system.
+    fn two_system_data() -> CardData {
+        let mut d = card_data(Some("Two systems"), "u");
+        for e in d.doc.engagements.iter_mut().filter(|e| e.kill_id == 3) {
+            e.system_id = 30002187;
+            e.system_name = "Amarr".into();
+        }
+        d.doc.battle = br_core::battle::preview_battle(d.doc.engagements.clone(), BATTLE_BREAK_SECS);
+        d
+    }
+
+    #[test]
+    fn a_report_narrows_to_the_systems_picked() {
+        let d = two_system_data();
+        let whole = viewer_page(&d, &[]).into_string();
+        assert!(whole.contains("All systems") && whole.contains("Amarr") && whole.contains("Jita"), "a toggle per system");
+        assert!(whole.contains("3 kills"));
+        let jita = viewer_page(&d, &[30000142]).into_string();
+        assert!(jita.contains("2 kills"), "only Jita's killmails");
+        assert!(jita.contains("href=\"/br/AbCd123456\" title=\"Show this system too\""), "Amarr back in is every system again");
+        assert!(jita.contains("/api/br/AbCd123456.json"), "the download stays whole");
+        let every = viewer_page(&d, &[30000142, 30002187]).into_string();
+        assert!(every.contains("3 kills"), "every system picked is all of them");
+        let junk = viewer_page(&d, &[1, 2]).into_string();
+        assert!(junk.contains("3 kills"), "unknown ids are ignored");
+    }
+
     fn card_data(title: Option<&str>, uploader: &str) -> CardData {
         CardData { id: "AbCd123456".into(), doc: doc(title), uploader: uploader.into(), views: 42 }
     }
@@ -1465,7 +1569,7 @@ mod tests {
 
     #[test]
     fn viewer_shows_facts_icon_and_download() {
-        let html = viewer_page(&card_data(Some("Big Fight"), "Uploader X")).into_string();
+        let html = viewer_page_t(&card_data(Some("Big Fight"), "Uploader X")).into_string();
         assert!(html.contains("Big Fight"));
         assert!(html.contains("Jita"));
         assert!(html.contains("Red Alliance") && html.contains("Blue Alliance"));
@@ -1487,7 +1591,7 @@ mod tests {
             views: 0,
         };
         let card_html = card(&data).into_string();
-        let view_html = viewer_page(&data).into_string();
+        let view_html = viewer_page(&data, &[]).into_string();
         for html in [&card_html, &view_html] {
             assert!(!html.contains("<script>alert(1)</script>"));
             assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
@@ -1505,7 +1609,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Yy11111111".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(!html.contains("<img src=x onerror=alert(1)>"));
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"));
     }
@@ -1544,7 +1648,7 @@ mod tests {
 
     #[test]
     fn viewer_renders_both_layouts_and_toggle() {
-        let html = viewer_page(&card_data(Some("Layouts"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Layouts"), "u")).into_string();
         assert!(html.contains("data-mode=\"tiles\""));
         assert!(html.contains("data-mode=\"details\""));
         assert!(html.contains("class=\"report view-tiles\""));
@@ -1558,7 +1662,7 @@ mod tests {
 
     #[test]
     fn details_view_has_zkill_links_and_involvement_maps() {
-        let html = viewer_page(&card_data(Some("Kills"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Kills"), "u")).into_string();
         assert!(html.contains("https://zkillboard.com/kill/1/"));
         assert!(html.contains("rel=\"noopener\""));
         assert!(html.contains("data-kill=\"1\""));
@@ -1577,7 +1681,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Zz22222222".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     }
@@ -1592,14 +1696,14 @@ mod tests {
                 assert!(*r > 0.10, "only parties above 10%");
             }
         }
-        let html = viewer_page(&card_data(Some("Dom"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Dom"), "u")).into_string();
         assert!(html.contains("images.evetech.net/alliances/100/logo"));
         assert!(html.contains("class=\"dom-logo\""));
     }
 
     #[test]
     fn hull_filter_ids_match_between_tiles_and_details() {
-        let html = viewer_page(&card_data(Some("Filter"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Filter"), "u")).into_string();
         for id in ["587", "588"] {
             let tile = format!("class=\"ship\" data-ship=\"{id}\"");
             let cell = format!("data-ship=\"{id}\"");
@@ -1621,7 +1725,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ll44444444".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(html.contains("class=\"dparty-name\""));
         assert!(html.contains(&format!("title=\"{long}\"")));
         assert!(CSS.contains(".dparty-name{min-width:0; overflow:hidden; text-overflow:ellipsis"));
@@ -1640,7 +1744,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Mm33333333".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(html.contains("id=\"breakdown-modal\""));
         assert!(html.contains("class=\"bd-list\""));
         assert!(html.contains("class=\"bd-count\""));
@@ -1650,7 +1754,7 @@ mod tests {
 
     #[test]
     fn tiles_show_ship_names_lossbar_and_isk_colors() {
-        let html = viewer_page(&card_data(Some("Hulls"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Hulls"), "u")).into_string();
         assert!(html.contains("class=\"ship-name\""));
         assert!(html.contains("Rifter") && html.contains("Rupture"));
         // Loss bar instead of "x lost / y survived" text and no killing-blow marker.
@@ -1709,7 +1813,7 @@ mod tests {
         let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, ship_names, Default::default());
         let data = CardData { id: "Pp55555555".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         for pod in POD_TYPES {
             assert!(!html.contains(&format!("data-ship=\"{pod}\"")), "pod {pod} must not be a tile");
         }
@@ -1729,7 +1833,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Rr77777777".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(html.contains("dcell lost dpod-row"));
         assert!(html.contains(&icon_url(670)));
         assert!(!html.contains("https://zkillboard.com/kill/2/"));
@@ -1745,13 +1849,13 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Qq66666666".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(!html.contains("dcell lost dpod-row"));
     }
 
     #[test]
     fn no_em_dashes_in_rendered_output() {
-        let view = viewer_page(&card_data(None, "u")).into_string();
+        let view = viewer_page_t(&card_data(None, "u")).into_string();
         let card_html = card(&card_data(Some("T"), "u")).into_string();
         let dir = directory_page(&[card_data(None, "u")], &DirQuery::default(), 1, false).into_string();
         let nf = not_found_page().into_string();
@@ -1762,7 +1866,7 @@ mod tests {
 
     #[test]
     fn no_coalition_side_still_renders_subtitle_placeholder() {
-        let html = viewer_page(&card_data(Some("Align"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Align"), "u")).into_string();
         assert!(html.contains("class=\"coalition-members\" aria-hidden=\"true\""));
         assert!(html.matches("class=\"coalition-members\"").count() >= 2);
         assert!(CSS.contains(".coalition-members{") && CSS.contains("min-height:1.6em"));
@@ -1770,7 +1874,7 @@ mod tests {
 
     #[test]
     fn sides_data_json_is_present_and_well_formed() {
-        let html = viewer_page(&card_data(None, "u")).into_string();
+        let html = viewer_page_t(&card_data(None, "u")).into_string();
         assert!(html.contains("id=\"sides-data\""));
         let j = sides_data_json(&doc(None));
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
@@ -1796,7 +1900,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ss88888888".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         let blob = sides_data_json(&data.doc);
         assert!(!blob.contains("</script>"));
         assert!(blob.contains("\\u003c"));
@@ -1805,7 +1909,7 @@ mod tests {
 
     #[test]
     fn party_logos_and_names_link_to_zkill() {
-        let html = viewer_page(&card_data(Some("Z"), "u")).into_string();
+        let html = viewer_page_t(&card_data(Some("Z"), "u")).into_string();
         assert!(html.contains("https://zkillboard.com/alliance/100/"));
         assert!(html.contains("class=\"dom-logo-link\""));
         assert!(html.contains("class=\"bd-entity\""));
@@ -1837,7 +1941,7 @@ mod tests {
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Cc99999999".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
         assert!(html.contains("https://zkillboard.com/corporation/300/"));
         let v: serde_json::Value = serde_json::from_str(&sides_data_json(&data.doc)).unwrap();
         assert!(v["parties"].as_array().unwrap().iter().any(|p| p["id"] == 300 && p["kind"] == "corp"));
@@ -1882,7 +1986,7 @@ mod tests {
             affiliations,
         );
         let data = CardData { id: "Aa10101010".into(), doc: d, uploader: "u".into(), views: 1 };
-        let html = viewer_page(&data).into_string();
+        let html = viewer_page(&data, &[]).into_string();
 
         assert!(html.contains("https://images.evetech.net/corporations/98001/logo?size=32"));
         assert!(html.contains("https://zkillboard.com/corporation/98001/"));

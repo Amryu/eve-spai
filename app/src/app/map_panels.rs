@@ -766,7 +766,7 @@ impl SpaiApp {
             }
         }
         let mut wp_pick: Option<i64> = None;
-        let mut set_dest = false;
+        let mut set_dest: Option<Vec<String>> = None;
         let name_id = |id: i64| -> (i64, String) {
             (
                 id,
@@ -930,13 +930,11 @@ impl SpaiApp {
                 || self.travel_end.is_some()
                 || !self.travel_waypoints.is_empty();
             ui.horizontal(|ui| {
-                if self.travel_route.is_some()
-                    && ui
-                        .button("Set destination")
-                        .on_hover_text("Write the planned route to EVE as individual waypoints")
-                        .clicked()
-                {
-                    set_dest = true;
+                if self.travel_route.is_some() {
+                    let has_char = self.active_character != "No character";
+                    if let Some(names) = self.destination_split_button(ui, "Set destination", has_char) {
+                        set_dest = Some(names);
+                    }
                 }
                 if has_route && ui.button("Clear route").clicked() {
                     clear = true;
@@ -976,12 +974,14 @@ impl SpaiApp {
             self.travel_wp_q.clear();
             self.travel_wp_sel = 0;
         }
-        if set_dest {
+        if let Some(names) = set_dest {
             if let Some(route) = self.travel_route.clone() {
                 let mut seen = std::collections::HashSet::new();
                 let unique: Vec<i64> = route.into_iter().filter(|s| seen.insert(*s)).collect();
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                crate::esi::set_route(cid, self.active_character.clone(), unique);
+                for n in names {
+                    crate::esi::set_route(cid.clone(), n, unique.clone());
+                }
             }
         }
         if let Some(id) = remove_wp {

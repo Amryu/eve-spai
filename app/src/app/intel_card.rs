@@ -975,8 +975,13 @@ pub(crate) fn intel_row(
                                 let lbl = egui::RichText::new(format!("{} zKill", icon::ARROW_SQUARE_OUT))
                                     .color(red)
                                     .strong();
-                                if ui.add(egui::Button::new(lbl)).clicked() {
-                                    let _ = open::that(&link.url);
+                                if ui.add(egui::Button::new(lbl)).on_hover_text("Open the killmail").clicked() {
+                                    match crate::zkill::parse_kill_id(&link.url) {
+                                        Some(id) => clicked = Some(IntelClick::Kill(id, info.as_ref().and_then(|i| i.hash.clone()))),
+                                        None => {
+                                            let _ = open::that(&link.url);
+                                        }
+                                    }
                                     consumed = true;
                                 }
                                 if let Some(inf) = &info {

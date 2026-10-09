@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
+mod frametime;
+mod killmail;
 mod memtrim;
 mod evetools;
 mod zkapi;
@@ -117,7 +119,28 @@ pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::Nativ
         }));
     }
 
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WGPU_BACKEND").is_none() && vulkan_gpu_present() {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut native_options.wgpu_options.wgpu_setup {
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::VULKAN;
+        }
+    }
+
     native_options
+}
+
+/// Whether Vulkan reaches a real GPU here. eframe otherwise brings up OpenGL beside Vulkan for every
+/// GPU, which loads a second driver stack (about 23 MB per process) only to use one of them; with no
+/// Vulkan GPU it keeps OpenGL as the fallback.
+#[cfg(target_os = "linux")]
+fn vulkan_gpu_present() -> bool {
+    use eframe::wgpu;
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(desc);
+    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN))
+        .iter()
+        .any(|a| !matches!(a.get_info().device_type, wgpu::DeviceType::Cpu))
 }
 
 /// The outgoing process only releases the lock when it exits, which happens a moment after it spawns
@@ -181,6 +204,7 @@ fn main() -> eframe::Result<()> {
         (_, true) => crashlog::Role::FleetLogin,
         _ => crashlog::Role::Main,
     });
+    memtrim::spawn_periodic();
 
     // Re-exec into the overlay child when launched with the hidden flag, before any main-window
     // setup runs. The child must always start (it is spawned by the main), so the single-instance
@@ -252,10 +276,11 @@ fn main() -> eframe::Result<()> {
         .with_inner_size(
             saved.as_ref().and_then(|s| s.main_window_size).map_or([1100.0, 720.0], |(w, h)| [w, h]),
         );
-    if let Some((x, y)) = saved.as_ref().and_then(|s| s.main_window_pos) {
+    if let Some((x, y)) = saved.as_ref().and_then(|s| s.main_window_pos).filter(|p| !app::alert_window::off_screen_sentinel(*p)) {
         viewport = viewport.with_position([x, y]);
     }
-    if saved.as_ref().is_some_and(|s| s.main_window_maximized) {
+    // On Linux the window manager ignores it at creation; the app maximizes once the window is up.
+    if cfg!(not(target_os = "linux")) && saved.as_ref().is_some_and(|s| s.main_window_maximized) {
         viewport = viewport.with_maximized(true);
     }
     let native_options = base_native_options(viewport);
