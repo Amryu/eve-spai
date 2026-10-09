@@ -131,6 +131,12 @@ pub struct Settings {
     pub battles: BattleFilter,
     #[serde(default)]
     pub min_battle_isk: f64,
+    /// Battles with fewer pilots are left out of the list.
+    #[serde(default)]
+    pub battle_min_pilots: u32,
+    /// Only battles one of these alliances, corporations or coalitions took part in.
+    #[serde(default)]
+    pub battle_parties: Vec<String>,
     #[serde(default = "default_battle_break")]
     pub battle_break_secs: i64,
     #[serde(default)]
@@ -1449,6 +1455,8 @@ impl Default for Settings {
             battles_enabled: true,
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,
+            battle_min_pilots: 0,
+            battle_parties: Vec::new(),
             battle_break_secs: default_battle_break(),
             bookmarks: Vec::new(),
             notes_folder: String::new(),

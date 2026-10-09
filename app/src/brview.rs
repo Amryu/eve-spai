@@ -31,6 +31,34 @@ pub struct BrInputs {
     pub condensed: bool,
     /// The open report's systems to show, all of them when empty.
     pub systems: Vec<i64>,
+    /// Battles with fewer pilots are left out of the list.
+    pub min_pilots: u32,
+    /// Alliances, corporations or coalitions, lowercase: only battles one of them took part in.
+    pub parties: Vec<String>,
+}
+
+/// One battle in the list: its newest kill, jumps from you, pilots, and the battle without kills.
+pub type Card = (i64, Option<u32>, u32, Battle);
+
+/// Everyone in a battle: victims and attackers, once each.
+pub fn pilot_count(b: &Battle) -> u32 {
+    let mut ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for e in &b.engagements {
+        if e.victim_char != 0 {
+            ids.insert(e.victim_char);
+        }
+        ids.extend(e.attackers.iter().map(|a| a.char_id).filter(|id| *id != 0));
+    }
+    ids.len() as u32
+}
+
+/// Whether one of `parties` (lowercase names) took part, by alliance, corporation or coalition.
+pub fn has_party(b: &Battle, parties: &[String]) -> bool {
+    parties.is_empty()
+        || b.sides.iter().any(|s| {
+            s.coalition.as_deref().is_some_and(|c| parties.iter().any(|p| c.eq_ignore_ascii_case(p)))
+                || s.parties.iter().any(|x| parties.iter().any(|p| x.name.eq_ignore_ascii_case(p)))
+        })
 }
 
 #[derive(Clone)]
@@ -103,9 +131,11 @@ pub fn ship_tiles(rosters: &[Vec<Participant>]) -> SideTiles {
 pub struct BrOutputs {
     pub sig: u64,
     pub ready: bool,
-    pub cards: Vec<(i64, Option<u32>, Battle)>,
+    pub cards: Vec<Card>,
     pub total: usize,
     pub filtered: usize,
+    /// Alliance and coalition names in the listed battles, most battles first, to pick from.
+    pub party_names: Vec<String>,
     pub detail: Option<Arc<BattleDetail>>,
 }
 
@@ -380,6 +410,8 @@ pub fn ui_signature(
     inp.sort.hash(&mut h);
     inp.condensed.hash(&mut h);
     inp.systems.hash(&mut h);
+    inp.min_pilots.hash(&mut h);
+    inp.parties.hash(&mut h);
     h.finish()
 }
 
@@ -420,7 +452,8 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
     {
         let rules = deps.filter.lock().unwrap();
         let reach = Reach::new(&systems, &intel_sys, player, FROM_YOU_JUMPS.max(rules.max_jumps_condition().unwrap_or(0)));
-        let mut cands: Vec<(i64, Option<u32>, f64, Battle)> = Vec::new();
+        let mut cands: Vec<(i64, Option<u32>, f64, u32, Battle)> = Vec::new();
+        let mut seen: HashMap<String, u32> = HashMap::new();
         for b in battles.iter() {
             let vis = inp.show_history
                 || shown(b, &rules, &systems, &type_names, &deps.ship_sizes, &reach);
@@ -439,19 +472,30 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
                     ambiguous: b.ambiguous,
                     suggested_splits: b.suggested_splits.clone(),
                 };
-                cands.push((kid, from_you, b.isk, light));
+                for s in &light.sides {
+                    let mut names: Vec<&str> = s.parties.iter().filter(|p| p.kind == br_core::battle::PartyKind::Alliance).map(|p| p.name.as_str()).collect();
+                    names.extend(s.coalition.as_deref());
+                    for n in names {
+                        *seen.entry(n.to_owned()).or_default() += 1;
+                    }
+                }
+                cands.push((kid, from_you, b.isk, pilot_count(b), light));
                 if cands.len() >= MAX_CANDIDATES {
                     break;
                 }
             }
         }
-        out.total = cands.iter().filter(|c| c.2 >= inp.min_isk).count();
+        let mut names: Vec<(String, u32)> = seen.into_iter().collect();
+        names.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out.party_names = names.into_iter().map(|(n, _)| n).collect();
+        let keep = |c: &(i64, Option<u32>, f64, u32, Battle)| c.2 >= inp.min_isk && c.3 >= inp.min_pilots && has_party(&c.4, &inp.parties);
+        out.total = cands.iter().filter(|c| keep(c)).count();
         out.filtered = cands.len() - out.total;
         out.cards = cands
             .into_iter()
-            .filter(|c| c.2 >= inp.min_isk)
+            .filter(|c| keep(c))
             .take(MAX_CARDS)
-            .map(|(kid, from_you, _, b)| (kid, from_you, b))
+            .map(|(kid, from_you, _, pilots, b)| (kid, from_you, pilots, b))
             .collect();
     }
 
