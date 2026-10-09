@@ -300,7 +300,10 @@ impl SpaiApp {
         let coords = self.jump_systems.clone().unwrap_or_default();
         let bridges = self.settings.intel_count_bridges;
         let danger = self.route_danger();
-        let (avoid_gate, avoid_jump) = (self.route_avoid(false), self.route_avoid(true));
+        let (mut avoid_gate, mut avoid_jump) = (self.route_avoid(false), self.route_avoid(true));
+        let rules = self.route_rule_avoid();
+        avoid_gate.once.extend(rules.iter().copied());
+        avoid_jump.once.extend(rules);
         let holes =
             if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
         let kinds: Vec<&str> = (0..self.map_route_anchors.len().saturating_sub(1)).map(|i| self.map_leg_kind(i)).collect();
@@ -339,18 +342,67 @@ impl SpaiApp {
     /// Ansiblex zone limit.
     pub(crate) fn route_graph(&mut self) -> Option<std::sync::Arc<crate::geo::Systems>> {
         let base = self.systems.clone()?;
-        let Some(zone) = self.map_route_zone.filter(|z| *z != self.settings.ansiblex_max_zone) else {
+        let zone = self.map_route_zone.filter(|z| *z != self.settings.ansiblex_max_zone);
+        let regions = self.settings.route_region_gates;
+        if zone.is_none() && regions {
             return Some(base);
-        };
+        }
         let key = std::sync::Arc::as_ptr(&base) as usize;
-        if let Some((k, z, g)) = &self.map_route_graph {
-            if *k == key && *z == zone {
+        let z = zone.unwrap_or(u8::MAX);
+        if let Some((k, zz, r, g)) = &self.map_route_graph {
+            if *k == key && *zz == z && *r == regions {
                 return Some(g.clone());
             }
         }
-        let g = std::sync::Arc::new(if zone == 0 { base.gates_only() } else { crate::ansiblex::with_max_zone(&base, &self.settings, zone) });
-        self.map_route_graph = Some((key, zone, g.clone()));
+        let mut g = match zone {
+            Some(0) => base.gates_only(),
+            Some(zone) => crate::ansiblex::with_max_zone(&base, &self.settings, zone),
+            None => (*base).clone(),
+        };
+        if !regions {
+            g = g.without_region_gates();
+        }
+        let g = std::sync::Arc::new(g);
+        self.map_route_graph = Some((key, z, regions, g.clone()));
         Some(g)
+    }
+
+    /// The systems the route rules keep a route out of: gate camps, security bands, busy systems
+    /// and sov held by the alliances named. The route's own anchors are never in it.
+    pub(crate) fn route_rule_avoid(&self) -> std::collections::HashSet<i64> {
+        let st = &self.settings;
+        let mut out = std::collections::HashSet::new();
+        let Some(geo) = self.systems.as_ref() else { return out };
+        if st.route_avoid_camps {
+            let now = crate::clock::utc().timestamp();
+            out.extend(
+                self.camps.lock().unwrap().camped(now).into_iter().filter(|(_, l)| *l >= crate::camp::CampLevel::Possible).map(|(id, _)| id),
+            );
+        }
+        let sov: std::collections::HashSet<String> = st.route_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
+        if st.route_max_kills > 0 || !sov.is_empty() {
+            for (id, f) in self.system_status.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                if st.route_max_kills > 0 && f.ship_kills > st.route_max_kills {
+                    out.insert(*id);
+                }
+                if f.sov.as_deref().is_some_and(|h| sov.contains(&h.to_lowercase())) {
+                    out.insert(*id);
+                }
+            }
+        }
+        if st.route_sec != [true; 3] {
+            // J-space has no band to keep out of: filtering Thera as "null" would defeat a hole route.
+            out.extend(geo.all_ids().filter(|id| !crate::geo::is_wormhole_system(*id)).filter(|id| {
+                geo.info_of(*id).is_some_and(|i| {
+                    let band = if i.security >= 0.45 { 0 } else if i.security > 0.0 { 1 } else { 2 };
+                    !st.route_sec[band]
+                })
+            }));
+        }
+        for a in &self.map_route_anchors {
+            out.remove(a);
+        }
+        out
     }
 
     /// The intel behind a route warning, as its own window.

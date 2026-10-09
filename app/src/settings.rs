@@ -103,8 +103,30 @@ pub struct Settings {
     /// first rather than the browser.
     #[serde(default)]
     pub comms_mumble_cache: std::collections::HashMap<String, String>,
+    /// The old travel planner's routes. Moved into `saved_map_routes` on load and left empty.
     #[serde(default)]
     pub saved_routes: Vec<SavedRoute>,
+    /// Route planner: keep off systems with a likely gate camp.
+    #[serde(default)]
+    pub route_avoid_camps: bool,
+    /// Route planner: the security bands a route may pass through, high, low and null.
+    #[serde(default = "all_sec")]
+    pub route_sec: [bool; 3],
+    /// Route planner: keep off systems with more than this many kills in the last hour; 0 is no limit.
+    #[serde(default)]
+    pub route_max_kills: u32,
+    /// Route planner: keep off sov held by these alliances, by name.
+    #[serde(default)]
+    pub route_avoid_sov: Vec<String>,
+    /// Route planner: may cross into another region by gate.
+    #[serde(default = "default_true")]
+    pub route_region_gates: bool,
+    /// Radial and tree layouts: a sound and a flash when a new threat comes within range.
+    #[serde(default)]
+    pub map_threat_alarm: bool,
+    /// Route planner: replan as intel and kills come in, and sound when the route changes a lot.
+    #[serde(default)]
+    pub route_live: bool,
     #[serde(default)]
     pub route_folders: Vec<String>,
     #[serde(default)]
@@ -1040,7 +1062,44 @@ fn default_msg_sound() -> String {
 fn default_ping_sound() -> String {
     "horn".to_owned()
 }
+fn all_sec() -> [bool; 3] {
+    [true; 3]
+}
+
 impl Settings {
+    /// Moves the old travel planner's saved routes into the route planner's, once. Returns whether
+    /// anything moved.
+    pub fn migrate_travel_routes(&mut self) -> bool {
+        if self.saved_routes.is_empty() {
+            return false;
+        }
+        for r in std::mem::take(&mut self.saved_routes) {
+            let mut anchors = vec![r.start];
+            anchors.extend(r.waypoints.iter().copied());
+            anchors.push(r.end);
+            let name = if r.folder.is_empty() { r.name.clone() } else { format!("{}/{}", r.folder, r.name) };
+            if self.saved_map_routes.iter().any(|m| m.name == name) {
+                continue;
+            }
+            self.saved_map_routes.push(SavedMapRoute {
+                name,
+                kind: "gate".into(),
+                anchors,
+                avoid: r.constraints.map(|c| c.avoid).unwrap_or_default(),
+                titans: Vec::new(),
+                titan_at_start: false,
+                titan_self_jump: false,
+                legs: Vec::new(),
+                hull: 0,
+                jdc: 0,
+                jfc: 0,
+                saved_at: 0,
+                via_wormholes: false,
+            });
+        }
+        true
+    }
+
     /// Moves mentions still on the old `warning` default to the `mention` tone, once. Returns
     /// whether anything changed and needs saving.
     pub fn migrate_mention_sound(&mut self) -> bool {
@@ -1442,6 +1501,13 @@ impl Default for Settings {
             comms_links: std::collections::HashMap::new(),
             comms_mumble_cache: std::collections::HashMap::new(),
             saved_routes: Vec::new(),
+            route_avoid_camps: false,
+            route_sec: [true; 3],
+            route_max_kills: 0,
+            route_avoid_sov: Vec::new(),
+            route_region_gates: true,
+            route_live: false,
+            map_threat_alarm: false,
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
             saved_map_routes: Vec::new(),
@@ -2489,6 +2555,13 @@ mod web_settings_tests {
     fn mentions_on_the_old_default_move_to_the_mention_tone_once() {
         let mut s: Settings = serde_json::from_str(r#"{"jabber_mention_sound":"warning"}"#).unwrap();
         assert!(s.migrate_mention_sound());
+        let mut t = Settings::default();
+        t.saved_routes = vec![SavedRoute { name: "Home".into(), folder: "Ops".into(), start: 1, end: 3, waypoints: vec![2], jumps: 2, constraints: None }];
+        assert!(t.migrate_travel_routes());
+        assert!(t.saved_routes.is_empty());
+        assert_eq!(t.saved_map_routes[0].anchors, vec![1, 2, 3]);
+        assert_eq!(t.saved_map_routes[0].name, "Ops/Home");
+        assert!(!t.migrate_travel_routes(), "once");
         assert_eq!(s.jabber_mention_sound, "mention");
         s.jabber_mention_sound = "warning".into();
         assert!(!s.migrate_mention_sound(), "picked again on purpose afterwards: kept");

@@ -531,7 +531,7 @@ impl SpaiApp {
             .collect();
         f.upgrades = self.web_upgrade_marks();
         f.cyno = self.settings.cyno_generators.clone();
-        f.route = self.travel_route.clone().unwrap_or_default();
+        f.route = self.map_route_opts.get(self.map_route_at).map(|o| o.hops.iter().map(|h| h.id).collect()).unwrap_or_default();
         f.sov_colors = self.web_sov_colors();
         f.coal_colors = self.web_coalition_colors();
         f.jabber = self.web_jabber_side();

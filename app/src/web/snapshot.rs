@@ -113,7 +113,7 @@ pub struct MapLive {
     /// Scanned wormhole connections, as system pairs. Both ends known only.
     pub holes: Vec<(i64, i64)>,
     pub cyno: Vec<i64>,
-    /// The current travel route, in order.
+    /// The route planned on the map, in order.
     pub route: Vec<i64>,
     pub upgrades: Vec<(i64, Vec<UpgradeMark>)>,
 }

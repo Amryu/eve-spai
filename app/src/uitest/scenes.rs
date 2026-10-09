@@ -2653,31 +2653,6 @@ pub(crate) fn all() -> Vec<Scene> {
             },
         ];
     }));
-    v.push(dialog_scene("dialog_routes", [640.0, 620.0], |a| {
-        a.routes_dialog_open = true;
-        a.systems = Some(fixtures::systems());
-        a.settings.route_folders = vec!["Deployments".into()];
-        a.settings.saved_routes = vec![
-            crate::settings::SavedRoute {
-                name: "Home run".into(),
-                folder: "Deployments".into(),
-                start: 30_004_759,
-                end: 30_000_142,
-                waypoints: vec![30_004_608],
-                jumps: 12,
-                constraints: None,
-            },
-            crate::settings::SavedRoute {
-                name: "Staging".into(),
-                folder: String::new(),
-                start: 30_004_608,
-                end: 30_003_704,
-                waypoints: vec![],
-                jumps: 3,
-                constraints: None,
-            },
-        ];
-    }));
     v.push(dialog_scene("dialog_filter_picker", [520.0, 620.0], |a| {
         let mut p = crate::pickers::FilterPicker::new(crate::pickers::PickerKind::Ships, 0);
         p.data = crate::pickers::PickerData::List(
@@ -4147,7 +4122,7 @@ fn uitest_bench_intel_bridge_detection() {
 /// own control: a labelled checkbox in the distance dropdown, beside the jumps it changes.
 #[test]
 fn uitest_intel_toolbar_carries_the_bridge_toggle() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::NodeT as _;
 
     let mut scene = view_scene("intel_toolbar_probe", View::Intel, [1280.0, 800.0]);
     let mut harness = harness::build(&mut scene, false);
@@ -6054,7 +6029,6 @@ fn uitest_dialog_scenes_render_their_dialog() {
         ("dialog_jump_bridges", "1DQ1-A » O-EIMK"),
         ("dialog_coalitions", "Alliances (sov holders)"),
         ("dialog_battle_filter", "Add rule"),
-        ("dialog_routes", "Home run"),
         ("dialog_filter_picker", "2 selected"),
         ("dialog_verdict_explainer", "Uncertain pilot (?)"),
     ] {
@@ -7317,13 +7291,13 @@ fn uitest_ansiblex_zones_and_jump_range_are_exclusive() {
     let on = |h: &egui_kittest::Harness<'_>, label: &str| {
         h.get_by_label_contains(label).accesskit_node().toggled() == Some(Toggled::True)
     };
-    assert!(on(&harness, "Jump range (hover)"), "jump range starts on");
+    assert!(on(&harness, "Jump range"), "jump range starts on");
     harness.get_by_label_contains("Ansiblex zones").click();
     harness.run();
     harness.run();
     assert!(on(&harness, "Ansiblex zones"));
-    assert!(!on(&harness, "Jump range (hover)"), "zones must switch jump range off");
-    harness.get_by_label_contains("Jump range (hover)").click();
+    assert!(!on(&harness, "Jump range"), "zones must switch jump range off");
+    harness.get_by_label_contains("Jump range").click();
     harness.run();
     harness.run();
     assert!(!on(&harness, "Ansiblex zones"), "jump range must switch zones off");

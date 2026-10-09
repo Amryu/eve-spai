@@ -245,7 +245,7 @@ impl SpaiApp {
     fn map_route_graph_now(&self) -> Option<std::sync::Arc<crate::geo::Systems>> {
         match self.map_route_zone.filter(|z| *z != self.settings.ansiblex_max_zone) {
             None => self.systems.clone(),
-            Some(_) => self.map_route_graph.as_ref().map(|(_, _, g)| g.clone()),
+            Some(_) => self.map_route_graph.as_ref().map(|(_, _, _, g)| g.clone()),
         }
     }
 

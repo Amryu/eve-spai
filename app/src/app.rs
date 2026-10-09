@@ -35,24 +35,6 @@ enum ActivityMode {
 }
 
 impl ActivityMode {
-    fn to_u8(self) -> u8 {
-        match self {
-            ActivityMode::Off => 0,
-            ActivityMode::ShipKills => 1,
-            ActivityMode::PodKills => 2,
-            ActivityMode::NpcKills => 3,
-            ActivityMode::Jumps => 4,
-        }
-    }
-    fn from_u8(n: u8) -> Self {
-        match n {
-            1 => ActivityMode::ShipKills,
-            2 => ActivityMode::PodKills,
-            3 => ActivityMode::NpcKills,
-            4 => ActivityMode::Jumps,
-            _ => ActivityMode::Off,
-        }
-    }
     fn value(self, f: &crate::systemstatus::SysFlags) -> u32 {
         match self {
             ActivityMode::Off => 0,
@@ -67,15 +49,6 @@ impl ActivityMode {
             ActivityMode::Jumps => 400.0,
             ActivityMode::NpcKills => 200.0,
             _ => 30.0,
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            ActivityMode::Off => "off",
-            ActivityMode::ShipKills => "ship kills",
-            ActivityMode::PodKills => "pod kills",
-            ActivityMode::NpcKills => "NPC kills",
-            ActivityMode::Jumps => "jumps",
         }
     }
 }
@@ -187,70 +160,14 @@ impl Default for MapOverlays {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum MapMode {
-    #[default]
-    Standard,
-    Travel,
-    Hunting,
-    Safety,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasteKind {
     Dscan,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum RouteView {
-    #[default]
-    ByFolder,
-    ByName,
-    BySystem,
-}
 
-#[derive(Clone)]
-pub(crate) struct RouteItem {
-    name: String,
-    folder: String,
-    from: i64,
-    to: i64,
-    jumps: usize,
-    wp: usize,
-}
 
-impl MapMode {
-    fn label(self) -> &'static str {
-        match self {
-            MapMode::Standard => "Standard",
-            MapMode::Travel => "Travel",
-            MapMode::Hunting => "Hunting",
-            MapMode::Safety => "Safety",
-        }
-    }
-    fn overlay_preset(self) -> MapOverlays {
-        MapOverlays {
-            sov: SovMode::Off,
-            adm: false,
-            upgrades: false,
-            jump_range: false,
-            wormholes: false,
-            thera: false,
-            turnur: false,
-            camps: !matches!(self, MapMode::Standard),
-            bridges: matches!(self, MapMode::Travel | MapMode::Hunting),
-            activity: match self {
-                MapMode::Standard => ActivityMode::Off,
-                _ => ActivityMode::ShipKills,
-            },
-            cyno_gen: false,
-            jove: false,
-            // The user's own marks, which no mode has a reason to hide.
-            notes: true,
-            ansiblex_zones: false,
-        }
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 struct PersistedView {
@@ -333,7 +250,8 @@ pub enum IntelClick {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightDockTab {
-    Mode,
+    /// Threats in range, while a radial or tree layout centres the map on you.
+    Nearby,
     System,
     /// The route being planned. Its own tab, since the map has no jump-plan mode to host it.
     Route,
@@ -356,6 +274,9 @@ pub(crate) struct SystemInfoOut {
     intel_click: Option<IntelClick>,
     open_const: Option<i64>,
     open_region: Option<i64>,
+    /// Docked: the header's pop-out and close.
+    pop_out: bool,
+    close: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -731,53 +652,9 @@ pub struct SpaiApp {
     /// The sharing group each hole came from, by uid.
     pub(crate) wh_group_of: std::collections::HashMap<String, String>,
     map_overlays: MapOverlays,
-    map_mode: MapMode,
-    standard_overlays: MapOverlays,
-    travel_start: Option<i64>,
-    travel_end: Option<i64>,
-    travel_start_q: String,
-    travel_end_q: String,
-    travel_regional_gates: bool,
-    travel_jump_bridges: bool,
-    travel_avoid_camps: bool,
-    travel_max_ship_kills: u32,
-    travel_sec: [bool; 3],
-    travel_start_sel: usize,
-    travel_end_sel: usize,
-    travel_sugg_key: (String, Option<i64>, String, Option<i64>),
-    travel_sugg: (Vec<SysHit>, Vec<SysHit>),
-    travel_wp_q: String,
-    travel_wp_sel: usize,
-    travel_wp_sugg_key: String,
-    travel_wp_sugg: Vec<SysHit>,
-    travel_metric: ActivityMode,
-    travel_planned_hash: u64,
-    travel_pending_hash: u64,
-    travel_dirty_at: Option<f64>,
-    travel_direct_route: Option<Vec<i64>>,
-    travel_live: bool,
-    travel_live_base: Option<Vec<i64>>,
-    travel_changed: Vec<i64>,
-    travel_changed_at: Option<i64>,
-    travel_live_next: f64,
     /// The single in-game destination we last wrote (the next hop on the route), so we only
     /// re-write it when it changes. EVE rejects duplicate waypoints, so we advance one hop at a
     /// time instead of writing the whole (possibly self-revisiting) route at once.
-    travel_ingame_dest: Option<i64>,
-    travel_waypoints: Vec<i64>,
-    pub(crate) routes_dialog_open: bool,
-    route_save_name: String,
-    route_save_folder: String,
-    route_search: String,
-    route_new_folder: String,
-    route_view: RouteView,
-    route_edit: Option<(String, String)>,
-    route_edit_name: String,
-    route_edit_folder: String,
-    travel_avoid: Vec<i64>,
-    travel_avoid_sov: std::collections::HashSet<String>,
-    travel_sov_dialog_open: bool,
-    travel_route: Option<Vec<i64>>,
     ctx_menu_system: Option<i64>,
     jump_ship: usize,
     jump_jdc: u32,
@@ -845,7 +722,10 @@ pub struct SpaiApp {
     sig_browser: sig_browser::SigBrowser,
     scanner_track: scanner::ScannerTrack,
     /// The graph for `map_route_zone`, keyed by the base graph it was built from and the zone.
-    map_route_graph: Option<(usize, u8, std::sync::Arc<crate::geo::Systems>)>,
+    map_route_graph: Option<(usize, u8, bool, std::sync::Arc<crate::geo::Systems>)>,
+    /// When a kept-current route is next looked at, and what it avoided then.
+    route_live_next: f64,
+    route_live_sig: u64,
     /// The ways of flying each leg, and which one is picked.
     map_route_legs: Vec<crate::web::route::LegChoice>,
     map_leg_pick: Vec<usize>,
@@ -867,7 +747,6 @@ pub struct SpaiApp {
     safety_prev: Option<std::collections::HashSet<i64>>,
     safety_last_scan: f64,
     sov_discover_last: f64,
-    safety_prev_layout: Option<crate::map::MapLayout>,
     flash_until: f64,
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
@@ -900,7 +779,8 @@ pub struct SpaiApp {
     upgrade_kinds: [bool; 4],
     map_highlight_upgrade: Option<String>,
     system_window: Option<i64>,
-    system_kills_tab: bool,
+    /// The system panel's tab: 0 overview, 1 intel, 2 kills.
+    system_kills_tab: u8,
     system_kills_cache: std::collections::HashMap<i64, crate::lookup::SharedLookup>,
     constellation_window: Option<i64>,
     region_window: Option<i64>,
@@ -1127,7 +1007,7 @@ impl SpaiApp {
             }
             settings.jabber_ping_rules_seeded = true;
         }
-        if settings.migrate_mention_sound() {
+        if settings.migrate_mention_sound() | settings.migrate_travel_routes() {
             if let Some(s) = &store {
                 let _ = s.save_settings(&settings);
             }
@@ -1640,50 +1520,6 @@ impl SpaiApp {
             wh_share: Default::default(),
             wh_group_of: Default::default(),
             map_overlays: pv.overlays,
-            map_mode: MapMode::Standard,
-            standard_overlays: pv.overlays,
-            travel_start: None,
-            travel_end: None,
-            travel_start_q: String::new(),
-            travel_end_q: String::new(),
-            travel_regional_gates: true,
-            travel_jump_bridges: true,
-            travel_avoid_camps: true,
-            travel_max_ship_kills: 0,
-            travel_sec: [true, true, true],
-            travel_start_sel: 0,
-            travel_end_sel: 0,
-            travel_sugg_key: (String::new(), None, String::new(), None),
-            travel_sugg: (Vec::new(), Vec::new()),
-            travel_wp_q: String::new(),
-            travel_wp_sel: 0,
-            travel_wp_sugg_key: String::new(),
-            travel_wp_sugg: Vec::new(),
-            travel_metric: ActivityMode::ShipKills,
-            travel_planned_hash: 0,
-            travel_pending_hash: 0,
-            travel_dirty_at: None,
-            travel_direct_route: None,
-            travel_live: false,
-            travel_live_base: None,
-            travel_changed: Vec::new(),
-            travel_changed_at: None,
-            travel_live_next: 0.0,
-            travel_ingame_dest: None,
-            travel_waypoints: Vec::new(),
-            routes_dialog_open: false,
-            route_save_name: String::new(),
-            route_save_folder: String::new(),
-            route_search: String::new(),
-            route_new_folder: String::new(),
-            route_view: RouteView::ByFolder,
-            route_edit: None,
-            route_edit_name: String::new(),
-            route_edit_folder: String::new(),
-            travel_avoid: Vec::new(),
-            travel_avoid_sov: std::collections::HashSet::new(),
-            travel_sov_dialog_open: false,
-            travel_route: None,
             ctx_menu_system: None,
             jump_ship: 0,
             jump_jdc: 5,
@@ -1733,6 +1569,8 @@ impl SpaiApp {
             sig_browser: Default::default(),
             scanner_track: Default::default(),
             map_route_graph: None,
+            route_live_next: 0.0,
+            route_live_sig: 0,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
             map_forks: Default::default(),
@@ -1749,7 +1587,6 @@ impl SpaiApp {
             safety_prev: None,
             safety_last_scan: 0.0,
             sov_discover_last: 0.0,
-            safety_prev_layout: None,
             flash_until: 0.0,
             map_draw: Vec::new(),
             map_draw_spaced: false,
@@ -1777,7 +1614,7 @@ impl SpaiApp {
             upgrade_kinds: [true; 4],
             map_highlight_upgrade: None,
             system_window: None,
-            system_kills_tab: false,
+            system_kills_tab: 0,
             system_kills_cache: std::collections::HashMap::new(),
             constellation_window: None,
             region_window: None,
@@ -3021,11 +2858,7 @@ impl SpaiApp {
 
     fn persist_view_options(&mut self) {
         let pv = PersistedView {
-            overlays: if self.map_mode == MapMode::Standard {
-                self.map_overlays
-            } else {
-                self.standard_overlays
-            },
+            overlays: self.map_overlays,
             map_layout: self.map_layout,
             map_threat_jumps: self.map_threat_jumps,
             intel_max_jumps: self.intel_max_jumps,
@@ -3775,7 +3608,6 @@ impl SpaiApp {
         self.jump_bridges_window(ctx);
         self.sov_upgrades_window(ctx);
         self.coalitions_window(ctx);
-        self.travel_sov_dialog(ctx);
         self.severity_window(ctx);
         self.test_intel_dialog(ctx);
         self.note_editor_window(ctx);
@@ -3796,8 +3628,8 @@ impl SpaiApp {
         self.verdict_dialog(ctx);
         self.dscan_view_dialog(ctx);
         self.fleet_ping_window_ui(ctx);
-        self.routes_dialog(ctx);
         self.safety_watch(ctx);
+        self.route_live_tick(ctx);
         self.screen_flash(ctx);
         if let Some(vp) = self.focus_window.take() {
             ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
@@ -6697,76 +6529,7 @@ fn find_op_channel(text: &str) -> Option<String> {
     None
 }
 
-enum RowAction {
-    None,
-    Load,
-    Delete,
-    Edit,
-    Commit,
-    Cancel,
-}
 
-#[allow(clippy::too_many_arguments)]
-fn route_item_row(
-    ui: &mut egui::Ui,
-    it: &RouteItem,
-    from_name: &str,
-    to_name: &str,
-    is_editing: bool,
-    edit_name: &mut String,
-    edit_folder: &mut String,
-    folders: &[String],
-) -> RowAction {
-    let mut act = RowAction::None;
-    if is_editing {
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(edit_name).desired_width(120.0).hint_text("Name"));
-            egui::ComboBox::from_id_salt(("route_edit_folder", it.name.as_str()))
-                .selected_text(if edit_folder.is_empty() {
-                    "(root)".to_owned()
-                } else {
-                    edit_folder.clone()
-                })
-                .show_ui(ui, |ui| {
-                    ui.menu_value(edit_folder, String::new(), "(root)");
-                    for f in folders {
-                        ui.menu_value(edit_folder, f.clone(), f);
-                    }
-                });
-            if ui.button("Save").clicked() {
-                act = RowAction::Commit;
-            }
-            if ui.button("Cancel").clicked() {
-                act = RowAction::Cancel;
-            }
-        });
-    } else {
-        ui.horizontal(|ui| {
-            if ui.button("Load").clicked() {
-                act = RowAction::Load;
-            }
-            ui.label(egui::RichText::new(&it.name).strong());
-            ui.label(egui::RichText::new(format!("{from_name} \u{2192} {to_name}")).weak());
-            ui.label(egui::RichText::new(format!("{}j", it.jumps)).weak());
-            if it.wp > 0 {
-                ui.label(egui::RichText::new(format!("{} wp", it.wp)).weak());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
-                    act = RowAction::Delete;
-                }
-                if ui
-                    .button(egui_phosphor::regular::PENCIL_SIMPLE)
-                    .on_hover_text("Rename / move to folder")
-                    .clicked()
-                {
-                    act = RowAction::Edit;
-                }
-            });
-        });
-    }
-    act
-}
 
 /// Direct Mumble deep-link for a command-comms channel (op 1-12). Channels 9-12 carry a "- SC"
 /// suffix. Opened locally by the rescue window's Command Comms button; never posted, because a
