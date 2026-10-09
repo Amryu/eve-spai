@@ -641,6 +641,31 @@ fn battle_report_scene(name: &'static str, size: [f32; 2], tab: crate::app::BrTa
     })
 }
 
+/// The battle list with a few battles, one of them with a coalition name and many systems.
+fn battle_list_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let (mut big, big_names) = fixtures::big_battle(4);
+    if let Some(side) = big.sides.first_mut() {
+        side.coalition = Some("The Exceptionally Long-Named Coalition of Assorted Spaceship Enthusiasts".into());
+    }
+    big.systems.extend([(30_000_001, "Tanoo".into(), 0.9), (30_000_002, "Lashesih".into(), 0.8), (30_000_003, "Akpivem".into(), 0.6)]);
+    let mut names = names;
+    names.extend(big_names);
+    let battles = vec![b.clone(), big, b];
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle_list(battles.clone(), names.clone());
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
 fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
     use br_core::battle::{Battle, Engagement, Party, PartyKind};
     harness::scratch_profile();
@@ -2229,6 +2254,8 @@ pub(crate) fn all() -> Vec<Scene> {
     // window. 720 breaks them into the most rows, which is where a divider is most likely to end
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
+    v.push(battle_list_scene("battle_list", [1280.0, 800.0]));
+    v.push(battle_list_scene("battle_list_narrow", [720.0, 800.0]));
     // 1440 is a break point where the throttle picker lands last on its row with the least space
     // left, next to the panel edge.
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
@@ -2811,13 +2838,11 @@ fn content_rects(harness: &egui_kittest::Harness<'_>) -> Vec<egui::Rect> {
 }
 
 /// A divider is a group boundary, so one at the start or the end of a row divides nothing. The
-/// battles toolbar is a single wrapping row and its break points move with the window, so sweep
-/// the whole range from the app's minimum width up.
+/// intel toolbar wraps and its break points move with the window, so sweep the whole range from the
+/// app's minimum width up.
 #[test]
 fn uitest_toolbar_dividers_keep_content_on_both_sides() {
-    for (name, view) in
-        [("battles_divider_probe", View::Battles), ("intel_divider_probe", View::Intel)]
-    {
+    for (name, view) in [("intel_divider_probe", View::Intel)] {
         for w in (720..=1600).step_by(40).map(|w| w as f32) {
             let mut scene = view_scene(name, view, [w, 800.0]);
             let harness = harness::build(&mut scene, false);
@@ -8243,4 +8268,50 @@ fn uitest_a_finished_share_is_a_toast_not_a_row() {
     h.run_steps(3);
     assert!(h.query_by_label_contains("link copied").is_some(), "the toast says the link was copied");
     assert_eq!(tiles_top(&h), before, "nothing pushed the report down");
+}
+
+/// The battle list's filters popup, open.
+#[test]
+#[ignore = "writes a PNG"]
+fn uitest_screenshots_battle_list_filters() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = battle_list_scene("battle_list_filters", [1280.0, 800.0]);
+    let mut h = harness::build(&mut scene, true);
+    h.get_by_label_contains("Filters").click();
+    h.run_steps(3);
+    harness::shot(&mut h, "battle_list_filters");
+}
+
+/// Picking a participant from the suggestions sets the filter and leaves the popup open for more.
+#[test]
+fn uitest_battle_filters_take_a_participant_and_stay_open() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = battle_list_scene("battle_filters_probe", [1280.0, 800.0]);
+    let mut h = harness::build(&mut scene, false);
+    h.get_by_label_contains("Filters").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Pandemic Horde").click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Filters (1)").is_some(), "one filter set");
+    assert!(h.query_by_label_contains("Goonswarm Federation").is_some(), "still open, the other names still offered");
+}
+
+/// Merging: a click on a card picks it instead of opening it, and Merge waits for two.
+#[test]
+fn uitest_merge_picks_cards_by_clicking_them() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = battle_list_scene("battle_merge_probe", [1280.0, 800.0]);
+    let mut h = harness::build(&mut scene, false);
+    h.get_by_label_contains("Merge\u{2026}").click();
+    h.run_steps(3);
+    let merge_enabled = |h: &egui_kittest::Harness<'_>| !h.get_by_label_contains("Merge 2").accesskit_node().is_disabled();
+    let checks: Vec<egui::Rect> = h.get_all_by_role(egui::accesskit::Role::CheckBox).map(|n| n.rect()).collect();
+    assert_eq!(checks.len(), 3, "a checkbox per card");
+    // Beside each checkbox, on its card.
+    for r in &checks[..2] {
+        harness::click_at(&h, egui::pos2(r.right() + 300.0, r.center().y));
+        h.run_steps(3);
+    }
+    assert!(merge_enabled(&h), "two picked, Merge ready");
+    assert!(h.query_by_label_contains("Pick the battles").is_some(), "still merging, nothing opened");
 }

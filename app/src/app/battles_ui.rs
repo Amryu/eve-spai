@@ -11,13 +11,7 @@ impl SpaiApp {
         }
         let mut changed = false;
         let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai - Battle rules", [580.0, 620.0], |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "Battles near your intel are shown by default. Add rules to include or exclude \
-                     others. The first rule that matches a battle wins.",
-                )
-                .weak(),
-            );
+            ui.label(egui::RichText::new("The first rule that matches a battle decides. Without one, battles near your intel are tracked.").weak());
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let rules = &mut self.settings.battles.rules;
@@ -78,6 +72,10 @@ impl SpaiApp {
                                             }
                                         }
                                     });
+                                let pairs = matches!(
+                                    cond,
+                                    BattleCond::Alliance(_) | BattleCond::Corporation(_) | BattleCond::Player(_) | BattleCond::ShipType(_)
+                                );
                                 match cond {
                                     BattleCond::IntelArea => {
                                         ui.label(egui::RichText::new("(default tracked area)").weak());
@@ -90,9 +88,13 @@ impl SpaiApp {
                                     | BattleCond::Constellation(s)
                                     | BattleCond::System(s)
                                     | BattleCond::ShipType(s) => {
-                                        changed |= ui
-                                            .add(egui::TextEdit::singleline(s).desired_width(200.0).hint_text("name"))
-                                            .changed();
+                                        let field = ui.add(egui::TextEdit::singleline(s).desired_width(200.0).hint_text("name"));
+                                        let field = if pairs {
+                                            field.on_hover_text("Add a region, coalition or hull condition to this rule to pull in new battles")
+                                        } else {
+                                            field
+                                        };
+                                        changed |= field.changed();
                                     }
                                     BattleCond::JumpsFromMe(nn) => {
                                         changed |= ui.add(egui::DragValue::new(nn).range(0..=100).suffix(" jumps")).changed();
@@ -123,21 +125,6 @@ impl SpaiApp {
                                     }
                                 });
                             });
-                            if matches!(
-                                cond,
-                                BattleCond::Alliance(_)
-                                    | BattleCond::Corporation(_)
-                                    | BattleCond::Player(_)
-                                    | BattleCond::ShipType(_)
-                            ) {
-                                ui.label(
-                                    egui::RichText::new(
-                                        "   pairs with a region/coalition/hull condition to pull in new battles",
-                                    )
-                                    .weak()
-                                    .size(11.0),
-                                );
-                            }
                         }
                         if let Some(j) = del_cond {
                             rule.conditions.remove(j);
@@ -963,6 +950,99 @@ impl SpaiApp {
         }
     }
 
+    /// How many list filters are set.
+    fn battle_filters_active(&self) -> usize {
+        (self.settings.min_battle_isk > 0.0) as usize + (self.settings.battle_min_pilots > 0) as usize + (!self.settings.battle_parties.is_empty()) as usize
+    }
+
+    /// The list's filters. Returns whether the tracking rules were asked for.
+    fn battle_filters_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use egui_phosphor::regular as icon;
+        ui.set_width(300.0);
+        let mut rules = false;
+        egui::Grid::new("br_filters").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Minimum ISK");
+            let mut bn = self.settings.min_battle_isk / 1e9;
+            if ui
+                .add(egui::DragValue::new(&mut bn).range(0.0..=100_000.0).speed(0.5).custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n:.0}B") }))
+                .on_hover_text("ISK destroyed in the whole battle")
+                .changed()
+            {
+                self.settings.min_battle_isk = (bn * 1e9).max(0.0);
+                self.needs_save = true;
+            }
+            ui.end_row();
+            ui.label("Minimum pilots");
+            let mut n = self.settings.battle_min_pilots;
+            if ui
+                .add(egui::DragValue::new(&mut n).range(0..=10_000).speed(1.0).custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n:.0}") }))
+                .changed()
+            {
+                self.settings.battle_min_pilots = n;
+                self.needs_save = true;
+            }
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.label("With any of");
+        let mut remove = None;
+        for (i, p) in self.settings.battle_parties.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(icon::X).on_hover_text("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(p).truncate()).on_hover_text(p);
+                    });
+                });
+            });
+        }
+        if let Some(i) = remove {
+            self.settings.battle_parties.remove(i);
+            self.needs_save = true;
+        }
+        let typed = self.battle_party_input.trim().to_lowercase();
+        let resp = ui.add(egui::TextEdit::singleline(&mut self.battle_party_input).hint_text("Alliance, corporation or coalition").desired_width(f32::INFINITY));
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        // The names in the listed battles that match what is typed, most battles first.
+        let picks: Vec<String> = self
+            .battle_party_names
+            .iter()
+            .filter(|n| !self.settings.battle_parties.iter().any(|p| p.eq_ignore_ascii_case(n)))
+            .filter(|n| typed.is_empty() || n.to_lowercase().contains(&typed))
+            .take(6)
+            .cloned()
+            .collect();
+        let mut add = None;
+        for n in &picks {
+            if ui.add(egui::Button::new(format!("{}  {n}", icon::PLUS)).truncate().frame(false)).on_hover_text(format!("Add {n}")).clicked() {
+                add = Some(n.clone());
+            }
+        }
+        if enter && !typed.is_empty() {
+            add = Some(picks.first().cloned().unwrap_or_else(|| self.battle_party_input.trim().to_owned()));
+        }
+        if let Some(n) = add {
+            self.settings.battle_parties.push(n);
+            self.battle_party_input.clear();
+            self.needs_save = true;
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Tracking rules\u{2026}", icon::LIST_CHECKS)).on_hover_text("Which battles are tracked at all").clicked() {
+                rules = true;
+            }
+            if self.battle_filters_active() > 0 && ui.button("Clear filters").clicked() {
+                self.settings.min_battle_isk = 0.0;
+                self.settings.battle_min_pilots = 0;
+                self.settings.battle_parties.clear();
+                self.needs_save = true;
+            }
+        });
+        rules
+    }
+
     /// Sharing's progress and outcome as notices; a finished share's link goes to the clipboard.
     pub(crate) fn share_status_poll(&mut self, ctx: &egui::Context) {
         use crate::brshare::ShareStatus;
@@ -1223,9 +1303,8 @@ impl SpaiApp {
                     .unwrap_or_else(|| "Battle report".into());
                 self.show_imported_report(b, title, ctx);
                 self.build_kill_input.clear();
-                self.build_kill_error = None;
             }
-            Some(crate::zkill::BuildFromKill::Failed(msg)) => self.build_kill_error = Some(msg),
+            Some(crate::zkill::BuildFromKill::Failed(msg)) => self.toast_error(msg),
             _ => {}
         }
     }
@@ -1430,6 +1509,8 @@ impl SpaiApp {
             inp.sort = self.battle_roster_sort;
             inp.condensed = self.battle_condensed;
             inp.systems = self.battle_systems.clone();
+            inp.min_pilots = self.settings.battle_min_pilots;
+            inp.parties = self.settings.battle_parties.iter().map(|p| p.to_lowercase()).collect();
         }
         let want_sig = {
             let _s = crate::frametime::span("br: signature (battles + intel locks)");
@@ -2001,8 +2082,7 @@ impl SpaiApp {
         if self.chat_dir.is_none() && self.settings.intel_channels.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Battle reports cluster killmails near systems seen in intel. \
-                     Configure intel channels (Settings) so there's an area to watch.",
+                    "Battles are found near systems seen in intel: set up intel channels in Settings.",
                 )
                 .weak(),
             );
@@ -2013,172 +2093,118 @@ impl SpaiApp {
         let mut do_build = false;
         let building =
             matches!(*self.build_from_kill.lock().unwrap(), crate::zkill::BuildFromKill::Loading);
+        let mut open_rules = false;
         toolbar(ui, |ui| {
-            ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.battle_search)
-                    .hint_text("Filter by system, alliance, pilot…")
-                    .desired_width(240.0),
-            );
-            if !self.battle_search.is_empty() && ui.button("Clear").clicked() {
-                self.battle_search.clear();
-            }
-            toolbar_sep(ui);
-            ui.label("\u{2265} ISK").on_hover_text("Only list battles whose total ISK destroyed is at least this many billions");
-            let mut bn = self.settings.min_battle_isk / 1e9;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut bn)
-                        .range(0.0..=100_000.0)
-                        .speed(0.5)
-                        .custom_formatter(|n, _| if n == 0.0 { "off".to_owned() } else { format!("{n:.0}B") }),
-                )
-                .changed()
-            {
-                self.settings.min_battle_isk = (bn * 1e9).max(0.0);
-                self.needs_save = true;
-            }
-            toolbar_sep(ui);
-            ui.label("Split gap (min)")
-                .on_hover_text("Auto-split a battle when there's a lull longer than this.");
-            let mut mins = (self.settings.battle_break_secs / 60).clamp(1, 30);
-            if ui
-                .add(egui::DragValue::new(&mut mins).range(1..=30).speed(0.2))
-                .on_hover_text("Auto-split a battle when there's a lull longer than this.")
-                .changed()
-            {
-                let secs = mins.clamp(1, 30) * 60;
-                self.settings.battle_break_secs = secs;
-                self.needs_save = true;
-                self.battle_break_shared.store(secs, std::sync::atomic::Ordering::Relaxed);
-            }
-            if ui
-                .checkbox(&mut self.show_history, "Last 30 days")
-                .on_hover_text(
-                    "EVE Spai keeps 30 days of battle history on disk. Export a battle to JSON to \
-                     keep it longer; Open JSON reads it back.",
-                )
-                .changed()
-            {
-                self.battle_selected = None;
-                if self.show_history {
-                    self.load_battle_history(ui.ctx());
-                }
-            }
-            if ui.button(format!("{}  Rules…", egui_phosphor::regular::FUNNEL)).clicked() {
-                self.battle_filter_open = true;
-            }
-            toolbar_sep(ui);
-            if ui
-                .button(format!("{}  Open JSON", egui_phosphor::regular::FOLDER_OPEN))
-                .on_hover_text("Open a saved battle-report JSON file")
-                .clicked()
-            {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("EVE Spai battle report", &["json"])
-                    .pick_file()
-                {
-                    to_load = Some(path);
-                }
-            }
-            if ui
-                .button(format!("{}  My shared BRs", egui_phosphor::regular::GLOBE))
-                .on_hover_text("List and manage the reports you've shared to eve-spai.com")
-                .clicked()
-            {
-                open_my_shared = true;
-            }
-            toolbar_sep(ui);
-            let input = ui.add_enabled(
-                !building,
-                egui::TextEdit::singleline(&mut self.build_kill_input)
-                    .hint_text("Paste a zKill kill link or id")
-                    .desired_width(220.0),
-            );
-            let submit =
-                input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !building;
-            if ui
-                .add_enabled(
-                    !building,
-                    egui::Button::new(format!(
-                        "{}  Build from kill",
-                        egui_phosphor::regular::HAMMER
-                    )),
-                )
-                .on_hover_text("Build a battle report from one zKillboard kill link or id")
-                .clicked()
-                || submit
-            {
-                do_build = true;
-            }
-            if building {
-                ui.add(egui::Spinner::new());
-            }
-            let mut th = self.settings.work_throttle;
-            toolbar_combo(
-                ui,
-                "work_throttle",
-                format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()),
-                |ui| {
-                    for opt in crate::settings::WorkThrottle::CHOICES {
-                        ui.menu_value(&mut th, opt, opt.label());
+            use egui_phosphor::regular as icon;
+            // The scope, the filters and the menu claim their room first; the search takes the rest.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button(icon::DOTS_THREE, |ui| {
+                    if ui.button(format!("{}  Open JSON\u{2026}", icon::FOLDER_OPEN)).on_hover_text("Open a saved battle report").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("EVE Spai battle report", &["json"]).pick_file() {
+                            to_load = Some(path);
+                        }
+                        ui.close();
                     }
-                },
-            )
-            .on_hover_text("Throttle background work (battle feed + clustering) to limit CPU.");
-            if th != self.settings.work_throttle {
-                self.settings.work_throttle = th;
-                self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
-                self.needs_save = true;
-            }
-            toolbar_sep(ui);
-            if ui
-                .checkbox(&mut self.settings.battles_enabled, "Enabled")
-                .on_hover_text(
-                    "Generate and compute battle reports. Turn off to stop all \
-                     battle-report computation.",
-                )
-                .changed()
-            {
-                self.battles_enabled_shared
-                    .store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
-                self.needs_save = true;
-            }
+                    if ui.button(format!("{}  My shared BRs", icon::GLOBE)).on_hover_text("The reports you shared to eve-spai.com").clicked() {
+                        open_my_shared = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("Build from a kill").weak());
+                    ui.horizontal(|ui| {
+                        let input = ui.add_enabled(
+                            !building,
+                            egui::TextEdit::singleline(&mut self.build_kill_input).hint_text("zKill link or id").desired_width(180.0),
+                        );
+                        let submit = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if building {
+                            ui.add(egui::Spinner::new());
+                        } else if ui.button(icon::HAMMER).on_hover_text("Build a battle report around this kill").clicked() || submit {
+                            do_build = true;
+                            ui.close();
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("Split after a lull of");
+                        let mut mins = (self.settings.battle_break_secs / 60).clamp(1, 30);
+                        if ui.add(egui::DragValue::new(&mut mins).range(1..=30).speed(0.2).suffix(" min")).changed() {
+                            let secs = mins.clamp(1, 30) * 60;
+                            self.settings.battle_break_secs = secs;
+                            self.needs_save = true;
+                            self.battle_break_shared.store(secs, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                    let mut th = self.settings.work_throttle;
+                    ui.menu_button(format!("{}  CPU: {}", icon::GAUGE, th.label()), |ui| {
+                        for opt in crate::settings::WorkThrottle::CHOICES {
+                            ui.menu_value(&mut th, opt, opt.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("How hard the kill feed and clustering may work");
+                    if th != self.settings.work_throttle {
+                        self.settings.work_throttle = th;
+                        self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
+                        self.needs_save = true;
+                    }
+                    if ui.checkbox(&mut self.settings.battles_enabled, "Battle reports on").changed() {
+                        self.battles_enabled_shared.store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
+                        self.needs_save = true;
+                    }
+                })
+                .response
+                .on_hover_text("Open, share, build and settings");
+                let active = self.battle_filters_active();
+                let label = if active > 0 { format!("{}  Filters ({active})", icon::FUNNEL) } else { format!("{}  Filters", icon::FUNNEL) };
+                let menu = egui::containers::menu::MenuButton::new(label)
+                    .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
+                menu.ui(ui, |ui| {
+                    if self.battle_filters_ui(ui) {
+                        open_rules = true;
+                        ui.close();
+                    }
+                });
+                let scope = if self.show_history { "Last 30 days" } else { "Active" };
+                let mut history = self.show_history;
+                toolbar_combo(ui, "br_scope", scope.to_owned(), |ui| {
+                    ui.menu_value(&mut history, false, "Active").on_hover_text("Battles going on or just over");
+                    ui.menu_value(&mut history, true, "Last 30 days").on_hover_text("Kept on disk for 30 days; save a report as JSON to keep it longer");
+                });
+                if history != self.show_history {
+                    self.show_history = history;
+                    self.battle_selected = None;
+                    if history {
+                        self.load_battle_history(ui.ctx());
+                    }
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(icon::MAGNIFYING_GLASS);
+                    let w = (ui.available_width() - if self.battle_search.is_empty() { 0.0 } else { 30.0 }).max(80.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.battle_search).hint_text("System, alliance or pilot").desired_width(w));
+                    if !self.battle_search.is_empty() && ui.button(icon::X).on_hover_text("Clear").clicked() {
+                        self.battle_search.clear();
+                    }
+                });
+            });
         });
+        if open_rules {
+            self.battle_filter_open = true;
+        }
         if open_my_shared {
             self.open_my_shared(&ui.ctx().clone());
         }
         if do_build {
             match crate::zkill::parse_kill_id(&self.build_kill_input) {
-                None => {
-                    self.build_kill_error = Some("Not a valid zKill kill link or id".to_owned());
-                }
+                None => self.toast_error("Not a zKillboard kill link or id"),
                 Some(id) => {
-                    self.build_kill_error = None;
-                    if let (Some(systems), Some(ship_ids)) =
-                        (self.systems.clone(), self.battle_ship_ids.clone())
-                    {
-                        crate::zkill::spawn_build_from_kill(
-                            id,
-                            systems,
-                            ship_ids,
-                            self.build_from_kill.clone(),
-                            ui.ctx().clone(),
-                        );
+                    if let (Some(systems), Some(ship_ids)) = (self.systems.clone(), self.battle_ship_ids.clone()) {
+                        crate::zkill::spawn_build_from_kill(id, systems, ship_ids, self.build_from_kill.clone(), ui.ctx().clone());
                     } else {
-                        self.build_kill_error =
-                            Some("Ship data is still loading, try again in a moment".to_owned());
+                        self.toast_error("Ship data is still loading, try again in a moment");
                     }
                 }
             }
-        }
-        if let Some(err) = self.build_kill_error.clone() {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(err).color(crate::theme::standing::WARNING));
-                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).clicked() {
-                    self.build_kill_error = None;
-                }
-            });
         }
         if let Some(path) = to_load {
             self.load_battle_report(&path, ui.ctx());
@@ -2191,9 +2217,10 @@ impl SpaiApp {
         let want_sig = self.br_publish_inputs();
         {
             let out = self.br_outputs.lock().unwrap();
-            if out.sig != self.battle_cards_out_sig {
+            if out.sig != self.battle_cards_out_sig && !self.battle_cards_seeded {
                 self.battle_cards_out_sig = out.sig;
                 self.battle_cards = out.cards.clone();
+                self.battle_party_names = out.party_names.clone();
                 self.battle_cards_total = out.total;
                 self.battle_cards_filtered = out.filtered;
                 self.battle_cards_ready = out.ready;
@@ -2202,7 +2229,7 @@ impl SpaiApp {
         let total = self.battle_cards_total;
         let filtered = self.battle_cards_filtered;
         let ready = self.battle_cards_ready;
-        let fresh = self.battle_cards_out_sig == want_sig;
+        let fresh = self.battle_cards_seeded || self.battle_cards_out_sig == want_sig;
         let waited = if ready && fresh {
             self.battle_wait_since = None;
             std::time::Duration::ZERO
@@ -2242,26 +2269,25 @@ impl SpaiApp {
         };
         let mut do_merge = false;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(count_txt).weak());
-            ui.separator();
-            if ui
-                .menu_label(self.battle_edit_mode, format!("{}  Merge", egui_phosphor::regular::ARROWS_MERGE))
-                .on_hover_text("Tick two or more battles to merge them into one")
-                .clicked()
-            {
-                self.battle_edit_mode = !self.battle_edit_mode;
-            }
+            use egui_phosphor::regular as icon;
             if self.battle_edit_mode {
                 let n = self.battle_merge_sel.len();
-                if n >= 2
-                    && ui
-                        .button(format!("{} Merge {n} battles", egui_phosphor::regular::ARROWS_MERGE))
-                        .clicked()
+                ui.label(egui::RichText::new("Pick the battles to merge").strong());
+                if ui
+                    .add_enabled(n >= 2, egui::Button::new(format!("{}  Merge {n}", icon::ARROWS_MERGE)))
+                    .on_disabled_hover_text("Pick two or more")
+                    .clicked()
                 {
                     do_merge = true;
                 }
-                if n > 0 && ui.button("Clear").clicked() {
+                if ui.button("Cancel").clicked() {
+                    self.battle_edit_mode = false;
                     self.battle_merge_sel.clear();
+                }
+            } else {
+                ui.label(egui::RichText::new(count_txt).weak());
+                if ui.button(format!("{}  Merge\u{2026}", icon::ARROWS_MERGE)).on_hover_text("Make one battle out of several").clicked() {
+                    self.battle_edit_mode = true;
                 }
             }
         });
@@ -2272,22 +2298,23 @@ impl SpaiApp {
         let cards = &self.battle_cards;
         let _cards_span = crate::frametime::span("br: card list");
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (kid, from_you, b) in cards {
+            for (kid, from_you, pilots, b) in cards {
                 if edit {
+                    // The whole card picks it, its checkbox shows that it is picked.
+                    let mut on = merge_sel.contains(kid);
+                    let mut flip = false;
                     ui.horizontal(|ui| {
-                        let mut on = merge_sel.contains(kid);
-                        if ui.checkbox(&mut on, "").changed() {
-                            if on {
-                                merge_sel.insert(*kid);
-                            } else {
-                                merge_sel.remove(kid);
-                            }
-                        }
-                        if battle_row(ui, b, now, *from_you) {
-                            open = Some(*kid);
-                        }
+                        flip |= ui.checkbox(&mut on, "").changed();
+                        flip |= battle_row(ui, b, now, *from_you, *pilots);
                     });
-                } else if battle_row(ui, b, now, *from_you) {
+                    if flip {
+                        if merge_sel.contains(kid) {
+                            merge_sel.remove(kid);
+                        } else {
+                            merge_sel.insert(*kid);
+                        }
+                    }
+                } else if battle_row(ui, b, now, *from_you, *pilots) {
                     open = Some(*kid);
                 }
                 ui.add_space(4.0);

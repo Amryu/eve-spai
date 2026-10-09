@@ -446,7 +446,6 @@ pub struct SpaiApp {
     br_share_deleting: bool,
     build_from_kill: crate::zkill::SharedBuildFromKill,
     build_kill_input: String,
-    build_kill_error: Option<String>,
     battle_ship_ids: Option<std::sync::Arc<std::collections::HashSet<i64>>>,
     br_share: crate::brshare::SharedShare,
     /// A br.evetools report being made or updated.
@@ -525,7 +524,13 @@ pub struct SpaiApp {
     battle_filter_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // UI-side snapshots of the worker output, re-cloned only when its signature changes (never
     // per frame), so scrolling/rendering never clones the battle list or the open battle.
-    battle_cards: Vec<(i64, Option<u32>, br_core::battle::Battle)>,
+    battle_cards: Vec<crate::brview::Card>,
+    /// Alliance and coalition names in the listed battles, for the participant filter.
+    battle_party_names: Vec<String>,
+    /// What is typed into the participant filter.
+    battle_party_input: String,
+    /// Seeded by a test: the list shows these cards as they are, no worker behind them.
+    battle_cards_seeded: bool,
     battle_cards_total: usize,
     battle_cards_filtered: usize,
     battle_cards_ready: bool,
@@ -1435,7 +1440,6 @@ impl SpaiApp {
                 crate::zkill::BuildFromKill::Idle,
             )),
             build_kill_input: String::new(),
-            build_kill_error: None,
             battle_ship_ids: None,
             br_share: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::ShareStatus::Idle)),
             evetools: Default::default(),
@@ -1497,6 +1501,9 @@ impl SpaiApp {
             br_last_sent_sig: 0,
             battle_filter_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_cards: Vec::new(),
+            battle_party_names: Vec::new(),
+            battle_party_input: String::new(),
+            battle_cards_seeded: false,
             battle_cards_total: 0,
             battle_cards_filtered: 0,
             battle_cards_ready: false,
@@ -3217,6 +3224,25 @@ impl SpaiApp {
         self.battle_selected = Some(kid);
         let tiles = crate::brview::ship_tiles(&rosters);
         self.battle_detail_cache = Some(std::sync::Arc::new(crate::brview::BattleDetail { kid, battle: b, inv, rosters, condensed, ship_ids, tiles, shown: None }));
+    }
+
+    /// The battle list as the worker would leave it: `battles`, newest first, with these names.
+    #[cfg(test)]
+    pub(crate) fn seed_battle_list(&mut self, battles: Vec<br_core::battle::Battle>, names: std::collections::HashMap<i64, String>) {
+        *self.type_names.lock().unwrap() = names;
+        self.battle_cards = battles
+            .iter()
+            .map(|b| {
+                let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
+                let pilots = crate::brview::pilot_count(b);
+                (kid, Some(3), pilots, br_core::battle::Battle { engagements: Vec::new(), ..b.clone() })
+            })
+            .collect();
+        self.battle_cards_total = self.battle_cards.len();
+        self.battle_cards_ready = true;
+        self.battle_cards_seeded = true;
+        self.battle_party_names = vec!["Goonswarm Federation".into(), "Pandemic Horde".into(), "The Initiative.".into()];
+        *self.battles.lock().unwrap() = battles;
     }
 
     #[cfg(test)]
@@ -5765,43 +5791,69 @@ pub(crate) fn battle_row(
     b: &br_core::battle::Battle,
     now: i64,
     from_you: Option<u32>,
+    pilots: u32,
 ) -> bool {
     let span_min = ((b.end - b.start) / 60).max(0);
     let resp = egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
+        let w = ui.available_width();
+        ui.set_width(w);
+        ui.set_max_width(w);
+        // Two lines, never wrapped: the figures keep their room, names give way with an ellipsis.
+        ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
             from_you_chip(ui, from_you);
-            for (_id, name, sec) in &b.systems {
-                ui.label(security_badge(*sec));
-                ui.label(egui::RichText::new(name).strong());
-            }
-            ui.separator();
-            ui.label(format!("{} kills", b.kills));
-            if b.ambiguous {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::WARNING)
-                        .color(crate::theme::standing::WARNING)
-                        .strong(),
-                )
-                .on_hover_text("This battle may be two fights. Open to review.");
-            }
-            ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
-            if span_min > 0 {
-                ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut figures = format!("{} kills \u{00b7} {pilots} pilots \u{00b7} {} ISK", b.kills, fmt_isk(b.isk));
+                if span_min > 0 {
+                    figures.push_str(&format!(" \u{00b7} {span_min}m"));
+                }
+                ui.add(egui::Label::new(egui::RichText::new(figures).weak()).wrap_mode(egui::TextWrapMode::Extend));
+                if b.ambiguous {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(crate::theme::standing::WARNING).strong())
+                        .on_hover_text("This battle may be two fights. Open to review.");
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let mut job = egui::text::LayoutJob::default();
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+                    for (i, (_, name, sec)) in b.systems.iter().enumerate() {
+                        if i > 0 {
+                            job.append("  ", 0.0, egui::TextFormat::simple(font.clone(), ui.visuals().text_color()));
+                        }
+                        job.append(&format!("{:.1} ", (sec * 10.0).round() / 10.0), 0.0, egui::TextFormat::simple(mono.clone(), security_color(*sec)));
+                        job.append(name, 0.0, egui::TextFormat::simple(font.clone(), ui.visuals().strong_text_color()));
+                    }
+                    let all = b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+                    ui.add(egui::Label::new(job).truncate()).on_hover_text(all);
+                });
+            });
         });
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
+            // Each side gets an equal share of the line, its name cut to fit.
+            let n = b.sides.len().clamp(1, 2) as f32;
+            let vs_w = 24.0;
+            let gap = ui.spacing().item_spacing.x;
+            let share = ((ui.available_width() - (vs_w + 2.0 * gap) * (n - 1.0)) / n).floor().max(60.0);
             for (i, side) in b.sides.iter().take(2).enumerate() {
                 if i > 0 {
-                    ui.label(egui::RichText::new("vs").strong());
+                    ui.add_sized([vs_w, 18.0], egui::Label::new(egui::RichText::new("vs").strong()));
                 }
                 let col = side_color(i);
-                if let Some(lead) = side.parties.first() {
-                    party_badge(ui, lead, 18.0, false);
-                }
-                ui.label(egui::RichText::new(side_title(side)).color(col).strong());
-                ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
+                ui.scope(|ui| {
+                    ui.set_max_width(share);
+                    ui.horizontal(|ui| {
+                        if let Some(lead) = side.parties.first() {
+                            party_badge(ui, lead, 18.0, false);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let title = side_title(side);
+                                ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong()).truncate()).on_hover_text(&title);
+                            });
+                        });
+                    });
+                });
             }
         });
     })
