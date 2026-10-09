@@ -20,6 +20,7 @@ pub struct AiDeps {
     pub lookup_table: crate::localscan::SharedTable,
     pub facts: Arc<Mutex<AiFacts>>,
     pub memories: crate::ai::memory::SharedMemories,
+    pub watches: crate::ai::watch::SharedWatches,
     /// Whether tools may reach ESI and the web. Off in tests.
     pub online: bool,
 }
@@ -69,6 +70,7 @@ impl AiDeps {
             lookup_table: Default::default(),
             facts: Arc::new(Mutex::new(facts)),
             memories: Default::default(),
+            watches: Default::default(),
             online: false,
         }
     }

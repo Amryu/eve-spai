@@ -77,11 +77,13 @@ pub struct Turn {
     pub error: Option<String>,
     /// Asked by voice: the answer is spoken whatever the settings say.
     pub voice: bool,
+    /// Posted by this watch rather than in answer to a question.
+    pub watch: Option<u64>,
 }
 
 impl Turn {
     fn new(user: bool, text: String, voice: bool) -> Self {
-        Self { user, text, chips: Vec::new(), cards: Vec::new(), streaming: !user, error: None, voice }
+        Self { user, text, chips: Vec::new(), cards: Vec::new(), streaming: !user, error: None, voice, watch: None }
     }
 }
 
@@ -93,6 +95,8 @@ pub struct AiView {
     /// Text the voice output has not taken yet, from the turn being answered.
     pub speak: String,
     pub speak_turn: Option<usize>,
+    /// Watch news the UI has not shown outside the tab yet.
+    pub watch_news: Vec<String>,
 }
 
 pub type SharedView = Arc<Mutex<AiView>>;
@@ -118,13 +122,15 @@ pub struct Session {
     calls: VecDeque<i64>,
     tokens_today: (i64, u64),
     conv: String,
+    /// When the watches last had their new items judged.
+    watch_checked: i64,
     /// Started the first time a backend that runs its own tools asks for one.
     mcp: Option<super::mcp::McpServer>,
 }
 
 impl Session {
     pub fn new(deps: AiDeps, view: SharedView, cancel: Arc<AtomicBool>, make: ProviderFactory, repaint: Option<egui::Context>) -> Self {
-        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0), conv: super::mcp::new_token(), mcp: None }
+        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0), conv: super::mcp::new_token(), watch_checked: 0, mcp: None }
     }
 
     fn update(&self, f: impl FnOnce(&mut AiView)) {
@@ -346,6 +352,185 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Posts a message from a watch into the chat, and lets the UI tell the user elsewhere.
+    fn watch_post(&mut self, id: u64, text: String, card: Option<PendingAction>) {
+        self.notes.push(format!("Watch {id} told the user: {text}"));
+        self.update(|v| {
+            let mut t = Turn::new(false, text.clone(), false);
+            t.streaming = false;
+            t.watch = Some(id);
+            t.cards.extend(card.map(|action| ActionCard { action, state: CardState::Pending }));
+            v.turns.push(t);
+            v.watch_news.push(text);
+        });
+    }
+
+    /// Moves the watches on: time spans ending, quiet ones asking, unanswered ones stopping, and new
+    /// intel and kills judged against each running one.
+    pub fn tick_watches(&mut self, store: Option<&crate::store::Store>, now: i64) {
+        use super::watch::Due;
+        let dues: Vec<(Due, String)> = {
+            let mut ws = self.deps.watches.lock().unwrap_or_else(|e| e.into_inner());
+            ws.iter_mut().filter_map(|w| w.tick(now).map(|d| (d, w.goal.clone()))).collect()
+        };
+        for (due, goal) in dues {
+            match due {
+                Due::Ended(id) => self.watch_post(id, format!("Stopped watching for {goal}: its time is up."), None),
+                Due::Ask(id) => {
+                    let card = PendingAction { id: now as u64 * 1000 + 900 + id % 100, kind: super::tools::ActionKind::KeepWatching(id), summary: format!("Keep watching for {goal}") };
+                    self.watch_post(id, format!("Nothing on {goal} for half an hour. Keep watching?"), Some(card));
+                }
+                Due::GaveUp(id) => {
+                    self.update(|v| {
+                        for c in v.turns.iter_mut().flat_map(|t| t.cards.iter_mut()) {
+                            if c.action.kind == super::tools::ActionKind::KeepWatching(id) && c.state == CardState::Pending {
+                                c.state = CardState::Dismissed;
+                            }
+                        }
+                    });
+                    self.watch_post(id, format!("Stopped watching for {goal}. Say so or press Resume to start again."), None);
+                }
+            }
+        }
+        if now - self.watch_checked < super::watch::BATCH_SECS {
+            return;
+        }
+        self.watch_checked = now;
+        // Not while a question is being answered: both would talk over each other in the chat.
+        if self.view.lock().unwrap_or_else(|e| e.into_inner()).busy {
+            return;
+        }
+        for (id, goal, items) in self.watch_candidates(store, now) {
+            match self.judge(&goal, &items, now) {
+                Ok(Some(msg)) => {
+                    if let Some(w) = self.deps.watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == id) {
+                        w.hit(now);
+                    }
+                    self.watch_post(id, msg, None);
+                }
+                Ok(None) => {}
+                // A failed check says why once in the chat and stops the watch, rather than
+                // failing quietly every 20 seconds.
+                Err(e) => {
+                    if let Some(w) = self.deps.watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == id) {
+                        w.stop("the check failed");
+                    }
+                    self.watch_post(id, format!("Stopped watching for {goal}: {e}"), None);
+                }
+            }
+        }
+    }
+
+    /// New items per running watch that pass its filter, as lines for the model.
+    fn watch_candidates(&mut self, store: Option<&crate::store::Store>, now: i64) -> Vec<(u64, String, Vec<String>)> {
+        let facts = self.deps.facts();
+        let (intel_ok, kills_ok) = (facts.allowed("intel.reports"), facts.allowed("kills.feed") || facts.allowed("kills.history"));
+        let mut ws = self.deps.watches.lock().unwrap_or_else(|e| e.into_inner());
+        let running: Vec<usize> = ws.iter().enumerate().filter(|(_, w)| w.running()).map(|(i, _)| i).collect();
+        if running.is_empty() {
+            return Vec::new();
+        }
+        let oldest_intel = running.iter().map(|&i| ws[i].seen_intel).min().unwrap_or(now);
+        let oldest_kill = running.iter().map(|&i| ws[i].seen_kills).min().unwrap_or(now);
+        let reports: Vec<crate::intel::IntelReport> = if intel_ok {
+            let st = self.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+            st.reports.iter().filter(|r| r.received > oldest_intel).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let kills = match (kills_ok, store) {
+            (true, Some(s)) => s.load_engagements(oldest_kill + 1),
+            _ => Vec::new(),
+        };
+        let ships = store.map(super::tools::intel::ship_names).unwrap_or_default();
+        let ship = |id: i64| ships.get(&id).cloned().unwrap_or_else(|| format!("type {id}"));
+        let age = |t: i64| super::tools::fmt_age(now, t);
+        let mut out = Vec::new();
+        for i in running {
+            let w = &mut ws[i];
+            let mut items = Vec::new();
+            for r in reports.iter().filter(|r| r.received > w.seen_intel) {
+                let sys: Vec<i64> = r.systems.iter().map(|s| s.id).collect();
+                let hay = format!("{} {} {} {}", r.text, r.pilots.join(" "), r.ships.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" "), r.alliances.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>().join(" ")).to_lowercase();
+                if w.candidate(&sys, &hay) {
+                    items.push(format!("intel {} in {}: {}: \"{}\"", age(r.received), r.channel, r.reporter, r.text));
+                }
+            }
+            for e in kills.iter().filter(|e| e.time > w.seen_kills) {
+                let attackers: Vec<String> = e.attackers.iter().map(|a| a.party.name.clone()).collect();
+                let hay = format!("{} {} {} {}", e.victim.name, e.victim_pilot, attackers.join(" "), ship(e.victim_ship)).to_lowercase();
+                if w.candidate(&[e.system_id], &hay) {
+                    let mut groups = attackers.clone();
+                    groups.sort();
+                    groups.dedup();
+                    items.push(format!(
+                        "kill {} in {}: {} ({}, {}) killed by {} pilots of {}",
+                        age(e.time),
+                        e.system_name,
+                        ship(e.victim_ship),
+                        e.victim_pilot,
+                        e.victim.name,
+                        e.attackers.len(),
+                        groups.into_iter().take(4).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+            w.seen_intel = reports.iter().map(|r| r.received).max().unwrap_or(w.seen_intel).max(w.seen_intel);
+            w.seen_kills = kills.iter().map(|e| e.time).max().unwrap_or(w.seen_kills).max(w.seen_kills);
+            if !items.is_empty() {
+                items.truncate(30);
+                out.push((w.id, w.goal.clone(), items));
+            }
+        }
+        out
+    }
+
+    /// Asks the model whether `items` are what the watch is after. The message when they are.
+    fn judge(&mut self, goal: &str, items: &[String], now: i64) -> Result<Option<String>, String> {
+        let facts = self.deps.facts();
+        self.within_caps(&facts, now)?;
+        let mut provider = (self.make)(&facts)?;
+        if provider.caps().hosts_own_tools && self.mcp.is_none() {
+            self.mcp = Some(super::mcp::start(self.deps.clone()).map_err(|e| format!("Could not start the tool server: {e}"))?);
+        }
+        let model = match facts.ai.provider {
+            super::config::ProviderKind::Anthropic if !facts.ai.watch_model.trim().is_empty() => facts.ai.watch_model.clone(),
+            _ => model_of(&facts).0,
+        };
+        let msgs = vec![Msg::user(&super::watch::judge_prompt(goal, items))];
+        // Its own conversation each time, so a CLI backend does not mix checks into the chat.
+        let conv = super::mcp::new_token();
+        let req = Request {
+            system_static: super::watch::JUDGE_SYSTEM,
+            system_dynamic: "",
+            msgs: &msgs,
+            tools: &[],
+            model: &model,
+            effort: "",
+            max_tokens: 400,
+            conv: &conv,
+            mcp: self.mcp.as_ref().map(|m| (m.port, m.token.as_str())),
+        };
+        let mut text = String::new();
+        let mut usage = Usage::default();
+        let never = AtomicBool::new(false);
+        provider
+            .stream(&req, &never, &mut |d| match d {
+                Delta::Text(t) => text.push_str(&t),
+                Delta::Usage(u) => usage = u,
+                _ => {}
+            })
+            .map_err(|e| e.to_string())?;
+        self.tokens_today.1 += usage.input + usage.output;
+        self.update(|v| {
+            v.usage.input += usage.input;
+            v.usage.output += usage.output;
+        });
+        Ok(super::watch::parse_verdict(&text))
+    }
+}
+
 /// The instructions that change rarely, in the cached part of the prompt: the assistant's own, the
 /// language, the glossary, what it remembers, and the user's own instructions last.
 pub fn static_prompt(facts: &AiFacts, memories: &str) -> String {
@@ -425,8 +610,13 @@ pub fn provider_for(facts: &AiFacts, secrets: &dyn SecretStore) -> Result<Box<dy
 pub fn spawn(mut session: Session, rx: Receiver<Command>) {
     let _ = std::thread::Builder::new().name("ai-session".into()).spawn(move || {
         let store = crate::store::Store::open().ok();
-        while let Ok(cmd) = rx.recv() {
-            session.handle(cmd, store.as_ref());
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(cmd) => session.handle(cmd, store.as_ref()),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            session.tick_watches(store.as_ref(), crate::clock::utc().timestamp());
         }
     });
 }
@@ -519,6 +709,41 @@ mod tests {
         s.handle(Command::ActionResult { id, applied: true, note: "The user applied: Show 1DQ1-A on the map".into() }, None);
         assert_eq!(s.view.lock().unwrap().turns[1].cards[0].state, CardState::Applied);
         assert_eq!(s.notes.len(), 1);
+    }
+
+    #[test]
+    fn a_watch_reports_a_match_asks_when_quiet_and_stops_unanswered() {
+        use crate::ai::watch::{Watch, ANSWER_WAIT, IDLE_ASK_AFTER};
+        let (mut s, seen) = session(vec![vec![Delta::Text("{\"match\": true, \"message\": \"Frat in 1DQ1-A, just now.\"}".into()), Delta::Done(Stop::End)]], &["intel.reports"]);
+        let t0 = 1_000_000;
+        s.deps.watches.lock().unwrap().push(Watch::new(1, "the Frat gang".into(), Default::default(), vec!["frat".into()], t0, None));
+        s.deps.intel_state.lock().unwrap().reports.push(crate::intel::IntelReport { received: t0 + 5, channel: "Delve.Imperium".into(), reporter: "Scout".into(), text: "frat +15 1DQ1-A".into(), ..Default::default() });
+        s.deps.intel_state.lock().unwrap().reports.push(crate::intel::IntelReport { received: t0 + 6, text: "clr".into(), ..Default::default() });
+        s.tick_watches(None, t0 + 30);
+        {
+            let v = s.view.lock().unwrap();
+            assert_eq!(v.turns.len(), 1);
+            assert_eq!(v.turns[0].watch, Some(1));
+            assert_eq!(v.turns[0].text, "Frat in 1DQ1-A, just now.");
+            assert_eq!(v.watch_news.len(), 1);
+        }
+        let asked = &seen.lock().unwrap()[0];
+        let q = format!("{asked:?}");
+        assert!(q.contains("frat +15") && !q.contains("clr"), "only candidates go to the model: {q}");
+        s.tick_watches(None, t0 + 30 + 25);
+        assert_eq!(s.view.lock().unwrap().turns.len(), 1, "nothing new, no model call, no message");
+        let quiet = t0 + 30 + IDLE_ASK_AFTER;
+        s.tick_watches(None, quiet);
+        {
+            let v = s.view.lock().unwrap();
+            assert!(v.turns[1].text.contains("Keep watching?"));
+            assert_eq!(v.turns[1].cards[0].state, CardState::Pending);
+        }
+        s.tick_watches(None, quiet + ANSWER_WAIT);
+        let v = s.view.lock().unwrap();
+        assert_eq!(v.turns[1].cards[0].state, CardState::Dismissed, "the question is closed");
+        assert!(v.turns[2].text.starts_with("Stopped watching"));
+        assert!(!s.deps.watches.lock().unwrap()[0].running());
     }
 
     #[test]

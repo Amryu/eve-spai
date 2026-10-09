@@ -44,6 +44,7 @@ impl SpaiApp {
                 lookup_table: self.lookup_table.clone(),
                 facts: self.ai_facts.clone(),
                 memories: self.ai_memories.clone(),
+                watches: self.ai_watches.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -85,6 +86,12 @@ impl SpaiApp {
     /// Carries out an action card the user applied. Returns the note the model gets about it.
     fn ai_apply(&mut self, kind: &ActionKind, summary: &str) -> String {
         match kind {
+            ActionKind::KeepWatching(id) => {
+                let now = crate::clock::utc().timestamp();
+                if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *id) {
+                    w.resume(now);
+                }
+            }
             ActionKind::Highlight(ids) => {
                 self.ai_highlight = ids.clone();
                 self.view = View::Map;
@@ -209,6 +216,7 @@ impl SpaiApp {
         let ship_names = std::mem::take(&mut self.ai_ship_names);
         let names = AppNames { systems: systems.as_deref(), ships: &ship_names.1 };
         egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show_inside(ui, |ui| {
+            self.ai_watch_strip(ui);
             if turns.is_empty() {
                 self.ai_empty_state(ui);
                 return;
@@ -239,10 +247,77 @@ impl SpaiApp {
         if let Some((id, applied)) = card_click {
             let card = turns.iter().flat_map(|t| t.cards.iter()).find(|c| c.action.id == id).cloned();
             if let Some(card) = card {
+                if let (false, ActionKind::KeepWatching(wid)) = (applied, &card.action.kind) {
+                    if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *wid) {
+                        w.stop("stopped by you");
+                    }
+                }
                 let note = if applied { self.ai_apply(&card.action.kind, &card.action.summary) } else { format!("The user dismissed: {}", card.action.summary) };
                 handle.send(Command::ActionResult { id, applied, note });
             }
         }
+    }
+
+    /// Watch news shown as a toast when the user is not looking at the chat.
+    pub(crate) fn ai_watch_news(&mut self) {
+        let Some(h) = &self.ai else { return };
+        let news = std::mem::take(&mut h.view.lock().unwrap_or_else(|e| e.into_inner()).watch_news);
+        if self.view == View::Assistant {
+            return;
+        }
+        for n in news {
+            self.toast(format!("{}  {n}", egui_phosphor::regular::BINOCULARS));
+        }
+    }
+
+    /// The watches, one line each, with stop or resume. Nothing when there are none.
+    fn ai_watch_strip(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let now = crate::clock::utc().timestamp();
+        let list: Vec<(u64, String, String, bool, String)> = self
+            .ai_watches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|w| (w.id, w.goal.clone(), w.status(now), w.running(), w.stopped_why().map(|y| format!("Stopped: {y}")).unwrap_or_default()))
+            .collect();
+        if list.is_empty() {
+            return;
+        }
+        let mut act: Option<(u64, u8)> = None;
+        for (id, goal, status, running, why) in &list {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !running && ui.button(icon::X).on_hover_text("Remove").clicked() {
+                        act = Some((*id, 2));
+                    }
+                    if *running {
+                        if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
+                            act = Some((*id, 0));
+                        }
+                    } else if ui.button(format!("{}  Resume", icon::PLAY)).clicked() {
+                        act = Some((*id, 1));
+                    }
+                    let s = ui.label(egui::RichText::new(status).weak());
+                    if !why.is_empty() {
+                        s.on_hover_text(why);
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let col = if *running { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+                        ui.add(egui::Label::new(egui::RichText::new(format!("{}  {goal}", icon::BINOCULARS)).color(col)).truncate()).on_hover_text(goal);
+                    });
+                });
+            });
+        }
+        if let Some((id, what)) = act {
+            let mut ws = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner());
+            match what {
+                0 => ws.iter_mut().filter(|w| w.id == id).for_each(|w| w.stop("stopped by you")),
+                1 => ws.iter_mut().filter(|w| w.id == id).for_each(|w| w.resume(now)),
+                _ => ws.retain(|w| w.id != id),
+            }
+        }
+        ui.separator();
     }
 
     fn ai_open_link(&mut self, l: Link, ctx: &egui::Context) {
@@ -356,6 +431,9 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
         }
         ui.add_space(4.0);
     }
+    if t.watch.is_some() {
+        ui.label(egui::RichText::new(format!("{}  Watch", icon::BINOCULARS)).weak());
+    }
     if !t.text.is_empty() {
         if let Some(l) = render_text(ui, &t.text, w, names) {
             *link = Some(l);
@@ -377,10 +455,12 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
                 {
                     match c.state {
                         CardState::Pending => {
-                            if ui.button("Dismiss").clicked() {
+                            let watch = matches!(c.action.kind, ActionKind::KeepWatching(_));
+                            if ui.button(if watch { "Stop" } else { "Dismiss" }).clicked() {
                                 click = Some((c.action.id, false));
                             }
-                            if ui.button(format!("{}  Apply", icon::CHECK)).clicked() {
+                            let yes = if watch { format!("{}  Keep watching", icon::BINOCULARS) } else { format!("{}  Apply", icon::CHECK) };
+                            if ui.button(yes).clicked() {
                                 click = Some((c.action.id, true));
                             }
                         }
@@ -392,7 +472,9 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
                         }
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(&c.action.summary).wrap());
+                        if !matches!(c.action.kind, ActionKind::KeepWatching(_)) {
+                            ui.add(egui::Label::new(&c.action.summary).wrap());
+                        }
                     });
                 }
             });
