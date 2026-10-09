@@ -653,6 +653,7 @@ impl SpaiApp {
         let jabber_set_up = !self.settings.jabber_jid.trim().is_empty();
         let mut open_jabber = false;
         let mut retry_click = false;
+        let recheck = std::cell::Cell::new(false);
         // Who the route button sends to, and who else it may: worked out before the closures, which
         // hold the rescue lock and so cannot ask.
         let mut set_dest: Option<(i64, Vec<String>)> = None;
@@ -1206,6 +1207,13 @@ impl SpaiApp {
                         } else {
                             ui.label(egui::RichText::new(text).color(colour));
                         }
+                        if ui
+                            .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+                            .on_hover_text("Recheck the fleet boss and which op channels are free")
+                            .clicked()
+                        {
+                            recheck.set(true);
+                        }
                     };
                     ui.horizontal_wrapped(|ui| {
                         if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
@@ -1444,6 +1452,12 @@ impl SpaiApp {
         if retry_click {
             self.jabber_retry();
         }
+        if recheck.get() {
+            self.fleet_boss_asked = None;
+            self.fleet_channels_at = None;
+            self.fleet_boss_poll(ui.ctx());
+            self.fleet_channel_poll(ui.ctx());
+        }
         if let Some((sid, names)) = set_dest {
             self.rescue_send_route(&names, sid);
         }
@@ -1581,6 +1595,13 @@ impl SpaiApp {
     }
 
     /// A fresh ping picked: its route goes to the FC's character once, without a click.
+    /// A rescue ping came in within the last [`AUTO_ROUTE_FRESH_SECS`].
+    pub(crate) fn rescue_ping_recent(&self) -> bool {
+        let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+        let newest = r.events.iter().map(|e| e.received).max().unwrap_or(0);
+        crate::clock::utc().timestamp() - newest <= AUTO_ROUTE_FRESH_SECS
+    }
+
     pub(crate) fn rescue_auto_route(&mut self) {
         let (seq, target, received, test) = {
             let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
