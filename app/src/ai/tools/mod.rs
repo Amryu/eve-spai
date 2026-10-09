@@ -6,12 +6,13 @@
 //! Nothing here can send a message anywhere; `no_tool_sends_messages` keeps it that way.
 
 mod actions;
-mod intel;
+pub(crate) mod intel;
 mod kills;
 mod map;
 mod memory;
 mod misc;
 mod history;
+mod watch;
 mod web;
 
 use serde_json::{json, Value};
@@ -84,6 +85,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(kills::TOOLS);
     v.extend(misc::TOOLS);
     v.extend(history::TOOLS);
+    v.extend(watch::TOOLS);
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);

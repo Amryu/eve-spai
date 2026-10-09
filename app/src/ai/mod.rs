@@ -18,3 +18,4 @@ pub mod gemini;
 pub mod mcp;
 pub mod cli;
 pub mod links;
+pub mod watch;

@@ -10,6 +10,8 @@ pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINA
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionKind {
+    /// The watch asked whether to carry on: apply keeps it going, dismiss stops it.
+    KeepWatching(u64),
     Highlight(Vec<i64>),
     Focus(i64),
     PlanRoute { from: i64, to: i64 },

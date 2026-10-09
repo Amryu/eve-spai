@@ -1327,7 +1327,7 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
             a.view = View::Assistant;
             a.systems = Some(fixtures::systems());
             a.set_ship_names_for_test(&[(12015, "Muninn"), (22456, "Sabre"), (12034, "Hound")]);
-            let turn = |user: bool, text: &str| Turn { user, text: text.into(), chips: vec![], cards: vec![], streaming: false, error: None, voice: false };
+            let turn = |user: bool, text: &str| Turn { user, text: text.into(), chips: vec![], cards: vec![], streaming: false, error: None, voice: false, watch: None };
             let mut answer = turn(false, "**The Fraternity. gang went south.** Last seen in **QX-LIJ** 4 minutes ago, 6 jumps from you.\n\n- 21:12 killed [a Hound](spai:kill/131000001) in 1DQ1-A (14 of them, Muninn and a Sabre)\n- 21:19 intel in Delve.Imperium: \"frat gang +20 QX-LIJ\"\n\nThe Jove observatory in Y-OMTZ is 3 jumps from QX-LIJ, a likely way out.");
             answer.chips = vec![
                 Chip { name: "track_movement".into(), args: "entity: frat, since_minutes: 60".into(), error: None },
@@ -1353,10 +1353,27 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
                     m.add(MemKind::Place, "QX-LIJ is a common way out for Fraternity. gangs", false, 0);
                 }
                 a.ai_memories_open = true;
+                {
+                    use crate::ai::watch::Watch;
+                    let now = crate::clock::utc().timestamp();
+                    let mut ws = a.ai_watches.lock().unwrap();
+                    let mut frat = Watch::new(1, "The Frat gang heading towards 1DQ1-A".into(), Default::default(), vec!["frat".into()], now - 900, None);
+                    frat.hits = 2;
+                    ws.push(frat);
+                    ws.push(Watch::new(2, "Titans or supers anywhere in Delve".into(), Default::default(), vec!["avatar".into()], now - 300, Some(now + 3300)));
+                    let mut old = Watch::new(3, "Anyone from The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts within five jumps of home".into(), Default::default(), vec!["x".into()], now - 7200, None);
+                    old.stop("no answer after a quiet spell");
+                    ws.push(old);
+                }
+                let mut hit = turn(false, "Frat moved to QX-LIJ, 14 of them in Muninns, 2 minutes ago.");
+                hit.watch = Some(1);
+                let mut ask = turn(false, "Nothing on Titans or supers anywhere in Delve for half an hour. Keep watching?");
+                ask.watch = Some(2);
+                ask.cards = vec![ActionCard { action: PendingAction { id: 2, kind: ActionKind::KeepWatching(2), summary: "Keep watching for Titans or supers anywhere in Delve".into() }, state: CardState::Pending }];
                 crate::app::ai_ui::seed_ai_view(
                     &mut a,
                     ui.ctx(),
-                    vec![turn(true, "Where did the Frat gang go?"), answer, turn(true, "and the route home?"), failed, turn(true, "anything near me now?"), live],
+                    vec![turn(true, "Where did the Frat gang go?"), answer, turn(true, "and the route home?"), failed, hit, ask, turn(true, "anything near me now?"), live],
                 );
             }
             a
