@@ -21,3 +21,4 @@ pub mod links;
 pub mod watch;
 pub mod voice;
 pub mod ptt;
+pub mod feeds;

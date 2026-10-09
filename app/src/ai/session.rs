@@ -443,6 +443,16 @@ impl Session {
             (true, Some(s)) => s.load_engagements(oldest_kill + 1),
             _ => Vec::new(),
         };
+        let oldest_feed = running.iter().map(|&i| ws[i].seen_feeds).min().unwrap_or(now);
+        let feed_items: Vec<super::feeds::FeedItem> = {
+            let st = self.deps.feeds.lock().unwrap_or_else(|e| e.into_inner());
+            st.items
+                .iter()
+                .filter(|f| f.seen > oldest_feed)
+                .filter(|f| facts.ai.feeds.iter().any(|d| d.id == f.feed && facts.allowed(&d.perm_key())))
+                .cloned()
+                .collect()
+        };
         let ships = store.map(super::tools::intel::ship_names).unwrap_or_default();
         let ship = |id: i64| ships.get(&id).cloned().unwrap_or_else(|| format!("type {id}"));
         let age = |t: i64| super::tools::fmt_age(now, t);
@@ -476,6 +486,16 @@ impl Session {
                     ));
                 }
             }
+            let names: Vec<String> = facts.systems.as_ref().map(|g| w.systems.iter().filter_map(|id| g.info_of(*id).map(|i| i.name.to_lowercase())).collect()).unwrap_or_default();
+            for f in feed_items.iter().filter(|f| f.seen > w.seen_feeds) {
+                let hay = format!("{} {}", f.title, f.text).to_lowercase();
+                let in_place = w.systems.is_empty() || names.iter().any(|n| hay.contains(n.as_str()));
+                if in_place && (w.words.is_empty() || w.words.iter().any(|x| hay.contains(x.as_str()))) {
+                    let feed = facts.ai.feeds.iter().find(|d| d.id == f.feed).map_or("a feed", |d| d.name.as_str());
+                    items.push(format!("{feed} {}: {} {}", age(f.time), f.title, f.text.chars().take(300).collect::<String>()));
+                }
+            }
+            w.seen_feeds = feed_items.iter().map(|f| f.seen).max().unwrap_or(w.seen_feeds).max(w.seen_feeds);
             w.seen_intel = reports.iter().map(|r| r.received).max().unwrap_or(w.seen_intel).max(w.seen_intel);
             w.seen_kills = kills.iter().map(|e| e.time).max().unwrap_or(w.seen_kills).max(w.seen_kills);
             if !items.is_empty() {

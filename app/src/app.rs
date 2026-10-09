@@ -943,6 +943,13 @@ pub struct SpaiApp {
     pub(crate) ai_listen: crate::app::ai_voice_in::Listen,
     /// Microphones, listed when the settings first show them.
     ai_mics: Option<Vec<String>>,
+    pub(crate) ai_feeds: crate::ai::feeds::SharedFeeds,
+    /// The feed definitions as the poller reads them, kept in step with the settings.
+    ai_feed_defs: std::sync::Arc<std::sync::Mutex<Vec<crate::ai::feeds::FeedDef>>>,
+    ai_feeds_started: bool,
+    pub(crate) ai_feeds_open: bool,
+    pub(crate) ai_feed_edit: Option<crate::ai::feeds::FeedDef>,
+    ai_feed_secret: String,
     ai_stt_key_input: String,
     rescue_history_open: bool,
     rescue_history_filter: String,
@@ -1769,6 +1776,12 @@ impl SpaiApp {
             ai_ptt: None,
             ai_listen: Default::default(),
             ai_mics: None,
+            ai_feeds: Default::default(),
+            ai_feed_defs: Default::default(),
+            ai_feeds_started: false,
+            ai_feeds_open: false,
+            ai_feed_edit: None,
+            ai_feed_secret: String::new(),
             ai_stt_key_input: String::new(),
             rescue_history_open: false,
             rescue_history_filter: String::new(),
@@ -3727,6 +3740,7 @@ impl SpaiApp {
         self.toasts_ui(ctx);
         self.ai_perms_window(ctx);
         self.ai_glossary_window(ctx);
+        self.ai_feeds_window(ctx);
         self.ai_push_facts(false);
         self.ai_watch_news();
         self.ai_voice_tick();

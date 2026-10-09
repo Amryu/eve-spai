@@ -28,6 +28,8 @@ pub struct AiSettings {
     /// The language answers come in; "auto" follows the user's.
     pub language: String,
     pub glossary: super::glossary::Edits,
+    /// Outside sources for the assistant to read and watch.
+    pub feeds: Vec<super::feeds::FeedDef>,
 }
 
 /// Languages the assistant can be asked to answer in: (code, name as shown, name in English).
@@ -68,6 +70,7 @@ impl Default for AiSettings {
             instructions: String::new(),
             language: "auto".into(),
             glossary: Default::default(),
+            feeds: Vec::new(),
         }
     }
 }

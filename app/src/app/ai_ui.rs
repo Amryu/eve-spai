@@ -45,6 +45,7 @@ impl SpaiApp {
                 facts: self.ai_facts.clone(),
                 memories: self.ai_memories.clone(),
                 watches: self.ai_watches.clone(),
+                feeds: self.ai_feeds.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -81,6 +82,18 @@ impl SpaiApp {
             ai: s.ai.clone(),
         };
         *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
+        *self.ai_feed_defs.lock().unwrap_or_else(|e| e.into_inner()) = s.ai.feeds.clone();
+        if !self.ai_feeds_started && !self.headless && !self.settings.ai.feeds.is_empty() {
+            self.ai_feeds_started = true;
+            {
+                let loaded = crate::ai::feeds::FeedStore::load(self.store.as_ref());
+                let mut st = self.ai_feeds.lock().unwrap_or_else(|e| e.into_inner());
+                if st.items.is_empty() {
+                    st.items = loaded.items;
+                }
+            }
+            crate::ai::feeds::spawn(self.ai_feeds.clone(), self.ai_feed_defs.clone(), self.ai_secrets.clone(), self.ui_ctx.clone());
+        }
     }
 
     /// Carries out an action card the user applied. Returns the note the model gets about it.
