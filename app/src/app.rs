@@ -465,6 +465,8 @@ pub struct SpaiApp {
     battle_search: String,
     battle_hover: Option<BattleHover>,
     battle_condensed: bool,
+    /// Reports the Intel view showed last frame, for its toolbar.
+    intel_shown_count: usize,
     /// Tiles or pilots, and the hull the pilot list is narrowed to after a tile click.
     battle_tab: BrTab,
     battle_ship_filter: Option<i64>,
@@ -1501,6 +1503,7 @@ impl SpaiApp {
             br_unlisted: false,
             br_character: None,
             battle_condensed: false,
+            intel_shown_count: 0,
             battle_tab: BrTab::Tiles,
             battle_ship_filter: None,
             battle_systems: Vec::new(),
@@ -2405,10 +2408,10 @@ impl SpaiApp {
 
     /// The intel toolbar's search field. Its own hint text is the floor: a field too narrow to
     /// show its placeholder tells the user nothing about what it filters.
-    pub(crate) const INTEL_FILTER_HINT: &'static str = "Filter by system, text, channel, or tag";
+    pub(crate) const INTEL_FILTER_HINT: &'static str = "System, text, channel or tag";
     /// The hint lays out at ~187px, so a crowded row wraps the field onto its own line rather than
     /// shrinking it past what it can say.
-    const INTEL_FILTER_MIN_W: f32 = 220.0;
+    const INTEL_FILTER_MIN_W: f32 = 140.0;
 
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
         if self.settings.fleet_ping_on_top == crate::settings::OnTop::Smart {
@@ -3295,6 +3298,11 @@ impl SpaiApp {
     #[cfg(test)]
     pub(crate) fn battle_view_state(&self) -> (BrTab, Option<i64>) {
         (self.battle_tab, self.battle_ship_filter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn battle_systems_picked(&self) -> Vec<i64> {
+        self.battle_systems.clone()
     }
 
     /// Known holes, drawn on the map with the wormhole layer on.
@@ -6124,6 +6132,8 @@ pub(crate) struct BattleDetailOut {
     pub(crate) show_ship: Option<i64>,
     /// A loss's killmail to open.
     pub(crate) open_kill: Option<i64>,
+    /// The rearranging of sides asked for.
+    pub(crate) open_sides: bool,
 }
 
 /// The report's one-line summary: its systems, when, how many kills and how much ISK, and whether it
@@ -6225,26 +6235,60 @@ pub(crate) fn side_chips(ui: &mut egui::Ui, b: &br_core::battle::Battle) {
 
 /// A side's head: who, what it lost in its own colour, the other figures on one line, and the
 /// efficiency bar.
-fn side_head(ui: &mut egui::Ui, side: &br_core::battle::Side, i: usize, pilots: usize, width: f32) {
+/// Returns whether the rearranging was asked for. `who`: each party on the side with its pilots,
+/// most first. `rearrange`: the battle's sides can be moved by hand.
+fn side_head(
+    ui: &mut egui::Ui,
+    side: &br_core::battle::Side,
+    i: usize,
+    pilots: usize,
+    width: f32,
+    who: &[(br_core::battle::Party, usize)],
+    rearrange: bool,
+) -> bool {
+    use egui_phosphor::regular as icon;
     let col = side_color(i);
     let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
+    let mut asked = false;
     ui.horizontal(|ui| {
         if let Some(lead) = side.parties.first() {
             party_badge(ui, lead, 22.0, true);
         }
         let title = side_title(side);
-        // The count first: a long name gives way to it, cut with an ellipsis, the whole on hover.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if side.parties.len() > 1 {
-                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak()).on_hover_ui(|ui| {
-                    ui.label(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
-                });
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong().size(15.0)).truncate())
-                    .on_hover_text(&title);
-            });
+        // The name gives way to what follows it: cut with an ellipsis, the whole on hover.
+        let extras = if side.parties.len() > 1 { 56.0 } else { 0.0 } + if rearrange { 34.0 } else { 0.0 };
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - extras).max(60.0));
+            ui.add(egui::Label::new(egui::RichText::new(&title).color(col).strong().size(15.0)).truncate()).on_hover_text(&title);
         });
+        if side.parties.len() > 1 {
+            ui.menu_button(egui::RichText::new(format!("+{}", side.parties.len() - 1)).color(col), |ui| {
+                ui.set_min_width(260.0);
+                if let Some(c) = &side.coalition {
+                    ui.label(egui::RichText::new(c).color(col).strong());
+                }
+                ui.label(egui::RichText::new(format!("{} groups, {pilots} pilots", side.parties.len())).weak());
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (p, n) in who {
+                        ui.horizontal(|ui| {
+                            party_badge(ui, p, 18.0, true);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(format!("{n}")).weak());
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.add(egui::Label::new(&p.name).truncate()).on_hover_text(&p.name);
+                                });
+                            });
+                        });
+                    }
+                });
+            })
+            .response
+            .on_hover_text("Everyone on this side");
+        }
+        if rearrange && ui.button(icon::ARROWS_LEFT_RIGHT).on_hover_text("Rearrange sides").clicked() {
+            asked = true;
+        }
     });
     ui.add_space(4.0);
     let eff = side.isk_efficiency();
@@ -6276,6 +6320,15 @@ fn side_head(ui: &mut egui::Ui, side: &br_core::battle::Side, i: usize, pilots: 
     let fill = eff.unwrap_or(0.0).clamp(0.0, 100.0) as f32 / 100.0;
     ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fill, rect.height())), 2.0, col);
     ui.add_space(6.0);
+    asked
+}
+
+/// Text with a thin black edge, so it reads over a coloured bar as well as next to it.
+pub(crate) fn outlined_text(painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>, color: egui::Color32) {
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
+        painter.galley_with_override_text_color(pos + egui::vec2(dx, dy), galley.clone(), egui::Color32::BLACK);
+    }
+    painter.galley(pos, galley, color);
 }
 
 /// The loss share in a tile's bar: deep enough that the count printed over it stays readable.
@@ -6325,7 +6378,7 @@ fn ship_tile(ui: &mut egui::Ui, t: &crate::brview::ShipTile, name: &str, width: 
         format!("{}/{}", t.lost, t.total)
     };
     let g = ui.painter().layout_job(one_line(&label, font, text, bar.width() - 4.0));
-    ui.painter().galley(bar.center() - g.size() / 2.0, g, text);
+    outlined_text(ui.painter(), bar.center() - g.size() / 2.0, g, text);
     resp.on_hover_text(format!("{name}: {} of {} destroyed\nClick to list these pilots", t.lost, t.total))
 }
 
@@ -6342,6 +6395,7 @@ pub(crate) fn battle_detail(
     tiles: &crate::brview::SideTiles,
     tab: BrTab,
     ship_filter: Option<i64>,
+    rearrange: bool,
 ) -> BattleDetailOut {
     use std::collections::HashSet;
     let mut out = BattleDetailOut::default();
@@ -6369,21 +6423,33 @@ pub(crate) fn battle_detail(
     // Each panel adds its frame's margin and stroke, the space after it, and the item spacing.
     let frame = egui::Frame::group(ui.style());
     let gap = frame.total_margin().sum().x + 6.0 + ui.spacing().item_spacing.x;
-    let n = b.sides.len().max(1) as f32;
-    let side_w = ((ui.available_width() - gap * n) / n).floor().max(MIN_SIDE_W);
+    // As many sides a row as fit at their narrowest; the rest wrap onto rows below, never past the
+    // window's edge.
+    let n = b.sides.len().max(1);
+    let avail = ui.available_width();
+    let cols = (((avail + gap) / (MIN_SIDE_W + gap)).floor() as usize).clamp(1, n);
+    let rows = n.div_ceil(cols);
+    let side_w = ((avail - gap * cols as f32) / cols as f32).floor().max(120.0);
     if tab == BrTab::Timeline {
         crate::app::br_timeline::timeline_chart(ui, b, 220.0, true);
         ui.add_space(6.0);
-        out.open_kill = crate::app::br_timeline::timeline_kills(ui, b, type_names);
+        let mut skip = ui.data_mut(|d| d.get_persisted::<bool>(egui::Id::new("br_skip_empty_pods"))).unwrap_or(true);
+        if ui.checkbox(&mut skip, "Filter empty capsules").on_hover_text("Leave out capsules lost with no implants").changed() {
+            ui.data_mut(|d| d.insert_persisted(egui::Id::new("br_skip_empty_pods"), skip));
+        }
+        out.open_kill = crate::app::br_timeline::timeline_kills(ui, b, type_names, skip);
         return out;
     }
     // Under the tiles, when there is height to spare, the fight over time.
     let timeline_h = if tab == BrTab::Tiles && ui.available_height() >= TIMELINE_UNDER_TILES_FROM { 120.0 } else { 0.0 };
-    let col_h = (ui.available_height() - 12.0 - if timeline_h > 0.0 { timeline_h + 8.0 } else { 0.0 }).max(180.0);
+    let area_h = (ui.available_height() - 12.0 - if timeline_h > 0.0 { timeline_h + 8.0 } else { 0.0 }).max(180.0);
+    // One row fills the height; several each take a share and the rows scroll.
+    let col_h = if rows == 1 { area_h } else { (area_h * 0.8).clamp(320.0, 560.0) };
     // No taller than the sides: the timeline goes under them.
-    egui::ScrollArea::horizontal().auto_shrink([false, true]).max_height(col_h + 24.0).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt(("battle_sides", b.start)).auto_shrink([false, true]).max_height(area_h + 24.0).show(ui, |ui| {
+        for row in 0..rows {
         ui.horizontal_top(|ui| {
-            for (i, side) in b.sides.iter().enumerate() {
+            for (i, side) in b.sides.iter().enumerate().skip(row * cols).take(cols) {
                 let col = side_color(i);
                 let roster = &rosters[i];
                 egui::Frame::group(ui.style()).fill(col.gamma_multiply(0.05)).show(ui, |ui| {
@@ -6392,7 +6458,17 @@ pub(crate) fn battle_detail(
                         ui.set_min_width(side_w);
                         ui.set_min_height(col_h);
                         let top = ui.cursor().top();
-                        side_head(ui, side, i, tiles.pilots.get(i).copied().unwrap_or(roster.len()), side_w);
+                        // Who is on the side and with how many, most first.
+                        let mut who: Vec<(br_core::battle::Party, usize)> = side.parties.iter().map(|p| (p.clone(), 0)).collect();
+                        for r in roster.iter() {
+                            if let Some(w) = who.iter_mut().find(|(p, _)| if p.id != 0 { p.id == r.party.id } else { p.name == r.party.name }) {
+                                w.1 += 1;
+                            }
+                        }
+                        who.sort_by(|a, b| b.1.cmp(&a.1));
+                        if side_head(ui, side, i, tiles.pilots.get(i).copied().unwrap_or(roster.len()), side_w, &who, rearrange) {
+                            out.open_sides = true;
+                        }
                         let list_h = (col_h - (ui.cursor().top() - top) - 8.0).max(120.0);
                         if tab == BrTab::Tiles {
                             // As many tiles a row as fit at the narrowest, then stretched to fill it.
@@ -6508,6 +6584,7 @@ pub(crate) fn battle_detail(
                 ui.add_space(6.0);
             }
         });
+        }
     });
     if timeline_h > 0.0 {
         ui.add_space(4.0);

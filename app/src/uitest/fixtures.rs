@@ -1549,7 +1549,7 @@ pub(crate) fn killmail() -> (crate::killmail::KillDetail, HashMap<i64, String>) 
             item(24_478, 0, 1_200, 300, 1),
             item(12_608, 5, 0, 1_500, 0),
         ],
-        zkb: Zkb { total: 98_123_456.0, fitted: 61_000_000.0, dropped: 21_456_000.0, destroyed: 76_667_456.0, points: 7, solo: false, npc: false, awox: false, labels: vec!["pvp".into(), "loc:highsec".into()], location_id: 0 },
+        zkb: Zkb { total: 98_123_456.0, fitted: 61_000_000.0, dropped: 21_456_000.0, destroyed: 76_667_456.0, points: 7, solo: false, npc: false, awox: false, labels: vec!["pvp".into(), "loc:highsec".into()], location_id: 0, estimated: false },
         names: [
             (2_112_000_001, "Victim Pilot"),
             (98_000_001, "Victim Corp"),

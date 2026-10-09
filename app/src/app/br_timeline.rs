@@ -5,6 +5,8 @@ use super::*;
 
 /// The narrowest a bucket of the chart is drawn, in points.
 const BUCKET_W: f32 = 6.0;
+/// The widest a side's name is in the chart's tooltip before it is cut.
+const TOOLTIP_NAME_W: f32 = 220.0;
 /// The shortest stretch of time a bucket covers.
 const MIN_BUCKET_SECS: i64 = 10;
 
@@ -39,6 +41,13 @@ fn hhmm(t: i64) -> String {
     chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default()
 }
 
+fn hhmmss(t: i64) -> String {
+    chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%H:%M:%S").to_string()).unwrap_or_default()
+}
+
+/// A capsule lost with nothing in it: worth no more than the capsule itself.
+const EMPTY_POD_ISK: f64 = 100_000.0;
+
 /// The chart, `height` tall and as wide as there is room. `running`: each side's running total as a
 /// line over the bars.
 pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, height: f32, running: bool) {
@@ -65,7 +74,8 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
             }
             let h = (*isk / peak) as f32 * plot.height();
             let r = egui::Rect::from_min_max(egui::pos2(x0 + 0.5, y - h), egui::pos2(x0 + col_w - 0.5, y));
-            painter.rect_filled(r, 1.0, side_color(s).gamma_multiply(0.85));
+            // Dimmer under the running totals, so the lines read over bars of their own colour.
+            painter.rect_filled(r, 1.0, side_color(s).gamma_multiply(if running { 0.45 } else { 0.85 }));
             y -= h;
         }
     }
@@ -80,7 +90,9 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
                 let x = plot.left() + (i as f32 + 1.0) * col_w;
                 pts.push(egui::pos2(x, plot.bottom() - (acc / top) as f32 * plot.height()));
             }
-            painter.add(egui::Shape::line(pts, egui::Stroke::new(2.0, side_color(s))));
+            // A dark edge first, so the line stands clear of the bars.
+            painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(5.0, ui.visuals().extreme_bg_color)));
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, side_color(s))));
         }
     }
     // Times along the bottom, about every 120 points.
@@ -91,7 +103,9 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
         let x = plot.left() + f * plot.width();
         let t = bk.start + (f as f64 * span as f64) as i64;
         let align = if k == 0 { egui::Align2::LEFT_TOP } else if k == ticks { egui::Align2::RIGHT_TOP } else { egui::Align2::CENTER_TOP };
-        painter.text(egui::pos2(x, plot.bottom() + 3.0), align, hhmm(t), font.clone(), ui.visuals().weak_text_color());
+        // Seconds once the ticks are under a minute apart.
+        let label = if span / ticks as i64 >= 60 { hhmm(t) } else { hhmmss(t) };
+        painter.text(egui::pos2(x, plot.bottom() + 3.0), align, label, font.clone(), ui.visuals().weak_text_color());
     }
     if let Some(p) = resp.hover_pos().filter(|p| plot.x_range().contains(p.x)) {
         let i = (((p.x - plot.left()) / col_w) as usize).min(n - 1);
@@ -99,11 +113,19 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
         painter.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], egui::Stroke::new(1.0, ui.visuals().text_color().gamma_multiply(0.5)));
         let from = bk.start + i as i64 * bk.secs;
         resp.on_hover_ui_at_pointer(|ui| {
-            ui.label(egui::RichText::new(format!("{}\u{2013}{} EVE", hhmm(from), hhmm(from + bk.secs))).strong());
+            ui.label(egui::RichText::new(format!("{}\u{2013}{} EVE", hhmmss(from), hhmmss(from + bk.secs))).strong());
+            // One line a side: the name cut to fit, the figures whole.
             for (s, side) in b.sides.iter().enumerate() {
                 let (isk, k) = (bk.lost[i][s], bk.kills[i][s]);
                 if k > 0 {
-                    ui.label(egui::RichText::new(format!("{}: {} lost, {k} kill{}", side_title(side), fmt_isk(isk), if k == 1 { "" } else { "s" })).color(side_color(s)));
+                    ui.horizontal(|ui| {
+                        ui.scope(|ui| {
+                            ui.set_max_width(TOOLTIP_NAME_W);
+                            ui.add(egui::Label::new(egui::RichText::new(side_title(side)).color(side_color(s)).strong()).truncate());
+                        });
+                        let figures = format!("{} lost, {k} kill{}", fmt_isk(isk), if k == 1 { "" } else { "s" });
+                        ui.add(egui::Label::new(egui::RichText::new(figures).color(side_color(s))).wrap_mode(egui::TextWrapMode::Extend));
+                    });
                 }
             }
         });
@@ -112,8 +134,18 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
 
 /// Every kill in order, newest last: when, whose, what, worth what, and who landed the final blow.
 /// Returns a kill clicked.
-pub(crate) fn timeline_kills(ui: &mut egui::Ui, b: &br_core::battle::Battle, type_names: &std::collections::HashMap<i64, String>) -> Option<i64> {
-    let mut kills: Vec<&br_core::battle::Engagement> = b.engagements.iter().collect();
+/// `skip_empty_pods`: leave out capsules lost with nothing in them.
+pub(crate) fn timeline_kills(
+    ui: &mut egui::Ui,
+    b: &br_core::battle::Battle,
+    type_names: &std::collections::HashMap<i64, String>,
+    skip_empty_pods: bool,
+) -> Option<i64> {
+    let mut kills: Vec<&br_core::battle::Engagement> = b
+        .engagements
+        .iter()
+        .filter(|e| !(skip_empty_pods && br_core::battle::POD_TYPES.contains(&e.victim_ship) && e.isk <= EMPTY_POD_ISK))
+        .collect();
     kills.sort_by_key(|e| (e.time, e.kill_id));
     let mut clicked = None;
     let row_h = 30.0;
@@ -126,7 +158,7 @@ pub(crate) fn timeline_kills(ui: &mut egui::Ui, b: &br_core::battle::Battle, typ
                 ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
             }
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(4.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            row.label(egui::RichText::new(hhmm(e.time)).monospace().weak());
+            row.label(egui::RichText::new(hhmmss(e.time)).monospace().weak());
             let (dot, _) = row.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             row.painter().circle_filled(dot.center(), 4.0, col);
             hull_badge(&mut row, e.victim_ship, 24.0);
@@ -136,8 +168,10 @@ pub(crate) fn timeline_kills(ui: &mut egui::Ui, b: &br_core::battle::Battle, typ
                     ui.add(egui::Label::new(egui::RichText::new(format!("by {}", fb.pilot)).weak()).truncate());
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    // The ship first and plain, the pilot after it, quieter: two names that read as two.
                     let ship = type_names.get(&e.victim_ship).cloned().unwrap_or_default();
-                    ui.add(egui::Label::new(format!("{}  {}", e.victim_pilot, ship)).truncate());
+                    ui.add(egui::Label::new(egui::RichText::new(ship).strong()).wrap_mode(egui::TextWrapMode::Extend));
+                    ui.add(egui::Label::new(egui::RichText::new(&e.victim_pilot).weak()).truncate());
                 });
             });
             if resp.on_hover_text("Open the killmail").clicked() {
