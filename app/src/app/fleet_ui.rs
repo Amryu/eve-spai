@@ -1321,8 +1321,7 @@ impl SpaiApp {
         ui.heading("Fleet command");
         ui.label(
             egui::RichText::new(
-                "Fleet tracking, pings, composition and the delve911 rescue, for GSF skirmish \
-                 commanders and above. Sign in to the fleet dashboard to unlock them.",
+                "Fleet tracking, pings, composition and the delve911 rescue, for GSF skirmish commanders and up. Sign in to the fleet dashboard to unlock.",
             )
             .weak(),
         );

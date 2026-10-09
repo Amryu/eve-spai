@@ -727,8 +727,7 @@ impl SpaiApp {
                     if wh {
                         ui.label(
                             egui::RichText::new(
-                                "Planned through scanned wormholes. Those chains move, so this is \
-                                 deleted a day after saving rather than quietly becoming wrong.",
+                                "Planned through scanned wormholes, so it is deleted a day after saving.",
                             )
                             .color(crate::theme::standing::WARNING),
                         );

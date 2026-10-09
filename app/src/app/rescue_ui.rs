@@ -146,9 +146,7 @@ impl SpaiApp {
         ui.heading("FC / Rescue (delve911)");
         ui.label(
             egui::RichText::new(
-                "Capital-rescue coordination, on top of the fleet dashboard: a rescue runs on a \
-                 fleet preset tagged Capital Save and hands over to fleet tracking. Needs the \
-                 fleet dashboard switched on above, plus the delve911 rooms.",
+                "Capital rescues, run on a fleet preset tagged Capital Save and handed over to fleet tracking. Needs the fleet dashboard on and the delve911 rooms.",
             )
             .weak(),
         );

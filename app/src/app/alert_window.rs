@@ -542,9 +542,7 @@ pub(crate) fn build_alert_viewport_cb(
                     ui.heading("Uncertain pilot (?)");
                     ui.add_space(4.0);
                     ui.label(
-                        "A \"?\" means this name matched a real EVE character that looks \
-                         inactive. It may be a rarely-used pilot, or a chat word that matches a \
-                         character name.",
+                        "A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word.",
                     );
                     ui.add_space(6.0);
                     ui.label(

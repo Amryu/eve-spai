@@ -3575,15 +3575,11 @@ impl SpaiApp {
             });
             if keyring {
                 ui.label(
-                    "Neither the system keychain nor the encrypted fallback could give the saved \
-                     login back. If the profile directory was copied here from another machine or \
-                     another user account, the fallback cannot open it by design; logging in again \
-                     replaces it.",
+                    "The saved login could not be read back. A profile copied from another machine or account cannot be opened by design; logging in again replaces it.",
                 );
             } else {
                 ui.label(
-                    "Location, fleet membership and in-game routes stay blank until the character \
-                     is logged in again. Intel, alerts and jabber are unaffected.",
+                    "Location, fleet and in-game routes stay blank until the character logs in again. Intel, alerts and Jabber are unaffected.",
                 );
             }
             ui.horizontal(|ui| {

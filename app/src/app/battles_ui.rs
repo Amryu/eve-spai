@@ -1702,8 +1702,7 @@ impl SpaiApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "Battle reports are off. No battles are generated or computed. \
-                     Gate-camp warnings and the kill feed keep working.",
+                    "Battle reports are off. Gate-camp warnings and the kill feed keep working.",
                 )
                 .weak(),
             );
