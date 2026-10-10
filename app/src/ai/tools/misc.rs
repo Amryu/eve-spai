@@ -5,11 +5,12 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_ROOMS, &JABBER_CHAT, &LOCALSCAN, &PILOT_INFO, &NOTES];
+    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_TRACKING, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_ROOMS, &JABBER_CHAT, &LOCALSCAN, &PILOT_INFO, &NOTES, &MY_SETUP];
 
 static MY_CHARACTERS: ToolSpec = ToolSpec {
     name: "my_characters",
-    description: "Where the user's logged-in characters are, and whether each is docked. The active one is marked.",
+    description: "Where the user's logged-in characters are, whether each is docked, and the ship each last moved in. The \
+                  active one is marked.",
     need: Need::All(&["characters.locations"]),
     kind: Kind::Read,
     schema: || schema(json!({}), &[]),
@@ -18,9 +19,22 @@ static MY_CHARACTERS: ToolSpec = ToolSpec {
             let p = ctx.deps.player.lock().unwrap_or_else(|e| e.into_inner());
             (p.active_name.clone(), p.locations.clone())
         };
+        let ship_names = ctx.store.map(super::intel::ship_names).unwrap_or_default();
         let mut out: Vec<Value> = locs
             .iter()
-            .map(|(name, (sys, docked))| json!({"name": name, "system": ctx.system_name(*sys), "docked": docked, "active": *name == active}))
+            .map(|(name, (sys, docked))| {
+                let mut c = json!({"name": name, "system": ctx.system_name(*sys), "docked": docked, "active": *name == active});
+                // The ship as of the last move the app saw; it does not know of a reship without one.
+                if let Some(store) = ctx.store {
+                    if let Some(m) = store.move_history(0, Some(name), 1).into_iter().next() {
+                        if let Some(id) = m.ship {
+                            c["ship"] = json!(ship_names.get(&id).cloned().unwrap_or_else(|| format!("type {id}")));
+                            c["ship_as_of"] = json!(fmt_age(ctx.now, m.time));
+                        }
+                    }
+                }
+                c
+            })
             .collect();
         out.sort_by(|a, b| b["active"].as_bool().cmp(&a["active"].as_bool()));
         Ok(json!(out))
@@ -167,6 +181,45 @@ static RESCUE: ToolSpec = ToolSpec {
                 "class": r.cap_class.map(|c| format!("{c:?}")), "anomaly": r.anomaly,
             },
             "recent_pings": pings,
+        }))
+    },
+};
+
+static FLEET_TRACKING: ToolSpec = ToolSpec {
+    name: "fleet_tracking",
+    description: "What the app recorded while it tracked a fleet (by fleet id): where the fleet went and how (gate, \
+                  Ansiblex, wormhole, jump), pilots joining, leaving and reshipping, and its kills and losses with value.",
+    need: Need::All(&["fleets.history"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"id": {"type": "string"}, "limit": {"type": "integer", "minimum": 5, "maximum": 200}}), &["id"]),
+    run: |ctx, v| {
+        let store = ctx.store.ok_or("the database is not open")?;
+        let id = str_arg(v, "id").ok_or("which fleet?")?;
+        let n = u64_arg(v, "limit", 60, 200) as usize;
+        let moves = store.fleet_moves(id);
+        let kills = store.fleet_kills(id);
+        if moves.is_empty() && kills.is_empty() {
+            return Err("nothing recorded for that fleet; only fleets tracked in the app are".into());
+        }
+        let names = super::intel::ship_names(store);
+        let ship = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("type {id}"));
+        let (lost, killed): (Vec<_>, Vec<_>) = kills.iter().partition(|k| k.loss);
+        Ok(json!({
+            "losses": lost.len(),
+            "isk_lost_billions": (lost.iter().map(|k| k.value).sum::<f64>() / 1e8).round() / 10.0,
+            "kills": killed.len(),
+            "isk_killed_billions": (killed.iter().map(|k| k.value).sum::<f64>() / 1e8).round() / 10.0,
+            "kill_list": kills.iter().rev().take(30).map(|k| json!({"when": eve_time(k.at), "system": ctx.system_name(k.system_id), "lost": k.loss, "victim": k.victim_name, "ship": ship(k.ship_type_id), "isk_millions": (k.value / 1e6).round(), "kill_id": k.kill_id})).collect::<Vec<_>>(),
+            "moves": moves.iter().rev().take(n).map(|m| {
+                let mut x = json!({"when": eve_time(m.at), "what": format!("{:?}", m.kind)});
+                if m.count > 0 { x["fleet_count"] = json!(m.count); }
+                if !m.name.is_empty() { x["pilot"] = json!(m.name); }
+                if m.system_id > 0 { x["system"] = json!(ctx.system_name(m.system_id)); }
+                if m.from_system > 0 && m.from_system != m.system_id { x["from"] = json!(ctx.system_name(m.from_system)); }
+                if let Some(via) = &m.via { x["via"] = json!(format!("{via:?}")); }
+                if !m.ship_name.is_empty() { x["ship"] = json!(m.ship_name); }
+                x
+            }).collect::<Vec<_>>(),
         }))
     },
 };
@@ -393,17 +446,54 @@ static PILOT_INFO: ToolSpec = ToolSpec {
     },
 };
 
+static MY_SETUP: ToolSpec = ToolSpec {
+    name: "my_setup",
+    description: "The user's own setup: staging system, the alliance capital Ansiblex zones are counted from, the route \
+                  planner's avoid lists and security limits, and their saved routes.",
+    need: Need::Any(&["actions.route", "actions.settings"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        let s = &ctx.facts.setup;
+        Ok(json!({
+            "staging": (!s.staging.is_empty()).then_some(&s.staging),
+            "ansiblex_capital": (!s.capital.is_empty()).then_some(&s.capital),
+            "avoid_by_gate": s.avoid_gate.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>(),
+            "avoid_jumping_into": s.avoid_jump.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>(),
+            "avoid_sov_of": s.avoid_sov,
+            "allowed_security": {"high": s.sec[0], "low": s.sec[1], "null": s.sec[2]},
+            "saved_routes": s.routes.iter().map(|r| json!({"name": r.name, "through": r.anchors.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        }))
+    },
+};
+
 static NOTES: ToolSpec = ToolSpec {
     name: "notes",
-    description: "The user's own notes and tags on a system or a pilot.",
+    description: "The user's own notes and tags: on one system or pilot, or every system and pilot carrying a tag or words.",
     need: Need::All(&["notes"]),
     kind: Kind::Read,
-    schema: || schema(json!({"system": {"type": "string"}, "pilot": {"type": "string"}}), &[]),
+    schema: || schema(json!({"system": {"type": "string"}, "pilot": {"type": "string"}, "search": {"type": "string", "description": "A tag or words, to list every system and pilot noted with them"}}), &[]),
     run: notes,
 };
 
 fn notes(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let view = ctx.facts.notes_view.clone().ok_or("no notes")?;
+    if let Some(q) = str_arg(v, "search") {
+        let q = q.trim().to_lowercase();
+        let row = |m: &crate::notes::Merged, kind: &str| {
+            let tags: Vec<String> = m.tags.iter().filter_map(|id| view.tag(id).map(|t| t.name.clone())).collect();
+            json!({"kind": kind, "name": m.name, "tags": tags, "notes": m.parts.iter().filter(|p| !p.note.is_empty()).map(|p| p.note.clone()).collect::<Vec<_>>()})
+        };
+        let hits: Vec<Value> = view
+            .systems
+            .values()
+            .filter(|m| view.matches(m, &q))
+            .map(|m| row(m, "system"))
+            .chain(view.pilots.values().filter(|m| view.matches(m, &q)).map(|m| row(m, "pilot")))
+            .take(60)
+            .collect();
+        return Ok(json!({"matches": hits}));
+    }
     let merged = if let Some(sys) = str_arg(v, "system") {
         view.system(ctx.system(sys)?).cloned()
     } else if let Some(p) = str_arg(v, "pilot") {

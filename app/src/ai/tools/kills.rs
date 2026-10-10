@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use super::{eve_time, fmt_age, schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&RECENT, &HISTORY, &BATTLES];
+pub static TOOLS: &[&ToolSpec] = &[&RECENT, &HISTORY, &BATTLES, &BATTLE_DETAIL];
 
 fn kill_schema(max_minutes: u64) -> Value {
     schema(
@@ -152,3 +152,56 @@ fn battles(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         .collect();
     Ok(json!(out))
 }
+
+static BATTLE_DETAIL: ToolSpec = ToolSpec {
+    name: "battle_detail",
+    description: "One battle by its battle_id from battle_reports: each side's groups, pilots with their hulls, what each lost \
+                  and the damage they did, and the side's totals.",
+    need: Need::All(&["battles"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"battle_id": {"type": "integer"}, "pilots_per_side": {"type": "integer", "minimum": 5, "maximum": 150}}), &["battle_id"]),
+    run: |ctx, v| {
+        let id = v.get("battle_id").and_then(Value::as_i64).ok_or("which battle?")?;
+        let per = u64_arg(v, "pilots_per_side", 40, 150) as usize;
+        let list = ctx.deps.battles.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let b = list.iter().find(|b| b.engagements.iter().any(|e| e.kill_id == id)).ok_or("no battle with that id; it may have aged out")?;
+        let names = ctx.store.map(super::intel::ship_names).unwrap_or_default();
+        let ship = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("type {id}"));
+        let sides: Vec<Value> = (0..b.sides.len())
+            .map(|i| {
+                let s = &b.sides[i];
+                let roster = b.roster(i);
+                let mut hulls: std::collections::BTreeMap<String, usize> = Default::default();
+                for p in &roster {
+                    *hulls.entry(ship(p.ship)).or_default() += 1;
+                }
+                json!({
+                    "groups": s.parties.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                    "coalition": s.coalition,
+                    "pilots": roster.len(),
+                    "kills": s.kills, "losses": s.losses,
+                    "isk_lost_billions": (s.isk_lost / 1e8).round() / 10.0,
+                    "isk_destroyed_billions": (s.isk_destroyed / 1e8).round() / 10.0,
+                    "hulls": hulls,
+                    "roster": roster.iter().take(per).map(|p| {
+                        let mut r = json!({"pilot": p.pilot, "group": p.party.name, "ship": ship(p.ship)});
+                        if let Some(l) = &p.lost {
+                            r["lost_isk_millions"] = json!(((l.value + l.pod_value) / 1e6).round());
+                            r["kill_id"] = json!(l.kill_id);
+                        }
+                        if p.damage > 0 {
+                            r["damage"] = json!(p.damage);
+                        }
+                        r
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "from": eve_time(b.start), "to": eve_time(b.end),
+            "systems": b.systems.iter().map(|(_, n, _)| n.clone()).collect::<Vec<_>>(),
+            "kills": b.kills, "isk_billions": (b.isk / 1e8).round() / 10.0,
+            "sides": sides,
+        }))
+    },
+};

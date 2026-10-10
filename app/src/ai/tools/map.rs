@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use super::{schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&SYSTEM_INFO, &MAP_QUERY, &ROUTE, &SYSTEMS_WITHIN, &JOVE_NEAR, &CAMPS, &WORMHOLES_NEAR, &SHIP_INFO];
+pub static TOOLS: &[&ToolSpec] = &[&SYSTEM_INFO, &MAP_QUERY, &ROUTE, &SYSTEMS_WITHIN, &JOVE_NEAR, &CAMPS, &WORMHOLES_NEAR, &SIGNATURES, &SHIP_INFO];
 
 static SYSTEM_INFO: ToolSpec = ToolSpec {
     name: "system_info",
@@ -329,9 +329,38 @@ fn wormholes_near(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     Ok(json!(out))
 }
 
+static SIGNATURES: ToolSpec = ToolSpec {
+    name: "system_signatures",
+    description: "The cosmic signatures pasted for a system, newest first: id, kind and name, when first seen and by whom, \
+                  and which are new since the paste before.",
+    need: Need::All(&["wormholes"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"system": {"type": "string"}}), &["system"]),
+    run: |ctx, v| {
+        let store = ctx.store.ok_or("the database is not open")?;
+        let id = ctx.system(str_arg(v, "system").unwrap_or_default())?;
+        let sigs = store.system_sigs(id);
+        Ok(json!({"system": ctx.system_name(id), "signatures": sigs.iter().map(|s| {
+            let mut x = json!({"id": s.sig, "added": super::fmt_age(ctx.now, s.added_at)});
+            for (k, val) in [("kind", &s.kind), ("group", &s.group), ("name", &s.name), ("by", &s.who)] {
+                if !val.is_empty() {
+                    x[k] = json!(val);
+                }
+            }
+            if s.updated_at > s.added_at + 60 {
+                x["updated"] = json!(super::fmt_age(ctx.now, s.updated_at));
+            }
+            if let Some(o) = &s.origin {
+                x["shared_from"] = json!(o);
+            }
+            x
+        }).collect::<Vec<_>>()}))
+    },
+};
+
 static SHIP_INFO: ToolSpec = ToolSpec {
     name: "ship_info",
-    description: "A ship type's class and its hit points and resists from the static data.",
+    description: "A ship type's class, hit points and resists, slots, hardpoints, drones, speed and warp speed from the static data.",
     need: Need::All(&["sde"]),
     kind: Kind::Read,
     schema: || schema(json!({"ship": {"type": "string", "description": "Ship name, e.g. Muninn"}}), &["ship"]),
@@ -349,7 +378,11 @@ fn ship_info(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         "class": group,
         "details": d.map(|d| json!({
             "shield_hp": d.shield_hp, "armor_hp": d.armor_hp, "hull_hp": d.hull_hp,
-            "shield_resists": d.shield_resist, "armor_resists": d.armor_resist, "hull_resists": d.hull_resist,
+            "resists_em_th_kin_exp": {"shield": d.shield_resist, "armor": d.armor_resist, "hull": d.hull_resist},
+            "slots_high_mid_low": [d.high_slots, d.mid_slots, d.low_slots],
+            "turret_hardpoints": d.turret_hardpoints, "launcher_hardpoints": d.launcher_hardpoints,
+            "drone_bay_m3": d.drone_cap, "drone_bandwidth": d.drone_bw,
+            "max_velocity_ms": d.max_velocity, "warp_speed_aus": d.warp_speed,
         })),
     }))
 }
