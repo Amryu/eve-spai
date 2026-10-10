@@ -1411,10 +1411,12 @@ impl SpaiApp {
             let sort_label = match self.battle_roster_sort {
                 RosterSort::Value => tr!("ISK loss"),
                 RosterSort::Hull => tr!("Hull size"),
+                RosterSort::Damage => tr!("Damage dealt"),
             };
             toolbar_combo(ui, "battle_roster_sort", sort_label.to_owned(), |ui| {
                 ui.menu_value(&mut self.battle_roster_sort, RosterSort::Value, tr!("ISK loss"));
                 ui.menu_value(&mut self.battle_roster_sort, RosterSort::Hull, tr!("Hull size"));
+                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Damage, tr!("Damage dealt"));
             });
             if let Some(ship) = self.battle_ship_filter.filter(|_| !self.battle_condensed) {
                 let name = self.type_names.lock().unwrap().get(&ship).cloned().unwrap_or_else(|| format!("Type {ship}"));
