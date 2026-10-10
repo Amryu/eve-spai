@@ -60,7 +60,8 @@ fn system_info(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
 static ROUTE: ToolSpec = ToolSpec {
     name: "route",
     description: "The shortest gate route between two systems, every system on it with its security. Jump bridges are \
-                  used unless use_bridges is false.",
+                  used unless use_bridges is false. It knows nothing of the user's avoid lists, camps or security limits; \
+                  plan_route takes those into account.",
     need: Need::All(&["sde"]),
     kind: Kind::Read,
     schema: || {
@@ -178,7 +179,7 @@ fn wormholes_near(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         None => None,
     };
     let mut out = Vec::new();
-    for w in store.wormholes() {
+    for w in store.wormholes().into_iter().filter(|w| !w.is_expired(ctx.now)) {
         if let Some(d) = &around {
             let near = d.contains_key(&w.system_id) || w.dest_system_id.is_some_and(|b| d.contains_key(&b));
             if !near {
@@ -192,8 +193,12 @@ fn wormholes_near(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             "leads_to": w.dest_system_id.map(|b| ctx.system_name(b)).unwrap_or_else(|| format!("{:?}", w.dest)),
             "size": w.size.map(|s| format!("{s:?}")),
             "mass": w.mass.map(|m| format!("{m:?}")),
+            "size_for_ships": w.effective_size().map(|s| format!("{s:?}")),
             "life": w.life.map(|l| format!("{l:?}")),
+            "hours_left": w.hours_left(ctx.now),
             "reported": super::fmt_age(ctx.now, w.reported_at),
+            "source": format!("{:?}", w.source),
+            "note": w.note,
             "drifter": w.is_drifter,
         }));
     }

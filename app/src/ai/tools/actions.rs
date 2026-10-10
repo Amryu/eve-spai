@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use super::{schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE, &MAP_DATA, &EDIT_MAP_DATA, &SEND_JABBER];
+pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE, &MAP_DATA, &EDIT_MAP_DATA, &SEND_JABBER, &OPEN_CHAT, &JABBER_WINDOWS];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionKind {
@@ -20,7 +20,10 @@ pub enum ActionKind {
     /// Changes to the jump bridges, cyno generators or sov upgrades, all applied together.
     EditMapData(MapDataEdit),
     /// A Jabber message, to a room or a person, sent only on the user's click.
-    SendJabber { to: String, room: bool, body: String, broadcast: bool },
+    SendJabber { to: String, room: bool, join: bool, body: String, broadcast: bool },
+    /// Shows a conversation: in the Jabber tab, a new window, or a window already open, brought to
+    /// the front. Only shows what is on the user's screen already, so it happens without a click.
+    OpenChat { jid: String, window: ChatWindowPick },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -208,15 +211,20 @@ fn add_alert_rule(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
 static MAP_DATA: ToolSpec = ToolSpec {
     name: "map_data",
     description: "The user's own map data as it stands: jump bridges (Ansiblexes), friendly cyno generators and sov upgrades.",
-    need: Need::Any(&["actions.settings", "map.cyno"]),
+    need: Need::Any(&["map.bridges", "map.cyno"]),
     kind: Kind::Read,
     schema: || schema(json!({}), &[]),
     run: |ctx, _| {
-        Ok(json!({
-            "jump_bridges": ctx.facts.jump_bridges.iter().map(|b| format!("{} <> {}", b.from, b.to)).collect::<Vec<_>>(),
-            "cyno_generators": ctx.facts.cyno_generators.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>(),
-            "sov_upgrades": ctx.facts.sov_upgrades.iter().map(|u| json!({"system": u.system, "upgrade": u.upgrade})).collect::<Vec<_>>(),
-        }))
+        // Each part only as far as it is allowed.
+        let mut out = json!({});
+        if ctx.facts.allowed("map.bridges") {
+            out["jump_bridges"] = json!(ctx.facts.jump_bridges.iter().map(|b| format!("{} <> {}", b.from, b.to)).collect::<Vec<_>>());
+            out["sov_upgrades"] = json!(ctx.facts.sov_upgrades.iter().map(|u| json!({"system": u.system, "upgrade": u.upgrade})).collect::<Vec<_>>());
+        }
+        if ctx.facts.allowed("map.cyno") {
+            out["cyno_generators"] = json!(ctx.facts.cyno_generators.iter().map(|id| ctx.system_name(*id)).collect::<Vec<_>>());
+        }
+        Ok(out)
     },
 };
 
@@ -319,22 +327,186 @@ fn edit_map_data(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     Ok(out)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChatWindowPick {
+    Main,
+    New,
+    Existing(u64),
+}
+
+impl ActionKind {
+    /// Actions carried out as soon as they are proposed.
+    pub fn immediate(&self) -> bool {
+        matches!(self, ActionKind::OpenChat { .. })
+    }
+}
+
+static OPEN_CHAT: ToolSpec = ToolSpec {
+    name: "open_chat",
+    description: "Opens a Jabber conversation for the user and brings it to the front: in the Jabber tab, in a new window, or \
+                  in one of the chat windows already open (see jabber_windows). Done at once, it sends nothing.",
+    need: Need::Any(&["jabber.chats", "actions.jabber"]),
+    kind: Kind::Action,
+    schema: || {
+        schema(
+            json!({
+                "conversation": {"type": "string", "description": "Room or person, by name, contact name or address"},
+                "kind": {"type": "string", "enum": ["room", "person"]},
+                "window": {"type": "string", "description": "main, new, or the number of an open chat window"}
+            }),
+            &["conversation"],
+        )
+    },
+    run: |ctx, v| {
+        let want = str_arg(v, "conversation").ok_or("which conversation?")?.to_owned();
+        let t = {
+            let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+            resolve_jabber(&st, &ctx.facts.jabber_domain, &want, str_arg(v, "kind"))?
+        };
+        let window = match str_arg(v, "window").map(str::trim).unwrap_or("main") {
+            "new" => ChatWindowPick::New,
+            "main" | "" => ChatWindowPick::Main,
+            n => {
+                let id: u64 = n.trim_start_matches('#').parse().map_err(|_| format!("no chat window {n}; see jabber_windows"))?;
+                if !ctx.facts.chat_windows.iter().any(|(w, _)| *w == id) {
+                    return Err(format!("no chat window {id} is open; see jabber_windows"));
+                }
+                ChatWindowPick::Existing(id)
+            }
+        };
+        let summary = format!("Opened {}", t.label);
+        queue(ctx, ActionKind::OpenChat { jid: t.jid, window }, summary)
+    },
+};
+
+static JABBER_WINDOWS: ToolSpec = ToolSpec {
+    name: "jabber_windows",
+    description: "The chat windows the user has popped out, by number, with the conversations open in each.",
+    need: Need::Any(&["jabber.chats", "actions.jabber"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        Ok(json!(ctx
+            .facts
+            .chat_windows
+            .iter()
+            .map(|(id, tabs)| json!({"window": id, "conversations": tabs.iter().map(|t| t.split('@').next().unwrap_or(t)).collect::<Vec<_>>()}))
+            .collect::<Vec<_>>()))
+    },
+};
+
 /// The commands that reach a whole coalition. Never written unless the user asked for them by name.
 const BROADCAST: [&str; 2] = ["!bping", "!bcast"];
 
 static SEND_JABBER: ToolSpec = ToolSpec {
     name: "send_jabber",
-    description: "Writes a Jabber message to a room or a person, for the user to check and send with a click. Only when the \
-                  user clearly asked you to write or send a message; if in doubt, ask them first. Never use the !bping or \
-                  !bcast commands unless the user asked for that command by name.",
+    description: "Writes a Jabber message to a room or a person, for the user to check and send with a click: a room not \
+                  joined yet is joined first, and a person with no conversation yet gets a new one. Only when the user clearly \
+                  asked you to write or send a message; if in doubt, ask them first. Never use the !bping or !bcast commands \
+                  unless the user asked for that command by name.",
     need: Need::All(&["actions.jabber"]),
     kind: Kind::Action,
-    schema: || schema(json!({"conversation": {"type": "string", "description": "Room or person, by name or address"}, "text": {"type": "string"}}), &["conversation", "text"]),
+    schema: || {
+        schema(
+            json!({
+                "conversation": {"type": "string", "description": "Room or person, by name, contact name or address; spacing, underscores and case do not matter"},
+                "kind": {"type": "string", "enum": ["room", "person"], "description": "Say which when the name could be either, or for a room not joined yet"},
+                "text": {"type": "string"}
+            }),
+            &["conversation", "text"],
+        )
+    },
     run: send_jabber,
 };
 
+/// A name as Jabber spells it: lower case, with spaces, hyphens and dots as underscores.
+pub fn jabber_norm(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.trim().chars() {
+        let c = c.to_lowercase().next().unwrap_or(c);
+        out.push(if matches!(c, ' ' | '-' | '.' | '_') { '_' } else { c });
+    }
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_owned()
+}
+
+/// Where a message goes: a room or a person, whether the room has to be joined first, and whether
+/// there is no conversation with them yet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JabberTarget {
+    pub jid: String,
+    pub room: bool,
+    pub join: bool,
+    pub new: bool,
+    pub label: String,
+}
+
+/// Finds a room or a person by address, by the part before the @, or by a contact's name; spaces,
+/// underscores, hyphens, dots and case do not matter. Unknown names become a new conversation on
+/// the user's own server, or a room on its conference service, for the user to check on the card.
+pub fn resolve_jabber(st: &crate::jabber::JabberState, own_domain: &str, want: &str, kind: Option<&str>) -> Result<JabberTarget, String> {
+    let local = |jid: &str| jid.split('@').next().unwrap_or(jid).to_owned();
+    let is_room = |jid: &str| st.rooms.contains(jid) || st.rooms_left.contains(jid) || st.rooms_inaccessible.contains(jid) || jid.split('@').nth(1).is_some_and(|d| d.starts_with("conference."));
+    // (jid, shown name)
+    let mut known: Vec<(String, String)> = Vec::new();
+    for r in st.rooms.iter().chain(&st.rooms_left).chain(&st.rooms_inaccessible).chain(st.chats.keys()) {
+        if !known.iter().any(|(j, _)| j == r) {
+            known.push((r.clone(), local(r)));
+        }
+    }
+    for (jid, c) in &st.roster {
+        match known.iter_mut().find(|(j, _)| j == jid) {
+            Some(k) => k.1 = c.name.clone().unwrap_or_else(|| local(jid)),
+            None => known.push((jid.clone(), c.name.clone().unwrap_or_else(|| local(jid)))),
+        }
+    }
+    let wanted_room = kind.map(|k| k.eq_ignore_ascii_case("room"));
+    let fits_kind = |jid: &str| wanted_room.is_none_or(|r| r == is_room(jid));
+    let target = |jid: &str, label: &str| JabberTarget {
+        jid: jid.to_owned(),
+        room: is_room(jid),
+        join: is_room(jid) && !st.rooms.contains(jid),
+        new: !st.chats.contains_key(jid) && !st.rooms.contains(jid),
+        label: label.to_owned(),
+    };
+    let w = want.trim();
+    if w.contains('@') {
+        let jid = w.to_lowercase();
+        let label = known.iter().find(|(j, _)| *j == jid).map_or_else(|| local(&jid), |(_, l)| l.clone());
+        return Ok(target(&jid, &label));
+    }
+    let n = jabber_norm(w);
+    if n.is_empty() {
+        return Err("to whom?".into());
+    }
+    let exact: Vec<&(String, String)> = known.iter().filter(|(j, l)| fits_kind(j) && (jabber_norm(&local(j)) == n || jabber_norm(l) == n)).collect();
+    let hits: Vec<&(String, String)> =
+        if exact.is_empty() { known.iter().filter(|(j, l)| fits_kind(j) && (jabber_norm(&local(j)).contains(&n) || jabber_norm(l).contains(&n))).collect() } else { exact };
+    match hits.as_slice() {
+        [one] => Ok(target(&one.0, &one.1)),
+        [] => {
+            let domain = own_domain.trim();
+            if domain.is_empty() {
+                return Err(format!("no Jabber room or contact matches {want:?}, and the user's own server is not set up"));
+            }
+            if wanted_room == Some(true) {
+                // A room on the conference service the joined rooms use, else the server's usual one.
+                let conf = st.rooms.iter().chain(st.chats.keys()).find_map(|r| r.split('@').nth(1).filter(|d| d.starts_with("conference.")).map(str::to_owned)).unwrap_or_else(|| format!("conference.{domain}"));
+                let jid = format!("{n}@{conf}");
+                Ok(JabberTarget { jid: jid.clone(), room: true, join: true, new: true, label: n })
+            } else {
+                let jid = format!("{n}@{domain}");
+                Ok(JabberTarget { jid, room: false, join: false, new: true, label: w.to_owned() })
+            }
+        }
+        many => Err(format!("several match {want:?}: {}; ask which", many.iter().take(8).map(|(j, l)| format!("{l} ({j})")).collect::<Vec<_>>().join(", "))),
+    }
+}
+
 fn send_jabber(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
-    let want = str_arg(v, "conversation").ok_or("to whom?")?.trim().to_lowercase();
+    let want = str_arg(v, "conversation").ok_or("to whom?")?.to_owned();
     let body = str_arg(v, "text").ok_or("what should it say?")?.trim().to_owned();
     if body.is_empty() {
         return Err("the message is empty".into());
@@ -350,20 +522,18 @@ fn send_jabber(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             return Err("broadcast commands (!bping, !bcast) are only written when the user asks for that command by name; ask them".into());
         }
     }
-    let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
-    let known: Vec<(String, bool)> = st.rooms.iter().map(|r| (r.clone(), true)).chain(st.chats.keys().filter(|k| !st.rooms.contains(*k)).map(|k| (k.clone(), false))).collect();
-    drop(st);
-    let local = |jid: &str| jid.split('@').next().unwrap_or(jid).to_lowercase();
-    let exact: Vec<&(String, bool)> = known.iter().filter(|(j, _)| j.to_lowercase() == want || local(j) == want).collect();
-    let hits: Vec<&(String, bool)> = if exact.is_empty() { known.iter().filter(|(j, _)| j.to_lowercase().contains(&want)).collect() } else { exact };
-    let (to, room) = match hits.as_slice() {
-        [one] => (*one).clone(),
-        [] => return Err(format!("no Jabber room or contact matches {want:?}")),
-        many => return Err(format!("several match {want:?}: {}; ask which", many.iter().take(8).map(|(j, _)| j.as_str()).collect::<Vec<_>>().join(", "))),
+    let t = {
+        let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        resolve_jabber(&st, &ctx.facts.jabber_domain, &want, str_arg(v, "kind"))?
     };
-    let name = local(&to);
-    let summary = if broadcast { format!("BROADCAST to {name}: \"{body}\"") } else { format!("Send to {name}: \"{body}\"") };
-    queue(ctx, ActionKind::SendJabber { to, room, body, broadcast }, summary)
+    let what = match (t.room, t.join, t.new) {
+        (true, true, _) => format!("Join room {} ({}) and send", t.label, t.jid),
+        (true, false, _) => format!("Send to room {}", t.label),
+        (false, _, true) => format!("Start a conversation with {} ({})", t.label, t.jid),
+        (false, _, false) => format!("Send to {}", t.label),
+    };
+    let summary = if broadcast { format!("BROADCAST. {what}: \"{body}\"") } else { format!("{what}: \"{body}\"") };
+    queue(ctx, ActionKind::SendJabber { to: t.jid, room: t.room, join: t.join, body, broadcast }, summary)
 }
 
 #[cfg(test)]
@@ -431,6 +601,22 @@ mod tests {
         assert!(!err, "{out}");
         let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "op", "text": "hi"}));
         assert!(err && out.contains("several"), "a vague name is asked about: {out}");
+        {
+            let mut j = deps.jabber.lock().unwrap();
+            j.roster.insert("xenuria_thrax@example.invalid".into(), crate::jabber::Contact { name: Some("Xenuria Thrax".into()), groups: vec![], presence: Default::default(), status_text: String::new(), sub: Default::default() });
+            j.rooms_left.insert("skirmish_commanders@conference.example.invalid".into());
+        }
+        let st = deps.jabber.lock().unwrap();
+        let t = resolve_jabber(&st, "example.invalid", "Skirmish Commanders", None).unwrap();
+        assert!(t.room && t.join, "a room left is joined again: {t:?}");
+        let t = resolve_jabber(&st, "example.invalid", "xenuria thrax", None).unwrap();
+        assert_eq!((t.jid.as_str(), t.room, t.new), ("xenuria_thrax@example.invalid", false, true));
+        let t = resolve_jabber(&st, "example.invalid", "Some New-Pilot", Some("person")).unwrap();
+        assert_eq!(t.jid, "some_new_pilot@example.invalid", "a new person, spelled the Jabber way");
+        let t = resolve_jabber(&st, "example.invalid", "capital ops", Some("room")).unwrap();
+        assert_eq!((t.jid.as_str(), t.join), ("capital_ops@conference.example.invalid", true));
+        assert!(resolve_jabber(&st, "", "nobody here", None).is_err());
+        drop(st);
         *deps.last_question.lock().unwrap() = "tell the ops room the fleet is up".into();
         let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "ops", "text": "!bping fleet up"}));
         assert!(err && out.contains("by name"), "{out}");

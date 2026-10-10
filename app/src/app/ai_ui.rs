@@ -82,6 +82,8 @@ impl SpaiApp {
             fleet_backend: self.fleet_on().then(|| self.fleet_backend.clone()),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
+            chat_windows: self.jabber_popouts.iter().map(|w| (w.id, w.tabs.clone())).collect(),
+            jabber_domain: s.jabber_jid.split('@').nth(1).unwrap_or("").split('/').next().unwrap_or("").to_owned(),
             opsec: false,
         };
         *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
@@ -100,17 +102,59 @@ impl SpaiApp {
     }
 
     /// Carries out an action card the user applied. Returns the note the model gets about it.
-    fn ai_apply(&mut self, kind: &ActionKind, summary: &str) -> String {
+    pub(crate) fn ai_apply(&mut self, kind: &ActionKind, summary: &str) -> String {
         match kind {
-            ActionKind::SendJabber { to, room, body, .. } => {
-                let cmd = if *room { crate::jabber::Cmd::SendRoom { room: to.clone(), body: body.clone() } } else { crate::jabber::Cmd::Send { to: to.clone(), body: body.clone() } };
-                match &self.jabber_tx {
-                    Some(tx) => {
-                        let _ = tx.send(cmd);
+            ActionKind::SendJabber { to, room, join, body, .. } => {
+                let Some(tx) = self.jabber_tx.clone() else {
+                    self.toast_error("Jabber is not connected; nothing was sent");
+                    return format!("Not sent, Jabber is not connected: {summary}");
+                };
+                if *join {
+                    // A room takes messages only once we are in it: the message waits for the join.
+                    let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: to.clone() });
+                    self.ai_room_waits.push((to.clone(), body.clone(), std::time::Instant::now()));
+                } else if *room {
+                    let _ = tx.send(crate::jabber::Cmd::SendRoom { room: to.clone(), body: body.clone() });
+                } else {
+                    let _ = tx.send(crate::jabber::Cmd::Send { to: to.clone(), body: body.clone() });
+                }
+            }
+            ActionKind::OpenChat { jid, window } => {
+                use super::chat_tabs::ChatWinKey;
+                use crate::ai::tools::ChatWindowPick;
+                self.ai_push_facts(true);
+                match window {
+                    ChatWindowPick::Main => {
+                        self.view = View::Jabber;
+                        let owner = self.tab_set().owner(jid);
+                        if owner != Some(ChatWinKey::Main) {
+                            if owner.is_some() {
+                                self.tab_set().move_tab(jid, ChatWinKey::Main, None);
+                            }
+                        }
+                        self.jabber_open(jid, ChatWinKey::Main);
                     }
-                    None => {
-                        self.toast_error("Jabber is not connected; nothing was sent");
-                        return format!("Not sent, Jabber is not connected: {summary}");
+                    ChatWindowPick::New => {
+                        if self.tab_set().owner(jid).is_none() {
+                            self.tab_set().attach(jid, ChatWinKey::Main, None);
+                        }
+                        match self.new_popout(jid, None) {
+                            Some(id) => self.raise_popout(id),
+                            None => {
+                                self.jabber_open(jid, ChatWinKey::Main);
+                                self.view = View::Jabber;
+                                return format!("No room for another chat window; opened in the Jabber tab instead: {summary}");
+                            }
+                        }
+                    }
+                    ChatWindowPick::Existing(id) => {
+                        if self.tab_set().owner(jid).is_some() {
+                            self.tab_set().move_tab(jid, ChatWinKey::Popout(*id), None);
+                        } else {
+                            self.tab_set().attach(jid, ChatWinKey::Popout(*id), None);
+                        }
+                        self.win_set_active(ChatWinKey::Popout(*id), Some(jid.clone()));
+                        self.raise_popout(*id);
                     }
                 }
             }
@@ -366,6 +410,53 @@ impl SpaiApp {
                 handle.send(Command::ActionResult { id, applied, note });
             }
         }
+    }
+
+    /// Carries out the actions that need no click as soon as they arrive.
+    pub(crate) fn ai_immediate_actions(&mut self) {
+        let Some(h) = self.ai.clone() else { return };
+        let due: Vec<(u64, ActionKind, String)> = {
+            let mut v = h.view.lock().unwrap_or_else(|e| e.into_inner());
+            let mut out = Vec::new();
+            for c in v.turns.iter_mut().flat_map(|t| t.cards.iter_mut()) {
+                if c.state == CardState::Pending && c.action.kind.immediate() {
+                    c.state = CardState::Applied;
+                    out.push((c.action.id, c.action.kind.clone(), c.action.summary.clone()));
+                }
+            }
+            out
+        };
+        for (id, kind, summary) in due {
+            let note = self.ai_apply(&kind, &summary);
+            h.send(Command::ActionResult { id, applied: true, note });
+        }
+    }
+
+    /// Sends messages that waited for a room to be joined, once it is; gives up after half a minute.
+    pub(crate) fn ai_room_waits_tick(&mut self) {
+        if self.ai_room_waits.is_empty() {
+            return;
+        }
+        let joined: std::collections::BTreeSet<String> = self.jabber.lock().unwrap_or_else(|e| e.into_inner()).rooms.clone();
+        let mut failed = Vec::new();
+        let tx = self.jabber_tx.clone();
+        self.ai_room_waits.retain(|(room, body, at)| {
+            if joined.contains(room) {
+                if let Some(tx) = &tx {
+                    let _ = tx.send(crate::jabber::Cmd::SendRoom { room: room.clone(), body: body.clone() });
+                }
+                false
+            } else if at.elapsed() > std::time::Duration::from_secs(30) {
+                failed.push(room.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for r in failed {
+            self.toast_error(format!("Could not join {r}; the message was not sent"));
+        }
+        self.ui_ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 
     /// Watch news: spoken when answers are, and a toast when the user is not looking at the chat.
@@ -1004,5 +1095,28 @@ impl SpaiApp {
         if cancel {
             self.ai_mem_edit = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod open_chat_tests {
+    use crate::ai::tools::{ActionKind, ChatWindowPick};
+
+    #[test]
+    fn a_conversation_opens_in_a_new_window_or_moves_into_an_open_one() {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut a = crate::app::SpaiApp::build(&ctx, true);
+        let jid = "ops@conference.example.invalid".to_owned();
+        a.ai_apply(&ActionKind::OpenChat { jid: jid.clone(), window: ChatWindowPick::New }, "Opened ops");
+        assert_eq!(a.jabber_popouts.len(), 1);
+        assert!(a.jabber_popouts[0].tabs.contains(&jid));
+        let first = a.jabber_popouts[0].id;
+        let other = "someone@example.invalid".to_owned();
+        a.ai_apply(&ActionKind::OpenChat { jid: other.clone(), window: ChatWindowPick::Existing(first) }, "Opened someone");
+        assert!(a.jabber_popouts[0].tabs.contains(&other));
+        assert_eq!(a.jabber_popouts[0].active.as_deref(), Some(other.as_str()), "the one asked for is in front");
+        a.ai_apply(&ActionKind::OpenChat { jid: other.clone(), window: ChatWindowPick::Main }, "Opened someone");
+        assert!(!a.jabber_popouts.iter().any(|w| w.tabs.contains(&other)), "moved back to the Jabber tab");
     }
 }

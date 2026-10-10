@@ -48,6 +48,10 @@ pub struct AiFacts {
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
+    /// Popped-out chat windows by id, with the conversations in each.
+    pub chat_windows: Vec<(u64, Vec<String>)>,
+    /// The server of the user's own Jabber address, for addressing someone not met yet.
+    pub jabber_domain: String,
     /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
     pub opsec: bool,
 }

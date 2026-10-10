@@ -947,6 +947,8 @@ pub struct SpaiApp {
     pub(crate) ai_feeds: crate::ai::feeds::SharedFeeds,
     /// Shared with the session: the conversation has read opsec data.
     ai_opsec: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Messages waiting for their room to be joined: room, text, when asked.
+    ai_room_waits: Vec<(String, String, std::time::Instant)>,
     /// The feed definitions as the poller reads them, kept in step with the settings.
     ai_feed_defs: std::sync::Arc<std::sync::Mutex<Vec<crate::ai::feeds::FeedDef>>>,
     ai_feeds_started: bool,
@@ -1792,6 +1794,7 @@ impl SpaiApp {
             ai_mics: None,
             ai_feeds: Default::default(),
             ai_opsec: Default::default(),
+            ai_room_waits: Vec::new(),
             ai_feed_defs: Default::default(),
             ai_feeds_started: false,
             ai_feeds_open: false,
@@ -3765,6 +3768,8 @@ impl SpaiApp {
         self.ai_watch_news();
         self.ai_voice_tick();
         self.ai_listen_tick();
+        self.ai_room_waits_tick();
+        self.ai_immediate_actions();
         self.fleet_boss_detail_window(ctx);
         self.fleet_snowflakes_window(ctx);
         self.fleet_migrate_window(ctx);
