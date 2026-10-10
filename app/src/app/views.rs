@@ -6,11 +6,29 @@ impl SpaiApp {
     pub(crate) fn intel_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
 
+        // The chat logs are only read once the static data is in; until then a missing log folder
+        // is not the reason, and saying so sent pilots hunting for a folder that was fine.
+        if self.chat_dir.is_none() && !matches!(*self.sde_status.lock().unwrap(), crate::sde::SdeStatus::Ready) {
+            ui.label(tr!("Intel starts once the static game data is downloaded."));
+            self.sde_status_ui(ui);
+            return;
+        }
+
         if self.chat_dir.is_none() {
             ui.colored_label(
                 crate::theme::standing::WARNING,
                 tr!("EVE chat logs not found. Set the logs directory in Settings."),
             );
+            // Where it looked, so a pilot whose logs are elsewhere can see why and say where they are.
+            ui.add_space(6.0);
+            let configured = self.settings.eve_logs_dir.trim().to_owned();
+            if !configured.is_empty() {
+                ui.label(egui::RichText::new(trf!("Set in Settings: {path}", path = configured)).weak());
+            }
+            ui.label(egui::RichText::new(tr!("Looked for a Chatlogs folder in:")).weak());
+            for d in crate::logpaths::candidate_log_dirs() {
+                ui.add(egui::Label::new(egui::RichText::new(d.display().to_string()).weak().monospace()).wrap());
+            }
             return;
         }
 

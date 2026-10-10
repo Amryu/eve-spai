@@ -57,41 +57,34 @@ pub fn candidate_log_dirs() -> Vec<PathBuf> {
 }
 
 pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
+    // A folder set by hand wins when it holds logs; one that does not (moved, mistyped, the wrong
+    // level picked) falls back to the search rather than leaving the app with no logs at all.
+    configured_logs(configured, "Chatlogs").or_else(|| candidate_log_dirs().into_iter().map(|d| d.join("Chatlogs")).find(|d| d.is_dir()))
+}
+
+/// The `sub` folder (Chatlogs or Gamelogs) under a folder set by hand, whichever level was picked:
+/// the subfolder itself, `logs`, or the `EVE` folder above it. A folder full of logs counts whatever
+/// its name.
+fn configured_logs(configured: &str, sub: &str) -> Option<PathBuf> {
     let configured = configured.trim();
-    if !configured.is_empty() {
-        let p = PathBuf::from(configured);
-        if p.ends_with("Chatlogs") && p.is_dir() {
-            return Some(p);
-        }
-        let cl = p.join("Chatlogs");
-        if cl.is_dir() {
-            return Some(cl);
-        }
-        return p.is_dir().then_some(p);
+    if configured.is_empty() {
+        return None;
     }
-    candidate_log_dirs()
-        .into_iter()
-        .map(|d| d.join("Chatlogs"))
-        .find(|d| d.is_dir())
+    let p = PathBuf::from(configured);
+    if p.ends_with(sub) && p.is_dir() {
+        return Some(p);
+    }
+    for c in [p.join(sub), p.join("logs").join(sub), p.join("EVE").join("logs").join(sub)] {
+        if c.is_dir() {
+            return Some(c);
+        }
+    }
+    let has_logs = std::fs::read_dir(&p).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x == "txt"));
+    has_logs.then_some(p)
 }
 
 pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        let p = PathBuf::from(configured);
-        if p.ends_with("Gamelogs") && p.is_dir() {
-            return Some(p);
-        }
-        let gl = p.join("Gamelogs");
-        if gl.is_dir() {
-            return Some(gl);
-        }
-        return None;
-    }
-    candidate_log_dirs()
-        .into_iter()
-        .map(|d| d.join("Gamelogs"))
-        .find(|d| d.is_dir())
+    configured_logs(configured, "Gamelogs").or_else(|| candidate_log_dirs().into_iter().map(|d| d.join("Gamelogs")).find(|d| d.is_dir()))
 }
 
 /// The current byte length of `path`, read by seeking an open handle to its end. On Windows
@@ -103,6 +96,18 @@ pub fn real_len(path: &std::path::Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_log_folder_set_by_hand_is_found_at_any_level() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/logpaths-test/文档");
+        let chat = root.join("EVE/logs/Chatlogs");
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::write(chat.join("本地_20261010_144512_1.txt"), b"x").unwrap();
+        for picked in [root.join("EVE"), root.join("EVE/logs"), chat.clone(), root.clone()] {
+            assert_eq!(super::configured_logs(picked.to_str().unwrap(), "Chatlogs"), Some(chat.clone()), "{picked:?}");
+        }
+        assert_eq!(super::configured_logs(root.join("gone").to_str().unwrap(), "Chatlogs"), None, "a missing folder falls back to the search");
+    }
+
     use super::*;
     use std::io::Write;
 

@@ -119,19 +119,26 @@ impl SpaiApp {
     }
 
     pub(crate) fn map_view(&mut self, ui: &mut egui::Ui) {
+        if !self.sde_status_ui(ui) {
+            return;
+        }
+        if self.map_popped {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(tr!("Map is in its own window.")).weak());
+            if ui.button(tr!("Dock map")).clicked() {
+                self.dock_map();
+            }
+        } else {
+            self.map_area(ui);
+        }
+    }
+
+    /// Whether the static data is ready; when not, says where its download stands with the ways on
+    /// (download, retry, cancel, from a file). The map and the intel feed both wait for it.
+    pub(crate) fn sde_status_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let status = self.sde_status.lock().unwrap().clone();
         match status {
-            SdeStatus::Ready => {
-                if self.map_popped {
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new(tr!("Map is in its own window.")).weak());
-                    if ui.button(tr!("Dock map")).clicked() {
-                        self.dock_map();
-                    }
-                } else {
-                    self.map_area(ui);
-                }
-            }
+            SdeStatus::Ready => return true,
             SdeStatus::Downloading(msg) => {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -153,6 +160,7 @@ impl SpaiApp {
                 self.sde_retry_row(ui);
             }
         }
+        false
     }
 
     pub(crate) fn set_map_view(&mut self, v: crate::map::MapView) {

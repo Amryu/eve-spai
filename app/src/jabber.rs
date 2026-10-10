@@ -13,6 +13,17 @@ pub fn is_room_private(key: &str) -> bool {
     key.contains('/')
 }
 
+/// How a contact is named: the name the roster gives, else the address's local part. A roster name
+/// that is an address itself (some clients store the full JID as the name) shows its local part too.
+pub fn contact_name(name: Option<&str>, jid: &str) -> String {
+    let local = |s: &str| s.split('@').next().unwrap_or(s).to_owned();
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) if n.contains('@') && !n.contains(' ') => local(n),
+        Some(n) => n.to_owned(),
+        None => local(jid),
+    }
+}
+
 /// How a conversation is named: the account's local part, or "nick (via room)" for someone written
 /// to through a room.
 pub fn convo_name(key: &str) -> String {
@@ -1371,6 +1382,14 @@ fn handle_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_contact_named_by_its_address_shows_the_local_part() {
+        assert_eq!(super::contact_name(Some("leonora_d@goonfleet.com"), "leonora_d@goonfleet.com"), "leonora_d");
+        assert_eq!(super::contact_name(Some("Leonora"), "leonora_d@goonfleet.com"), "Leonora");
+        assert_eq!(super::contact_name(None, "leonora_d@goonfleet.com"), "leonora_d");
+        assert_eq!(super::contact_name(Some("  "), "leonora_d@goonfleet.com"), "leonora_d");
+    }
+
     #[test]
     fn a_seat_check_answer_says_whether_we_are_still_in_the_room() {
         use super::{seat_answer, Seat};
