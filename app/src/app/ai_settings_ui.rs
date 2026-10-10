@@ -109,9 +109,37 @@ impl SpaiApp {
                     });
                     ui.end_row();
                     ui.label("Model");
-                    changed |= ui
-                        .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("the program's own default").desired_width(280.0))
-                        .changed();
+                    if claude {
+                        // The program takes these short names and any full model id.
+                        const CLAUDE_MODELS: [(&str, &str); 5] =
+                            [("", "The program's default"), ("opus", "Opus 5.5"), ("sonnet", "Sonnet 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("haiku", "Haiku 4.5")];
+                        let known = CLAUDE_MODELS.iter().find(|(k, _)| *k == cfg.model.trim());
+                        let other = known.is_none() || self.ai_cli_other_model;
+                        let shown = if other { "Other\u{2026}".to_owned() } else { known.map_or("", |(_, l)| l).to_owned() };
+                        ui.vertical(|ui| {
+                            egui::ComboBox::from_id_salt("ai_claude_model").selected_text(shown).width(280.0).show_ui(ui, |ui| {
+                                for (k, l) in CLAUDE_MODELS {
+                                    if ui.menu_value(&mut cfg.model, k.to_owned(), l).changed() {
+                                        self.ai_cli_other_model = false;
+                                        changed = true;
+                                    }
+                                }
+                                if ui.add(egui::Button::new("Other\u{2026}").selected(other)).clicked() {
+                                    self.ai_cli_other_model = true;
+                                    ui.close();
+                                }
+                            });
+                            if other {
+                                changed |= ui
+                                    .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("a model id, e.g. claude-opus-5-5").desired_width(280.0))
+                                    .changed();
+                            }
+                        });
+                    } else {
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("the program's own default").desired_width(280.0))
+                            .changed();
+                    }
                     ui.end_row();
                     ui.label("");
                     ui.add(
@@ -324,6 +352,7 @@ impl SpaiApp {
             SttKind::Local => "A speech server on this computer",
             SttKind::Openai => "OpenAI",
             SttKind::Groq => "Groq",
+            SttKind::Whisper => "Whisper, on this computer",
             SttKind::Unknown => "Unknown",
         };
         let secrets = self.ai_secrets.clone();
@@ -340,7 +369,12 @@ impl SpaiApp {
             let v = &mut self.settings.ai.voice;
             ui.label("Recognition");
             egui::ComboBox::from_id_salt("ai_stt").selected_text(label(v.stt)).width(280.0).show_ui(ui, |ui| {
-                for k in [SttKind::Off, SttKind::Local, SttKind::Openai, SttKind::Groq] {
+                let kinds: &[SttKind] = if crate::ai::voice::whisper::AVAILABLE {
+                    &[SttKind::Off, SttKind::Whisper, SttKind::Local, SttKind::Openai, SttKind::Groq]
+                } else {
+                    &[SttKind::Off, SttKind::Local, SttKind::Openai, SttKind::Groq]
+                };
+                for &k in kinds {
                     changed |= ui.menu_value(&mut v.stt, k, label(k)).changed();
                 }
             });
@@ -424,6 +458,9 @@ impl SpaiApp {
         if self.settings.ai.voice.stt == SttKind::Off {
             return changed;
         }
+        if self.settings.ai.voice.stt == SttKind::Whisper {
+            changed |= self.ai_whisper_models_ui(ui);
+        }
         if let Some(p) = problem {
             ui.label(egui::RichText::new(p).color(crate::theme::standing::WARNING));
         } else if cfg!(target_os = "linux") && crate::ai::ptt::SUPPORTED {
@@ -443,6 +480,60 @@ impl SpaiApp {
         changed
     }
 
+    /// The Whisper model in use, picked from all of them, with what each costs and whether it is here.
+    fn ai_whisper_models_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::ai::voice::whisper::{self, MODELS};
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+        let progress = self.ai_whisper_progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let cur = self.settings.ai.voice.whisper_file.clone();
+        let shown = |m: &whisper::Model| format!("{}  \u{b7}  {}  \u{b7}  about {} MB memory", m.label(), super::fmt_bytes(m.bytes), m.ram_mb());
+        let mut get: Option<String> = None;
+        egui::Grid::new("ai_whisper").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+            ui.label("Whisper model").on_hover_text(
+                "Bigger models hear better and take longer: tiny and base answer in well under a second, small in one or two, \
+                 medium and large in several on a CPU. q5 and q8 are smaller copies that sound nearly the same. \
+                 English-only models hear every language as English.",
+            );
+            let sel = whisper::model(&cur).map_or(cur.clone(), &shown);
+            let v = &mut self.settings.ai.voice;
+            egui::ComboBox::from_id_salt("ai_whisper_model").selected_text(sel).width(420.0).truncate().height(420.0).show_ui(ui, |ui| {
+                for m in MODELS {
+                    let mark = if whisper::installed(m.file) { format!("{}  ", icon::CHECK) } else { "      ".to_owned() };
+                    changed |= ui.menu_value(&mut v.whisper_file, m.file.to_owned(), format!("{mark}{}", shown(m))).changed();
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                if whisper::installed(&cur) {
+                    let loaded = whisper::loaded().as_deref() == Some(cur.as_str());
+                    ui.label(egui::RichText::new(if loaded { "Downloaded, loaded now" } else { "Downloaded" }).weak());
+                    if ui.button(format!("{}  Remove", icon::TRASH)).on_hover_text("Delete the file to free the disk space").clicked() {
+                        whisper::remove(&cur);
+                    }
+                } else if let Some(m) = whisper::model(&cur) {
+                    if ui.add_enabled(!progress.busy, egui::Button::new(format!("{}  Get, {}", icon::DOWNLOAD_SIMPLE, super::fmt_bytes(m.bytes)))).clicked() {
+                        get = Some(cur.clone());
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        if progress.busy {
+            let frac = if progress.total > 0 { progress.done as f32 / progress.total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(frac).text(format!("{}  {}", progress.what, super::fmt_bytes(progress.done))));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        } else if let Some(e) = &progress.error {
+            ui.label(egui::RichText::new(e).color(crate::theme::standing::WARNING));
+        }
+        ui.label(egui::RichText::new("The model loads when you ask and is let go after five idle minutes.").weak());
+        if let Some(f) = get {
+            crate::ai::voice::whisper::install(f, self.ai_whisper_progress.clone(), Some(self.ui_ctx.clone()));
+        }
+        changed
+    }
+
     /// One row per answer language: its Piper voice and whether it is installed.
     fn ai_piper_voices_ui(&mut self, ui: &mut egui::Ui) -> bool {
         use crate::ai::voice::models;
@@ -458,7 +549,7 @@ impl SpaiApp {
                 egui::ComboBox::from_id_salt(("piper_voice", *code)).selected_text(shown).width(200.0).show_ui(ui, |ui| {
                     let mut pick = chosen.clone();
                     for v in models::CATALOG.iter().filter(|v| v.lang == *code) {
-                        if ui.menu_value(&mut pick, v.id.to_owned(), v.label).changed() {
+                        if ui.menu_value(&mut pick, v.id.to_owned(), v.label).on_hover_text(format!("Recordings licensed {}", v.license)).changed() {
                             self.settings.ai.voice.piper_voices.insert((*code).to_owned(), pick.clone());
                             changed = true;
                         }

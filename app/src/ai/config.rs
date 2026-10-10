@@ -228,6 +228,8 @@ pub struct VoiceSettings {
     pub whisper_model: String,
     /// A local speech server speaking OpenAI's transcription API, ending in /v1.
     pub stt_url: String,
+    /// The Whisper model file run inside the app.
+    pub whisper_file: String,
     pub piper_voice: String,
     /// The Piper voice per answer language, by voice id; a language left out takes its default.
     pub piper_voices: std::collections::BTreeMap<String, String>,
@@ -252,7 +254,8 @@ impl Default for VoiceSettings {
             tts: TtsKind::Off,
             whisper_model: "Systran/faster-whisper-small".into(),
             stt_url: "http://localhost:8000/v1".into(),
-            piper_voice: "en_US-lessac-medium".into(),
+            whisper_file: crate::ai::voice::whisper::DEFAULT_MODEL.into(),
+            piper_voice: "en_US-joe-medium".into(),
             piper_voices: Default::default(),
             cloud_voice: "alloy".into(),
             elevenlabs_voice: String::new(),
@@ -273,6 +276,8 @@ pub enum SttKind {
     Local,
     Openai,
     Groq,
+    /// Whisper running inside the app.
+    Whisper,
     #[serde(other)]
     Unknown,
 }

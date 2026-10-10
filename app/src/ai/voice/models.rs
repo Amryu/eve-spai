@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const PIPER_RELEASE: &str = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2";
-const VOICES: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0";
+/// Pinned to one commit of the collection, so a voice cannot change under its checksum.
+const VOICES: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117";
 
 /// (archive, sha256) of the Piper build for this platform.
 fn piper_asset() -> Option<(&'static str, &'static str)> {
@@ -25,18 +26,23 @@ pub struct VoiceInfo {
     pub id: &'static str,
     pub lang: &'static str,
     pub label: &'static str,
+    /// The license of the recordings the voice was trained on. Only voices free to use are listed:
+    /// Lessac (research only) and voices of unknown origin were taken out.
+    pub license: &'static str,
     path: &'static str,
     onnx_sha: &'static str,
     json_sha: &'static str,
 }
 
 pub const CATALOG: &[VoiceInfo] = &[
-    VoiceInfo { id: "en_US-lessac-medium", lang: "en", label: "English (US), Lessac", path: "en/en_US/lessac/medium", onnx_sha: "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f", json_sha: "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0" },
-    VoiceInfo { id: "en_GB-alan-medium", lang: "en", label: "English (UK), Alan", path: "en/en_GB/alan/medium", onnx_sha: "0a309668932205e762801f1efc2736cd4b0120329622adf62be09e56339d3330", json_sha: "c0f0d124e5895c00e7c03b35dcc8287f319a6998a365b182deb5c8e752ee8c1e" },
-    VoiceInfo { id: "de_DE-thorsten-medium", lang: "de", label: "Deutsch, Thorsten", path: "de/de_DE/thorsten/medium", onnx_sha: "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819", json_sha: "974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85" },
-    VoiceInfo { id: "es_ES-davefx-medium", lang: "es", label: "Español, Davefx", path: "es/es_ES/davefx/medium", onnx_sha: "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917", json_sha: "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842" },
-    VoiceInfo { id: "ru_RU-irina-medium", lang: "ru", label: "Русский, Irina", path: "ru/ru_RU/irina/medium", onnx_sha: "8ff38212d23da300bbe3705c645e6e5b9475f0bfde01558eb17813e22acaaaaa", json_sha: "c2ec28bb38e2b59e93b959b3e40348c1afebbd272f30fed5d41205d08e98a9d7" },
-    VoiceInfo { id: "zh_CN-huayan-medium", lang: "zh", label: "中文, Huayan", path: "zh/zh_CN/huayan/medium", onnx_sha: "9929917bf8cabb26fd528ea44d3a6699c11e87317a14765312420be230be0f3d", json_sha: "d521dc45504a8ccc99e325822b35946dd701840bfb07e3dbb31a40929ed6a82b" },
+    VoiceInfo { id: "en_US-joe-medium", lang: "en", label: "English (US), Joe", license: "CC0", path: "en/en_US/joe/medium", onnx_sha: "58afce0321b8d9c46d7cdf9c16500cc55a793b4220212dba6b70fb788b3baf06", json_sha: "3d6d5410b3795cb1950595247ef8f06190719e6fdbfa3a2356d8ec368e1aad33" },
+    VoiceInfo { id: "en_GB-cori-medium", lang: "en", label: "English (UK), Cori", license: "Public domain", path: "en/en_GB/cori/medium", onnx_sha: "1899f98e5fb8310154f3c2973f4b8a929ba7245e722b3d3a85680b833d95f10d", json_sha: "e262c16d7f192f69d4edd6b4ef8a5915379e67495fcc402f1ab15eeb33da3d36" },
+    VoiceInfo { id: "en_US-libritts_r-medium", lang: "en", label: "English (US), LibriTTS", license: "CC BY 4.0", path: "en/en_US/libritts_r/medium", onnx_sha: "10bb85e071d616fcf4071f369f1799d0491492ab3c5d552ec19fb548fac13195", json_sha: "b471dc60d2d8335e819c393d196d6fbf792817f40051257b269878505bc9afb3" },
+    VoiceInfo { id: "de_DE-thorsten-medium", lang: "de", label: "Deutsch, Thorsten", license: "CC0", path: "de/de_DE/thorsten/medium", onnx_sha: "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819", json_sha: "974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85" },
+    VoiceInfo { id: "es_ES-davefx-medium", lang: "es", label: "Español, Davefx", license: "CC0", path: "es/es_ES/davefx/medium", onnx_sha: "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917", json_sha: "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842" },
+    VoiceInfo { id: "ru_RU-denis-medium", lang: "ru", label: "Русский, Denis", license: "CC0", path: "ru/ru_RU/denis/medium", onnx_sha: "15fab56e11a097858ee115545d0f697fc2a316c41a291a5362349fb870411b0a", json_sha: "831c860dac0b5073eaa81610a0a638ec23d90a6cf8e5f871b4485c2cec3767c8" },
+    VoiceInfo { id: "ru_RU-dmitri-medium", lang: "ru", label: "Русский, Dmitri", license: "CC0", path: "ru/ru_RU/dmitri/medium", onnx_sha: "f073356ebc4bd0f80c5af58df2953a5988bd5bdab1eb38635ce960b071fbefcb", json_sha: "667ef3117bc642c2892dff7690d8bdc8ca4228aeaa783b2dc1416df632855e0d" },
+    VoiceInfo { id: "zh_CN-chaowen-medium", lang: "zh", label: "中文, Chaowen", license: "CC0", path: "zh/zh_CN/chaowen/medium", onnx_sha: "820d64ac16048fbcf38dd0823d37fab5f5e0c2bd71b01ca5a50f553fac19e746", json_sha: "a6bb2caafa0645642f13cbf7e2f6fbbb16fded66e51109fc26d622f6472fa16f" },
 ];
 
 pub fn voice(id: &str) -> Option<&'static VoiceInfo> {
@@ -86,7 +92,7 @@ fn sha_hex(b: &[u8]) -> String {
 }
 
 /// Fetches `url` whole, reporting progress, and returns it only if its SHA-256 is `sha`.
-fn fetch_checked(url: &str, sha: &str, what: &str, progress: &SharedProgress) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn fetch_checked(url: &str, sha: &str, what: &str, progress: &SharedProgress) -> anyhow::Result<Vec<u8>> {
     let client = crate::http::client(60)?;
     let mut resp = client.get(url).timeout(std::time::Duration::from_secs(1800)).send()?.error_for_status()?;
     let total = resp.content_length().unwrap_or(0);
@@ -114,7 +120,7 @@ fn fetch_checked(url: &str, sha: &str, what: &str, progress: &SharedProgress) ->
 }
 
 /// Writes through a temporary name so a half-written file is never taken for a whole one.
-fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }

@@ -13,6 +13,8 @@ pub struct SttCfg {
     pub local_url: String,
     /// The model the local server is asked for.
     pub local_model: String,
+    /// The Whisper model file, when Whisper runs in the app.
+    pub whisper_file: String,
 }
 
 impl SttCfg {
@@ -27,6 +29,7 @@ impl SttCfg {
                 }
                 (url.to_owned(), if self.local_model.trim().is_empty() { "whisper-1".into() } else { self.local_model.trim().to_owned() })
             }
+            SttKind::Whisper => unreachable!("handled before"),
             SttKind::Off | SttKind::Unknown => anyhow::bail!("speech recognition is off"),
         })
     }
@@ -35,6 +38,9 @@ impl SttCfg {
 /// What was said in `pcm` (16 kHz mono). `lang` is the answer language when fixed, else empty;
 /// `hint` is words likely to come up.
 pub fn transcribe(cfg: &SttCfg, pcm: &[i16], lang: &str, hint: &str) -> anyhow::Result<String> {
+    if cfg.kind == SttKind::Whisper {
+        return super::whisper::transcribe(&cfg.whisper_file, pcm, lang, hint);
+    }
     let (base, model) = cfg.endpoint()?;
     let wav = super::playback::wav(super::capture::RATE, pcm);
     let part = reqwest::blocking::multipart::Part::bytes(wav).file_name("question.wav").mime_str("audio/wav")?;

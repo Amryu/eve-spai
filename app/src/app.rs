@@ -939,6 +939,7 @@ pub struct SpaiApp {
     ai_voice_cfg_at: Option<std::time::Instant>,
     ai_voice_key_input: String,
     pub(crate) ai_piper_progress: crate::ai::voice::models::SharedProgress,
+    pub(crate) ai_whisper_progress: crate::ai::voice::models::SharedProgress,
     ai_ptt: Option<crate::ai::ptt::Ptt>,
     pub(crate) ai_listen: crate::app::ai_voice_in::Listen,
     /// Microphones, listed when the settings first show them.
@@ -951,6 +952,8 @@ pub struct SpaiApp {
     pub(crate) ai_feed_edit: Option<crate::ai::feeds::FeedDef>,
     ai_feed_secret: String,
     ai_stt_key_input: String,
+    /// The Claude program's model is being typed rather than picked.
+    ai_cli_other_model: bool,
     rescue_history_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
@@ -1773,6 +1776,7 @@ impl SpaiApp {
             ai_voice_cfg_at: None,
             ai_voice_key_input: String::new(),
             ai_piper_progress: Default::default(),
+            ai_whisper_progress: Default::default(),
             ai_ptt: None,
             ai_listen: Default::default(),
             ai_mics: None,
@@ -1783,6 +1787,7 @@ impl SpaiApp {
             ai_feed_edit: None,
             ai_feed_secret: String::new(),
             ai_stt_key_input: String::new(),
+            ai_cli_other_model: false,
             rescue_history_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,

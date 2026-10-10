@@ -20,6 +20,10 @@ path = "src/main.rs"
 # `eve-spai-fleet-login`, so the app itself starts without WebKitGTK installed.
 # Build with `cargo build --features fleet-auth`.
 fleet-auth = ["dep:wry", "dep:tao", "dep:webkit2gtk"]
+# Whisper speech recognition on this computer. whisper.cpp builds with cmake and a C++ compiler,
+# which every CI runner has; a host without them builds with --no-default-features.
+local-stt = ["dep:whisper-rs"]
+default = ["local-stt"]
 
 # Embed the Windows application icon into the .exe (build.rs). winresource is pure Rust and
 # compiles on every host; build.rs only invokes it for a Windows *target*, so non-Windows builds
@@ -70,6 +74,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 feed-rs = "2"
+whisper-rs = { version = "0.16", optional = true }
 arboard = { version = "3", default-features = false }
 # Native open/save file dialogs for the battle-report JSON import/export. xdg-portal backend
 # (pure Rust, via the XDG desktop portal) so Linux needs no GTK system libs; matches the tree's
