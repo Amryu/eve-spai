@@ -642,8 +642,8 @@ fn perm_node(
     let locked = node.key == "sde";
     let mut on = state == Tri::On || locked;
     let row = |ui: &mut egui::Ui, on: &mut bool| {
-        let r = ui.add_enabled(!locked, egui::Checkbox::new(on, node.label).indeterminate(state == Tri::Mixed));
-        if node.hint.is_empty() { r } else { r.on_hover_text(node.hint) }
+        let r = ui.add_enabled(!locked, egui::Checkbox::new(on, spai_ui::i18n::t(node.label)).indeterminate(state == Tri::Mixed));
+        if node.hint.is_empty() { r } else { r.on_hover_text(spai_ui::i18n::t(node.hint)) }
     };
     let kids = dynamic(node.key);
     if node.children.is_empty() && kids.is_empty() {

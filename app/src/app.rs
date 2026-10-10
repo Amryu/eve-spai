@@ -887,7 +887,7 @@ pub struct SpaiApp {
     /// putting the same ping into skirmish_commanders twice.
     fleet_last_ping: Option<(String, String, std::time::Instant)>,
     /// When the fleet-boss check was last asked for, so the refresh button cannot be held down.
-    fleet_boss_asked: Option<std::time::Instant>,
+    pub(crate) fleet_boss_asked: Option<std::time::Instant>,
     fleet_channels_at: Option<std::time::Instant>,
     /// One channel for the whole tab: several commands are in flight at once, so a single slot the
     /// way the web server's start does it would not do.

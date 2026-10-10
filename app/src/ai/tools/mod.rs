@@ -6,6 +6,7 @@
 //! Nothing here can send a message anywhere; `no_tool_sends_messages` keeps it that way.
 
 mod actions;
+mod fleet;
 pub(crate) mod intel;
 mod kills;
 mod map;
@@ -25,7 +26,7 @@ use serde_json::{json, Value};
 use super::deps::{AiDeps, AiFacts};
 use super::provider::ToolDef;
 
-pub use actions::{ActionKind, ChatWindowPick, PendingAction};
+pub use actions::{ActionKind, ChatWindowPick, FleetOp, PendingAction};
 
 /// Results longer than this are cut, and say so.
 pub const RESULT_CAP: usize = 8_000;
@@ -97,6 +98,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);
+    v.extend(fleet::TOOLS);
     v
 }
 
