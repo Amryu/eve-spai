@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "br-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "eve-spai"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6189,7 +6189,7 @@ dependencies = [
 
 [[package]]
 name = "spai-assets"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -6198,7 +6198,7 @@ dependencies = [
 
 [[package]]
 name = "spai-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "chrono",
  "ecolor",
@@ -6211,7 +6211,7 @@ dependencies = [
 
 [[package]]
 name = "spai-share"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -6230,7 +6230,7 @@ dependencies = [
 
 [[package]]
 name = "spai-ui"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "chrono",
  "egui",
@@ -6243,7 +6243,7 @@ dependencies = [
 
 [[package]]
 name = "spai-web"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64",
