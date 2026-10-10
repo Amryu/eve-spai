@@ -88,7 +88,7 @@ const MODULES: &str = "Warp Disruptor, Warp Scrambler, Stasis Webifier, Energy N
 /// EVE's shorthand, which a recogniser otherwise hears as ordinary words ("hick" for HIC).
 const ABBR: &str = "HIC, DIC, FAX, JF, Blops, HAC, T3C, T3D, logi, FC, CTA, PAP, SRP, x-up, ESS, ADM, IHub, TCU, Ansiblex, \
                     Keepstar, Fortizar, Astrahus, Tatara, Azbel, Raitaru, Athanor, POS, cyno, d-scan, MWD, neut, scram, \
-                    Thera, Turnur, K162, EOL, battle report, BR, killmail, Init, Frat, Horde, Goons, bomber gang";
+                    Thera, Turnur, K162, EOL, battle report, BR, killmail, Init, Frat, Horde, Goons, bomber gang, 4 tek H, tek";
 /// Comms channels: "op 11" is otherwise heard as "upper level" or "set up 11".
 const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms";
 
@@ -125,7 +125,8 @@ pub fn hint(glossary_terms: &[String], near: &[String], ships: &[String]) -> Str
 pub fn tidy(text: &str) -> String {
     static INIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let text = INIT.get_or_init(|| regex::Regex::new(r"(?i)\binnit\b").expect("pattern")).replace_all(text, "Init");
-    let text = text.as_ref();
+    let text = tek(&text);
+    let text = text.as_str();
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(r"(?i)\b(?:op|opp|ops)\.?\s*-?\s*(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b").expect("pattern")
@@ -151,8 +152,82 @@ pub fn tidy(text: &str) -> String {
     .into_owned()
 }
 
+/// "tek" (or "tech") is how the dash in a system name is said: "four tek H" is 4-H, "one D Q one
+/// tek A" is 1DQ1-A. The letters, digits and number words on either side become one name.
+fn tek(text: &str) -> String {
+    let digit = |w: &str| -> Option<&'static str> {
+        Some(match w.to_lowercase().as_str() {
+            "zero" | "oh" => "0",
+            "one" => "1",
+            "two" => "2",
+            "three" => "3",
+            "four" => "4",
+            "five" => "5",
+            "six" => "6",
+            "seven" => "7",
+            "eight" => "8",
+            "nine" => "9",
+            _ => return None,
+        })
+    };
+    // Part of a spoken name: a number word, digits, one letter, or a short run of capitals.
+    let part = |w: &str| -> Option<String> {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+        if w.is_empty() {
+            return None;
+        }
+        if let Some(d) = digit(w) {
+            return Some(d.to_owned());
+        }
+        let caps = w.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+        (w.chars().all(|c| c.is_ascii_digit()) || w.chars().count() == 1 || (caps && w.len() <= 5)).then(|| w.to_uppercase())
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let is_tek = |w: &str| matches!(w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase().as_str(), "tek" | "tech" | "tec");
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        if is_tek(words[i]) {
+            let mut before = Vec::new();
+            while let Some(p) = out.last().and_then(|w| part(w)) {
+                before.push(p);
+                out.pop();
+            }
+            before.reverse();
+            let mut after = Vec::new();
+            let mut j = i + 1;
+            while j < words.len() && after.len() < 5 {
+                match part(words[j]) {
+                    Some(p) => after.push(p),
+                    None => break,
+                }
+                j += 1;
+            }
+            if !before.is_empty() && !after.is_empty() {
+                // Punctuation after the name stays with it.
+                let tail: String = words[j - 1].chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect();
+                out.push(format!("{}-{}{tail}", before.concat(), after.concat()));
+                i = j;
+                continue;
+            }
+            out.extend(before);
+        }
+        out.push(words[i].to_owned());
+        i += 1;
+    }
+    out.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tek_is_the_dash_in_a_system_name() {
+        assert_eq!(super::tidy("route to four tek H please"), "route to 4-H please");
+        assert_eq!(super::tidy("anything in one D Q one tek A?"), "anything in 1DQ1-A?");
+        assert_eq!(super::tidy("QX tech LIJ"), "QX-LIJ");
+        assert_eq!(super::tidy("the tek guy"), "the tek guy", "no name around it, nothing changes");
+    }
+
     use super::*;
 
     #[test]

@@ -369,6 +369,8 @@ pub struct SpaiApp {
     pub(crate) battles: crate::zkill::SharedBattles,
     battle_history: crate::zkill::SharedBattles,
     battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The assistant asking for the battle history the Battles page builds.
+    want_battle_history: std::sync::Arc<std::sync::atomic::AtomicBool>,
     show_history: bool,
     pub(crate) battle_selected: Option<i64>,
     pub(crate) battle_detail_cache: Option<std::sync::Arc<crate::brview::BattleDetail>>,
@@ -948,6 +950,8 @@ pub struct SpaiApp {
     pub(crate) ai_whisper_progress: crate::ai::voice::models::SharedProgress,
     ai_ptt: Option<crate::ai::ptt::Ptt>,
     pub(crate) ai_listen: crate::app::ai_voice_in::Listen,
+    /// When the current recording or transcription began, for the pending message's timer.
+    pub(crate) ai_listen_since: Option<std::time::Instant>,
     /// Microphones, listed when the settings first show them.
     ai_mics: Option<Vec<String>>,
     pub(crate) ai_feeds: crate::ai::feeds::SharedFeeds,
@@ -1389,6 +1393,7 @@ impl SpaiApp {
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_history: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_history_loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            want_battle_history: Default::default(),
             show_history: false,
             battle_selected: None,
             loaded_report: None,
@@ -1800,6 +1805,7 @@ impl SpaiApp {
             ai_whisper_progress: Default::default(),
             ai_ptt: None,
             ai_listen: Default::default(),
+            ai_listen_since: None,
             ai_mics: None,
             ai_feeds: Default::default(),
             ai_opsec: Default::default(),
@@ -4038,6 +4044,9 @@ impl eframe::App for SpaiApp {
 
         self.settings.theme.apply(&ctx);
         self.apply_language();
+        if self.want_battle_history.swap(false, std::sync::atomic::Ordering::SeqCst) && self.battle_history.lock().unwrap().is_empty() {
+            self.load_battle_history(&ctx);
+        }
 
         self.refresh_characters();
         ft.mark("refresh_characters");

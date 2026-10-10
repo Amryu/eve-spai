@@ -34,6 +34,7 @@ pub const BASE: &[(&str, &str)] = &[
     ("Hot drop", "Capitals or Black Ops arriving suddenly through a cyno"),
     ("Hostile", "A pilot with negative or no standing, treated as an enemy"),
     ("Hunter", "A pilot roaming to find and kill ratters or miners"),
+    ("tek", "Said for the dash in a system name: four tek H is 4-H, one D Q one tek A is 1DQ1-A; a partial name like 4-H is the start of one, so search for it"),
     ("Init", "The Initiative., a nullsec alliance known for black ops (blops) drops and stealth bomber gangs; voice may hear it as innit"),
     ("Intel", "Reports of hostile movements posted in shared intel channels"),
     ("Jove observatory", "A structure in some systems where drifter wormholes appear"),

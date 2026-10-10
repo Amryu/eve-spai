@@ -53,7 +53,9 @@ impl SpaiApp {
                 alerts: self.recent_alerts.clone(),
                 standings: self.standings.clone(),
                 jump_skills: self.jump_skills.clone(),
-                battle_cache: Default::default(),
+                battle_history: self.battle_history.clone(),
+                battle_history_loading: self.battle_history_loading.clone(),
+                want_battle_history: self.want_battle_history.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -92,7 +94,6 @@ impl SpaiApp {
             alert_rules: s.alerts.rules.clone(),
             doctrines: self.ai_doctrine_facts(),
             route_anchors: self.map_route_anchors.clone(),
-            battle_break_secs: s.battle_break_secs,
             route_destination: self.route_destination,
             last_dscan: self.ai_last_dscan(),
             comms: self.comms_directory(),
@@ -429,7 +430,16 @@ impl SpaiApp {
         let names = AppNames { systems: systems.as_deref(), ships: &ship_names.1 };
         egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6))).show_inside(ui, |ui| {
             self.ai_watch_strip(ui);
-            if turns.is_empty() {
+            // The spoken question shows from the moment the key goes down, before its words are known.
+            let secs = self.ai_listen_since.map_or(0, |t| t.elapsed().as_secs());
+            let pending = if self.ai_listen.recording() {
+                Some(trf!("Listening\u{2026} {secs} s", secs = secs))
+            } else if self.ai_listen.transcribing() {
+                Some(trf!("Transcribing\u{2026} {secs} s", secs = secs))
+            } else {
+                None
+            };
+            if turns.is_empty() && pending.is_none() {
                 self.ai_empty_state(ui);
                 return;
             }
@@ -445,6 +455,19 @@ impl SpaiApp {
                         }
                     });
                     ui.add_space(8.0);
+                }
+                if let Some(text) = &pending {
+                    ui.allocate_ui_with_layout(egui::vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(w);
+                        egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(6.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(egui_phosphor::regular::MICROPHONE).weak());
+                                ui.add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)));
+                                ui.label(egui::RichText::new(text).weak());
+                            });
+                        });
+                    });
                 }
             });
         });
@@ -1004,19 +1027,30 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
             if let (true, Some(t)) = (own_line, summary) {
                 ui.add(egui::Label::new(t).wrap());
             }
-            ui.allocate_ui_with_layout(egui::vec2(inner, 0.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Buttons that do not fit on one line even alone wrap from the left instead.
+            let wrapped = buttons_w > inner;
+            let layout = if wrapped {
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)
+            } else {
+                egui::Layout::right_to_left(egui::Align::Center)
+            };
+            ui.allocate_ui_with_layout(egui::vec2(inner, 0.0), layout, |ui| {
                 match c.state {
                     CardState::Pending => {
-                        if always
-                            && ui.button(tr!("Always")).on_hover_text(tr!("Apply, and do this kind of thing without asking from now on (Data access can take it back)")).clicked()
-                        {
-                            click = Some((c.action.id, 2));
+                        // Apply reads first: rightmost from the right, leftmost when wrapped.
+                        let mut order = [2, 0, 1];
+                        if wrapped {
+                            order.reverse();
                         }
-                        if ui.button(no).clicked() {
-                            click = Some((c.action.id, 0));
-                        }
-                        if ui.button(yes).clicked() {
-                            click = Some((c.action.id, 1));
+                        for which in order {
+                            let hit = match which {
+                                2 => always && ui.button(tr!("Always")).on_hover_text(tr!("Apply, and do this kind of thing without asking from now on (Data access can take it back)")).clicked(),
+                                0 => ui.button(no).clicked(),
+                                _ => ui.button(yes.as_str()).clicked(),
+                            };
+                            if hit {
+                                click = Some((c.action.id, which));
+                            }
                         }
                     }
                     CardState::Applied => {
@@ -1111,7 +1145,9 @@ fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Opti
                 Link::Url(u) => format!("{}\n{u}", link_hint(&l)),
                 _ => link_hint(&l).to_owned(),
             };
-            let resp = resp.on_hover_text(hint);
+            // At the pointer: the label is the whole line, and a tooltip under it would sit at its
+            // left end, away from the link.
+            let resp = resp.on_hover_text_at_pointer(hint);
             if let Link::Url(u) = &l {
                 resp.context_menu(|ui| {
                     if ui.button(tr!("Copy link")).clicked() {
