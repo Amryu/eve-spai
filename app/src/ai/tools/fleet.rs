@@ -65,6 +65,8 @@ static FLEET_FORM: ToolSpec = ToolSpec {
         Ok(json!({
             "presets": ctx.facts.fleet_presets.iter().map(|p| json!({"preset": p.label, "folder": p.folder})).collect::<Vec<_>>(),
             "name": f.name,
+            "kind": if st.is_peacetime() { "peacetime" } else { "strategic or untagged" },
+            "hurf": f.description,
             "fc": st.fc().map(|(_, n)| n),
             "fc_is_boss": boss.as_ref().map(|b| b.0),
             "boss_note": boss.map(|b| b.1).filter(|n| !n.is_empty()),
@@ -90,8 +92,10 @@ static FLEET_START: ToolSpec = ToolSpec {
     description: "Fills the fleet start form (from a preset and/or the fields given) and proposes tracking the fleet. \
                   Channels take a name, \"free\" for an unused one, or \"none\". When a picked channel is in use by another \
                   fleet it does not propose anything: ask the user whether to keep it anyway, take free ones, or which to \
-                  use, then call again with in_use set. Missing fields come back as an error to ask about. Tracking \
-                  waits for the FC to become fleet boss when they are not yet.",
+                  use, then call again with in_use set. Missing fields come back as an error to ask about. A Peacetime \
+                  fleet needs a fresh hurf each time (the description: a short callout that makes people join, funny, \
+                  serious or anything): ask the user for one, or offer one to approve, and pass it as description. \
+                  Tracking waits for the FC to become fleet boss when they are not yet.",
     need: Need::All(&["actions.fleet"]),
     kind: Kind::Action,
     schema: || {
@@ -105,7 +109,7 @@ static FLEET_START: ToolSpec = ToolSpec {
                 "comms": {"type": "string"},
                 "logi": {"type": "string"},
                 "boost": {"type": "string"},
-                "description": {"type": "string"},
+                "description": {"type": "string", "description": "The hurf: the callout in the ping"},
                 "in_use": {"type": "string", "enum": ["ask", "keep", "pick_free"], "description": "What to do with channels another fleet uses; ask by default"}
             }),
             &[],
@@ -162,6 +166,13 @@ fn fleet_start(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         let missing = st.missing();
         if !missing.is_empty() {
             return Err(format!("the form still needs {}; ask the user for it", missing.join(", ")));
+        }
+        // A preset's hurf is last time's: a Peacetime fleet gets a new one every start.
+        if st.is_peacetime() && str_arg(v, "description").is_none_or(|d| d.trim().is_empty()) {
+            return Ok(json!({
+                "needs_answer": "This is a Peacetime fleet and needs a new hurf, the short callout that makes people join. Ask the user for one, or offer one for them to approve, then call again with it as description.",
+                "last_hurf": st.draft.form.description,
+            }));
         }
         let busy = st.channels_in_use();
         if !busy.is_empty() {
@@ -444,5 +455,32 @@ mod tests {
         let (r, err) = run(&deps, "confirm_fleet_action", json!({"action_id": id}));
         assert!(!err, "{r}");
         assert!(deps.view.lock().unwrap().turns[1].cards[0].confirmed);
+    }
+
+    #[test]
+    fn a_peacetime_fleet_asks_for_a_new_hurf() {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut app = crate::app::SpaiApp::build(&ctx, true);
+        app.settings.fleet_presets = crate::uitest::fixtures::fleet_presets();
+        crate::uitest::fixtures::seed_fleet_state(&app);
+        crate::uitest::fixtures::open_fleet_start(&app);
+        let mut deps = AiDeps::for_tests(facts(&["actions.fleet"]));
+        deps.fleet = app.fleet_state_for_test().clone();
+        {
+            let mut st = deps.fleet.lock().unwrap();
+            st.active_strat.put(Vec::new());
+            st.active_pct.put(Vec::new());
+            // Peacetime: its primary tag, plus a secondary one.
+            let peace = st.seed.tags.iter().find(|t| t.is_primary && t.name.eq_ignore_ascii_case("PEACETIME")).map(|t| t.id).unwrap();
+            let second = st.seed.tags.iter().find(|t| !t.is_primary).map(|t| t.id).unwrap();
+            st.draft.tags = [peace, second].into_iter().collect();
+            assert!(st.is_peacetime() && st.missing().is_empty(), "{:?}", st.missing());
+        }
+        let (r, err) = run(&deps, "fleet_start", json!({"in_use": "keep"}));
+        assert!(!err && r["needs_answer"].as_str().unwrap().contains("hurf"), "{r}");
+        let (r, err) = run(&deps, "fleet_start", json!({"in_use": "keep", "description": "Shoot the bears, get the PAP"}));
+        assert!(!err && r["action_id"].is_number(), "{r}");
+        assert_eq!(deps.fleet.lock().unwrap().draft.form.description, "Shoot the bears, get the PAP");
     }
 }
