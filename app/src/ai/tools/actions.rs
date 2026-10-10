@@ -26,6 +26,8 @@ pub enum ActionKind {
     OpenChat { jid: String, window: ChatWindowPick },
     /// Moves the user's Mumble into a channel.
     JoinMumble { url: String },
+    /// The user's own Mumble: mute, deafen, how it transmits.
+    MumbleSet { mute: Option<bool>, deaf: Option<bool>, transmit: Option<u32> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -351,7 +353,7 @@ impl ActionKind {
             ActionKind::SetDestination { .. } => Some("actions.destination"),
             ActionKind::AddAlertRule(_) | ActionKind::EditMapData(_) => Some("actions.settings"),
             ActionKind::SendJabber { broadcast: false, .. } => Some("actions.jabber"),
-            ActionKind::JoinMumble { .. } => Some("actions.mumble"),
+            ActionKind::JoinMumble { .. } | ActionKind::MumbleSet { .. } => Some("actions.mumble"),
             ActionKind::SendJabber { broadcast: true, .. } | ActionKind::KeepWatching(_) | ActionKind::OpenChat { .. } => None,
         }
     }

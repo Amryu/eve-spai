@@ -45,6 +45,74 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// Calls a method of Mumble's bus interface; None when Mumble is not there to answer.
+#[cfg(target_os = "linux")]
+fn call<A, R>(method: &str, args: &A) -> Option<R>
+where
+    A: serde::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    let conn = zbus::blocking::Connection::session().ok()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, "net.sourceforge.mumble.mumble", "/", "net.sourceforge.mumble.Mumble").ok()?;
+    proxy.call::<_, _, R>(method, args).ok()
+}
+
+/// How Mumble stands: muted, deafened, who is talking, how it transmits. None when it is not
+/// running or has no bus interface (Windows and macOS builds have none).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Status {
+    pub muted: bool,
+    pub deaf: bool,
+    pub talking: Vec<String>,
+    /// 0 continuous, 1 voice activity, 2 push to talk.
+    pub transmit: u32,
+}
+
+#[cfg(target_os = "linux")]
+pub fn status() -> Option<Status> {
+    Some(Status {
+        muted: call::<_, bool>("isSelfMuted", &())?,
+        deaf: call::<_, bool>("isSelfDeaf", &())?,
+        talking: call::<_, Vec<String>>("getTalkingUsers", &()).unwrap_or_default(),
+        transmit: call::<_, u32>("getTransmitMode", &()).unwrap_or(2),
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_self_muted(on: bool) -> bool {
+    call::<_, ()>("setSelfMuted", &(on,)).is_some()
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_self_deaf(on: bool) -> bool {
+    call::<_, ()>("setSelfDeaf", &(on,)).is_some()
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_transmit(mode: u32) -> bool {
+    call::<_, ()>("setTransmitMode", &(mode,)).is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn status() -> Option<Status> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_self_muted(_on: bool) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_self_deaf(_on: bool) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_transmit(_mode: u32) -> bool {
+    false
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn current_url() -> Option<String> {
     None
@@ -130,4 +198,14 @@ mod tests {
         assert!(!in_channel("", want));
         assert!(!in_channel(want, ""));
     }
+}
+
+/// Reads the running Mumble's state, changing nothing:
+/// `cargo test --bin eve-spai mumble_status_live -- --ignored --nocapture`.
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+#[ignore = "needs a running Mumble"]
+fn mumble_status_live() {
+    println!("{:?} in {:?}", status(), current_url().and_then(|u| channel_path(&u)));
+    assert!(status().is_some());
 }
