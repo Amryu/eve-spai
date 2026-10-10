@@ -25,6 +25,10 @@ pub fn summary(deps: &AiDeps, facts: &AiFacts, store: Option<&crate::store::Stor
     .map(|(_, l)| *l)
     .collect();
     let _ = writeln!(s, "You may read: static game data{}{}.", if scopes.is_empty() { "" } else { ", " }, scopes.join(", "));
+    let off = super::tools::switched_off(facts);
+    if !off.is_empty() {
+        let _ = writeln!(s, "Switched off by the user in Data access (tell them which to tick when a question needs one): {}.", off.join(", "));
+    }
     let Some(geo) = facts.systems.as_ref() else { return s };
     let mut homes: Vec<(String, i64)> = Vec::new();
     if facts.allowed("characters.locations") {

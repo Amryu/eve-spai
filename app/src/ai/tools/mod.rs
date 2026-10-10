@@ -110,6 +110,28 @@ fn permitted(spec: &ToolSpec, facts: &AiFacts) -> bool {
 }
 
 /// The tools on offer under the current permissions.
+/// The Data access ticks that would open tools the user has switched off, by their names in the
+/// dialog, so the assistant can say which one a question needs.
+pub fn switched_off(facts: &AiFacts) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for t in registry().into_iter().filter(|t| !permitted(t, facts)) {
+        let under;
+        let keys: &[&str] = match t.need {
+            Need::All(k) | Need::Any(k) => k,
+            Need::AnyUnder(p) => {
+                under = [p];
+                &under
+            }
+        };
+        if let Some(l) = keys.first().and_then(|k| crate::ai::perms::label_of(k)) {
+            if !out.contains(&l) {
+                out.push(l);
+            }
+        }
+    }
+    out
+}
+
 pub fn tools_for(facts: &AiFacts) -> Vec<ToolDef> {
     registry()
         .into_iter()
