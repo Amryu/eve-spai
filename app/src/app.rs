@@ -4090,6 +4090,9 @@ impl eframe::App for SpaiApp {
         self.dscan_dialog(&ctx);
         ft.mark("dscan_dialog");
         self.fleet_unlock_tick(&ctx);
+        if self.fleet_on() {
+            self.fleet_track_tick(&ctx);
+        }
         ft.mark("fleet_unlock_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);

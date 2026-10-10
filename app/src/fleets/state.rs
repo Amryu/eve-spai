@@ -269,6 +269,9 @@ pub struct FleetState {
     /// A start is on its way to the dashboard. A second click before it answers would create a
     /// second fleet for the same in-game fleet, and the dashboard does not refuse it.
     pub starting: bool,
+    /// Track was pressed before the FC was fleet boss: the boss check repeats every few seconds
+    /// and the fleet starts once it passes.
+    pub track_waiting: bool,
     /// Fleets this app started, by the character that is boss. The active list only knows a fleet
     /// once it has been reloaded, so this covers the gap straight after a start.
     pub started_for: std::collections::HashMap<i64, FleetId>,
@@ -601,6 +604,52 @@ impl FleetState {
                 .or(Some((s.character_id, s.character_name.clone()))),
             None => Some((s.character_id, s.character_name.clone())),
         }
+    }
+
+    /// What the start form still lacks before a fleet may be tracked, each in words. The doctrine
+    /// notes are optional and not asked for.
+    pub fn missing(&self) -> Vec<&'static str> {
+        let f = &self.draft.form;
+        let has = |primary: bool| self.draft.tags.iter().any(|id| self.seed.tags.iter().any(|t| t.id == *id && t.is_primary == primary));
+        let mut out = Vec::new();
+        if f.name.trim().is_empty() {
+            out.push(tr_noop!("a fleet name"));
+        }
+        if self.fc().is_none() {
+            out.push(tr_noop!("the FC"));
+        }
+        if f.setup_id == 0 {
+            out.push(tr_noop!("a doctrine"));
+        }
+        if self.draft.formup.is_none() {
+            out.push(tr_noop!("a formup location"));
+        }
+        if f.mumble_channel_id.is_none() {
+            out.push(tr_noop!("a comms channel"));
+        }
+        if !has(true) {
+            out.push(tr_noop!("a primary tag"));
+        }
+        if !has(false) {
+            out.push(tr_noop!("a secondary tag"));
+        }
+        out
+    }
+
+    /// The comms channels the form picked that another fleet already uses: (which, its name).
+    pub fn channels_in_use(&self) -> Vec<(&'static str, String)> {
+        let f = &self.draft.form;
+        let mut out = Vec::new();
+        for (what, id, list) in [
+            (tr_noop!("comms"), f.mumble_channel_id, &self.seed.mumble_channels),
+            (tr_noop!("logi"), f.logi_channel_id, &self.seed.logi_channels),
+            (tr_noop!("boost"), f.boost_channel_id, &self.seed.boost_channels),
+        ] {
+            if let Some(c) = id.and_then(|id| list.iter().find(|c| c.id == id)).filter(|c| c.is_in_use) {
+                out.push((what, c.name.trim().to_owned()));
+            }
+        }
+        out
     }
 
     /// What the form would send, or nothing when it is not filled in enough to send.

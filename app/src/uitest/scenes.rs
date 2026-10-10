@@ -8703,3 +8703,44 @@ fn docking_the_map_leaves_overlay_mode() {
     a.dock_map();
     assert!(!a.map_overlay_mode && !a.map_popped);
 }
+
+/// Track before the FC is fleet boss waits, and starts the fleet once the boss check says yes.
+#[test]
+fn track_waits_for_the_fleet_boss_and_then_starts() {
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+    a.settings.fleet_presets = fixtures::fleet_presets();
+    fixtures::seed_fleet_state(&a);
+    fixtures::open_fleet_start(&a);
+    let fc = {
+        let mut st = a.fleet_state_for_test().lock().unwrap();
+        st.active_strat.put(Vec::new());
+        st.active_pct.put(Vec::new());
+        assert!(st.missing().is_empty(), "the fixture's form is complete: {:?}", st.missing());
+        let fc = st.fc().unwrap().0;
+        st.boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: false, backup_available: false, error_message: None }));
+        fc
+    };
+    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { track_wait: true, ..Default::default() });
+    assert!(a.fleet_state_for_test().lock().unwrap().track_waiting);
+    a.fleet_track_tick(&ctx);
+    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "not boss yet, so no start");
+    a.fleet_state_for_test().lock().unwrap().boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: true, backup_available: false, error_message: None }));
+    a.fleet_track_tick(&ctx);
+    let st = a.fleet_state_for_test().lock().unwrap();
+    assert!(st.starting && !st.track_waiting, "boss now, so it starts and stops waiting");
+}
+
+#[test]
+fn a_form_without_doctrine_or_tags_says_what_is_missing() {
+    let mut st = crate::fleets::FleetState::default();
+    st.draft.form.name = "Home defence".into();
+    let m = st.missing();
+    for want in ["a doctrine", "a formup location", "a comms channel", "a primary tag", "a secondary tag"] {
+        assert!(m.contains(&want), "{want} in {m:?}");
+    }
+    assert!(!m.contains(&"a fleet name"));
+}
