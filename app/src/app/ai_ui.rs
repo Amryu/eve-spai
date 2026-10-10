@@ -48,6 +48,8 @@ impl SpaiApp {
                 feeds: self.ai_feeds.clone(),
                 opsec: self.ai_opsec.clone(),
                 last_question: Default::default(),
+                alerts: self.recent_alerts.clone(),
+                standings: self.standings.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -82,6 +84,9 @@ impl SpaiApp {
             fleet_backend: self.fleet_on().then(|| self.fleet_backend.clone()),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
+            lookup_current: self.lookup_current.clone(),
+            alert_rules: s.alerts.rules.clone(),
+            coalitions: s.coalitions.clone(),
             chat_windows: self.jabber_popouts.iter().map(|w| (w.id, w.tabs.clone())).collect(),
             jabber_domain: s.jabber_jid.split('@').nth(1).unwrap_or("").split('/').next().unwrap_or("").to_owned(),
             opsec: false,

@@ -25,6 +25,10 @@ pub struct AiDeps {
     /// Set once the conversation has read Jabber, rescue or feed messages, which must not leave
     /// the app: from then on nothing may reach the web. A new chat clears it.
     pub opsec: Arc<std::sync::atomic::AtomicBool>,
+    /// The alerts the app raised: when and what.
+    pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
+    /// Standings from the user's contacts, by character, corporation or alliance id.
+    pub standings: Arc<Mutex<std::collections::HashMap<i64, f32>>>,
     /// The user's latest question, for safeguards that depend on what was actually asked.
     pub last_question: Arc<Mutex<String>>,
     /// Whether tools may reach ESI and the web. Off in tests.
@@ -48,6 +52,10 @@ pub struct AiFacts {
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
+    pub alert_rules: Vec<crate::settings::AlertRule>,
+    pub coalitions: Vec<crate::settings::Coalition>,
+    /// The names in the local being looked up now.
+    pub lookup_current: Vec<String>,
     /// Popped-out chat windows by id, with the conversations in each.
     pub chat_windows: Vec<(u64, Vec<String>)>,
     /// The server of the user's own Jabber address, for addressing someone not met yet.
@@ -86,6 +94,8 @@ impl AiDeps {
             feeds: Default::default(),
             opsec: Default::default(),
             last_question: Default::default(),
+            alerts: Default::default(),
+            standings: Default::default(),
             online: false,
         }
     }
