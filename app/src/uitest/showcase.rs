@@ -363,7 +363,7 @@ fn lookup() -> Scene {
     let rows: Vec<(String, Row)> = [line, fc, newbro, explorer, camper, hauler, blops].into_iter().map(|s| (s.name.clone(), Row::Done(Box::new(s)))).collect();
     let org = |name: &str, ticker: &str| Org { name: name.to_owned(), ticker: ticker.to_owned() };
     let orgs = vec![
-        (98_400_001, org("KarmaFleet", "KF")),
+        (98_400_001, org("KarmaFleet", "SNOOO")),
         (98_400_002, org("GoonWaffe", "GEWNS")),
         (98_400_011, org("Hollow Reach Salvage", "HRSV")),
         (98_400_012, org("Ashen Veil", "ASHV")),
