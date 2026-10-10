@@ -53,6 +53,7 @@ pub struct AiFacts {
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
     pub alert_rules: Vec<crate::settings::AlertRule>,
+    pub setup: Setup,
     pub coalitions: Vec<crate::settings::Coalition>,
     /// The names in the local being looked up now.
     pub lookup_current: Vec<String>,
@@ -62,6 +63,18 @@ pub struct AiFacts {
     pub jabber_domain: String,
     /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
     pub opsec: bool,
+}
+
+/// The parts of the user's setup the assistant reads.
+#[derive(Clone, Default)]
+pub struct Setup {
+    pub staging: String,
+    pub capital: String,
+    pub avoid_gate: Vec<i64>,
+    pub avoid_jump: Vec<i64>,
+    pub avoid_sov: Vec<String>,
+    pub sec: [bool; 3],
+    pub routes: Vec<crate::settings::SavedMapRoute>,
 }
 
 impl AiFacts {
