@@ -129,6 +129,10 @@
   section { padding: 44px 0; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin: 0 0 22px; font-weight: 600; }
   .lead { color: var(--muted); font-size: 16px; margin: -8px 0 30px; max-width: 720px; }
+  .tools { list-style: none; padding: 0; margin: -14px 0 40px; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 24px; color: var(--muted); }
+  .tools li { padding-left: 14px; position: relative; }
+  .tools li::before { content: ""; position: absolute; left: 0; top: 0.6em; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); }
+  .tools strong { color: var(--text); font-weight: 600; }
 
   .feature { display: grid; grid-template-columns: 5fr 7fr; gap: 40px; align-items: center; padding: 34px 0; border-top: 1px solid var(--line); }
   .feature:first-of-type { border-top: 0; }
@@ -197,7 +201,7 @@
     <img class="logo" src="eve-spai.png" alt="EVE Spai logo" width="96" height="96" />
     <h1>EVE&nbsp;Spai<span class="dot">.</span></h1>
     <p class="tag">Intel, maps and wormholes for EVE Online, built by and for the <span class="imperium">Imperium</span>.</p>
-    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste, turns nearby kills into battle reports and answers your questions by voice. Free and open source.</p>
+    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste, turns nearby kills into battle reports and answers your questions, typed or spoken. Free, open source, and on Windows, Linux and macOS.</p>
     <div><span class="alpha">Version 1.0 &middot; in active development</span></div>
 
     <div class="download">
@@ -239,7 +243,17 @@
   <main class="wrap">
     <section id="features">
       <h2>What it does</h2>
-      <p class="lead">Most intel, map, wormhole, lookup and battle features work for any capsuleer. Jabber pings are made for the Imperium's own ping format.</p>
+      <p class="lead">One window for what you would otherwise keep open in a dozen tabs:</p>
+      <ul class="tools">
+        <li><strong>Live intel</strong> read from your chat channels</li>
+        <li><strong>Star map</strong> with routes, jump bridges and jump ranges</li>
+        <li><strong>Wormhole</strong> chains, signatures and scan routes</li>
+        <li><strong>Pilot lookup</strong> for a pasted local</li>
+        <li><strong>Battle reports</strong> from zKillboard</li>
+        <li><strong>Jabber</strong> chat and fleet pings</li>
+        <li><strong>Assistant</strong> you can talk to</li>
+        <li><strong>Alerts</strong>, notes, tags and a map over the game</li>
+      </ul>
 
       <div class="feature">
         <div class="text">
@@ -249,7 +263,7 @@
           <ul>
             <li><strong>Alerts you design:</strong> by distance, count, hulls, keywords, channel or tagged pilots.</li>
             <li><strong>Heard and seen:</strong> a sound per rule, desktop notifications, an alert window over the game and phone push.</li>
-            <li><strong>Knows what it read:</strong> clears, kills, cynos, bubbles and "no visual" are picked out.</li>
+            <li><strong>Speaks intel shorthand:</strong> clears, kills, cynos, bubbles and "no visual" are picked out.</li>
           </ul>
         </div>
         <div class="shots">
@@ -262,7 +276,7 @@
         <div class="text">
           <div class="rank">02</div>
           <h3>Star map and routes</h3>
-          <p>An interactive map of the universe or one region, with hostiles lit as they are reported and the layers you want: sovereignty, activity, jump bridges with their Ansiblex zones, gate camps, Jove observatories and wormhole links.</p>
+          <p>An interactive map of the universe or one region, with hostiles lighting up as they are reported and the layers you want: sovereignty, activity, jump bridges with their Ansiblex zones, gate camps, Jove observatories and wormhole links.</p>
           <ul>
             <li><strong>Route planner:</strong> gate, capital jump and titan bridge routes, with systems to avoid and warnings on the way.</li>
             <li><strong>Straight to your client:</strong> set the route as waypoints in the game with one click.</li>
@@ -281,7 +295,7 @@
           <p>Every chain you know on one map, each hole coloured by the time it has left and drawn by the mass it has left. Pinned systems show how many jumps they are from each chain.</p>
           <ul>
             <li><strong>Signatures:</strong> paste a probe scan and every signature is kept per system, searchable in one browser.</li>
-            <li><strong>Found for you:</strong> holes your characters jump through are recorded, Thera and Turnur come from EVE-Scout.</li>
+            <li><strong>Logged as you go:</strong> every hole your characters jump through lands on the map, and Thera and Turnur come from EVE-Scout.</li>
             <li><strong>Shared safely:</strong> share chains with your group, end-to-end encrypted.</li>
             <li><strong>Scan routes:</strong> send one or more scouts around your space, nearest systems first.</li>
           </ul>
@@ -290,7 +304,7 @@
           <img class="shot" src="img/wormholes.webp?v=4" loading="lazy" width="1920" height="1200" alt="The wormhole map with several chains" data-caption="The wormhole map: line colour is time left, the pattern is mass left." />
           <div class="shots two">
             <img class="shot small" src="img/signatures-thumb.webp?v=4" data-full="img/signatures.webp?v=4" loading="lazy" width="640" height="400" alt="The signature browser" data-caption="The signature browser: every pasted signature, searchable." />
-            <img class="shot small" src="img/scan_route-thumb.webp?v=4" data-full="img/scan_route.webp?v=4" loading="lazy" width="640" height="1280" alt="A scan route for two scouts" data-caption="A scan route split between two scouts." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
+            <img class="shot small" src="img/scan_route-thumb.webp?v=5" data-full="img/scan_route.webp?v=5" loading="lazy" width="640" height="1280" alt="A scan route for two scouts" data-caption="A scan route split between two scouts." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
           </div>
         </div>
       </div>
@@ -299,14 +313,14 @@
         <div class="text">
           <div class="rank">04</div>
           <h3>Lookup</h3>
-          <p>Paste local and get every pilot in one table: danger, kills and losses, gang size, where and how they fly, standings and your own notes.</p>
+          <p>Paste local and size up every pilot in one table: danger, kills and losses, gang size, where and how they fly, standings and your own notes.</p>
           <ul>
             <li><strong>Habits at a glance:</strong> tags for FC, cyno, black ops, logi, bait and more.</li>
             <li><strong>Your call:</strong> hide blues, pick the columns, keep a history of lookups.</li>
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/lookup.webp?v=4" loading="lazy" width="2160" height="1200" alt="The local lookup table" data-caption="A pasted local, looked up." />
+          <img class="shot" src="img/lookup.webp?v=5" loading="lazy" width="2160" height="1200" alt="The local lookup table" data-caption="A pasted local, looked up." />
         </div>
       </div>
 
@@ -314,7 +328,7 @@
         <div class="text">
           <div class="rank">05</div>
           <h3>Battle reports</h3>
-          <p>Kills near you cluster into battles on their own: sides, efficiency, losses and hulls worked out. Split an engagement, move a group to the other side or scrub a stray kill, then share it as a link on eve-spai.com.</p>
+          <p>No more stitching killmails together by hand. Kills near you cluster into battles on their own: sides, efficiency, losses and hulls worked out. Split an engagement, move a group to the other side or scrub a stray kill, then share it as a link on eve-spai.com.</p>
         </div>
         <div class="shots">
           <img class="shot" src="img/battle.webp?v=4" loading="lazy" width="1920" height="1200" alt="A battle report with three sides" data-caption="A real fight in F-5WYK, three sides worked out from the killmails." />
@@ -325,7 +339,7 @@
         <div class="text">
           <div class="rank">06</div>
           <h3>Jabber, made for the Imperium</h3>
-          <p>Fleet pings and chat without leaving the app. Pings are read into FC, formup, doctrine and comms, with a button to join Mumble.</p>
+          <p>Never miss a fleet: pings and chat right in the app. Pings are read into FC, formup, doctrine and comms, with a button to join Mumble.</p>
           <ul>
             <li><strong>Rooms and DMs:</strong> in the app or in their own windows.</li>
             <li><strong>Ping rules:</strong> pick which pings sound, pop up or reach your phone.</li>
@@ -399,7 +413,7 @@
     <section id="feedback" class="narrow">
       <h2>Feedback</h2>
       <div class="card">
-        <p>EVE Spai is under active development. Ideas, feedback and bug reports are welcome.</p>
+        <p>EVE Spai is under active development and shaped by the pilots who use it. Ideas, feedback and bug reports are welcome.</p>
         <div class="buttons">
           <a class="btn primary" href="https://discord.gg/u4bDqB9rjn">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.27 5.33A16.6 16.6 0 0015.1 4l-.2.4a14 14 0 014 2 13.6 13.6 0 00-11.8 0c1.1-.86 2.5-1.55 4-2L10.9 4a16.6 16.6 0 00-4.17 1.33C3.6 9.96 2.7 14.5 3.16 18.95A16.7 16.7 0 008.3 21.5l.45-.65a10.9 10.9 0 01-1.74-.84l.43-.32a11.7 11.7 0 0010.1 0l.43.32c-.55.33-1.13.6-1.74.84l.45.65a16.6 16.6 0 005.13-2.55c.5-5.1-.83-9.6-2.32-13.62zM9.5 16c-.83 0-1.5-.76-1.5-1.7 0-.93.66-1.7 1.5-1.7s1.5.77 1.5 1.7c0 .94-.67 1.7-1.5 1.7zm5 0c-.83 0-1.5-.76-1.5-1.7 0-.93.67-1.7 1.5-1.7s1.5.77 1.5 1.7c0 .94-.67 1.7-1.5 1.7z"/></svg>

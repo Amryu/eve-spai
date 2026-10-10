@@ -867,7 +867,7 @@ fn wormholes_pins_scene(name: &'static str) -> Scene {
     })
 }
 
-/// The Route dock planning a scan route around SCAN-22 for two scouts at opposite corners.
+/// The Route dock planning a scan route around C-J6MT for two scouts at opposite corners.
 fn route_scan_scene(name: &'static str) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;

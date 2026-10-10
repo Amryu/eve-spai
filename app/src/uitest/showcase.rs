@@ -261,38 +261,119 @@ fn jabber() -> Scene {
     .sharp(SHARP)
 }
 
-/// A pasted local list, looked up: made-up pilots and groups, every row finished.
+/// A pasted local list, looked up: made-up pilots, three in Goonswarm, three without an alliance and
+/// one in Fraternity., each with their own record, hulls and habits.
 fn lookup() -> Scene {
-    use crate::localscan::{Org, Row};
+    use crate::localscan::{Bait, Bar, Cyno, Fc, Org, Row, Ship, Summary, Tag};
     harness::scratch_profile();
-    fn rename(n: &str) -> &str {
-        match n {
-        "Fixture Pilot" => "Rhaegan Voss",
-        "Sample Hunter" => "Daro Kestrin",
-        "Test Logi" => "Liss Amberfall",
-        "Placeholder Scout" => "Tavik Oron",
-        "Imaginary Blops" => "Selune Varr",
-        "Quiet Alt" => "Marek Ilyn",
-        other => other,
-        }
-    }
-    let rows: Vec<(String, Row)> = fixtures::lookup_rows()
-        .into_iter()
-        .filter_map(|(n, r)| match r {
-            Row::Done(mut s) => {
-                let name = rename(&n).to_owned();
-                s.name = name.clone();
-                Some((name, Row::Done(s)))
-            }
-            _ => None,
-        })
-        .collect();
+    const GOONS: i64 = 1_354_830_081;
+    const FRAT: i64 = 99_003_581;
+    const HORDE: i64 = 99_005_338;
+    const INIT: i64 = 1_900_696_668;
+    let bars = |v: &[(u32, u32)]| v.iter().map(|&(kills, losses)| Bar { kills, losses }).collect::<Vec<_>>();
+    #[allow(clippy::too_many_arguments)]
+    let pilot = |id: i64, name: &str, corp: i64, alliance: i64, days: i64, sec: f64, danger: u32, gang: u32, avg: f64, solo: u32, kills: u32, losses: u32, isk: (f64, f64)| Summary {
+        id,
+        name: name.into(),
+        birthday: Some(fixtures::now() - days * 86_400),
+        security: Some(sec),
+        corp_id: corp,
+        alliance_id: alliance,
+        danger,
+        gang,
+        avg_gang: avg,
+        solo,
+        kills,
+        losses,
+        isk_destroyed: isk.0,
+        isk_lost: isk.1,
+        ..Default::default()
+    };
+    let fill = |mut s: Summary, groups: &[(u32, u32)], space: &[(u32, u32)], isk: &[(u32, u32)], ships: &[(i64, u32, u32)]| {
+        s.groups.iter_mut().zip(bars(groups)).for_each(|(a, b)| *a = b);
+        s.space.iter_mut().zip(bars(space)).for_each(|(a, b)| *a = b);
+        s.isk.iter_mut().zip(bars(isk)).for_each(|(a, b)| *a = b);
+        s.ships = ships.iter().map(|&(type_id, kills, losses)| Ship { type_id, group_id: 0, kills, losses }).collect();
+        s
+    };
+    let mut line = fill(
+        pilot(2_120_000_101, "Brannoc Velt", 98_400_001, GOONS, 2_262, 2.1, 38, 98, 61.0, 1, 1_284, 212, (410e9, 38e9)),
+        &[(1, 2), (8, 6), (40, 11), (190, 38), (420, 70), (430, 55), (195, 30), (0, 0)],
+        &[(12, 4), (40, 9), (1_210, 196), (22, 3), (0, 0), (0, 0)],
+        &[(980, 160), (230, 40), (60, 10), (14, 2)],
+        &[(12015, 640, 31), (11987, 210, 9), (22456, 180, 12)],
+    );
+    line.affiliates = vec![(GOONS, 1_120), (HORDE, 41)];
+    line.tags = vec![(Tag::Logi, 9)];
+    let mut fc = fill(
+        pilot(2_120_000_102, "Iska Morrow", 98_400_002, GOONS, 3_420, 4.8, 64, 99, 142.0, 0, 4_920, 388, (2.1e12, 96e9)),
+        &[(0, 0), (12, 8), (60, 20), (410, 60), (1_380, 120), (2_100, 130), (958, 50), (0, 0)],
+        &[(30, 6), (210, 22), (4_500, 352), (180, 8), (0, 0), (0, 0)],
+        &[(3_100, 250), (1_200, 90), (480, 38), (140, 10)],
+        &[(22460, 1_830, 96), (29990, 1_120, 44), (11978, 610, 30)],
+    );
+    fc.affiliates = vec![(GOONS, 4_600), (INIT, 180), (HORDE, 120)];
+    fc.tags = vec![(Tag::Fc, 0), (Tag::Cyno, 4)];
+    fc.fc = Some(Fc { level: "high".into(), score: 92, monitor: 0, command: 210, large_fleet: 880 });
+    fc.cyno = Some(Cyno { standard: 4, covert: 0, industrial: 0 });
+    let newbro = fill(
+        pilot(2_120_000_103, "Pell Arnault", 98_400_001, GOONS, 65, 0.6, 9, 100, 38.0, 0, 14, 9, (2.1e9, 0.4e9)),
+        &[(0, 0), (0, 1), (0, 0), (6, 3), (8, 4), (0, 1), (0, 0), (0, 0)],
+        &[(0, 0), (0, 0), (14, 9), (0, 0), (0, 0), (0, 0)],
+        &[(14, 9), (0, 0), (0, 0), (0, 0)],
+        &[(620, 11, 5), (32880, 0, 2), (608, 3, 2)],
+    );
+    let mut explorer = fill(
+        pilot(2_120_000_104, "Odrin Saak", 98_400_011, 0, 1_130, 3.4, 21, 40, 2.1, 19, 31, 44, (5.6e9, 7.2e9)),
+        &[(19, 20), (9, 14), (3, 8), (0, 2), (0, 0), (0, 0), (0, 0), (0, 0)],
+        &[(2, 3), (1, 6), (4, 9), (24, 26), (0, 0), (0, 0)],
+        &[(29, 40), (2, 4), (0, 0), (0, 0)],
+        &[(33468, 12, 9), (11192, 2, 6), (605, 0, 11)],
+    );
+    explorer.affiliates = vec![(0, 31)];
+    let mut camper = fill(
+        pilot(2_120_000_105, "Veyra Tolune", 98_400_012, 0, 2_040, -7.9, 91, 71, 5.4, 143, 2_206, 118, (640e9, 31e9)),
+        &[(143, 21), (1_100, 52), (720, 30), (230, 12), (13, 3), (0, 0), (0, 0), (0, 0)],
+        &[(310, 12), (1_840, 98), (52, 6), (4, 2), (0, 0), (0, 0)],
+        &[(1_790, 100), (330, 15), (70, 3), (16, 0)],
+        &[(33157, 1_210, 61), (22456, 640, 33), (11198, 356, 24)],
+    );
+    camper.faction_id = 500_002;
+    camper.affiliates = vec![(0, 2_100), (99_003_214, 90)];
+    camper.tags = vec![(Tag::Ganker, 26), (Tag::Bait, 4)];
+    camper.ganker = 26;
+    camper.bait = Some(Bait { level: "low".into(), count: 4 });
+    let hauler = fill(
+        pilot(2_120_000_106, "Kett Marrow", 98_400_013, 0, 610, 5.0, 0, 0, 0.0, 0, 0, 6, (0.0, 3.1e9)),
+        &[(0, 4), (0, 2), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
+        &[(0, 2), (0, 3), (0, 1), (0, 0), (0, 0), (0, 0)],
+        &[(0, 5), (0, 1), (0, 0), (0, 0)],
+        &[(12733, 0, 3), (29248, 0, 2), (11129, 0, 1)],
+    );
+    let mut blops = fill(
+        pilot(2_120_000_107, "Saro Dvelin", 98_400_021, FRAT, 1_560, -2.6, 94, 89, 18.0, 27, 3_870, 402, (1.4e12, 88e9)),
+        &[(27, 6), (380, 40), (1_240, 120), (1_610, 170), (520, 52), (73, 14), (0, 0), (0, 0)],
+        &[(60, 8), (420, 51), (3_310, 336), (80, 7), (0, 0), (0, 0)],
+        &[(2_910, 330), (680, 52), (220, 16), (60, 4)],
+        &[(12038, 1_210, 96), (12032, 640, 51), (29986, 310, 22)],
+    );
+    blops.affiliates = vec![(FRAT, 3_400), (HORDE, 260), (INIT, 140)];
+    blops.tags = vec![(Tag::Blops, 7), (Tag::Cyno, 3)];
+    blops.cyno = Some(Cyno { standard: 0, covert: 3, industrial: 0 });
+    let rows: Vec<(String, Row)> = [line, fc, newbro, explorer, camper, hauler, blops].into_iter().map(|s| (s.name.clone(), Row::Done(Box::new(s)))).collect();
     let org = |name: &str, ticker: &str| Org { name: name.to_owned(), ticker: ticker.to_owned() };
     let orgs = vec![
-        (98_000_001, org("Hollow Reach Salvage", "HRSV")),
-        (98_000_003, org("Ashen Veil", "ASHV")),
-        (99_000_001, org("Vanta Consortium", "VANTA")),
-        (99_000_002, org("Crimson Tidewalkers", "TIDE")),
+        (98_400_001, org("KarmaFleet", "KF")),
+        (98_400_002, org("GoonWaffe", "GEWNS")),
+        (98_400_011, org("Hollow Reach Salvage", "HRSV")),
+        (98_400_012, org("Ashen Veil", "ASHV")),
+        (98_400_013, org("Tidewalker Freight", "TDWF")),
+        (98_400_021, org("Hellfire Collective", "HFC")),
+        (GOONS, org("Goonswarm Federation", "CONDI")),
+        (FRAT, org("Fraternity.", "FRT")),
+        (HORDE, org("Pandemic Horde", "REKTD")),
+        (INIT, org("The Initiative.", "INIT")),
+        (99_003_214, org("Brave Collective", "BRAVE")),
     ];
     let mut app: Option<crate::app::SpaiApp> = None;
     // Wider than the rest: the table's full set of columns needs a little over 1280.
@@ -300,6 +381,8 @@ fn lookup() -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.seed_lookup(rows.clone(), orgs.clone());
+            // Blue Goonswarm, red Fraternity., the rest without a standing.
+            a.seed_standings([(GOONS, 10.0), (FRAT, -10.0)]);
             a.view = View::Lookup;
             a
         });

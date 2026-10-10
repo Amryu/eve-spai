@@ -3164,6 +3164,11 @@ impl SpaiApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn seed_standings(&mut self, standings: impl IntoIterator<Item = (i64, f32)>) {
+        *self.standings.lock().unwrap() = standings.into_iter().collect();
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_lookup(&mut self, rows: Vec<(String, crate::localscan::Row)>, orgs: Vec<(i64, crate::localscan::Org)>) {
         let mut t = self.lookup_table.lock().unwrap();
         self.lookup_current = rows.iter().map(|(n, _)| n.clone()).collect();
