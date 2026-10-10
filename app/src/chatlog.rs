@@ -108,6 +108,7 @@ fn parse_message(line: &str) -> Option<ChatMessage> {
     let line = line.strip_prefix("[ ")?;
     let (timestamp, rest) = line.split_once(" ] ")?;
     let (author, text) = rest.split_once(" > ")?;
+    crate::theme::note_text(rest);
     Some(ChatMessage {
         timestamp: timestamp.trim().to_owned(),
         author: author.trim().to_owned(),
