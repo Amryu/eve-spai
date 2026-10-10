@@ -69,21 +69,55 @@ pub fn transcribe(cfg: &SttCfg, pcm: &[i16], lang: &str, hint: &str) -> anyhow::
 
 /// The words a question is likely to hold that a recogniser would not know: EVE terms and the
 /// systems near the user. Kept short; recognisers only read the first couple of hundred tokens.
-pub fn hint(glossary_terms: &[String], systems: &[String]) -> String {
-    // Comms channels first: "op 11" is otherwise heard as "upper level" or "set up 11".
-    const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms, battle report, battle reports, BR, killmail";
-    let mut words: Vec<&str> = vec![OPS];
-    words.extend(systems.iter().map(String::as_str).take(30));
-    words.extend(glossary_terms.iter().map(String::as_str).take(40));
-    let mut s = String::from("EVE Online intel: ");
-    for w in words {
-        if s.len() + w.len() > 600 {
-            break;
+/// Words the hint can carry. Whisper keeps only the last ~224 tokens of a prompt, so the hint is
+/// held to that, with what matters most at the end.
+const HINT_CHARS: usize = 900;
+
+/// Common hulls, for when nothing more particular is known.
+const SHIPS: &str = "Muninn, Eagle, Cerberus, Sacrilege, Zealot, Ishtar, Vagabond, Deimos, Loki, Legion, Tengu, Proteus, Sabre, \
+                     Heretic, Flycatcher, Eris, Devoter, Onyx, Broadsword, Phobos, Svipul, Hecate, Jackdaw, Confessor, Ferox, \
+                     Drake, Hurricane, Harbinger, Brutix, Machariel, Nightmare, Apocalypse, Megathron, Raven, Typhoon, Tempest, \
+                     Rokh, Basilisk, Scimitar, Guardian, Oneiros, Kirin, Scalpel, Stork, Bifrost, Pontifex, Damnation, Claymore, \
+                     Vulture, Nighthawk, Malediction, Stiletto, Ares, Crusader, Raptor, Taranis, Interceptor, Naglfar, Revelation, \
+                     Phoenix, Moros, Apostle, Ninazu, Lif, Minokawa, Thanatos, Archon, Chimera, Nidhoggur, Nyx, Aeon, Hel, Wyvern, \
+                     Avatar, Erebus, Ragnarok, Leviathan, Rorqual, Orca, Porpoise";
+/// Parts of module names that come up on comms.
+const MODULES: &str = "Warp Disruptor, Warp Scrambler, Stasis Webifier, Energy Neutralizer, Nosferatu, Interdiction Sphere, \
+                       Cynosural Field, Microwarpdrive, Afterburner, Remote Armor Repairer, Remote Shield Booster, Smartbomb, \
+                       ECM, Sensor Dampener, Target Painter, Covert Ops Cloak, Command Burst, Siege Module, Triage, Bastion";
+/// EVE's shorthand, which a recogniser otherwise hears as ordinary words ("hick" for HIC).
+const ABBR: &str = "HIC, DIC, FAX, JF, Blops, HAC, T3C, T3D, logi, FC, CTA, PAP, SRP, x-up, ESS, ADM, IHub, TCU, Ansiblex, \
+                    Keepstar, Fortizar, Astrahus, Tatara, Azbel, Raitaru, Athanor, POS, cyno, d-scan, MWD, neut, scram, \
+                    Thera, Turnur, K162, EOL, battle report, BR, killmail";
+/// Comms channels: "op 11" is otherwise heard as "upper level" or "set up 11".
+const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms";
+
+/// The words a question is likely to hold that a recogniser would not know: common hulls, module
+/// names, the glossary, EVE's shorthand, the ships in play (doctrine hulls, ships in recent intel),
+/// the comms channels and the systems near the user, in that order of rising weight.
+pub fn hint(glossary_terms: &[String], near: &[String], ships: &[String]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let particular: Vec<String> = ships.iter().take(30).cloned().collect();
+    let common: Vec<&str> = SHIPS.split(',').map(str::trim).filter(|c| !particular.iter().any(|p| p.eq_ignore_ascii_case(c))).collect();
+    parts.push(common.join(", "));
+    parts.push(MODULES.split_whitespace().collect::<Vec<_>>().join(" "));
+    parts.push(glossary_terms.iter().take(25).cloned().collect::<Vec<_>>().join(", "));
+    parts.push(ABBR.split_whitespace().collect::<Vec<_>>().join(" "));
+    // The doctrine hulls and the ships in recent intel matter more than the common list.
+    parts.push(particular.join(", "));
+    parts.push(OPS.to_owned());
+    parts.push(near.iter().take(25).cloned().collect::<Vec<_>>().join(", "));
+    let mut body = parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(", ");
+    // Over budget, the start goes: it holds the least particular words.
+    if body.len() > HINT_CHARS {
+        let mut cut = body.len() - HINT_CHARS;
+        while !body.is_char_boundary(cut) {
+            cut += 1;
         }
-        s.push_str(w);
-        s.push_str(", ");
+        let rest = &body[cut..];
+        body = rest.split_once(", ").map_or(rest, |(_, r)| r).to_owned();
     }
-    s.trim_end_matches([',', ' ']).to_owned()
+    format!("EVE Online intel: {body}")
 }
 
 /// "op eleven", "opp 11", "op11" as "Op 11": how the comms channels are written.
@@ -123,11 +157,14 @@ mod tests {
         assert_eq!(local.endpoint().unwrap(), ("http://localhost:8000/v1".into(), "whisper-1".into()));
         assert!(SttCfg { kind: SttKind::Local, ..Default::default() }.endpoint().is_err());
         assert_eq!(SttCfg { kind: SttKind::Groq, ..Default::default() }.endpoint().unwrap().1, "whisper-large-v3-turbo");
-        let h = hint(&["Cyno".into(), "Ansiblex".into()], &["1DQ1-A".into()]);
-        assert!(h.starts_with("EVE Online intel: Op 1, Op 2") && h.ends_with("1DQ1-A, Cyno, Ansiblex"), "{h}");
+        let h = hint(&["Bridge".into()], &["1DQ1-A".into()], &["Ferox Navy Issue".into()]);
+        assert!(h.ends_with("Op 12, op11, Capital Comms, 1DQ1-A"), "the most particular words come last: {h}");
+        assert!(h.contains("Ferox Navy Issue") && h.contains("Warp Scrambler") && h.contains("HIC") && h.contains("Bridge"), "{h}");
         assert_eq!(tidy("move me to op eleven and opp 4, then op11"), "move me to Op 11 and Op 4, then Op 11");
         assert_eq!(tidy("the opening operation"), "the opening operation", "only whole words");
         let long: Vec<String> = (0..500).map(|i| format!("Term{i}")).collect();
-        assert!(hint(&long, &[]).len() <= 620);
+        let h = hint(&long, &long, &long);
+        assert!(h.len() <= HINT_CHARS + 20, "{}", h.len());
+        assert!(h.ends_with("Term24"), "the nearest systems survive the cut: {h}");
     }
 }

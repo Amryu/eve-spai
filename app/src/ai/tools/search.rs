@@ -7,7 +7,96 @@ use std::collections::BTreeMap;
 
 use super::{eve_time, fmt_age, schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&SEARCH_BATTLES, &JABBER_SEARCH];
+pub static TOOLS: &[&ToolSpec] = &[&SEARCH_BATTLES, &JABBER_SEARCH, &FIND_SYSTEMS, &FIND_SHIPS, &FIND_PILOTS];
+
+/// One page of `items` from `offset`, with how many there are and where the next page starts.
+fn page(items: Vec<Value>, v: &Value, default: u64, max: u64) -> Value {
+    let total = items.len();
+    let offset = v.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = u64_arg(v, "limit", default, max) as usize;
+    let shown: Vec<Value> = items.into_iter().skip(offset).take(limit).collect();
+    let next = (offset + shown.len() < total).then_some(offset + shown.len());
+    json!({"matching": total, "offset": offset, "next_offset": next, "items": shown})
+}
+
+static FIND_SYSTEMS: ToolSpec = ToolSpec {
+    name: "find_systems",
+    description: "Finds solar systems by part of their name, region, constellation and security range, for when a name is \
+                  only half known or a list is wanted (every lowsec system in a region). Paged.",
+    need: Need::All(&["sde"]),
+    kind: Kind::Read,
+    schema: || {
+        schema(
+            json!({
+                "name": {"type": "string"}, "region": {"type": "string"}, "constellation": {"type": "string"},
+                "min_security": {"type": "number"}, "max_security": {"type": "number"},
+                "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 80}
+            }),
+            &[],
+        )
+    },
+    run: |ctx, v| {
+        let geo = ctx.geo()?;
+        let low = |k: &str| str_arg(v, k).map(|x| x.trim().to_lowercase());
+        let (name, region, cons) = (low("name"), low("region"), low("constellation"));
+        let (lo, hi) = (v.get("min_security").and_then(Value::as_f64).unwrap_or(-1.0), v.get("max_security").and_then(Value::as_f64).unwrap_or(1.0));
+        let mut hits: Vec<&crate::geo::SystemInfo> = geo
+            .all_ids()
+            .filter_map(|id| geo.info_of(id))
+            .filter(|i| name.as_ref().is_none_or(|n| i.name.to_lowercase().contains(n.as_str())))
+            .filter(|i| region.as_ref().is_none_or(|r| i.region.to_lowercase() == *r))
+            .filter(|i| cons.as_ref().is_none_or(|c| i.constellation.to_lowercase() == *c))
+            .filter(|i| (i.security * 10.0).round() / 10.0 >= lo && (i.security * 10.0).round() / 10.0 <= hi)
+            .collect();
+        hits.sort_by(|a, b| a.name.cmp(&b.name));
+        let items: Vec<Value> = hits.iter().map(|i| json!({"name": i.name, "security": (i.security * 10.0).round() / 10.0, "constellation": i.constellation, "region": i.region})).collect();
+        Ok(page(items, v, 30, 80))
+    },
+};
+
+static FIND_SHIPS: ToolSpec = ToolSpec {
+    name: "find_ships",
+    description: "Finds ship types by part of their name or their class (Interdictor, Heavy Assault Cruiser...), for when a \
+                  name is misheard or only half given, or to list a class. Paged; ship_info has the details.",
+    need: Need::All(&["sde"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"name": {"type": "string"}, "class": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 80}}), &[]),
+    run: |ctx, v| {
+        let store = ctx.store.ok_or("the database is not open")?;
+        let name = str_arg(v, "name").map(|x| x.trim().to_lowercase());
+        let class = str_arg(v, "class").map(|x| x.trim().to_lowercase());
+        let names = super::intel::ship_names(store);
+        let mut hits: Vec<(String, String)> = store
+            .ship_index()
+            .into_iter()
+            .filter(|(n, (_, g))| name.as_ref().is_none_or(|w| n.contains(w.as_str())) && class.as_ref().is_none_or(|c| g.to_lowercase().contains(c.as_str())))
+            .map(|(n, (id, g))| (names.get(&id).cloned().unwrap_or(n), g))
+            .collect();
+        hits.sort();
+        hits.dedup();
+        Ok(page(hits.into_iter().map(|(n, g)| json!({"ship": n, "class": g})).collect(), v, 30, 80))
+    },
+};
+
+static FIND_PILOTS: ToolSpec = ToolSpec {
+    name: "find_pilots",
+    description: "Finds pilots the app has met by part of their name, for when a name is misspelled or half remembered; \
+                  pilot_info has what is known of one. Paged.",
+    need: Need::Any(&["pilots.lookup", "intel.reports"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"name": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 80}}), &["name"]),
+    run: |ctx, v| {
+        let store = ctx.store.ok_or("the database is not open")?;
+        let want = str_arg(v, "name").unwrap_or_default().trim().to_lowercase();
+        if want.len() < 2 {
+            return Err("give at least two letters".into());
+        }
+        let mut hits: Vec<String> = store.known_pilot_names().into_iter().map(|(n, _)| n).filter(|n| n.to_lowercase().contains(&want)).collect();
+        // Closest first: a name starting with the words before one merely holding them.
+        hits.sort_by_key(|n| (!n.to_lowercase().starts_with(&want), n.len()));
+        Ok(page(hits.into_iter().map(|n| json!(n)).collect(), v, 30, 80))
+    },
+};
 
 /// How long a clustering of the stored kills is reused before it is built again.
 const CACHE_SECS: i64 = 300;
@@ -279,6 +368,24 @@ mod tests {
         assert!(!err && t.contains("Goonswarm"), "the battle opens from the stored history: {t}");
         let (t, _) = super::super::dispatch(&mut ctx, "search_battles", &json!({"query": "nobody here", "days": 7}));
         assert!(t.contains("\"matching\":0"), "{t}");
+    }
+
+    #[test]
+    fn systems_and_pilots_are_found_by_part_of_a_name_and_paged() {
+        let store = crate::store::Store::mem();
+        for (n, id) in [("Xenuria Thrax", 1), ("Xenu Other", 2), ("Somebody Else", 3)] {
+            store.add_known_pilot(n, id);
+        }
+        let deps = AiDeps::for_tests(facts(&["intel.reports"]));
+        let f = deps.facts();
+        let mut actions = Vec::new();
+        let mut ctx = super::super::Ctx { deps: &deps, facts: &f, store: Some(&store), now: 0, actions: &mut actions };
+        let (t, err) = super::super::dispatch(&mut ctx, "find_systems", &json!({"name": "1dq"}));
+        assert!(!err && t.contains("1DQ1-A"), "{t}");
+        let (t, _) = super::super::dispatch(&mut ctx, "find_systems", &json!({"limit": 1}));
+        assert!(t.contains("next_offset"), "a long list pages: {t}");
+        let (t, err) = super::super::dispatch(&mut ctx, "find_pilots", &json!({"name": "xenu"}));
+        assert!(!err && t.contains("Xenuria Thrax") && t.contains("Xenu Other") && !t.contains("Somebody"), "{t}");
     }
 
     #[test]

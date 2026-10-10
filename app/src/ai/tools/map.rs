@@ -292,7 +292,7 @@ static WORMHOLES_NEAR: ToolSpec = ToolSpec {
                   reported. Without a system, every known hole.",
     need: Need::All(&["wormholes"]),
     kind: Kind::Read,
-    schema: || schema(json!({"system": {"type": "string"}, "jumps": {"type": "integer", "minimum": 0, "maximum": 15}}), &[]),
+    schema: || schema(json!({"system": {"type": "string"}, "jumps": {"type": "integer", "minimum": 0, "maximum": 15}, "query": {"type": "string", "description": "Words in a hole's type, signature, note, source or systems"}}), &[]),
     run: wormholes_near,
 };
 
@@ -303,7 +303,24 @@ fn wormholes_near(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         None => None,
     };
     let mut out = Vec::new();
+    let words: Vec<String> = str_arg(v, "query").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
     for w in store.wormholes().into_iter().filter(|w| !w.is_expired(ctx.now)) {
+        if !words.is_empty() {
+            let hay = format!(
+                "{} {} {} {} {:?} {} {}",
+                w.signature.clone().unwrap_or_default(),
+                w.wh_type.clone().unwrap_or_default(),
+                w.note.clone().unwrap_or_default(),
+                format!("{:?}", w.dest),
+                w.source,
+                ctx.system_name(w.system_id),
+                w.dest_system_id.map(|b| ctx.system_name(b)).unwrap_or_default()
+            )
+            .to_lowercase();
+            if !words.iter().all(|x| hay.contains(x.as_str())) {
+                continue;
+            }
+        }
         if let Some(d) = &around {
             let near = d.contains_key(&w.system_id) || w.dest_system_id.is_some_and(|b| d.contains_key(&b));
             if !near {

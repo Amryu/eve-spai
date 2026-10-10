@@ -12,12 +12,13 @@ static ALERTS: ToolSpec = ToolSpec {
     description: "The alerts the app raised, newest first: what the user was warned about, for 'what did I miss while I was AFK'.",
     need: Need::All(&["intel.reports"]),
     kind: Kind::Read,
-    schema: || schema(json!({"since_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}, "limit": {"type": "integer", "minimum": 1, "maximum": 60}}), &[]),
+    schema: || schema(json!({"since_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}, "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 60}}), &[]),
     run: |ctx, v| {
         let since = ctx.now - 60 * u64_arg(v, "since_minutes", 120, 1440) as i64;
+        let words: Vec<String> = str_arg(v, "query").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
         let n = u64_arg(v, "limit", 25, 60) as usize;
         let log = ctx.deps.alerts.lock().unwrap_or_else(|e| e.into_inner());
-        let out: Vec<Value> = log.iter().rev().filter(|(t, _)| *t >= since).take(n).map(|(t, s)| json!({"when": eve_time(*t), "age": fmt_age(ctx.now, *t), "alert": s})).collect();
+        let out: Vec<Value> = log.iter().rev().filter(|(t, _)| *t >= since).filter(|(_, s)| { let l = s.to_lowercase(); words.iter().all(|w| l.contains(w.as_str())) }).take(n).map(|(t, s)| json!({"when": eve_time(*t), "age": fmt_age(ctx.now, *t), "alert": s})).collect();
         Ok(json!({"alerts": out}))
     },
 };
