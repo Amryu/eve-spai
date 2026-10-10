@@ -53,18 +53,26 @@ pub(crate) fn systems_wh_pins() -> Arc<Systems> {
     Arc::new(s)
 }
 
-/// A 6 by 4 grid of gate-linked nullsec systems, "SCAN-00" to "SCAN-53", id `30_009_100 + 10x + y`,
-/// for scan routes that have somewhere to go.
+/// A 6 by 4 grid of gate-linked nullsec systems, id `30_009_100 + 10x + y`, for scan routes that
+/// have somewhere to go. Named after Insmother systems with C-J6MT at (2, 2); the gates are made up.
 pub(crate) fn systems_scan() -> Arc<Systems> {
+    const NAMES: [[&str; 4]; 6] = [
+        ["88A-RA", "78-0R6", "8-WYQZ", "4M-QXK"],
+        ["YPW-M4", "0-6VZ5", "04-EHC", "1TG7-W"],
+        ["2-Q4YG", "27-HP0", "C-J6MT", "3U-48K"],
+        ["4CJ-AC", "5C-RPA", "67Y-NR", "7-JT09"],
+        ["8EF-58", "A-TJ0G", "B-II34", "D-P1EH"],
+        ["EFM-C4", "F2A-GX", "GB-6X5", "HL-VZX"],
+    ];
     let id = |x: i64, y: i64| 30_009_100 + 10 * x + y;
     let mut by_name = HashMap::new();
     let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
     for x in 0..6 {
         for y in 0..4 {
-            let name = format!("SCAN-{x}{y}");
+            let name = NAMES[x as usize][y as usize].to_owned();
             by_name.insert(
                 name.to_lowercase(),
-                SystemInfo { id: id(x, y), name, security: -0.4, constellation: "Grid".into(), region: "Delve".into(), faction: String::new() },
+                SystemInfo { id: id(x, y), name, security: -0.4, constellation: "Grid".into(), region: "Insmother".into(), faction: String::new() },
             );
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 if (0..6).contains(&(x + dx)) && (0..4).contains(&(y + dy)) {
