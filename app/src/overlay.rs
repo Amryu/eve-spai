@@ -53,7 +53,8 @@ impl Overlay {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // The overlay renders the same cards as the main, so its egui context needs the same
         // setup, otherwise icons render as tofu squares and ship images as red error triangles.
-        crate::theme::install_fonts(&cc.egui_ctx);
+        // The CJK font only once the main app says it is wanted (`OverlayConfig::cjk`).
+        crate::theme::install_fonts_opts(&cc.egui_ctx, false);
         crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
         let theme = crate::store::Store::open()
             .ok()
@@ -142,6 +143,7 @@ impl Overlay {
                 }
             };
             let mut rd = std::io::BufReader::new(std::io::stdin().lock());
+            let mut cjk_on = false;
             loop {
                 match crate::ipc::recv::<crate::ipc::MainToOverlay, _>(&mut rd) {
                     Ok(crate::ipc::MainToOverlay::Shutdown) => {
@@ -248,6 +250,10 @@ impl Overlay {
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
                     Ok(crate::ipc::MainToOverlay::Config(c)) => {
+                        if c.cjk != cjk_on {
+                            cjk_on = c.cjk;
+                            crate::theme::install_fonts_opts(&ctx, cjk_on);
+                        }
                         {
                             let mut st = ping_shared.lock().unwrap();
                             st.enabled = c.ping_enabled;
