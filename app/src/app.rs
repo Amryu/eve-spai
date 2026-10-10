@@ -685,8 +685,6 @@ pub struct SpaiApp {
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     dscan_view: Option<DscanView>,
     pub(crate) wh_cache: Vec<crate::wormholes::Wormhole>,
-    /// The CJK font is in the font set.
-    cjk_font_on: bool,
     pub(crate) dash: dashboard::DashState,
     wh_reloaded: Option<std::time::Instant>,
     wh_overlay: WhOverlay,
@@ -1051,8 +1049,7 @@ impl SpaiApp {
     /// (including the tray and the overlay subprocess). Everything that only shapes in-memory
     /// state still runs, so the resulting app renders the same as a live one.
     pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
-        // Without the CJK font: it is loaded once wanted (`ensure_cjk_font`).
-        crate::theme::install_fonts_opts(ctx, false);
+        crate::theme::install_fonts(ctx);
         let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
         let fleet_mumble = std::sync::mpsc::channel();
 
@@ -1630,7 +1627,6 @@ impl SpaiApp {
             dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
             dscan_view: None,
             wh_cache: Vec::new(),
-            cjk_font_on: false,
             dash: Default::default(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
@@ -1873,21 +1869,6 @@ impl SpaiApp {
     }
 
     /// The delve911 rescue, which runs on fleet command.
-    /// Loads the CJK font when Chinese is the language, the system speaks Chinese, Japanese or
-    /// Korean, or such text has gone by, which is remembered for the next start.
-    fn ensure_cjk_font(&mut self, ctx: &egui::Context) {
-        if crate::theme::cjk_seen() && !self.settings.cjk_font {
-            self.settings.cjk_font = true;
-            self.needs_save = true;
-        }
-        let lang = if self.settings.language.is_empty() { spai_ui::i18n::system_language() } else { self.settings.language.clone() };
-        let want = self.settings.cjk_font || matches!(lang.as_str(), "zh" | "ja" | "ko");
-        if want && !self.cjk_font_on {
-            self.cjk_font_on = want;
-            crate::theme::install_fonts_opts(ctx, want);
-        }
-    }
-
     pub(crate) fn rescue_on(&self) -> bool {
         self.fleet_on() && self.settings.fc_rescue_enabled
     }
@@ -2409,7 +2390,6 @@ impl SpaiApp {
             ping_win_pos: self.settings.fleet_ping_window_pos,
             ping_win_size: self.settings.fleet_ping_window_size,
             compact: self.settings.alerts.compact_mode,
-            cjk: self.cjk_font_on,
         }
     }
 
@@ -2437,7 +2417,6 @@ impl SpaiApp {
             cfg.ping_win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             cfg.ping_win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             cfg.compact.hash(&mut h);
-            cfg.cjk.hash(&mut h);
             h.finish()
         };
         if Some(config_hash) != self.config_sent_hash {
@@ -4136,7 +4115,6 @@ impl eframe::App for SpaiApp {
             self.fleet_track_tick(&ctx);
         }
         self.dash_track_focus(&ctx);
-        self.ensure_cjk_font(&ctx);
         ft.mark("fleet_unlock_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);

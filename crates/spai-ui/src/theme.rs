@@ -252,28 +252,6 @@ pub fn install_fonts(ctx: &egui::Context) {
     install_fonts_opts(ctx, true);
 }
 
-/// Whether text with Chinese, Japanese or Korean characters has gone by, from any thread; the app
-/// loads the CJK font once it has.
-static CJK_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Notes `text` for the CJK font: cheap enough for every chat line.
-pub fn note_text(text: &str) {
-    if !CJK_SEEN.load(std::sync::atomic::Ordering::Relaxed) && text.chars().any(is_cjk) {
-        CJK_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-pub fn cjk_seen() -> bool {
-    CJK_SEEN.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-fn is_cjk(c: char) -> bool {
-    matches!(c as u32,
-        0x1100..=0x11FF | 0x2E80..=0x2FDF | 0x3000..=0x30FF | 0x3100..=0x31FF | 0x3400..=0x4DBF
-        | 0x4E00..=0x9FFF | 0xA960..=0xA97F | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF
-        | 0x20000..=0x2FA1F)
-}
-
 /// `include_cjk = false` skips the system font probe, whose result depends on which fonts the
 /// machine happens to have installed. The UI harness needs layout to be machine-independent.
 pub fn install_fonts_opts(ctx: &egui::Context, include_cjk: bool) {
@@ -304,14 +282,6 @@ fn load_cjk_font() -> Option<egui::FontData> {
     bytes.map(egui::FontData::from_static)
 }
 
-#[cfg(test)]
-mod cjk_tests {
-    #[test]
-    fn cjk_text_is_noticed_and_latin_is_not() {
-        assert!(!super::is_cjk('A') && !super::is_cjk('é') && !super::is_cjk('Ж'));
-        assert!(super::is_cjk('中') && super::is_cjk('カ') && super::is_cjk('한'));
-    }
-}
 
 fn cjk_font_candidates() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {

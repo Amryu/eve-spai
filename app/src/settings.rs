@@ -159,10 +159,6 @@ pub struct Settings {
     /// Ship names in that language as well, as a client set to it shows them.
     #[serde(default)]
     pub translate_ship_names: bool,
-    /// Chinese, Japanese or Korean text has turned up before, so the CJK font loads at the start.
-    /// Not shown anywhere: the font costs ~19 MB, so it waits until it is needed.
-    #[serde(default)]
-    pub cjk_font: bool,
     /// The language was chosen in setup or in the one-time dialog shown to those who set up before.
     #[serde(default)]
     pub language_asked: bool,
@@ -1560,7 +1556,6 @@ impl Default for Settings {
             ai: Default::default(),
             language: String::new(),
             translate_ship_names: false,
-            cjk_font: false,
             language_asked: false,
             retention: Default::default(),
             battles_enabled: true,

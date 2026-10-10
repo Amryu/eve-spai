@@ -596,8 +596,6 @@ fn push_msg(
     check_mention: bool,
     store: Option<&crate::store::Store>,
 ) {
-    crate::theme::note_text(&msg.from);
-    crate::theme::note_text(&msg.body);
     if let Some(s) = store {
         s.add_chat(key, &msg.from, &msg.body, msg.time, msg.outgoing);
     }
