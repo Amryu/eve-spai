@@ -2440,7 +2440,7 @@ impl SpaiApp {
     /// While the static data downloads: stop it, or stop it and build from a file instead. The
     /// build after the downloads cannot be stopped, so neither is offered then.
     pub(crate) fn sde_cancel_row(&mut self, ui: &mut egui::Ui, msg: &str) {
-        if msg.starts_with("Downloading") || msg.starts_with("Connecting") {
+        if sde::cancellable(msg) {
             ui.horizontal(|ui| {
                 if ui.button(tr!("Cancel")).clicked() {
                     sde::cancel(&self.sde_status);
