@@ -175,7 +175,7 @@ fn scan(
                 messages
                     .iter()
                     .find(|m| {
-                        m.author.eq_ignore_ascii_case("EVE System")
+                        crate::chatlog::is_system_author(&m.author)
                             && m.text.contains("Channel MOTD:")
                     })
                     .map(|m| intel::parse_motd_regions(&m.text, known_regions))
@@ -191,7 +191,7 @@ fn scan(
             };
             let mut st = state.lock().unwrap();
             for m in &messages {
-                if m.author.eq_ignore_ascii_case("EVE System") {
+                if crate::chatlog::is_system_author(&m.author) {
                     continue;
                 }
                 if st.duplicate_line(&meta.channel, &m.timestamp, &m.author, &m.text) {
