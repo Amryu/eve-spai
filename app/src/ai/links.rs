@@ -110,8 +110,23 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '-' || c == '\''
 }
 
-/// Plain text, with any system or ship names in it made links.
+/// Plain text, with web addresses and any system or ship names in it made links.
 fn plain(text: &str, bold: bool, names: &dyn Names, out: &mut Vec<Span>) {
+    let mut rest = text;
+    while let Some(at) = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min() {
+        let tail = &rest[at..];
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        // Sentence punctuation after an address is not part of it.
+        let url = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
+        names_in(&rest[..at], bold, names, out);
+        out.push(Span { text: url.to_owned(), bold, link: Some(Link::Url(url.to_owned())) });
+        rest = &tail[url.len()..];
+    }
+    names_in(rest, bold, names, out);
+}
+
+/// Plain text, with any system or ship names in it made links.
+fn names_in(text: &str, bold: bool, names: &dyn Names, out: &mut Vec<Span>) {
     // Word starts and ends, as byte offsets.
     let mut words: Vec<(usize, usize)> = Vec::new();
     let mut start = None;
@@ -219,5 +234,8 @@ mod tests {
         assert!(all.ends_with("or bad [x]"), "an unknown target leaves its label, a lone bracket stays: {all}");
         assert_eq!(spans("[pings](spai:pings) in [Jita](spai:wh/Jita)", &Fake).iter().filter_map(|x| x.link.clone()).collect::<Vec<_>>(), vec![Link::Pings, Link::Wormholes(4)]);
         assert_eq!(spans("[the map](spai:page/Map) [x](spai:page/nowhere)", &Fake).iter().filter_map(|x| x.link.clone()).collect::<Vec<_>>(), vec![Link::Page("map".into())]);
+        let bare = spans("See https://zkillboard.com/kill/1/. Then Jita.", &Fake);
+        let l: Vec<_> = bare.iter().filter_map(|x| x.link.clone()).collect();
+        assert_eq!(l, vec![Link::Url("https://zkillboard.com/kill/1/".into()), Link::System(4)], "a bare address is a link, its full stop is not");
     }
 }
