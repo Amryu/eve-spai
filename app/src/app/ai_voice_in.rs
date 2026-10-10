@@ -57,7 +57,11 @@ impl SpaiApp {
             near.sort_by_key(|(_, j)| *j);
             systems = near.into_iter().filter_map(|(id, _)| g.info_of(id).map(|i| i.name.clone())).take(30).collect();
         }
-        crate::ai::voice::stt::hint(&terms, &systems)
+        // The fleet dashboard's comms channels, as the user hears them called.
+        let channels: Vec<String> = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.mumble_channels.iter().map(|c| c.name.clone()).filter(|n| !n.is_empty()).take(20).collect();
+        let mut words = channels;
+        words.extend(systems);
+        crate::ai::voice::stt::hint(&terms, &words)
     }
 
     pub(crate) fn ai_listen_start(&mut self, source: Source) {
