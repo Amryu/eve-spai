@@ -88,7 +88,7 @@ const MODULES: &str = "Warp Disruptor, Warp Scrambler, Stasis Webifier, Energy N
 /// EVE's shorthand, which a recogniser otherwise hears as ordinary words ("hick" for HIC).
 const ABBR: &str = "HIC, DIC, FAX, JF, Blops, HAC, T3C, T3D, logi, FC, CTA, PAP, SRP, x-up, ESS, ADM, IHub, TCU, Ansiblex, \
                     Keepstar, Fortizar, Astrahus, Tatara, Azbel, Raitaru, Athanor, POS, cyno, d-scan, MWD, neut, scram, \
-                    Thera, Turnur, K162, EOL, battle report, BR, killmail";
+                    Thera, Turnur, K162, EOL, battle report, BR, killmail, Init, Frat, Horde, Goons, bomber gang";
 /// Comms channels: "op 11" is otherwise heard as "upper level" or "set up 11".
 const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms";
 
@@ -106,7 +106,7 @@ pub fn hint(glossary_terms: &[String], near: &[String], ships: &[String]) -> Str
     // The doctrine hulls and the ships in recent intel matter more than the common list.
     parts.push(particular.join(", "));
     parts.push(OPS.to_owned());
-    parts.push(near.iter().take(25).cloned().collect::<Vec<_>>().join(", "));
+    parts.push(near.iter().take(80).cloned().collect::<Vec<_>>().join(", "));
     let mut body = parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(", ");
     // Over budget, the start goes: it holds the least particular words.
     if body.len() > HINT_CHARS {
@@ -120,8 +120,12 @@ pub fn hint(glossary_terms: &[String], near: &[String], ships: &[String]) -> Str
     format!("EVE Online intel: {body}")
 }
 
-/// "op eleven", "opp 11", "op11" as "Op 11": how the comms channels are written.
+/// "op eleven", "opp 11", "op11" as "Op 11": how the comms channels are written. "Innit" is Init,
+/// The Initiative., not slang.
 pub fn tidy(text: &str) -> String {
+    static INIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let text = INIT.get_or_init(|| regex::Regex::new(r"(?i)\binnit\b").expect("pattern")).replace_all(text, "Init");
+    let text = text.as_ref();
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(r"(?i)\b(?:op|opp|ops)\.?\s*-?\s*(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b").expect("pattern")
@@ -162,9 +166,10 @@ mod tests {
         assert!(h.contains("Ferox Navy Issue") && h.contains("Warp Scrambler") && h.contains("HIC") && h.contains("Bridge"), "{h}");
         assert_eq!(tidy("move me to op eleven and opp 4, then op11"), "move me to Op 11 and Op 4, then Op 11");
         assert_eq!(tidy("the opening operation"), "the opening operation", "only whole words");
+        assert_eq!(tidy("where is innit going"), "where is Init going");
         let long: Vec<String> = (0..500).map(|i| format!("Term{i}")).collect();
         let h = hint(&long, &long, &long);
         assert!(h.len() <= HINT_CHARS + 20, "{}", h.len());
-        assert!(h.ends_with("Term24"), "the nearest systems survive the cut: {h}");
+        assert!(h.ends_with("Term79"), "the last words, the most particular, survive the cut: {h}");
     }
 }

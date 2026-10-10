@@ -12,7 +12,12 @@ use super::secrets::SecretStore;
 use super::tools::{self, Ctx, PendingAction};
 
 /// Turns of tool calls before the loop gives up on an answer.
-const MAX_STEPS: usize = 12;
+const MAX_STEPS: usize = 8;
+/// After this many rounds of lookups, or this long, the model is told to answer with what it has.
+const NUDGE_STEPS: usize = 4;
+const NUDGE_SECS: u64 = 30;
+/// Past this the question ends, with whatever was found so far.
+const GIVE_UP_SECS: u64 = 75;
 
 pub const SYSTEM_PROMPT: &str = "You are the intel assistant inside EVE Spai, a desktop intel tool for EVE Online players. \
 You help a pilot understand what is happening around them: hostile gangs, kills, wormholes, routes and fleets.\n\
@@ -28,7 +33,7 @@ describe your own thinking or what you looked up unless asked.\n\
 - First decide what kind of question it is, and answer in that shape:\n\
   - Live intel (where is a gang now, is my route clear, what just died nearby): time matters more than detail. One or \
 two short sentences: where, how many, how long ago, how far from the user. Only the newest evidence, no history, \
-no caveats unless the data is stale. Look up only what answers it.\n\
+no caveats unless the data is stale. At most two lookups; track_movement answers most of these in one.\n\
   - History (where did they go last week, how often is this gate camped, past fleets or rescues): summarise with \
 counts, times and trends, then the few events that matter. Longer is fine.\n\
   - Game mechanics or general EVE knowledge (how cynos work, what a ship does): answer from what you know, without \
@@ -53,7 +58,7 @@ access tick turns it on. You cannot change Data access yourself.\n\
 - Jabber messages: write one only when the user clearly asks you to write or send it. Never assume they meant to; \
 if in doubt, ask. Never use the !bping or !bcast commands unless the user asks for that command by name. The user's own \
 instructions below may relax this, at their own risk.\n\
-- Jabber messages, rescue pings and outside feeds are operational secrets. Never put any of their content into a web \
+- Jabber messages, raw chat logs, rescue pings and outside feeds are operational secrets. Never put any of their content into a web \
 search, a web address or a link; it may only be shown to the user.";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -228,7 +233,12 @@ impl Session {
     }
 
     fn run_loop(&mut self, turn_ix: usize, store: Option<&crate::store::Store>) -> Result<(), String> {
-        for _ in 0..MAX_STEPS {
+        let started = std::time::Instant::now();
+        let mut nudged = false;
+        for step in 0..MAX_STEPS {
+            if step > 0 && started.elapsed().as_secs() >= GIVE_UP_SECS {
+                return Err("Took too long; ask again more narrowly".into());
+            }
             let mut facts = self.deps.facts();
             facts.opsec = self.deps.opsec.load(Ordering::Relaxed);
             let now = crate::clock::utc().timestamp();
@@ -356,12 +366,19 @@ impl Session {
                     }
                 });
             }
+            // Long searching is mostly a question misread: stop looking and say what was found.
+            if !nudged && (step + 1 >= NUDGE_STEPS || started.elapsed().as_secs() >= NUDGE_SECS) {
+                nudged = true;
+                results.push(Block::Text(
+                    "[Enough lookups: answer now with what you have, in a few words. If the question is unclear, ask what was meant. No more tools.]".into(),
+                ));
+            }
             self.history.push(Msg { role: Role::User, blocks: results });
             if self.cancel.load(Ordering::Relaxed) {
                 return Err("Stopped".into());
             }
         }
-        Err("Gave up after too many lookups without an answer".into())
+        Err("Gave up after too many lookups without an answer; ask again more narrowly".into())
     }
 }
 
@@ -781,6 +798,27 @@ mod tests {
         assert_eq!(v.turns[1].cards[0].state, CardState::Dismissed, "the question is closed");
         assert!(v.turns[2].text.starts_with("Stopped watching"));
         assert!(!s.deps.watches.lock().unwrap()[0].running());
+    }
+
+    #[test]
+    fn a_model_that_keeps_looking_is_told_to_answer_and_then_stopped() {
+        let call = |i: usize| vec![Delta::ToolUse { id: format!("t{i}"), name: "route".into(), input: json!({"from": "1DQ1-A", "to": "7-K5EL"}) }, Delta::Done(Stop::ToolUse)];
+        // A fresh fake per request, as the factory is asked once a round.
+        let turns = Arc::new(Mutex::new((0..MAX_STEPS).map(call).collect::<VecDeque<_>>()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (t2, s2) = (turns.clone(), seen.clone());
+        let make: ProviderFactory = Box::new(move |_| {
+            let mut f = FakeProvider::new(vec![t2.lock().unwrap().pop_front().unwrap_or_default()]);
+            f.seen = s2.clone();
+            Ok(Box::new(f))
+        });
+        let mut s = Session::new(AiDeps::for_tests(facts(&[])), Default::default(), Default::default(), make, None);
+        s.handle(Command::Send { text: "where?".into(), voice: false }, None);
+        let asked = seen.lock().unwrap();
+        let nudged = asked.iter().position(|msgs| format!("{msgs:?}").contains("Enough lookups"));
+        assert_eq!(nudged, Some(NUDGE_STEPS), "the nudge goes with the results of the fourth round");
+        let v = s.view.lock().unwrap();
+        assert!(v.turns.last().unwrap().error.as_deref().is_some_and(|e| e.contains("Gave up")), "{:?}", v.turns.last());
     }
 
     #[test]
