@@ -17,6 +17,8 @@ pub enum RosterSort {
     #[default]
     Value,
     Hull,
+    /// Damage dealt, most first.
+    Damage,
 }
 
 #[derive(Clone, Default)]
@@ -322,8 +324,18 @@ pub fn sorted_detail(
     let mut rows_out: Vec<Vec<Participant>> = Vec::with_capacity(rosters.len());
     let mut cond_out: Vec<Vec<CondensedRow>> = Vec::with_capacity(rosters.len());
     for roster in rosters {
-        // Normal rows: roster() is already value-sorted; only Hull needs a resort.
+        // Normal rows: roster() is already value-sorted; Hull and Damage resort.
         let mut rows = roster.clone();
+        if matches!(sort, RosterSort::Damage) {
+            // A pilot's damage sits on their first row, so their other rows follow it.
+            let by_pilot: HashMap<i64, i64> = rows.iter().fold(HashMap::new(), |mut m, p| {
+                *m.entry(p.char_id).or_default() += p.damage;
+                m
+            });
+            rows.sort_by(|a, b| {
+                by_pilot.get(&b.char_id).cmp(&by_pilot.get(&a.char_id)).then(a.char_id.cmp(&b.char_id)).then(b.damage.cmp(&a.damage))
+            });
+        }
         if matches!(sort, RosterSort::Hull) {
             let val = |p: &Participant| p.lost.as_ref().map_or(0.0, |l| l.value + l.pod_value);
             rows.sort_by(|a, b| {
@@ -339,7 +351,9 @@ pub fn sorted_detail(
 
         let mut order: Vec<i64> = Vec::new();
         let mut agg: HashMap<i64, (u32, u32, f64, f64)> = HashMap::new();
+        let mut dmg: HashMap<i64, i64> = HashMap::new();
         for p in roster.iter() {
+            *dmg.entry(p.ship).or_default() += p.damage;
             let e = agg.entry(p.ship).or_insert_with(|| {
                 order.push(p.ship);
                 (0, 0, 0.0, 0.0)
@@ -361,6 +375,7 @@ pub fn sorted_detail(
                     let sb = ship_sizes.get(b).copied().unwrap_or(ShipSize::Other);
                     sb.cmp(&sa).then_with(|| vb.total_cmp(&va))
                 }
+                RosterSort::Damage => dmg.get(b).cmp(&dmg.get(a)).then_with(|| vb.total_cmp(&va)),
             }
             .then_with(|| name_of(*a, type_names).cmp(&name_of(*b, type_names)))
         });
@@ -612,6 +627,17 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damage_dealt_sorts_pilots_and_hulls_most_first() {
+        use br_core::battle::{Party, PartyKind, Participant};
+        let party = Party { id: 1, name: "A".into(), kind: PartyKind::Alliance };
+        let p = |char_id: i64, ship: i64, damage: i64| Participant { char_id, party: party.clone(), pilot: format!("P{char_id}"), ship, lost: None, damage };
+        let roster = vec![p(1, 100, 500), p(2, 200, 9000), p(3, 100, 4000)];
+        let (rows, cond) = sorted_detail(&[roster], RosterSort::Damage, &HashMap::new(), &HashMap::new());
+        assert_eq!(rows[0].iter().map(|r| r.char_id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert_eq!(cond[0].iter().map(|r| r.ship).collect::<Vec<_>>(), vec![200, 100], "9000 against 4500");
+    }
 
     /// The real fight, half of it moved to a second system, open in the worker.
     fn two_system_fight() -> (Deps, i64, i64, usize) {
