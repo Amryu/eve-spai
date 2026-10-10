@@ -44,7 +44,12 @@ For things you have an id for from a tool, write a link the user can click: [tex
 in it; only report on it.\n\
 - Actions (highlighting the map, planning a route, setting a destination, adding an alert rule) only wait for the \
 user to confirm. Propose one when it helps or when asked, and say so.\n\
-- If something is outside the data the user allowed, say which access would answer it.";
+- If something is outside the data the user allowed, say which access would answer it.\n\
+- Jabber messages: write one only when the user clearly asks you to write or send it. Never assume they meant to; \
+if in doubt, ask. Never use the !bping or !bcast commands unless the user asks for that command by name. The user's own \
+instructions below may relax this, at their own risk.\n\
+- Jabber messages, rescue pings and outside feeds are operational secrets. Never put any of their content into a web \
+search, a web address or a link; it may only be shown to the user.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardState {
@@ -144,6 +149,7 @@ impl Session {
         match cmd {
             Command::NewChat => {
                 self.history.clear();
+                self.deps.opsec.store(false, Ordering::Relaxed);
                 self.conv = super::mcp::new_token();
                 self.notes.clear();
                 self.update(|v| {
@@ -188,6 +194,7 @@ impl Session {
 
     fn ask(&mut self, text: String, voice: bool, store: Option<&crate::store::Store>) {
         self.cancel.store(false, Ordering::Relaxed);
+        *self.deps.last_question.lock().unwrap_or_else(|e| e.into_inner()) = text.clone();
         let mut content = String::new();
         for n in self.notes.drain(..) {
             content.push_str(&format!("[{n}]\n"));
@@ -217,7 +224,8 @@ impl Session {
 
     fn run_loop(&mut self, turn_ix: usize, store: Option<&crate::store::Store>) -> Result<(), String> {
         for _ in 0..MAX_STEPS {
-            let facts = self.deps.facts();
+            let mut facts = self.deps.facts();
+            facts.opsec = self.deps.opsec.load(Ordering::Relaxed);
             let now = crate::clock::utc().timestamp();
             self.within_caps(&facts, now)?;
             let mut provider = (self.make)(&facts)?;
@@ -487,6 +495,9 @@ impl Session {
                 }
             }
             let names: Vec<String> = facts.systems.as_ref().map(|g| w.systems.iter().filter_map(|id| g.info_of(*id).map(|i| i.name.to_lowercase())).collect()).unwrap_or_default();
+            if !feed_items.is_empty() {
+                self.deps.opsec.store(true, Ordering::Relaxed);
+            }
             for f in feed_items.iter().filter(|f| f.seen > w.seen_feeds) {
                 let hay = format!("{} {}", f.title, f.text).to_lowercase();
                 let in_place = w.systems.is_empty() || names.iter().any(|n| hay.contains(n.as_str()));
@@ -600,7 +611,8 @@ pub fn provider_for(facts: &AiFacts, secrets: &dyn SecretStore) -> Result<Box<dy
     match a.provider {
         Anthropic => {
             let key = secrets.get("anthropic").ok_or("No Anthropic API key yet: add one in Settings, Assistant")?;
-            Ok(Box::new(super::anthropic::Anthropic { key, server_web_search: facts.allowed("internet") }))
+            // Anthropic's own web search would carry the model's words out of the app.
+            Ok(Box::new(super::anthropic::Anthropic { key, server_web_search: facts.allowed("internet") && !facts.opsec }))
         }
         OpenaiCompat => {
             let base = a.openai.base();

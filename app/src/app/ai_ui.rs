@@ -46,6 +46,8 @@ impl SpaiApp {
                 memories: self.ai_memories.clone(),
                 watches: self.ai_watches.clone(),
                 feeds: self.ai_feeds.clone(),
+                opsec: self.ai_opsec.clone(),
+                last_question: Default::default(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -80,6 +82,7 @@ impl SpaiApp {
             fleet_backend: self.fleet_on().then(|| self.fleet_backend.clone()),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
+            opsec: false,
         };
         *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
         *self.ai_feed_defs.lock().unwrap_or_else(|e| e.into_inner()) = s.ai.feeds.clone();
@@ -99,6 +102,18 @@ impl SpaiApp {
     /// Carries out an action card the user applied. Returns the note the model gets about it.
     fn ai_apply(&mut self, kind: &ActionKind, summary: &str) -> String {
         match kind {
+            ActionKind::SendJabber { to, room, body, .. } => {
+                let cmd = if *room { crate::jabber::Cmd::SendRoom { room: to.clone(), body: body.clone() } } else { crate::jabber::Cmd::Send { to: to.clone(), body: body.clone() } };
+                match &self.jabber_tx {
+                    Some(tx) => {
+                        let _ = tx.send(cmd);
+                    }
+                    None => {
+                        self.toast_error("Jabber is not connected; nothing was sent");
+                        return format!("Not sent, Jabber is not connected: {summary}");
+                    }
+                }
+            }
             ActionKind::KeepWatching(id) => {
                 let now = crate::clock::utc().timestamp();
                 if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *id) {
@@ -647,6 +662,10 @@ impl SpaiApp {
             Link::Wormholes(id) => {
                 self.wh_info = Some(id);
                 self.view = View::Wormholes;
+            }
+            // A link the model wrote could carry what it read out in its address.
+            Link::Url(_) if self.ai_opsec.load(std::sync::atomic::Ordering::Relaxed) => {
+                self.toast("Web links are off in a conversation that read Jabber or feed messages; start a new chat");
             }
             Link::Url(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
         }

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use super::{schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE, &MAP_DATA, &EDIT_MAP_DATA];
+pub static TOOLS: &[&ToolSpec] = &[&HIGHLIGHT, &FOCUS, &PLAN_ROUTE, &SET_DESTINATION, &ADD_ALERT_RULE, &MAP_DATA, &EDIT_MAP_DATA, &SEND_JABBER];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionKind {
@@ -19,6 +19,8 @@ pub enum ActionKind {
     AddAlertRule(Box<crate::settings::AlertRule>),
     /// Changes to the jump bridges, cyno generators or sov upgrades, all applied together.
     EditMapData(MapDataEdit),
+    /// A Jabber message, to a room or a person, sent only on the user's click.
+    SendJabber { to: String, room: bool, body: String, broadcast: bool },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -317,6 +319,53 @@ fn edit_map_data(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     Ok(out)
 }
 
+/// The commands that reach a whole coalition. Never written unless the user asked for them by name.
+const BROADCAST: [&str; 2] = ["!bping", "!bcast"];
+
+static SEND_JABBER: ToolSpec = ToolSpec {
+    name: "send_jabber",
+    description: "Writes a Jabber message to a room or a person, for the user to check and send with a click. Only when the \
+                  user clearly asked you to write or send a message; if in doubt, ask them first. Never use the !bping or \
+                  !bcast commands unless the user asked for that command by name.",
+    need: Need::All(&["actions.jabber"]),
+    kind: Kind::Action,
+    schema: || schema(json!({"conversation": {"type": "string", "description": "Room or person, by name or address"}, "text": {"type": "string"}}), &["conversation", "text"]),
+    run: send_jabber,
+};
+
+fn send_jabber(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
+    let want = str_arg(v, "conversation").ok_or("to whom?")?.trim().to_lowercase();
+    let body = str_arg(v, "text").ok_or("what should it say?")?.trim().to_owned();
+    if body.is_empty() {
+        return Err("the message is empty".into());
+    }
+    let lower = body.to_lowercase();
+    let broadcast = BROADCAST.iter().any(|c| lower.contains(c));
+    if broadcast {
+        let asked = ctx.deps.last_question.lock().unwrap_or_else(|e| e.into_inner()).to_lowercase();
+        let own = ctx.facts.ai.instructions.to_lowercase();
+        // Asked for by name in this question, or allowed in the user's own instructions at their risk.
+        let named = BROADCAST.iter().filter(|c| lower.contains(*c)).all(|c| asked.contains(&c[1..]) || own.contains(&c[1..]));
+        if !named {
+            return Err("broadcast commands (!bping, !bcast) are only written when the user asks for that command by name; ask them".into());
+        }
+    }
+    let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+    let known: Vec<(String, bool)> = st.rooms.iter().map(|r| (r.clone(), true)).chain(st.chats.keys().filter(|k| !st.rooms.contains(*k)).map(|k| (k.clone(), false))).collect();
+    drop(st);
+    let local = |jid: &str| jid.split('@').next().unwrap_or(jid).to_lowercase();
+    let exact: Vec<&(String, bool)> = known.iter().filter(|(j, _)| j.to_lowercase() == want || local(j) == want).collect();
+    let hits: Vec<&(String, bool)> = if exact.is_empty() { known.iter().filter(|(j, _)| j.to_lowercase().contains(&want)).collect() } else { exact };
+    let (to, room) = match hits.as_slice() {
+        [one] => (*one).clone(),
+        [] => return Err(format!("no Jabber room or contact matches {want:?}")),
+        many => return Err(format!("several match {want:?}: {}; ask which", many.iter().take(8).map(|(j, _)| j.as_str()).collect::<Vec<_>>().join(", "))),
+    };
+    let name = local(&to);
+    let summary = if broadcast { format!("BROADCAST to {name}: \"{body}\"") } else { format!("Send to {name}: \"{body}\"") };
+    queue(ctx, ActionKind::SendJabber { to, room, body, broadcast }, summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::*;
@@ -364,6 +413,33 @@ mod tests {
         assert!(e.apply(&mut bridges, &mut cynos, &mut ups));
         assert_eq!(bridges.len(), 1, "the same bridge the other way round is not added twice");
         assert_eq!(ups, vec![crate::settings::SovUpgrade { system: "1DQ1-A".into(), upgrade: "Cynosural Suppression".into() }]);
+    }
+
+    #[test]
+    fn jabber_messages_wait_for_a_click_and_broadcasts_need_asking_by_name() {
+        let deps = AiDeps::for_tests(facts(&["actions.jabber"]));
+        {
+            let mut j = deps.jabber.lock().unwrap();
+            j.rooms.insert("ops@conference.example.invalid".into());
+            j.rooms.insert("ops-chat@conference.example.invalid".into());
+            j.chats.insert("someone@example.invalid".into(), Vec::new());
+        }
+        let f = deps.facts();
+        let mut actions = Vec::new();
+        let mut ctx = Ctx { deps: &deps, facts: &f, store: None, now: 1, actions: &mut actions };
+        let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "ops", "text": "x up for the Muninn fleet"}));
+        assert!(!err, "{out}");
+        let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "op", "text": "hi"}));
+        assert!(err && out.contains("several"), "a vague name is asked about: {out}");
+        *deps.last_question.lock().unwrap() = "tell the ops room the fleet is up".into();
+        let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "ops", "text": "!bping fleet up"}));
+        assert!(err && out.contains("by name"), "{out}");
+        *deps.last_question.lock().unwrap() = "send a bping to ops: fleet up".into();
+        let (out, err) = super::super::dispatch(&mut ctx, "send_jabber", &json!({"conversation": "ops", "text": "!bping fleet up"}));
+        assert!(!err, "{out}");
+        assert!(matches!(&actions[0].kind, ActionKind::SendJabber { room: true, broadcast: false, .. }));
+        assert!(matches!(&actions[1].kind, ActionKind::SendJabber { broadcast: true, .. }));
+        assert!(actions[1].summary.starts_with("BROADCAST"));
     }
 
     #[test]
