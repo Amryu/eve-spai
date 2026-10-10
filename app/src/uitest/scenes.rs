@@ -1337,6 +1337,27 @@ fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) 
 /// on the same context and paint egui's "double use of widget ID" error over the dialog.
 /// The Assistant tab with a conversation: a finished answer with its lookups and an action card,
 /// an error, and a turn still being written. Empty shows the first-use page instead.
+/// A spoken question while it is still being turned into words: the pending message at the end.
+fn assistant_listening_scene() -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui("assistant_listening", [720.0, 480.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Assistant;
+            a.settings.ai.enabled = true;
+            let (_tx, rx) = std::sync::mpsc::channel();
+            std::mem::forget(_tx);
+            a.ai_listen = crate::app::ai_voice_in::Listen::Transcribing(rx);
+            a.ai_listen_since = Some(std::time::Instant::now());
+            a
+        });
+        a.apply_language();
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    })
+}
+
 fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool, popped: bool) -> Scene {
     use crate::ai::session::{ActionCard, CardState, Chip, Turn};
     use crate::ai::tools::{ActionKind, PendingAction};
@@ -2408,6 +2429,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(battle_list_scene("battle_list", [1280.0, 800.0]));
     v.push(assistant_scene("assistant", [1280.0, 800.0], false, false));
     v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false, false));
+    v.push(assistant_listening_scene());
     v.push(assistant_scene("assistant_popout", [560.0, 820.0], false, true));
     v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true, false));
     v.push(view_scene("assistant_off", View::Assistant, [1024.0, 600.0]));

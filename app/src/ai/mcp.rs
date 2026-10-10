@@ -80,7 +80,6 @@ pub fn start(deps: AiDeps) -> anyhow::Result<McpServer> {
     let actions: SharedActions = Default::default();
     let (tok, acts) = (token.clone(), actions.clone());
     std::thread::Builder::new().name("ai-mcp".into()).spawn(move || {
-        let store = crate::store::Store::open().ok();
         for mut req in server.incoming_requests() {
             let loopback = req.remote_addr().is_some_and(|a| a.ip().is_loopback());
             let auth = req.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str().to_owned());
@@ -101,15 +100,21 @@ pub fn start(deps: AiDeps) -> anyhow::Result<McpServer> {
                 let _ = req.respond(tiny_http::Response::empty(400));
                 continue;
             };
-            match handle(&deps, store.as_ref(), &acts, &msg) {
-                Some(answer) => {
-                    let h = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("header");
-                    let _ = req.respond(tiny_http::Response::from_string(answer.to_string()).with_header(h));
+            // Each request on its own thread: one slow tool must not hold up the CLI's other calls
+            // and its own protocol traffic, which it would time out and report as the tools gone.
+            let (deps, acts) = (deps.clone(), acts.clone());
+            let _ = std::thread::Builder::new().name("ai-mcp-call".into()).spawn(move || {
+                let store = crate::store::Store::open().ok();
+                match handle(&deps, store.as_ref(), &acts, &msg) {
+                    Some(answer) => {
+                        let h = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("header");
+                        let _ = req.respond(tiny_http::Response::from_string(answer.to_string()).with_header(h));
+                    }
+                    None => {
+                        let _ = req.respond(tiny_http::Response::empty(202));
+                    }
                 }
-                None => {
-                    let _ = req.respond(tiny_http::Response::empty(202));
-                }
-            }
+            });
         }
     })?;
     Ok(McpServer { port, token, actions })

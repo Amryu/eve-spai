@@ -27,8 +27,12 @@ pub struct AiDeps {
     pub opsec: Arc<std::sync::atomic::AtomicBool>,
     /// The alerts the app raised: when and what.
     pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
-    /// Battles clustered from the stored kills for the assistant: when built, from when, the battles.
-    pub battle_cache: Arc<Mutex<Option<(i64, i64, Vec<br_core::battle::Battle>)>>>,
+    /// The Battles page's history, clustered from the stored kills, and whether it is being built.
+    pub battle_history: crate::zkill::SharedBattles,
+    pub battle_history_loading: Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the assistant when it needs the history and the page has not built it: the app
+    /// builds it the way the page does.
+    pub want_battle_history: Arc<std::sync::atomic::AtomicBool>,
     /// Jump Drive Calibration and Jump Fuel Conservation of the active character, when read.
     pub jump_skills: crate::esi::SharedJumpSkills,
     /// Standings from the user's contacts, by character, corporation or alliance id.
@@ -60,8 +64,6 @@ pub struct AiFacts {
     pub setup: Setup,
     pub doctrines: Vec<DoctrineFacts>,
     pub route_anchors: Vec<i64>,
-    /// Quiet seconds that split one battle into two, as the Battles tab uses.
-    pub battle_break_secs: i64,
     pub route_destination: Option<i64>,
     /// The comms channels the app knows: (name, mumble:// link when known, gnf.lt link when known).
     pub comms: Vec<(String, Option<String>, Option<String>)>,
@@ -138,7 +140,9 @@ impl AiDeps {
             alerts: Default::default(),
             standings: Default::default(),
             jump_skills: Default::default(),
-            battle_cache: Default::default(),
+            battle_history: Default::default(),
+            battle_history_loading: Default::default(),
+            want_battle_history: Default::default(),
             online: false,
         }
     }

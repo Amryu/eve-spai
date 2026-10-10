@@ -89,6 +89,7 @@ impl SpaiApp {
             Ok(r) => {
                 crate::sound::play("info", 0.6);
                 self.ai_listen = Listen::Recording(r, source);
+                self.ai_listen_since = Some(std::time::Instant::now());
             }
             Err(e) => self.toast_error(trf!("Microphone: {e}", e = e)),
         }
@@ -123,6 +124,7 @@ impl SpaiApp {
             ctx.request_repaint();
         });
         self.ai_listen = Listen::Transcribing(rx);
+        self.ai_listen_since = Some(std::time::Instant::now());
     }
 
     /// Runs the talk key and the recording through their states, once a frame.
@@ -160,7 +162,7 @@ impl SpaiApp {
                 self.ai_listen_start(Source::Toggle);
             }
         }
-        if self.ai_listen.recording() {
+        if self.ai_listen.recording() || self.ai_listen.transcribing() {
             self.ui_ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         let done = match &self.ai_listen {
@@ -169,6 +171,7 @@ impl SpaiApp {
         };
         if let Some(res) = done {
             self.ai_listen = Listen::Idle;
+            self.ai_listen_since = None;
             match res {
                 Ok(Some(text)) => {
                     let ctx = self.ui_ctx.clone();

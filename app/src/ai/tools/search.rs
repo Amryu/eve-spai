@@ -98,44 +98,40 @@ static FIND_PILOTS: ToolSpec = ToolSpec {
     },
 };
 
-/// How long a clustering of the stored kills is reused before it is built again.
-const CACHE_SECS: i64 = 300;
-
-/// Every battle since `since`: the live ones and those clustered from the stored kills, as the
-/// Battles tab builds its history (same window, reach, quiet gap and the user's edits).
-pub(crate) fn all_battles(ctx: &Ctx, since: i64) -> Vec<br_core::battle::Battle> {
+/// Every battle since `since`: the live ones and the Battles page's history. The history is the
+/// page's own, built once from the stored kills; when the page has not built it yet the app is asked
+/// to, and this waits a little for it.
+pub(crate) fn all_battles(ctx: &Ctx, since: i64) -> Result<Vec<br_core::battle::Battle>, String> {
+    use std::sync::atomic::Ordering;
     let mut out: Vec<br_core::battle::Battle> = ctx.deps.battles.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let (Some(store), Some(geo)) = (ctx.store, ctx.facts.systems.clone()) else { return out };
-    let cached = {
-        let c = ctx.deps.battle_cache.lock().unwrap_or_else(|e| e.into_inner());
-        c.as_ref().filter(|(at, from, _)| ctx.now - at < CACHE_SECS && *from <= since).map(|(_, _, b)| b.clone())
-    };
-    let history = match cached {
-        Some(b) => b,
-        None => {
-            let engs = store.load_engagements(since);
-            let overrides = store.load_battle_overrides();
-            let gap = if ctx.facts.battle_break_secs > 0 { ctx.facts.battle_break_secs } else { br_core::battle::BATTLE_WINDOW_SECS };
-            let built: Vec<br_core::battle::Battle> = br_core::battle::cluster(
-                &engs,
-                br_core::battle::BATTLE_WINDOW_SECS,
-                br_core::battle::BATTLE_MAX_JUMPS,
-                gap,
-                &overrides,
-                |a, b| geo.jumps(a, b, br_core::battle::BATTLE_MAX_JUMPS),
-            )
-            .into_iter()
-            .filter(|b| b.is_anchored() && b.is_two_sided())
-            .collect();
-            *ctx.deps.battle_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some((ctx.now, since, built.clone()));
-            built
+    let empty = || ctx.deps.battle_history.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+    if empty() {
+        if !ctx.deps.battle_history_loading.load(Ordering::SeqCst) {
+            ctx.deps.want_battle_history.store(true, Ordering::SeqCst);
         }
-    };
+        // A few seconds for the app to take the request up, then the page's own build time.
+        let started = std::time::Instant::now();
+        let secs = |s: u64| std::time::Duration::from_secs(s);
+        while empty() {
+            let picked_up = !ctx.deps.want_battle_history.load(Ordering::SeqCst);
+            let loading = ctx.deps.battle_history_loading.load(Ordering::SeqCst);
+            let waited = started.elapsed();
+            if (!picked_up && waited >= secs(3)) || (picked_up && !loading) || waited >= secs(20) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        ctx.deps.want_battle_history.store(false, Ordering::SeqCst);
+        if empty() && ctx.deps.battle_history_loading.load(Ordering::SeqCst) {
+            return Err("the battle history is still being built; ask again in a moment".into());
+        }
+    }
+    let history = ctx.deps.battle_history.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // The live list wins for a battle in both: it may hold kills the store has not caught up on.
     let live: std::collections::HashSet<i64> = out.iter().flat_map(|b| b.engagements.iter().map(|e| e.kill_id)).collect();
     out.extend(history.into_iter().filter(|b| !b.engagements.iter().any(|e| live.contains(&e.kill_id))));
     out.retain(|b| b.end >= since);
-    out
+    Ok(out)
 }
 
 fn battle_id(b: &br_core::battle::Battle) -> Option<i64> {
@@ -183,7 +179,7 @@ fn search_battles(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let min_kills = v.get("min_kills").and_then(Value::as_u64).unwrap_or(0) as usize;
     let min_isk = v.get("min_isk_billions").and_then(Value::as_f64).unwrap_or(0.0) * 1e9;
     let region_of = |b: &br_core::battle::Battle| b.systems.first().and_then(|(id, _, _)| geo.info_of(*id)).map(|i| i.region.clone()).unwrap_or_default();
-    let mut hits: Vec<br_core::battle::Battle> = all_battles(ctx, since)
+    let mut hits: Vec<br_core::battle::Battle> = all_battles(ctx, since)?
         .into_iter()
         .filter(|b| b.kills >= min_kills && b.isk >= min_isk)
         .filter(|b| system.is_none_or(|s| b.systems.iter().any(|(id, _, _)| *id == s)))
@@ -354,6 +350,20 @@ mod tests {
             });
         }
         let deps = AiDeps::for_tests(facts(&["battles"]));
+        // The Battles page's history, as it builds it from those kills.
+        let geo = deps.facts().systems.clone().unwrap();
+        let built: Vec<_> = br_core::battle::cluster(
+            &store.load_engagements(0),
+            br_core::battle::BATTLE_WINDOW_SECS,
+            br_core::battle::BATTLE_MAX_JUMPS,
+            br_core::battle::BATTLE_WINDOW_SECS,
+            &store.load_battle_overrides(),
+            |a, b| geo.jumps(a, b, br_core::battle::BATTLE_MAX_JUMPS),
+        )
+        .into_iter()
+        .filter(|b| b.is_anchored() && b.is_two_sided())
+        .collect();
+        *deps.battle_history.lock().unwrap() = built;
         let f = deps.facts();
         let mut actions = Vec::new();
         let mut ctx = super::super::Ctx { deps: &deps, facts: &f, store: Some(&store), now, actions: &mut actions };
@@ -410,3 +420,4 @@ mod tests {
         assert!(deps.opsec.load(std::sync::atomic::Ordering::Relaxed), "reading Jabber closes the web for this chat");
     }
 }
+
