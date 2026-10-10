@@ -532,6 +532,7 @@
   "Downloading {what} from {host}… {got}{of} MB at {rate} MB/s": "Загрузка {what} с {host}… {got}{of} МБ, {rate} МБ/с",
   "Downloading {what}…": "Загрузка {what}…",
   "Drag a rule by its handle, or select it and use the arrows below, to change the order": "Перетащите правило за ручку или выберите его и используйте стрелки ниже, чтобы изменить порядок",
+  "Drag a tile by its title to move it.": "Перетащите плитку за заголовок, чтобы переместить её.",
   "Drag from one system to another on the map, or right-click a system to start a route.": "Протяните от одной системы к другой на карте или кликните правой кнопкой по системе, чтобы начать маршрут.",
   "Drag onto another squad to move this pilot.": "Перетащите на другой сквад, чтобы переместить пилота.",
   "Drag to move the overlay": "Перетащите, чтобы сдвинуть оверлей",

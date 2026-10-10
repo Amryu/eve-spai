@@ -12,12 +12,19 @@ const AWAY_SECS: i64 = 15 * 60;
 /// How far back the timeline and the fleet board look.
 const LOOKBACK_SECS: i64 = 2 * 3600;
 const PING_LOOKBACK_SECS: i64 = 3 * 3600;
-const MINIMAP_JUMPS: u32 = 6;
+const MINIMAP_JUMPS: u32 = 5;
 /// Intel in the timeline reaches further out than the alert radius.
 const TIMELINE_JUMPS: u32 = 10;
 /// How far the Thera and Turnur entrances are looked for.
 const HUB_JUMPS: u32 = 15;
 const TILE_MIN_WIDTH: f32 = 420.0;
+/// The columns the layout is saved in; a narrower window folds them.
+const COLUMNS: usize = 3;
+/// The first layout, balanced for two columns as most windows show it: the third folds under
+/// the first.
+const DEFAULT_COLUMNS: [&[&str]; COLUMNS] = [&["situation", "timeline"], &["fleets", "minimap", "battles"], &["wormholes", "assistant"]];
+/// Neighbouring dots closer than this, on average, read as one blob: the map shows fewer jumps.
+const MINIMAP_MIN_SPACING: f32 = 12.0;
 /// How often the tiles' data is worked out again. Painting reads the last result.
 const SNAPSHOT_SECS: f32 = 2.0;
 
@@ -141,10 +148,13 @@ struct Entry {
 
 /// The gate map around the active character, laid out once per snapshot.
 struct MiniMap {
-    dist: HashMap<i64, u32>,
+    dist: std::collections::BTreeMap<i64, u32>,
+    /// Inside the area, by id.
     pts: Vec<crate::store::MapSystem>,
     edges: Vec<(i64, i64)>,
     bridges: Vec<(i64, i64)>,
+    /// Where bridges out of the area land: placed on the same projection, never fitted into view.
+    far: Vec<crate::store::MapSystem>,
 }
 
 /// Everything the tiles show that costs a graph walk or a pass over the feeds, worked out every
@@ -166,7 +176,6 @@ struct Snapshot {
 
 #[derive(Default)]
 pub(crate) struct DashState {
-    heights: HashMap<Tile, f32>,
     kills: Vec<br_core::battle::Engagement>,
     kills_at: Option<std::time::Instant>,
     snap: Option<Snapshot>,
@@ -379,7 +388,8 @@ impl SpaiApp {
         out
     }
 
-    /// The gate map within [`MINIMAP_JUMPS`] of the active character, on the 2D map layout.
+    /// The gate map within [`MINIMAP_JUMPS`] of the active character, on the 2D map layout, with
+    /// the jump bridges out of it. Sorted by id, so everything is drawn in the same order each frame.
     fn dash_layout_minimap(&self) -> Option<MiniMap> {
         let g = self.systems.as_ref()?;
         let center = self.player_system()?;
@@ -387,12 +397,15 @@ impl SpaiApp {
             Some(c) => c.iter().map(|s| (s.id, s)).collect(),
             None => self.map_systems.iter().map(|s| (s.id, s)).collect(),
         };
-        // Over gates and jump bridges alike, so what a bridge puts within reach is on the map too.
-        let dist: HashMap<i64, u32> = g.distances_from(center, MINIMAP_JUMPS).into_iter().filter(|(id, _)| coords.contains_key(id)).collect();
-        let pts: Vec<crate::store::MapSystem> = dist.keys().filter_map(|id| coords.get(id)).map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..(*s).clone() }).collect();
+        let flat = |s: &crate::store::MapSystem| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() };
+        let dist: std::collections::BTreeMap<i64, u32> = g.gate_distances_from(center, MINIMAP_JUMPS).into_iter().filter(|(id, _)| coords.contains_key(id)).collect();
+        let pts: Vec<crate::store::MapSystem> = dist.keys().filter_map(|id| coords.get(id)).map(|s| flat(s)).collect();
         let edges = dist.keys().flat_map(|a| g.neighbors_gates_only(*a).iter().filter(|b| *a < **b && dist.contains_key(b)).map(move |b| (*a, *b))).collect();
-        let bridges = dist.keys().flat_map(|a| g.neighbors(*a).iter().filter(|b| *a < **b && dist.contains_key(b) && g.is_bridge(*a, **b)).map(move |b| (*a, *b))).collect();
-        Some(MiniMap { dist, pts, edges, bridges })
+        let mut bridges: Vec<(i64, i64)> = dist.keys().flat_map(|a| g.neighbors(*a).iter().filter(|b| coords.contains_key(b) && g.is_bridge(*a, **b)).map(move |b| (*a, *b))).collect();
+        bridges.retain(|(a, b)| !dist.contains_key(b) || a < b);
+        bridges.sort_unstable();
+        let far = bridges.iter().filter(|(_, b)| !dist.contains_key(b)).filter_map(|(_, b)| coords.get(b)).map(|s| flat(s)).collect();
+        Some(MiniMap { dist, pts, edges, bridges, far })
     }
 
     pub(crate) fn dashboard_view(&mut self, ui: &mut egui::Ui) {
@@ -422,32 +435,38 @@ impl SpaiApp {
             ui.label(egui::RichText::new(tr!("No tiles picked. Add some with Tiles above.")).weak());
             return;
         }
+        let stored = self.dash_columns();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // Tiles stand as far apart down a column as the columns stand apart.
             let gap = ui.spacing().item_spacing.x;
             // The away tile spans the full width: it is the one thing to read first.
-            let mut rest = tiles.clone();
-            if let Some(i) = rest.iter().position(|t| *t == Tile::Away) {
-                rest.remove(i);
+            if tiles.contains(&Tile::Away) {
                 self.dash_tile(ui, Tile::Away);
                 ui.add_space(gap - ui.spacing().item_spacing.y);
             }
-            let cols = ((ui.available_width() / TILE_MIN_WIDTH).floor() as usize).clamp(1, 3);
-            // Each tile goes into the shortest column so far, by last frame's heights.
-            let mut placed: Vec<Vec<Tile>> = vec![Vec::new(); cols];
-            let mut sums = vec![0.0_f32; cols];
-            for t in rest {
-                let c = (0..cols).min_by(|a, b| sums[*a].total_cmp(&sums[*b])).unwrap_or(0);
-                sums[c] += self.dash.heights.get(&t).copied().unwrap_or(200.0) + gap;
-                placed[c].push(t);
+            let cols = ((ui.available_width() / TILE_MIN_WIDTH).floor() as usize).clamp(1, COLUMNS);
+            // Each saved column keeps its tiles in its order; a narrower window folds the right
+            // columns under the left ones, never re-sorting them.
+            let mut shown: Vec<Vec<(usize, Tile)>> = vec![Vec::new(); cols];
+            for (i, list) in stored.iter().enumerate() {
+                shown[i % cols].extend(list.iter().filter(|t| tiles.contains(t)).map(|t| (i, *t)));
             }
             ui.columns(cols, |columns| {
-                for (col, list) in columns.iter_mut().zip(placed) {
-                    for (i, t) in list.into_iter().enumerate() {
-                        if i > 0 {
+                for (c, (col, list)) in columns.iter_mut().zip(shown).enumerate() {
+                    let last_column = list.last().map_or(c, |(i, _)| *i);
+                    for (k, (_, t)) in list.into_iter().enumerate() {
+                        if k > 0 {
                             col.add_space(gap - col.spacing().item_spacing.y);
                         }
                         self.dash_tile(col, t);
+                    }
+                    // The rest of the column takes a tile dropped below the last one.
+                    let (rect, resp) = col.allocate_exact_size(egui::vec2(col.available_width(), 80.0), egui::Sense::hover());
+                    if resp.dnd_hover_payload::<Tile>().is_some() {
+                        col.painter().hline(rect.x_range(), rect.top() + 4.0, egui::Stroke::new(3.0, col.visuals().selection.stroke.color));
+                    }
+                    if let Some(moved) = resp.dnd_release_payload::<Tile>() {
+                        self.dash_move_to_column(*moved, last_column);
                     }
                 }
             });
@@ -468,43 +487,80 @@ impl SpaiApp {
                 let code = order[i].trim_start_matches('-').to_owned();
                 let Some(t) = Tile::from_code(&code) else { continue };
                 let mut on = !order[i].starts_with('-');
-                ui.horizontal(|ui| {
-                    let up = ui.add_enabled(i > 0, egui::Button::new(icon::CARET_UP).frame(false)).on_hover_text(tr!("Move up"));
-                    let down = ui.add_enabled(i + 1 < n, egui::Button::new(icon::CARET_DOWN).frame(false)).on_hover_text(tr!("Move down"));
-                    if ui.checkbox(&mut on, t.label().tr()).changed() {
-                        order[i] = if on { code.clone() } else { format!("-{code}") };
-                        changed = true;
-                    }
-                    if up.clicked() {
-                        order.swap(i, i - 1);
-                        changed = true;
-                    }
-                    if down.clicked() {
-                        order.swap(i, i + 1);
-                        changed = true;
-                    }
-                });
+                if ui.checkbox(&mut on, t.label().tr()).changed() {
+                    order[i] = if on { code.clone() } else { format!("-{code}") };
+                    changed = true;
+                }
             }
             if changed {
                 self.settings.dashboard_tiles = order.into_iter().filter(|c| !c.starts_with('-')).collect();
                 self.needs_save = true;
             }
             ui.separator();
+            ui.label(egui::RichText::new(tr!("Drag a tile by its title to move it.")).weak());
             if ui.button(tr!("Reset to the default tiles")).clicked() {
                 self.settings.dashboard_tiles = crate::settings::default_dashboard_tiles();
+                self.settings.dashboard_columns.clear();
                 self.needs_save = true;
                 ui.close();
             }
         });
     }
 
-    /// Puts `moved` before `target`, or after it.
-    fn dash_move(&mut self, moved: Tile, target: Tile, after: bool) {
-        let tiles = &mut self.settings.dashboard_tiles;
-        tiles.retain(|c| c != moved.code());
-        let at = tiles.iter().position(|c| c == target.code()).map_or(tiles.len(), |i| i + usize::from(after));
-        tiles.insert(at, moved.code().to_owned());
+    /// The saved columns, brought in line with the tiles turned on: one gone is dropped, one new
+    /// joins the column with the fewest tiles, and that is saved, so nothing moves on its own later.
+    pub(crate) fn dash_columns(&mut self) -> Vec<Vec<Tile>> {
+        let on: Vec<Tile> = self.dashboard_tiles().into_iter().filter(|t| *t != Tile::Away).collect();
+        if self.settings.dashboard_columns.is_empty() {
+            self.settings.dashboard_columns = DEFAULT_COLUMNS.iter().map(|c| c.iter().map(|s| (*s).to_owned()).collect()).collect();
+        }
+        let mut cols: Vec<Vec<Tile>> = self.settings.dashboard_columns.iter().map(|c| c.iter().filter_map(|s| Tile::from_code(s)).filter(|t| on.contains(t)).collect()).collect();
+        cols.resize(COLUMNS, Vec::new());
+        let mut seen = std::collections::HashSet::new();
+        for c in cols.iter_mut() {
+            c.retain(|t| seen.insert(*t));
+        }
+        for t in on {
+            if !seen.contains(&t) {
+                let i = (0..COLUMNS).min_by_key(|i| cols[*i].len()).unwrap_or(0);
+                cols[i].push(t);
+            }
+        }
+        let codes: Vec<Vec<String>> = cols.iter().map(|c| c.iter().map(|t| t.code().to_owned()).collect()).collect();
+        if codes != self.settings.dashboard_columns {
+            self.settings.dashboard_columns = codes;
+            self.needs_save = true;
+        }
+        cols
+    }
+
+    fn dash_store_columns(&mut self, cols: Vec<Vec<Tile>>) {
+        self.settings.dashboard_columns = cols.iter().map(|c| c.iter().map(|t| t.code().to_owned()).collect()).collect();
         self.needs_save = true;
+    }
+
+    /// Puts `moved` before `target`, or after it, in `target`'s column.
+    fn dash_move(&mut self, moved: Tile, target: Tile, after: bool) {
+        let mut cols = self.dash_columns();
+        for c in cols.iter_mut() {
+            c.retain(|t| *t != moved);
+        }
+        let Some(ci) = cols.iter().position(|c| c.contains(&target)) else { return };
+        let at = cols[ci].iter().position(|t| *t == target).map_or(cols[ci].len(), |i| i + usize::from(after));
+        cols[ci].insert(at, moved);
+        self.dash_store_columns(cols);
+    }
+
+    /// Puts `moved` at the bottom of saved column `column`.
+    fn dash_move_to_column(&mut self, moved: Tile, column: usize) {
+        let mut cols = self.dash_columns();
+        for c in cols.iter_mut() {
+            c.retain(|t| *t != moved);
+        }
+        if let Some(c) = cols.get_mut(column) {
+            c.push(moved);
+        }
+        self.dash_store_columns(cols);
     }
 
     fn dash_tile(&mut self, ui: &mut egui::Ui, tile: Tile) {
@@ -551,7 +607,6 @@ impl SpaiApp {
             }
         });
         let r = resp.response;
-        self.dash.heights.insert(tile, r.rect.height());
         if tile == Tile::Away {
             return;
         }
@@ -781,12 +836,25 @@ impl SpaiApp {
             ui.label(egui::RichText::new(tr!("Shows the systems around you once your location is known.")).weak());
             return None;
         };
-        let Some(bounds) = crate::map::Bounds::of(&m.pts) else {
-            ui.label(egui::RichText::new(tr!("No map data for this system.")).weak());
-            return None;
+        let w = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, (w * 0.55).clamp(220.0, 310.0)), egui::Sense::click());
+        let inner = rect.shrink2(egui::vec2(40.0, 22.0));
+        // Fewer jumps until neighbouring systems stand far enough apart to read as dots.
+        let mut jumps = MINIMAP_JUMPS;
+        let (pos, far) = loop {
+            let pts: Vec<&crate::store::MapSystem> = m.pts.iter().filter(|s| m.dist.get(&s.id).is_some_and(|d| *d <= jumps)).collect();
+            if pts.is_empty() {
+                ui.label(egui::RichText::new(tr!("No map data for this system.")).weak());
+                return None;
+            }
+            let outside = m.far.iter().chain(m.pts.iter().filter(|s| m.dist.get(&s.id).is_some_and(|d| *d > jumps)));
+            let (pos, far) = spread_layout(&pts, outside, inner);
+            let typical = typical_spacing(&pos);
+            if typical >= MINIMAP_MIN_SPACING || jumps <= 2 {
+                break (pos, far);
+            }
+            jumps -= 1;
         };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 244.0), egui::Sense::click());
-        let pos: HashMap<i64, egui::Pos2> = m.pts.iter().map(|s| (s.id, crate::map::project(s.x, s.z, &bounds, rect.shrink(12.0), 1.0, egui::Vec2::ZERO))).collect();
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals();
         let line = egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.6));
@@ -795,25 +863,18 @@ impl SpaiApp {
                 painter.line_segment([*pa, *pb], line);
             }
         }
+        // Bridges inside the area, and the ones leaving it cut at the edge with where they land.
+        let mut exits: Vec<(i64, egui::Pos2)> = Vec::new();
         for (a, b) in &m.bridges {
-            if let (Some(pa), Some(pb)) = (pos.get(a), pos.get(b)) {
-                let (ca, cb) = spai_ui::star_map::bridge_colors(g, &self.settings.ansiblex_capital, *a, *b, spai_ui::theme::standing::FRIENDLY);
-                spai_ui::star_map::gradient_polyline(&painter, &spai_ui::star_map::arc_polyline(*pa, *pb, spai_ui::star_map::BRIDGE_BOW), ca, cb, 1.5);
-            }
-        }
-        // Region names, faint, where the area spans more than one.
-        let mut regions: HashMap<&str, (egui::Vec2, f32)> = HashMap::new();
-        for (id, p) in &pos {
-            if let Some(i) = g.info_of(*id) {
-                let e = regions.entry(i.region.as_str()).or_insert((egui::Vec2::ZERO, 0.0));
-                e.0 += p.to_vec2();
-                e.1 += 1.0;
-            }
-        }
-        if regions.len() > 1 {
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            for (name, (sum, n)) in &regions {
-                painter.text((*sum / *n).to_pos2(), egui::Align2::CENTER_CENTER, *name, font.clone(), visuals.weak_text_color().gamma_multiply(0.7));
+            let Some(pa) = pos.get(a) else { continue };
+            let Some(pb) = pos.get(b).or_else(|| far.get(b)) else { continue };
+            let (ca, cb) = spai_ui::star_map::bridge_colors(g, &self.settings.ansiblex_capital, *a, *b, spai_ui::theme::standing::FRIENDLY);
+            let arc = spai_ui::star_map::arc_polyline(*pa, *pb, spai_ui::star_map::BRIDGE_BOW);
+            spai_ui::star_map::gradient_polyline(&painter, &arc, ca, cb, 1.5);
+            if !pos.contains_key(b) {
+                if let Some(edge) = arc.iter().take_while(|p| inner.contains(**p)).last() {
+                    exits.push((*b, *edge));
+                }
             }
         }
         let here: std::collections::HashSet<i64> = snap.chars.iter().map(|(_, s, _)| *s).collect();
@@ -850,6 +911,23 @@ impl SpaiApp {
             taken.push(r);
             painter.rect_filled(r, 3.0, backing);
             painter.galley(r.min + egui::vec2(4.0, 1.0), galley, visuals.text_color());
+        }
+        // Where the bridges leaving the area land, faint, at the edge they cross.
+        for (dest, at) in exits {
+            let Some(info) = g.info_of(dest) else { continue };
+            let galley = painter.layout_no_wrap(info.name.clone(), font.clone(), visuals.weak_text_color());
+            let size = galley.size() + egui::vec2(8.0, 2.0);
+            let r = egui::Rect::from_center_size(at, size);
+            let r = r.translate(egui::vec2(
+                (inner.left() - r.left()).max(0.0) + (inner.right() - r.right()).min(0.0),
+                (inner.top() - r.top()).max(0.0) + (inner.bottom() - r.bottom()).min(0.0),
+            ));
+            if taken.iter().any(|t| t.intersects(r)) {
+                continue;
+            }
+            taken.push(r);
+            painter.rect_filled(r, 3.0, backing);
+            painter.galley(r.min + egui::vec2(4.0, 1.0), galley, visuals.weak_text_color());
         }
         let hovered = hover?;
         if let Some(i) = g.info_of(hovered) {
@@ -890,6 +968,12 @@ impl SpaiApp {
                 let name = side.coalition.clone().or_else(|| side.parties.first().map(|p| p.name.clone())).unwrap_or_default();
                 let eff = side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "–".into());
                 ui.horizontal(|ui| {
+                    let logo = side.parties.iter().find_map(|p| match p.kind {
+                        br_core::battle::PartyKind::Alliance => Some(eve_alliance_logo_url(p.id, 20.0)),
+                        br_core::battle::PartyKind::Corporation => Some(eve_corp_logo_url(p.id, 20.0)),
+                        _ => None,
+                    });
+                    super::killmail_ui::eve_image(ui, logo, 20.0);
                     ui.add(egui::Label::new(name).truncate());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(trf!("{lost} lost, {eff} efficiency", lost = side.losses, eff = eff)).weak());
@@ -1153,6 +1237,50 @@ impl SpaiApp {
     }
 }
 
+/// How far apart, in screen points, the 2D map's coordinates are evened out: by rank, mostly.
+/// The game's 2D map packs a region tight and leaves wide gaps between regions, so a few jumps
+/// across a border squeeze each region into a blob; ranks spread the systems over the tile and
+/// keep which lies north, south, east and west of which.
+const SPREAD_BY_RANK: f32 = 0.7;
+
+/// `inside` laid into `rect`, each axis a blend of rank and position; `outside` (where bridges
+/// land) placed by position alone on the same scale, usually past the edge.
+fn spread_layout<'a>(
+    inside: &[&crate::store::MapSystem],
+    outside: impl Iterator<Item = &'a crate::store::MapSystem>,
+    rect: egui::Rect,
+) -> (std::collections::BTreeMap<i64, egui::Pos2>, HashMap<i64, egui::Pos2>) {
+    let axis = |vals: Vec<f64>| -> (Vec<f32>, f64, f64) {
+        let lo = vals.iter().copied().fold(f64::MAX, f64::min);
+        let hi = vals.iter().copied().fold(f64::MIN, f64::max);
+        let span = (hi - lo).max(1.0);
+        let mut order: Vec<usize> = (0..vals.len()).collect();
+        order.sort_by(|a, b| vals[*a].total_cmp(&vals[*b]));
+        let mut rank = vec![0.0f32; vals.len()];
+        let last = (vals.len().max(2) - 1) as f32;
+        for (r, i) in order.into_iter().enumerate() {
+            rank[i] = r as f32 / last;
+        }
+        let out = vals.iter().zip(rank).map(|(v, r)| SPREAD_BY_RANK * r + (1.0 - SPREAD_BY_RANK) * ((v - lo) / span) as f32).collect();
+        (out, lo, span)
+    };
+    let (xs, x0, xs_span) = axis(inside.iter().map(|s| s.x).collect());
+    // Screen y grows down, the map's z grows north.
+    let (zs, z0, zs_span) = axis(inside.iter().map(|s| -s.z).collect());
+    let at = |x: f32, z: f32| egui::pos2(rect.left() + x * rect.width(), rect.top() + z * rect.height());
+    let pos = inside.iter().enumerate().map(|(i, s)| (s.id, at(xs[i], zs[i]))).collect();
+    let far = outside.map(|s| (s.id, at(((s.x - x0) / xs_span) as f32, ((-s.z - z0) / zs_span) as f32))).collect();
+    (pos, far)
+}
+
+/// The median distance from each dot to its nearest neighbour.
+fn typical_spacing(pos: &std::collections::BTreeMap<i64, egui::Pos2>) -> f32 {
+    let pts: Vec<egui::Pos2> = pos.values().copied().collect();
+    let mut nn: Vec<f32> = pts.iter().enumerate().map(|(i, p)| pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, q)| p.distance(*q)).fold(f32::MAX, f32::min)).collect();
+    nn.sort_by(f32::total_cmp);
+    nn.get(nn.len() / 2).copied().unwrap_or(f32::MAX)
+}
+
 const AWAY_SYSTEM: &str = "You brief an EVE Online pilot who just came back to their intel tool. Be brief and concrete: name systems, hulls and jump counts. No greetings, no lists of everything, no advice they did not ask for.";
 
 fn dash_fleet_row(ui: &mut egui::Ui, f: &crate::pings::FleetInfo, at: i64, now: i64, systems: &Option<std::sync::Arc<crate::geo::Systems>>) {
@@ -1247,6 +1375,27 @@ mod tests {
         a.settings.dashboard_tiles.retain(|c| c != "battles");
         a.dash_offer_new_tiles();
         assert!(!a.settings.dashboard_tiles.iter().any(|c| c == "battles"), "offered only once");
+    }
+
+    #[test]
+    fn columns_are_saved_and_only_a_move_changes_them() {
+        let mut a = crate::app::SpaiApp::build(&egui::Context::default(), true);
+        a.settings.dashboard_columns.clear();
+        let first = a.dash_columns();
+        assert_eq!(first, a.dash_columns(), "asking again changes nothing");
+        assert_eq!(first[1], vec![Tile::Fleets, Tile::Minimap, Tile::Battles], "the default layout");
+        a.dash_move(Tile::Battles, Tile::Situation, false);
+        let moved = a.dash_columns();
+        assert_eq!(moved[0][0], Tile::Battles, "dropped above the first tile of the first column");
+        assert!(!moved[1].contains(&Tile::Battles));
+        a.dash_move_to_column(Tile::Battles, 2);
+        assert_eq!(a.dash_columns()[2].last(), Some(&Tile::Battles), "dropped below the last tile");
+        a.settings.dashboard_tiles.retain(|c| c != "battles");
+        assert!(!a.dash_columns().iter().flatten().any(|t| *t == Tile::Battles), "a tile turned off leaves its column");
+        a.settings.dashboard_tiles.push("battles".into());
+        let back = a.dash_columns();
+        assert!(back.iter().flatten().any(|t| *t == Tile::Battles), "and comes back once turned on");
+        assert_eq!(back, a.dash_columns(), "and then stays where it went");
     }
 
     #[test]

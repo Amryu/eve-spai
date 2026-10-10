@@ -532,6 +532,7 @@
   "Downloading {what} from {host}… {got}{of} MB at {rate} MB/s": "正在从 {host} 下载 {what}… {got}{of} MB，{rate} MB/s",
   "Downloading {what}…": "正在下载 {what}…",
   "Drag a rule by its handle, or select it and use the arrows below, to change the order": "拖动规则的手柄，或选中后使用下方箭头来改变顺序",
+  "Drag a tile by its title to move it.": "拖动卡片标题即可移动它。",
   "Drag from one system to another on the map, or right-click a system to start a route.": "在地图上从一个星系拖到另一个星系，或右键点击星系开始规划路线。",
   "Drag onto another squad to move this pilot.": "拖到另一个小队以移动此飞行员。",
   "Drag to move the overlay": "拖动以移动悬浮层",
