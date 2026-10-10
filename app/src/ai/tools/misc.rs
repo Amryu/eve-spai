@@ -298,7 +298,7 @@ static JABBER_PINGS: ToolSpec = ToolSpec {
 
 /// A ping as the assistant reads it: who, when, and each fleet it calls, with systems by name; the
 /// raw text only when nothing could be read out of it.
-fn ping_view(ctx: &Ctx, p: &crate::pings::Ping) -> Value {
+pub(crate) fn ping_view(ctx: &Ctx, p: &crate::pings::Ping) -> Value {
     use crate::pings::{Comms, Formup, Ping};
     let fleet = |f: &crate::pings::FleetInfo| {
         json!({

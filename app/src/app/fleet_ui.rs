@@ -1223,7 +1223,7 @@ impl SpaiApp {
     ///
     /// The same ping to the same group twice inside `PING_REPEAT` is a double click, not a second
     /// ping, and a ping that goes out twice is an FC's mistake broadcast to everyone.
-    fn fleet_send_ping(&mut self, group: &str) {
+    pub(crate) fn fleet_send_ping(&mut self, group: &str) {
         let rendered = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.preview.value.as_ref().map(|p| p.ping.clone())
@@ -1249,6 +1249,7 @@ impl SpaiApp {
                 room,
                 body: crate::fleets::ping::bping(group, &body),
             });
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).ping_requested_at = Some(crate::clock::utc().timestamp());
         }
     }
 

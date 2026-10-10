@@ -42,6 +42,8 @@ pub enum FleetOp {
     Act(crate::fleets::model::FleetId, crate::fleets::backend::Action),
     /// Make the br.evetools report of the fleet open in the app.
     CreateBr(String),
+    /// The start form's Request ping: the ping posted into skirmish_commanders as !bping coord.
+    RequestPing,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

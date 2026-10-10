@@ -272,6 +272,8 @@ pub struct FleetState {
     /// Track was pressed before the FC was fleet boss: the boss check repeats every few seconds
     /// and the fleet starts once it passes.
     pub track_waiting: bool,
+    /// When the start form last posted its ping request into skirmish_commanders.
+    pub ping_requested_at: Option<i64>,
     /// Fleets this app started, by the character that is boss. The active list only knows a fleet
     /// once it has been reloaded, so this covers the gap straight after a start.
     pub started_for: std::collections::HashMap<i64, FleetId>,

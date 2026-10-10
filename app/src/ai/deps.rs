@@ -78,6 +78,8 @@ pub struct AiFacts {
     pub chat_windows: Vec<(u64, Vec<String>)>,
     /// The server of the user's own Jabber address, for addressing someone not met yet.
     pub jabber_domain: String,
+    /// The room ping requests go to, skirmish_commanders unless set otherwise.
+    pub skirmish_room: String,
     /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
     pub opsec: bool,
 }
