@@ -463,7 +463,7 @@ impl Session {
                 // failing quietly every 20 seconds.
                 Err(e) => {
                     if let Some(w) = self.deps.watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == id) {
-                        w.stop("the check failed");
+                        w.stop(spai_ui::tr_noop!("the check failed"));
                     }
                     self.watch_post(id, format!("Stopped watching for {goal}: {e}"), None);
                 }

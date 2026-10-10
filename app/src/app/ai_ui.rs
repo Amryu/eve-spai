@@ -520,7 +520,7 @@ impl SpaiApp {
             if let Some(card) = card {
                 if let (false, ActionKind::KeepWatching(wid)) = (applied, &card.action.kind) {
                     if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *wid) {
-                        w.stop("stopped by you");
+                        w.stop(tr_noop!("stopped by you"));
                     }
                 }
                 let note = if applied { self.ai_apply(&card.action.kind, &card.action.summary) } else { format!("The user dismissed: {}", card.action.summary) };
@@ -716,7 +716,18 @@ impl SpaiApp {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|w| (w.id, w.goal.clone(), w.status(now), w.running(), w.stopped_why().map(|y| format!("Stopped: {y}")).unwrap_or_default()))
+            .map(|w| {
+                let status = match &w.state {
+                    crate::ai::watch::WatchState::Stopped(_) => tr!("Stopped").to_owned(),
+                    crate::ai::watch::WatchState::Asking(_) => tr!("Asking").to_owned(),
+                    crate::ai::watch::WatchState::Active => match w.until {
+                        Some(u) => trf!("{n} min left", n = ((u - now).max(0) + 59) / 60),
+                        None => trf!("{n} found", n = w.hits),
+                    },
+                };
+                let why = w.stopped_why().map(|y| trf!("Stopped: {why}", why = spai_ui::i18n::t_dyn(y))).unwrap_or_default();
+                (w.id, w.goal.clone(), status, w.running(), why)
+            })
             .collect();
         if list.is_empty() {
             return;
@@ -749,7 +760,7 @@ impl SpaiApp {
         if let Some((id, what)) = act {
             let mut ws = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner());
             match what {
-                0 => ws.iter_mut().filter(|w| w.id == id).for_each(|w| w.stop("stopped by you")),
+                0 => ws.iter_mut().filter(|w| w.id == id).for_each(|w| w.stop(tr_noop!("stopped by you"))),
                 1 => ws.iter_mut().filter(|w| w.id == id).for_each(|w| w.resume(now)),
                 _ => ws.retain(|w| w.id != id),
             }
