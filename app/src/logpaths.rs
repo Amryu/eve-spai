@@ -18,6 +18,11 @@ pub fn candidate_log_dirs() -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut dirs = Vec::new();
+    // Where the system says Documents is: moved to another drive, or redirected into OneDrive under
+    // a localized name (OneDrive\文档 on a Chinese Windows), none of which the fixed paths below see.
+    if let Some(docs) = directories::UserDirs::new().and_then(|u| u.document_dir().map(|d| d.to_path_buf())) {
+        dirs.push(docs.join("EVE/logs"));
+    }
 
     #[cfg(target_os = "linux")]
     {
@@ -31,7 +36,16 @@ pub fn candidate_log_dirs() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         dirs.push(home.join("Documents/EVE/logs"));
-        dirs.push(home.join("OneDrive/Documents/EVE/logs"));
+        // Every OneDrive (personal, or "OneDrive - Company"), with Documents under whatever name.
+        if let Ok(rd) = std::fs::read_dir(&home) {
+            for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("OneDrive")) {
+                if let Ok(inner) = std::fs::read_dir(e.path()) {
+                    for d in inner.flatten() {
+                        dirs.push(d.path().join("EVE/logs"));
+                    }
+                }
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     {

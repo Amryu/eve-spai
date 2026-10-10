@@ -358,6 +358,10 @@ pub struct SpaiApp {
     eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
     pub(crate) intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
     watcher_started: bool,
+    /// The chat-log watcher thread is running.
+    intel_watcher_running: bool,
+    /// When the logs folder was last looked for, while it is not found.
+    chat_dir_checked: Option<std::time::Instant>,
     pub(crate) chat_dir: Option<std::path::PathBuf>,
     intel_query: String,
     intel_max_jumps: u32,
@@ -1374,6 +1378,8 @@ impl SpaiApp {
             eve_settings_path,
             intel_state,
             watcher_started: false,
+            intel_watcher_running: false,
+            chat_dir_checked: None,
             chat_dir: None,
             intel_query: String::new(),
             intel_max_jumps: pv.intel_max_jumps,
@@ -2231,24 +2237,41 @@ impl SpaiApp {
             }
         }
 
-        if let Some(dir) = self.chat_dir.clone() {
-            let ships = std::sync::Arc::new(store.ship_index());
-            self.ship_index = Some(ships.clone());
-            crate::watcher::spawn(
-                dir,
-                self.settings.intel_channels.clone(),
-                systems,
-                ships,
-                self.pilots.clone(),
-                self.intel_state.clone(),
-                self.sightings.clone(),
-                self.activity.clone(),
-                self.revivals.clone(),
-                self.intel_inject.clone(),
-                ctx.clone(),
-            );
-        }
+        let _ = systems;
+        self.start_intel_watcher(ctx);
+    }
 
+    /// Starts reading the chat logs once their folder is known. Until then it is looked for again
+    /// every 15 seconds: the EVE client creates it on its first logged chat, which may well be after
+    /// this app started, and a folder set in Settings later counts too.
+    fn start_intel_watcher(&mut self, ctx: &egui::Context) {
+        if self.intel_watcher_running || !self.watcher_started || self.headless {
+            return;
+        }
+        if self.chat_dir.is_none() {
+            if self.chat_dir_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(15)) {
+                return;
+            }
+            self.chat_dir_checked = Some(std::time::Instant::now());
+            self.chat_dir = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
+        }
+        let (Some(dir), Some(store), Some(systems)) = (self.chat_dir.clone(), self.store.as_ref(), self.systems.clone()) else { return };
+        let ships = std::sync::Arc::new(store.ship_index());
+        self.ship_index = Some(ships.clone());
+        crate::watcher::spawn(
+            dir,
+            self.settings.intel_channels.clone(),
+            systems,
+            ships,
+            self.pilots.clone(),
+            self.intel_state.clone(),
+            self.sightings.clone(),
+            self.activity.clone(),
+            self.revivals.clone(),
+            self.intel_inject.clone(),
+            ctx.clone(),
+        );
+        self.intel_watcher_running = true;
     }
 
     /// The intel toolbar's search field. Its own hint text is the floor: a field too narrow to
@@ -3767,6 +3790,7 @@ impl SpaiApp {
         self.ai_perms_window(ctx);
         self.ai_glossary_window(ctx);
         self.ai_feeds_window(ctx);
+        self.start_intel_watcher(ctx);
         self.ai_push_facts(false);
         self.ai_watch_news();
         self.ai_voice_tick();
