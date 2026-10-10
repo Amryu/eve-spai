@@ -78,11 +78,12 @@ pub(crate) fn queue_pub(ctx: &mut Ctx, kind: ActionKind, summary: String) -> Res
 }
 
 fn queue(ctx: &mut Ctx, kind: ActionKind, summary: String) -> Result<Value, String> {
+    let now = kind.immediate(&ctx.facts.ai.auto_actions);
     // Unique across calls too: the MCP server queues each call's actions on their own.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = ctx.now as u64 * 1000 + SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 1000;
     ctx.actions.push(PendingAction { id, kind, summary: summary.clone() });
-    Ok(json!({"status": "waiting for the user to confirm", "action": summary}))
+    Ok(json!({"status": if now { "done; the user lets you do this without asking" } else { "waiting for the user to confirm" }, "action": summary}))
 }
 
 static HIGHLIGHT: ToolSpec = ToolSpec {
@@ -341,9 +342,23 @@ pub enum ChatWindowPick {
 }
 
 impl ActionKind {
-    /// Actions carried out as soon as they are proposed.
-    pub fn immediate(&self) -> bool {
-        matches!(self, ActionKind::OpenChat { .. })
+    /// The Data access key the action falls under, for doing it without asking. None for what
+    /// always asks.
+    pub fn perm_key(&self) -> Option<&'static str> {
+        match self {
+            ActionKind::Highlight(_) | ActionKind::Focus(_) => Some("actions.map"),
+            ActionKind::PlanRoute { .. } => Some("actions.route"),
+            ActionKind::SetDestination { .. } => Some("actions.destination"),
+            ActionKind::AddAlertRule(_) | ActionKind::EditMapData(_) => Some("actions.settings"),
+            ActionKind::SendJabber { broadcast: false, .. } => Some("actions.jabber"),
+            ActionKind::JoinMumble { .. } => Some("actions.mumble"),
+            ActionKind::SendJabber { broadcast: true, .. } | ActionKind::KeepWatching(_) | ActionKind::OpenChat { .. } => None,
+        }
+    }
+
+    /// Carried out as soon as it is proposed: opening a window always, the rest when the user said so.
+    pub fn immediate(&self, auto: &[String]) -> bool {
+        matches!(self, ActionKind::OpenChat { .. }) || self.perm_key().is_some_and(|k| auto.iter().any(|a| a == k))
     }
 }
 
@@ -632,6 +647,21 @@ mod tests {
         assert!(matches!(&actions[0].kind, ActionKind::SendJabber { room: true, broadcast: false, .. }));
         assert!(matches!(&actions[1].kind, ActionKind::SendJabber { broadcast: true, .. }));
         assert!(actions[1].summary.starts_with("BROADCAST"));
+    }
+
+    #[test]
+    fn kinds_the_user_lets_through_run_at_once_and_broadcasts_never_do() {
+        let mut f = facts(&["actions"]);
+        f.ai.auto_actions = vec!["actions.destination".into(), "actions.jabber".into()];
+        let deps = AiDeps::for_tests(f);
+        let (out, err) = run(&deps, "set_destination", json!({"system": "1DQ1-A"}));
+        assert!(!err && out["status"].as_str().unwrap().starts_with("done"), "{out}");
+        let (out, _) = run(&deps, "focus_map", json!({"system": "1DQ1-A"}));
+        assert!(out["status"].as_str().unwrap().starts_with("waiting"), "map actions still ask: {out}");
+        let auto = vec!["actions.jabber".to_owned()];
+        assert!(ActionKind::SendJabber { to: "x".into(), room: true, join: false, body: "hi".into(), broadcast: false }.immediate(&auto));
+        assert!(!ActionKind::SendJabber { to: "x".into(), room: true, join: false, body: "!bping".into(), broadcast: true }.immediate(&auto), "a broadcast always asks");
+        assert!(!ActionKind::KeepWatching(1).immediate(&["actions.settings".into()]));
     }
 
     #[test]

@@ -597,17 +597,19 @@ impl SpaiApp {
         };
         let mut changed = false;
         let mut perms_map = std::mem::take(&mut self.settings.ai.perms);
+        let mut auto = std::mem::take(&mut self.settings.ai.auto_actions);
         let channels = self.settings.intel_channels.clone();
         let keep = Self::dialog_viewport(ctx, "ai_perms", "EVE Spai - Assistant data access", [460.0, 640.0], |ui| {
-            ui.label(egui::RichText::new("The assistant reads only what is ticked. Actions always ask you first.").weak());
+            ui.label(egui::RichText::new("The assistant reads only what is ticked. Actions ask you first unless you let a kind through.").weak());
             ui.add_space(4.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for node in perms::TREE {
-                    changed |= perm_node(ui, node, &mut perms_map, unlocked, &dynamic, &channels, &feeds);
+                    changed |= perm_node(ui, node, &mut perms_map, unlocked, &dynamic, &channels, &feeds, &mut auto);
                 }
             });
         });
         self.settings.ai.perms = perms_map;
+        self.settings.ai.auto_actions = auto;
         if changed {
             self.needs_save = true;
             self.ai_push_facts(true);
@@ -627,6 +629,7 @@ fn perm_node(
     dynamic: &dyn Fn(&str) -> Vec<String>,
     channels: &[String],
     feeds: &[(String, String)],
+    auto: &mut Vec<String>,
 ) -> bool {
     if !perms::visible(node, u) {
         return false;
@@ -649,6 +652,22 @@ fn perm_node(
                 perms::set(map, node.key, on);
                 changed = true;
             }
+            // Actions can be let through without a click, one kind at a time.
+            if on && node.key.starts_with("actions.") {
+                let mut free = auto.iter().any(|a| a == node.key);
+                let shown = if free { "without asking" } else { "asks first" };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| egui::ComboBox::from_id_salt(("ai_auto", node.key)).selected_text(shown).width(130.0).show_ui(ui, |ui| {
+                    let a = ui.menu_value(&mut free, false, "asks first").changed();
+                    let b = ui.menu_value(&mut free, true, "without asking").on_hover_text(if node.key == "actions.jabber" { "Broadcasts (!bping, !bcast) still ask" } else { "" }).changed();
+                    if a || b {
+                        auto.retain(|k| k != node.key);
+                        if free {
+                            auto.push(node.key.to_owned());
+                        }
+                        changed = true;
+                    }
+                }));
+            }
         });
         return changed;
     }
@@ -662,7 +681,7 @@ fn perm_node(
         })
         .body(|ui| {
             for c in node.children {
-                changed |= perm_node(ui, c, map, u, dynamic, channels, feeds);
+                changed |= perm_node(ui, c, map, u, dynamic, channels, feeds, auto);
             }
             let extra: Vec<(String, String)> = match node.key {
                 "intel.chatlogs" => channels.iter().map(|ch| (perms::channel_key(ch), ch.clone())).collect(),

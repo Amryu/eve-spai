@@ -2452,7 +2452,7 @@ pub(crate) fn all() -> Vec<Scene> {
             a.ai_feeds_open = true;
         }));
     }
-    v.push(dialog_scene("dialog_ai_perms", [460.0, 640.0], |a| {
+    v.push(dialog_scene("dialog_ai_perms", [460.0, 900.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.intel_channels = vec!["Delve.Imperium".into(), "Querious.Imperium".into()];
         a.settings.ai.perms.insert("intel".into(), true);
@@ -2463,6 +2463,8 @@ pub(crate) fn all() -> Vec<Scene> {
             crate::ai::feeds::FeedDef { id: 2, name: "The Exceptionally Long-Named Coalition Broadcast Relay For Assorted Spaceship Enthusiasts".into(), ..Default::default() },
         ];
         a.settings.ai.perms.insert("feeds.1".into(), true);
+        a.settings.ai.perms.insert("actions".into(), true);
+        a.settings.ai.auto_actions = vec!["actions.destination".into()];
         a.ai_perms_open = true;
     }));
     v.push(battle_list_scene("battle_list_narrow", [720.0, 800.0]));
