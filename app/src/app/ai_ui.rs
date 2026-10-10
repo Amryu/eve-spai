@@ -347,7 +347,9 @@ impl SpaiApp {
 
         let mut send: Option<String> = None;
         // The tab already sits on the window's bottom margin, so the room below the field is that.
-        let input_frame = egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 0 });
+        // The popped-out window has no such margin, so it gets the same room as above the field.
+        let bottom = if self.ai_in_window { 8 } else { 0 };
+        let input_frame = egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom });
         egui::Panel::bottom("ai_input").frame(input_frame).show_inside(ui, |ui| {
             // The field's height, so the buttons beside it centre on it rather than its top.
             // Last frame's: the field grows with the text, and the buttons follow its middle.

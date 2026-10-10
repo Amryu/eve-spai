@@ -1337,7 +1337,7 @@ fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) 
 /// on the same context and paint egui's "double use of widget ID" error over the dialog.
 /// The Assistant tab with a conversation: a finished answer with its lookups and an action card,
 /// an error, and a turn still being written. Empty shows the first-use page instead.
-fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
+fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool, popped: bool) -> Scene {
     use crate::ai::session::{ActionCard, CardState, Chip, Turn};
     use crate::ai::tools::{ActionKind, PendingAction};
     harness::scratch_profile();
@@ -1401,8 +1401,15 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
             }
             a
         });
-        a.root_chrome(ui);
-        a.root_central(ui, None);
+        if popped {
+            // As the popped-out window draws it: its own panel, no margin of its own.
+            a.ai_in_window = true;
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show_inside(ui, |ui| a.assistant_view(ui));
+            a.ai_in_window = false;
+        } else {
+            a.root_chrome(ui);
+            a.root_central(ui, None);
+        }
     })
 }
 
@@ -2399,9 +2406,10 @@ pub(crate) fn all() -> Vec<Scene> {
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
     v.push(battle_list_scene("battle_list", [1280.0, 800.0]));
-    v.push(assistant_scene("assistant", [1280.0, 800.0], false));
-    v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false));
-    v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true));
+    v.push(assistant_scene("assistant", [1280.0, 800.0], false, false));
+    v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false, false));
+    v.push(assistant_scene("assistant_popout", [560.0, 820.0], false, true));
+    v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true, false));
     v.push(view_scene("assistant_off", View::Assistant, [1024.0, 600.0]));
     v.push({
         harness::scratch_profile();
