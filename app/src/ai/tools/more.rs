@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &DOCTRINES, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &JOIN_MUMBLE];
+    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &DOCTRINES, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &COMMS, &JOIN_MUMBLE];
 
 static JUMP_ROUTE: ToolSpec = ToolSpec {
     name: "jump_route",
@@ -295,58 +295,77 @@ static MUMBLE_NOW: ToolSpec = ToolSpec {
 
 static JOIN_MUMBLE: ToolSpec = ToolSpec {
     name: "join_mumble",
-    description: "Moves the user's Mumble into a channel, for the user to confirm with a click: by a mumble:// or comms link, \
-                  by an op number (Op 4), or by words matching a fleet ping (its FC, fleet or doctrine), whose comms link is used.",
+    description: "Moves the user's Mumble into a channel, after a click unless they let it through: by channel name (Op 11, HD, \
+                  Capital Comms, Standing Comms, Command 4 (Alpha)), by op number, by words matching a fleet ping (its FC, \
+                  fleet or doctrine), or by a mumble:// or gnf.lt link. comms_channels lists every channel known.",
     need: Need::All(&["actions.mumble"]),
     kind: Kind::Action,
-    schema: || schema(json!({"link": {"type": "string"}, "op": {"type": "integer"}, "ping": {"type": "string"}}), &[]),
+    schema: || {
+        schema(
+            json!({"channel": {"type": "string"}, "op": {"type": "integer", "minimum": 1, "maximum": 12}, "ping": {"type": "string"}, "link": {"type": "string"}}),
+            &[],
+        )
+    },
     run: join_mumble,
 };
 
+static COMMS: ToolSpec = ToolSpec {
+    name: "comms_channels",
+    description: "The Mumble channels the app knows a way into: op channels, HD, capital, hellcamp and standing comms, and \
+                  each op's command channel in both command sectors.",
+    need: Need::Any(&["actions.mumble", "jabber.pings"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| Ok(json!(ctx.facts.comms.iter().map(|(n, m, s)| json!({"channel": n, "direct": m.is_some(), "via_short_link": m.is_none() && s.is_some()})).collect::<Vec<_>>())),
+};
+
+/// A channel name as it is compared: lower case, no spaces, "o7" as op 7.
+fn chan_key(s: &str) -> String {
+    let k: String = s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+    if k == "o7" { "op7".into() } else { k }
+}
+
 fn join_mumble(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     use crate::pings::Comms;
-    let mut link = str_arg(v, "link").map(str::to_owned);
-    let mut label = String::new();
-    if link.is_none() {
-        let op = v.get("op").and_then(Value::as_u64);
-        let words: Vec<String> = str_arg(v, "ping").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
-        if op.is_none() && words.is_empty() {
-            return Err("give a link, an op number or words from a fleet ping".into());
-        }
+    let known = |name: &str| -> Option<(String, String)> {
+        let want = chan_key(name);
+        ctx.facts.comms.iter().find(|(n, _, _)| chan_key(n) == want || chan_key(n).starts_with(&want) && want.len() > 3).and_then(|(n, m, s)| m.clone().or(s.clone()).map(|l| (n.clone(), l)))
+    };
+    let picked: Option<(String, String)> = if let Some(l) = str_arg(v, "link") {
+        Some((crate::mumble::channel_path(l).and_then(|p| p.rsplit('/').next().map(str::to_owned)).unwrap_or_else(|| "the linked channel".into()), l.to_owned()))
+    } else if let Some(c) = str_arg(v, "channel") {
+        Some(known(c).ok_or_else(|| format!("no way into a channel called {c} is known; see comms_channels"))?)
+    } else if let Some(n) = v.get("op").and_then(Value::as_u64) {
+        Some(known(&format!("Op {n}")).ok_or_else(|| format!("no link for Op {n} is known"))?)
+    } else if let Some(words) = str_arg(v, "ping") {
+        let words: Vec<String> = words.to_lowercase().split_whitespace().map(str::to_owned).collect();
         let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        let mut hit = None;
         'pings: for p in st.pings.iter().rev() {
             for f in p.fleets() {
-                let Some(Comms::Mumble { channel, link: l }) = &f.comms else { continue };
+                let Some(Comms::Mumble { channel, link }) = &f.comms else { continue };
                 let hay = format!("{} {} {} {}", f.fc, f.fleet.clone().unwrap_or_default(), f.doctrine.clone().unwrap_or_default(), channel).to_lowercase();
-                let op_ok = op.is_none_or(|n| {
-                    let c = channel.to_lowercase();
-                    c == format!("op {n}") || c.starts_with(&format!("op {n} "))
-                });
-                if op_ok && words.iter().all(|w| hay.contains(w.as_str())) {
-                    link = Some(l.clone());
-                    label = format!("{channel}, {}'s fleet", f.fc);
+                if words.iter().all(|w| hay.contains(w.as_str())) {
+                    hit = Some((format!("{channel}, {}'s fleet", f.fc), link.clone()));
                     break 'pings;
                 }
             }
         }
         drop(st);
-    }
-    let link = link.ok_or("no fleet ping names that channel; ask the user for the link")?;
-    let url = if link.starts_with("mumble://") {
-        link.clone()
-    } else if link.starts_with("http") {
-        if !ctx.deps.online {
-            return Err("the comms link has to be opened to find the channel, and the network is not reachable".into());
-        }
-        let client = crate::http::client(10).map_err(|e| e.to_string())?;
-        let body = client.get(&link).send().and_then(|r| r.text()).map_err(|e| e.to_string())?;
-        crate::pings::extract_mumble_url(&body).ok_or("that link does not lead to a Mumble channel")?
+        // The channel the ping names, by the app's own link for it when it has one.
+        Some(match hit {
+            Some((label, link)) => {
+                let chan = label.split(',').next().unwrap_or("").to_owned();
+                known(&chan).map(|(_, l)| (label.clone(), l)).unwrap_or((label, link))
+            }
+            None => return Err("no fleet ping matches those words".into()),
+        })
     } else {
-        return Err("not a Mumble or comms link".into());
+        None
     };
-    let path = crate::mumble::channel_path(&url).unwrap_or_else(|| url.clone());
-    if label.is_empty() {
-        label = path.rsplit('/').next().unwrap_or(&path).to_owned();
+    let (label, url) = picked.ok_or("name a channel, an op number, words from a fleet ping, or a link")?;
+    if !(url.starts_with("mumble://") || url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("not a Mumble or comms link".into());
     }
     super::actions::queue_pub(ctx, super::ActionKind::JoinMumble { url }, format!("Join Mumble: {label}"))
 }
@@ -358,16 +377,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn mumble_is_joined_by_link_or_by_a_pings_op_and_waits_for_a_click() {
-        let deps = AiDeps::for_tests(facts(&["actions.mumble"]));
-        let (out, err) = run(&deps, "join_mumble", json!({"link": "mumble://mumble.example.invalid/Ops/Op%204?title=x"}));
+    fn mumble_is_joined_by_channel_op_ping_or_link_and_waits_for_a_click() {
+        let mut f = facts(&["actions.mumble"]);
+        f.comms = vec![
+            ("Op 11".into(), None, Some("https://gnf.lt/sBIoA65.html".into())),
+            ("Capital Comms".into(), Some("mumble://mumble.example.invalid/Ops/Capital".into()), Some("https://gnf.lt/x.html".into())),
+            ("Command 4 (Alpha)".into(), Some("mumble://mumble.example.invalid/Ops/Command%20Sector%20Alpha/Command%204".into()), None),
+        ];
+        let deps = AiDeps::for_tests(f);
+        let url_of = |out: &serde_json::Value| out["action"].as_str().unwrap_or_default().to_owned();
+        let (out, err) = run(&deps, "join_mumble", json!({"op": 11}));
+        assert!(!err && url_of(&out).contains("Op 11"), "{out}");
+        let (out, err) = run(&deps, "join_mumble", json!({"channel": "capital comms"}));
+        assert!(!err && url_of(&out).contains("Capital"), "{out}");
+        let (out, err) = run(&deps, "join_mumble", json!({"channel": "command 4 alpha"}));
         assert!(!err, "{out}");
         deps.jabber.lock().unwrap().pings = vec![crate::uitest::fixtures::ping_fleet_multi()];
-        let (out, err) = run(&deps, "join_mumble", json!({"op": 5}));
-        assert!(err && out.to_string().contains("not reachable"), "the ping's comms link needs the network: {out}");
-        let (out, err) = run(&deps, "join_mumble", json!({"op": 42}));
-        assert!(err && out.to_string().contains("no fleet ping"), "{out}");
-        let (_, err) = run(&AiDeps::for_tests(facts(&[])), "join_mumble", json!({"link": "mumble://x/y"}));
+        let (out, err) = run(&deps, "join_mumble", json!({"ping": "bridge runner"}));
+        assert!(!err, "a ping's comms link is used when the channel has none known: {out}");
+        let (out, err) = run(&deps, "join_mumble", json!({"channel": "nowhere"}));
+        assert!(err && out.to_string().contains("comms_channels"), "{out}");
+        let (_, err) = run(&AiDeps::for_tests(facts(&[])), "join_mumble", json!({"op": 11}));
         assert!(err, "joining needs its own tick");
     }
 

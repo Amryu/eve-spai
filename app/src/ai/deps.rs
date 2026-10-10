@@ -59,6 +59,8 @@ pub struct AiFacts {
     pub doctrines: Vec<DoctrineFacts>,
     pub route_anchors: Vec<i64>,
     pub route_destination: Option<i64>,
+    /// The comms channels the app knows: (name, mumble:// link when known, gnf.lt link when known).
+    pub comms: Vec<(String, Option<String>, Option<String>)>,
     /// The d-scan last opened: its link and (ship, count).
     pub last_dscan: Option<(String, Vec<(String, u32)>)>,
     pub coalitions: Vec<crate::settings::Coalition>,

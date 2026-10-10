@@ -91,6 +91,7 @@ impl SpaiApp {
             route_anchors: self.map_route_anchors.clone(),
             route_destination: self.route_destination,
             last_dscan: self.ai_last_dscan(),
+            comms: self.comms_directory(),
             setup: crate::ai::deps::Setup {
                 staging: s.rescue_staging_system.clone(),
                 capital: s.ansiblex_capital.clone(),
@@ -177,7 +178,10 @@ impl SpaiApp {
                     }
                 }
             }
-            ActionKind::JoinMumble { url } => crate::mumble::open_url(url),
+            // Through the Fleet tab's own way in: a mumble:// link goes straight to Mumble, a short link
+            // is resolved first and only opened in the browser when that fails.
+            ActionKind::JoinMumble { url } if url.starts_with("mumble://") => crate::mumble::open_url(url),
+            ActionKind::JoinMumble { url } => self.comms_join(crate::fleets::comms::Links { mumble: None, short: Some(url.clone()) }),
             ActionKind::KeepWatching(id) => {
                 let now = crate::clock::utc().timestamp();
                 if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *id) {
