@@ -109,6 +109,50 @@ pub(crate) fn scenes() -> Vec<Scene> {
             let (b, names) = fixtures::real_battle();
             a.seed_battle(b, names);
         }),
+        // A spoken question about the gang in the intel feed, answered with links, a killmail, a
+        // map action waiting for a click and a watch running.
+        showcase("showcase_assistant", View::Assistant, |a| {
+            use crate::ai::session::{ActionCard, CardState, Chip, Turn};
+            use crate::ai::tools::{ActionKind, PendingAction};
+            a.settings.ai.enabled = true;
+            a.settings.ai.voice.stt = crate::ai::config::SttKind::Groq;
+            a.set_ship_names_for_test(&[(22456, "Sabre"), (29990, "Loki"), (32880, "Venture")]);
+            let path: Vec<i64> = ["EKPB-3", "Z182-R", "KDG-TA"].iter().filter_map(|n| a.systems.as_ref().and_then(|g| g.lookup(n)).map(|i| i.id)).collect();
+            let now = crate::clock::utc().timestamp();
+            {
+                let mut ws = a.ai_watches.lock().unwrap();
+                let mut w = crate::ai::watch::Watch::new(1, "Vex Harrow and Kaelen Dray within 3 jumps of A24L-V".into(), Default::default(), vec!["vex harrow".into()], now - 120, Some(now + 3480));
+                w.hits = 1;
+                ws.push(w);
+            }
+            let q = Turn { user: true, voice: true, text: "Where's that Sabre and Loki pair heading?".into(), ..Default::default() };
+            let answer = Turn {
+                text: "**Vex Harrow and Kaelen Dray**, Sabre and Loki, on the EKPB-3 gate 25 seconds ago.\n\n\
+                       - 21:38 killed a Venture [killmail](spai:kill/131000002) in 4M-QXK\n\
+                       - 21:52 intel in Delve.Imperium: \"Sabre Loki EKPB-3 gate\"\n\n\
+                       They are working north towards KDG-TA. Highlight their path?"
+                    .into(),
+                chips: vec![
+                    Chip { name: "track_movement".into(), args: "entity: Vex Harrow, since_minutes: 60".into(), error: None },
+                    Chip { name: "route".into(), args: "from: EKPB-3, to: A24L-V".into(), error: None },
+                    Chip { name: "highlight_systems".into(), args: "systems: [EKPB-3, Z182-R, KDG-TA]".into(), error: None },
+                ],
+                cards: vec![ActionCard {
+                    action: PendingAction { id: 1, kind: ActionKind::Highlight(path), summary: "Highlight EKPB-3, Z182-R, KDG-TA on the map".into() },
+                    state: CardState::Pending,
+                    confirmed: false,
+                }],
+                ..Default::default()
+            };
+            let ask = Turn { user: true, text: "Tell me if they come within 3 jumps of me".into(), ..Default::default() };
+            let watching = Turn {
+                text: "Watching for Vex Harrow and Kaelen Dray within 3 jumps of A24L-V for the next hour.".into(),
+                chips: vec![Chip { name: "create_watch".into(), args: "goal: Vex Harrow and Kaelen Dray within 3 jumps of A24L-V".into(), error: None }],
+                ..Default::default()
+            };
+            let ctx = egui::Context::default();
+            crate::app::ai_ui::seed_ai_view(a, &ctx, vec![q, answer, ask, watching]);
+        }),
         // A gate route across the region, drawn on the map with the Route dock beside it.
         showcase("showcase_route", View::Map, |a| {
             let Some(g) = a.systems.clone() else { return };

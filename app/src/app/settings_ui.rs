@@ -372,7 +372,9 @@ impl SpaiApp {
     /// The language dropdown: the system's language first, then each one in its own name.
     pub(crate) fn language_picker(&mut self, ui: &mut egui::Ui) -> bool {
         let name_of = |code: &str| spai_ui::i18n::LANGUAGES.iter().find(|(c, _)| *c == code).map_or("English", |(_, n)| *n);
-        let auto = trf!("System ({lang})", lang = name_of(&spai_ui::i18n::system_language()));
+        // Renders read the same on every machine, whatever its system language.
+        let system = if cfg!(test) { "en".to_owned() } else { spai_ui::i18n::system_language() };
+        let auto = trf!("System ({lang})", lang = name_of(&system));
         let current = if self.settings.language.is_empty() { auto.clone() } else { name_of(&self.settings.language).to_owned() };
         let mut changed = false;
         egui::ComboBox::from_id_salt("settings_language").selected_text(current).show_ui(ui, |ui| {

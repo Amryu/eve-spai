@@ -4,11 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>EVE Spai, intel and wormhole tool for EVE Online</title>
-<meta name="description" content="EVE Spai reads your intel channels, maps hostiles, tracks wormhole chains, looks up locals and builds battle reports. Built by and for the Imperium." />
+<meta name="description" content="EVE Spai reads your intel channels, maps hostiles, tracks wormhole chains, looks up locals, builds battle reports and has an assistant you can ask by voice. Built by and for the Imperium." />
 <link rel="icon" type="image/png" href="eve-spai.png" />
 <meta property="og:title" content="EVE Spai" />
 <meta property="og:description" content="Intel, maps and wormholes for EVE Online, built by and for the Imperium." />
-<meta property="og:image" content="img/og.png" />
+<meta property="og:image" content="img/og.png?v=4" />
 <meta name="twitter:card" content="summary_large_image" />
 <style>
   :root {
@@ -141,7 +141,7 @@
   .feature li strong { color: var(--text); font-weight: 600; }
   .note { border-left: 2px solid var(--red); padding-left: 12px; }
 
-  .also { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 10px; }
+  .also { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 10px; }
   .also div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
   .also h4 { margin: 0 0 4px; font-size: 15.5px; }
   .also p { margin: 0; color: var(--muted); font-size: 14px; }
@@ -197,8 +197,8 @@
     <img class="logo" src="eve-spai.png" alt="EVE Spai logo" width="96" height="96" />
     <h1>EVE&nbsp;Spai<span class="dot">.</span></h1>
     <p class="tag">Intel, maps and wormholes for EVE Online, built by and for the <span class="imperium">Imperium</span>.</p>
-    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste and turns nearby kills into battle reports. Free and open source.</p>
-    <div><span class="alpha">Alpha &middot; in active development</span></div>
+    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste, turns nearby kills into battle reports and answers your questions by voice. Free and open source.</p>
+    <div><span class="alpha">Version 1.0 &middot; in active development</span></div>
 
     <div class="download">
       <a class="btn primary big" id="dlBtn" href="https://github.com/Amryu/eve-spai/releases/latest">
@@ -233,7 +233,7 @@
   </header>
 
   <div class="hero-shot">
-    <img class="shot" src="img/map.webp" width="1920" height="1200" alt="The star map with intel lighting up systems in Insmother, jump bridges drawn between them" data-caption="The star map: intel lights up systems as it is reported, jump bridges drawn with their Ansiblex zones." />
+    <img class="shot" src="img/map.webp?v=4" width="1920" height="1200" alt="The star map with intel lighting up systems in Insmother, jump bridges drawn between them" data-caption="The star map: intel lights up systems as it is reported, jump bridges drawn with their Ansiblex zones." />
   </div>
 
   <main class="wrap">
@@ -253,8 +253,8 @@
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/intel.webp" loading="lazy" width="1920" height="1200" alt="The intel feed with hostile reports as cards" data-caption="The intel feed: each report as a card with jumps from you, hulls and pilots." />
-          <img class="shot small" src="img/alert.webp" loading="lazy" width="840" height="225" alt="The alert window with two hostile reports" data-caption="The alert window sits over the game while you play." />
+          <img class="shot" src="img/intel.webp?v=4" loading="lazy" width="1920" height="1200" alt="The intel feed with hostile reports as cards" data-caption="The intel feed: each report as a card with jumps from you, hulls and pilots." />
+          <img class="shot small" src="img/alert.webp?v=4" loading="lazy" width="840" height="225" alt="The alert window with two hostile reports" data-caption="The alert window sits over the game while you play." />
         </div>
       </div>
 
@@ -270,7 +270,7 @@
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/route.webp" loading="lazy" width="1920" height="1200" alt="A planned gate route across Insmother with the route panel" data-caption="A gate route across Insmother, the Route panel beside it." />
+          <img class="shot" src="img/route.webp?v=4" loading="lazy" width="1920" height="1200" alt="A planned gate route across Insmother with the route panel" data-caption="A gate route across Insmother, the Route panel beside it." />
         </div>
       </div>
 
@@ -287,10 +287,10 @@
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/wormholes.webp" loading="lazy" width="1920" height="1200" alt="The wormhole map with several chains" data-caption="The wormhole map: line colour is time left, the pattern is mass left." />
+          <img class="shot" src="img/wormholes.webp?v=4" loading="lazy" width="1920" height="1200" alt="The wormhole map with several chains" data-caption="The wormhole map: line colour is time left, the pattern is mass left." />
           <div class="shots two">
-            <img class="shot small" src="img/signatures-thumb.webp" data-full="img/signatures.webp" loading="lazy" width="640" height="400" alt="The signature browser" data-caption="The signature browser: every pasted signature, searchable." />
-            <img class="shot small" src="img/scan_route-thumb.webp" data-full="img/scan_route.webp" loading="lazy" width="640" height="1280" alt="A scan route for two scouts" data-caption="A scan route split between two scouts." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
+            <img class="shot small" src="img/signatures-thumb.webp?v=4" data-full="img/signatures.webp?v=4" loading="lazy" width="640" height="400" alt="The signature browser" data-caption="The signature browser: every pasted signature, searchable." />
+            <img class="shot small" src="img/scan_route-thumb.webp?v=4" data-full="img/scan_route.webp?v=4" loading="lazy" width="640" height="1280" alt="A scan route for two scouts" data-caption="A scan route split between two scouts." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
           </div>
         </div>
       </div>
@@ -306,7 +306,7 @@
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/lookup.webp" loading="lazy" width="2160" height="1200" alt="The local lookup table" data-caption="A pasted local, looked up." />
+          <img class="shot" src="img/lookup.webp?v=4" loading="lazy" width="2160" height="1200" alt="The local lookup table" data-caption="A pasted local, looked up." />
         </div>
       </div>
 
@@ -317,7 +317,7 @@
           <p>Kills near you cluster into battles on their own: sides, efficiency, losses and hulls worked out. Split an engagement, move a group to the other side or scrub a stray kill, then share it as a link on eve-spai.com.</p>
         </div>
         <div class="shots">
-          <img class="shot" src="img/battle.webp" loading="lazy" width="1920" height="1200" alt="A battle report with three sides" data-caption="A real fight in F-5WYK, three sides worked out from the killmails." />
+          <img class="shot" src="img/battle.webp?v=4" loading="lazy" width="1920" height="1200" alt="A battle report with three sides" data-caption="A real fight in F-5WYK, three sides worked out from the killmails." />
         </div>
       </div>
 
@@ -333,8 +333,26 @@
           </ul>
         </div>
         <div class="shots">
-          <img class="shot" src="img/jabber.webp?v=3" loading="lazy" width="1920" height="1200" alt="The Jabber view with the fleet ping feed" data-caption="The fleet ping feed in the Jabber view." />
-          <img class="shot small" src="img/ping.webp?v=3" loading="lazy" width="840" height="285" alt="The fleet ping window" data-caption="The ping window over the game." />
+          <img class="shot" src="img/jabber.webp?v=4" loading="lazy" width="1920" height="1200" alt="The Jabber view with the fleet ping feed" data-caption="The fleet ping feed in the Jabber view." />
+          <img class="shot small" src="img/ping.webp?v=4" loading="lazy" width="840" height="285" alt="The fleet ping window" data-caption="The ping window over the game." />
+        </div>
+      </div>
+
+      <div class="feature">
+        <div class="text">
+          <div class="rank">07</div>
+          <h3>Assistant</h3>
+          <p>Ask about the situation in plain words, typed or spoken: where a gang went, what is near you, the fastest safe route home. It reads the same intel, kills, maps and pings you see and answers in a few lines, with systems, ships and killmails linked.</p>
+          <ul>
+            <li><strong>Talk to it:</strong> push to talk while you play and hear the answer; speech can run on your own machine.</li>
+            <li><strong>Your model:</strong> Claude, OpenAI, Gemini, a local model through Ollama or LM Studio, or your Claude or ChatGPT subscription.</li>
+            <li><strong>You decide what it reads:</strong> tick what it may see; Jabber and intel only ever go to the model you picked.</li>
+            <li><strong>Watches:</strong> ask it to keep an eye on a gang or a system and it speaks up when something matches.</li>
+            <li><strong>Asks before it acts:</strong> map highlights, routes, Jabber messages and fleet actions wait for your yes.</li>
+          </ul>
+        </div>
+        <div class="shots">
+          <img class="shot" src="img/assistant.webp?v=4" loading="lazy" width="1920" height="1200" alt="The assistant answering where a pair of hostiles went, with linked systems, a killmail and a watch running" data-caption="Asked by voice: where a pair went, the killmail linked, a map highlight waiting for a click and a watch running." />
         </div>
       </div>
 
@@ -343,6 +361,8 @@
         <div><h4>Phone web view</h4><p>Intel, map and routes on your phone or a second screen, on your own network.</p></div>
         <div><h4>D-scan sharing</h4><p>A d-scan on the clipboard becomes a link to share in one click.</p></div>
         <div><h4>Light on resources</h4><p>One native window, no browser engine, a few hundred megabytes of memory.</p></div>
+        <div><h4>In your language</h4><p>English, Deutsch, Español, Français, Русский and 中文, ship names too if you like.</p></div>
+        <div><h4>Map over the game</h4><p>A see-through map laid over EVE, on top only while the game is.</p></div>
       </div>
     </section>
 
@@ -358,13 +378,14 @@
           <li><strong>Map layers</strong>Sovereignty by alliance or coalition, activity, jump bridges, zones, camps and more.</li>
           <li><strong>Jump bridges and zones</strong>Paste your network, set the capital and the Ansiblex zone routes may use.</li>
           <li><strong>Intel channels</strong>Pick yours or start from a coalition pack; turn characters off one by one.</li>
+          <li><strong>Language</strong>Six languages to start with, asked for when you set up and changed any time.</li>
           <li><strong>Wormhole routes</strong>Which kinds of hole routes may use, and how much mass, time and size they need.</li>
         </ul>
         <div class="shots">
-          <img class="shot" src="img/alert_rules.webp" loading="lazy" width="1920" height="1200" alt="The alert rules editor" data-caption="The alert rules editor." />
+          <img class="shot" src="img/alert_rules.webp?v=4" loading="lazy" width="1920" height="1200" alt="The alert rules editor" data-caption="The alert rules editor." />
           <div class="shots two">
-            <img class="shot small" src="img/settings-thumb.webp" data-full="img/settings.webp" loading="lazy" width="640" height="400" alt="The settings view" data-caption="Settings: themes, sounds, paths and more." />
-            <img class="shot small" src="img/layers-thumb.webp" data-full="img/layers.webp" loading="lazy" width="640" height="1600" alt="The map layers panel" data-caption="The map's layers." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
+            <img class="shot small" src="img/settings-thumb.webp?v=4" data-full="img/settings.webp?v=4" loading="lazy" width="640" height="400" alt="The settings view" data-caption="Settings: themes, sounds, paths and more." />
+            <img class="shot small" src="img/layers-thumb.webp?v=4" data-full="img/layers.webp?v=4" loading="lazy" width="640" height="1600" alt="The map layers panel" data-caption="The map's layers." style="aspect-ratio: 16 / 10; object-fit: cover; object-position: top;" />
           </div>
         </div>
       </div>
@@ -376,9 +397,9 @@
     </section>
 
     <section id="feedback" class="narrow">
-      <h2>Alpha and feedback</h2>
+      <h2>Feedback</h2>
       <div class="card">
-        <p>EVE Spai is alpha software under active development. Things will break. Feedback and bug reports are welcome.</p>
+        <p>EVE Spai is under active development. Ideas, feedback and bug reports are welcome.</p>
         <div class="buttons">
           <a class="btn primary" href="https://discord.gg/u4bDqB9rjn">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.27 5.33A16.6 16.6 0 0015.1 4l-.2.4a14 14 0 014 2 13.6 13.6 0 00-11.8 0c1.1-.86 2.5-1.55 4-2L10.9 4a16.6 16.6 0 00-4.17 1.33C3.6 9.96 2.7 14.5 3.16 18.95A16.7 16.7 0 008.3 21.5l.45-.65a10.9 10.9 0 01-1.74-.84l.43-.32a11.7 11.7 0 0010.1 0l.43.32c-.55.33-1.13.6-1.74.84l.45.65a16.6 16.6 0 005.13-2.55c.5-5.1-.83-9.6-2.32-13.62zM9.5 16c-.83 0-1.5-.76-1.5-1.7 0-.93.66-1.7 1.5-1.7s1.5.77 1.5 1.7c0 .94-.67 1.7-1.5 1.7zm5 0c-.83 0-1.5-.76-1.5-1.7 0-.93.67-1.7 1.5-1.7s1.5.77 1.5 1.7c0 .94-.67 1.7-1.5 1.7z"/></svg>
