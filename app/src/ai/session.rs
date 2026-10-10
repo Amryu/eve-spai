@@ -130,6 +130,9 @@ pub enum Command {
     /// The user applied or dismissed an action card; the note tells the model what happened.
     ActionResult { id: u64, applied: bool, note: String },
     NewChat,
+    /// A one-off question outside the chat (the dashboard's away summary); the answer, or why there
+    /// is none, goes back on `reply`.
+    Brief { system: &'static str, prompt: String, reply: std::sync::mpsc::Sender<Result<String, String>> },
 }
 
 pub type ProviderFactory = Box<dyn Fn(&AiFacts) -> Result<Box<dyn Provider>, String> + Send>;
@@ -188,6 +191,13 @@ impl Session {
                 self.notes.push(note);
             }
             Command::Send { text, voice } => self.ask(text, voice, store),
+            Command::Brief { system, prompt, reply } => {
+                let now = crate::clock::utc().timestamp();
+                let _ = reply.send(self.once(system, &prompt, 500, now));
+                if let Some(c) = &self.repaint {
+                    c.request_repaint();
+                }
+            }
         }
     }
 
@@ -550,6 +560,13 @@ impl Session {
 
     /// Asks the model whether `items` are what the watch is after. The message when they are.
     fn judge(&mut self, goal: &str, items: &[String], now: i64) -> Result<Option<String>, String> {
+        let text = self.once(super::watch::JUDGE_SYSTEM, &super::watch::judge_prompt(goal, items), 400, now)?;
+        Ok(super::watch::parse_verdict(&text))
+    }
+
+    /// One question in its own conversation, with no tools, on the cheaper watch model where one
+    /// is set. Counts against the caps like any other call.
+    fn once(&mut self, system: &str, prompt: &str, max_tokens: u32, now: i64) -> Result<String, String> {
         let facts = self.deps.facts();
         self.within_caps(&facts, now)?;
         let mut provider = (self.make)(&facts)?;
@@ -560,17 +577,17 @@ impl Session {
             super::config::ProviderKind::Anthropic if !facts.ai.watch_model.trim().is_empty() => facts.ai.watch_model.clone(),
             _ => model_of(&facts).0,
         };
-        let msgs = vec![Msg::user(&super::watch::judge_prompt(goal, items))];
+        let msgs = vec![Msg::user(prompt)];
         // Its own conversation each time, so a CLI backend does not mix checks into the chat.
         let conv = super::mcp::new_token();
         let req = Request {
-            system_static: super::watch::JUDGE_SYSTEM,
+            system_static: system,
             system_dynamic: "",
             msgs: &msgs,
             tools: &[],
             model: &model,
             effort: "",
-            max_tokens: 400,
+            max_tokens,
             conv: &conv,
             mcp: self.mcp.as_ref().map(|m| (m.port, m.token.as_str())),
         };
@@ -589,7 +606,7 @@ impl Session {
             v.usage.input += usage.input;
             v.usage.output += usage.output;
         });
-        Ok(super::watch::parse_verdict(&text))
+        Ok(text)
     }
 }
 

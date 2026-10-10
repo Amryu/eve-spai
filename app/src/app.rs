@@ -188,6 +188,7 @@ mod notes_ui;
 mod dscan_update;
 pub(crate) mod wormholes_ui;
 mod views;
+pub(crate) mod dashboard;
 mod lookup_ui;
 mod web_glue;
 mod settings_ui;
@@ -684,6 +685,7 @@ pub struct SpaiApp {
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     dscan_view: Option<DscanView>,
     pub(crate) wh_cache: Vec<crate::wormholes::Wormhole>,
+    pub(crate) dash: dashboard::DashState,
     wh_reloaded: Option<std::time::Instant>,
     wh_overlay: WhOverlay,
     /// The add/edit form, while it is open.
@@ -1625,6 +1627,7 @@ impl SpaiApp {
             dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
             dscan_view: None,
             wh_cache: Vec::new(),
+            dash: Default::default(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
             wh_form: None,
@@ -4111,6 +4114,7 @@ impl eframe::App for SpaiApp {
         if self.fleet_on() {
             self.fleet_track_tick(&ctx);
         }
+        self.dash_track_focus(&ctx);
         ft.mark("fleet_unlock_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);

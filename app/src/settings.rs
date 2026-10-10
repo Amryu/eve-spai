@@ -294,6 +294,12 @@ pub struct Settings {
     /// Systems the wormhole map's Routes panel measures from the selected system.
     #[serde(default)]
     pub wh_route_pins: Vec<String>,
+    /// The dashboard's tiles in order, by `dashboard::Tile::code`.
+    #[serde(default = "default_dashboard_tiles")]
+    pub dashboard_tiles: Vec<String>,
+    /// The dashboard timeline's filter, a `dashboard::Kind` code; empty for everything.
+    #[serde(default)]
+    pub dashboard_timeline: String,
     /// The least mass a hole on a route may have left: a `Mass` code, empty for any.
     #[serde(default)]
     pub wh_route_min_mass: String,
@@ -697,6 +703,10 @@ pub(crate) use spai_ui::wh_graph::WH_PIN_JUMPS_MAX;
 
 fn default_wh_pin_jumps() -> u32 {
     20
+}
+
+pub(crate) fn default_dashboard_tiles() -> Vec<String> {
+    ["away", "situation", "fleets", "timeline", "minimap"].map(String::from).to_vec()
 }
 
 fn default_wh_route_kinds() -> Vec<String> {
@@ -1594,6 +1604,8 @@ impl Default for Settings {
             wh_ask: true,
             wh_route_kinds: default_wh_route_kinds(),
             wh_route_pins: Vec::new(),
+            dashboard_tiles: default_dashboard_tiles(),
+            dashboard_timeline: String::new(),
             wh_route_min_mass: String::new(),
             wh_route_min_time: String::new(),
             wh_route_min_size: String::new(),

@@ -62,9 +62,13 @@ fn pilot_ids() -> std::collections::HashMap<String, i64> {
 
 /// The app in `view`, the player in [`HOME`] in Insmother, the intel feed filled.
 fn showcase(name: &'static str, view: View, setup: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
+    showcase_sized(name, view, SIZE, setup)
+}
+
+fn showcase_sized(name: &'static str, view: View, size: [f32; 2], setup: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, SIZE, move |ui| {
+    Scene::ui(name, size, move |ui| {
         let app = app.get_or_insert_with(|| {
             let region = fixtures::insmother();
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
@@ -100,6 +104,10 @@ pub(crate) fn scenes() -> Vec<Scene> {
         lookup(),
         showcase("showcase_map", View::Map, |_| {}),
         showcase("showcase_intel", View::Intel, |_| {}),
+        showcase("showcase_dashboard", View::Dashboard, dashboard_setup),
+        // The whole dashboard in frame, for the layout checks.
+        showcase_sized("showcase_dashboard_tall", View::Dashboard, [1280.0, 1300.0], dashboard_setup),
+        showcase_sized("showcase_dashboard_narrow", View::Dashboard, [720.0, 2000.0], dashboard_setup),
         // Paths as a Windows pilot's would read, not this machine's.
         showcase("showcase_settings", View::Settings, |a| {
             a.settings.eve_logs_dir = r"C:\Users\Pilot\Documents\EVE\logs".into();
@@ -216,6 +224,39 @@ fn evening_pings() -> Vec<crate::pings::Ping> {
         ping(9 * 60, "Svipul roam through the backyard, Kirins and Scalpels welcome", "Mira Ostwald", "C-J6MT", PapType::Peacetime, "Op 9", "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"),
         ping(23 * 60, "Ihub timer in Z182-R, we need every Ferox", "Dain Morrow", "C-J6MT", PapType::Strategic, "Op 2", "Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)"),
     ]
+}
+
+/// The dashboard after an hour away: a second character docked up, kills and a battle nearby, two
+/// fleets pinged and two alerts fired.
+fn dashboard_setup(a: &mut crate::app::SpaiApp) {
+    let now = fixtures::now();
+    let g = a.systems.clone().expect("systems");
+    let id = |n: &str| g.lookup(n).map(|i| i.id).expect("system");
+    a.characters.push(crate::store::CharacterRow { id: 2_112_000_901, name: "Tavik Oron".into(), expires_at: 0, scopes: String::new() });
+    a.player.lock().unwrap().locations.insert("Tavik Oron".into(), (id("4M-QXK"), true));
+    a.settings.jabber_enabled = true;
+    a.jabber.lock().unwrap().pings = evening_pings();
+    let (mut b, names) = fixtures::real_battle();
+    let shift = now - 40 * 60 - b.end;
+    b.start += shift;
+    b.end += shift;
+    for e in &mut b.engagements {
+        e.time += shift;
+    }
+    let mut kills: Vec<br_core::battle::Engagement> = b.engagements.iter().take(3).cloned().collect();
+    for (k, (sys, ago)) in kills.iter_mut().zip([("WF4C-8", 6 * 60), ("4M-QXK", 18 * 60), ("RQN-OO", 31 * 60)]) {
+        k.system_id = id(sys);
+        k.system_name = sys.into();
+        k.time = now - ago;
+    }
+    let ships: Vec<(i64, &str)> = kills.iter().filter_map(|k| names.get(&k.victim_ship).map(|n| (k.victim_ship, n.as_str()))).collect();
+    a.seed_battle_list(vec![b], names.clone());
+    a.seed_dashboard(
+        kills,
+        &ships,
+        vec![(now - 25, "Sabre Loki on the EKPB-3 gate, 1 jump".into()), (now - 70, "12 hostile in 4M-QXK, 3 jumps".into())],
+        Some((now - 62 * 60, now)),
+    );
 }
 
 /// Room names as they read from the new home.
