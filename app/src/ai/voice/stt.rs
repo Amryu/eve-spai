@@ -71,7 +71,7 @@ pub fn transcribe(cfg: &SttCfg, pcm: &[i16], lang: &str, hint: &str) -> anyhow::
 /// systems near the user. Kept short; recognisers only read the first couple of hundred tokens.
 pub fn hint(glossary_terms: &[String], systems: &[String]) -> String {
     // Comms channels first: "op 11" is otherwise heard as "upper level" or "set up 11".
-    const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms";
+    const OPS: &str = "Op 1, Op 2, Op 3, Op 4, Op 5, Op 6, Op 7, Op 8, Op 9, Op 10, Op 11, Op 12, op11, Capital Comms, battle report, battle reports, BR, killmail";
     let mut words: Vec<&str> = vec![OPS];
     words.extend(systems.iter().map(String::as_str).take(30));
     words.extend(glossary_terms.iter().map(String::as_str).take(40));

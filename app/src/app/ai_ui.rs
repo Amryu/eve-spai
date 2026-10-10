@@ -51,6 +51,7 @@ impl SpaiApp {
                 alerts: self.recent_alerts.clone(),
                 standings: self.standings.clone(),
                 jump_skills: self.jump_skills.clone(),
+                battle_cache: Default::default(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -89,6 +90,7 @@ impl SpaiApp {
             alert_rules: s.alerts.rules.clone(),
             doctrines: self.ai_doctrine_facts(),
             route_anchors: self.map_route_anchors.clone(),
+            battle_break_secs: s.battle_break_secs,
             route_destination: self.route_destination,
             last_dscan: self.ai_last_dscan(),
             comms: self.comms_directory(),

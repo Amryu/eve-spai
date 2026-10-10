@@ -115,8 +115,8 @@ fn kills(ctx: &mut Ctx, v: &Value, default_min: u64, max_min: u64) -> Result<Val
 
 static BATTLES: ToolSpec = ToolSpec {
     name: "battle_reports",
-    description: "Battles the app has clustered from kills in the watched area: systems, time span, sides with their groups, \
-                  kills, losses and ISK lost.",
+    description: "The latest battles from the live kill feed of the last day. For older battles and searching, as the Battles \
+                  tab shows them, use search_battles.",
     need: Need::All(&["battles"]),
     kind: Kind::Read,
     schema: || schema(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 20}}), &[]),
@@ -163,7 +163,7 @@ static BATTLE_DETAIL: ToolSpec = ToolSpec {
     run: |ctx, v| {
         let id = v.get("battle_id").and_then(Value::as_i64).ok_or("which battle?")?;
         let per = u64_arg(v, "pilots_per_side", 40, 150) as usize;
-        let list = ctx.deps.battles.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let list = super::search::all_battles(ctx, 0);
         let b = list.iter().find(|b| b.engagements.iter().any(|e| e.kill_id == id)).ok_or("no battle with that id; it may have aged out")?;
         let names = ctx.store.map(super::intel::ship_names).unwrap_or_default();
         let ship = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("type {id}"));

@@ -27,6 +27,8 @@ pub struct AiDeps {
     pub opsec: Arc<std::sync::atomic::AtomicBool>,
     /// The alerts the app raised: when and what.
     pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
+    /// Battles clustered from the stored kills for the assistant: when built, from when, the battles.
+    pub battle_cache: Arc<Mutex<Option<(i64, i64, Vec<br_core::battle::Battle>)>>>,
     /// Jump Drive Calibration and Jump Fuel Conservation of the active character, when read.
     pub jump_skills: crate::esi::SharedJumpSkills,
     /// Standings from the user's contacts, by character, corporation or alliance id.
@@ -58,6 +60,8 @@ pub struct AiFacts {
     pub setup: Setup,
     pub doctrines: Vec<DoctrineFacts>,
     pub route_anchors: Vec<i64>,
+    /// Quiet seconds that split one battle into two, as the Battles tab uses.
+    pub battle_break_secs: i64,
     pub route_destination: Option<i64>,
     /// The comms channels the app knows: (name, mumble:// link when known, gnf.lt link when known).
     pub comms: Vec<(String, Option<String>, Option<String>)>,
@@ -134,6 +138,7 @@ impl AiDeps {
             alerts: Default::default(),
             standings: Default::default(),
             jump_skills: Default::default(),
+            battle_cache: Default::default(),
             online: false,
         }
     }

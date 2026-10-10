@@ -213,8 +213,8 @@ impl SpaiApp {
                 .map(|s| {
                     // Bounded by the retention window: the whole table can be hundreds of MB of
                     // JSON, and the prune that bounds it runs asynchronously.
-                    let since = crate::clock::utc().timestamp()
-                        - crate::store::ENGAGEMENT_RETENTION_SECS;
+                    let days = s.load_settings().map(|x| x.retention.kills_nearby).unwrap_or(30);
+                    let since = if days >= crate::settings::Retention::FOREVER { 0 } else { crate::clock::utc().timestamp() - days.max(1) as i64 * 86_400 };
                     let engs = s.load_engagements(since);
                     let overrides = s.load_battle_overrides();
                     br_core::battle::cluster(

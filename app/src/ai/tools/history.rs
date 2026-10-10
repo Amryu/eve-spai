@@ -103,7 +103,8 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
                 "region": {"type": "string"},
                 "alliance": {"type": "string", "description": "Name or shorthand"},
                 "days": {"type": "integer", "minimum": 1, "maximum": 365},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 40}
+                "limit": {"type": "integer", "minimum": 1, "maximum": 40},
+                "offset": {"type": "integer", "minimum": 0, "description": "Skip this many of the latest kills, to page"}
             }),
             &[],
         )
@@ -155,6 +156,7 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
         let ally_ids: Vec<i64> = top_ally.iter().take(8).map(|(a, _)| *a).collect();
         let names = alliance_names(ctx, &ally_ids);
         let limit = u64_arg(v, "limit", 15, 40) as usize;
+        let offset = v.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
         Ok(json!({
             "alliance": alliance.map(|a| a.1),
             "kills": kills.len(),
@@ -162,7 +164,8 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
             "top_systems": top_sys.iter().take(8).map(|(s, n)| json!({"system": ctx.system_name(*s), "kills": n})).collect::<Vec<_>>(),
             "attacker_ships": top_hulls.iter().take(12).map(|(s, n)| json!({"ship": ships.get(s).cloned().unwrap_or_else(|| format!("type {s}")), "kills": n})).collect::<Vec<_>>(),
             "top_attacking_alliances": top_ally.iter().take(8).map(|(a, n)| json!({"alliance": names.get(a).cloned().unwrap_or_else(|| format!("alliance {a}")), "kills": n})).collect::<Vec<_>>(),
-            "latest": kills.iter().take(limit).map(|k| json!({
+            "next_offset": (offset + limit < kills.len()).then_some(offset + limit),
+            "latest": kills.iter().skip(offset).take(limit).map(|k| json!({
                 "kill_id": k.kill_id, "when": eve_time(k.time), "age": fmt_age(ctx.now, k.time), "system": ctx.system_name(k.system_id),
                 "ship": ships.get(&k.ship_type_id).cloned().unwrap_or_else(|| format!("type {}", k.ship_type_id)),
                 "isk_millions": (k.value / 1e6).round(), "attackers": k.attackers, "on_gate": k.on_gate,
