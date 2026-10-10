@@ -1324,6 +1324,7 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool) -> Scene {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.ai.enabled = true;
+            a.settings.ai.voice.stt = crate::ai::config::SttKind::Groq;
             a.view = View::Assistant;
             a.systems = Some(fixtures::systems());
             a.set_ship_names_for_test(&[(12015, "Muninn"), (22456, "Sabre"), (12034, "Hound")]);

@@ -300,10 +300,17 @@ impl SpaiApp {
         });
 
         let mut send: Option<String> = None;
-        egui::Panel::bottom("ai_input").show_inside(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+        // The tab already sits on the window's bottom margin, so the room below the field is that.
+        let input_frame = egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 0 });
+        egui::Panel::bottom("ai_input").frame(input_frame).show_inside(ui, |ui| {
+            // The field's height, so the buttons beside it centre on it rather than its top.
+            // Last frame's: the field grows with the text, and the buttons follow its middle.
+            let h_id = egui::Id::new("ai_input_h");
+            // No spacing after the row: the panel's margin is all the room below it.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let field_h = ui.data(|d| d.get_temp::<f32>(h_id)).unwrap_or(2.0 * ui.text_style_height(&egui::TextStyle::Body) + 4.0);
+            {
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), field_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if busy {
                         if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
                             handle.stop();
@@ -341,14 +348,17 @@ impl SpaiApp {
                         .desired_width(ui.available_width())
                         .hint_text("Ask about intel, kills, routes, wormholes\u{2026} (Enter sends, Shift+Enter for a new line)");
                     let r = ui.add(edit);
+                    if (r.rect.height() - field_h).abs() > 0.5 {
+                        ui.data_mut(|d| d.insert_temp(h_id, r.rect.height()));
+                        ui.ctx().request_repaint();
+                    }
                     let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
                     if enter && !busy && !self.ai_input.trim().is_empty() {
                         send = Some(std::mem::take(&mut self.ai_input).trim_end_matches('\n').to_owned());
                         ui.ctx().memory_mut(|m| m.request_focus(r.id));
                     }
                 });
-            });
-            ui.add_space(6.0);
+            }
         });
 
         if self.ai_memories_open {
