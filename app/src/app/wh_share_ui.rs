@@ -10,6 +10,7 @@ use crate::store::{ShareGroup, SharePrefs};
 
 #[derive(Default)]
 pub(crate) struct ShareUi {
+    pub(crate) right_edge: Option<f32>,
     handle: Option<engine::Handle>,
     started: bool,
     pub(crate) open: bool,
@@ -161,16 +162,16 @@ impl SpaiApp {
         let status = self.wh_share.handle.as_ref()?.status.lock().unwrap().clone();
         let weak = egui::Color32::from_gray(150);
         if let Some(e) = status.error {
-            return Some((format!("{}  Sync failed", icon::CLOUD_WARNING), crate::theme::standing::WARNING, e));
+            return Some((trf!("{icon}  Sync failed", icon = icon::CLOUD_WARNING), crate::theme::standing::WARNING, e));
         }
         if status.busy {
-            return Some((format!("{}  Syncing", icon::CLOUD_ARROW_UP), weak, "Sending and fetching group changes".into()));
+            return Some((trf!("{icon}  Syncing", icon = icon::CLOUD_ARROW_UP), weak, tr!("Sending and fetching group changes").into()));
         }
         let last = status.synced_at.values().copied().min();
         let names: Vec<&str> = self.wh_share.groups.iter().map(|g| g.name.as_str()).collect();
         let text = match last {
-            Some(t) => format!("{}  Synced {} ago", icon::CLOUD_CHECK, human_ago(crate::clock::utc().timestamp() - t)),
-            None => format!("{}  Not synced yet", icon::CLOUD_CHECK),
+            Some(t) => trf!("{icon}  Synced {ago} ago", icon = icon::CLOUD_CHECK, ago = human_ago(crate::clock::utc().timestamp() - t)),
+            None => trf!("{icon}  Not synced yet", icon = icon::CLOUD_CHECK),
         };
         Some((text, weak, format!("Sharing with {}", names.join(", "))))
     }
@@ -196,13 +197,23 @@ impl SpaiApp {
         let mut prefs: Option<(String, SharePrefs, SharePrefs)> = None;
         let counts: Vec<(i64, i64)> = groups.iter().map(|g| self.store.as_ref().map_or((0, 0), |s| s.share_group_counts(&g.id))).collect();
         let mut copy: Option<String> = None;
-        egui::Window::new(format!("{}  Wormhole sharing", icon::USERS_THREE))
+        // Wide enough for the groups table in the chosen language, whose column titles can run
+        // longer than English.
+        let table_w = {
+            let font = egui::TextStyle::Body.resolve(&ctx.global_style());
+            let w = |t: &str| ctx.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x);
+            let names = groups.iter().map(|g| w(&g.name)).fold(w(tr!("Group")), f32::max);
+            names + 2.0 * (w(tr!("Wormholes")) + w(tr!("Probe scans"))) + w(tr!("Hide")) + 20.0 + 5.0 * 14.0 + 16.0
+        };
+        let shown = egui::Window::new(trf!("{icon}  Wormhole sharing", icon = icon::USERS_THREE))
             .open(&mut open)
             .resizable(true)
-            .default_width(520.0)
+            .default_width(table_w.max(520.0))
             // Left of centre and below the toolbars, leaving room beside it for the members dialog.
             .pivot(egui::Align2::RIGHT_TOP)
             .default_pos(egui::pos2(ctx.content_rect().center().x - 4.0, ctx.content_rect().top() + 150.0))
+            // A longer translation widens it to the left; the nav rail stays clear.
+            .constrain_to(ctx.content_rect().with_min_x(ctx.content_rect().left() + self.nav_width() + 8.0))
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
@@ -242,7 +253,9 @@ impl SpaiApp {
                 ui.add_space(6.0);
                 if !groups.is_empty() {
                     ui.label(egui::RichText::new(tr!("What each group gets and gives")).strong());
-                    egui::ScrollArea::vertical().id_salt("wh_share_prefs_scroll").max_height(160.0).show(ui, |ui| {
+                    // Both ways: a language with longer column titles scrolls the table rather than widening
+                    // the window over the dialogs that open beside it.
+                    egui::ScrollArea::both().id_salt("wh_share_prefs_scroll").max_height(160.0).max_width(ui.available_width()).show(ui, |ui| {
                     egui::Grid::new("wh_share_prefs").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
                         ui.label("");
                         ui.label(trf!("{icon}  Send", icon = icon::UPLOAD_SIMPLE)).on_hover_text(tr!("What of yours goes to the group. What came from another group never does."));
@@ -292,11 +305,11 @@ impl SpaiApp {
                     }
                     for g in &groups {
                         let has_key = self.store.as_ref().is_some_and(|s| s.share_key(&g.id, g.epoch).is_some());
-                        let synced = status.synced_at.get(&g.id).map(|t| format!(", synced {} ago", human_ago(crate::clock::utc().timestamp() - t)));
+                        let synced = status.synced_at.get(&g.id).map(|t| trf!(", synced {ago} ago", ago = human_ago(crate::clock::utc().timestamp() - t)));
                         let title = if has_key {
                             format!("{}  ({}{})", g.name, g.role.label().tr(), synced.unwrap_or_default())
                         } else {
-                            format!("{}  (waiting to be let in)", g.name)
+                            trf!("{name}  (waiting to be let in)", name = g.name)
                         };
                         egui::CollapsingHeader::new(title).id_salt(("wh_share_group", &g.id)).default_open(true).show(ui, |ui| {
                             if !has_key {
@@ -309,7 +322,7 @@ impl SpaiApp {
                             ui.horizontal(|ui| {
                                 let owner = members.iter().find(|m| m.role == Role::Owner).map_or("", |m| m.name.as_str());
                                 let n = members.len();
-                                ui.label(trf!("{n} member{v} \u{b7} owner {owner}", n = n, v = if n == 1 { "" } else { "s" }, owner = owner));
+                                ui.label(if n == 1 { trf!("1 member \u{b7} owner {owner}", owner = owner) } else { trf!("{n} members \u{b7} owner {owner}", n = n, owner = owner) });
                                 if ui.button(trf!("{icon}  Members\u{2026}", icon = icon::USERS)).on_hover_text(tr!("Everyone in the group, their roles and keys")).clicked() {
                                     self.wh_share.members_of = Some(g.id.clone());
                                     self.wh_share.members_filter.clear();
@@ -441,7 +454,7 @@ impl SpaiApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(tr!("As"));
-                    let name = chars.iter().find(|c| Some(c.0) == self.wh_share.char_id).map_or("no character", |c| c.1.as_str());
+                    let name = chars.iter().find(|c| Some(c.0) == self.wh_share.char_id).map_or(tr!("no character"), |c| c.1.as_str());
                     egui::ComboBox::from_id_salt("wh_share_char").selected_text(name).show_ui(ui, |ui| {
                         for (id, n) in &chars {
                             if ui.menu_label(Some(*id) == self.wh_share.char_id, n.as_str()).clicked() {
@@ -483,6 +496,8 @@ impl SpaiApp {
                     }
                 });
             });
+        // The members and delete dialogs open beside it, wherever its width put its edge.
+        self.wh_share.right_edge = shown.map(|r| r.response.rect.right());
         if let Some((group, was, now)) = prefs {
             self.set_share_prefs(&group, was, now);
         }
@@ -503,11 +518,14 @@ impl SpaiApp {
         let mut open = true;
         let mut go = false;
         let mut cancel = false;
-        egui::Window::new(format!("Delete {name}?"))
+        egui::Window::new(trf!("Delete {name}?", name = name))
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            // Beside the sharing window, where the members dialog goes, not over its table.
+            .pivot(egui::Align2::LEFT_TOP)
+            .default_pos(egui::pos2(self.wh_share.right_edge.map_or(ctx.content_rect().center().x, |r| r + 8.0), ctx.content_rect().top() + 150.0))
+            .default_width(380.0)
             .show(ctx, |ui| {
                 ui.label(tr!("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone."));
                 ui.label(tr!("Holes already on members' maps stay until they expire."));
@@ -542,13 +560,13 @@ impl SpaiApp {
         members.sort_by(|a, b| b.role.cmp(&a.role).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
         let mut open = true;
         let mut cmd: Option<Cmd> = None;
-        egui::Window::new(format!("{}  Members of {}", icon::USERS, g.name))
+        egui::Window::new(trf!("{icon}  Members of {v}", icon = icon::USERS, v = g.name))
             .id(egui::Id::new("wh_share_members"))
             .open(&mut open)
             .resizable(true)
             .default_size([480.0, 420.0])
             .pivot(egui::Align2::LEFT_TOP)
-            .default_pos(egui::pos2(ctx.content_rect().center().x + 4.0, ctx.content_rect().top() + 150.0))
+            .default_pos(egui::pos2(self.wh_share.right_edge.map_or(ctx.content_rect().center().x, |r| r + 8.0), ctx.content_rect().top() + 150.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.members_filter).hint_text(tr!("Filter by name")).desired_width(200.0));

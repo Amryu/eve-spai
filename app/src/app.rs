@@ -651,8 +651,8 @@ pub struct SpaiApp {
     /// Per message history: the message at its bottom edge and how far into it the edge falls,
     /// the size it had then, and the frames left for a resize to settle.
     jabber_history_bottom: std::collections::HashMap<egui::Id, (usize, f32, egui::Vec2, u8)>,
-    wizard_open: bool,
-    wizard_step: u8,
+    pub(crate) wizard_open: bool,
+    pub(crate) wizard_step: u8,
     wizard_checked: bool,
     /// Result of the wizard's create-shortcut action: None = not tried, Some(Ok) = done.
     wizard_shortcut: Option<Result<(), String>>,
@@ -2243,13 +2243,21 @@ impl SpaiApp {
     /// this app started, and a folder set in Settings later counts too.
     /// Puts the chosen language in force, and the ship names in it when those are translated too.
     /// Ship names come from the static data, so they are looked up again once it has loaded.
+    /// The active character's name, or "No character" in the user's language. The English text
+    /// stays the stored value, which code all over compares against.
+    pub(crate) fn shown_character(&self) -> String {
+        if self.active_character == "No character" { tr!("No character").to_owned() } else { self.active_character.clone() }
+    }
+
     pub(crate) fn apply_language(&mut self) {
         let key = (self.settings.language.clone(), self.settings.translate_ship_names, self.ship_index.is_some());
         if self.language_applied.as_ref() == Some(&key) {
             return;
         }
         // Renders stay the same on every machine, whatever its system language.
-        let auto = if cfg!(test) { "en" } else { "" };
+        // SPAI_LANG renders a scene in another language by hand.
+        let forced = if cfg!(test) { std::env::var("SPAI_LANG").unwrap_or_else(|_| "en".into()) } else { String::new() };
+        let auto = forced.as_str();
         spai_ui::i18n::set_language(if self.settings.language.is_empty() { auto } else { &self.settings.language });
         let lang = spai_ui::i18n::language();
         let ships = (self.settings.translate_ship_names && lang != "en").then(|| self.store.as_ref().map(|s| s.ship_names_in(lang))).flatten();
@@ -2437,7 +2445,7 @@ impl SpaiApp {
         }
         let mut open = true;
         let mut picked = None;
-        egui::Window::new("Static data from a file")
+        egui::Window::new(tr!("Static data from a file"))
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
@@ -2448,7 +2456,7 @@ impl SpaiApp {
                 ui.label(tr!("Download FC's static data export (the JSONL zip, about 100 MB) in your browser, then choose the file. The smaller tables are still fetched from fuzzwork.co.uk."));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.hyperlink_to(format!("{}  Download the JSONL SDE", egui_phosphor::regular::DOWNLOAD_SIMPLE), sde::JSONL_URL);
+                    ui.hyperlink_to(trf!("{icon}  Download the JSONL SDE", icon = egui_phosphor::regular::DOWNLOAD_SIMPLE), sde::JSONL_URL);
                     if ui.button(egui_phosphor::regular::COPY).on_hover_text(tr!("Copy the link")).clicked() {
                         ui.ctx().copy_text(sde::JSONL_URL.to_owned());
                     }
@@ -3514,7 +3522,7 @@ impl SpaiApp {
 
                     let before = self.active_character.clone();
                     egui::ComboBox::from_id_salt("active_character")
-                        .selected_text(&self.active_character)
+                        .selected_text(self.shown_character())
                         .width(combo_w)
                         .height(popup_h)
                         .show_ui(ui, |ui| {
@@ -3552,11 +3560,11 @@ impl SpaiApp {
                         let (icon, text, col) = if esi_ok {
                             (
                                 egui_phosphor::regular::PLUGS_CONNECTED,
-                                "ESI online",
+                                tr!("ESI online"),
                                 egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
                             )
                         } else {
-                            (egui_phosphor::regular::PLUGS, "ESI offline", ui.visuals().weak_text_color())
+                            (egui_phosphor::regular::PLUGS, tr!("ESI offline"), ui.visuals().weak_text_color())
                         };
                         ui.label(egui::RichText::new(format!("{icon}  {text}")).color(col));
                     });
@@ -3574,7 +3582,7 @@ impl SpaiApp {
                     let intel = self.intel_state.lock().unwrap().reports.len();
                     ui.label(trf!("Intel: {intel}", intel = intel));
                     ui.separator();
-                    ui.label(egui::RichText::new(&self.active_character).weak());
+                    ui.label(egui::RichText::new(self.shown_character()).weak());
                     ui.separator();
                     ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
                     if let Some(av) = self.update.lock().unwrap().available.clone() {
@@ -3608,12 +3616,12 @@ impl SpaiApp {
             });
     }
 
+    pub(crate) fn nav_width(&self) -> f32 {
+        if self.settings.nav_expanded { nav::WIDTH_EXPANDED } else { nav::WIDTH_COLLAPSED }
+    }
+
     fn nav_rail(&mut self, ui: &mut egui::Ui) {
-        let width = if self.settings.nav_expanded {
-            nav::WIDTH_EXPANDED
-        } else {
-            nav::WIDTH_COLLAPSED
-        };
+        let width = self.nav_width();
         let badge = self.jabber_has_unread();
         // Only once a session has worked: before that the Jabber page shows its own login state.
         let jabber_down = {
@@ -4058,6 +4066,7 @@ impl eframe::App for SpaiApp {
             self.wizard_open = !self.settings.wizard_done;
         }
         self.setup_wizard(&ctx);
+        self.language_dialog(&ctx);
         ft.mark("setup_wizard");
         self.poll_dscan_clipboard(&ctx);
         ft.mark("poll_dscan_clipboard");
@@ -5858,7 +5867,7 @@ pub(crate) fn battle_row(
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
             from_you_chip(ui, from_you);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut figures = format!("{} kills \u{00b7} {pilots} pilots \u{00b7} {} ISK", b.kills, fmt_isk(b.isk));
+                let mut figures = trf!("{kills} kills \u{00b7} {pilots} pilots \u{00b7} {isk} ISK", kills = b.kills, pilots = pilots, isk = fmt_isk(b.isk));
                 if span_min > 0 {
                     figures.push_str(&format!(" \u{00b7} {span_min}m"));
                 }
@@ -5886,7 +5895,8 @@ pub(crate) fn battle_row(
         // Every side, as many to a line as fit at a readable width, each cut to its share.
         const MIN_SIDE: f32 = 170.0;
         let n = b.sides.len().max(1);
-        let vs_w = 24.0;
+        // As wide as "vs" is in the chosen language.
+        let vs_w = egui::WidgetText::from(egui::RichText::new(tr!("vs")).strong()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x.max(20.0) + 4.0;
         let gap = ui.spacing().item_spacing.x;
         let avail = ui.available_width();
         let per_line = (((avail + vs_w + 2.0 * gap) / (MIN_SIDE + vs_w + 2.0 * gap)).floor() as usize).clamp(1, n);
@@ -6311,10 +6321,10 @@ fn side_head(
     asked
 }
 
-/// Text with a thin black edge, so it reads over a coloured bar as well as next to it.
+/// Text with a thin edge in the opposite brightness, so it reads over a coloured bar as well as next to it.
 pub(crate) fn outlined_text(painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>, color: egui::Color32) {
     for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
-        painter.galley_with_override_text_color(pos + egui::vec2(dx, dy), galley.clone(), egui::Color32::BLACK);
+        painter.galley_with_override_text_color(pos + egui::vec2(dx, dy), galley.clone(), spai_ui::theme::halo(color));
     }
     painter.galley(pos, galley, color);
 }
@@ -6604,14 +6614,7 @@ pub(crate) fn condensed_row(
     let resp = ui
         .horizontal(|ui| {
             ui.set_min_width(row_w);
-            hull_badge(ui, ship, 26.0);
-            ui.label(egui::RichText::new(name_of(ship)).strong());
-            ui.label(egui::RichText::new(format!("\u{00d7}{total}")).weak());
-            if let Some(d) = damage {
-                let t = egui::RichText::new(trf!("{v} dmg", v = fmt_count(d)));
-                ui.label(if d > 0 { t.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { t.weak() })
-                    .on_hover_text(tr!("Damage dealt by this side's pilots in this hull"));
-            }
+            // Right side first, so the hull's name gives way to it rather than running into it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pod_isk > 0.0 {
                     ui.label(egui::RichText::new(trf!("+{v} pods", v = fmt_isk(pod_isk))).weak())
@@ -6624,6 +6627,28 @@ pub(crate) fn condensed_row(
                 if lost > 0 {
                     ui.label(egui::RichText::new(trf!("{lost} lost", lost = lost)).color(red).strong());
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    hull_badge(ui, ship, 26.0);
+                    let count = egui::RichText::new(format!("\u{00d7}{total}")).weak();
+                    let dmg = damage.map(|d| {
+                        let t = egui::RichText::new(trf!("{v} dmg", v = fmt_count(d)));
+                        if d > 0 { t.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { t.weak() }
+                    });
+                    let width_of = |ui: &egui::Ui, t: &egui::RichText| {
+                        egui::WidgetText::from(t.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x
+                    };
+                    let gap = ui.spacing().item_spacing.x;
+                    let reserved = width_of(ui, &count) + gap + dmg.as_ref().map_or(0.0, |d| width_of(ui, d) + gap);
+                    let name_w = (ui.available_width() - reserved).max(24.0);
+                    ui.scope(|ui| {
+                        ui.set_max_width(name_w);
+                        ui.add(egui::Label::new(egui::RichText::new(name_of(ship)).strong()).truncate());
+                    });
+                    ui.label(count);
+                    if let Some(t) = dmg {
+                        ui.label(t).on_hover_text(tr!("Damage dealt by this side's pilots in this hull"));
+                    }
+                });
             });
         })
         .response;
@@ -7515,11 +7540,11 @@ fn sound_picker(
             value.clone()
         };
         egui::ComboBox::from_id_salt(("sound_picker", salt)).selected_text(label).show_ui(ui, |ui| {
-            if allow_default && ui.menu_label(is_default, "Default").clicked() {
+            if allow_default && ui.menu_label(is_default, tr!("Default")).clicked() {
                 value.clear();
                 changed = true;
             }
-            if ui.menu_label(is_off, "Off").clicked() {
+            if ui.menu_label(is_off, tr!("Off")).clicked() {
                 *value = "off".to_owned();
                 changed = true;
             }
@@ -7534,7 +7559,7 @@ fn sound_picker(
                     }
                 });
             }
-            if ui.menu_label(is_file, format!("{} Custom file…", icon::FOLDER_OPEN)).clicked() {
+            if ui.menu_label(is_file, trf!("{icon} Custom file…", icon = icon::FOLDER_OPEN)).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("audio", &["wav", "mp3", "ogg", "flac"])
                     .pick_file()

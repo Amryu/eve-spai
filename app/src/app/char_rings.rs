@@ -360,7 +360,7 @@ pub(crate) fn jump_chip_style(via: JumpVia) -> (egui::Color32, Option<String>) {
         // where most of them are, and the tooltip still says which kind of bridge it is.
         JumpVia::BridgeShorter(_) => (crate::theme::standing::ALLIANCE, None),
         // Colour cannot say "there is no gate route at all", so this one keeps its words.
-        JumpVia::BridgeOnly => (crate::theme::standing::ALLIANCE, Some("bridge only".to_owned())),
+        JumpVia::BridgeOnly => (crate::theme::standing::ALLIANCE, Some(tr!("bridge only").to_owned())),
     }
 }
 

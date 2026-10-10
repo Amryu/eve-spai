@@ -227,6 +227,8 @@ pub(crate) const FROZEN_AT: i64 = 1_780_315_200;
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
     assert_no_live_profile();
+    // Every scene in English, or all in SPAI_LANG to check another language by hand.
+    spai_ui::i18n::set_language(&std::env::var("SPAI_LANG").unwrap_or_else(|_| "en".into()));
     if gpu {
         crate::clock::freeze(Some(FROZEN_AT));
     }

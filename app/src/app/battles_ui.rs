@@ -12,7 +12,7 @@ impl SpaiApp {
             return;
         }
         let mut changed = false;
-        let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai - Battle rules", [580.0, 620.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "battle_filter", tr!("EVE Spai - Battle rules"), [580.0, 620.0], |ui| {
             ui.label(egui::RichText::new(tr!("The first rule that matches a battle decides. Without one, battles near your intel are tracked.")).weak());
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -35,7 +35,7 @@ impl SpaiApp {
                             rule.action = act;
                             let mut all = rule.match_all;
                             egui::ComboBox::from_id_salt(("br_all", i))
-                                .selected_text(if all { "All of" } else { "Any of" })
+                                .selected_text(if all { tr!("All of") } else { tr!("Any of") })
                                 .width(72.0)
                                 .show_ui(ui, |ui| {
                                     changed |= ui.menu_value(&mut all, true, tr!("All of")).changed();
@@ -533,7 +533,7 @@ impl SpaiApp {
             };
             let mut open = true;
             let mut restore: Option<i64> = None;
-            egui::Window::new(format!("{} Excluded kills", icon::TRASH))
+            egui::Window::new(trf!("{icon} Excluded kills", icon = icon::TRASH))
                 .open(&mut open)
                 .resizable(true)
                 .default_width(460.0)
@@ -574,7 +574,7 @@ impl SpaiApp {
             let list = self.store.as_ref().map(|s| s.list_scrubs()).unwrap_or_default();
             let mut open = true;
             let mut restore: Option<(i64, i64)> = None;
-            egui::Window::new(format!("{} Scrubbed pilots", icon::BROOM))
+            egui::Window::new(trf!("{icon} Scrubbed pilots", icon = icon::BROOM))
                 .open(&mut open)
                 .resizable(true)
                 .default_width(360.0)
@@ -654,7 +654,7 @@ impl SpaiApp {
             let mut open = true;
             let mut add_kid: Option<i64> = None;
             let mut link_input = std::mem::take(&mut self.battle_add_link);
-            egui::Window::new(format!("{} Add kill to battle", icon::PLUS))
+            egui::Window::new(trf!("{icon} Add kill to battle", icon = icon::PLUS))
                 .open(&mut open)
                 .resizable(true)
                 .default_width(520.0)
@@ -741,7 +741,7 @@ impl SpaiApp {
     ) -> anyhow::Result<Option<std::path::PathBuf>> {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(battle_file_name(battle))
-            .add_filter("EVE Spai battle report", &["json"])
+            .add_filter(tr!("EVE Spai battle report"), &["json"])
             .save_file()
         else {
             return Ok(None);
@@ -924,7 +924,7 @@ impl SpaiApp {
             }
             None => {
                 *self.br_share.lock().unwrap() =
-                    crate::brshare::ShareStatus::Error("Log in to share (opening EVE SSO…).".into());
+                    crate::brshare::ShareStatus::Error(tr!("Log in to share (opening EVE SSO…).").into());
                 self.start_login(ctx);
             }
         }
@@ -938,7 +938,7 @@ impl SpaiApp {
             }
             None => {
                 self.br_mine.lock().unwrap().status =
-                    crate::brshare::MineStatus::Error("Log in to see your shared reports.".into());
+                    crate::brshare::MineStatus::Error(tr!("Log in to see your shared reports.").into());
             }
         }
     }
@@ -1044,17 +1044,17 @@ impl SpaiApp {
             ShareStatus::Idle => {
                 if std::mem::take(&mut self.br_share_deleting) {
                     self.br_shared = None;
-                    self.toast_keyed("share", "Shared report deleted", false);
+                    self.toast_keyed("share", tr!("Shared report deleted"), false);
                 }
             }
             ShareStatus::Uploading => {
-                let text = if self.br_share_deleting { "Deleting the shared report\u{2026}" } else { "Sharing to eve-spai.com\u{2026}" };
+                let text = if self.br_share_deleting { tr!("Deleting the shared report\u{2026}") } else { tr!("Sharing to eve-spai.com\u{2026}") };
                 self.toast_busy("share", text);
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
             }
             ShareStatus::Done { id, url } => {
                 ctx.copy_text(url.clone());
-                self.toast_keyed("share", format!("Shared, link copied: {url}"), false);
+                self.toast_keyed("share", trf!("Shared, link copied: {url}", url = url), false);
                 self.br_shared = Some((self.br_share_kid, id, url));
                 *self.br_share.lock().unwrap() = ShareStatus::Idle;
             }
@@ -1072,7 +1072,7 @@ impl SpaiApp {
         match status {
             crate::evetools::Status::Done(url) => {
                 ctx.copy_text(url.clone());
-                self.toast_keyed("evetools", format!("br.evetools link copied: {url}"), false);
+                self.toast_keyed("evetools", trf!("br.evetools link copied: {url}", url = url), false);
                 *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
             }
             crate::evetools::Status::Failed(e) => {
@@ -1080,7 +1080,7 @@ impl SpaiApp {
                 *self.evetools.lock().unwrap() = crate::evetools::Status::Idle;
             }
             crate::evetools::Status::Working => {
-                self.toast_busy("evetools", "Making the br.evetools report\u{2026}");
+                self.toast_busy("evetools", tr!("Making the br.evetools report\u{2026}"));
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
             }
             crate::evetools::Status::Idle => {}
@@ -1096,7 +1096,7 @@ impl SpaiApp {
         let base = crate::brshare::api_base();
         let mut reload = false;
         let mut delete_id: Option<String> = None;
-        egui::Window::new(format!("{}  My shared BRs", icon::SHARE_NETWORK))
+        egui::Window::new(trf!("{icon}  My shared BRs", icon = icon::SHARE_NETWORK))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -1136,7 +1136,7 @@ impl SpaiApp {
                                     .corner_radius(4.0)
                                     .show(ui, |ui| {
                                         let title = r.title.clone().unwrap_or_else(|| {
-                                            r.systems.first().cloned().unwrap_or_else(|| "Battle report".into())
+                                            r.systems.first().cloned().unwrap_or_else(|| tr!("Battle report").into())
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new(title).strong());
@@ -1229,7 +1229,7 @@ impl SpaiApp {
                     br_core::battle::preview_battle(doc.engagements, self.settings.battle_break_secs)
                 };
                 let title = doc.title.clone().unwrap_or_else(|| {
-                    b.systems.first().map(|(_, n, _)| n.clone()).unwrap_or_else(|| "Battle report".into())
+                    b.systems.first().map(|(_, n, _)| n.clone()).unwrap_or_else(|| tr!("Battle report").into())
                 });
                 self.show_imported_report(b, title, ctx);
             }
@@ -1287,7 +1287,7 @@ impl SpaiApp {
                     .systems
                     .first()
                     .map(|(_, n, _)| n.clone())
-                    .unwrap_or_else(|| "Battle report".into());
+                    .unwrap_or_else(|| tr!("Battle report").into());
                 self.show_imported_report(b, title, ctx);
                 self.build_kill_input.clear();
             }
@@ -1383,13 +1383,13 @@ impl SpaiApp {
                 self.report_systems_picker(ui, systems);
                 toolbar_sep(ui);
             }
-            if ui.menu_label(self.battle_tab == BrTab::Tiles, format!("{}  Tiles", icon::SQUARES_FOUR)).clicked() {
+            if ui.menu_label(self.battle_tab == BrTab::Tiles, trf!("{icon}  Tiles", icon = icon::SQUARES_FOUR)).clicked() {
                 self.battle_tab = BrTab::Tiles;
             }
-            if ui.menu_label(self.battle_tab == BrTab::Details, format!("{}  Details", icon::LIST_BULLETS)).clicked() {
+            if ui.menu_label(self.battle_tab == BrTab::Details, trf!("{icon}  Details", icon = icon::LIST_BULLETS)).clicked() {
                 self.battle_tab = BrTab::Details;
             }
-            if ui.menu_label(self.battle_tab == BrTab::Timeline, format!("{}  Timeline", icon::CHART_BAR)).clicked() {
+            if ui.menu_label(self.battle_tab == BrTab::Timeline, trf!("{icon}  Timeline", icon = icon::CHART_BAR)).clicked() {
                 self.battle_tab = BrTab::Timeline;
             }
             if ambiguous {
@@ -1409,8 +1409,8 @@ impl SpaiApp {
                 .on_hover_text(tr!("Stack each side's ships by hull (count + losses)"));
             ui.label(tr!("Sort"));
             let sort_label = match self.battle_roster_sort {
-                RosterSort::Value => "ISK loss",
-                RosterSort::Hull => "Hull size",
+                RosterSort::Value => tr!("ISK loss"),
+                RosterSort::Hull => tr!("Hull size"),
             };
             toolbar_combo(ui, "battle_roster_sort", sort_label.to_owned(), |ui| {
                 ui.menu_value(&mut self.battle_roster_sort, RosterSort::Value, tr!("ISK loss"));
@@ -1436,12 +1436,12 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         self.battle_systems.retain(|id| systems.iter().any(|s| s.0 == *id));
         let label = match self.battle_systems.len() {
-            0 => format!("{}  All {} systems", icon::FUNNEL, systems.len()),
+            0 => trf!("{icon}  All {n} systems", icon = icon::FUNNEL, n = systems.len()),
             1 => {
                 let name = systems.iter().find(|s| s.0 == self.battle_systems[0]).map_or("", |s| s.1.as_str());
                 format!("{}  {name}", icon::FUNNEL)
             }
-            n => format!("{}  {n} of {} systems", icon::FUNNEL, systems.len()),
+            n => trf!("{icon}  {n} of {total} systems", icon = icon::FUNNEL, n = n, total = systems.len()),
         };
         let filtering = !self.battle_systems.is_empty();
         let text = if filtering { egui::RichText::new(label).color(ui.visuals().hyperlink_color) } else { egui::RichText::new(label) };
@@ -1450,7 +1450,7 @@ impl SpaiApp {
             .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
         let (resp, _) = menu.ui(ui, |ui| {
             ui.set_max_width(280.0);
-            if ui.menu_label(!filtering, "All systems").clicked() {
+            if ui.menu_label(!filtering, tr!("All systems")).clicked() {
                 self.battle_systems.clear();
             }
             ui.separator();
@@ -1541,7 +1541,7 @@ impl SpaiApp {
         let mut open = true;
         let mut moved: Option<(i64, i64)> = None;
         let mut reset = false;
-        egui::Window::new(format!("{}  Rearrange sides", icon::ARROWS_LEFT_RIGHT))
+        egui::Window::new(trf!("{icon}  Rearrange sides", icon = icon::ARROWS_LEFT_RIGHT))
             .id(egui::Id::new("battle_sides"))
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
@@ -1571,11 +1571,11 @@ impl SpaiApp {
                                                     continue;
                                                 }
                                                 let lead = other.parties.first().map_or(0, |q| q.id);
-                                                if ui.menu_label(false, format!("Side {}: {}", j + 1, side_title(other))).clicked() {
+                                                if ui.menu_label(false, trf!("Side {v}: {v2}", v = j + 1, v2 = side_title(other))).clicked() {
                                                     moved = Some((p.id, lead));
                                                 }
                                             }
-                                            if side.parties.len() > 1 && ui.menu_label(false, "A side of its own").clicked() {
+                                            if side.parties.len() > 1 && ui.menu_label(false, tr!("A side of its own")).clicked() {
                                                 moved = Some((p.id, 0));
                                             }
                                         });
@@ -1787,7 +1787,7 @@ impl SpaiApp {
                             ui,
                             |ui| {
                                 if ui
-                                    .menu_label(self.battle_edit_mode, format!("{}  Edit", icon::PENCIL_SIMPLE))
+                                    .menu_label(self.battle_edit_mode, trf!("{icon}  Edit", icon = icon::PENCIL_SIMPLE))
                                     .on_hover_text(tr!("Split off kills, remove kills/pilots, add a kill"))
                                     .clicked()
                                 {
@@ -1829,7 +1829,7 @@ impl SpaiApp {
                                         let sel_name = current
                                             .and_then(|id| authed.iter().find(|(a, _)| *a == id).map(|(_, n)| n.clone()))
                                             .unwrap_or_else(|| "Select character".to_owned());
-                                        ui.menu_button(format!("{}  Manage as: {sel_name}", icon::USER), |ui| {
+                                        ui.menu_button(trf!("{icon}  Manage as: {sel_name}", icon = icon::USER, sel_name = sel_name), |ui| {
                                             for (id, name) in &authed {
                                                 if ui.menu_label(self.br_character == Some(*id), name).clicked() {
                                                     self.br_character = Some(*id);
@@ -2087,7 +2087,7 @@ impl SpaiApp {
                     .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
                 let (more_resp, _) = more.ui(ui, |ui| {
                     if ui.button(trf!("{icon}  Open JSON\u{2026}", icon = icon::FOLDER_OPEN)).on_hover_text(tr!("Open a saved battle report")).clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("EVE Spai battle report", &["json"]).pick_file() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter(tr!("EVE Spai battle report"), &["json"]).pick_file() {
                             to_load = Some(path);
                         }
                         ui.close();
@@ -2123,7 +2123,7 @@ impl SpaiApp {
                         }
                     });
                     let mut th = self.settings.work_throttle;
-                    ui.menu_button(format!("{}  CPU: {}", icon::GAUGE, th.label().tr()), |ui| {
+                    ui.menu_button(trf!("{icon}  CPU: {v}", icon = icon::GAUGE, v = th.label().tr()), |ui| {
                         for opt in crate::settings::WorkThrottle::CHOICES {
                             ui.menu_value(&mut th, opt, opt.label().tr());
                         }
@@ -2142,7 +2142,7 @@ impl SpaiApp {
                 });
                 more_resp.on_hover_text(tr!("Open, share, build and settings"));
                 let active = self.battle_filters_active();
-                let label = if active > 0 { format!("{}  Filters ({active})", icon::FUNNEL) } else { format!("{}  Filters", icon::FUNNEL) };
+                let label = if active > 0 { trf!("{icon}  Filters ({active})", icon = icon::FUNNEL, active = active) } else { trf!("{icon}  Filters", icon = icon::FUNNEL) };
                 let menu = egui::containers::menu::MenuButton::new(label)
                     .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
                 menu.ui(ui, |ui| {
@@ -2248,10 +2248,11 @@ impl SpaiApp {
         }
 
         let shown_n = self.battle_cards.len();
-        let count_txt = if filtered > 0 {
-            format!("{total} battles ({filtered} filtered)")
-        } else {
-            format!("{total} battles")
+        let count_txt = match (total, filtered) {
+            (1, 0) => tr!("1 battle").to_owned(),
+            (_, 0) => trf!("{total} battles", total = total),
+            (1, _) => trf!("1 battle ({filtered} filtered)", filtered = filtered),
+            _ => trf!("{total} battles ({filtered} filtered)", total = total, filtered = filtered),
         };
         let mut do_merge = false;
         ui.horizontal(|ui| {

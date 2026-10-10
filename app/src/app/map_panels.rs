@@ -49,7 +49,7 @@ impl SpaiApp {
         let st = &self.settings;
         let mut n = st.route_avoid_camps as usize + (st.route_sec != [true; 3]) as usize + (st.route_max_kills > 0) as usize;
         n += (!st.route_avoid_sov.is_empty()) as usize + (!st.route_region_gates) as usize;
-        let head = if n > 0 { format!("{}  Avoid ({n})", icon::PROHIBIT) } else { format!("{}  Avoid", icon::PROHIBIT) };
+        let head = if n > 0 { trf!("{icon}  Avoid ({n})", icon = icon::PROHIBIT, n = n) } else { trf!("{icon}  Avoid", icon = icon::PROHIBIT) };
         egui::CollapsingHeader::new(head).id_salt("route_rules").show(ui, |ui| {
             let st = &mut self.settings;
             changed |= ui.checkbox(&mut st.route_avoid_camps, tr!("Gate camps")).on_hover_text(tr!("Systems with a likely or possible camp")).changed();
@@ -198,16 +198,16 @@ impl SpaiApp {
         ui.add_space(4.0);
         let mut replan = false;
         const KINDS: [(&str, &str, &str); 4] = [
-            ("gate", "By gate", "Gates, bridges and holes"),
-            ("jump", "By jump drive", "Capital jumps between cyno systems"),
-            ("mixed", "Mixed", "Each leg flown by gate or jumped, switched per leg"),
-            ("scan", "Scan sweep", "A sweep through the systems around a centre, for scouts"),
+            ("gate", tr_noop!("By gate"), tr_noop!("Gates, bridges and holes")),
+            ("jump", tr_noop!("By jump drive"), tr_noop!("Capital jumps between cyno systems")),
+            ("mixed", tr_noop!("Mixed"), tr_noop!("Each leg flown by gate or jumped, switched per leg")),
+            ("scan", tr_noop!("Scan sweep"), tr_noop!("A sweep through the systems around a centre, for scouts")),
         ];
-        let current = KINDS.iter().find(|k| k.0 == self.map_route_kind).map_or("By gate", |k| k.1);
+        let current = KINDS.iter().find(|k| k.0 == self.map_route_kind).map_or_else(|| tr!("By gate").to_owned(), |k| spai_ui::i18n::t_dyn(k.1));
         let mut pick: Option<&str> = None;
         egui::ComboBox::from_id_salt("route_kind").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
             for (kind, label, hint) in KINDS {
-                if ui.menu_label(self.map_route_kind == kind, label).on_hover_text(hint).clicked() {
+                if ui.menu_label(self.map_route_kind == kind, spai_ui::i18n::t_dyn(label)).on_hover_text(spai_ui::i18n::t_dyn(hint)).clicked() {
                     pick = Some(kind);
                 }
             }
@@ -253,9 +253,9 @@ impl SpaiApp {
                     // How the leg into this anchor is flown, switched in place.
                     let jump = self.map_leg_kind(i - 1) == "jump";
                     let (glyph, tip, other) = if jump {
-                        (icon::SPIRAL, "Jumped; click to gate it", "gate")
+                        (icon::SPIRAL, tr!("Jumped; click to gate it"), "gate")
                     } else {
-                        (icon::SIGN_IN, "Gated; click to jump it", "jump")
+                        (icon::SIGN_IN, tr!("Gated; click to jump it"), "jump")
                     };
                     if spai_ui::widgets::icon_button(ui, glyph).on_hover_text(tip).clicked() {
                         flip = Some((i - 1, other));
@@ -361,7 +361,7 @@ impl SpaiApp {
             .unwrap_or_default();
         if !listed.is_empty() {
             let mut stop: Option<(i64, bool)> = None;
-            egui::CollapsingHeader::new(trf!("{icon}  avoiding {listed} system{v}", icon = icon::EYE_SLASH, listed = listed.len(), v = if listed.len() == 1 { "" } else { "s" }))
+            egui::CollapsingHeader::new(if listed.len() == 1 { trf!("{icon}  avoiding 1 system", icon = icon::EYE_SLASH) } else { trf!("{icon}  avoiding {listed} systems", icon = icon::EYE_SLASH, listed = listed.len()) })
             .id_salt("route_avoid")
             .show(ui, |ui| {
                 for a in &listed {
@@ -413,9 +413,9 @@ impl SpaiApp {
         ui.label(egui::RichText::new(head).strong());
         if let Some(saved) = o.saved {
             let thin = saved <= 2;
-            let mut line = format!("saves {saved} gate{}", if saved == 1 { "" } else { "s" });
+            let mut line = if saved == 1 { trf!("saves {n} gate", n = saved) } else { trf!("saves {n} gates", n = saved) };
             if thin {
-                line.push_str(" — barely worth the cyno, a direct route may be simpler");
+                line.push_str(tr!(" — barely worth the cyno, a direct route may be simpler"));
             }
             ui.label(egui::RichText::new(line).color(if thin {
                 crate::theme::standing::WARNING
@@ -451,9 +451,9 @@ impl SpaiApp {
             if ui
                 .add_enabled(has_char && !ingame.is_empty(), egui::Button::new(trf!("{icon}  Set in game", icon = icon::MAP_PIN_LINE)))
                 .on_hover_text(if self.map_route_kind == "gate" {
-                    "Set this route in the game, one waypoint per system"
+                    tr!("Set this route in the game, one waypoint per system")
                 } else {
-                    "Set waypoints in the game at both ends of each leg you fly yourself"
+                    tr!("Set waypoints in the game at both ends of each leg you fly yourself")
                 })
                 .on_disabled_hover_text(tr!("Log a character in to route in the game"))
                 .clicked()
@@ -535,7 +535,7 @@ impl SpaiApp {
                             if let Some(i) = anchor_at.filter(|&i| i > 0) {
                                 let last = i == self.map_route_anchors.len() - 1;
                                 let label =
-                                    if last { "Remove destination" } else { "Remove waypoint" };
+                                    if last { tr!("Remove destination") } else { tr!("Remove waypoint") };
                                 if ui.button(label).clicked() {
                                     drop_anchor_row = Some(i);
                                     ui.close();
@@ -544,7 +544,7 @@ impl SpaiApp {
                             if !h.anchor {
                                 let on = self.map_avoid_once.contains(&h.id);
                                 if ui
-                                    .button(if on { "Stop avoiding" } else { "Avoid this system" })
+                                    .button(if on { tr!("Stop avoiding") } else { tr!("Avoid this system") })
                                     .clicked()
                                 {
                                     if on {
@@ -596,11 +596,16 @@ impl SpaiApp {
                                     None => tail.weak(),
                                 });
                                 if let Some(((fuel, fat), react)) = cost {
-                                    ui.label(
-                                        egui::RichText::new(trf!("{v} iso · fatigue {v2} · ready in {v3}", v = fuel.round() as i64, v2 = fmt_min(fat), v3 = fmt_min(react)))
+                                    let text = egui::RichText::new(trf!("{v} iso · fatigue {v2} · ready in {v3}", v = fuel.round() as i64, v2 = fmt_min(fat), v3 = fmt_min(react)))
                                         .weak()
-                                        .size(11.0),
-                                    );
+                                        .size(11.0);
+                                    // A line of its own when the rest of this one is too short, rather
+                                    // than starting here and wrapping under the hop's name.
+                                    let w = egui::WidgetText::from(text.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
+                                    if w > ui.available_size_before_wrap().x {
+                                        ui.end_row();
+                                    }
+                                    ui.label(text);
                                 }
                                 if let Some(w) = &warn {
                                     if warn_button(ui, w) {
@@ -693,7 +698,7 @@ impl SpaiApp {
                 .map_route_opts
                 .get(self.map_route_at)
                 .is_some_and(|o| o.uses_wormhole);
-            egui::Window::new(format!("{}  Save route", icon::COPY))
+            egui::Window::new(trf!("{icon}  Save route", icon = icon::COPY))
                 .id(egui::Id::new("map_save_route"))
                 .collapsible(false)
                 .resizable(false)
@@ -752,7 +757,7 @@ impl SpaiApp {
                 })
                 .cloned()
                 .collect();
-            egui::Window::new(format!("{}  Saved routes", icon::ARROW_SQUARE_OUT))
+            egui::Window::new(trf!("{icon}  Saved routes", icon = icon::ARROW_SQUARE_OUT))
                 .id(egui::Id::new("map_load_route"))
                 .collapsible(false)
                 .open(&mut open)
@@ -824,7 +829,7 @@ impl SpaiApp {
         let Some(ids) = self.map_alts.clone() else { return };
         let mut open = true;
         let mut pick: Option<i64> = None;
-        egui::Window::new("In range of both")
+        egui::Window::new(tr!("In range of both"))
             .id(egui::Id::new("map_alts"))
             .collapsible(false)
             .default_width(240.0)
@@ -1020,9 +1025,22 @@ impl SpaiApp {
     pub(crate) fn map_area(&mut self, ui: &mut egui::Ui) {
         if !self.map_overlay_mode {
             if self.left_dock_open {
+                // As wide as its longest row needs in the chosen language, within the usual range.
+                use egui_phosphor::regular as ic;
+                let widest = [
+                    trf!("{icon}  Sov upgrades", icon = ic::MAP_PIN_LINE),
+                    trf!("{icon}  Cyno generators", icon = ic::CROSSHAIR_SIMPLE),
+                    trf!("{icon}  Jump bridges", icon = ic::ARROWS_LEFT_RIGHT),
+                    trf!("{icon}  Intel highlight", icon = ic::CLOCK_COUNTDOWN),
+                    trf!("{icon}  Jove observatories", icon = ic::CELL_TOWER),
+                    trf!("{icon}  Ansiblex zones", icon = ic::CIRCLES_THREE),
+                ]
+                .iter()
+                .map(|t| egui::WidgetText::from(t.as_str()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x)
+                    .fold(0.0, f32::max);
                 egui::Panel::left("map_standard_dock")
                     .resizable(true)
-                    .default_size(212.0)
+                    .default_size((widest + 90.0).clamp(212.0, 300.0))
                     .size_range(170.0..=300.0)
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -1065,9 +1083,9 @@ impl SpaiApp {
                                 self.right_dock_open = false;
                             }
                             for (tab, ok, label) in [
-                                (RightDockTab::System, has_system, format!("{}  System", icon::INFO)),
-                                (RightDockTab::Route, has_route, format!("{}  Route", icon::PATH)),
-                                (RightDockTab::Nearby, has_nearby, format!("{}  Nearby", icon::WARNING)),
+                                (RightDockTab::System, has_system, trf!("{icon}  System", icon = icon::INFO)),
+                                (RightDockTab::Route, has_route, trf!("{icon}  Route", icon = icon::PATH)),
+                                (RightDockTab::Nearby, has_nearby, trf!("{icon}  Nearby", icon = icon::WARNING)),
                             ] {
                                 if ok && ui.menu_label(self.right_dock_tab == tab, label).clicked() {
                                     self.right_dock_tab = tab;
@@ -1108,7 +1126,7 @@ impl SpaiApp {
             if self.map_popped && !self.map_overlay_mode {
                 ui.checkbox(&mut self.map_window_on_top, trf!("{icon}  Keep on top", icon = icon::PUSH_PIN));
             }
-            let label = if self.map_overlay_mode { "Close the overlay" } else { "Overlay over EVE" };
+            let label = if self.map_overlay_mode { tr!("Close the overlay") } else { tr!("Overlay over EVE") };
             if ui
                 .button(format!("{}  {label}", icon::FRAME_CORNERS))
                 .on_hover_text(tr!("A borderless, see-through map to lay over the game"))
@@ -1126,7 +1144,7 @@ impl SpaiApp {
                 v
             };
             if !others.is_empty() {
-                ui.menu_button(format!("{}  A character's own map", icon::USERS_THREE), |ui| {
+                ui.menu_button(trf!("{icon}  A character's own map", icon = icon::USERS_THREE), |ui| {
                     for n in &others {
                         let mut open = self.map_char_popouts.contains(n);
                         if ui.checkbox(&mut open, n).changed() {
@@ -1151,10 +1169,10 @@ impl SpaiApp {
 
         ui.add_space(4.0);
         let label = |l: MapLayout| match l {
-            MapLayout::Geographic => "3D, as in space",
-            MapLayout::Spaced => "2D, as in game",
-            MapLayout::Radial => "Rings of jumps around you",
-            MapLayout::Tree => "Tree of jumps from you",
+            MapLayout::Geographic => tr!("3D, as in space"),
+            MapLayout::Spaced => tr!("2D, as in game"),
+            MapLayout::Radial => tr!("Rings of jumps around you"),
+            MapLayout::Tree => tr!("Tree of jumps from you"),
         };
         egui::ComboBox::from_id_salt(ui.id().with("map_layout"))
             .selected_text(label(self.map_layout))
@@ -1393,8 +1411,8 @@ impl SpaiApp {
                 .iter()
                 .find(|(r, _)| *r == id)
                 .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "Region".to_owned()),
-            MapView::Universe => "Region".to_owned(),
+                .unwrap_or_else(|| tr!("Region").to_owned()),
+            MapView::Universe => tr!("Region").to_owned(),
         };
         let region_list: Vec<(i64, String)> = self
             .map_regions
@@ -1588,7 +1606,7 @@ impl SpaiApp {
         let mut keep = true;
         // The overlay is a window of its own: a window's transparency is fixed when it is made, so
         // turning the popped-out map into an overlay in place would leave it opaque.
-        let (id, title) = if overlay { ("map_overlay", "EVE Spai - Map overlay") } else { ("map_window", "EVE Spai - Map") };
+        let (id, title) = if overlay { ("map_overlay", tr!("EVE Spai - Map overlay")) } else { ("map_window", tr!("EVE Spai - Map")) };
         let opacity = self.settings.map_overlay_opacity.clamp(0.2, 1.0);
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of(id),

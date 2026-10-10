@@ -279,10 +279,10 @@ impl SpaiApp {
         let on = |k: HoleKind, s: &crate::settings::Settings| s.wh_route_kinds.iter().any(|c| c == k.code());
         let n = HoleKind::ALL.iter().filter(|k| on(**k, &self.settings)).count();
         let text = match n {
-            0 => "No holes".to_owned(),
-            n if n == HoleKind::ALL.len() => "All kinds".to_owned(),
+            0 => tr!("No holes").to_owned(),
+            n if n == HoleKind::ALL.len() => tr!("All kinds").to_owned(),
             1 => HoleKind::ALL.iter().find(|k| on(**k, &self.settings)).map_or_else(String::new, |k| k.label().tr().to_owned()),
-            n => format!("{n} of {} kinds", HoleKind::ALL.len()),
+            n => trf!("{n} of {total} kinds", n = n, total = HoleKind::ALL.len()),
         };
         let button = ui.button(format!("{text}  {}", egui_phosphor::regular::CARET_DOWN));
         // Stays open while kinds are picked: each click is one of several choices.
@@ -331,9 +331,9 @@ impl SpaiApp {
                 "mass",
                 &mut self.settings.wh_route_min_mass,
                 &[
-                    ("", "Any", "Any mass left"),
-                    (Mass::Reduced.code(), "Not critical", "Skip holes with under 10% mass left. Holes with their mass not read pass."),
-                    (Mass::Fresh.code(), "Over 50%", "Only holes with over half their mass left. Holes with their mass not read pass."),
+                    ("", tr!("Any"), tr!("Any mass left")),
+                    (Mass::Reduced.code(), tr!("Not critical"), tr!("Skip holes with under 10% mass left. Holes with their mass not read pass.")),
+                    (Mass::Fresh.code(), tr!("Over 50%"), tr!("Only holes with over half their mass left. Holes with their mass not read pass.")),
                 ],
             );
             ui.end_row();
@@ -343,11 +343,11 @@ impl SpaiApp {
                 "time",
                 &mut self.settings.wh_route_min_time,
                 &[
-                    ("", "Any", "Any time left, even holes that could close any moment"),
-                    (TimeLeft::Expiring.code(), "Not expired", "Skip holes past their time"),
-                    (TimeLeft::Under1h.code(), "1h or more", "Skip holes with under an hour left"),
-                    (TimeLeft::Under4h.code(), "4h or more", "Skip holes with under 4 hours left"),
-                    (TimeLeft::Under12h.code(), "12h or more", "Skip holes with under 12 hours left"),
+                    ("", tr!("Any"), tr!("Any time left, even holes that could close any moment")),
+                    (TimeLeft::Expiring.code(), tr!("Not expired"), tr!("Skip holes past their time")),
+                    (TimeLeft::Under1h.code(), tr!("1h or more"), tr!("Skip holes with under an hour left")),
+                    (TimeLeft::Under4h.code(), tr!("4h or more"), tr!("Skip holes with under 4 hours left")),
+                    (TimeLeft::Under12h.code(), tr!("12h or more"), tr!("Skip holes with under 12 hours left")),
                 ],
             );
             ui.end_row();
@@ -357,10 +357,10 @@ impl SpaiApp {
                 "size",
                 &mut self.settings.wh_route_min_size,
                 &[
-                    ("", "Any", "Any hole size"),
-                    (ShipSize::Medium.code(), "Medium or bigger", "Holes a cruiser fits through. Holes of unknown size and type pass."),
-                    (ShipSize::Large.code(), "Large or bigger", "Holes a battleship fits through. Holes of unknown size and type pass."),
-                    (ShipSize::XLarge.code(), "XL", "Holes a capital fits through. Holes of unknown size and type pass."),
+                    ("", tr!("Any"), tr!("Any hole size")),
+                    (ShipSize::Medium.code(), tr!("Medium or bigger"), tr!("Holes a cruiser fits through. Holes of unknown size and type pass.")),
+                    (ShipSize::Large.code(), tr!("Large or bigger"), tr!("Holes a battleship fits through. Holes of unknown size and type pass.")),
+                    (ShipSize::XLarge.code(), "XL", tr!("Holes a capital fits through. Holes of unknown size and type pass.")),
                 ],
             );
             ui.end_row();
@@ -589,13 +589,13 @@ impl SpaiApp {
             ui.label(egui::RichText::new(trf!("{v} known", v = self.wh_cache.len())).weak());
             ui.add_space(8.0);
             let (table, sigs) = (self.wh_graph.table, self.wh_graph.sig_browser);
-            if ui.menu_label(!table && !sigs, format!("{}  Map", icon::GRAPH)).clicked() {
+            if ui.menu_label(!table && !sigs, trf!("{icon}  Map", icon = icon::GRAPH)).clicked() {
                 (self.wh_graph.table, self.wh_graph.sig_browser) = (false, false);
             }
-            if ui.menu_label(table && !sigs, format!("{}  Table", icon::TABLE)).clicked() {
+            if ui.menu_label(table && !sigs, trf!("{icon}  Table", icon = icon::TABLE)).clicked() {
                 (self.wh_graph.table, self.wh_graph.sig_browser) = (true, false);
             }
-            if ui.menu_label(sigs, format!("{}  Signatures", icon::LIST_MAGNIFYING_GLASS)).on_hover_text(tr!("Every probe scan signature pasted, to search and clean up")).clicked() {
+            if ui.menu_label(sigs, trf!("{icon}  Signatures", icon = icon::LIST_MAGNIFYING_GLASS)).on_hover_text(tr!("Every probe scan signature pasted, to search and clean up")).clicked() {
                 self.wh_graph.sig_browser = true;
             }
             ui.add_space(8.0);
@@ -603,9 +603,8 @@ impl SpaiApp {
                 let form = self.wh_form_here();
                 self.wh_form = Some(form);
             }
-            ui.add_space(8.0);
             let active = self.settings.wh_filter.active();
-            let label = if active == 0 { format!("{}  Filter", icon::FUNNEL) } else { format!("{}  Filter ({active})", icon::FUNNEL) };
+            let label = if active == 0 { trf!("{icon}  Filter", icon = icon::FUNNEL) } else { trf!("{icon}  Filter ({active})", icon = icon::FUNNEL, active = active) };
             let filter_btn = ui.button(label).on_hover_text(tr!("Which holes the map and the table show"));
             let mut filter_changed = false;
             egui::Popup::from_toggle_button_response(&filter_btn)
@@ -800,7 +799,7 @@ impl SpaiApp {
         form.twin = twin.as_ref().map(crate::app::wh_prompt::twin_label);
         form.second &= form.twin.is_some();
         let (type_was, dest_was) = (form.wh_type.clone(), form.dest.clone());
-        egui::Window::new(if form.id.is_some() { "Edit wormhole" } else { "Add wormhole" })
+        egui::Window::new(if form.id.is_some() { tr!("Edit wormhole") } else { tr!("Add wormhole") })
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -830,7 +829,7 @@ impl SpaiApp {
             };
             // Only a different signature makes another hole between the same two systems.
             if let Some(known) = twin.as_ref().filter(|t| form.second && t.same_hole(&fresh)) {
-                form.error = Some(format!("Another hole needs a signature other than the known one's ({}).", crate::app::wh_prompt::twin_label(known)));
+                form.error = Some(trf!("Another hole needs a signature other than the known one's ({known}).", known = crate::app::wh_prompt::twin_label(known)));
                 self.wh_form = Some(form);
                 return;
             }

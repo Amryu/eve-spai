@@ -45,8 +45,8 @@ pub(crate) fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
 
 pub(crate) fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
     let word = match kind {
-        crate::intel::AnomKind::Anomaly => "Anom",
-        crate::intel::AnomKind::Signature => "Sig",
+        crate::intel::AnomKind::Anomaly => tr!("Anom"),
+        crate::intel::AnomKind::Signature => tr!("Sig"),
     };
     let icon = egui_phosphor::regular::CROSSHAIR;
     if code.is_empty() {
@@ -133,11 +133,11 @@ pub(crate) fn char_roster_text(all: &CardChars) -> String {
         .enumerate()
         .map(|(i, h)| {
             let jtxt = match h.jumps {
-                Some(0) => "here".to_owned(),
+                Some(0) => tr!("here").to_owned(),
                 Some(j) => format!("{j}j"),
-                None => "out of range".to_owned(),
+                None => tr!("out of range").to_owned(),
             };
-            let you = if all.selected == Some(i) { "  (selected)" } else { "" };
+            let you = if all.selected == Some(i) { tr!("  (selected)") } else { "" };
             format!("{:<width$}  {jtxt}{you}", h.name)
         })
         .collect::<Vec<_>>()
@@ -274,7 +274,7 @@ pub(crate) fn intel_row(
                             ui.label(egui::RichText::new(&s.name).strong().color(accent));
                         }
                     });
-                    let body = if r.text.trim().is_empty() { "(no message text)" } else { &r.text };
+                    let body = if r.text.trim().is_empty() { tr!("(no message text)") } else { &r.text };
                     ui.add(egui::Label::new(body).wrap());
                 });
                 return;
@@ -679,9 +679,9 @@ pub(crate) fn intel_row(
                     let corp_name = aff.as_ref().and_then(|a| a.corp_name.clone());
                     let alliance_name = aff.as_ref().and_then(|a| a.alliance_name.clone());
                     let hint = if is_uncertain {
-                        "Looks inactive - click to mark real or hide"
+                        tr!("Looks inactive - click to mark real or hide")
                     } else {
-                        "Click to look up"
+                        tr!("Click to look up")
                     };
                     let resp = if compact {
                         if resp.hovered() {
@@ -818,7 +818,7 @@ pub(crate) fn intel_row(
 
                 for g in &r.gates {
                     let label = if g.is_empty() {
-                        format!("{} gate", icon::SIGN_IN)
+                        trf!("{icon} gate", icon = icon::SIGN_IN)
                     } else {
                         format!("{} {g} gate", icon::SIGN_IN)
                     };
@@ -942,11 +942,11 @@ pub(crate) fn intel_row(
                                         );
                                         if inf.attacker_count > 0 {
                                             let (tag, hover) = if inf.attacker_count == 1 {
-                                                ("S".to_owned(), "Solo kill".to_owned())
+                                                ("S".to_owned(), tr!("Solo kill").to_owned())
                                             } else {
                                                 (
                                                     format!("+{}", inf.attacker_count - 1),
-                                                    format!("{} attackers", inf.attacker_count),
+                                                    trf!("{n} attackers", n = inf.attacker_count),
                                                 )
                                             };
                                             ui.label(

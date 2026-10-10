@@ -262,12 +262,12 @@ impl SpaiApp {
                 let around = geo.as_ref().and_then(|g| g.info_of(saved.centre)).map_or_else(|| format!("#{}", saved.centre), |i| i.name.clone());
                 let left: usize = saved.plan.scouts.iter().map(|s| s.stops.len()).sum();
                 let scouts: Vec<&str> = saved.plan.scouts.iter().map(|s| s.name.as_str()).collect();
-                let hover = format!(
-                    "{} systems left for {}, {} ticked off, planned {} ago",
-                    left,
-                    scouts.join(", "),
-                    saved.done.len(),
-                    human_ago(crate::clock::utc().timestamp() - saved.at)
+                let hover = trf!(
+                    "{left} systems left for {scouts}, {done} ticked off, planned {ago} ago",
+                    left = left,
+                    scouts = scouts.join(", "),
+                    done = saved.done.len(),
+                    ago = human_ago(crate::clock::utc().timestamp() - saved.at),
                 );
                 ui.add_space(4.0);
                 if ui.button(trf!("{icon}  Resume the scan around {around}", icon = icon::ARROW_COUNTER_CLOCKWISE, around = around)).on_hover_text(hover).clicked() {
@@ -290,9 +290,9 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             ui.label(tr!("Look for"));
             let kinds = [
-                ("any", "Any hole", "Every k-space system"),
-                ("drifter", "Drifter holes", "Only systems with a Jove Observatory, the only ones drifter holes open in"),
-                ("pochven", "Pochven holes", "Only systems a Pochven C729 can open in"),
+                ("any", tr!("Any hole"), tr!("Every k-space system")),
+                ("drifter", tr!("Drifter holes"), tr!("Only systems with a Jove Observatory, the only ones drifter holes open in")),
+                ("pochven", tr!("Pochven holes"), tr!("Only systems a Pochven C729 can open in")),
             ];
             let current = kinds.iter().find(|k| k.0 == self.settings.scan.look_for).unwrap_or(&kinds[0]).1;
             egui::ComboBox::from_id_salt("scan_look_for").selected_text(current).show_ui(ui, |ui| {
@@ -306,7 +306,7 @@ impl SpaiApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.label(tr!("Security"));
-            for (code, label) in [("hs", "High"), ("ls", "Low"), ("ns", "Null")] {
+            for (code, label) in [("hs", tr!("High")), ("ls", tr!("Low")), ("ns", tr!("Null"))] {
                 let set = &mut self.settings.scan.security;
                 let on = set.is_empty() || set.iter().any(|c| c == code);
                 if ui.menu_label(on, label).clicked() {
@@ -358,7 +358,7 @@ impl SpaiApp {
             let mut on = self.settings.scan.scouts.contains(c);
             let label = match at {
                 Some(s) => format!("{c}  \u{b7}  {}", name(s)),
-                None => format!("{c}  \u{b7}  location unknown"),
+                None => trf!("{c}  \u{b7}  location unknown", c = c),
             };
             let r = ui.add_enabled(at.is_some(), egui::Checkbox::new(&mut on, label));
             if r.on_disabled_hover_text(tr!("Its location is not known yet")).changed() {
@@ -376,14 +376,14 @@ impl SpaiApp {
         }
         ui.separator();
         let Some(plan) = self.scan_route.plan.clone() else {
-            ui.label(egui::RichText::new(if self.scan_route.working.is_some() { "Planning\u{2026}" } else { "Nothing planned yet" }).weak());
+            ui.label(egui::RichText::new(if self.scan_route.working.is_some() { tr!("Planning\u{2026}") } else { tr!("Nothing planned yet") }).weak());
             return;
         };
         let detours: usize = plan.scouts.iter().map(|s| s.detours.len()).sum();
         let core = plan.scouts.iter().map(|s| s.stops.len()).sum::<usize>() - detours;
-        let mut head = format!("{core} of {} systems", self.scan_route.targets);
+        let mut head = trf!("{core} of {targets} systems", core = core, targets = self.scan_route.targets);
         if detours > 0 {
-            head.push_str(&format!(" + {detours} detour{}", if detours == 1 { "" } else { "s" }));
+            head.push_str(&if detours == 1 { trf!(" + {n} detour", n = detours) } else { trf!(" + {n} detours", n = detours) });
         }
         ui.label(egui::RichText::new(head).strong());
         if !plan.unreached.is_empty() {

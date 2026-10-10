@@ -112,7 +112,7 @@ impl SpaiApp {
         let title = subject_title(&draft.subject, &self.systems);
         let error = self.notes_error.clone();
         let mut actions = Vec::new();
-        let mut keep = Self::dialog_viewport(ctx, "note_editor", "EVE Spai - Notes and tags", [460.0, 600.0], |ui| {
+        let mut keep = Self::dialog_viewport(ctx, "note_editor", tr!("EVE Spai - Notes and tags"), [460.0, 600.0], |ui| {
             editor_body(ui, &mut draft, &book, &view, &title, error.as_deref(), &mut actions);
         });
         for a in actions {
@@ -177,8 +177,8 @@ impl SpaiApp {
         let systems = self.systems.clone();
         let mut actions = Vec::new();
         let title = match m.kind {
-            NoteKind::System => "EVE Spai - System notes and tags",
-            NoteKind::Pilot => "EVE Spai - Pilot notes and tags",
+            NoteKind::System => tr!("EVE Spai - System notes and tags"),
+            NoteKind::Pilot => tr!("EVE Spai - Pilot notes and tags"),
         };
         let keep = Self::dialog_viewport(ctx, "notes_manager", title, [860.0, 620.0], |ui| {
             manager_body(ui, &mut m, &book, &view, &systems, error.as_deref(), &mut actions);
@@ -204,11 +204,11 @@ impl SpaiApp {
                 let _ = self.apply_notes_op(op);
             }
             ManagerAction::CreateFolder { parent } => {
-                let op = NotesOp::CreateFolder { parent, name: "New folder".into() };
+                let op = NotesOp::CreateFolder { parent, name: tr!("New folder").into() };
                 if let Ok(applied) = self.apply_notes_op(op) {
                     if let Some(id) = applied.folder {
                         m.folder = id.clone();
-                        m.rename = Some((id, "New folder".into()));
+                        m.rename = Some((id, tr!("New folder").into()));
                         m.rename_focus = true;
                     }
                 }
@@ -231,12 +231,12 @@ impl SpaiApp {
                 let file = format!("{}.spainotes.json", export.folder.name.replace(['/', '\\', ':'], "_"));
                 if let Some(path) = rfd::FileDialog::new()
                     .set_file_name(file)
-                    .add_filter("EVE Spai notes", &["json"])
+                    .add_filter(tr!("EVE Spai notes"), &["json"])
                     .save_file()
                 {
                     m.status = Some(match std::fs::write(&path, crate::notes::to_json(&export)) {
-                        Ok(()) => format!("Exported to {}", path.display()),
-                        Err(e) => format!("Export failed: {e}"),
+                        Ok(()) => trf!("Exported to {path}", path = path.display()),
+                        Err(e) => trf!("Export failed: {e}", e = e),
                     });
                 }
             }
@@ -245,14 +245,14 @@ impl SpaiApp {
                 let text =
                     if compressed { crate::notes::to_compressed(&export) } else { crate::notes::to_json(&export) };
                 ctx.copy_text(text);
-                m.status = Some(format!(
-                    "Copied \"{}\" {}",
-                    export.folder.name,
-                    if compressed { "compressed" } else { "as JSON" }
-                ));
+                m.status = Some(if compressed {
+                    trf!("Copied \"{name}\" compressed", name = export.folder.name)
+                } else {
+                    trf!("Copied \"{name}\" as JSON", name = export.folder.name)
+                });
             }
             ManagerAction::OpenImportFile => {
-                if let Some(path) = rfd::FileDialog::new().add_filter("EVE Spai notes", &["json", "txt"]).pick_file() {
+                if let Some(path) = rfd::FileDialog::new().add_filter(tr!("EVE Spai notes"), &["json", "txt"]).pick_file() {
                     let imp = m.import.get_or_insert_with(|| Import {
                         text: String::new(),
                         error: None,
@@ -264,7 +264,7 @@ impl SpaiApp {
                             imp.text = t;
                             imp.error = None;
                         }
-                        Err(e) => imp.error = Some(format!("Could not read the file: {e}")),
+                        Err(e) => imp.error = Some(trf!("Could not read the file: {e}", e = e)),
                     }
                 }
             }
@@ -323,7 +323,7 @@ pub(crate) fn editor_body(
         .iter()
         .find(|(id, _)| *id == d.folder)
         .map(|(_, p)| p.clone())
-        .unwrap_or_else(|| format!("{} (made on save)", crate::notes::DEFAULT_FOLDER));
+        .unwrap_or_else(|| trf!("{folder} (made on save)", folder = crate::notes::DEFAULT_FOLDER));
     ui.horizontal(|ui| {
         ui.label(trf!("{icon}  Folder", icon = icon::FOLDER));
         egui::ComboBox::from_id_salt("note_editor_folder").selected_text(current).width(260.0).show_ui(ui, |ui| {
@@ -366,7 +366,7 @@ pub(crate) fn editor_body(
         // Tags from offline folders stay on the entry; they can be removed here but not added.
         let hidden: Vec<String> = d.tags.iter().filter(|id| view.tag(id).is_none()).cloned().collect();
         for id in hidden {
-            let name = book.tag(&id).map(|t| t.name.clone()).unwrap_or_else(|| "deleted tag".into());
+            let name = book.tag(&id).map(|t| t.name.clone()).unwrap_or_else(|| tr!("deleted tag").into());
             if selectable_chip(ui, true, egui::RichText::new(trf!("{name} (offline)", name = name)).weak())
                 .on_hover_text(tr!("Defined in an offline folder. Click to remove it from this entry."))
                 .clicked()
@@ -505,7 +505,7 @@ fn folder_rows(
                 ui.add_space(caret_w);
             } else {
                 let caret = if open { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-                let hint = if open { "Collapse" } else { "Expand" };
+                let hint = if open { tr!("Collapse") } else { tr!("Expand") };
                 if ui
                     .add_sized([caret_w, caret_w], egui::Button::new(caret).frame(false))
                     .on_hover_text(hint)
@@ -595,9 +595,9 @@ fn folder_menu(
     }
     if top {
         let (label, on) = if f.online {
-            (format!("{}  Take offline", icon::CLOUD_SLASH), false)
+            (trf!("{icon}  Take offline", icon = icon::CLOUD_SLASH), false)
         } else {
-            (format!("{}  Bring online", icon::CLOUD), true)
+            (trf!("{icon}  Bring online", icon = icon::CLOUD), true)
         };
         if ui.button(label).clicked() {
             pick = Some(ManagerAction::Op(NotesOp::SetOnline { id: id.clone(), on }));
@@ -619,7 +619,7 @@ fn folder_menu(
     }
     let mut inside = Vec::new();
     collect_ids(f, &mut inside);
-    ui.menu_button(format!("{}  Move into", icon::FOLDER), |ui| {
+    ui.menu_button(trf!("{icon}  Move into", icon = icon::FOLDER), |ui| {
         for (other, path) in folder_choices(book) {
             if inside.contains(&other) {
                 continue;
@@ -753,15 +753,15 @@ fn folder_detail(
     ui.add_space(8.0);
 
     let noun = match kind {
-        NoteKind::System => "System",
-        NoteKind::Pilot => "Pilot",
+        NoteKind::System => tr!("System"),
+        NoteKind::Pilot => tr!("Pilot"),
     };
     let n_tags = folder.tags.iter().filter(|t| t.kind == kind).count();
     let n_notes = folder.entries(kind).len();
     ui.horizontal(|ui| {
         for (tab, label) in [
-            (DetailTab::Notes, format!("{}  {noun} notes ({n_notes})", icon::NOTE)),
-            (DetailTab::Tags, format!("{}  {noun} tags ({n_tags})", icon::TAG)),
+            (DetailTab::Notes, trf!("{icon}  {noun} notes ({n})", icon = icon::NOTE, noun = noun, n = n_notes)),
+            (DetailTab::Tags, trf!("{icon}  {noun} tags ({n})", icon = icon::TAG, noun = noun, n = n_tags)),
         ] {
             if selectable_chip(ui, m.tab == tab, label).clicked() {
                 m.tab = tab;
@@ -946,7 +946,7 @@ fn notes_tab(
             if ui.button(trf!("{icon}  Show", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 actions.push(ManagerAction::Go(subject.clone()));
             }
-            ui.menu_button(format!("{}  Move to", icon::FOLDER), |ui| {
+            ui.menu_button(trf!("{icon}  Move to", icon = icon::FOLDER), |ui| {
                 for (id, path) in &choices {
                     if *id == folder.id {
                         continue;
@@ -1029,13 +1029,13 @@ fn confirm_modal(ui: &mut egui::Ui, m: &mut NotesManager, actions: &mut Vec<Mana
     let Some(c) = &m.confirm else { return };
     let (heading, body, op) = match c {
         Confirm::Folder { id, name, items } => (
-            format!("Delete \"{name}\"?"),
-            format!("The folder, its subfolders and their {items} tags and notes are deleted. Export it first to keep a copy."),
+            trf!("Delete \"{name}\"?", name = name),
+            trf!("The folder, its subfolders and their {items} tags and notes are deleted. Export it first to keep a copy.", items = items),
             NotesOp::DeleteFolder { id: id.clone() },
         ),
         Confirm::Tag { id, name, uses } => (
-            format!("Delete tag \"{name}\"?"),
-            format!("It is removed from {uses} entries. Alert rules that name it stop matching."),
+            trf!("Delete tag \"{name}\"?", name = name),
+            trf!("It is removed from {uses} entries. Alert rules that name it stop matching.", uses = uses),
             NotesOp::DeleteTag { id: id.clone() },
         ),
     };

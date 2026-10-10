@@ -756,9 +756,9 @@ impl SpaiApp {
         );
         let can_jabber = self.jabber_conn().0 && !skirmish_jid.is_empty();
         let jabber_why = if self.settings.jabber_jid.trim().is_empty() {
-            "Jabber is not set up: sign in on the Jabber tab to post pings from here."
+            tr!("Jabber is not set up: sign in on the Jabber tab to post pings from here.")
         } else {
-            "Jabber is not connected."
+            tr!("Jabber is not connected.")
         };
 
         egui::Panel::top("fleet_subnav").show_inside(ui, |ui| {
@@ -776,7 +776,7 @@ impl SpaiApp {
                 if selectable_chip(
                     ui,
                     quick_open,
-                    format!("{}  Quick Fleet", egui_phosphor::regular::LIGHTNING),
+                    trf!("{icon}  Quick Fleet", icon = egui_phosphor::regular::LIGHTNING),
                 )
                 .on_hover_text(tr!("Start from a saved preset"))
                 .clicked()
@@ -826,7 +826,7 @@ impl SpaiApp {
                             .on_hover_text(trf!("Command group: {v}", v = s.identity.command_group));
                     }
                     let n = st.journal.len();
-                    if selectable_chip(ui, journal_open, format!("{n} recorded"))
+                    if selectable_chip(ui, journal_open, trf!("{n} recorded", n = n))
                         .on_hover_text(journal_hint(mode))
                         .clicked()
                     {
@@ -1327,10 +1327,10 @@ impl SpaiApp {
                         .settings
                         .fleet_unlock
                         .is_some()
-                        .then(|| "The dashboard session has ended; sign in again to keep fleet command unlocked.".to_owned());
+                        .then(|| tr!("The dashboard session has ended; sign in again to keep fleet command unlocked.").to_owned());
                 }
                 Check::Unreachable(why) => {
-                    self.fleet_unlock_note = Some(format!("The fleet dashboard could not be reached: {why}"));
+                    self.fleet_unlock_note = Some(trf!("The fleet dashboard could not be reached: {why}", why = why));
                 }
             }
             self.needs_save = true;
@@ -1477,7 +1477,7 @@ impl SpaiApp {
         let mut open = true;
         let mut apply = false;
         let mut cancel = false;
-        egui::Window::new("Rename saved fleet")
+        egui::Window::new(tr!("Rename saved fleet"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -1498,7 +1498,7 @@ impl SpaiApp {
                             .width(40.0)
                             .selected_text("")
                             .show_ui(ui, |ui| {
-                                if ui.menu_label(folder.trim().is_empty(), "top level").clicked() {
+                                if ui.menu_label(folder.trim().is_empty(), tr!("top level")).clicked() {
                                     folder.clear();
                                 }
                                 for f in &folders {
@@ -1524,9 +1524,9 @@ impl SpaiApp {
                             egui::Button::new(tr!("Save")),
                         )
                         .on_disabled_hover_text(if taken_now {
-                            "That folder already has a preset by that name."
+                            tr!("That folder already has a preset by that name.")
                         } else {
-                            "A preset needs a name."
+                            tr!("A preset needs a name.")
                         })
                         .clicked()
                     {
@@ -1571,7 +1571,7 @@ impl SpaiApp {
         let mut open = true;
         let mut clear: Option<String> = None;
         let pick_id = egui::Id::new("fleet_boost_detail_pilot");
-        egui::Window::new(format!("Boost: {what}"))
+        egui::Window::new(trf!("Boost: {what}", what = what))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -1613,7 +1613,7 @@ impl SpaiApp {
                             let ship = ships
                                 .get(&pilot.to_lowercase())
                                 .cloned()
-                                .unwrap_or_else(|| "not in fleet".to_owned());
+                                .unwrap_or_else(|| tr!("not in fleet").to_owned());
                             let on = picked.eq_ignore_ascii_case(pilot);
                             if ui
                                 .menu_label(on, format!("{pilot}   {ship}"))
@@ -1634,9 +1634,9 @@ impl SpaiApp {
                     .collect();
                 ui.label(
                     egui::RichText::new(if picked.is_empty() {
-                        format!("Everything read from the channel ({})", posts.len())
+                        trf!("Everything read from the channel ({n})", n = posts.len())
                     } else {
-                        format!("What {picked} posted ({})", posts.len())
+                        trf!("What {picked} posted ({n})", picked = picked, n = posts.len())
                     })
                     .weak(),
                 );
@@ -1691,7 +1691,7 @@ impl SpaiApp {
         self.fleet_search_poll();
         let mut open = true;
         let mut act = FormAct::default();
-        egui::Window::new("Snowflakes")
+        egui::Window::new(tr!("Snowflakes"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -1713,7 +1713,7 @@ impl SpaiApp {
     pub(crate) fn fleet_boss_detail_window(&mut self, ctx: &egui::Context) {
         let Some(text) = self.fleet_boss_detail.clone() else { return };
         let mut open = true;
-        egui::Window::new("Fleet boss check")
+        egui::Window::new(tr!("Fleet boss check"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -1799,9 +1799,9 @@ impl SpaiApp {
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(match mode {
-                Mode::DryRun => "Dry run: the names come from the seed file and nothing is sent.",
-                Mode::ReadOnly => "Live data. Writes are recorded, not sent.",
-                Mode::Live => "Live. Actions go to the dashboard.",
+                Mode::DryRun => tr!("Dry run: the names come from the seed file and nothing is sent."),
+                Mode::ReadOnly => tr!("Live data. Writes are recorded, not sent."),
+                Mode::Live => tr!("Live. Actions go to the dashboard."),
             })
             .weak(),
         );
@@ -1853,8 +1853,8 @@ impl SpaiApp {
             }
             ui.label(
                 egui::RichText::new(match n {
-                    0 => "nothing set".to_owned(),
-                    n => format!("{n} set"),
+                    0 => tr!("nothing set").to_owned(),
+                    n => trf!("{n} set", n = n),
                 })
                 .weak(),
             );
@@ -1867,11 +1867,11 @@ impl SpaiApp {
         let bundle = crate::fleets::config::export(&self.settings, names);
         let path = rfd::FileDialog::new()
             .set_file_name("doctrines.spaifleet.json")
-            .add_filter("EVE Spai doctrines", &["json"])
+            .add_filter(tr!("EVE Spai doctrines"), &["json"])
             .save_file()?;
         Some(match std::fs::write(&path, crate::fleets::config::to_json(&bundle)) {
-            Ok(()) => format!("Exported {} doctrines.", bundle.doctrines.len()),
-            Err(e) => format!("Export failed: {e}"),
+            Ok(()) => trf!("Exported {n} doctrines.", n = bundle.doctrines.len()),
+            Err(e) => trf!("Export failed: {e}", e = e),
         })
     }
 
@@ -1879,19 +1879,19 @@ impl SpaiApp {
     /// can be shared without taking the rest of somebody's configuration with it.
     fn fleet_import_doctrines(&mut self) -> Option<String> {
         let path = rfd::FileDialog::new()
-            .add_filter("EVE Spai doctrines", &["json"])
+            .add_filter(tr!("EVE Spai doctrines"), &["json"])
             .pick_file()?;
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) => return Some(format!("Could not read it: {e}")),
+            Err(e) => return Some(trf!("Could not read it: {e}", e = e)),
         };
         let bundle = match crate::fleets::config::from_json(&text) {
             Ok(b) => b,
-            Err(e) => return Some(format!("Not a doctrine file: {e}")),
+            Err(e) => return Some(trf!("Not a doctrine file: {e}", e = e)),
         };
         let n = crate::fleets::config::import(&mut self.settings, &bundle, false);
         self.needs_save = true;
-        Some(format!("Imported {} doctrines, {} hulls, {} boosts.", n.doctrines, n.hulls, n.boosts))
+        Some(trf!("Imported {d} doctrines, {h} hulls, {b} boosts.", d = n.doctrines, h = n.hulls, b = n.boosts))
     }
 
     /// The editor window. Doctrines on the left, that doctrine's boosts on the right.
@@ -1930,7 +1930,7 @@ impl SpaiApp {
             d.get_temp(pick_id).unwrap_or_else(|| setups.first().map(|s| s.id.0).unwrap_or(0))
         });
 
-        egui::Window::new("Doctrines")
+        egui::Window::new(tr!("Doctrines"))
             .open(&mut open)
             .default_size([780.0, 540.0])
             .min_size([560.0, 320.0])
@@ -2021,9 +2021,9 @@ impl SpaiApp {
                                 egui::Button::new(trf!("{icon}  Add \"{v}\"", icon = egui_phosphor::regular::PLUS, v = clip(&typed, 14))),
                             )
                             .on_disabled_hover_text(if typed.is_empty() {
-                                "Type a name above first."
+                                tr!("Type a name above first.")
                             } else {
-                                "That doctrine is already listed."
+                                tr!("That doctrine is already listed.")
                             })
                             .clicked()
                         {
@@ -2066,13 +2066,13 @@ impl SpaiApp {
                             .iter()
                             .find(|s| s.id.0 == picked)
                             .map(|s| s.name.trim().to_owned())
-                            .unwrap_or_else(|| "No doctrine".to_owned());
+                            .unwrap_or_else(|| tr!("No doctrine").to_owned());
                         let mine = rules.iter().filter(|r| r.setup_id == picked).count();
                         let tab_id = egui::Id::new("fleet_doctrine_tab");
                         let mut tab: u8 = ui.data(|d| d.get_temp(tab_id).unwrap_or(0));
                         ui.horizontal(|ui| {
                             for (i, label) in
-                                [(0u8, "Boosts"), (1, "Ships"), (2, "Always allowed")]
+                                [(0u8, tr!("Boosts")), (1, tr!("Ships")), (2, tr!("Always allowed"))]
                             {
                                 if selectable_chip(ui, tab == i, label).clicked() {
                                     tab = i;
@@ -2146,7 +2146,7 @@ impl SpaiApp {
                             if ui
                                 .add_enabled(
                                     mine == 0,
-                                    egui::Button::new(if armor { "Fill (shield)" } else { "Fill (armor)" }),
+                                    egui::Button::new(if armor { tr!("Fill (shield)") } else { tr!("Fill (armor)") }),
                                 )
                                 .on_disabled_hover_text(tr!("This doctrine already has boosts set."))
                                 .clicked()
@@ -2182,9 +2182,9 @@ impl SpaiApp {
                             })
                             .response
                             .on_disabled_hover_text(if mine > 0 {
-                                "This doctrine already has boosts set."
+                                tr!("This doctrine already has boosts set.")
                             } else {
-                                "No other doctrine has boosts set."
+                                tr!("No other doctrine has boosts set.")
                             });
                             if let Some(from) = copy_from {
                                 let copied: Vec<_> = rules
@@ -2422,15 +2422,15 @@ fn fleets_page(
         });
         ui.add_space(4.0);
         let heading = match history.value.as_ref() {
-            Some(p) if p.total > 0 => format!(
-                "{}   {}-{} of {}",
-                if st.history_search.trim().is_empty() { "My history" } else { "Matches" },
-                st.history_skip + 1,
-                st.history_skip + p.items.len() as u32,
-                p.total
+            Some(p) if p.total > 0 => trf!(
+                "{what}   {from}-{to} of {total}",
+                what = if st.history_search.trim().is_empty() { tr!("My history") } else { tr!("Matches") },
+                from = st.history_skip + 1,
+                to = st.history_skip + p.items.len() as u32,
+                total = p.total
             ),
-            Some(_) if !st.history_search.trim().is_empty() => "No fleet matches".to_owned(),
-            _ => "My history".to_owned(),
+            Some(_) if !st.history_search.trim().is_empty() => tr!("No fleet matches").to_owned(),
+            _ => tr!("My history").to_owned(),
         };
         rows(ui, &heading, history.value.as_ref().map(|p| p.items.as_slice()), &history, goto);
         if let Some(p) = history.value.as_ref() {
@@ -2570,9 +2570,9 @@ fn preset_kind(
     // as P until there is a reason to split them further.
     let strat = primary.iter().any(|t| t.name.trim().eq_ignore_ascii_case("STRATEGIC"));
     Some(if strat {
-        ("S", standing::HOSTILE, "Strategic")
+        ("S", standing::HOSTILE, tr!("Strategic"))
     } else {
-        ("P", standing::WARNING, "Peacetime")
+        ("P", standing::WARNING, tr!("Peacetime"))
     })
 }
 
@@ -2804,7 +2804,7 @@ fn start_page(
                 let starting = st.starting;
                 let tracked = st.already_tracking();
                 let track = |ui: &mut egui::Ui, act: &mut FormAct| {
-                    let label = if starting { "Starting\u{2026}" } else { "Track fleet" };
+                    let label = if starting { tr!("Starting\u{2026}") } else { tr!("Track fleet") };
                     let resp = ui
                         .add_enabled(
                             can_start && ready && boss_ok && !starting && tracked.is_none(),
@@ -2905,7 +2905,7 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
         );
         let combo = egui::ComboBox::from_id_salt("preset_folder_pick").width(0.0);
         combo.show_ui(ui, |ui| {
-            if ui.menu_label(folder.is_empty(), "Top level").clicked() {
+            if ui.menu_label(folder.is_empty(), tr!("Top level")).clicked() {
                 folder.clear();
             }
             for f in folders {
@@ -3412,8 +3412,13 @@ fn channel_row(
         let current = slot
             .and_then(|id| list.iter().find(|c| c.id == id))
             .map(|c| c.name.trim().to_owned())
-            .unwrap_or_else(|| "none".to_owned());
-        egui::ComboBox::from_id_salt(salt).width(180.0).selected_text(current).show_ui(ui, |ui| {
+            .unwrap_or_else(|| tr!("none").to_owned());
+        let taken = slot.is_some_and(|id| list.iter().any(|c| c.id == id && c.is_in_use));
+        // The combo gives way to the tags beside it, which run longer in some languages.
+        let tag_w = |t: &str| egui::WidgetText::from(t).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x + ui.spacing().item_spacing.x;
+        let tags = if auto { tag_w(tr!("switched")) } else { 0.0 } + if taken { tag_w(tr!("in use")) } else { 0.0 };
+        let combo_w = (ui.available_width() - tags - 2.0 * ui.spacing().item_spacing.x).clamp(100.0, 180.0);
+        egui::ComboBox::from_id_salt(salt).width(combo_w).selected_text(current).show_ui(ui, |ui| {
             changed |= ui.menu_value(slot, None, tr!("none")).changed();
             for c in list {
                 let text = if c.is_in_use {
@@ -3430,7 +3435,7 @@ fn channel_row(
             )
             .on_hover_text(tr!("The channel asked for was taken, so this free one was picked."));
         }
-        if slot.is_some_and(|id| list.iter().any(|c| c.id == id && c.is_in_use)) {
+        if taken {
             ui.label(
                 egui::RichText::new(tr!("in use")).color(crate::theme::standing::WARNING),
             )
@@ -3544,7 +3549,7 @@ fn tag_field(
             let chosen: Vec<&TagItem> = pool.iter().filter(|t| selected.contains(&t.id)).collect();
             if chosen.is_empty() {
                 ui.label(
-                    egui::RichText::new(if single { "none" } else { "none selected" }).weak(),
+                    egui::RichText::new(if single { tr!("none") } else { tr!("none selected") }).weak(),
                 );
             }
             for t in chosen {
@@ -3572,7 +3577,7 @@ fn tag_field(
 
     let open_button = ui
         .button(egui_phosphor::regular::CARET_DOWN)
-        .on_hover_text(if single { "Choose the primary tag" } else { "Choose secondary tags" });
+        .on_hover_text(if single { tr!("Choose the primary tag") } else { tr!("Choose secondary tags") });
     let _ = inner;
 
     // As wide as the window allows: the tags are short, so a wide popup fits three or four to a
@@ -3791,13 +3796,13 @@ fn snowflake_rows(
         let add = ui
             .add_enabled(ready, egui::Button::new(trf!("{icon}  Add", icon = egui_phosphor::regular::PLUS)))
             .on_disabled_hover_text(if !can {
-                "Your account does not have the manageFleetSnowflakes permission."
+                tr!("Your account does not have the manageFleetSnowflakes permission.")
             } else if name.trim().is_empty() {
-                "Type a character name."
+                tr!("Type a character name.")
             } else if exact.is_none() {
-                "No character by that name."
+                tr!("No character by that name.")
             } else {
-                "Already a snowflake."
+                tr!("Already a snowflake.")
             });
         if add.clicked() {
             if let Some(l) = exact {
@@ -3915,9 +3920,9 @@ fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
                                 .return_key(shift_enter)
                                 .desired_rows(1)
                                 .hint_text(if d.connected {
-                                    "message (Shift+Enter for a new line)"
+                                    tr!("message (Shift+Enter for a new line)")
                                 } else {
-                                    "jabber offline"
+                                    tr!("jabber offline")
                                 }),
                         );
                         if ready
@@ -3985,7 +3990,7 @@ fn side_pane(
     // fleet, so the target is the whole half rather than a label inside it.
     ui.horizontal(|ui| {
         let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        for (i, label) in [(0u8, "Presets"), (1, "Ping preview")] {
+        for (i, label) in [(0u8, tr!("Presets")), (1, tr!("Ping preview"))] {
             if pane_tab(ui, w, tab == i, label).clicked() {
                 tab = i;
             }
@@ -4270,9 +4275,9 @@ fn preset_row(
             })
             .response
             .on_hover_text(if p.folder.trim().is_empty() {
-                format!("Drag {} into a folder, or onto another to go before it", p.label)
+                trf!("Drag {name} into a folder, or onto another to go before it", name = p.label)
             } else {
-                format!("Drag {} out of {}, or onto another to go before it", p.label, p.folder.trim())
+                trf!("Drag {name} out of {folder}, or onto another to go before it", name = p.label, folder = p.folder.trim())
             });
         },
     )
@@ -4387,11 +4392,11 @@ fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
 /// The question a destructive action asks before it is recorded, or nothing when it is harmless.
 fn confirm_question(action: &Action) -> Option<&'static str> {
     Some(match action {
-        Action::Close => "Close this fleet?",
-        Action::KickAll => "Kick everyone out of the fleet?",
-        Action::KickCapsules => "Kick every pod out of the fleet?",
-        Action::KickMany { .. } => "Kick everyone in the wrong ship?",
-        Action::Kick { .. } => "Kick them out of the fleet?",
+        Action::Close => tr!("Close this fleet?"),
+        Action::KickAll => tr!("Kick everyone out of the fleet?"),
+        Action::KickCapsules => tr!("Kick every pod out of the fleet?"),
+        Action::KickMany { .. } => tr!("Kick everyone in the wrong ship?"),
+        Action::Kick { .. } => tr!("Kick them out of the fleet?"),
         _ => return None,
     })
 }
@@ -4417,16 +4422,17 @@ fn danger(action: &Action) -> Danger {
 /// What a severe action costs, spelled out rather than implied.
 fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
     match action {
-        Action::Close => Some(format!(
-            "The fleet stops being tracked and {pilots} pilots stop earning PAPs for it."
+        Action::Close => Some(trf!(
+            "The fleet stops being tracked and {pilots} pilots stop earning PAPs for it.",
+            pilots = pilots
         )),
         Action::KickAll => {
-            Some(format!("All {pilots} pilots are removed. They have to be invited back one by one."))
+            Some(trf!("All {pilots} pilots are removed. They have to be invited back one by one.", pilots = pilots))
         }
-        Action::KickCapsules => Some("Every pilot in a pod is removed.".to_owned()),
-        Action::KickMany { character_ids, .. } => Some(format!(
-            "{} pilots are removed. Bridges and the FC are left where they are.",
-            character_ids.len()
+        Action::KickCapsules => Some(tr!("Every pilot in a pod is removed.").to_owned()),
+        Action::KickMany { character_ids, .. } => Some(trf!(
+            "{n} pilots are removed. Bridges and the FC are left where they are.",
+            n = character_ids.len()
         )),
         _ => None,
     }
@@ -4766,7 +4772,7 @@ fn tracking_page(
                 if selectable_chip(
                     ui,
                     *sidebar,
-                    format!("{}  Settings", egui_phosphor::regular::SLIDERS_HORIZONTAL),
+                    trf!("{icon}  Settings", icon = egui_phosphor::regular::SLIDERS_HORIZONTAL),
                 )
                 .on_hover_text(tr!("Change the doctrine or the comms of this fleet"))
                 .clicked()
@@ -4789,13 +4795,6 @@ fn tracking_page(
         });
         ui.add_space(4.0);
     });
-
-    // Nothing on that bar can act on a fleet that is already closed, so the bar is not there.
-    if !read_only {
-        egui::Panel::bottom("fleet_actions").frame(bar_frame(ui)).show_inside(ui, |ui| {
-            action_bar(ui, st, act_on, open_migrate);
-        });
-    }
 
     if *sidebar {
         egui::Panel::right("fleet_sidebar")
@@ -4823,6 +4822,15 @@ fn tracking_page(
     // After the readiness sidebar, so it docks to the left of it. The member tree's columns are
     // fixed, so it needs their full width before anything may take space beside it.
     chat_dock(ui, chat, MEMBER_TABLE_W);
+
+    // Nothing on that bar can act on a fleet that is already closed, so the bar is not there.
+    // Placed after the side panels, so it sits under the member list and wraps there rather than
+    // running under the sidebar.
+    if !read_only {
+        egui::Panel::bottom("fleet_actions").frame(bar_frame(ui)).show_inside(ui, |ui| {
+            action_bar(ui, st, act_on, open_migrate);
+        });
+    }
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         let (can_move, can_kick) = (
@@ -5719,7 +5727,7 @@ fn action_bar(
                     .collect();
                 let more = n.saturating_sub(who.len());
                 resp.on_hover_text(if more > 0 {
-                    format!("{}\nand {more} more", who.join("\n"))
+                    format!("{}\n{}", who.join("\n"), trf!("and {more} more", more = more))
                 } else {
                     who.join("\n")
                 })
@@ -5736,11 +5744,11 @@ fn action_bar(
 
         // Inviting needs somebody to invite, which is a picker this page does not have yet.
         let actions: [(&str, &str, Action); 5] = [
-            (icon::MEGAPHONE, "Set MOTD", Action::SetMotd),
-            (icon::STACK, "Add wing", Action::AddWing),
-            (icon::PROHIBIT, "Kick pods", Action::KickCapsules),
-            (icon::SIGN_OUT, "Kick everyone", Action::KickAll),
-            (icon::X_CIRCLE, "Close fleet", Action::Close),
+            (icon::MEGAPHONE, tr!("Set MOTD"), Action::SetMotd),
+            (icon::STACK, tr!("Add wing"), Action::AddWing),
+            (icon::PROHIBIT, tr!("Kick pods"), Action::KickCapsules),
+            (icon::SIGN_OUT, tr!("Kick everyone"), Action::KickAll),
+            (icon::X_CIRCLE, tr!("Close fleet"), Action::Close),
         ];
         for (glyph, label, action) in actions {
             let perm = action.perm();
@@ -6418,7 +6426,7 @@ impl SpaiApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("Quick Fleet")
+        egui::Window::new(tr!("Quick Fleet"))
             .open(&mut open)
             .default_size([340.0, 420.0])
             .collapsible(false)
@@ -6650,7 +6658,7 @@ impl SpaiApp {
         let mut search: Option<String> = None;
         let mut check: Option<i64> = None;
         let mut migrate: Option<i64> = None;
-        egui::Window::new("Migrate fleet")
+        egui::Window::new(tr!("Migrate fleet"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

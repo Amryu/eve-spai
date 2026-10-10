@@ -49,13 +49,13 @@ impl SpaiApp {
         const R: f32 = 58.0;
         const BTN: egui::Vec2 = egui::vec2(104.0, 28.0);
         let opts: Vec<(&str, &str, &str)> = if leg_only {
-            vec![("gate", i::SIGN_IN, "Gate"), ("jump", i::SPIRAL, "Jump"), ("cancel", i::X, "Cancel")]
+            vec![("gate", i::SIGN_IN, tr!("Gate")), ("jump", i::SPIRAL, tr!("Jump")), ("cancel", i::X, tr!("Cancel"))]
         } else {
             vec![
-                ("gate", i::SIGN_IN, "Gate route"),
-                ("jump", i::SPIRAL, "Jump route"),
-                ("mixed", i::SHUFFLE, "Mixed route"),
-                ("cancel", i::X, "Cancel"),
+                ("gate", i::SIGN_IN, tr!("Gate route")),
+                ("jump", i::SPIRAL, tr!("Jump route")),
+                ("mixed", i::SHUFFLE, tr!("Mixed route")),
+                ("cancel", i::X, tr!("Cancel")),
             ]
         };
         let half = egui::vec2(R + BTN.x / 2.0 + 8.0, R + BTN.y / 2.0 + 8.0);
@@ -512,9 +512,9 @@ impl SpaiApp {
         let gates = graph.jumps_gates_only(from, to, JUMP_SCAN_CAP);
         let bridged = graph.jumps(from, to, JUMP_SCAN_CAP);
         let jumps = |n: Option<u32>| match n {
-            Some(1) => "1 jump".to_owned(),
-            Some(n) => format!("{n} jumps"),
-            None => "no route".to_owned(),
+            Some(1) => tr!("1 jump").to_owned(),
+            Some(n) => trf!("{n} jumps", n = n),
+            None => tr!("no route").to_owned(),
         };
         egui::Area::new(egui::Id::new("map_link_tip"))
             .order(egui::Order::Tooltip)

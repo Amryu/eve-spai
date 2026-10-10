@@ -149,7 +149,7 @@ pub(crate) fn ping_viewport_builder(
 ) -> egui::ViewportBuilder {
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
-        .with_title("EVE Spai \u{2014} Fleet ping")
+        .with_title(tr!("EVE Spai \u{2014} Fleet ping"))
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
         .with_taskbar(false)
@@ -200,7 +200,7 @@ pub(crate) fn alert_viewport_builder(
 ) -> egui::ViewportBuilder {
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
-        .with_title("EVE Spai \u{2014} alerts")
+        .with_title(tr!("EVE Spai \u{2014} alerts"))
         .with_window_level(if on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
@@ -476,9 +476,9 @@ pub(crate) fn build_alert_viewport_cb(
                                 snooze = !snooze;
                             }
                             let (ticon, thint) = if compact {
-                                (egui_phosphor::regular::ARROWS_OUT, "Expand")
+                                (egui_phosphor::regular::ARROWS_OUT, tr!("Expand"))
                             } else {
-                                (egui_phosphor::regular::ARROWS_IN, "Compact mode")
+                                (egui_phosphor::regular::ARROWS_IN, tr!("Compact mode"))
                             };
                             if ui.button(ticon).on_hover_text(thint).clicked() {
                                 compact_toggle = Some(!compact);

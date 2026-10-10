@@ -613,7 +613,7 @@ impl SpaiApp {
             }
             if focus.is_none() && Some(s.id) == fc {
                 painter.circle_stroke(p, dot + 8.5 * k, egui::Stroke::new(ring(3.0), FC_COL));
-                painter.text(p + egui::vec2(-(dot + 6.0 * k), -(dot + 6.0 * k)), egui::Align2::RIGHT_BOTTOM, "FC", font.clone(), FC_COL);
+                painter.text(p + egui::vec2(-(dot + 6.0 * k), -(dot + 6.0 * k)), egui::Align2::RIGHT_BOTTOM, tr!("FC"), font.clone(), FC_COL);
             }
             // A system is named once its dot has room for a name, fading in as the room opens up.
             let room = pos
@@ -658,8 +658,9 @@ impl SpaiApp {
                     continue;
                 }
                 let Some(name) = graph.info_of(any).map(|i| i.region.clone()) else { continue };
-                painter.text(c + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, &name, region_font.clone(), egui::Color32::from_black_alpha(180));
-                painter.text(c, egui::Align2::CENTER_CENTER, &name, region_font.clone(), egui::Color32::from_gray(220));
+                let col = visuals.strong_text_color();
+                painter.text(c + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, &name, region_font.clone(), spai_ui::theme::halo(col));
+                painter.text(c, egui::Align2::CENTER_CENTER, &name, region_font.clone(), col);
             }
         }
         // Over the canvas, not above it: a line of text in the layout pushed the map and the side
@@ -842,7 +843,7 @@ impl SpaiApp {
                         .selected_text(current.clone().unwrap_or_else(|| "Whole fleet".to_owned()))
                         .show_ui(ui, |ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.fleet_map.search).hint_text(tr!("Search")));
-                            if ui.menu_label(focus.is_none(), "Whole fleet").clicked() {
+                            if ui.menu_label(focus.is_none(), tr!("Whole fleet")).clicked() {
                                 focus = None;
                             }
                             let q = self.fleet_map.search.to_lowercase();

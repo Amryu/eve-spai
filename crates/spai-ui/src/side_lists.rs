@@ -72,8 +72,8 @@ fn facts_text(w: &Wormhole, now: i64) -> String {
 fn who_texts(w: &Wormhole, now: i64) -> (String, String) {
     let (_, edited) = who_lines(w, now);
     match (&edited, &w.edited_by) {
-        (Some(_), Some((who, at))) => (format!("{} {} ago", icon::PENCIL_SIMPLE, human_ago(now - at)), who.clone()),
-        _ => (format!("{} ago", human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().tr().to_owned())),
+        (Some(_), Some((who, at))) => (format!("{} {}", icon::PENCIL_SIMPLE, crate::trf!("{age} ago", age = human_ago(now - at))), who.clone()),
+        _ => (crate::trf!("{age} ago", age = human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().tr().to_owned())),
     }
 }
 
@@ -83,7 +83,7 @@ fn who_width(ui: &egui::Ui, here: &[&Wormhole], now: i64) -> f32 {
         let (at, by) = who_texts(w, now);
         text_w(ui, &at).max(text_w(ui, &by))
     })
-    .fold(text_w(ui, crate::tr!("88m ago")), f32::max)
+    .fold(text_w(ui, &crate::trf!("{age} ago", age = "88m")), f32::max)
     .min(text_w(ui, crate::tr!("Mmmmmmmmmmmmmmmm")))
 }
 
@@ -173,8 +173,8 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                                 if let Some(m) = w.mass {
                                     part(&mut job, m.short(), mass_color(Some(m)));
                                 }
-                                let read = w.observed_at.map(|t| format!(", read {} ago", human_ago(now - t))).unwrap_or_default();
-                                let hover = [hole_code(w), w.hours_left(now).map(|h| format!("Time left: {h}h{read}")), crate::wh_graph::opened_line(w, now), w.mass.map(|m| format!("Mass: {}", m.label().tr()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
+                                let read = w.observed_at.map(|t| crate::trf!(", read {ago} ago", ago = human_ago(now - t))).unwrap_or_default();
+                                let hover = [hole_code(w), w.hours_left(now).map(|h| crate::trf!("Time left: {h}h{read}", h = h, read = read)), crate::wh_graph::opened_line(w, now), w.mass.map(|m| crate::trf!("Mass: {mass}", mass = m.label().tr()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
                                 if !job.text.is_empty() {
                                     ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false)).on_hover_text(hover);
                                 }
@@ -382,7 +382,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
                                 act.delete = Some(sg.clone());
                             }
                             let is_hole = hole.is_some() || sg.group == "Wormhole";
-                            if can_edit && is_hole && icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { "Edit this wormhole" } else { "Add it as a wormhole" }).clicked() {
+                            if can_edit && is_hole && icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { crate::tr!("Edit this wormhole") } else { crate::tr!("Add it as a wormhole") }).clicked() {
                                 match hole {
                                     Some(w) => act.edit = Some(w.uid.clone()),
                                     None => act.new_hole = Some(WhForm::at(sys_name.to_owned(), sg.sig.clone(), unidentified_type(sel, &sg.name))),

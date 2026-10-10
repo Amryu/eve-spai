@@ -25,6 +25,7 @@ impl SpaiApp {
         #[derive(Clone, Copy, PartialEq)]
         enum S {
             Shortcut,
+            Language,
             Welcome,
             Logs,
             Channels,
@@ -39,7 +40,7 @@ impl SpaiApp {
         if matches!(crate::tray::menu_entry_exists(), Some(false)) {
             steps.push(S::Shortcut);
         }
-        steps.extend([S::Welcome, S::Logs, S::Channels]);
+        steps.extend([S::Language, S::Welcome, S::Logs, S::Channels]);
         if self.settings.configuration_pack == "The Imperium" {
             steps.extend([S::JumpBridges, S::SovUpgrades, S::Jabber]);
         }
@@ -51,7 +52,7 @@ impl SpaiApp {
 
         let mut close = false;
         let mut finish = false;
-        egui::Window::new(format!("{}  Setup", icon::MAGIC_WAND))
+        egui::Window::new(trf!("{icon}  Setup", icon = icon::MAGIC_WAND))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -107,7 +108,7 @@ impl SpaiApp {
                         ui.add_space(4.0);
                         let hint = crate::logpaths::chat_logs_dir("")
                             .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "auto-detect".into());
+                            .unwrap_or_else(|| tr!("auto-detect").into());
                         let resolved = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
                         ui.horizontal(|ui| {
                             ui.add(
@@ -278,7 +279,7 @@ impl SpaiApp {
                                         }
                                         Err(e) => {
                                             self.jabber.lock().unwrap().status =
-                                                format!("Keychain error: {e}");
+                                                trf!("Keychain error: {e}", e = e);
                                         }
                                     }
                                 }
@@ -300,6 +301,19 @@ impl SpaiApp {
                                 egui::RichText::new(trf!("{icon}  {v} character(s) linked", icon = icon::CHECK_CIRCLE, v = self.characters.len()))
                                 .color(crate::theme::standing::ALLIANCE),
                             );
+                        }
+                    }
+                    S::Language => {
+                        ui.heading(trf!("{icon}  Language", icon = icon::TRANSLATE));
+                        ui.label(tr!("The language EVE Spai shows. It can be changed in Settings at any time."));
+                        ui.add_space(4.0);
+                        self.language_picker(ui);
+                        if ui
+                            .checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
+                            .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."))
+                            .changed()
+                        {
+                            self.needs_save = true;
                         }
                     }
                     S::Theme => {
@@ -349,8 +363,56 @@ impl SpaiApp {
         self.wizard_step = idx.min(last) as u8;
         if finish || close {
             self.settings.wizard_done = true;
+            self.settings.language_asked = true;
             self.needs_save = true;
             self.wizard_open = false;
+        }
+    }
+
+    /// The language dropdown: the system's language first, then each one in its own name.
+    pub(crate) fn language_picker(&mut self, ui: &mut egui::Ui) -> bool {
+        let name_of = |code: &str| spai_ui::i18n::LANGUAGES.iter().find(|(c, _)| *c == code).map_or("English", |(_, n)| *n);
+        let auto = trf!("System ({lang})", lang = name_of(&spai_ui::i18n::system_language()));
+        let current = if self.settings.language.is_empty() { auto.clone() } else { name_of(&self.settings.language).to_owned() };
+        let mut changed = false;
+        egui::ComboBox::from_id_salt("settings_language").selected_text(current).show_ui(ui, |ui| {
+            changed |= ui.menu_value(&mut self.settings.language, String::new(), auto).changed();
+            for (code, name) in spai_ui::i18n::LANGUAGES {
+                changed |= ui.menu_value(&mut self.settings.language, code.to_owned(), name).changed();
+            }
+        });
+        if changed {
+            self.needs_save = true;
+        }
+        changed
+    }
+
+    /// Asks once for the language, for people who finished setup before it had a language step.
+    pub(crate) fn language_dialog(&mut self, ctx: &egui::Context) {
+        if self.settings.language_asked || !self.settings.wizard_done || self.wizard_open {
+            return;
+        }
+        let mut done = false;
+        egui::Window::new(trf!("{icon}  Language", icon = egui_phosphor::regular::TRANSLATE))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label(tr!("EVE Spai now speaks more languages. Pick one, or keep your system's."));
+                ui.add_space(4.0);
+                self.language_picker(ui);
+                ui.checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
+                    .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."));
+                ui.add_space(6.0);
+                let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    done = ui.button(tr!("OK")).clicked();
+                });
+            });
+        if done {
+            self.settings.language_asked = true;
+            self.needs_save = true;
         }
     }
 
@@ -426,7 +488,7 @@ impl SpaiApp {
                     Err(e) => picker.add_status = Some(e),
                 }
             }
-            let title = format!("{}  filter: {}", egui_phosphor::regular::FUNNEL, picker.kind.title().tr());
+            let title = trf!("{icon}  filter: {kind}", icon = egui_phosphor::regular::FUNNEL, kind = picker.kind.title().tr());
             let mut actions = crate::pickers::PickerActions::default();
             egui::Window::new(title)
                 .open(&mut open)
@@ -489,8 +551,8 @@ impl SpaiApp {
                 .map_err(|e| e.to_string())
                 .and_then(|c| match crate::universe::character(&c, &name) {
                     Ok(Some((_, found))) => Ok(found),
-                    Ok(None) => Err(format!("No pilot named \"{}\"", name.trim())),
-                    Err(e) => Err(format!("lookup failed: {e}")),
+                    Ok(None) => Err(trf!("No pilot named \"{name}\"", name = name.trim())),
+                    Err(e) => Err(trf!("lookup failed: {e}", e = e)),
                 });
             *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(res);
             ctx.request_repaint();
@@ -512,7 +574,7 @@ impl SpaiApp {
             let text = if list.is_empty() { any.to_owned() } else { list.join(", ") };
             let w = ui.available_width().min(420.0);
             ui.add(egui::Button::new((egui::RichText::new(&text), egui::Atom::grow(), egui_phosphor::regular::PENCIL_SIMPLE)).truncate().min_size(egui::vec2(w, 0.0)))
-                .on_hover_text(if list.is_empty() { "Click to choose".to_owned() } else { text.clone() })
+                .on_hover_text(if list.is_empty() { tr!("Click to choose").to_owned() } else { text.clone() })
                 .clicked()
         };
         let row = |ui: &mut egui::Ui, label: &str, hint: &str| {
@@ -563,26 +625,26 @@ impl SpaiApp {
 
             row(ui, tr!("Mentions"), tr!("The report has to mention one of these"));
             const KINDS: [(&str, &str); 10] = [
-                ("bubble", "Bubble"),
-                ("camp", "Camp"),
-                ("cyno", "Cyno"),
-                ("dropper", "Dropper"),
-                ("captackled", "Capital tackled"),
-                ("kill", "Kill"),
+                ("bubble", tr_noop!("Bubble")),
+                ("camp", tr_noop!("Camp")),
+                ("cyno", tr_noop!("Cyno")),
+                ("dropper", tr_noop!("Dropper")),
+                ("captackled", tr_noop!("Capital tackled")),
+                ("kill", tr_noop!("Kill")),
                 ("ess", "ESS"),
-                ("spike", "Spike"),
-                ("wormhole", "Wormhole"),
-                ("help", "Help"),
+                ("spike", tr_noop!("Spike")),
+                ("wormhole", tr_noop!("Wormhole")),
+                ("help", tr_noop!("Help")),
             ];
-            let picked: Vec<String> = KINDS.iter().filter(|(k, _)| ru.require.iter().any(|t| t == k)).map(|(_, l)| (*l).to_owned()).collect();
-            let text = if picked.is_empty() { "Anything".to_owned() } else { picked.join(", ") };
+            let picked: Vec<String> = KINDS.iter().filter(|(k, _)| ru.require.iter().any(|t| t == k)).map(|(_, l)| l.tr().to_owned()).collect();
+            let text = if picked.is_empty() { tr!("Anything").to_owned() } else { picked.join(", ") };
             let w = ui.available_width().min(420.0);
             let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), egui_phosphor::regular::CARET_DOWN)).truncate().min_size(egui::vec2(w, 0.0)))
                 .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
             menu.ui(ui, |ui| {
                 for (tag, label) in KINDS {
                     let mut on = ru.require.iter().any(|t| t == tag);
-                    if ui.checkbox(&mut on, label).changed() {
+                    if ui.checkbox(&mut on, label.tr()).changed() {
                         ru.require.retain(|t| t != tag);
                         if on {
                             ru.require.push(tag.to_owned());
@@ -652,7 +714,7 @@ impl SpaiApp {
             ui.add_enabled_ui(!ru.suppress, |ui| {
                 egui::ComboBox::from_id_salt(("rsevover", i))
                     .selected_text(match ru.severity_override {
-                        None => "As reported".to_owned(),
+                        None => tr!("As reported").to_owned(),
                         Some(s) => format!("{s:?}"),
                     })
                     .show_ui(ui, |ui| {
@@ -794,7 +856,7 @@ impl SpaiApp {
                                             },
                                         );
                                         let label =
-                                            if name.is_empty() { "(unnamed rule)" } else { &name };
+                                            if name.is_empty() { tr!("(unnamed rule)") } else { &name };
                                         let txt = if enabled {
                                             egui::RichText::new(label)
                                         } else {
@@ -921,7 +983,7 @@ impl SpaiApp {
         let channels = &self.settings.intel_channels;
         let mut open = true;
         let mut send = false;
-        egui::Window::new(format!("{}  Test intel", egui_phosphor::regular::FLASK))
+        egui::Window::new(trf!("{icon}  Test intel", icon = egui_phosphor::regular::FLASK))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -990,7 +1052,7 @@ impl SpaiApp {
                 author: t.reporter.trim().to_owned(),
                 text: t.text.trim().to_owned(),
             };
-            t.sent = Some(format!("Sent to {}.", t.channel.trim()));
+            t.sent = Some(trf!("Sent to {channel}.", channel = t.channel.trim()));
             self.intel_inject.lock().unwrap().push((t.channel.trim().to_owned(), msg));
         }
         if !open {
@@ -1007,7 +1069,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "severity_window",
-            "EVE Spai - Intel severity",
+            tr!("EVE Spai - Intel severity"),
             [620.0, 480.0],
             |ui| {
                 ui.label(
@@ -1016,11 +1078,11 @@ impl SpaiApp {
                 );
                 ui.add_space(4.0);
                 let sv = &mut self.settings.severity;
-                let combo = |ui: &mut egui::Ui, label: &str, val: &mut crate::settings::Severity| -> bool {
+                let combo = |ui: &mut egui::Ui, label: &'static str, val: &mut crate::settings::Severity| -> bool {
                     use crate::settings::Severity::*;
                     let mut ch = false;
                     ui.horizontal(|ui| {
-                        ui.label(label);
+                        ui.label(label.tr());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             egui::ComboBox::from_id_salt(label)
                                 .selected_text(format!("{val:?}"))
@@ -1041,18 +1103,18 @@ impl SpaiApp {
                         ui.add(egui::DragValue::new(&mut sv.big_gang_threshold).range(2..=100)).changed();
                 });
                 ui.columns(2, |c| {
-                    changed |= combo(&mut c[0], "Small gang (< threshold)", &mut sv.small_gang);
-                    changed |= combo(&mut c[0], "Big gang (≥ threshold)", &mut sv.big_gang);
-                    changed |= combo(&mut c[0], "Bubble", &mut sv.bubble);
-                    changed |= combo(&mut c[0], "Gate camp", &mut sv.gate_camp);
-                    changed |= combo(&mut c[0], "Spike (local)", &mut sv.spike);
-                    changed |= combo(&mut c[0], "Cyno", &mut sv.cyno);
-                    changed |= combo(&mut c[1], "Capital tackled", &mut sv.cap_tackled);
-                    changed |= combo(&mut c[1], "Kill", &mut sv.kill);
-                    changed |= combo(&mut c[1], "No visual", &mut sv.no_visual);
-                    changed |= combo(&mut c[1], "Wormhole", &mut sv.wormhole);
+                    changed |= combo(&mut c[0], tr_noop!("Small gang (< threshold)"), &mut sv.small_gang);
+                    changed |= combo(&mut c[0], tr_noop!("Big gang (≥ threshold)"), &mut sv.big_gang);
+                    changed |= combo(&mut c[0], tr_noop!("Bubble"), &mut sv.bubble);
+                    changed |= combo(&mut c[0], tr_noop!("Gate camp"), &mut sv.gate_camp);
+                    changed |= combo(&mut c[0], tr_noop!("Spike (local)"), &mut sv.spike);
+                    changed |= combo(&mut c[0], tr_noop!("Cyno"), &mut sv.cyno);
+                    changed |= combo(&mut c[1], tr_noop!("Capital tackled"), &mut sv.cap_tackled);
+                    changed |= combo(&mut c[1], tr_noop!("Kill"), &mut sv.kill);
+                    changed |= combo(&mut c[1], tr_noop!("No visual"), &mut sv.no_visual);
+                    changed |= combo(&mut c[1], tr_noop!("Wormhole"), &mut sv.wormhole);
                     changed |= combo(&mut c[1], "ESS", &mut sv.ess);
-                    changed |= combo(&mut c[1], "High-threat ships", &mut sv.threat_ship);
+                    changed |= combo(&mut c[1], tr_noop!("High-threat ships"), &mut sv.threat_ship);
                 });
                 ui.separator();
                 ui.label(egui::RichText::new(tr!("High-threat hulls (one per line)")).weak());
@@ -1097,7 +1159,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "coalitions_window",
-            "EVE Spai - Coalitions",
+            tr!("EVE Spai - Coalitions"),
             [520.0, 680.0],
             |ui| {
                 ui.label(
@@ -1184,7 +1246,7 @@ impl SpaiApp {
                                 egui::ComboBox::from_id_salt(("coal_of", i))
                                     .selected_text(current.clone().unwrap_or_else(|| "—".to_owned()))
                                     .show_ui(ui, |ui| {
-                                        if ui.menu_label(current.is_none(), "— independent").clicked() {
+                                        if ui.menu_label(current.is_none(), tr!("— independent")).clicked() {
                                             ally_assign = Some((a.name.clone(), None));
                                         }
                                         for c in &self.settings.coalitions {
@@ -1206,7 +1268,7 @@ impl SpaiApp {
             },
         );
         if add {
-            self.coal_edit.push(("New coalition".to_owned(), String::new()));
+            self.coal_edit.push((tr!("New coalition").to_owned(), String::new()));
         }
         if reset {
             self.coal_edit = crate::settings::default_coalitions()
@@ -1295,17 +1357,17 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "jump_bridges_window",
-            "EVE Spai - Jump bridges",
+            tr!("EVE Spai - Jump bridges"),
             [460.0, 560.0],
             |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(tr!("Paste the dotlan bridge link.")).weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
-                        "Imperium members: open the forum topic and copy its dotlan Ansiblex \
+                        tr!("Imperium members: open the forum topic and copy its dotlan Ansiblex \
                          link (https://evemaps.dotlan.net/universe/A::B,C::D), which lists the \
-                         whole network.",
+                         whole network."),
                     );
-                    ui.hyperlink_to("Equinox upgrades", EQUINOX_TOPIC);
+                    ui.hyperlink_to(tr!("Equinox upgrades"), EQUINOX_TOPIC);
                 });
                 egui::ScrollArea::vertical()
                     .max_height(90.0)
@@ -1511,10 +1573,10 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "sov_upgrades_window",
-            "EVE Spai - Sov upgrades",
+            tr!("EVE Spai - Sov upgrades"),
             [460.0, 520.0],
             |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new(tr!("Paste sov-upgrade data (one per line).")).weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
                         tr!("Imperium members: open the forum topic, then follow the link inside it to \
@@ -1522,8 +1584,8 @@ impl SpaiApp {
                          paste. The first system matched on each line is used; the rest of the line \
                          becomes the upgrade label."),
                     );
-                    ui.hyperlink_to("Equinox upgrades", EQUINOX_TOPIC);
                 });
+                ui.hyperlink_to(tr!("Equinox upgrades"), EQUINOX_TOPIC);
                 egui::ScrollArea::vertical()
                     .max_height(110.0)
                     .auto_shrink([false, false])
@@ -1567,8 +1629,10 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         ui.label(tr!("Add"));
                         self.system_input(ui, "sov_new_sys", &mut sys, tr!("System"), 110.0);
-                        ui.add(egui::TextEdit::singleline(&mut up).hint_text(tr!("Upgrade, e.g. Cynosural Suppression")).desired_width(ui.available_width() - 60.0));
-                        add = ui.add_enabled(resolve(&sys).is_some() && !up.trim().is_empty(), egui::Button::new(tr!("Add"))).clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            add = ui.add_enabled(resolve(&sys).is_some() && !up.trim().is_empty(), egui::Button::new(tr!("Add"))).clicked();
+                            ui.add(egui::TextEdit::singleline(&mut up).hint_text(tr!("Upgrade, e.g. Cynosural Suppression")).desired_width(ui.available_width()));
+                        });
                     });
                     if add {
                         if let Some(system) = resolve(&sys) {
@@ -1592,13 +1656,15 @@ impl SpaiApp {
                             let mut done = None;
                             ui.horizontal(|ui| {
                                 self.system_input(ui, "sov_edit_sys", &mut es, tr!("System"), 110.0);
-                                ui.add(egui::TextEdit::singleline(&mut eu).desired_width(ui.available_width() - 130.0));
-                                if ui.add_enabled(resolve(&es).is_some() && !eu.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
-                                    done = Some(true);
-                                }
-                                if ui.button(tr!("Cancel")).clicked() {
-                                    done = Some(false);
-                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button(tr!("Cancel")).clicked() {
+                                        done = Some(false);
+                                    }
+                                    if ui.add_enabled(resolve(&es).is_some() && !eu.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
+                                        done = Some(true);
+                                    }
+                                    ui.add(egui::TextEdit::singleline(&mut eu).desired_width(ui.available_width()));
+                                });
                             });
                             match done {
                                 Some(true) => save = Some((ei, es, eu)),
@@ -1653,7 +1719,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "intel_channels_window",
-            "EVE Spai - Intel channels",
+            tr!("EVE Spai - Intel channels"),
             [420.0, 480.0],
             |ui| {
                 ui.add_space(6.0);
@@ -1703,31 +1769,31 @@ impl SpaiApp {
         let size = self.store.as_ref().and_then(|s| std::fs::metadata(s.path()).ok()).map(|m| m.len());
         ui.label(
             egui::RichText::new(match size {
-                Some(b) => format!("What the app saw, kept for the assistant and for looking back. The database is {} now; older data is cleared every few hours.", super::fmt_bytes(b)),
-                None => "What the app saw, kept for the assistant and for looking back. Older data is cleared every few hours.".to_owned(),
+                Some(b) => trf!("What the app saw, kept for the assistant and for looking back. The database is {size} now; older data is cleared every few hours.", size = super::fmt_bytes(b)),
+                None => tr!("What the app saw, kept for the assistant and for looking back. Older data is cleared every few hours.").to_owned(),
             })
             .weak(),
         );
         let r = &mut self.settings.retention;
         let rows: [(&str, &str, &mut u32, bool); 7] = [
-            ("Intel reports", "Every parsed intel line from your channels", &mut r.intel, true),
-            ("Kills near you", "Kills near you or your intel, which battle reports are built from", &mut r.kills_nearby, false),
-            ("All kills in EVE", "A short line per kill anywhere in EVE, about 3 MB a day", &mut r.kills_all, true),
-            ("System statistics", "ESI's hourly kills and jumps per system, about 1.5 MB a day", &mut r.system_stats, true),
-            ("Sov changes", "Each time a system changes hands", &mut r.sov, true),
-            ("Your moves", "Where your characters went, and in what", &mut r.moves, true),
-            ("Local scans", "The pilots of each local you looked up", &mut r.local_scans, true),
+            (tr!("Intel reports"), tr!("Every parsed intel line from your channels"), &mut r.intel, true),
+            (tr!("Kills near you"), tr!("Kills near you or your intel, which battle reports are built from"), &mut r.kills_nearby, false),
+            (tr!("All kills in EVE"), tr!("A short line per kill anywhere in EVE, about 3 MB a day"), &mut r.kills_all, true),
+            (tr!("System statistics"), tr!("ESI's hourly kills and jumps per system, about 1.5 MB a day"), &mut r.system_stats, true),
+            (tr!("Sov changes"), tr!("Each time a system changes hands"), &mut r.sov, true),
+            (tr!("Your moves"), tr!("Where your characters went, and in what"), &mut r.moves, true),
+            (tr!("Local scans"), tr!("The pilots of each local you looked up"), &mut r.local_scans, true),
         ];
         egui::Grid::new("retention_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             for (label, hint, days, can_off) in rows {
                 ui.label(label).on_hover_text(hint);
-                let cur = crate::settings::Retention::CHOICES.iter().find(|(d, _)| d == days).map_or_else(|| format!("{days} days"), |(_, l)| (*l).to_owned());
+                let cur = crate::settings::Retention::CHOICES.iter().find(|(d, _)| d == days).map_or_else(|| trf!("{days} days", days = days), |(_, l)| spai_ui::i18n::t(l).to_owned());
                 egui::ComboBox::from_id_salt(("retention", label)).selected_text(cur).width(140.0).show_ui(ui, |ui| {
                     for (d, l) in crate::settings::Retention::CHOICES {
                         if d == 0 && !can_off {
                             continue;
                         }
-                        changed |= ui.menu_value(days, d, l).changed();
+                        changed |= ui.menu_value(days, d, spai_ui::i18n::t(l)).changed();
                     }
                 });
                 ui.end_row();
@@ -1745,7 +1811,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "cyno_generators_window",
-            "EVE Spai - Cyno generators",
+            tr!("EVE Spai - Cyno generators"),
             [380.0, 460.0],
             |ui| {
                 ui.add_space(6.0);
@@ -1861,16 +1927,7 @@ impl SpaiApp {
                     ui.separator();
 
                     ui.label(egui::RichText::new(tr!("Language")).strong());
-                    let name_of = |code: &str| spai_ui::i18n::LANGUAGES.iter().find(|(c, _)| *c == code).map_or(code.to_owned(), |(_, n)| (*n).to_owned());
-                    let system = name_of(&spai_ui::i18n::system_language());
-                    let auto = trf!("System ({lang})", lang = system);
-                    let current = if self.settings.language.is_empty() { auto.clone() } else { name_of(&self.settings.language) };
-                    egui::ComboBox::from_id_salt("settings_language").selected_text(current).show_ui(ui, |ui| {
-                        changed |= ui.menu_value(&mut self.settings.language, String::new(), auto).changed();
-                        for (code, name) in spai_ui::i18n::LANGUAGES {
-                            changed |= ui.menu_value(&mut self.settings.language, code.to_owned(), name).changed();
-                        }
-                    });
+                    changed |= self.language_picker(ui);
                     changed |= ui
                         .checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
                         .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."))
@@ -1914,7 +1971,7 @@ impl SpaiApp {
                         use crate::settings::DscanService as Dsc;
                         egui::ComboBox::from_id_salt("dscan_service")
                             .selected_text(match self.settings.dscan_service {
-                                Dsc::Auto => format!("Auto ({imp_target})"),
+                                Dsc::Auto => trf!("Auto ({imp_target})", imp_target = imp_target),
                                 Dsc::DscanInfo => "dscan.info".to_owned(),
                                 Dsc::Adashboard => "adashboard.info".to_owned(),
                             })
@@ -2003,12 +2060,12 @@ impl SpaiApp {
                     ui.add_space(6.0);
                     let logs_hint = crate::logpaths::chat_logs_dir("")
                         .and_then(|p| p.parent().map(|p| p.display().to_string()))
-                        .unwrap_or_else(|| "auto-detect".to_owned());
+                        .unwrap_or_else(|| tr!("auto-detect").to_owned());
                     ui.label(tr!("EVE chat-log directory"));
                     changed |= dir_picker_row(ui, &logs_hint, &mut self.settings.eve_logs_dir);
                     let settings_hint = crate::charsettings::settings_root("")
                         .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "auto-detect".to_owned());
+                        .unwrap_or_else(|| tr!("auto-detect").to_owned());
                     ui.label(tr!("EVE settings directory"))
                         .on_hover_text(tr!("Used by Characters > Copy settings"));
                     if dir_picker_row(ui, &settings_hint, &mut self.settings.eve_settings_dir) {
@@ -2045,7 +2102,7 @@ impl SpaiApp {
                                     egui::DragValue::new(&mut a.window_timeout)
                                         .range(0.0..=300.0)
                                         .custom_formatter(|n, _| {
-                                            if n <= 0.0 { "never hides".to_owned() } else { format!("{n}s") }
+                                            if n <= 0.0 { tr!("never hides").to_owned() } else { format!("{n}s") }
                                         }),
                                 )
                                 .on_hover_text(tr!("0 = never auto-hide"))
@@ -2053,9 +2110,9 @@ impl SpaiApp {
                             ui.label(tr!("· on top"));
                             egui::ComboBox::from_id_salt("on_top")
                                 .selected_text(match a.on_top {
-                                    OnTop::Always => "Always",
-                                    OnTop::Smart => "Smart (EVE active)",
-                                    OnTop::Never => "Never",
+                                    OnTop::Always => tr!("Always"),
+                                    OnTop::Smart => tr!("Smart (EVE active)"),
+                                    OnTop::Never => tr!("Never"),
                                 })
                                 .show_ui(ui, |ui| {
                                     changed |= ui.menu_value(&mut a.on_top, OnTop::Always, tr!("Always")).changed();
@@ -2354,9 +2411,9 @@ impl SpaiApp {
                     egui::Grid::new("sounds_jabber").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                         let st = &mut self.settings;
                         for (label, salt, sound, vol) in [
-                            ("Messages", "msg", &mut st.jabber_msg_sound, &mut st.jabber_msg_volume),
-                            ("Fleet pings", "ping", &mut st.jabber_ping_sound, &mut st.jabber_ping_volume),
-                            ("Mentions", "mention", &mut st.jabber_mention_sound, &mut st.jabber_mention_volume),
+                            (tr!("Messages"), "msg", &mut st.jabber_msg_sound, &mut st.jabber_msg_volume),
+                            (tr!("Fleet pings"), "ping", &mut st.jabber_ping_sound, &mut st.jabber_ping_volume),
+                            (tr!("Mentions"), "mention", &mut st.jabber_mention_sound, &mut st.jabber_mention_volume),
                         ] {
                             ui.label(label);
                             changed |= sound_picker(ui, ("sounds_jabber", salt), false, sound, *vol);
@@ -2379,8 +2436,8 @@ impl SpaiApp {
             egui::Grid::new("sounds_map").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                 let st = &mut self.settings;
                 for (label, hint, salt, sound, vol) in [
-                    ("Threat nearby", "Map safety mode: a hostile report or kill turned up within range.", "safety", &mut st.sound_safety, &mut st.sound_safety_volume),
-                    ("Route rerouted", "Live travel: the route got much longer to go round danger.", "reroute", &mut st.sound_reroute, &mut st.sound_reroute_volume),
+                    (tr!("Threat nearby"), tr!("Map safety mode: a hostile report or kill turned up within range."), "safety", &mut st.sound_safety, &mut st.sound_safety_volume),
+                    (tr!("Route rerouted"), tr!("Live travel: the route got much longer to go round danger."), "reroute", &mut st.sound_reroute, &mut st.sound_reroute_volume),
                 ] {
                     ui.label(label).on_hover_text(hint);
                     changed |= sound_picker(ui, ("sounds_map", salt), false, sound, *vol);
@@ -2416,12 +2473,12 @@ fn rule_tag_menu(
     let mut changed = false;
     let name_of = |id: &str| -> String {
         if id == ANY_TAG {
-            "Any tag".to_owned()
+            tr!("Any tag").to_owned()
         } else {
-            notes.tag(id).map(|t| t.name.clone()).unwrap_or_else(|| "deleted tag".to_owned())
+            notes.tag(id).map(|t| t.name.clone()).unwrap_or_else(|| tr!("deleted tag").to_owned())
         }
     };
-    let text = if list.is_empty() { "Not needed".to_owned() } else { list.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ") };
+    let text = if list.is_empty() { tr!("Not needed").to_owned() } else { list.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ") };
     ui.push_id(salt, |ui| {
         let w = ui.available_width().min(420.0);
         let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), egui_phosphor::regular::CARET_DOWN)).truncate().min_size(egui::vec2(w, 0.0)))

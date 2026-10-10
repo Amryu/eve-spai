@@ -196,8 +196,8 @@ fn running_names(clients: &Clients) -> Option<Vec<String>> {
     Some(
         list.iter()
             .map(|c| match c.character_id {
-                Some(id) => format!("pid {} (character {id})", c.pid),
-                None => format!("pid {}", c.pid),
+                Some(id) => trf!("pid {pid} (character {id})", pid = c.pid, id = id),
+                None => trf!("pid {pid}", pid = c.pid),
             })
             .collect(),
     )
@@ -519,11 +519,11 @@ pub fn ui(
             ui.heading(tr!("Copy character settings"));
             ui.add_space(6.0);
             ui.label(trf!("From {v} to {v2}.", v = source_name.clone().unwrap_or_default(), v2 = dest_names.join(", ")));
-            ui.label(trf!("{dest_names} character file(s){v}.", dest_names = dest_names.len(), v = if plan.dest_accounts.is_empty() {
-                    String::new()
-                } else {
-                    format!(" and {} account file(s)", plan.dest_accounts.len())
-                }));
+            ui.label(if plan.dest_accounts.is_empty() {
+                trf!("{chars} character file(s).", chars = dest_names.len())
+            } else {
+                trf!("{chars} character file(s) and {accounts} account file(s).", chars = dest_names.len(), accounts = plan.dest_accounts.len())
+            });
             ui.label(
                 egui::RichText::new(tr!("Every file that gets overwritten is backed up next to it."))
                     .weak(),
@@ -547,7 +547,7 @@ pub fn ui(
             // its exit, so the gate is checked again here and not only when the button was drawn.
             let now = crate::eveproc::running_clients();
             if now.as_ref().is_some_and(|c| !c.is_empty()) {
-                state.result = Some(Err("EVE started while the dialog was open. Nothing was copied.".to_owned()));
+                state.result = Some(Err(tr!("EVE started while the dialog was open. Nothing was copied.").to_owned()));
             } else {
                 state.result = Some(charsettings::copy(&root, &plan));
                 state.invalidate();
@@ -558,8 +558,8 @@ pub fn ui(
     if let Some(result) = state.result.clone() {
         let mut open = true;
         egui::Window::new(match &result {
-            Ok(_) => format!("{}  Settings copied", egui_phosphor::regular::CHECK),
-            Err(_) => format!("{}  Copy failed", egui_phosphor::regular::WARNING),
+            Ok(_) => trf!("{icon}  Settings copied", icon = egui_phosphor::regular::CHECK),
+            Err(_) => trf!("{icon}  Copy failed", icon = egui_phosphor::regular::WARNING),
         })
         .collapsible(false)
         .resizable(false)

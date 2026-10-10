@@ -51,7 +51,7 @@ impl SpaiApp {
                     // No entropy, no pairing secret, so the socket stays shut rather than opening
                     // with something weaker.
                     self.settings.web.enabled = false;
-                    self.web_error = Some("could not generate a pairing token".to_owned());
+                    self.web_error = Some(tr!("could not generate a pairing token").to_owned());
                     self.needs_save = true;
                     return;
                 }
@@ -132,7 +132,7 @@ impl SpaiApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.web_starting = None;
-                self.web_error = Some("the listener could not be started".to_owned());
+                self.web_error = Some(tr!("the listener could not be started").to_owned());
                 return;
             }
         };
@@ -174,10 +174,10 @@ impl SpaiApp {
         let waiting = self.web_bind_draft.as_ref();
         if let Some((draft, at)) = waiting {
             if bind_addr_state(draft) == BindAddr::Invalid {
-                return ("not an address".to_owned(), standing::HOSTILE);
+                return (tr!("not an address").to_owned(), standing::HOSTILE);
             }
             let left = BIND_DEBOUNCE.saturating_sub(at.elapsed()).as_secs() + 1;
-            return (format!("binding in {left}s"), standing::WARNING);
+            return (trf!("binding in {left}s", left = left), standing::WARNING);
         }
         if let Some(e) = &self.web_error {
             return (e.clone(), standing::HOSTILE);
@@ -185,12 +185,12 @@ impl SpaiApp {
         // A saved address that is not one is ignored rather than allowed to hold up the start, so
         // the field has to say so or the page looks bound to something it is not.
         if bind_addr_state(&self.settings.web.bind_addr) == BindAddr::Invalid {
-            return ("not an address, ignored".to_owned(), standing::HOSTILE);
+            return (tr!("not an address, ignored").to_owned(), standing::HOSTILE);
         }
         match &self.web_server {
-            Some(h) => (format!("bound to {}", h.addr), standing::FRIENDLY),
-            None if self.web_starting.is_some() => ("binding…".to_owned(), standing::WARNING),
-            None => ("not bound".to_owned(), standing::WARNING),
+            Some(h) => (trf!("bound to {addr}", addr = h.addr), standing::FRIENDLY),
+            None if self.web_starting.is_some() => (tr!("binding…").to_owned(), standing::WARNING),
+            None => (tr!("not bound").to_owned(), standing::WARNING),
         }
     }
 
@@ -268,9 +268,9 @@ impl SpaiApp {
             let n = self.web_server.as_ref().map_or(0, |h| h.clients());
             ui.label(
                 egui::RichText::new(match n {
-                    0 => "no devices connected".to_owned(),
-                    1 => "1 device connected".to_owned(),
-                    n => format!("{n} devices connected"),
+                    0 => tr!("no devices connected").to_owned(),
+                    1 => tr!("1 device connected").to_owned(),
+                    n => trf!("{n} devices connected", n = n),
                 })
                 .weak(),
             );
@@ -279,7 +279,7 @@ impl SpaiApp {
         // Neither the link nor the code is shown by default: both carry the token, and a settings
         // pane is the kind of screen people share or stream. Revealing either is a deliberate act,
         // and it does not persist.
-        let label = if self.web_reveal { "Hide the pairing link" } else { "Show the pairing link and QR" };
+        let label = if self.web_reveal { tr!("Hide the pairing link") } else { tr!("Show the pairing link and QR") };
         if ui.button(format!("{}  {label}", icon::MAGNIFYING_GLASS)).clicked() {
             self.web_reveal = !self.web_reveal;
         }

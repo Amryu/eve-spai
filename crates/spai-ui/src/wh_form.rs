@@ -131,7 +131,7 @@ pub fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut Str
             let dest = match t.dest {
                 spai_core::whdata::Dest::Class(c) => c.label().tr(),
                 spai_core::whdata::Dest::AnyKspace => "k-space".into(),
-                spai_core::whdata::Dest::Unknown => "the other side".into(),
+                spai_core::whdata::Dest::Unknown => crate::tr!("the other side").into(),
             };
             format!("{} {dest}, {}", egui_phosphor::regular::ARROW_RIGHT, t.size_label())
         })
@@ -379,12 +379,12 @@ pub fn build(
     use spai_core::whdata;
     let lookup = |name: &str| geo.lookup(name.trim()).map(|i| i.id);
     let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_uppercase());
-    let sys = lookup(&form.system).ok_or_else(|| format!("No system called {:?}.", form.system.trim()))?;
+    let sys = lookup(&form.system).ok_or_else(|| crate::trf!("No system called {name}.", name = format!("{:?}", form.system.trim())))?;
     let dest_id = if form.dest.trim().is_empty() { None } else { lookup(&form.dest) };
     // Not a system: it may be a kind of space ("Highsec", "C5", "0.0").
     let dest_kind = dest_id.is_none().then(|| DestClass::from_words(&form.dest)).flatten();
     if !form.dest.trim().is_empty() && dest_id.is_none() && dest_kind.is_none() {
-        return Err(format!("No system or kind of space called {:?}.", form.dest.trim()));
+        return Err(crate::trf!("No system or kind of space called {name}.", name = format!("{:?}", form.dest.trim())));
     }
     let class = |id: i64| geo.info_of(id).map(|i| whdata::class_of(id, i.security, &i.region));
     if let Some(why) = whdata::connection_problem(sys, dest_id, class, Some(form.wh_type.as_str()), None) {

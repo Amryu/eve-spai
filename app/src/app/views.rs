@@ -33,16 +33,16 @@ impl SpaiApp {
             })
             .on_hover_text(tr!("Which reports to show"));
             let range = match self.intel_max_jumps {
-                0 => "Any distance".to_owned(),
-                1 => "Within 1 jump".to_owned(),
-                n => format!("Within {n} jumps"),
+                0 => tr!("Any distance").to_owned(),
+                1 => tr!("Within 1 jump").to_owned(),
+                n => trf!("Within {n} jumps", n = n),
             };
             toolbar_combo(ui, "intel_range", range, |ui| {
                 for n in [0u32, 1, 2, 3, 5, 8, 10, 15, 20] {
                     let l = match n {
-                        0 => "Any distance".to_owned(),
-                        1 => "1 jump".to_owned(),
-                        n => format!("{n} jumps"),
+                        0 => tr!("Any distance").to_owned(),
+                        1 => tr!("1 jump").to_owned(),
+                        n => trf!("{n} jumps", n = n),
                     };
                     ui.menu_value(&mut self.intel_max_jumps, n, l);
                 }
@@ -57,12 +57,12 @@ impl SpaiApp {
             })
             .on_hover_text(tr!("How far from you a report may be"));
             let zkill = if !self.settings.kill_intel {
-                "zKill: off".to_owned()
+                tr!("zKill: off").to_owned()
             } else {
                 match self.settings.kill_intel_jumps {
-                    0 => "zKill: in range".to_owned(),
-                    1 => "zKill: 1 jump".to_owned(),
-                    n => format!("zKill: {n} jumps"),
+                    0 => tr!("zKill: in range").to_owned(),
+                    1 => tr!("zKill: 1 jump").to_owned(),
+                    n => trf!("zKill: {n} jumps", n = n),
                 }
             };
             toolbar_combo(ui, "intel_zkill", zkill, |ui| {
@@ -102,7 +102,7 @@ impl SpaiApp {
             .response
             .on_hover_text(tr!("Intel settings"));
             toolbar_sep(ui);
-            ui.label(egui::RichText::new(trf!("{count} report{v}", count = count, v = if count == 1 { "" } else { "s" })).weak());
+            ui.label(egui::RichText::new(if count == 1 { tr!("1 report").to_owned() } else { trf!("{count} reports", count = count) }).weak());
             ui.label(icon::MAGNIFYING_GLASS);
             ui.add_sized(
                 [
@@ -383,7 +383,7 @@ impl SpaiApp {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(&self.active_character).strong());
+                ui.label(egui::RichText::new(self.shown_character()).strong());
                 match player_sys.and_then(|s| systems.as_ref().and_then(|sy| sy.info_of(s))) {
                     Some(info) => {
                         ui.label(tr!("in"));
@@ -597,11 +597,11 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(&c.name).strong());
                 ui.label(egui::RichText::new(trf!("· {scope_count} scopes", scope_count = scope_count)).weak());
                 let (col, txt) = if token_ok {
-                    (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "signed in")
+                    (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), tr!("signed in"))
                 } else if problem == Some(crate::esi::AuthProblem::NoKeychain) {
-                    (crate::theme::standing::HOSTILE, "keychain unavailable")
+                    (crate::theme::standing::HOSTILE, tr!("keychain unavailable"))
                 } else {
-                    (crate::theme::standing::WARNING, "login expired")
+                    (crate::theme::standing::WARNING, tr!("login expired"))
                 };
                 ui.label(egui::RichText::new("·").weak());
                 ui.label(egui::RichText::new(txt).color(col));
@@ -671,7 +671,7 @@ impl SpaiApp {
         if !self.pilot_window_open {
             return;
         }
-        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai - Pilot", [440.0, 580.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "pilot_window", tr!("EVE Spai - Pilot"), [440.0, 580.0], |ui| {
             ui.horizontal(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.pilot_query)
@@ -721,7 +721,7 @@ impl SpaiApp {
         show_system: bool,
     ) {
         if list.is_empty() {
-            let msg = if loading { "Loading\u{2026}" } else { "Nothing in this category." };
+            let msg = if loading { tr!("Loading\u{2026}") } else { tr!("Nothing in this category.") };
             ui.label(egui::RichText::new(msg).weak());
             return;
         }
@@ -826,7 +826,7 @@ impl SpaiApp {
                         org(ui, p.corp_id.map(|c| eve_corp_logo_url(c, 20.0)), &p.corp_name, tr!("Unknown corporation"));
                         let mut facts = Vec::new();
                         if let Some(b) = p.birthday {
-                            facts.push(format!("{} old, born {}", span_text(now - b), day_text(b)));
+                            facts.push(trf!("{age} old, born {day}", age = span_text(now - b), day = day_text(b)));
                         }
                         if let Some(sec) = p.security {
                             facts.push(format!("sec {sec:.1}"));
@@ -864,11 +864,11 @@ impl SpaiApp {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             for (pane, label) in [
-                (PilotPane::Info, "Info".to_owned()),
-                (PilotPane::Ships, "Ships".to_owned()),
-                (PilotPane::Kills, pane_count("Kills", report.kills.len(), report.stats.as_ref().map(|s| s.ships_destroyed))),
-                (PilotPane::Solo, pane_count("Solo", report.solo.len(), report.stats.as_ref().map(|s| s.solo_kills))),
-                (PilotPane::Losses, pane_count("Losses", report.losses.len(), report.stats.as_ref().map(|s| s.ships_lost))),
+                (PilotPane::Info, tr!("Info").to_owned()),
+                (PilotPane::Ships, tr!("Ships").to_owned()),
+                (PilotPane::Kills, pane_count(tr!("Kills"), report.kills.len(), report.stats.as_ref().map(|s| s.ships_destroyed))),
+                (PilotPane::Solo, pane_count(tr!("Solo"), report.solo.len(), report.stats.as_ref().map(|s| s.solo_kills))),
+                (PilotPane::Losses, pane_count(tr!("Losses"), report.losses.len(), report.stats.as_ref().map(|s| s.ships_lost))),
             ] {
                 if selectable_chip(ui, self.pilot_pane == pane, label).clicked() {
                     self.pilot_pane = pane;
@@ -918,7 +918,7 @@ impl SpaiApp {
                 let name = self
                     .ship_details_cached(ship_id)
                     .map(|d| d.name)
-                    .unwrap_or_else(|| "Other".to_owned());
+                    .unwrap_or_else(|| tr!("Other").to_owned());
                 ui.horizontal(|ui| {
                     let url = eve_type_icon_url(ship_id, 24.0);
                     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
@@ -987,7 +987,7 @@ impl SpaiApp {
             let history = report.profile.as_ref().map(|p| p.history.as_slice()).unwrap_or_default();
             ui.label(egui::RichText::new(trf!("Employment history ({history})", history = history.len())).strong());
             if history.is_empty() {
-                ui.label(egui::RichText::new(if report.loading { "Loading…" } else { "Nothing known." }).weak());
+                ui.label(egui::RichText::new(if report.loading { tr!("Loading…") } else { tr!("Nothing known.") }).weak());
             }
             for (i, e) in history.iter().enumerate() {
                 let end = if i == 0 { now } else { history[i - 1].start };
@@ -1054,7 +1054,7 @@ impl SpaiApp {
         let names = self.type_names.lock().unwrap().clone();
         let mut new_mode = mode;
 
-        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai - Fit", [460.0, 620.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "fit_window", tr!("EVE Spai - Fit"), [460.0, 620.0], |ui| {
             ui.horizontal(|ui| {
                 let url = eve_type_icon_url(ship_id, 28.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
@@ -1171,7 +1171,7 @@ impl SpaiApp {
 /// shown beside the sample rather than letting the sample pass for it.
 fn pane_count(label: &str, shown: usize, total: Option<i64>) -> String {
     match total {
-        Some(t) if t > shown as i64 => format!("{label} ({shown} of {t})"),
+        Some(t) if t > shown as i64 => trf!("{label} ({shown} of {t})", label = label, shown = shown, t = t),
         _ => format!("{label} ({shown})"),
     }
 }

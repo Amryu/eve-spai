@@ -159,6 +159,9 @@ pub struct Settings {
     /// Ship names in that language as well, as a client set to it shows them.
     #[serde(default)]
     pub translate_ship_names: bool,
+    /// The language was chosen in setup or in the one-time dialog shown to those who set up before.
+    #[serde(default)]
+    pub language_asked: bool,
     /// How long each kind of history is kept.
     #[serde(default)]
     pub retention: Retention,
@@ -1537,6 +1540,7 @@ impl Default for Settings {
             ai: Default::default(),
             language: String::new(),
             translate_ship_names: false,
+            language_asked: false,
             retention: Default::default(),
             battles_enabled: true,
             battles: BattleFilter::default(),
@@ -2660,7 +2664,7 @@ impl Retention {
     pub const FOREVER: u32 = 36_500;
     /// The choices offered, as (days, label).
     pub const CHOICES: [(u32, &'static str); 8] =
-        [(0, "Off"), (1, "1 day"), (7, "1 week"), (30, "30 days"), (90, "90 days"), (180, "180 days"), (365, "1 year"), (Self::FOREVER, "Forever")];
+        [(0, tr_noop!("Off")), (1, tr_noop!("1 day")), (7, tr_noop!("1 week")), (30, tr_noop!("30 days")), (90, tr_noop!("90 days")), (180, tr_noop!("180 days")), (365, tr_noop!("1 year")), (Self::FOREVER, tr_noop!("Forever"))];
 }
 
 impl Default for Retention {

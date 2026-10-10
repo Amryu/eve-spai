@@ -17,13 +17,13 @@ const UNDO_DEPTH: usize = 50;
 
 /// The groups to filter on, by code, with the label they show.
 const GROUPS: [(&str, &str); 7] = [
-    ("wormhole", "Wormhole"),
-    ("combat", "Combat"),
-    ("data", "Data"),
-    ("relic", "Relic"),
-    ("gas", "Gas"),
-    ("ore", "Ore"),
-    ("unscanned", "Unscanned"),
+    ("wormhole", crate::tr_noop!("Wormhole")),
+    ("combat", crate::tr_noop!("Combat")),
+    ("data", crate::tr_noop!("Data")),
+    ("relic", crate::tr_noop!("Relic")),
+    ("gas", crate::tr_noop!("Gas")),
+    ("ore", crate::tr_noop!("Ore")),
+    ("unscanned", crate::tr_noop!("Unscanned")),
 ];
 
 /// Signatures, anomalies, or both.
@@ -181,13 +181,13 @@ impl SigBrowser {
 
     /// What undo would put back, for its button.
     pub fn undo_hint(&self, geo: Option<&Systems>) -> String {
-        let Some(rows) = self.undo.last() else { return "Nothing deleted to undo".to_owned() };
+        let Some(rows) = self.undo.last() else { return crate::tr!("Nothing deleted to undo").to_owned() };
         let name = |id: i64| geo.and_then(|g| g.info_of(id)).map_or_else(|| format!("#{id}"), |i| i.name.clone());
-        let mut list: Vec<String> = rows.iter().take(8).map(|(sys, s)| format!("{} in {}", s.sig, name(*sys))).collect();
+        let mut list: Vec<String> = rows.iter().take(8).map(|(sys, s)| crate::trf!("{sig} in {system}", sig = s.sig, system = name(*sys))).collect();
         if rows.len() > 8 {
-            list.push(format!("and {} more", rows.len() - 8));
+            list.push(crate::trf!("and {n} more", n = rows.len() - 8));
         }
-        format!("Undo the last delete (Ctrl+Z): {}", list.join(", "))
+        crate::trf!("Undo the last delete (Ctrl+Z): {list}", list = list.join(", "))
     }
 
     /// An undo button, always there so nothing shifts when it becomes usable, and Ctrl+Z while
@@ -211,18 +211,33 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
     // Two fixed rows, filters then actions, so the table starts at the same height whatever
     // is picked and however narrow the window.
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut b.query).hint_text(crate::tr!("Search system, signature, site, who")).desired_width(220.0));
         let n = b.groups.len();
         let label = match n {
-            0 => "All groups".to_owned(),
-            1 => GROUPS.iter().find(|g| b.groups.contains(g.0)).map_or_else(String::new, |g| g.1.to_owned()),
-            n => format!("{n} groups"),
+            0 => crate::tr!("All groups").to_owned(),
+            1 => GROUPS.iter().find(|g| b.groups.contains(g.0)).map_or_else(String::new, |g| crate::i18n::t_dyn(g.1)),
+            n => crate::trf!("{n} groups", n = n),
         };
+        let windows = [
+            (0u32, crate::tr!("Any time")),
+            (1, crate::tr!("Last hour")),
+            (6, crate::tr!("Last 6 h")),
+            (24, crate::tr!("Last day")),
+            (72, crate::tr!("Last 3 days")),
+        ];
+        let current = windows.iter().find(|w| w.0 == b.within_h).map_or(crate::tr!("Any time"), |w| w.1);
+        let seen = crate::trf!("Seen: {current}", current = current);
+        // The search field gives up width to the dropdowns, whose labels run longer in some
+        // languages, so the row stays one line.
+        let text_w = |t: &str| egui::WidgetText::from(t).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x;
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+        let others = text_w(&format!("{label}  {}", icon::CARET_DOWN)) + pad + text_w(b.kinds.label().tr()) + text_w(&seen) + 2.0 * (pad + ui.spacing().icon_width + 8.0);
+        let search_w = (ui.available_width() - others - ui.spacing().item_spacing.x).clamp(100.0, 220.0);
+        ui.add(egui::TextEdit::singleline(&mut b.query).hint_text(crate::tr!("Search system, signature, site, who")).desired_width(search_w));
         let button = ui.button(format!("{label}  {}", icon::CARET_DOWN));
         egui::Popup::from_toggle_button_response(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             for (code, label) in GROUPS {
                 let on = b.groups.contains(code);
-                if ui.menu_label(on, label).clicked() {
+                if ui.menu_label(on, crate::i18n::t_dyn(label)).clicked() {
                     if on {
                         b.groups.remove(code);
                     } else {
@@ -236,9 +251,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                 ui.menu_value(&mut b.kinds, k, k.label().tr());
             }
         });
-        let windows = [(0u32, "Any time"), (1, "Last hour"), (6, "Last 6 h"), (24, "Last day"), (72, "Last 3 days")];
-        let current = windows.iter().find(|w| w.0 == b.within_h).map_or("Any time", |w| w.1);
-        egui::ComboBox::from_id_salt("sig_browser_within").selected_text(crate::trf!("Seen: {current}", current = current)).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("sig_browser_within").selected_text(seen).show_ui(ui, |ui| {
             for (h, label) in windows {
                 ui.menu_value(&mut b.within_h, h, label);
             }
@@ -270,29 +283,35 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
     let mut delete: Vec<(i64, String)> = Vec::new();
     ui.horizontal(|ui| {
         let systems: BTreeSet<i64> = rows.iter().map(|r| r.0).collect();
-        ui.label(egui::RichText::new(crate::trf!("{rows} of {v} signatures in {systems} systems", rows = rows.len(), v = b.rows.len(), systems = systems.len())).weak());
-        ui.add_space(8.0);
-        if ui.add_enabled(!picked.is_empty(), egui::Button::new(crate::trf!("{icon}  Delete {picked} picked", icon = icon::TRASH, picked = picked.len()))).clicked() {
-            delete = picked.clone();
-        }
-        act.restored = b.undo_button(ui, &format!("{}  Undo", icon::ARROW_COUNTER_CLOCKWISE), geo);
-        ui.add_space(8.0);
-        if ui.menu_label(!b.tree, icon::ROWS).on_hover_text(crate::tr!("One list")).clicked() {
-            b.tree = false;
-        }
-        if ui.menu_label(b.tree, icon::TREE_VIEW).on_hover_text(crate::tr!("By system: signatures under their system, with each system's latest paste")).clicked() {
-            b.tree = true;
-        }
-        if !rows.is_empty() {
-            let all = picked.len() == rows.len();
-            if ui.button(if all { "Pick none" } else { "Pick all shown" }).clicked() {
-                if all {
-                    b.picked.clear();
-                } else {
-                    b.picked.extend(shown.iter().cloned());
+        // Actions from the right; the count gives way when a language needs the room.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !rows.is_empty() {
+                let all = picked.len() == rows.len();
+                if ui.button(if all { crate::tr!("Pick none") } else { crate::tr!("Pick all shown") }).clicked() {
+                    if all {
+                        b.picked.clear();
+                    } else {
+                        b.picked.extend(shown.iter().cloned());
+                    }
                 }
             }
-        }
+            if ui.menu_label(b.tree, icon::TREE_VIEW).on_hover_text(crate::tr!("By system: signatures under their system, with each system's latest paste")).clicked() {
+                b.tree = true;
+            }
+            if ui.menu_label(!b.tree, icon::ROWS).on_hover_text(crate::tr!("One list")).clicked() {
+                b.tree = false;
+            }
+            ui.add_space(8.0);
+            act.restored = b.undo_button(ui, &crate::trf!("{icon}  Undo", icon = icon::ARROW_COUNTER_CLOCKWISE), geo);
+            if ui.add_enabled(!picked.is_empty(), egui::Button::new(crate::trf!("{icon}  Delete {picked} picked", icon = icon::TRASH, picked = picked.len()))).clicked() {
+                delete = picked.clone();
+            }
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let count = crate::trf!("{rows} of {v} signatures in {systems} systems", rows = rows.len(), v = b.rows.len(), systems = systems.len());
+                ui.add(egui::Label::new(egui::RichText::new(count).weak()).truncate());
+            });
+        });
     });
     ui.separator();
     if b.rows.is_empty() {
@@ -356,19 +375,23 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
         strong.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x
     };
     let fit = |label: &str, widest: &str| head_w(label).max(text_w(widest)) + 4.0;
-    let sys_w = fit("System", "Mmmmmmmmm");
-    let id_w = fit("Id", &format!("{} MMM-888", icon::MAGNIFYING_GLASS));
-    let group_w = fit("Group", "Combat");
-    let seen_w = fit("Seen", "88m");
-    let by_w = fit("By", "Mmmmmmmm");
+    let sys_w = fit(crate::tr!("System"), "Mmmmmmmmm");
+    let id_w = fit(crate::tr!("Id"), &format!("{} MMM-888", icon::MAGNIFYING_GLASS));
+    let widest_group = GROUPS.iter().map(|(_, l)| crate::i18n::t(l)).max_by(|a, b| text_w(a).total_cmp(&text_w(b))).unwrap_or("Combat");
+    let group_w = fit(crate::tr!("Group"), widest_group);
+    let seen_w = fit(crate::tr!("Seen"), "88m");
+    let by_w = fit(crate::tr!("By"), "Mmmmmmmm");
     let visuals = ui.visuals().clone();
     // Delete and edit, as wide as the map's side panel gives them, then the scrollbar's room.
     let actions_w = 76.0 + scrollbar_gutter(ui);
     // The first sighting's age too, where the window has room for it.
     let others = 24.0 + sys_w + id_w + group_w + 60.0 + seen_w + actions_w + ui.spacing().item_spacing.x * 8.0;
     // Narrower still, who pasted it moves into the Seen column's hover.
-    let show_by = ui.available_width() >= others + by_w + fit("Found", "Wed 88:88");
-    let found_w = fit("Found", "88h ago");
+    let found_w = fit(crate::tr!("Found"), &crate::trf!("{age} ago", age = "88h"));
+    // Narrowest of all, or in a language with longer headers, the first sighting moves into the
+    // Seen column's hover as well.
+    let show_found = ui.available_width() >= others + found_w;
+    let show_by = show_found && ui.available_width() >= others + found_w + by_w;
     {
         let mut table = egui_extras::TableBuilder::new(ui)
             .id_salt("sig_browser_table")
@@ -378,9 +401,11 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
             .column(egui_extras::Column::exact(sys_w).clip(true))
             .column(egui_extras::Column::exact(id_w))
             .column(egui_extras::Column::exact(group_w).clip(true))
-            .column(egui_extras::Column::remainder().at_least(60.0).clip(true))
-            .column(egui_extras::Column::exact(found_w))
-            .column(egui_extras::Column::exact(seen_w));
+            .column(egui_extras::Column::remainder().at_least(60.0).clip(true));
+        if show_found {
+            table = table.column(egui_extras::Column::exact(found_w));
+        }
+        table = table.column(egui_extras::Column::exact(seen_w));
         if show_by {
             table = table.column(egui_extras::Column::exact(by_w).clip(true));
         }
@@ -389,16 +414,16 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
             .header(row_h, |mut h| {
                 h.col(|_| {});
                 for (label, key) in [
-                    ("System", SigSort::System),
-                    ("Id", SigSort::Id),
-                    ("Group", SigSort::Group),
-                    ("Info", SigSort::Info),
-                    ("Found", SigSort::Found),
-                    ("Seen", SigSort::Seen),
-                    ("By", SigSort::Who),
+                    (crate::tr!("System"), SigSort::System),
+                    (crate::tr!("Id"), SigSort::Id),
+                    (crate::tr!("Group"), SigSort::Group),
+                    (crate::tr!("Info"), SigSort::Info),
+                    (crate::tr!("Found"), SigSort::Found),
+                    (crate::tr!("Seen"), SigSort::Seen),
+                    (crate::tr!("By"), SigSort::Who),
                 ]
                 .into_iter()
-                .filter(|(l, _)| show_by || *l != "By")
+                .filter(|(_, k)| (show_by || *k != SigSort::Who) && (show_found || *k != SigSort::Found))
                 {
                     h.col(|ui| {
                         let arrow = match (sort == key, b.descending) {
@@ -420,7 +445,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                             let shut = b.collapsed.contains(id);
                             row.col(|ui| {
                                 let caret = if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN };
-                                if ui.add(egui::Button::new(caret).frame(false)).on_hover_text(if shut { "Show its signatures" } else { "Fold it" }).clicked() {
+                                if ui.add(egui::Button::new(caret).frame(false)).on_hover_text(if shut { crate::tr!("Show its signatures") } else { crate::tr!("Fold it") }).clicked() {
                                     fold = Some(*id);
                                 }
                             });
@@ -432,8 +457,8 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                             row.col(|_| {});
                             row.col(|_| {});
                             row.col(|ui| {
-                                let sigs = |n: usize| if n == 1 { "1 signature".to_owned() } else { format!("{n} signatures") };
-                                let anomalies = |n: usize| if n == 1 { "1 anomaly".to_owned() } else { format!("{n} anomalies") };
+                                let sigs = |n: usize| if n == 1 { crate::tr!("1 signature").to_owned() } else { crate::trf!("{n} signatures", n = n) };
+                                let anomalies = |n: usize| if n == 1 { crate::tr!("1 anomaly").to_owned() } else { crate::trf!("{n} anomalies", n = n) };
                                 let text = match (n - anoms, *anoms) {
                                     (s, 0) => sigs(s),
                                     (0, a) => anomalies(a),
@@ -441,7 +466,9 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                                 };
                                 ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate());
                             });
-                            row.col(|_| {});
+                            if show_found {
+                                row.col(|_| {});
+                            }
                             row.col(|ui| {
                                 let t = egui::RichText::new(human_ago(now - last)).strong();
                                 ui.label(match age_color(&visuals, now, *last) {
@@ -503,13 +530,18 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                         };
                         ui.add(egui::Label::new(tint(egui::RichText::new(info))).truncate());
                     });
+                    if show_found {
+                        row.col(|ui| {
+                            let found = found_at(s.added_at, now, eve);
+                            ui.label(tint(egui::RichText::new(found))).on_hover_text(found_hover(s.added_at, now, eve));
+                        });
+                    }
                     row.col(|ui| {
-                        let found = found_at(s.added_at, now, eve);
-                        ui.label(tint(egui::RichText::new(found))).on_hover_text(found_hover(s.added_at, now, eve));
-                    });
-                    row.col(|ui| {
-                        ui.label(tint(egui::RichText::new(human_ago(now - s.updated_at))))
-                            .on_hover_text(crate::trf!("Last seen in a paste {v} ago by {v2}", v = human_ago(now - s.updated_at), v2 = s.who));
+                        let mut tip = crate::trf!("Last seen in a paste {v} ago by {v2}", v = human_ago(now - s.updated_at), v2 = s.who);
+                        if !show_found {
+                            tip = format!("{tip}\n{}", found_hover(s.added_at, now, eve));
+                        }
+                        ui.label(tint(egui::RichText::new(human_ago(now - s.updated_at)))).on_hover_text(tip);
                     });
                     if show_by {
                         row.col(|ui| {
@@ -521,7 +553,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                             delete = vec![key.clone()];
                         }
                         if (hole.is_some() || s.group == "Wormhole")
-                            && crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { "Edit this wormhole" } else { "Add it as a wormhole" }).clicked()
+                            && crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(if hole.is_some() { crate::tr!("Edit this wormhole") } else { crate::tr!("Add it as a wormhole") }).clicked()
                         {
                             match hole {
                                 Some(w) => act.edit = Some(w.uid.clone()),
