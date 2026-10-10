@@ -133,7 +133,7 @@ pub fn spawn(kill_id: i64, hash: Option<String>, ctx: egui::Context) -> SharedKi
     state
 }
 
-fn fetch(kill_id: i64, hash: Option<String>) -> Result<KillDetail, String> {
+pub(crate) fn fetch(kill_id: i64, hash: Option<String>) -> Result<KillDetail, String> {
     let client = crate::http::client(30).map_err(|e| e.to_string())?;
     let zk: serde_json::Value = crate::zkapi::fetch_waiting(&client, &format!("{ZKILL}/killID/{kill_id}/"))
         .and_then(|r| r.json().map_err(|e| e.to_string()))?;

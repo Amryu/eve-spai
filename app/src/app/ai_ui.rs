@@ -50,6 +50,7 @@ impl SpaiApp {
                 last_question: Default::default(),
                 alerts: self.recent_alerts.clone(),
                 standings: self.standings.clone(),
+                jump_skills: self.jump_skills.clone(),
                 online: true,
             };
             let secrets = self.ai_secrets.clone();
@@ -86,6 +87,10 @@ impl SpaiApp {
             ai: s.ai.clone(),
             lookup_current: self.lookup_current.clone(),
             alert_rules: s.alerts.rules.clone(),
+            doctrines: self.ai_doctrine_facts(),
+            route_anchors: self.map_route_anchors.clone(),
+            route_destination: self.route_destination,
+            last_dscan: self.ai_last_dscan(),
             setup: crate::ai::deps::Setup {
                 staging: s.rescue_staging_system.clone(),
                 capital: s.ansiblex_capital.clone(),
@@ -172,6 +177,7 @@ impl SpaiApp {
                     }
                 }
             }
+            ActionKind::JoinMumble { url } => crate::mumble::open_url(url),
             ActionKind::KeepWatching(id) => {
                 let now = crate::clock::utc().timestamp();
                 if let Some(w) = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|w| w.id == *id) {
@@ -434,6 +440,25 @@ impl SpaiApp {
                 handle.send(Command::ActionResult { id, applied, note });
             }
         }
+    }
+
+    /// The doctrines set up for fleets, by setup, with their hulls, tank, fit link and ping line.
+    fn ai_doctrine_facts(&self) -> Vec<crate::ai::deps::DoctrineFacts> {
+        let s = &self.settings;
+        let mut ids: Vec<i32> = s.fleet_hulls.iter().map(|h| h.setup_id).chain(s.fleet_doctrine_urls.iter().map(|x| x.0)).chain(s.fleet_doctrine_tanks.iter().map(|x| x.0)).filter(|id| *id != 0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+        ids.into_iter()
+            .map(|id| crate::ai::deps::DoctrineFacts {
+                name: st.seed.setup_name(crate::fleets::model::SetupId(id)).map(str::to_owned).unwrap_or_else(|| format!("setup {id}")),
+                main: s.fleet_hulls.iter().filter(|h| h.setup_id == id && h.main).map(|h| h.name.clone()).collect(),
+                support: s.fleet_hulls.iter().filter(|h| (h.setup_id == id || h.setup_id == 0) && !h.main).map(|h| h.name.clone()).collect(),
+                tank: s.fleet_doctrine_tanks.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
+                url: s.fleet_doctrine_urls.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
+                line: s.fleet_doctrine_lines.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
+            })
+            .collect()
     }
 
     /// Carries out the actions that need no click as soon as they arrive.
@@ -783,6 +808,26 @@ impl SpaiApp {
                 self.toast("Web links are off in a conversation that read Jabber or feed messages; start a new chat");
             }
             Link::Url(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
+            Link::Page(p) => {
+                let v = match p.as_str() {
+                    "overview" => Some(View::Dashboard),
+                    "map" => Some(View::Map),
+                    "wormholes" => Some(View::Wormholes),
+                    "intel" => Some(View::Intel),
+                    "alerts" => Some(View::Alerts),
+                    "battles" => Some(View::Battles),
+                    "lookup" => Some(View::Lookup),
+                    "characters" => Some(View::Characters),
+                    "jabber" => Some(View::Jabber),
+                    "fleet" if self.fleet_on() => Some(View::Fleet),
+                    "rescue" if self.rescue_on() => Some(View::Rescue),
+                    "settings" => Some(View::Settings),
+                    _ => None,
+                };
+                if let Some(v) = v {
+                    self.view = v;
+                }
+            }
         }
     }
 
@@ -1000,6 +1045,7 @@ fn link_hint(l: &Link) -> &'static str {
         Link::Pings => "Open the ping feed",
         Link::Wormholes(_) => "Show its wormholes",
         Link::Url(_) => "Open in the browser",
+        Link::Page(_) => "Go there in the app",
     }
 }
 
