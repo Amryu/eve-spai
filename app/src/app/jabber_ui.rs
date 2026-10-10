@@ -1811,7 +1811,7 @@ impl SpaiApp {
         for (jid, c) in &st.roster {
             set.entry(jid.clone()).or_insert_with(|| Convo {
                 jid: jid.clone(),
-                name: c.name.clone().unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned()),
+                name: crate::jabber::contact_name(c.name.as_deref(), jid),
                 unread: false,
                 unread_count: 0,
                 mention: false,

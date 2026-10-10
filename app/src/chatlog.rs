@@ -177,3 +177,4 @@ mod tests {
         assert!(is_system_author("EVE System") && is_system_author("EVE系统") && !is_system_author("Steve"));
     }
 }
+
