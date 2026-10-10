@@ -5029,6 +5029,9 @@ fn uitest_ping_body_link_stays_on_its_line() {
 fn uitest_ping_copy_matches_the_other_buttons() {
     use egui_kittest::kittest::Queryable as _;
 
+    // The same stopped clock `all()` sets in parallel tests: the ping is "2m ago" against it, and a
+    // freeze landing between building the fixture and drawing it would move the timestamp.
+    crate::clock::freeze(Some(harness::FROZEN_AT));
     let mut scene = ping_scene("copy_size_probe", fixtures::ping_fleet());
     let harness = harness::build(&mut scene, false);
     let copy = harness.get_by_label_contains("Copy").rect();
