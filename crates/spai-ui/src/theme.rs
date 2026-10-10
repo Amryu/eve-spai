@@ -282,7 +282,6 @@ fn load_cjk_font() -> Option<egui::FontData> {
     bytes.map(egui::FontData::from_static)
 }
 
-
 fn cjk_font_candidates() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
         &[
