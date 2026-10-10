@@ -9,7 +9,7 @@ use super::{schema, str_arg, Ctx, Kind, Need, ToolSpec};
 use crate::fleets::backend::Action;
 use crate::fleets::model::{ChannelItem, SnowflakeType};
 
-pub static TOOLS: &[&ToolSpec] = &[&FLEET_FORM, &FLEET_START, &FLEET_KICK, &FLEET_COMMAND, &FLEET_EDIT, &FLEET_BR, &FLEET_LINKS, &CONFIRM];
+pub static TOOLS: &[&ToolSpec] = &[&FLEET_FORM, &FLEET_REQUEST_PING, &FLEET_PING_STATUS, &FLEET_START, &FLEET_KICK, &FLEET_COMMAND, &FLEET_EDIT, &FLEET_BR, &FLEET_LINKS, &CONFIRM];
 
 /// What a proposal returns: the action waits for a yes in the user's next message.
 const ASK: &str = "Not done yet. Say in one short sentence what will happen and ask for a yes. When the user's next \
@@ -87,6 +87,75 @@ static FLEET_FORM: ToolSpec = ToolSpec {
     },
 };
 
+static FLEET_REQUEST_PING: ToolSpec = ToolSpec {
+    name: "fleet_request_ping",
+    description: "Proposes the start form's Request ping: the fleet's ping posted into skirmish_commanders as !bping coord, \
+                  for a coordinator to approve. Usually the first step before tracking. Only when the user asks for a ping \
+                  request in words; never on your own, and never as part of starting a fleet.",
+    need: Need::All(&["actions.fleet"]),
+    kind: Kind::Action,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        let asked = ctx.deps.last_question.lock().unwrap_or_else(|e| e.into_inner()).to_lowercase();
+        if !asked.contains("ping") {
+            return Err("a ping request is only made when the user asks for one in so many words; ask them".into());
+        }
+        let (summary, missing) = {
+            let st = ctx.deps.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            let ping = st.preview.value.as_ref().map(|p| p.ping.trim().to_owned()).filter(|p| !p.is_empty()).unwrap_or_else(|| st.draft.form.name.clone());
+            (format!("Request a ping in skirmish_commanders (!bping coord): {ping}"), st.missing())
+        };
+        if !missing.is_empty() {
+            return Err(format!("the form still needs {} before the ping says anything; ask the user for it", missing.join(", ")));
+        }
+        propose(ctx, FleetOp::RequestPing, summary)
+    },
+};
+
+static FLEET_PING_STATUS: ToolSpec = ToolSpec {
+    name: "fleet_ping_status",
+    description: "Where a fleet's ping stands: when the request went into skirmish_commanders, the replies there since (a \
+                  coordinator answers got or ok), and whether directorbot's ping for this FC has gone out, which is \
+                  usually when the fleet should be tracked.",
+    need: Need::All(&["actions.fleet", "jabber.pings"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        let (asked, fc) = {
+            let st = ctx.deps.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            (st.ping_requested_at, st.fc().map(|(_, n)| n).unwrap_or_default())
+        };
+        let Some(at) = asked else {
+            return Ok(json!({"requested": false, "note": "no ping requested from the start form this session"}));
+        };
+        let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        let replies: Vec<Value> = st
+            .chats
+            .get(&ctx.facts.skirmish_room)
+            .map(|m| m.iter().filter(|m| m.time >= at).take(30).map(|m| {
+                let t = m.body.to_lowercase();
+                let ack = ["got", "ok", "okay", "approved", "go"].iter().any(|w| t.split(|c: char| !c.is_alphanumeric()).any(|x| x == *w));
+                json!({"when": super::eve_time(m.time), "from": m.from, "text": m.body, "acknowledges": ack})
+            }).collect())
+            .unwrap_or_default();
+        let fc_l = fc.to_lowercase();
+        let pinged: Vec<Value> = st
+            .pings
+            .iter()
+            .filter(|p| p.timestamp() >= at && (fc_l.is_empty() || serde_json::to_string(p).unwrap_or_default().to_lowercase().contains(&fc_l)))
+            .map(|p| super::misc::ping_view(ctx, p))
+            .collect();
+        let next = if !pinged.is_empty() {
+            "the ping is out: time to track the fleet"
+        } else if replies.iter().any(|r| r["acknowledges"] == json!(true)) {
+            "a coordinator acknowledged it; the ping should follow from directorbot"
+        } else {
+            "waiting for a coordinator to answer in skirmish_commanders"
+        };
+        Ok(json!({"requested": super::eve_time(at), "replies": replies, "pinged": pinged, "next": next}))
+    },
+};
+
 static FLEET_START: ToolSpec = ToolSpec {
     name: "fleet_start",
     description: "Fills the fleet start form (from a preset and/or the fields given) and proposes tracking the fleet. \
@@ -95,7 +164,9 @@ static FLEET_START: ToolSpec = ToolSpec {
                   use, then call again with in_use set. Missing fields come back as an error to ask about. A Peacetime \
                   fleet needs a fresh hurf each time (the description: a short callout that makes people join, funny, \
                   serious or anything): ask the user for one, or offer one to approve, and pass it as description. \
-                  Tracking waits for the FC to become fleet boss when they are not yet.",
+                  Tracking waits for the FC to become fleet boss when they are not yet. Usually a ping is requested \
+                  first and the fleet tracked once directorbot pinged it (fleet_ping_status); when none was requested, \
+                  say so once, and track anyway if the user wants.",
     need: Need::All(&["actions.fleet"]),
     kind: Kind::Action,
     schema: || {
@@ -482,5 +553,26 @@ mod tests {
         let (r, err) = run(&deps, "fleet_start", json!({"in_use": "keep", "description": "Shoot the bears, get the PAP"}));
         assert!(!err && r["action_id"].is_number(), "{r}");
         assert_eq!(deps.fleet.lock().unwrap().draft.form.description, "Shoot the bears, get the PAP");
+    }
+
+    #[test]
+    fn a_ping_request_needs_the_user_to_ask_for_one() {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut app = crate::app::SpaiApp::build(&ctx, true);
+        app.settings.fleet_presets = crate::uitest::fixtures::fleet_presets();
+        crate::uitest::fixtures::seed_fleet_state(&app);
+        crate::uitest::fixtures::open_fleet_start(&app);
+        let mut deps = AiDeps::for_tests(facts(&["actions.fleet", "jabber.pings"]));
+        deps.fleet = app.fleet_state_for_test().clone();
+        let (r, _) = run(&deps, "fleet_ping_status", json!({}));
+        assert_eq!(r["requested"], false, "{r}");
+        *deps.last_question.lock().unwrap() = "track the fleet".into();
+        let (r, err) = run(&deps, "fleet_request_ping", json!({}));
+        assert!(err && r.to_string().contains("asks for one"), "not asked for: {r}");
+        *deps.last_question.lock().unwrap() = "request a ping for this fleet".into();
+        let (r, err) = run(&deps, "fleet_request_ping", json!({}));
+        assert!(!err && r["action_id"].is_number(), "{r}");
+        assert!(r["action"].as_str().unwrap().contains("skirmish_commanders"), "{r}");
     }
 }

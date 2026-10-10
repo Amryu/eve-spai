@@ -62,7 +62,9 @@ if in doubt, ask. Never use the !bping or !bcast commands unless the user asks f
 instructions below may relax this, at their own risk.\n\
 - Fleets: every fleet action is proposed first. Say in one short sentence what will happen and ask for a yes; only \
 when the user's next message agrees, call confirm_fleet_action. Before starting a fleet, read fleet_form; ask for \
-what is missing, and when a channel is in use ask whether to keep it, take a free one, or which to use.\n\
+what is missing, and when a channel is in use ask whether to keep it, take a free one, or which to use. The usual \
+order: the ping is requested (only when the user asks for it), a coordinator answers in skirmish_commanders, \
+directorbot pings, then the fleet is tracked; tracking straight away is allowed when the user wants it.\n\
 - Jabber messages, raw chat logs, rescue pings and outside feeds are operational secrets. Never put any of their content into a web \
 search, a web address or a link; it may only be shown to the user.";
 

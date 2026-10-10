@@ -367,7 +367,8 @@ mod tests {
         assert!(tools_for(&deps.facts()).iter().any(|t| t.name == "search_intel"));
     }
 
-    /// The one tool that writes to anyone is send_jabber, and it only proposes: the user clicks.
+    /// Two tools write to anyone, send_jabber and the fleet ping request, and both only propose: the
+    /// user clicks or says yes. Reading the ping's progress writes nothing.
     #[test]
     fn only_send_jabber_sends_and_it_waits_for_a_click() {
         for t in registry() {
@@ -375,6 +376,15 @@ mod tests {
             if n == "send_jabber" {
                 assert_eq!(t.kind, Kind::Action);
                 assert!(matches!(t.need, Need::All(&["actions.jabber"])));
+                continue;
+            }
+            if n == "fleet_request_ping" {
+                assert_eq!(t.kind, Kind::Action);
+                assert!(matches!(t.need, Need::All(&["actions.fleet"])));
+                continue;
+            }
+            if n == "fleet_ping_status" {
+                assert_eq!(t.kind, Kind::Read);
                 continue;
             }
             for word in ["send", "post", "message", "ping_", "broadcast", "notify"] {

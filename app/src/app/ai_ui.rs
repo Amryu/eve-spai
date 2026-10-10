@@ -110,6 +110,7 @@ impl SpaiApp {
             coalitions: s.coalitions.clone(),
             chat_windows: self.jabber_popouts.iter().map(|w| (w.id, w.tabs.clone())).collect(),
             jabber_domain: s.jabber_jid.split('@').nth(1).unwrap_or("").split('/').next().unwrap_or("").to_owned(),
+            skirmish_room: crate::app::goon_jid(&s.rescue_skirmish_jid, "skirmish_commanders@conference.goonfleet.com"),
             opsec: false,
         };
         *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
@@ -202,6 +203,7 @@ impl SpaiApp {
                     }
                 }
                 crate::ai::tools::FleetOp::Act(id, action) => self.fleet_dispatch(crate::fleets::state::Cmd::Act(id.clone(), action.clone())),
+                crate::ai::tools::FleetOp::RequestPing => self.fleet_send_ping(crate::fleets::ping::COORD),
                 crate::ai::tools::FleetOp::CreateBr(id) => {
                     let _ = self.fleet_br_view(id);
                     self.fleet_br_click(crate::app::fleet_map::BrClick::Create, &self.ui_ctx.clone());
