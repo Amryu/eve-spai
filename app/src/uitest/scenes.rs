@@ -2358,6 +2358,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(assistant_scene("assistant", [1280.0, 800.0], false));
     v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false));
     v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true));
+    v.push(view_scene("assistant_off", View::Assistant, [1024.0, 600.0]));
     v.push({
         harness::scratch_profile();
         let mut app: Option<crate::app::SpaiApp> = None;
@@ -8570,4 +8571,18 @@ fn uitest_screenshots_route_tab() {
     h.get_by_label_contains("Avoid").click();
     h.run_steps(3);
     harness::shot(&mut h, "route_tab");
+}
+
+/// With the assistant off, its tab still explains itself, and the button lands in Settings with
+/// the Assistant section on screen.
+#[test]
+fn uitest_assistant_off_leads_to_its_settings() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = all().into_iter().find(|s| s.name == "assistant_off").expect("scene");
+    let mut h = harness::build(&mut scene, false);
+    h.get_by_label_contains("Set it up in Settings").click();
+    h.run_steps(4);
+    let toggle = h.get_by_label("AI assistant");
+    let r = toggle.rect();
+    assert!(r.min.y >= 0.0 && r.max.y <= 600.0, "the Assistant section is scrolled into view: {r:?}");
 }
