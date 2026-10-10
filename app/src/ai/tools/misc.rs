@@ -43,8 +43,11 @@ static MY_CHARACTERS: ToolSpec = ToolSpec {
 
 fn rows(r: &[crate::fleets::model::FleetRow]) -> Value {
     json!(r.iter().take(30).map(|f| json!({
-        "id": f.id.0, "name": f.name, "doctrine": f.setup_name, "operation": f.operation_name, "group": f.group_name,
-        "commander": f.commander, "started_by": f.started_by, "started": f.started_at, "closed": f.closed_at,
+        "id": f.id.0, "name": f.name,
+        "started_by": f.started_by.as_ref().filter(|s| Some(*s) != f.commander.as_ref()),
+        "started": super::iso_time(&f.started_at),
+        "closed": f.closed_at.as_deref().map(super::iso_time), "doctrine": f.setup_name, "operation": f.operation_name, "group": f.group_name,
+        "commander": f.commander,
     })).collect::<Vec<_>>())
 }
 
@@ -289,16 +292,42 @@ static JABBER_PINGS: ToolSpec = ToolSpec {
             })
             .take(n)
             .collect();
-        Ok(json!(hits.iter().map(|p| {
-            let mut x = serde_json::to_value(p).unwrap_or_default();
-            if let Some(o) = x.as_object_mut().and_then(|o| o.values_mut().next()).and_then(Value::as_object_mut) {
-                o.insert("when".into(), json!(eve_time(p.timestamp())));
-                o.insert("age".into(), json!(fmt_age(ctx.now, p.timestamp())));
-            }
-            x
-        }).collect::<Vec<_>>()))
+        Ok(json!(hits.iter().map(|p| ping_view(ctx, p)).collect::<Vec<_>>()))
     },
 };
+
+/// A ping as the assistant reads it: who, when, and each fleet it calls, with systems by name; the
+/// raw text only when nothing could be read out of it.
+fn ping_view(ctx: &Ctx, p: &crate::pings::Ping) -> Value {
+    use crate::pings::{Comms, Formup, Ping};
+    let fleet = |f: &crate::pings::FleetInfo| {
+        json!({
+            "fc": f.fc,
+            "fleet": f.fleet,
+            "doctrine": f.doctrine,
+            "formup": f.formup.iter().map(|x| match x { Formup::System(id) => ctx.system_name(*id), Formup::Text(t) => t.clone() }).collect::<Vec<_>>(),
+            "pap": f.pap.as_ref().map(|x| format!("{x:?}")),
+            "comms": f.comms.as_ref().map(|c| match c { Comms::Mumble { channel, .. } => format!("{channel} (Mumble)"), Comms::Text(t) => t.clone() }),
+            "comms_link": f.comms.as_ref().and_then(|c| match c { Comms::Mumble { link, .. } => Some(link.clone()), Comms::Text(_) => None }),
+        })
+    };
+    let t = p.timestamp();
+    match p {
+        Ping::Plain { text, sender, target, raw, .. } => json!({
+            "when": eve_time(t), "age": fmt_age(ctx.now, t), "from": sender, "to": target,
+            "text": if text.trim().is_empty() { raw } else { text },
+        }),
+        Ping::Fleet { description, source, target, raw, .. } => {
+            let fleets: Vec<Value> = p.fleets().iter().map(fleet).collect();
+            json!({
+                "when": eve_time(t), "age": fmt_age(ctx.now, t), "from": source, "to": target,
+                "text": description,
+                "fleets": fleets,
+                "raw": if fleets.is_empty() && description.trim().is_empty() { Some(raw) } else { None },
+            })
+        }
+    }
+}
 
 static JABBER_ROOMS: ToolSpec = ToolSpec {
     name: "jabber_rooms",
@@ -389,7 +418,7 @@ pub(crate) fn pilot_row(name: &str, row: Option<&crate::localscan::Row>, orgs: &
                 "fc": s.fc.as_ref().map(|f| f.level.clone()),
                 "bait": s.bait.as_ref().map(|b| b.level.clone()),
                 "awox_kills": s.awox.iter().sum::<u32>(),
-                "tags": s.tags.iter().map(|(t, n)| format!("{t:?} {n}")).collect::<Vec<_>>(),
+                "tags": s.tags.iter().map(|(t, n)| if *n > 0 { format!("{t:?} {n}") } else { format!("{t:?}") }).collect::<Vec<_>>(),
             })
         }
         Some(Row::Blue(st)) => json!({"name": name, "blue": st}),

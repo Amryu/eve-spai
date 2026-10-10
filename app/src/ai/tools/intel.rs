@@ -66,7 +66,6 @@ fn report_json(ctx: &Ctx, r: &crate::intel::IntelReport, jumps: Option<u32>) -> 
         "pilots": r.pilots,
         "count": r.count,
         "severity": format!("{sev:?}"),
-        "clear": r.clear,
     });
     if !r.alliances.is_empty() {
         v["alliances"] = json!(r.alliances.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
@@ -123,6 +122,7 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let reports = intel_since(ctx, since, q.as_deref(), &area);
     let want_kinds: Vec<String> = v.get("kinds").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
     let mut out = Vec::new();
+    let mut matched = 0;
     for r in &reports {
         if !want_kinds.is_empty() && !kinds_of(r).iter().any(|k| want_kinds.iter().any(|w| w == k)) {
             continue;
@@ -149,12 +149,12 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
                 continue;
             }
         }
-        out.push(report_json(ctx, r, jumps));
-        if out.len() >= limit {
-            break;
+        matched += 1;
+        if out.len() < limit {
+            out.push(report_json(ctx, r, jumps));
         }
     }
-    Ok(json!({"count": out.len(), "reports": out}))
+    Ok(json!({"matching": matched, "shown": out.len(), "reports": out}))
 }
 
 static CHAT_LOG: ToolSpec = ToolSpec {
@@ -394,10 +394,10 @@ mod tests {
         }
         let (all, err) = run(&deps, "search_intel", json!({"since_minutes": 1440}));
         assert!(!err, "{all}");
-        let n = all["count"].as_u64().unwrap();
+        let n = all["matching"].as_u64().unwrap();
         assert!(n > 0, "{all}");
         let (none, _) = run(&deps, "search_intel", json!({"query": "zzzz-not-there", "since_minutes": 1440}));
-        assert_eq!(none["count"], 0);
+        assert_eq!(none["matching"], 0);
     }
 
     #[test]

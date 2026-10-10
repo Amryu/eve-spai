@@ -14,6 +14,8 @@ mod misc;
 mod history;
 mod watch;
 mod extra;
+#[cfg(test)]
+mod audit;
 mod web;
 
 use serde_json::{json, Value};
@@ -135,11 +137,17 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, input: &Value) -> (String, bool) {
         return ("Memories are not saved in a conversation that read Jabber, rescue or feed messages, so they cannot leave the app later.".into(), true);
     }
     match (spec.run)(ctx, input) {
-        Ok(v) => {
+        Ok(mut v) => {
             if OPSEC.contains(&name) {
                 ctx.deps.opsec.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            (cap(&json!({"untrusted_data": v}).to_string()), false)
+            compact(&mut v);
+            let dropped = shrink(&mut v);
+            let mut out = json!({"untrusted_data": v});
+            if dropped > 0 {
+                out["left_out"] = json!(format!("{dropped} items did not fit; ask for fewer, a shorter time span or a narrower filter"));
+            }
+            (cap(&out.to_string()), false)
         }
         Err(e) => (e, true),
     }
@@ -192,8 +200,98 @@ pub(crate) fn fmt_age(now: i64, t: i64) -> String {
     }
 }
 
+/// EVE time as short as it can be told apart: the time today, the date as well on another day,
+/// the year only when it is not this one.
 pub(crate) fn eve_time(t: i64) -> String {
-    chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()
+    let Some(d) = chrono::DateTime::from_timestamp(t, 0) else { return String::new() };
+    let now = crate::clock::utc();
+    if d.date_naive() == now.date_naive() {
+        d.format("%H:%M").to_string()
+    } else if d.format("%Y").to_string() == now.format("%Y").to_string() {
+        d.format("%b %d %H:%M").to_string()
+    } else {
+        d.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+/// An ISO time from an outside service (the fleet dashboard), told the same way.
+pub(crate) fn iso_time(s: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(s).map(|d| eve_time(d.timestamp())).unwrap_or_else(|_| s.to_owned())
+}
+
+/// Leaves out what says nothing: nulls, empty text, empty lists and objects. Absent means none.
+pub(crate) fn compact(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            for x in o.values_mut() {
+                compact(x);
+            }
+            o.retain(|_, x| !(x.is_null() || x.as_str() == Some("") || x.as_array().is_some_and(|a| a.is_empty()) || x.as_object().is_some_and(|m| m.is_empty())));
+        }
+        Value::Array(a) => {
+            for x in a.iter_mut() {
+                compact(x);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fits a result into [`RESULT_CAP`] by dropping whole items from the end of its longest list,
+/// never cutting one in half. Returns how many were dropped.
+fn shrink(v: &mut Value) -> usize {
+    enum Step {
+        Key(String),
+        Index(usize),
+    }
+    /// The path to the longest list with more than one item.
+    fn find(v: &Value, path: &mut Vec<usize>, keys: &mut Vec<Step>, best: &mut Option<(usize, Vec<Step>)>) {
+        match v {
+            Value::Array(a) => {
+                if a.len() > 1 && best.as_ref().is_none_or(|(n, _)| a.len() > *n) {
+                    *best = Some((a.len(), keys.iter().map(|k| match k { Step::Key(s) => Step::Key(s.clone()), Step::Index(i) => Step::Index(*i) }).collect()));
+                }
+                for (i, x) in a.iter().enumerate() {
+                    keys.push(Step::Index(i));
+                    find(x, path, keys, best);
+                    keys.pop();
+                }
+            }
+            Value::Object(o) => {
+                for (k, x) in o {
+                    keys.push(Step::Key(k.clone()));
+                    find(x, path, keys, best);
+                    keys.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    fn longest(v: &mut Value) -> Option<&mut Vec<Value>> {
+        let mut best = None;
+        find(v, &mut Vec::new(), &mut Vec::new(), &mut best);
+        let (_, steps) = best?;
+        let mut at = v;
+        for s in steps {
+            at = match s {
+                Step::Key(k) => at.get_mut(&k)?,
+                Step::Index(i) => at.get_mut(i)?,
+            };
+        }
+        at.as_array_mut()
+    }
+    let mut dropped = 0;
+    while v.to_string().len() > RESULT_CAP {
+        match longest(v) {
+            Some(a) => {
+                let cut = (a.len() / 4).max(1);
+                a.truncate(a.len() - cut);
+                dropped += cut;
+            }
+            None => break,
+        }
+    }
+    dropped
 }
 
 #[cfg(test)]
@@ -270,6 +368,18 @@ mod tests {
         for t in OPSEC {
             assert!(registry().iter().any(|r| r.name == *t) || ["jabber_rooms", "jabber_search"].contains(t), "{t} is a tool");
         }
+    }
+
+    #[test]
+    fn empty_fields_go_and_long_lists_shrink_by_whole_items() {
+        let mut v = json!({"a": null, "b": "", "c": [], "d": {}, "e": false, "f": 0, "g": [{"x": null, "y": 1}]});
+        compact(&mut v);
+        assert_eq!(v, json!({"e": false, "f": 0, "g": [{"y": 1}]}), "false and zero say something; null and empty do not");
+        let mut big = json!({"items": (0..2000).map(|i| json!({"n": i, "text": "some words here"})).collect::<Vec<_>>(), "note": "kept"});
+        let dropped = shrink(&mut big);
+        assert!(dropped > 0 && big.to_string().len() <= RESULT_CAP);
+        assert_eq!(big["note"], "kept");
+        assert!(serde_json::from_str::<Value>(&big.to_string()).is_ok(), "still whole JSON");
     }
 
     #[test]
