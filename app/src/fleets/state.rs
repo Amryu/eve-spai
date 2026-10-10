@@ -636,6 +636,13 @@ impl FleetState {
         out
     }
 
+    /// Whether the form is a Peacetime fleet: a primary tag, none of them STRATEGIC. The same rule
+    /// the preset list marks its P and S by.
+    pub fn is_peacetime(&self) -> bool {
+        let primary: Vec<&crate::fleets::model::TagItem> = self.draft.tags.iter().filter_map(|id| self.seed.tags.iter().find(|t| t.id == *id)).filter(|t| t.is_primary).collect();
+        !primary.is_empty() && !primary.iter().any(|t| t.name.trim().eq_ignore_ascii_case("STRATEGIC"))
+    }
+
     /// The comms channels the form picked that another fleet already uses: (which, its name).
     pub fn channels_in_use(&self) -> Vec<(&'static str, String)> {
         let f = &self.draft.form;
