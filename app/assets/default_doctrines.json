@@ -1,0 +1,1592 @@
+{
+ "fleet_hulls": [
+  {
+   "setup_id": 65,
+   "type_id": 11381,
+   "name": "Harpy",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 37458,
+   "name": "Kirin",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 37460,
+   "name": "Scalpel",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 65,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 22464,
+   "name": "Flycatcher",
+   "main": true
+  },
+  {
+   "setup_id": 46,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 37460,
+   "name": "Scalpel",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 37458,
+   "name": "Kirin",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 46,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 72812,
+   "name": "Ferox Navy Issue",
+   "main": true
+  },
+  {
+   "setup_id": 84,
+   "type_id": 11985,
+   "name": "Basilisk",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 620,
+   "name": "Osprey",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 11961,
+   "name": "Huginn",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 11971,
+   "name": "Lachesis",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 11995,
+   "name": "Onyx",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 12013,
+   "name": "Broadsword",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 22446,
+   "name": "Vulture",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 22470,
+   "name": "Nighthawk",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 22468,
+   "name": "Claymore",
+   "main": false
+  },
+  {
+   "setup_id": 84,
+   "type_id": 34562,
+   "name": "Svipul",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 644,
+   "name": "Typhoon",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 11987,
+   "name": "Guardian",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 625,
+   "name": "Augoror",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 12017,
+   "name": "Devoter",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 12021,
+   "name": "Phobos",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 34317,
+   "name": "Confessor",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 22448,
+   "name": "Absolution",
+   "main": false
+  },
+  {
+   "setup_id": 140,
+   "type_id": 22442,
+   "name": "Eos",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 12038,
+   "name": "Purifier",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 12034,
+   "name": "Hound",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 12032,
+   "name": "Manticore",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 11377,
+   "name": "Nemesis",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 33468,
+   "name": "Astero",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 22436,
+   "name": "Widow",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 22440,
+   "name": "Panther",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 22430,
+   "name": "Sin",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 22428,
+   "name": "Redeemer",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 44996,
+   "name": "Marshal",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 11192,
+   "name": "Buzzard",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 11182,
+   "name": "Cheetah",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 11172,
+   "name": "Helios",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 11188,
+   "name": "Anathema",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 44993,
+   "name": "Pacifier",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 85087,
+   "name": "Tholos",
+   "main": false
+  },
+  {
+   "setup_id": 60,
+   "type_id": 85086,
+   "name": "Cenotaph",
+   "main": false
+  },
+  {
+   "setup_id": 70,
+   "type_id": 73794,
+   "name": "Thrasher Fleet Issue",
+   "main": false
+  },
+  {
+   "setup_id": 70,
+   "type_id": 11190,
+   "name": "Sentinel",
+   "main": false
+  },
+  {
+   "setup_id": 70,
+   "type_id": 37460,
+   "name": "Scalpel",
+   "main": false
+  },
+  {
+   "setup_id": 70,
+   "type_id": 37458,
+   "name": "Kirin",
+   "main": false
+  },
+  {
+   "setup_id": 70,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 34562,
+   "name": "Svipul",
+   "main": true
+  },
+  {
+   "setup_id": 128,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 37458,
+   "name": "Kirin",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 37460,
+   "name": "Scalpel",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 128,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 0,
+   "type_id": 603,
+   "name": "Merlin",
+   "main": false
+  },
+  {
+   "setup_id": 0,
+   "type_id": 582,
+   "name": "Bantam",
+   "main": false
+  },
+  {
+   "setup_id": 116,
+   "type_id": 11184,
+   "name": "Crusader",
+   "main": true
+  },
+  {
+   "setup_id": 116,
+   "type_id": 11178,
+   "name": "Raptor",
+   "main": false
+  },
+  {
+   "setup_id": 116,
+   "type_id": 22464,
+   "name": "Flycatcher",
+   "main": false
+  },
+  {
+   "setup_id": 116,
+   "type_id": 22460,
+   "name": "Eris",
+   "main": false
+  },
+  {
+   "setup_id": 116,
+   "type_id": 22456,
+   "name": "Sabre",
+   "main": false
+  },
+  {
+   "setup_id": 116,
+   "type_id": 22452,
+   "name": "Heretic",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 24694,
+   "name": "Maelstrom",
+   "main": true
+  },
+  {
+   "setup_id": 125,
+   "type_id": 11985,
+   "name": "Basilisk",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 620,
+   "name": "Osprey",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 11961,
+   "name": "Huginn",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 11971,
+   "name": "Lachesis",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 11995,
+   "name": "Onyx",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 12013,
+   "name": "Broadsword",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 22446,
+   "name": "Vulture",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 22470,
+   "name": "Nighthawk",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 22468,
+   "name": "Claymore",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 34828,
+   "name": "Jackdaw",
+   "main": false
+  },
+  {
+   "setup_id": 125,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 100,
+   "type_id": 623,
+   "name": "Moa",
+   "main": true
+  },
+  {
+   "setup_id": 100,
+   "type_id": 24698,
+   "name": "Drake",
+   "main": false
+  },
+  {
+   "setup_id": 100,
+   "type_id": 11961,
+   "name": "Huginn",
+   "main": false
+  },
+  {
+   "setup_id": 100,
+   "type_id": 11971,
+   "name": "Lachesis",
+   "main": false
+  },
+  {
+   "setup_id": 100,
+   "type_id": 620,
+   "name": "Osprey",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 49710,
+   "name": "Kikimora",
+   "main": true
+  },
+  {
+   "setup_id": 64,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 37460,
+   "name": "Scalpel",
+   "main": false
+  },
+  {
+   "setup_id": 64,
+   "type_id": 37458,
+   "name": "Kirin",
+   "main": false
+  },
+  {
+   "setup_id": 67,
+   "type_id": 29344,
+   "name": "Exequror Navy Issue",
+   "main": true
+  },
+  {
+   "setup_id": 67,
+   "type_id": 37483,
+   "name": "Magus",
+   "main": false
+  },
+  {
+   "setup_id": 67,
+   "type_id": 37481,
+   "name": "Pontifex",
+   "main": false
+  },
+  {
+   "setup_id": 67,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 67,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 67,
+   "type_id": 37457,
+   "name": "Deacon",
+   "main": false
+  },
+  {
+   "setup_id": 62,
+   "type_id": 29340,
+   "name": "Osprey Navy Issue",
+   "main": true
+  },
+  {
+   "setup_id": 62,
+   "type_id": 631,
+   "name": "Scythe",
+   "main": false
+  },
+  {
+   "setup_id": 62,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 62,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 62,
+   "type_id": 3766,
+   "name": "Vigil",
+   "main": false
+  },
+  {
+   "setup_id": 62,
+   "type_id": 609,
+   "name": "Maulus",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 24702,
+   "name": "Hurricane",
+   "main": true
+  },
+  {
+   "setup_id": 59,
+   "type_id": 621,
+   "name": "Caracal",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 620,
+   "name": "Osprey",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 631,
+   "name": "Scythe",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 3766,
+   "name": "Vigil",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 59,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 82,
+   "type_id": 11393,
+   "name": "Retribution",
+   "main": true
+  },
+  {
+   "setup_id": 82,
+   "type_id": 37483,
+   "name": "Magus",
+   "main": false
+  },
+  {
+   "setup_id": 82,
+   "type_id": 37481,
+   "name": "Pontifex",
+   "main": false
+  },
+  {
+   "setup_id": 82,
+   "type_id": 11387,
+   "name": "Hyena",
+   "main": false
+  },
+  {
+   "setup_id": 82,
+   "type_id": 11174,
+   "name": "Keres",
+   "main": false
+  },
+  {
+   "setup_id": 82,
+   "type_id": 37457,
+   "name": "Deacon",
+   "main": false
+  },
+  {
+   "setup_id": 111,
+   "type_id": 629,
+   "name": "Rupture",
+   "main": true
+  },
+  {
+   "setup_id": 111,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 111,
+   "type_id": 37482,
+   "name": "Stork",
+   "main": false
+  },
+  {
+   "setup_id": 111,
+   "type_id": 620,
+   "name": "Osprey",
+   "main": false
+  },
+  {
+   "setup_id": 30,
+   "type_id": 16238,
+   "name": "Cormorant",
+   "main": false
+  },
+  {
+   "setup_id": 30,
+   "type_id": 3766,
+   "name": "Vigil",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 11178,
+   "name": "Raptor",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 11184,
+   "name": "Crusader",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 22464,
+   "name": "Flycatcher",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 22456,
+   "name": "Sabre",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 22460,
+   "name": "Eris",
+   "main": false
+  },
+  {
+   "setup_id": 119,
+   "type_id": 22452,
+   "name": "Heretic",
+   "main": false
+  },
+  {
+   "setup_id": 51,
+   "type_id": 602,
+   "name": "Kestrel",
+   "main": true
+  },
+  {
+   "setup_id": 51,
+   "type_id": 37480,
+   "name": "Bifrost",
+   "main": false
+  },
+  {
+   "setup_id": 51,
+   "type_id": 3766,
+   "name": "Vigil",
+   "main": false
+  },
+  {
+   "setup_id": 51,
+   "type_id": 609,
+   "name": "Maulus",
+   "main": false
+  },
+  {
+   "setup_id": 0,
+   "type_id": 45534,
+   "name": "Monitor",
+   "main": false
+  }
+ ],
+ "fleet_doctrine_tanks": [
+  [
+   125,
+   "shield"
+  ],
+  [
+   100,
+   "shield"
+  ],
+  [
+   140,
+   "armor"
+  ],
+  [
+   64,
+   "shield"
+  ],
+  [
+   70,
+   "shield"
+  ],
+  [
+   128,
+   "shield"
+  ],
+  [
+   67,
+   "armor"
+  ],
+  [
+   62,
+   "shield"
+  ],
+  [
+   59,
+   "shield"
+  ],
+  [
+   82,
+   "armor"
+  ],
+  [
+   111,
+   "shield"
+  ],
+  [
+   30,
+   "shield"
+  ],
+  [
+   116,
+   "armor"
+  ],
+  [
+   119,
+   "shield"
+  ],
+  [
+   84,
+   "shield"
+  ],
+  [
+   65,
+   "shield"
+  ],
+  [
+   46,
+   "shield"
+  ]
+ ],
+ "fleet_doctrine_urls": [
+  [
+   125,
+   "https://goonfleet.com/index.php/topic/374474-active-strat-alpha-fleet-maelstroms/"
+  ],
+  [
+   100,
+   "https://goonfleet.com/index.php/topic/366187-active-strat-snail-fleet/"
+  ],
+  [
+   60,
+   "https://goonfleet.com/index.php/topic/344458-active-strat-siegefleet-40-torp-bombers/"
+  ],
+  [
+   140,
+   "https://goonfleet.com/index.php/topic/380930-active-strat-typhoons/"
+  ],
+  [
+   64,
+   "https://goonfleet.com/index.php/topic/345055-active-strat-void-rays-mwd-kikis/"
+  ],
+  [
+   70,
+   "https://goonfleet.com/index.php/topic/349435-active-peacetime-tfis/"
+  ],
+  [
+   128,
+   "https://goonfleet.com/index.php/topic/374663-active-strat-svipuls/"
+  ],
+  [
+   67,
+   "https://goonfleet.com/index.php/topic/349390-active-strat-eni-fleet/"
+  ],
+  [
+   62,
+   "https://goonfleet.com/index.php/topic/341744-active-peacetime-osprey-navy-issues/"
+  ],
+  [
+   59,
+   "https://goonfleet.com/index.php/topic/295648-active-peacetime-mosh-masters-hurricanes/"
+  ],
+  [
+   82,
+   "https://goonfleet.com/index.php/topic/354268-active-peacetime-retributions/"
+  ],
+  [
+   111,
+   "https://goonfleet.com/index.php/topic/371893-active-peacetime-ruptures/"
+  ],
+  [
+   30,
+   "https://goonfleet.com/index.php/topic/299033-active-peacetime-cormorants/"
+  ],
+  [
+   116,
+   "https://goonfleet.com/index.php/topic/372184-active-strat-contraceptors/"
+  ],
+  [
+   119,
+   "https://goonfleet.com/index.php/topic/372184-active-strat-contraceptors/"
+  ],
+  [
+   51,
+   "https://goonfleet.com/index.php/topic/314644-active-peacetime-kestrels/"
+  ],
+  [
+   65,
+   "https://goonfleet.com/index.php/topic/346057-active-strat-harpyfleet/"
+  ],
+  [
+   84,
+   "https://goonfleet.com/index.php/topic/357801-active-strat-hammerfleet-fni/"
+  ],
+  [
+   46,
+   "https://goonfleet.com/index.php/topic/326958-active-strat-flycatchers/"
+  ]
+ ],
+ "fleet_doctrine_lines": [
+  [
+   84,
+   "Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)"
+  ],
+  [
+   128,
+   "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"
+  ]
+ ],
+ "fleet_doctrine_strict": [
+  60,
+  119,
+  116
+ ],
+ "fleet_boost_requirements": [
+  {
+   "setup_id": 65,
+   "charge": "Shield Harmonizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Active Shielding",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 65,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Rapid Deployment",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 84,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Shield Harmonizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Active Shielding",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 46,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Shield Harmonizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Active Shielding",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Sensor Optimization",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 128,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 51,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 51,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Armor Energizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Armor Reinforcement",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Rapid Repair",
+   "priority": "low"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Interdiction Maneuvers",
+   "priority": "low"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 67,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Rapid Deployment",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 100,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Interdiction Maneuvers",
+   "priority": "low"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Rapid Deployment",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 125,
+   "charge": "Electronic Superiority",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Shield Harmonizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Active Shielding",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 62,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 59,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Armor Energizing",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Armor Reinforcement",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Rapid Repair",
+   "priority": "low"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 82,
+   "charge": "Electronic Superiority",
+   "priority": "high"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 111,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Shield Harmonizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Shield Extension",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Active Shielding",
+   "priority": "high"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Evasive Maneuvers",
+   "priority": "high"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Interdiction Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Rapid Deployment",
+   "priority": "high"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Sensor Optimization",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 64,
+   "charge": "Electronic Superiority",
+   "priority": "low"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Armor Energizing",
+   "priority": "high"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Armor Reinforcement",
+   "priority": "high"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Rapid Repair",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Evasive Maneuvers",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Interdiction Maneuvers",
+   "priority": "low"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Rapid Deployment",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Sensor Optimization",
+   "priority": "high"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Electronic Hardening",
+   "priority": "medium"
+  },
+  {
+   "setup_id": 140,
+   "charge": "Electronic Superiority",
+   "priority": "medium"
+  }
+ ]
+}

@@ -2114,6 +2114,9 @@ impl SpaiApp {
         self.watcher_started = true;
 
         let mut systems = store.load_systems();
+        if self.settings.apply_doctrine_defaults() {
+            self.needs_save = true;
+        }
         if apply_baked_defaults(&mut self.settings, &systems, BAKED_REGION, BAKED_BRIDGES, BAKED_UPGRADES) {
             self.needs_save = true;
         }

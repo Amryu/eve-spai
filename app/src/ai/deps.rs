@@ -81,6 +81,10 @@ pub struct DoctrineFacts {
     pub tank: Option<String>,
     pub url: Option<String>,
     pub line: Option<String>,
+    /// Only its own hulls belong in it.
+    pub strict: bool,
+    /// Boosts it wants: (charge, priority).
+    pub boosts: Vec<(String, String)>,
 }
 
 /// The parts of the user's setup the assistant reads.
