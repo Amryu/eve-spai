@@ -1069,20 +1069,16 @@ impl SpaiApp {
             }
         }
         if act.start {
-            // Checked here as well as on the button: a click that lands in the frame the state
-            // changed would otherwise get through.
-            let req = {
-                let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-                if st.starting || st.already_tracking().is_some() {
-                    None
-                } else {
-                    let req = st.start_request();
-                    st.starting = req.is_some();
-                    req
-                }
-            };
-            if let Some(req) = req {
-                self.fleet_dispatch(Cmd::Start(req));
+            self.fleet_start_now();
+        }
+        if act.track_wait {
+            let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.track_waiting = !st.track_waiting;
+            let waiting = st.track_waiting;
+            drop(st);
+            if waiting {
+                // Asked at once, then every few seconds by fleet_track_tick.
+                self.fleet_boss_asked = None;
             }
         }
         if let Some(group) = act.jabber_ping {
@@ -1117,6 +1113,43 @@ impl SpaiApp {
         }
     }
 
+    /// Sends the start the form describes, unless one is already on its way or the FC is tracked.
+    pub(crate) fn fleet_start_now(&mut self) {
+        // Checked here as well as on the button: a click that lands in the frame the state
+        // changed would otherwise get through.
+        let req = {
+            let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.track_waiting = false;
+            if st.starting || st.already_tracking().is_some() || !st.missing().is_empty() {
+                None
+            } else {
+                let req = st.start_request();
+                st.starting = req.is_some();
+                req
+            }
+        };
+        if let Some(req) = req {
+            self.fleet_dispatch(Cmd::Start(req));
+        }
+    }
+
+    /// A Track waiting for the FC to become fleet boss: asks every few seconds, on any tab, and
+    /// starts the fleet the moment the answer is yes.
+    pub(crate) fn fleet_track_tick(&mut self, ctx: &egui::Context) {
+        let (waiting, boss_ok) = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            (st.track_waiting, st.fc().and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id)).is_some_and(|(_, c)| c.verdict().0))
+        };
+        if !waiting {
+            return;
+        }
+        if boss_ok {
+            self.fleet_start_now();
+        } else {
+            self.fleet_boss_poll(ctx);
+        }
+    }
+
     /// Whether enough time has passed to ask the dashboard again whether the FC is fleet boss.
     fn fleet_boss_may_ask(&mut self) -> bool {
         let now = std::time::Instant::now();
@@ -1140,7 +1173,14 @@ impl SpaiApp {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.boss.as_ref().is_some_and(|(id, c)| *id == character_id && !c.verdict().0)
         };
-        let every = if failed && self.rescue_on() && self.rescue_ping_recent() { BOSS_RETRY } else { BOSS_POLL };
+        let waiting = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).track_waiting;
+        let every = if waiting {
+            BOSS_TRACK_WAIT
+        } else if failed && self.rescue_on() && self.rescue_ping_recent() {
+            BOSS_RETRY
+        } else {
+            BOSS_POLL
+        };
         let due = self
             .fleet_boss_asked
             .is_none_or(|t| std::time::Instant::now().duration_since(t) >= every);
@@ -2644,6 +2684,8 @@ const PING_REPEAT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The fleet-boss check is a round trip per click, so the refresh button has a floor.
 const BOSS_RECHECK: std::time::Duration = std::time::Duration::from_secs(3);
+/// How often a Track waiting for the FC to be fleet boss asks again.
+const BOSS_TRACK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often the start form re-asks on its own. The answer goes stale the moment the FC forms up
 /// in game, and nothing tells the app when that happens.
@@ -2697,6 +2739,8 @@ pub(crate) struct FormAct {
     pub search_system: Option<String>,
     pub edited: bool,
     pub start: bool,
+    /// Track pressed before the FC is boss, or pressed again to stop waiting.
+    pub track_wait: bool,
     /// Post the ping request to skirmish_commanders, as the rescue does. The directorbot group.
     pub jabber_ping: Option<&'static str>,
 }
@@ -2794,7 +2838,9 @@ fn start_page(
                         act.jabber_ping = Some(crate::fleets::ping::COORD);
                     }
                 };
-                let ready = st.start_request().is_some();
+                let missing = st.missing();
+                let ready = missing.is_empty();
+                let waiting = st.track_waiting;
                 // The dashboard reads the fleet through the FC's ESI token, so tracking a
                 // character who is not fleet boss produces a fleet with nothing in it.
                 let boss_ok = st
@@ -2804,10 +2850,16 @@ fn start_page(
                 let starting = st.starting;
                 let tracked = st.already_tracking();
                 let track = |ui: &mut egui::Ui, act: &mut FormAct| {
-                    let label = if starting { tr!("Starting\u{2026}") } else { tr!("Track fleet") };
+                    let label = if starting {
+                        tr!("Starting\u{2026}")
+                    } else if waiting {
+                        tr!("Waiting for fleet boss\u{2026}")
+                    } else {
+                        tr!("Track fleet")
+                    };
                     let resp = ui
                         .add_enabled(
-                            can_start && ready && boss_ok && !starting && tracked.is_none(),
+                            can_start && ready && !starting && tracked.is_none(),
                             egui::Button::new(format!(
                                 "{}  {label}",
                                 egui_phosphor::regular::ROCKET_LAUNCH
@@ -2816,6 +2868,13 @@ fn start_page(
                         .on_hover_text(
                             tr!("Records the request this would send. Nothing leaves the app."),
                         );
+                    let resp = if waiting {
+                        resp.on_hover_text(tr!("Checking every 5 seconds whether the FC is fleet boss; tracking starts as soon as they are. Click to stop waiting."))
+                    } else if ready && !boss_ok {
+                        resp.on_hover_text(tr!("The FC is not fleet boss yet. Click to start tracking as soon as they are, checked every 5 seconds."))
+                    } else {
+                        resp
+                    };
                     let resp = if starting {
                         resp.on_disabled_hover_text(tr!("Waiting for the dashboard to answer."))
                     } else if let Some((_, name)) = &tracked {
@@ -2825,17 +2884,16 @@ fn start_page(
                         resp.on_disabled_hover_text(
                             tr!("Your account does not have the startFleet permission."),
                         )
-                    } else if !ready {
-                        resp.on_disabled_hover_text(tr!("Give the fleet a name first."))
                     } else {
-                        resp.on_disabled_hover_text(
-                            tr!("That character is not the boss of a fleet in game. The dashboard \
-                             reads the fleet through their token, so there would be nothing to \
-                             read."),
-                        )
+                        let what: Vec<&str> = missing.iter().map(|m| spai_ui::i18n::t(m)).collect();
+                        resp.on_disabled_hover_text(trf!("Still missing: {what}", what = what.join(", ")))
                     };
                     if resp.clicked() {
-                        act.start = true;
+                        if boss_ok && !waiting {
+                            act.start = true;
+                        } else {
+                            act.track_wait = true;
+                        }
                     }
                 };
                 group(ui, &mut |ui| {
