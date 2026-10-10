@@ -307,6 +307,8 @@ pub struct WhGraphView {
     pub pins_seen: Option<Vec<i64>>,
     /// The chains changed while a box was held: tidy once it is let go.
     pub tidy_due: bool,
+    /// The full tidy auto-tidy does once at the start of a run has happened.
+    pub tidied_this_run: bool,
     /// Systems picked with a shift-drag box, moved together by dragging any one of them.
     pub multi: HashSet<i64>,
     /// The shift-drag box being drawn: where it started and where the pointer is, on screen.

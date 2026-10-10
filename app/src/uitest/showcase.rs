@@ -7,7 +7,7 @@ use crate::intel::{DetectedShip, DetectedSystem, IntelReport};
 use crate::nav::View;
 
 /// Where the player sits in every showcase.
-pub(crate) const HOME: &str = "A24L-V";
+pub(crate) const HOME: &str = "C-J6MT";
 /// The signed-in character in every showcase.
 pub(crate) const PILOT: &str = "Kestrel Vane";
 const SIZE: [f32; 2] = [1280.0, 800.0];
@@ -41,9 +41,9 @@ pub(crate) fn home_intel(region: &crate::geo::Systems) -> Vec<IntelReport> {
     let mut clear = report(region, 107, 610, "Scout Ilsa Varn", "F39H-1 clr", &["F39H-1"], &[], &[], None);
     clear.clear = true;
     vec![
-        report(region, 101, 25, "Scout Ilsa Varn", "Vex Harrow Kaelen Dray  Sabre Loki  EKPB-3 gate", &["EKPB-3"], &[(22456, "Sabre"), (29990, "Loki")], &["Vex Harrow", "Kaelen Dray"], None),
+        report(region, 101, 25, "Scout Ilsa Varn", "Vex Harrow Kaelen Dray  Sabre Loki  RERZ-L gate", &["RERZ-L"], &[(22456, "Sabre"), (29990, "Loki")], &["Vex Harrow", "Kaelen Dray"], None),
         report(region, 102, 70, "Scout Tomas Reyl", "12 hostile 4M-QXK  Eris Cerberus", &["4M-QXK"], &[(22460, "Eris"), (11993, "Cerberus")], &[], Some(12)),
-        report(region, 103, 140, "Scout Ilsa Varn", "Mira Solvane  Stiletto  WF4C-8", &["WF4C-8"], &[(11198, "Stiletto")], &["Mira Solvane"], None),
+        report(region, 103, 140, "Scout Ilsa Varn", "Mira Solvane  Stiletto  L5-UWT", &["L5-UWT"], &[(11198, "Stiletto")], &["Mira Solvane"], None),
         report(region, 104, 260, "Scout Aven Kordt", "Ostrik Vale  Astero  cloaked  8G-2FP", &["8G-2FP"], &[(33468, "Astero")], &["Ostrik Vale"], None),
         report(region, 105, 390, "Scout Tomas Reyl", "5 red 7-JT09 Ishtar gang", &["7-JT09"], &[(12005, "Ishtar")], &[], Some(5)),
         report(region, 106, 480, "Scout Aven Kordt", "Jannik Holt  Heron  RQN-OO", &["RQN-OO"], &[(605, "Heron")], &["Jannik Holt"], None),
@@ -125,28 +125,28 @@ pub(crate) fn scenes() -> Vec<Scene> {
             a.settings.ai.enabled = true;
             a.settings.ai.voice.stt = crate::ai::config::SttKind::Groq;
             a.set_ship_names_for_test(&[(22456, "Sabre"), (29990, "Loki"), (32880, "Venture")]);
-            let path: Vec<i64> = ["EKPB-3", "Z182-R", "KDG-TA"].iter().filter_map(|n| a.systems.as_ref().and_then(|g| g.lookup(n)).map(|i| i.id)).collect();
+            let path: Vec<i64> = ["RERZ-L", "88A-RA", "C-J6MT"].iter().filter_map(|n| a.systems.as_ref().and_then(|g| g.lookup(n)).map(|i| i.id)).collect();
             let now = crate::clock::utc().timestamp();
             {
                 let mut ws = a.ai_watches.lock().unwrap();
-                let mut w = crate::ai::watch::Watch::new(1, "Vex Harrow and Kaelen Dray within 3 jumps of A24L-V".into(), Default::default(), vec!["vex harrow".into()], now - 120, Some(now + 3480));
+                let mut w = crate::ai::watch::Watch::new(1, "Vex Harrow and Kaelen Dray within 3 jumps of C-J6MT".into(), Default::default(), vec!["vex harrow".into()], now - 120, Some(now + 3480));
                 w.hits = 1;
                 ws.push(w);
             }
             let q = Turn { user: true, voice: true, text: "Where's that Sabre and Loki pair heading?".into(), ..Default::default() };
             let answer = Turn {
-                text: "**Vex Harrow and Kaelen Dray**, Sabre and Loki, on the EKPB-3 gate 25 seconds ago.\n\n\
+                text: "**Vex Harrow and Kaelen Dray**, Sabre and Loki, on the RERZ-L gate 25 seconds ago.\n\n\
                        - 21:38 killed a Venture [killmail](spai:kill/131000002) in 4M-QXK\n\
-                       - 21:52 intel in Delve.Imperium: \"Sabre Loki EKPB-3 gate\"\n\n\
-                       They are working north towards KDG-TA. Highlight their path?"
+                       - 21:52 intel in insmother.imperium: \"Sabre Loki RERZ-L gate\"\n\n\
+                       They are heading for C-J6MT through 88A-RA. Highlight their path?"
                     .into(),
                 chips: vec![
                     Chip { name: "track_movement".into(), args: "entity: Vex Harrow, since_minutes: 60".into(), error: None },
-                    Chip { name: "route".into(), args: "from: EKPB-3, to: A24L-V".into(), error: None },
-                    Chip { name: "highlight_systems".into(), args: "systems: [EKPB-3, Z182-R, KDG-TA]".into(), error: None },
+                    Chip { name: "route".into(), args: "from: RERZ-L, to: C-J6MT".into(), error: None },
+                    Chip { name: "highlight_systems".into(), args: "systems: [RERZ-L, 88A-RA, C-J6MT]".into(), error: None },
                 ],
                 cards: vec![ActionCard {
-                    action: PendingAction { id: 1, kind: ActionKind::Highlight(path), summary: "Highlight EKPB-3, Z182-R, KDG-TA on the map".into() },
+                    action: PendingAction { id: 1, kind: ActionKind::Highlight(path), summary: "Highlight RERZ-L, 88A-RA, C-J6MT on the map".into() },
                     state: CardState::Pending,
                     confirmed: false,
                 }],
@@ -154,8 +154,8 @@ pub(crate) fn scenes() -> Vec<Scene> {
             };
             let ask = Turn { user: true, text: "Tell me if they come within 3 jumps of me".into(), ..Default::default() };
             let watching = Turn {
-                text: "Watching for Vex Harrow and Kaelen Dray within 3 jumps of A24L-V for the next hour.".into(),
-                chips: vec![Chip { name: "create_watch".into(), args: "goal: Vex Harrow and Kaelen Dray within 3 jumps of A24L-V".into(), error: None }],
+                text: "Watching for Vex Harrow and Kaelen Dray within 3 jumps of C-J6MT for the next hour.".into(),
+                chips: vec![Chip { name: "create_watch".into(), args: "goal: Vex Harrow and Kaelen Dray within 3 jumps of C-J6MT".into(), error: None }],
                 ..Default::default()
             };
             let ctx = egui::Context::default();
@@ -164,7 +164,7 @@ pub(crate) fn scenes() -> Vec<Scene> {
         // A gate route across the region, drawn on the map with the Route dock beside it.
         showcase("showcase_route", View::Map, |a| {
             let Some(g) = a.systems.clone() else { return };
-            let (Some(from), Some(to)) = (g.lookup(HOME).map(|i| i.id), g.lookup("EKPB-3").map(|i| i.id)) else { return };
+            let (Some(from), Some(to)) = (g.lookup(HOME).map(|i| i.id), g.lookup("HL-VZX").map(|i| i.id)) else { return };
             a.settings.intel_count_bridges = true;
             a.map_route_start("gate", from);
             a.map_route_set_dest(to, None);
@@ -235,7 +235,8 @@ fn dashboard_setup(a: &mut crate::app::SpaiApp) {
     a.characters.push(crate::store::CharacterRow { id: 2_112_000_901, name: "Tavik Oron".into(), expires_at: 0, scopes: String::new() });
     a.player.lock().unwrap().locations.insert("Tavik Oron".into(), (id("4M-QXK"), true));
     a.settings.jabber_enabled = true;
-    a.jabber.lock().unwrap().pings = evening_pings();
+    // One fleet, so the map below it fits in the website's screenshot.
+    a.jabber.lock().unwrap().pings = evening_pings().into_iter().take(1).collect();
     let (mut b, names) = fixtures::real_battle();
     let shift = now - 40 * 60 - b.end;
     b.start += shift;
@@ -244,17 +245,30 @@ fn dashboard_setup(a: &mut crate::app::SpaiApp) {
         e.time += shift;
     }
     let mut kills: Vec<br_core::battle::Engagement> = b.engagements.iter().take(3).cloned().collect();
-    for (k, (sys, ago)) in kills.iter_mut().zip([("WF4C-8", 6 * 60), ("4M-QXK", 18 * 60), ("RQN-OO", 31 * 60)]) {
+    for (k, (sys, ago)) in kills.iter_mut().zip([("L5-UWT", 6 * 60), ("4M-QXK", 18 * 60), ("RQN-OO", 31 * 60)]) {
         k.system_id = id(sys);
         k.system_name = sys.into();
         k.time = now - ago;
     }
     let ships: Vec<(i64, &str)> = kills.iter().filter_map(|k| names.get(&k.victim_ship).map(|n| (k.victim_ship, n.as_str()))).collect();
     a.seed_battle_list(vec![b], names.clone());
+    {
+        use crate::ai::session::Turn;
+        a.settings.ai.enabled = true;
+        let q = Turn { user: true, voice: true, text: "Anything coming our way?".into(), ..Default::default() };
+        let answer = Turn {
+            text: "**Vex Harrow and Kaelen Dray** in a Sabre and a Loki sat on the RERZ-L gate 25 seconds ago, 2 jumps out. \
+                   12 hostiles in 4M-QXK next door, Eris and Cerberus. Nothing else within 5 jumps."
+                .into(),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        crate::app::ai_ui::seed_ai_view(a, &ctx, vec![q, answer]);
+    }
     a.seed_dashboard(
         kills,
         &ships,
-        vec![(now - 25, "Sabre Loki on the EKPB-3 gate, 1 jump".into()), (now - 70, "12 hostile in 4M-QXK, 3 jumps".into())],
+        vec![(now - 25, "Sabre Loki on the RERZ-L gate, 2 jumps".into()), (now - 70, "12 hostile in 4M-QXK, 1 jump".into())],
         Some((now - 62 * 60, now)),
     );
 }

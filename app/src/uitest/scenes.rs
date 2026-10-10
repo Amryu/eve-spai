@@ -8748,3 +8748,44 @@ fn a_form_without_doctrine_or_tags_says_what_is_missing() {
     }
     assert!(!m.contains(&"a fleet name"));
 }
+
+/// With auto-tidy on, the wormhole map is laid out afresh once at the start of a run, dragged
+/// positions from the last run and all, and not again on its own.
+#[test]
+fn uitest_auto_tidy_lays_the_wormhole_map_out_once_at_the_start() {
+    harness::scratch_profile();
+    let app: std::rc::Rc<std::cell::RefCell<Option<crate::app::SpaiApp>>> = Default::default();
+    let held = app.clone();
+    let mut scene = Scene::ui("selftest_wh_start_tidy", [1280.0, 800.0], move |ui| {
+        let mut slot = held.borrow_mut();
+        let app = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems());
+            a.settings.wh_manual_tidy = false;
+            a.wh_cache = vec![crate::wormholes::Wormhole {
+                id: 1,
+                system_id: 30_004_759,
+                dest: crate::wormholes::DestClass::Highsec,
+                dest_system_id: Some(30_000_142),
+                reported_at: fixtures::now() - 60,
+                updated_at: fixtures::now() - 60,
+                ..Default::default()
+            }];
+            a.wh_graph_reset_layout();
+            a
+        });
+        app.root_central(ui, None);
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    assert!(app.borrow().as_ref().unwrap().wh_graph.tidied_this_run, "auto-tidy ran at the start");
+    {
+        let mut slot = app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        a.settings.wh_manual_tidy = true;
+        a.wh_graph.tidied_this_run = false;
+    }
+    h.run_steps(3);
+    assert!(!app.borrow().as_ref().unwrap().wh_graph.tidied_this_run, "not with auto-tidy off");
+}
