@@ -187,6 +187,36 @@ pub(crate) fn home_defence_ping() -> crate::pings::Ping {
     }
 }
 
+/// Made-up fleet pings from around the home defence op, older than it, in the same format. Two, so the
+/// feed, newest at the bottom, still shows the home defence op whole.
+fn evening_pings() -> Vec<crate::pings::Ping> {
+    use crate::pings::{Comms, Formup, PapType, Ping};
+    let ping = |ago: i64, hurf: &str, fc: &str, formup: &str, pap: PapType, op: &str, doctrine: &str| {
+        let kind = match &pap {
+            PapType::Strategic => "Strategic",
+            _ => "Peacetime",
+        };
+        Ping::Fleet {
+            timestamp: fixtures::now() - ago,
+            description: hurf.into(),
+            fc: fc.into(),
+            fleet: None,
+            formup: vec![Formup::Text(formup.into())],
+            pap: Some(pap),
+            comms: Some(Comms::Mumble { channel: op.into(), link: format!("mumble://voice.example.invalid/{}", op.replace(' ', "%20")) }),
+            doctrine: Some(doctrine.into()),
+            source: Some("coord".into()),
+            target: Some("all".into()),
+            raw: format!("{hurf}\n\nFC Name: {fc}\nFormup Location: {formup}\nPAP Type: {kind}\nComms: {op}\nDoctrine: {doctrine}"),
+            parts: Vec::new(),
+        }
+    };
+    vec![
+        ping(9 * 60, "Bombers on standby, light cyno pilot wanted", "Mira Ostwald", "EKPB-3", PapType::Peacetime, "Op 9", "Purifier Bombers (Purifier > Sabre)"),
+        ping(23 * 60, "Ihub timer in Z182-R, we need every Ferox", "Dain Morrow", "KDG-TA", PapType::Strategic, "Op 2", "Ferox Navy Issue (Ferox > Scimitar > Sabre)"),
+    ]
+}
+
 /// Room names as they read from the new home.
 fn moved_home(jid: &str) -> String {
     jid.replace("delve", "insmother")
@@ -211,11 +241,8 @@ fn jabber() -> Scene {
     }
     f.subjects = f.subjects.iter().map(|(k, _)| (moved_home(k), SHOWCASE_MOTD.to_owned())).collect();
     f.unread = f.unread.iter().map(|r| moved_home(r)).collect();
-    for p in &mut f.pings {
-        if matches!(p, crate::pings::Ping::Fleet { .. }) {
-            *p = home_defence_ping();
-        }
-    }
+    // Fleet pings only: the home defence op and a few others from the same evening.
+    f.pings = std::iter::once(home_defence_ping()).chain(evening_pings()).collect();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui("showcase_jabber", SIZE, move |ui| {
         let app = app.get_or_insert_with(|| {
