@@ -113,7 +113,7 @@ fn kill_actions(ui: &mut egui::Ui, kill_id: i64, esi: Option<String>) {
 }
 
 /// A portrait or logo, or nothing for an id of 0.
-fn eve_image(ui: &mut egui::Ui, url: Option<String>, size: f32) {
+pub(crate) fn eve_image(ui: &mut egui::Ui, url: Option<String>, size: f32) {
     match url {
         Some(u) => {
             ui.add(egui::Image::new(u).fit_to_exact_size(egui::Vec2::splat(size)));

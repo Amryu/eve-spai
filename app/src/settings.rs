@@ -303,6 +303,9 @@ pub struct Settings {
     /// Every tile the dashboard has offered, so one added later is offered once.
     #[serde(default)]
     pub dashboard_seen: Vec<String>,
+    /// The dashboard's columns, each its tiles top to bottom, by `dashboard::Tile::code`.
+    #[serde(default)]
+    pub dashboard_columns: Vec<Vec<String>>,
     /// The least mass a hole on a route may have left: a `Mass` code, empty for any.
     #[serde(default)]
     pub wh_route_min_mass: String,
@@ -1610,6 +1613,7 @@ impl Default for Settings {
             dashboard_tiles: default_dashboard_tiles(),
             dashboard_timeline: String::new(),
             dashboard_seen: Vec::new(),
+            dashboard_columns: Vec::new(),
             wh_route_min_mass: String::new(),
             wh_route_min_time: String::new(),
             wh_route_min_size: String::new(),

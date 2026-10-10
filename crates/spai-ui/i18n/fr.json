@@ -532,6 +532,7 @@
   "Downloading {what} from {host}… {got}{of} MB at {rate} MB/s": "Téléchargement de {what} depuis {host}… {got}{of} Mo à {rate} Mo/s",
   "Downloading {what}…": "Téléchargement de {what}…",
   "Drag a rule by its handle, or select it and use the arrows below, to change the order": "Glissez une règle par sa poignée, ou sélectionnez-la et utilisez les flèches ci-dessous, pour changer l'ordre",
+  "Drag a tile by its title to move it.": "Faites glisser une tuile par son titre pour la déplacer.",
   "Drag from one system to another on the map, or right-click a system to start a route.": "Glissez d'un système à un autre sur la carte, ou clic droit sur un système pour démarrer une route.",
   "Drag onto another squad to move this pilot.": "Glissez sur une autre escouade pour déplacer ce pilote.",
   "Drag to move the overlay": "Glissez pour déplacer la superposition",
