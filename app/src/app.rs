@@ -230,6 +230,15 @@ pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
 pub(crate) use alert_engine::*;
 #[cfg(test)]
+#[test]
+fn only_the_games_own_window_title_counts_as_eve() {
+    assert!(is_eve_or_ours("EVE - Amryu") && is_eve_or_ours("EVE") && is_eve_or_ours("EVE Spai - Map overlay"));
+    for other in ["Mozilla Firefox - Developer tools", "Every day", "Steve's notes", "eve-spai - Visual Studio Code"] {
+        assert!(!is_eve_or_ours(other), "{other}");
+    }
+}
+
+#[cfg(test)]
 mod tests;
 
 /// Fired alerts, newest last, as (time, text), for the dashboard.
@@ -4189,7 +4198,19 @@ impl eframe::App for SpaiApp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn active_window() -> Option<(String, String)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut buf = [0u16; 256];
+    let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+    Some((format!("{hwnd:?}"), String::from_utf16_lossy(&buf[..n.max(0) as usize])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn active_window() -> Option<(String, String)> {
     None
 }
@@ -4209,14 +4230,21 @@ fn active_window() -> Option<(String, String)> {
     Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
 }
 
+/// Whether the game is the active window, or one of this app's own (the overlay being used counts).
 pub(crate) fn eve_is_focused() -> bool {
     match active_window() {
-        Some((_, name)) if !name.is_empty() => {
-            let n = name.to_lowercase();
-            n.contains("eve") && !n.contains("eve spai")
-        }
-        _ => true,
+        Some((_, name)) if !name.is_empty() => is_eve_or_ours(&name),
+        // On Linux the game runs under X, so when it is active the X tools see it: no answer is a
+        // native Wayland window, not the game. Elsewhere no answer means the check cannot tell.
+        _ => !cfg!(target_os = "linux"),
     }
+}
+
+/// The game names its window "EVE" or "EVE - <character>"; anything merely containing the letters
+/// (developer, every, Steve) is not it.
+fn is_eve_or_ours(title: &str) -> bool {
+    let t = title.trim().to_lowercase();
+    t == "eve" || t.starts_with("eve - ") || t.starts_with("eve spai")
 }
 
 #[cfg(not(target_os = "linux"))]
