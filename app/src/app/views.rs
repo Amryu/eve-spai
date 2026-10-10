@@ -1,4 +1,4 @@
-//! The intel, dashboard, lookup and characters views, the pilot window and the fit window.
+//! The intel, lookup and characters views, the pilot window and the fit window.
 
 use super::*;
 
@@ -389,85 +389,6 @@ impl SpaiApp {
             }
         }
         action
-    }
-
-    pub(crate) fn dashboard_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-        let now = crate::clock::utc().timestamp();
-        let player_sys = self.player_system();
-        let systems = self.systems.clone();
-        let bridges = self.settings.intel_count_bridges;
-
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(self.shown_character()).strong());
-                match player_sys.and_then(|s| systems.as_ref().and_then(|sy| sy.info_of(s))) {
-                    Some(info) => {
-                        ui.label(tr!("in"));
-                        ui.label(security_badge(info.security));
-                        ui.label(egui::RichText::new(&info.name).strong());
-                        system_chips(ui, &systems, &self.system_status.lock().unwrap(), info.id);
-                    }
-                    None => {
-                        ui.label(egui::RichText::new(tr!("location unknown")).weak());
-                    }
-                }
-            });
-        });
-        ui.add_space(6.0);
-
-        let (intel_count, nearest) = {
-            let state = self.intel_state.lock().unwrap();
-            let live: Vec<&crate::intel::IntelReport> =
-                state.reports.iter().filter(|r| !r.clear && !state.is_stale(r)).collect();
-            let nearest = live
-                .iter()
-                .filter_map(|r| {
-                    let id = r.primary_system()?.id;
-                    let j = jumps_from_you(&systems, player_sys, Some(id), bridges)?;
-                    Some((j, r.primary_system().unwrap().name.clone()))
-                })
-                .min_by_key(|(j, _)| *j);
-            (live.len(), nearest)
-        };
-        let battle_count = self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2).count();
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label(trf!("Live intel: {intel_count}", intel_count = intel_count));
-            ui.separator();
-            if let Some((j, name)) = &nearest {
-                ui.label(tr!("Nearest hostile:"));
-                ui.label(egui::RichText::new(name).strong());
-                ui.label(egui::RichText::new(format!("({j}j)")).weak());
-            } else {
-                ui.label(egui::RichText::new(tr!("no nearby hostiles")).weak());
-            }
-            ui.separator();
-            if battle_count > 0 {
-                if ui.link(format!("Battles: {battle_count}")).clicked() {
-                    self.view = View::Battles;
-                }
-            } else {
-                ui.label(trf!("Battles: {battle_count}", battle_count = battle_count));
-            }
-        });
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        ui.label(egui::RichText::new(tr!("Recent alerts")).strong());
-        let log = self.recent_alerts.lock().unwrap();
-        if log.is_empty() {
-            ui.label(egui::RichText::new(tr!("None.")).weak());
-        } else {
-            for (t, text) in log.iter().rev().take(5) {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - t))).monospace().weak());
-                    ui.label(text);
-                });
-            }
-        }
     }
 
     pub(crate) fn refresh_characters(&mut self) {
