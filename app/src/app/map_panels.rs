@@ -1644,8 +1644,7 @@ impl SpaiApp {
             },
         );
         if !keep {
-            self.map_popped = false;
-            self.map_overlay_mode = false;
+            self.dock_map();
         }
     }
 

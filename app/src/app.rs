@@ -708,7 +708,7 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_follow_region: Option<(i64, i64)>,
-    map_popped: bool,
+    pub(crate) map_popped: bool,
     map_in_popout: bool,
     map_char_popouts: Vec<String>,
     map_char_view: std::collections::HashMap<
@@ -717,7 +717,7 @@ pub struct SpaiApp {
     >,
     map_window_on_top: bool,
     map_controls_hidden: bool,
-    map_overlay_mode: bool,
+    pub(crate) map_overlay_mode: bool,
     /// A route drag in flight: the system it started on.
     map_link: Option<i64>,
     /// Where the last frame put each system, so a drag can be hit-tested against where the user

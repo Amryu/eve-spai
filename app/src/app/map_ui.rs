@@ -126,7 +126,7 @@ impl SpaiApp {
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new(tr!("Map is in its own window.")).weak());
                     if ui.button(tr!("Dock map")).clicked() {
-                        self.map_popped = false;
+                        self.dock_map();
                     }
                 } else {
                     self.map_area(ui);
@@ -2117,9 +2117,19 @@ impl SpaiApp {
 
     /// The overlay's strip, shown while the pointer is over it: a handle to move the window, follow,
     /// opacity, staying above EVE only while it is active, and the way out. Dragging the map pans it.
+    /// Back into the main window, out of overlay mode as well: a docked map left in overlay mode
+    /// has no side panel and only the overlay's controls.
+    pub(crate) fn dock_map(&mut self) {
+        self.map_popped = false;
+        self.map_overlay_mode = false;
+    }
+
     pub(crate) fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
-        if !ui.ui_contains_pointer() {
+        // Shown while the pointer is anywhere over the overlay, the bar itself included: the map's
+        // own hover ends where the bar, a layer above it, begins.
+        let over = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
+        if !over && !egui::Popup::is_any_open(ui.ctx()) {
             return;
         }
         egui::Area::new(ui.id().with("map_overlay_bar"))
@@ -2159,8 +2169,7 @@ impl SpaiApp {
                             }
                         });
                         if ui.button(icon::SIGN_OUT).on_hover_text(tr!("Close the overlay")).clicked() {
-                            self.map_overlay_mode = false;
-                            self.map_popped = false;
+                            self.dock_map();
                         }
                     });
                 });

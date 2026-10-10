@@ -8632,3 +8632,44 @@ fn uitest_assistant_off_leads_to_its_settings() {
     let r = toggle.rect();
     assert!(r.min.y >= 0.0 && r.max.y <= 600.0, "the Assistant section is scrolled into view: {r:?}");
 }
+
+/// The overlay's toolbar sits on a layer above the map, so hovering it ends the map's own hover.
+/// It has to stay up then, or it vanishes under the pointer and nothing on it can be reached.
+#[test]
+fn uitest_overlay_toolbar_stays_while_hovered_and_docking_leaves_overlay_mode() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("overlay_bar_hover", [520.0, 420.0], move |ui| {
+        let a = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.map_overlay_mode = true;
+            a.map_popped = true;
+            a
+        });
+        let rect = ui.max_rect();
+        ui.allocate_rect(rect, egui::Sense::hover());
+        a.map_overlay_controls(ui, rect);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.event(egui::Event::PointerMoved(egui::pos2(260.0, 300.0)));
+    harness.run_steps(3);
+    let exit = harness.get_by_label(egui_phosphor::regular::SIGN_OUT).rect().center();
+    harness.event(egui::Event::PointerMoved(exit));
+    harness.run_steps(3);
+    assert!(harness.query_by_label(egui_phosphor::regular::SIGN_OUT).is_some(), "the toolbar went away under the pointer");
+    harness.get_by_label(egui_phosphor::regular::SIGN_OUT).click();
+    harness.run_steps(2);
+    drop(harness);
+}
+
+#[test]
+fn docking_the_map_leaves_overlay_mode() {
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.map_overlay_mode = true;
+    a.map_popped = true;
+    a.dock_map();
+    assert!(!a.map_overlay_mode && !a.map_popped);
+}
