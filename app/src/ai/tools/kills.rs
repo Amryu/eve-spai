@@ -22,8 +22,9 @@ fn kill_schema(max_minutes: u64) -> Value {
 
 static RECENT: ToolSpec = ToolSpec {
     name: "recent_kills",
-    description: "Kills from the last few hours: when, where, the victim's ship, pilot and group, the ISK, and who killed it \
-                  (groups and ships). Filter by system and radius, region, or a group or pilot taking part.",
+    description: "Kills near the user or their intel from the last few hours: when, where, the victim's ship, pilot and group, \
+                  the ISK, and who killed it (groups and ships). Filter by system and radius, region, or a group or pilot taking \
+                  part. For kills anywhere in EVE use kills_anywhere.",
     need: Need::All(&["kills.feed"]),
     kind: Kind::Read,
     schema: || kill_schema(360),
@@ -32,11 +33,12 @@ static RECENT: ToolSpec = ToolSpec {
 
 static HISTORY: ToolSpec = ToolSpec {
     name: "kill_history",
-    description: "Like recent_kills, over the last 30 days of stored kills. Narrow it with filters: it is a lot of data.",
+    description: "Like recent_kills, further back: the kills near the user or their intel, as long as the user keeps them \
+                  (Settings, History). For kills anywhere in EVE use kills_anywhere. Narrow it with filters: it is a lot of data.",
     need: Need::All(&["kills.history"]),
     kind: Kind::Read,
-    schema: || kill_schema(43_200),
-    run: |ctx, v| kills(ctx, v, 1440, 43_200),
+    schema: || kill_schema(525_600),
+    run: |ctx, v| kills(ctx, v, 1440, 525_600),
 };
 
 fn kills(ctx: &mut Ctx, v: &Value, default_min: u64, max_min: u64) -> Result<Value, String> {

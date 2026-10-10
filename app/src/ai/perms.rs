@@ -51,6 +51,7 @@ pub const TREE: &[Node] = &[
             leaf("map.camps", "Gate camps", ""),
             leaf("map.jove", "Jove observatories", ""),
             leaf("map.cyno", "Cyno generators", ""),
+            leaf("map.bridges", "Jump bridges and sov upgrades", "The ones you entered"),
         ],
     },
     Node {

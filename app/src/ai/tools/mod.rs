@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use super::deps::{AiDeps, AiFacts};
 use super::provider::ToolDef;
 
-pub use actions::{ActionKind, PendingAction};
+pub use actions::{ActionKind, ChatWindowPick, PendingAction};
 
 /// Results longer than this are cut, and say so.
 pub const RESULT_CAP: usize = 8_000;

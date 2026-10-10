@@ -63,7 +63,8 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         }
         None => None,
     };
-    let reports = intel_since(ctx, since, q.as_deref());
+    let area: Vec<i64> = around.as_ref().map(|d| d.keys().copied().take(400).collect()).unwrap_or_default();
+    let reports = intel_since(ctx, since, q.as_deref(), &area);
     let mut out = Vec::new();
     for r in &reports {
         let mut jumps = None;
@@ -74,8 +75,16 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             }
         }
         if let Some(q) = &q {
-            let hay = format!("{} {} {} {}", r.text, r.channel, r.pilots.join(" "), r.ships.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" "))
-                .to_lowercase();
+            let hay = format!(
+                "{} {} {} {} {} {}",
+                r.text,
+                r.channel,
+                r.pilots.join(" "),
+                r.ships.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" "),
+                r.systems.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" "),
+                r.alliances.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>().join(" ")
+            )
+            .to_lowercase();
             if !q.split_whitespace().all(|w| hay.contains(w)) {
                 continue;
             }
@@ -223,8 +232,8 @@ fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     if ctx.allowed("intel.reports") {
         // Matched on the entity's own words in the store, then exactly here.
         let word = m.iter().max_by_key(|w| w.len()).cloned().unwrap_or_default();
-        let reports = intel_since(ctx, since, Some(&word));
-        let reports = if reports.is_empty() { intel_since(ctx, since, None) } else { reports };
+        let reports = intel_since(ctx, since, Some(&word), &[]);
+        let reports = if reports.is_empty() { intel_since(ctx, since, None, &[]) } else { reports };
         for r in reports.iter().filter(|r| !r.clear) {
             let named = r.pilots.iter().any(|p| hit(p, &m)) || r.alliances.iter().any(|(a, _)| hit(a, &m)) || m.iter().any(|w| w.len() >= 3 && r.text.to_lowercase().contains(w.as_str()));
             if let (true, Some(s)) = (named, r.primary_system()) {
@@ -280,7 +289,7 @@ fn since_of(ctx: &Ctx, v: &Value, default_min: u64, max_min: u64) -> i64 {
 
 /// Intel since `since`, newest first: the live hour from memory, older from the saved history,
 /// narrowed there to reports holding every word of `words`.
-pub(crate) fn intel_since(ctx: &Ctx, since: i64, words: Option<&str>) -> Vec<crate::intel::IntelReport> {
+pub(crate) fn intel_since(ctx: &Ctx, since: i64, words: Option<&str>, systems: &[i64]) -> Vec<crate::intel::IntelReport> {
     let mut out: Vec<crate::intel::IntelReport> = {
         let st = ctx.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
         st.reports.iter().rev().filter(|r| r.received >= since).take(2000).cloned().collect()
@@ -288,7 +297,7 @@ pub(crate) fn intel_since(ctx: &Ctx, since: i64, words: Option<&str>) -> Vec<cra
     let live_from = out.iter().map(|r| r.received).min().unwrap_or(ctx.now).min(ctx.now - 3600);
     if since < live_from {
         if let Some(store) = ctx.store {
-            out.extend(store.intel_history(since, live_from - 1, &[], None, words, 3000));
+            out.extend(store.intel_history(since, live_from - 1, systems, None, words, 3000));
         }
     }
     out
