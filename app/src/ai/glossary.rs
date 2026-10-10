@@ -34,7 +34,7 @@ pub const BASE: &[(&str, &str)] = &[
     ("Hot drop", "Capitals or Black Ops arriving suddenly through a cyno"),
     ("Hostile", "A pilot with negative or no standing, treated as an enemy"),
     ("Hunter", "A pilot roaming to find and kill ratters or miners"),
-    ("Init", "The Initiative., an alliance"),
+    ("Init", "The Initiative., a nullsec alliance known for black ops (blops) drops and stealth bomber gangs; voice may hear it as innit"),
     ("Intel", "Reports of hostile movements posted in shared intel channels"),
     ("Jove observatory", "A structure in some systems where drifter wormholes appear"),
     ("Jump", "One gate jump between systems; distances are counted in jumps"),

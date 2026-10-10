@@ -61,6 +61,11 @@ impl SpaiApp {
         let channels: Vec<String> = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.mumble_channels.iter().map(|c| c.name.clone()).filter(|n| !n.is_empty()).take(20).collect();
         let mut words = channels;
         words.extend(systems);
+        // The user's own characters, who are named in questions more than anyone.
+        {
+            let p = self.player.lock().unwrap_or_else(|e| e.into_inner());
+            words.extend(p.locations.keys().cloned());
+        }
         // Ships in play: the doctrine hulls, then those in the last hour's intel.
         let mut ships: Vec<String> = self.settings.fleet_hulls.iter().filter(|h| h.main).map(|h| h.name.clone()).collect();
         for r in self.intel_state.lock().unwrap_or_else(|e| e.into_inner()).reports.iter().rev().take(200) {

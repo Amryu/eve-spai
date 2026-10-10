@@ -181,7 +181,7 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, input: &Value) -> (String, bool) {
 
 /// Tools whose results are opsec: Jabber messages, the rescue's pings, and outside feeds. Once one
 /// has been read, the conversation may not reach the web.
-pub const OPSEC: &[&str] = &["jabber_chat", "jabber_pings", "jabber_rooms", "jabber_search", "rescue_status", "rescue_history", "feed_items"];
+pub const OPSEC: &[&str] = &["chat_log", "jabber_chat", "jabber_pings", "jabber_rooms", "jabber_search", "rescue_status", "rescue_history", "feed_items"];
 /// Tools that reach the web with words the model chose.
 pub const WEB: &[&str] = &["web_search", "web_fetch"];
 

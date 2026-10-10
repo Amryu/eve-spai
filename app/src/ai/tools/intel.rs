@@ -187,38 +187,61 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
 
 static CHAT_LOG: ToolSpec = ToolSpec {
     name: "chat_log",
-    description: "Raw lines from one of the user's EVE chat channels, as written in game, for the last minutes. Use when the \
-                  parsed intel reports miss something. Only channels the user allowed can be read.",
+    description: "Raw lines from the user's EVE chat logs, as written in game: one channel or every channel the user allowed \
+                  (intel, local, corp, fleet...), over minutes or days, filtered by words, newest last, paged with offset. \
+                  Use when the parsed intel misses something, or to find who said what.",
     need: Need::AnyUnder("intel.chatlogs"),
     kind: Kind::Read,
     schema: || {
         schema(
             json!({
-                "channel": {"type": "string"},
+                "channel": {"type": "string", "description": "Leave out for every allowed channel"},
                 "since_minutes": {"type": "integer", "minimum": 1, "maximum": 720},
-                "grep": {"type": "string", "description": "Only lines containing this, case-insensitive"}
+                "days": {"type": "integer", "minimum": 1, "maximum": 30},
+                "grep": {"type": "string", "description": "Only lines holding every one of these words, any case"},
+                "offset": {"type": "integer", "minimum": 0, "description": "Skip this many of the newest lines, to page back"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200}
             }),
-            &["channel"],
+            &[],
         )
     },
     run: chat_log,
 };
 
+/// The channel a log file is for: its name without the date, time and character id EVE appends.
+fn channel_of_file(name: &str) -> String {
+    let stem = name.strip_suffix(".txt").unwrap_or(name);
+    let mut parts: Vec<&str> = stem.rsplitn(4, '_').collect();
+    parts.reverse();
+    if parts.len() == 4 { parts[0].to_owned() } else { stem.to_owned() }
+}
+
 fn chat_log(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
-    let channel = str_arg(v, "channel").unwrap_or_default().to_owned();
-    if !ctx.allowed(&crate::ai::perms::channel_key(&channel)) {
-        return Err(format!("the user has not allowed reading the {channel} channel"));
+    let channel = str_arg(v, "channel").map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+    if let Some(c) = &channel {
+        if !ctx.allowed(&crate::ai::perms::channel_key(c)) {
+            return Err(format!("the user has not allowed reading the {c} channel"));
+        }
     }
     let dir = ctx.facts.chat_dir.clone().ok_or("the EVE chat log folder is not set")?;
-    let since = ctx.now - 60 * u64_arg(v, "since_minutes", 30, 720) as i64;
+    let since = match v.get("days").and_then(Value::as_u64) {
+        Some(d) => ctx.now - d.clamp(1, 30) as i64 * 86_400,
+        None => ctx.now - 60 * u64_arg(v, "since_minutes", 30, 720) as i64,
+    };
     let cutoff = chrono::DateTime::from_timestamp(since, 0).map(|d| d.format("%Y.%m.%d %H:%M:%S").to_string()).unwrap_or_default();
-    let grep = str_arg(v, "grep").map(str::to_lowercase);
-    let prefix = format!("{channel}_").to_lowercase();
-    let mut lines: Vec<(String, String, String)> = Vec::new();
+    let words: Vec<String> = str_arg(v, "grep").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
+    let mut lines: Vec<(String, String, String, String)> = Vec::new();
+    let mut channels_read: std::collections::BTreeSet<String> = Default::default();
     for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if !name.starts_with(&prefix) || !name.ends_with(".txt") {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.to_lowercase().ends_with(".txt") {
             continue;
+        }
+        let ch = channel_of_file(&fname);
+        match &channel {
+            Some(want) if !ch.eq_ignore_ascii_case(want) => continue,
+            None if !ctx.allowed(&crate::ai::perms::channel_key(&ch)) => continue,
+            _ => {}
         }
         let fresh = entry.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|t| {
             t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64 >= since).unwrap_or(false)
@@ -227,24 +250,43 @@ fn chat_log(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             continue;
         }
         if let Some((_, msgs)) = crate::chatlog::read(&entry.path()) {
+            channels_read.insert(ch.clone());
             for m in msgs {
-                if m.timestamp.as_str() >= cutoff.as_str() && grep.as_ref().is_none_or(|g| m.text.to_lowercase().contains(g)) {
-                    lines.push((m.timestamp, m.author, m.text));
+                if m.timestamp.as_str() < cutoff.as_str() {
+                    continue;
+                }
+                let hay = format!("{} {}", m.author, m.text).to_lowercase();
+                if words.iter().all(|w| hay.contains(w.as_str())) {
+                    lines.push((m.timestamp, ch.clone(), m.author, m.text));
                 }
             }
         }
     }
-    // Several characters in the channel log the same lines.
+    // Several characters in a channel log the same lines.
     lines.sort();
     lines.dedup();
     let total = lines.len();
-    let tail: Vec<Value> = lines.into_iter().rev().take(150).rev().map(|(t, a, x)| json!(format!("[{t}] {a} > {x}"))).collect();
-    Ok(json!({"channel": channel, "lines": total, "log": tail}))
+    let offset = v.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = u64_arg(v, "limit", 100, 200) as usize;
+    let end = total.saturating_sub(offset);
+    let start = end.saturating_sub(limit);
+    let one = channel.is_some() || channels_read.len() == 1;
+    let page: Vec<Value> = lines[start..end]
+        .iter()
+        .map(|(t, ch, a, x)| json!(if one { format!("[{t}] {a} > {x}") } else { format!("[{t}] {ch} | {a} > {x}") }))
+        .collect();
+    Ok(json!({
+        "channels": channels_read,
+        "matching": total,
+        "older_remaining": start,
+        "next_offset": (start > 0).then_some(offset + page.len()),
+        "log": page,
+    }))
 }
 
 static TRACK: ToolSpec = ToolSpec {
     name: "track_movement",
-    description: "Follows a group or pilot (alliance, corporation, shorthand like 'frat', or a pilot name) through the kill \
+    description: "Follows a group or pilot (alliance, corporation, shorthand like 'frat' or 'init', or a pilot name) through the kill \
                   feed and intel reports: every sighting in time order with the system, what happened and the jumps from \
                   the sighting before, then the last place seen. The fastest way to answer 'where did they go'. Uses whichever \
                   of kills and intel the user allowed.",
@@ -277,12 +319,21 @@ fn hit(name: &str, m: &[String]) -> bool {
     !n.is_empty() && m.iter().any(|w| n == *w || (w.len() >= 4 && n.contains(w.as_str())))
 }
 
+/// Stealth bombers, black ops and the recons that fly with them: a gang of these is one gang wherever
+/// it pops up next, named or not.
+const COVERT: &[&str] = &[
+    "Purifier", "Manticore", "Hound", "Nemesis", "Redeemer", "Sin", "Widow", "Panther", "Marshal", "Arazu", "Lachesis", "Falcon",
+    "Rook", "Pilgrim", "Curse", "Rapier", "Huginn", "Stratios", "Prospect", "Etana",
+];
+
 fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let entity = str_arg(v, "entity").ok_or("which group or pilot?")?.to_owned();
     let m = matchers(&entity);
     let since = since_of(ctx, v, 120, 2880);
     // (time, system, what)
     let mut seen: Vec<(i64, i64, String)> = Vec::new();
+    // Named sightings with the hulls seen: (time, system, hulls), for following on unnamed reports.
+    let mut known: Vec<(i64, i64, Vec<String>)> = Vec::new();
     if ctx.allowed("kills.feed") || ctx.allowed("kills.history") {
         if let Some(store) = ctx.store {
             let names = ship_names(store);
@@ -297,6 +348,7 @@ fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
                     let mut hulls: Vec<String> = ours.iter().map(|a| ship(a.ship)).collect();
                     hulls.sort();
                     hulls.dedup();
+                    known.push((e.time, e.system_id, hulls.clone()));
                     seen.push((
                         e.time,
                         e.system_id,
@@ -326,7 +378,41 @@ fn track(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             let named = r.pilots.iter().any(|p| hit(p, &m)) || r.alliances.iter().any(|(a, _)| hit(a, &m)) || m.iter().any(|w| w.len() >= 3 && r.text.to_lowercase().contains(w.as_str()));
             if let (true, Some(s)) = (named, r.primary_system()) {
                 seen.push((r.received, s.id, format!("intel in {}: \"{}\"", r.channel, r.text)));
+                known.push((r.received, s.id, r.ships.iter().map(|x| x.name.clone()).collect()));
             }
+        }
+        // Reports that do not name them but follow on from a sighting: close by, soon after, and in
+        // the same hulls (or both a covert gang). Marked as a guess, with why.
+        let geo = ctx.geo()?;
+        let all = intel_since(ctx, since, None, &[]);
+        let mut chain = known.clone();
+        chain.sort_by_key(|(t, _, _)| *t);
+        let mut unnamed: Vec<&crate::intel::IntelReport> = all.iter().filter(|r| !r.clear && r.primary_system().is_some()).collect();
+        unnamed.sort_by_key(|r| r.received);
+        let named_at: std::collections::HashSet<(i64, i64)> = known.iter().map(|(t, s, _)| (*t, *s)).collect();
+        for r in unnamed {
+            let Some(sys) = r.primary_system().map(|s| s.id) else { continue };
+            if named_at.contains(&(r.received, sys)) {
+                continue;
+            }
+            let Some((lt, ls, lh)) = chain.iter().filter(|(t, _, _)| *t <= r.received).last().cloned() else { continue };
+            if r.received - lt > 20 * 60 {
+                continue;
+            }
+            let Some(j) = geo.jumps(ls, sys, 4) else { continue };
+            let hulls: Vec<String> = r.ships.iter().map(|x| x.name.clone()).collect();
+            let shared: Vec<&String> = hulls.iter().filter(|h| lh.iter().any(|k| k.eq_ignore_ascii_case(h))).collect();
+            let covert = |list: &[String]| list.iter().any(|h| COVERT.iter().any(|c| c.eq_ignore_ascii_case(h)));
+            let why = if !shared.is_empty() {
+                format!("same hulls ({})", shared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+            } else if covert(&hulls) && covert(&lh) {
+                "a covert gang again".to_owned()
+            } else {
+                continue;
+            };
+            seen.push((r.received, sys, format!("probably the same gang, not named ({why}, {j} jumps on): intel in {}: \"{}\"", r.channel, r.text)));
+            chain.push((r.received, sys, if hulls.is_empty() { lh } else { hulls }));
+            chain.sort_by_key(|(t, _, _)| *t);
         }
     }
     seen.sort_by_key(|(t, _, _)| *t);
@@ -404,6 +490,56 @@ pub(crate) fn alliance_of(ctx: &Ctx, name: &str) -> Option<(i64, String)> {
 
 pub(crate) fn ship_names(store: &crate::store::Store) -> std::collections::HashMap<i64, String> {
     store.ship_index().into_iter().map(|(lc, (id, _))| (id, lc)).collect()
+}
+
+#[cfg(test)]
+mod gang_chain_tests {
+    use super::super::testkit::*;
+    use crate::ai::deps::AiDeps;
+    use crate::intel::{DetectedShip, DetectedSystem, IntelReport};
+    use serde_json::json;
+
+    fn rep(t: i64, sys: (i64, &str), text: &str, ships: &[&str]) -> IntelReport {
+        IntelReport {
+            received: t,
+            channel: "Delve.Imperium".into(),
+            reporter: "Scout".into(),
+            text: text.into(),
+            systems: vec![DetectedSystem { id: sys.0, name: sys.1.into(), security: -0.4 }],
+            ships: ships.iter().map(|s| DetectedShip { id: 0, name: (*s).into() }).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_unnamed_report_close_by_in_the_same_hulls_is_followed_as_the_gang() {
+        let deps = AiDeps::for_tests(facts(&["intel.reports"]));
+        let now = crate::clock::utc().timestamp();
+        {
+            let mut st = deps.intel_state.lock().unwrap();
+            st.reports.push(rep(now - 900, (30_004_759, "1DQ1-A"), "init blops gang 1DQ1-A Hound x8", &["Hound"]));
+            st.reports.push(rep(now - 600, (30_003_704, "7-K5EL"), "7-K5EL 8 Hound", &["Hound"]));
+            st.reports.push(rep(now - 550, (30_000_142, "Jita"), "Jita Sabre", &["Sabre"]));
+            st.reports.push(rep(now - 60 * 90, (30_003_704, "7-K5EL"), "7-K5EL Hound much earlier", &["Hound"]));
+        }
+        let (out, err) = run(&deps, "track_movement", json!({"entity": "init", "since_minutes": 180}));
+        assert!(!err, "{out}");
+        let trail = out["trail"].to_string();
+        assert!(trail.contains("probably the same gang") && trail.contains("7-K5EL 8 Hound"), "{trail}");
+        assert!(!trail.contains("Sabre"), "a different gang far away is not them: {trail}");
+        assert!(!trail.contains("much earlier"), "a report before the first sighting is not followed: {trail}");
+        assert_eq!(out["last_seen"]["system"], "7-K5EL");
+    }
+}
+
+#[cfg(test)]
+mod chat_file_tests {
+    #[test]
+    fn a_log_file_names_its_channel() {
+        assert_eq!(super::channel_of_file("Delve.Imperium_20261010_120000_1234567.txt"), "Delve.Imperium");
+        assert_eq!(super::channel_of_file("Local_20261010_120000_1234567.txt"), "Local");
+        assert_eq!(super::channel_of_file("My_Corp_Chat_20261010_120000_1234567.txt"), "My_Corp_Chat");
+    }
 }
 
 #[cfg(test)]
