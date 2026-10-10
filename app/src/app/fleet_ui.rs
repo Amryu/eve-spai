@@ -291,6 +291,27 @@ impl SpaiApp {
         CommsTargets { op, command, unlinked }
     }
 
+    /// Every comms channel the app knows a way into, for the assistant: the op channels, the named
+    /// ones and each op's command channel in both sectors.
+    pub(crate) fn comms_directory(&self) -> Vec<(String, Option<String>, Option<String>)> {
+        use crate::fleets::comms;
+        let mut out = Vec::new();
+        let names: Vec<String> = (1..=12).map(|n| format!("Op {n}")).chain(["HD", "Capital Comms", "Hellcamp Comms", "Standing Comms"].map(String::from)).collect();
+        for n in names {
+            let l = comms::links(&n, &self.settings.op_channel_links, &self.settings.comms_mumble_cache);
+            if l.mumble.is_some() || l.short.is_some() {
+                out.push((n.clone(), l.mumble, l.short));
+            }
+            for sector in [comms::Sector::Alpha, comms::Sector::Bravo] {
+                if let Some(u) = comms::command_url(sector, &n) {
+                    let c = comms::command_channel(&n).unwrap_or_default();
+                    out.push((format!("{c} ({})", sector.label()), Some(u), None));
+                }
+            }
+        }
+        out
+    }
+
     /// Copies what background fetches resolved into the settings, so the next run starts with it.
     fn comms_remember_resolved(&mut self) {
         let fresh: Vec<(String, String)> = self
@@ -313,7 +334,7 @@ impl SpaiApp {
     /// A known `mumble://` link goes straight to Mumble. Without one the short link is resolved on
     /// a thread and the result handed to Mumble, so a click before the background fetch finished
     /// still ends in Mumble; only if that fails too does the short link go to the browser.
-    fn comms_join(&self, links: crate::fleets::comms::Links) {
+    pub(crate) fn comms_join(&self, links: crate::fleets::comms::Links) {
         if let Some(m) = links.mumble {
             crate::mumble::open_url(&m);
             return;
