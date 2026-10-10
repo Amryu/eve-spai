@@ -2367,6 +2367,7 @@ pub(crate) fn all() -> Vec<Scene> {
                 a.settings.ai.enabled = true;
                 a.settings.ai.provider = crate::ai::config::ProviderKind::ClaudeCli;
                 a.settings.ai.claude_cli.path = "/opt/a-very-long-install-folder/that-nobody-expects/bin/claude-code-cli".into();
+                a.settings.ai.claude_cli.model = "sonnet".into();
                 a
             });
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -2393,7 +2394,7 @@ pub(crate) fn all() -> Vec<Scene> {
             });
         })
     });
-    for (name, tts) in [("settings_ai_voice_piper", crate::ai::config::TtsKind::Piper), ("settings_ai_voice_openai", crate::ai::config::TtsKind::Openai)] {
+    for (name, tts) in [("settings_ai_voice_piper", crate::ai::config::TtsKind::Piper), ("settings_ai_voice_openai", crate::ai::config::TtsKind::Openai), ("settings_ai_voice_whisper", crate::ai::config::TtsKind::Off)] {
         v.push({
             harness::scratch_profile();
             let mut app: Option<crate::app::SpaiApp> = None;
@@ -2402,7 +2403,13 @@ pub(crate) fn all() -> Vec<Scene> {
                     let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                     a.settings.ai.enabled = true;
                     a.settings.ai.voice.tts = tts;
-                    a.settings.ai.voice.stt = if tts == crate::ai::config::TtsKind::Piper { crate::ai::config::SttKind::Local } else { crate::ai::config::SttKind::Groq };
+                    a.settings.ai.voice.stt = match tts {
+                        crate::ai::config::TtsKind::Piper => crate::ai::config::SttKind::Local,
+                        crate::ai::config::TtsKind::Off => crate::ai::config::SttKind::Whisper,
+                        _ => crate::ai::config::SttKind::Groq,
+                    };
+                    a.settings.ai.voice.whisper_file = "ggml-large-v3-turbo-q5_0.bin".into();
+                    *a.ai_whisper_progress.lock().unwrap() = crate::ai::voice::models::Progress { what: "large-v3-turbo, q5_0".into(), done: 120_000_000, total: 574_041_195, busy: true, error: None };
                     a.settings.ai.voice.ptt = Some(crate::ai::config::KeyBind { code: 0x1_0009, label: "Mouse button 9".into(), platform: std::env::consts::OS.into() });
                     a.settings.ai.voice.speak_replies = true;
                     *a.ai_piper_progress.lock().unwrap() = crate::ai::voice::models::Progress { what: "Deutsch, Thorsten".into(), done: 21_000_000, total: 63_201_294, busy: true, error: None };

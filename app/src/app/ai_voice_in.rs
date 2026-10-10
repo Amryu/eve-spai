@@ -45,7 +45,7 @@ impl SpaiApp {
             SttKind::Local => self.ai_secrets.get("stt:local"),
             _ => None,
         };
-        crate::ai::voice::stt::SttCfg { kind: v.stt, key, local_url: v.stt_url.clone(), local_model: v.whisper_model.clone() }
+        crate::ai::voice::stt::SttCfg { kind: v.stt, key, local_url: v.stt_url.clone(), local_model: v.whisper_model.clone(), whisper_file: v.whisper_file.clone() }
     }
 
     /// EVE words and the systems around the user, so the recogniser spells them right.
@@ -101,6 +101,7 @@ impl SpaiApp {
 
     /// Runs the talk key and the recording through their states, once a frame.
     pub(crate) fn ai_listen_tick(&mut self) {
+        crate::ai::voice::whisper::unload_idle();
         if !self.ai_stt_on() {
             if self.ai_listen.recording() {
                 self.ai_listen = Listen::Idle;
