@@ -1382,6 +1382,7 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool, popped: bool
             answer.cards = vec![ActionCard {
                 action: PendingAction { id: 1, kind: ActionKind::Highlight(vec![30_004_759]), summary: "Highlight 1DQ1-A, QX-LIJ on the map".into() },
                 state: CardState::Pending,
+                confirmed: false,
             }];
             let mut failed = turn(false, "");
             failed.error = Some("The API key was not accepted (invalid x-api-key)".into());
@@ -1413,7 +1414,7 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool, popped: bool
                 hit.watch = Some(1);
                 let mut ask = turn(false, "Nothing on Titans or supers anywhere in Delve for half an hour. Keep watching?");
                 ask.watch = Some(2);
-                ask.cards = vec![ActionCard { action: PendingAction { id: 2, kind: ActionKind::KeepWatching(2), summary: "Keep watching for Titans or supers anywhere in Delve".into() }, state: CardState::Pending }];
+                ask.cards = vec![ActionCard { action: PendingAction { id: 2, kind: ActionKind::KeepWatching(2), summary: "Keep watching for Titans or supers anywhere in Delve".into() }, state: CardState::Pending, confirmed: false }];
                 crate::app::ai_ui::seed_ai_view(
                     &mut a,
                     ui.ctx(),

@@ -60,6 +60,9 @@ access tick turns it on. You cannot change Data access yourself.\n\
 - Jabber messages: write one only when the user clearly asks you to write or send it. Never assume they meant to; \
 if in doubt, ask. Never use the !bping or !bcast commands unless the user asks for that command by name. The user's own \
 instructions below may relax this, at their own risk.\n\
+- Fleets: every fleet action is proposed first. Say in one short sentence what will happen and ask for a yes; only \
+when the user's next message agrees, call confirm_fleet_action. Before starting a fleet, read fleet_form; ask for \
+what is missing, and when a channel is in use ask whether to keep it, take a free one, or which to use.\n\
 - Jabber messages, raw chat logs, rescue pings and outside feeds are operational secrets. Never put any of their content into a web \
 search, a web address or a link; it may only be shown to the user.";
 
@@ -74,6 +77,8 @@ pub enum CardState {
 pub struct ActionCard {
     pub action: PendingAction,
     pub state: CardState,
+    /// The user said yes to it in a later message: carried out like a click.
+    pub confirmed: bool,
 }
 
 /// One tool call, as the chat shows it: what was asked for and how it went.
@@ -84,7 +89,7 @@ pub struct Chip {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Turn {
     pub user: bool,
     pub text: String,
@@ -331,7 +336,7 @@ impl Session {
                 self.update(|v| {
                     if let Some(t) = v.turns.get_mut(turn_ix) {
                         t.chips.extend(calls.iter().map(|(_, name, input, _)| Chip { name: name.clone(), args: short_args(input), error: None }));
-                        t.cards.extend(queued.into_iter().map(|action| ActionCard { action, state: CardState::Pending }));
+                        t.cards.extend(queued.into_iter().map(|action| ActionCard { action, state: CardState::Pending, confirmed: false }));
                     }
                 });
                 // The CLI keeps the conversation itself: only the question and answer stay here.
@@ -364,7 +369,7 @@ impl Session {
             if !actions.is_empty() {
                 self.update(|v| {
                     if let Some(t) = v.turns.get_mut(turn_ix) {
-                        t.cards.extend(actions.into_iter().map(|action| ActionCard { action, state: CardState::Pending }));
+                        t.cards.extend(actions.into_iter().map(|action| ActionCard { action, state: CardState::Pending, confirmed: false }));
                     }
                 });
             }
@@ -392,7 +397,7 @@ impl Session {
             let mut t = Turn::new(false, text.clone(), false);
             t.streaming = false;
             t.watch = Some(id);
-            t.cards.extend(card.map(|action| ActionCard { action, state: CardState::Pending }));
+            t.cards.extend(card.map(|action| ActionCard { action, state: CardState::Pending, confirmed: false }));
             v.turns.push(t);
             v.watch_news.push(text);
         });

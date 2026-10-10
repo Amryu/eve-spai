@@ -29,6 +29,8 @@ pub struct AiDeps {
     pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
     /// The Battles page's history, clustered from the stored kills, and whether it is being built.
     pub battle_history: crate::zkill::SharedBattles,
+    /// The conversation as the chat shows it, for the tool that takes a spoken yes.
+    pub view: crate::ai::session::SharedView,
     pub battle_history_loading: Arc<std::sync::atomic::AtomicBool>,
     /// Set by the assistant when it needs the history and the page has not built it: the app
     /// builds it the way the page does.
@@ -141,6 +143,7 @@ impl AiDeps {
             standings: Default::default(),
             jump_skills: Default::default(),
             battle_history: Default::default(),
+            view: Default::default(),
             battle_history_loading: Default::default(),
             want_battle_history: Default::default(),
             online: false,

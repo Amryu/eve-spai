@@ -54,6 +54,7 @@ impl SpaiApp {
                 standings: self.standings.clone(),
                 jump_skills: self.jump_skills.clone(),
                 battle_history: self.battle_history.clone(),
+                view: view.clone(),
                 battle_history_loading: self.battle_history_loading.clone(),
                 want_battle_history: self.want_battle_history.clone(),
                 online: true,
@@ -185,6 +186,28 @@ impl SpaiApp {
             }
             // Through the Fleet tab's own way in: a mumble:// link goes straight to Mumble, a short link
             // is resolved first and only opened in the browser when that fails.
+            ActionKind::Fleet(op) => match op {
+                crate::ai::tools::FleetOp::Start => {
+                    let boss_ok = {
+                        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+                        st.fc().and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id)).is_some_and(|(_, c)| c.verdict().0)
+                    };
+                    if boss_ok {
+                        self.fleet_start_now();
+                    } else {
+                        // Not boss yet: the same wait Track starts, checked every few seconds.
+                        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).track_waiting = true;
+                        self.fleet_boss_asked = None;
+                        return format!("{summary}: waiting for the FC to be fleet boss, checked every 5 seconds");
+                    }
+                }
+                crate::ai::tools::FleetOp::Act(id, action) => self.fleet_dispatch(crate::fleets::state::Cmd::Act(id.clone(), action.clone())),
+                crate::ai::tools::FleetOp::CreateBr(id) => {
+                    let _ = self.fleet_br_view(id);
+                    self.fleet_br_click(crate::app::fleet_map::BrClick::Create, &self.ui_ctx.clone());
+                    return format!("{summary}: the report is being made; fleet_links has its link once it is done");
+                }
+            },
             ActionKind::MumbleSet { mute, deaf, transmit } => {
                 let ok = mute.is_none_or(crate::mumble::set_self_muted) & deaf.is_none_or(crate::mumble::set_self_deaf) & transmit.is_none_or(crate::mumble::set_transmit);
                 if !ok {
@@ -534,7 +557,7 @@ impl SpaiApp {
             let mut v = h.view.lock().unwrap_or_else(|e| e.into_inner());
             let mut out = Vec::new();
             for c in v.turns.iter_mut().flat_map(|t| t.cards.iter_mut()) {
-                if c.state == CardState::Pending && c.action.kind.immediate(&self.settings.ai.auto_actions) {
+                if c.state == CardState::Pending && (c.confirmed || c.action.kind.immediate(&self.settings.ai.auto_actions)) {
                     c.state = CardState::Applied;
                     out.push((c.action.id, c.action.kind.clone(), c.action.summary.clone()));
                 }

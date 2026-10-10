@@ -28,6 +28,20 @@ pub enum ActionKind {
     JoinMumble { url: String },
     /// The user's own Mumble: mute, deafen, how it transmits.
     MumbleSet { mute: Option<bool>, deaf: Option<bool>, transmit: Option<u32> },
+    /// Anything done to a fleet. Never done without the user's yes, said or clicked.
+    Fleet(FleetOp),
+}
+
+/// A fleet action the assistant proposed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FleetOp {
+    /// Track the fleet the start form now describes; waits for the FC to be boss if they are not.
+    Start,
+    /// A dashboard action on a tracked fleet: kicks, close, MOTD, wings, or an update of its
+    /// doctrine, channels and snowflakes.
+    Act(crate::fleets::model::FleetId, crate::fleets::backend::Action),
+    /// Make the br.evetools report of the fleet open in the app.
+    CreateBr(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -354,7 +368,8 @@ impl ActionKind {
             ActionKind::AddAlertRule(_) | ActionKind::EditMapData(_) => Some("actions.settings"),
             ActionKind::SendJabber { broadcast: false, .. } => Some("actions.jabber"),
             ActionKind::JoinMumble { .. } | ActionKind::MumbleSet { .. } => Some("actions.mumble"),
-            ActionKind::SendJabber { broadcast: true, .. } | ActionKind::KeepWatching(_) | ActionKind::OpenChat { .. } => None,
+            // Fleet actions are never let through without asking, so they have no key to allow.
+            ActionKind::SendJabber { broadcast: true, .. } | ActionKind::KeepWatching(_) | ActionKind::OpenChat { .. } | ActionKind::Fleet(_) => None,
         }
     }
 
