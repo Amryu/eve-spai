@@ -415,3 +415,24 @@ mod tests {
         });
     }
 }
+
+/// The edge or drop shadow behind text in `text`: dark behind light text, light behind dark text,
+/// so the text stays readable in light themes too.
+pub fn halo(text: egui::Color32) -> egui::Color32 {
+    let [r, g, b, _] = text.to_array();
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    if luma > 140.0 {
+        egui::Color32::from_black_alpha(200)
+    } else {
+        egui::Color32::from_white_alpha(220)
+    }
+}
+
+#[cfg(test)]
+mod halo_tests {
+    #[test]
+    fn the_halo_is_the_opposite_of_the_text() {
+        assert_eq!(super::halo(egui::Color32::from_gray(230)).to_array()[0], 0);
+        assert!(super::halo(egui::Color32::from_gray(20)).to_array()[0] > 200);
+    }
+}

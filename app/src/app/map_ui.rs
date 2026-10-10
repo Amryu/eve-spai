@@ -111,7 +111,7 @@ impl SpaiApp {
             painter.text(
                 *cp + egui::vec2(0.0, -r),
                 egui::Align2::CENTER_BOTTOM,
-                format!("Zone {} {ly:.0} ly", i + 1),
+                trf!("Zone {v} {ly} ly", v = i + 1, ly = format!("{:.0}", ly)),
                 egui::FontId::proportional(12.0),
                 *col,
             );
@@ -494,7 +494,7 @@ impl SpaiApp {
             }
             if self.plain_destination_offered() {
                 let mut picked = None;
-                ui.menu_button("Set Destination for", |ui| picked = self.destination_characters_menu(ui));
+                ui.menu_button(tr!("Set Destination for"), |ui| picked = self.destination_characters_menu(ui));
                 if let Some(names) = picked {
                     self.set_destination_for(&names, sid);
                     ui.close();
@@ -542,12 +542,12 @@ impl SpaiApp {
                     }
                     Some(i) if i > 0 => {
                         let last = i == anchors.len() - 1;
-                        let label = if last { "Remove Destination" } else { "Remove Waypoint" };
+                        let label = if last { tr!("Remove Destination") } else { tr!("Remove Waypoint") };
                         if ui.button(label).clicked() {
                             self.map_route_remove_anchor(i);
                             ui.close();
                         }
-                        let (other, label) = if self.map_leg_kind(i - 1) == "jump" { ("gate", "Reach by Gate") } else { ("jump", "Reach by Jump") };
+                        let (other, label) = if self.map_leg_kind(i - 1) == "jump" { ("gate", tr!("Reach by Gate")) } else { ("jump", tr!("Reach by Jump")) };
                         if ui.button(label).on_hover_text(tr!("Fly the leg into here the other way; the route becomes a mixed one")).clicked() {
                             self.map_set_leg_kind(i - 1, other);
                             ui.close();
@@ -564,7 +564,7 @@ impl SpaiApp {
                 }
                 ui.separator();
                 let once = self.map_avoid_once.contains(&sid);
-                if ui.button(if once { "Stop avoiding here" } else { "Avoid for this route" }).clicked()
+                if ui.button(if once { tr!("Stop avoiding here") } else { tr!("Avoid for this route") }).clicked()
                 {
                     if once {
                         self.map_avoid_once.remove(&sid);
@@ -579,7 +579,7 @@ impl SpaiApp {
                 let always = lists.iter().any(|&jump| {
                     if jump { self.settings.route_avoid_jump.contains(&sid) } else { self.settings.route_avoid_gate.contains(&sid) }
                 });
-                if ui.button(if always { "Stop avoiding always" } else { "Avoid always" }).clicked() {
+                if ui.button(if always { tr!("Stop avoiding always") } else { tr!("Avoid always") }).clicked() {
                     for jump in lists {
                         self.apply_overlay_message(
                             crate::ipc::OverlayToMain::AvoidSystem { id: sid, jump, on: !always },
@@ -591,9 +591,14 @@ impl SpaiApp {
                 }
                 ui.separator();
             }
-            let verb = if planning && !anchors.is_empty() { "Restart as" } else { "Start" };
-            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("mixed", "Mixed Route"), ("scan", "Scan Route")] {
-                if ui.button(format!("{verb} {name}")).clicked() {
+            let restart = planning && !anchors.is_empty();
+            for (kind, start_label, restart_label) in [
+                ("gate", tr!("Start Gate Route"), tr!("Restart as Gate Route")),
+                ("jump", tr!("Start Jump Route"), tr!("Restart as Jump Route")),
+                ("mixed", tr!("Start Mixed Route"), tr!("Restart as Mixed Route")),
+                ("scan", tr!("Start Scan Route"), tr!("Restart as Scan Route")),
+            ] {
+                if ui.button(if restart { restart_label } else { start_label }).clicked() {
                     self.map_route_start(kind, sid);
                     ui.close();
                 }
@@ -612,7 +617,7 @@ impl SpaiApp {
             let subject = crate::notes::Subject::System(sid);
             // A long tag list under a full system menu runs off the window, so it gets its own.
             let mut picked = None;
-            ui.menu_button(format!("{}  Tags", egui_phosphor::regular::TAG), |ui| {
+            ui.menu_button(trf!("{icon}  Tags", icon = egui_phosphor::regular::TAG), |ui| {
                 picked = notes_tag_toggles(ui, &view, &label, &subject);
             });
             if ui.button(trf!("{icon}  Edit note and tags…", icon = egui_phosphor::regular::NOTE_PENCIL)).clicked() {
@@ -1171,7 +1176,7 @@ impl SpaiApp {
                         painter.text(
                             hp + egui::vec2(0.0, -r),
                             egui::Align2::CENTER_BOTTOM,
-                            format!("{name} {ly:.0} ly"),
+                            trf!("{name} {ly} ly", name = name, ly = format!("{:.0}", ly)),
                             egui::FontId::proportional(12.0),
                             col,
                         );
@@ -1337,7 +1342,7 @@ impl SpaiApp {
                             egui::Align2::LEFT_CENTER,
                             &s.name,
                             name_font.clone(),
-                            egui::Color32::BLACK,
+                            spai_ui::theme::halo(ui.visuals().text_color()),
                         );
                     }
                     painter.text(
@@ -1381,7 +1386,7 @@ impl SpaiApp {
                         painter.text(
                             *p + egui::vec2(0.0, -(dot + 14.0)),
                             egui::Align2::CENTER_BOTTOM,
-                            "STAGING",
+                            tr!("STAGING"),
                             egui::FontId::proportional(12.0),
                             gold,
                         );
@@ -1397,7 +1402,7 @@ impl SpaiApp {
                         painter.text(
                             *p + egui::vec2(0.0, -(dot + 14.0)),
                             egui::Align2::CENTER_BOTTOM,
-                            "CAPITAL",
+                            tr!("CAPITAL"),
                             egui::FontId::proportional(12.0),
                             red,
                         );
@@ -1433,14 +1438,14 @@ impl SpaiApp {
         }
 
         let Some(graph) = self.systems.clone() else {
-            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "SDE not ready.", egui::FontId::proportional(14.0), visuals.weak_text_color());
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr!("SDE not ready."), egui::FontId::proportional(14.0), visuals.weak_text_color());
             return;
         };
         let Some(center) = self.map_threat_center.or(player_sys) else {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "No centre system. Set an active character, or right-click a system on the map.",
+                tr!("No centre system. Set an active character, or right-click a system on the map."),
                 egui::FontId::proportional(13.0),
                 visuals.weak_text_color(),
             );
@@ -1620,7 +1625,7 @@ impl SpaiApp {
         painter.text(
             rect.left_bottom() + egui::vec2(10.0, -10.0),
             egui::Align2::LEFT_BOTTOM,
-            format!("◎ {cname}  ·  ≤{depth} jumps  ·  {} systems", order.len()),
+            trf!("◎ {cname}  ·  ≤{depth} jumps  ·  {order} systems", cname = cname, depth = depth, order = order.len()),
             egui::FontId::proportional(12.0),
             visuals.weak_text_color(),
         );
@@ -1696,7 +1701,11 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     gear(ui);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| main(ui));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        // A long label (another language) ends in an ellipsis before the gear.
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        main(ui)
+                    });
                 });
             });
         };
@@ -1719,9 +1728,9 @@ impl SpaiApp {
                 &mut |ui| {
                     ui.label(trf!("{icon}  Holder", icon = icon::FLAG));
                     let text = match ov.sov {
-                        SovMode::Off => "Off",
-                        SovMode::Alliance => "Alliance",
-                        SovMode::Coalition => "Coalition",
+                        SovMode::Off => tr!("Off"),
+                        SovMode::Alliance => tr!("Alliance"),
+                        SovMode::Coalition => tr!("Coalition"),
                     };
                     egui::ComboBox::from_id_salt("map_sov_mode").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
                         ui.menu_value(&mut ov.sov, SovMode::Off, tr!("Off"));
@@ -1850,11 +1859,11 @@ impl SpaiApp {
             row(ui, &mut |_| {}, &mut |ui| {
                 ui.label(trf!("{icon}  Last hour", icon = icon::FIRE));
                 let text = match ov.activity {
-                    ActivityMode::Off => "Off",
-                    ActivityMode::ShipKills => "Ship kills",
-                    ActivityMode::PodKills => "Pod kills",
-                    ActivityMode::NpcKills => "NPC kills",
-                    ActivityMode::Jumps => "Jumps",
+                    ActivityMode::Off => tr!("Off"),
+                    ActivityMode::ShipKills => tr!("Ship kills"),
+                    ActivityMode::PodKills => tr!("Pod kills"),
+                    ActivityMode::NpcKills => tr!("NPC kills"),
+                    ActivityMode::Jumps => tr!("Jumps"),
                 };
                 egui::ComboBox::from_id_salt("map_activity").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
                     ui.menu_value(&mut ov.activity, ActivityMode::Off, tr!("Off"));
@@ -2010,13 +2019,13 @@ impl SpaiApp {
             let mins = (c.age / 60).max(0);
             let (label, col) = match c.level {
                 crate::camp::CampLevel::Likely => {
-                    ("Likely gate camp", egui::Color32::from_rgb(0xEF, 0x44, 0x44))
+                    (tr!("Likely gate camp"), egui::Color32::from_rgb(0xEF, 0x44, 0x44))
                 }
                 crate::camp::CampLevel::Possible => {
-                    ("Possible camp", egui::Color32::from_rgb(0xFF, 0xA7, 0x26))
+                    (tr!("Possible camp"), egui::Color32::from_rgb(0xFF, 0xA7, 0x26))
                 }
                 crate::camp::CampLevel::Flag => {
-                    ("Recent gate kills", egui::Color32::from_rgb(0xFF, 0xD5, 0x4F))
+                    (tr!("Recent gate kills"), egui::Color32::from_rgb(0xFF, 0xD5, 0x4F))
                 }
             };
             let over = (c.span / 60).max(0);

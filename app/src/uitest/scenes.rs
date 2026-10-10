@@ -135,6 +135,7 @@ fn map_hole_icons_scene(name: &'static str) -> Scene {
             ]);
             a
         });
+        app.apply_language();
         app.root_chrome(ui);
         app.root_central(ui, None);
     })
@@ -461,6 +462,26 @@ fn web_settings_scene_cfg(name: &'static str, size: [f32; 2], bind: bool) -> Sce
     })
 }
 
+/// The setup's language step, or the one-time language question for those who set up before.
+fn language_scene(name: &'static str, wizard: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [640.0, 420.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.wizard_done = !wizard;
+            a.wizard_open = wizard;
+            a.wizard_step = matches!(crate::tray::menu_entry_exists(), Some(false)) as u8;
+            a
+        });
+        if wizard {
+            app.setup_wizard(ui.ctx());
+        } else {
+            app.language_dialog(ui.ctx());
+        }
+    })
+}
+
 fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -475,6 +496,7 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
             }
             a
         });
+        app.apply_language();
         app.root_chrome(ui);
         app.root_central(ui, None);
     })
@@ -2346,6 +2368,27 @@ pub(crate) fn all() -> Vec<Scene> {
     // 720 is the app's minimum window width (main.rs), where the settings path fields and their
     // Browse buttons have the least room to share.
     v.push(view_scene("view_settings_narrow", View::Settings, [720.0, 800.0]));
+    // Names on the map keep an edge against their own colour, not a fixed black one.
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        Scene::ui("view_map_daylight", [1280.0, 800.0], move |ui| {
+            let app = app.get_or_insert_with(|| {
+                let region = fixtures::insmother();
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.view = View::Map;
+                a.seed_map(region.systems, region.regions, fixtures::INSMOTHER, region.drawn);
+                a.settings.theme = spai_ui::theme::Theme::daylight();
+                a
+            });
+            app.settings.theme.apply(ui.ctx());
+            app.apply_language();
+            app.root_chrome(ui);
+            app.root_central(ui, None);
+        })
+    });
+    v.push(language_scene("setup_language", true));
+    v.push(language_scene("language_dialog", false));
     // Tall enough to hold the whole settings column: the web section sits below Alerts, and a
     // scene that crops its own subject reads as coverage without being any.
     v.push(web_settings_scene("web_settings", [980.0, 2600.0]));

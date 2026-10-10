@@ -170,11 +170,13 @@ impl SpaiApp {
         let mut filter = std::mem::take(&mut self.rescue_history_filter);
         let mut delete: Option<(i64, String)> = None;
         let rescue = self.rescue.clone();
-        let keep = Self::dialog_viewport(ctx, "rescue_history_window", "EVE Spai - Past rescues", [620.0, 560.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "rescue_history_window", tr!("EVE Spai - Past rescues"), [620.0, 560.0], |ui| {
             let r = rescue.lock().unwrap_or_else(|e| e.into_inner());
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr!("Filter by system, pilot, ship or text")).desired_width(ui.available_width() - 120.0));
-                ui.label(egui::RichText::new(trf!("{v} pings", v = r.history.len())).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(trf!("{v} pings", v = r.history.len())).weak());
+                    ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr!("Filter by system, pilot, ship or text")).desired_width(ui.available_width()));
+                });
             });
             ui.separator();
             let f = filter.trim().to_lowercase();
@@ -191,7 +193,7 @@ impl SpaiApp {
                 })
                 .collect();
             if rows.is_empty() {
-                ui.label(egui::RichText::new(if r.history.is_empty() { "No delve911 pings yet. Each one is kept here with what was done about it." } else { "Nothing matches." }).weak());
+                ui.label(egui::RichText::new(if r.history.is_empty() { tr!("No delve911 pings yet. Each one is kept here with what was done about it.") } else { tr!("Nothing matches.") }).weak());
             }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for h in rows {
@@ -208,11 +210,11 @@ impl SpaiApp {
                                 .filter_map(|(on, l)| on.then_some(l))
                                 .collect();
                             let status = match h.resolved_at {
-                                Some(_) => format!("{}  Resolved", egui_phosphor::regular::CHECK_CIRCLE),
-                                None if h.worked => format!("{}  Worked", egui_phosphor::regular::PLAY),
-                                None => "Not worked".to_owned(),
+                                Some(_) => trf!("{icon}  Resolved", icon = egui_phosphor::regular::CHECK_CIRCLE),
+                                None if h.worked => trf!("{icon}  Worked", icon = egui_phosphor::regular::PLAY),
+                                None => tr!("Not worked").to_owned(),
                             };
-                            ui.label(egui::RichText::new(status).weak()).on_hover_text(if done.is_empty() { "No pings or invites sent".to_owned() } else { format!("Done: {}", done.join(", ")) });
+                            ui.label(egui::RichText::new(status).weak()).on_hover_text(if done.is_empty() { tr!("No pings or invites sent").to_owned() } else { trf!("Done: {v}", v = done.join(", ")) });
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let text = if what.is_empty() { h.raw.clone() } else { what };
                                 ui.add(egui::Label::new(text).truncate()).on_hover_text(format!("{}: {}", h.author, h.raw));
@@ -619,7 +621,7 @@ impl SpaiApp {
     pub(crate) fn rescue_popout_window(&mut self, ctx: &egui::Context) {
         let mut builder = egui::ViewportBuilder::default()
             .with_icon(app_icon())
-            .with_title("EVE Spai - Rescue")
+            .with_title(tr!("EVE Spai - Rescue"))
             .with_min_inner_size([420.0, 360.0])
             .with_window_level(egui::WindowLevel::AlwaysOnTop);
         if !self.rescue_geom_applied {
@@ -759,20 +761,20 @@ impl SpaiApp {
         let range_warning = self.rescue_range.as_ref().map(|w| {
             let jumps = |n: Option<u32>, unit: &str| match n {
                 Some(j) => format!("{j} {unit}"),
-                None => format!("no {unit} route"),
+                None => trf!("no {unit} route", unit = unit),
             };
             (
-                format!(
-                    "{}  OUT OF TITAN RANGE — {:.1} ly from staging",
-                    egui_phosphor::regular::WARNING,
-                    w.ly_from_staging
+                trf!(
+                    "{icon}  OUT OF TITAN RANGE — {ly} ly from staging",
+                    icon = egui_phosphor::regular::WARNING,
+                    ly = format!("{:.1}", w.ly_from_staging)
                 ),
-                format!(
-                    "Closest reachable: {}  →  {} · {} · {:.1} ly",
-                    w.closest_name,
-                    jumps(w.ansi_jumps, "Ansiblex jumps"),
-                    jumps(w.gate_jumps, "stargate jumps"),
-                    w.ly_to_target
+                trf!(
+                    "Closest reachable: {sys}  →  {ansi} · {gate} · {ly} ly",
+                    sys = w.closest_name,
+                    ansi = jumps(w.ansi_jumps, tr!("Ansiblex jumps")),
+                    gate = jumps(w.gate_jumps, tr!("stargate jumps")),
+                    ly = format!("{:.1}", w.ly_to_target)
                 ),
             )
         });
@@ -789,10 +791,10 @@ impl SpaiApp {
             if !jab_connected && !jabber_set_up {
                 // Never set up: retrying has nothing to connect with.
                 ui.horizontal_wrapped(|ui| {
-                    let why = "Jabber is not set up: rescue pings to delve911 and the skirmish channel go through it.";
+                    let why = tr!("Jabber is not set up: rescue pings to delve911 and the skirmish channel go through it.");
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
-                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber is not set up" } else { why }),
+                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { tr!("Jabber is not set up") } else { why }),
                     )
                     .on_hover_text(why);
                     if ui.button(tr!("Set up Jabber")).clicked() {
@@ -802,10 +804,10 @@ impl SpaiApp {
                 ui.separator();
             } else if !jab_connected {
                 ui.horizontal_wrapped(|ui| {
-                    let why = format!("Jabber disconnected — pings cannot be sent. {jab_status}");
+                    let why = trf!("Jabber disconnected — pings cannot be sent. {jab_status}", jab_status = jab_status);
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
-                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber disconnected" } else { why.as_str() }),
+                        format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { tr!("Jabber disconnected") } else { why.as_str() }),
                     )
                     .on_hover_text(&why);
                     if ui.button(tr!("Retry now")).clicked() {
@@ -886,9 +888,9 @@ impl SpaiApp {
                         None => btn,
                     };
                     let tip = if actions_done.contains(seq) {
-                        format!("{sys}  ·  cyno {cyno}  ·  {age} ago")
+                        trf!("{sys}  ·  cyno {cyno}  ·  {age} ago", sys = sys, cyno = cyno, age = age)
                     } else {
-                        format!("{sys}  ·  cyno {cyno}  ·  {age} ago\nAction outstanding")
+                        trf!("{sys}  ·  cyno {cyno}  ·  {age} ago\nAction outstanding", sys = sys, cyno = cyno, age = age)
                     };
                     if ui.add(btn).on_hover_text(tip).clicked() {
                         pick = Some(*seq);
@@ -986,7 +988,7 @@ impl SpaiApp {
                 let target = r.capital_system.zip(r.capital_system_name.clone());
                 let label = match &target {
                     Some((_, name)) => format!("{}  {name}", egui_phosphor::regular::MAP_PIN_LINE),
-                    None => format!("{}  Set Destination", egui_phosphor::regular::MAP_PIN_LINE),
+                    None => trf!("{icon}  Set Destination", icon = egui_phosphor::regular::MAP_PIN_LINE),
                 };
                 if let Some(pick) = rescue_route_button(ui, label, target.as_ref(), fc_char.as_deref(), &route_choices) {
                     set_dest = target.as_ref().map(|(id, _)| (*id, pick));
@@ -1131,6 +1133,12 @@ impl SpaiApp {
                                 );
                             }
                         }
+                        // Label and combo move to the next line together when the combo's least
+                        // width does not fit after the label.
+                        let label_w = egui::WidgetText::from(tr!("Preset")).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
+                        if ui.available_size_before_wrap().x < label_w + ui.spacing().item_spacing.x + 118.0 {
+                            ui.end_row();
+                        }
                         ui.label(tr!("Preset"));
                         let cur = r.doctrine.clone();
                         let shown = crate::settings::find_preset(&presets, &cur)
@@ -1168,7 +1176,7 @@ impl SpaiApp {
                         let btn = egui::Button::new(format!(
                             "{}  {}",
                             egui_phosphor::regular::HEADSET,
-                            if wide { "Command Comms" } else { "Comms" }
+                            if wide { tr!("Command Comms") } else { tr!("Comms") }
                         ));
                         let btn = match pulse_fill(ui, cmd_pending) {
                             Some(c) => btn.fill(c),
@@ -1243,7 +1251,7 @@ impl SpaiApp {
                                 let can_invite =
                                     !test_mode && jab_connected && !delve911_jid.is_empty();
                                 let btn = egui::Button::new(if compact {
-                                    format!("{}  Invite", egui_phosphor::regular::USER_PLUS)
+                                    trf!("{icon}  Invite", icon = egui_phosphor::regular::USER_PLUS)
                                 } else {
                                     format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET)
                                 });
@@ -1251,7 +1259,7 @@ impl SpaiApp {
                                     Some(c) => btn.fill(c),
                                     None => btn,
                                 };
-                                let hover = if compact { format!("Invite to Op {op_now} comms, in delve911:\n{msg}") } else { "Post this in delve911".to_owned() };
+                                let hover = if compact { trf!("Invite to Op {op_now} comms, in delve911:\n{msg}", op_now = op_now, msg = msg) } else { tr!("Post this in delve911").to_owned() };
                                 if ui
                                     .add_enabled(can_invite, btn)
                                     .on_hover_text(hover)
@@ -1272,7 +1280,7 @@ impl SpaiApp {
                     // start form uses. Nothing else tells you before you try to track.
                     let can_track = boss.as_ref().is_some_and(|(ok, _)| *ok);
                     let track_button = |ui: &mut egui::Ui, wide: bool| -> bool {
-                        let b = egui::Button::new(format!("{}  {}", egui_phosphor::regular::ROCKET_LAUNCH, if wide { "Start tracking" } else { "Track" }));
+                        let b = egui::Button::new(format!("{}  {}", egui_phosphor::regular::ROCKET_LAUNCH, if wide { tr!("Start tracking") } else { tr!("Track") }));
                         let b = if wide { b.min_size(egui::vec2(ui.available_width(), 24.0)) } else { b };
                         ui.add_enabled(can_track, b)
                             .on_hover_text(tr!("Fill the start form from this preset and open the fleet tab"))
@@ -1298,7 +1306,7 @@ impl SpaiApp {
                             None => (
                                 egui_phosphor::regular::CLOCK_COUNTDOWN,
                                 ui.visuals().weak_text_color(),
-                                "Fleet boss not checked".to_owned(),
+                                tr!("Fleet boss not checked").to_owned(),
                             ),
                         };
                         let icon = ui.label(egui::RichText::new(glyph).color(colour));
@@ -1338,7 +1346,7 @@ impl SpaiApp {
                                 let _ = tx.send(crate::jabber::Cmd::SendRoom { room: skirmish_jid.clone(), body });
                             }
                         };
-                        let coord = egui::Button::new(if compact { "coord" } else { "Ping coord" });
+                        let coord = egui::Button::new(if compact { tr!("coord") } else { tr!("Ping coord") });
                         let coord = match pulse_fill(ui, coord_pending) {
                             Some(c) => coord.fill(c),
                             None => coord,
@@ -1349,7 +1357,7 @@ impl SpaiApp {
                             r.coord_pinged_at = Some(now);
                             r.bpinged_at = Some(now);
                         }
-                        let fc = egui::Button::new(if compact { "fc" } else { "Ping fc" });
+                        let fc = egui::Button::new(if compact { tr!("fc") } else { tr!("Ping fc") });
                         let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text(tr!("!bping fc alone: the backup after coord, reaching more people"));
                         let resp = match &fc_ok {
                             Err((why, _)) => resp.on_disabled_hover_text(why),
@@ -1734,10 +1742,10 @@ impl SpaiApp {
         };
         let name = |id: i64| graph.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
         let note = match (staging, target, &route) {
-            (_, None, _) => "No capital pinged yet.".to_owned(),
-            (None, _, _) => "No rescue staging system set.".to_owned(),
-            (Some(s), Some(t), None) => format!("No titan route from {} to {}.", name(s), name(t)),
-            (Some(s), _, Some(o)) => format!("Titan at {}: {}", name(s), o.note.clone().unwrap_or_else(|| o.label.clone())),
+            (_, None, _) => tr!("No capital pinged yet.").to_owned(),
+            (None, _, _) => tr!("No rescue staging system set.").to_owned(),
+            (Some(s), Some(t), None) => trf!("No titan route from {from} to {to}.", from = name(s), to = name(t)),
+            (Some(s), _, Some(o)) => trf!("Titan at {sys}: {note}", sys = name(s), note = o.note.clone().unwrap_or_else(|| o.label.clone())),
         };
         let hops = route.map(|o| o.hops).unwrap_or_default();
         let mut ids: Vec<i64> = hops.iter().map(|h| h.id).chain(staging).chain(target).collect();

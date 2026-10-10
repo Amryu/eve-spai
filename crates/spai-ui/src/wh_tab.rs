@@ -363,7 +363,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                         tidy = true;
                     }
                     host.after_tidy(view, ui);
-                    ui.menu_button(format!("{}  Layout", icon::CARET_DOWN), |ui| {
+                    ui.menu_button(crate::trf!("{icon}  Layout", icon = icon::CARET_DOWN), |ui| {
                         use crate::wh_layout::Style;
                         let style = Style::from_code(&prefs.layout_style);
                         let pick = |ui: &mut egui::Ui, on: bool, label: &str, hint: &str| ui.menu_label(on, label).on_hover_text(hint).clicked();
@@ -399,7 +399,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                             ui.close();
                         }
                     });
-                    if ui.menu_label(prefs.legend_open, format!("{}  Legend", icon::BOOK_OPEN)).clicked() {
+                    if ui.menu_label(prefs.legend_open, crate::trf!("{icon}  Legend", icon = icon::BOOK_OPEN)).clicked() {
                         prefs.legend_open = !prefs.legend_open;
                     }
                     host.toolbar(view, ui);
@@ -437,7 +437,9 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         tidy_layout(view, host);
     }
     if prefs.legend_open {
-        legend(ui);
+        // At most half the height, so the map keeps room under it in a short window or a language
+        // whose legend wraps onto more lines.
+        egui::ScrollArea::vertical().id_salt("wh_legend").max_height(ui.available_height() * 0.5).auto_shrink([false, true]).show(ui, legend);
     }
 
     let rect = ui.available_rect_before_wrap();
@@ -575,13 +577,16 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         .collect();
 
     if edges.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "No hole with both sides known yet. The table has the rest.",
+        // Wrapped to the canvas, which a longer language can outgrow on one line.
+        let mut job = egui::text::LayoutJob::simple(
+            crate::tr!("No hole with both sides known yet. The table has the rest.").to_owned(),
             body.clone(),
             visuals.weak_text_color(),
+            (rect.width() - 24.0).max(80.0),
         );
+        job.halign = egui::Align::Center;
+        let g = painter.layout_job(job);
+        painter.galley(rect.center() - egui::vec2(0.0, g.size().y / 2.0), g, visuals.weak_text_color());
     }
 
     if let Some(area) = marquee_done {
@@ -724,9 +729,9 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             let g = painter.layout_job(job);
             painter.with_clip_rect(r.shrink(2.0).intersect(rect)).galley(r.center() - g.size() / 2.0, g, visuals.text_color());
             resp.on_hover_text(if n == u32::MAX {
-                format!("{}: pinned, no cluster within {} jumps", info.name, prefs.pin_jumps)
+                crate::trf!("{sys}: pinned, no cluster within {n} jumps", sys = info.name, n = prefs.pin_jumps)
             } else {
-                format!("{}: pinned, {n} jumps by gate and bridge from this cluster's nearest exit", info.name)
+                crate::trf!("{sys}: pinned, {n} jumps by gate and bridge from this cluster's nearest exit", sys = info.name, n = n)
             });
             continue;
         }
@@ -762,7 +767,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                 opened = Some(id);
                 ui.close();
             }
-            if ui.button(if pinned { "Remove from routes" } else { "Add to routes" }).clicked() {
+            if ui.button(if pinned { crate::tr!("Remove from routes") } else { crate::tr!("Add to routes") }).clicked() {
                 pin = Some(info.name.clone());
                 ui.close();
             }
@@ -830,18 +835,27 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                 tip.push_str(&format!("\n{e}"));
             }
             if let Some(who) = here.get(&id) {
-                tip.push_str(&format!("\nHere: {}", who.join(", ")));
+                tip.push_str(&format!("\n{}", crate::trf!("Here: {who}", who = who.join(", "))));
             }
             if jsys.is_some_and(|j| j.shattered()) {
-                tip.push_str("\nShattered");
+                tip.push_str(&format!("\n{}", crate::tr!("Shattered")));
             }
             if let Some(n) = hidden.get(&id) {
-                tip.push_str(&format!("\n{n} more hole{} to k-space leading nowhere pinned: double-click to see them", if *n == 1 { "" } else { "s" }));
+                tip.push_str(&format!(
+                    "\n{}",
+                    if *n == 1 {
+                        crate::tr!("1 more hole to k-space leading nowhere pinned: double-click to see it").to_owned()
+                    } else {
+                        crate::trf!("{n} more holes to k-space leading nowhere pinned: double-click to see them", n = n)
+                    }
+                ));
             }
             if off_systems.contains(&id) {
-                tip.push_str("\nIts holes are switched off for routes");
+                tip.push_str("\n");
+                tip.push_str(crate::tr!("Its holes are switched off for routes"));
             }
-            tip.push_str("\nClick to select, double-click to focus, drag to move");
+            tip.push_str("\n");
+            tip.push_str(crate::tr!("Click to select, double-click to focus, drag to move"));
             resp.on_hover_text(tip);
         }
     }
@@ -874,16 +888,16 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         );
         let types: Vec<&str> = [w.wh_type.as_deref(), w.dest_wh_type.as_deref()].into_iter().flatten().collect();
         if !types.is_empty() {
-            tip.push_str(&format!("\nType: {}", types.join(" / ")));
+            tip.push_str(&format!("\n{}", crate::trf!("Type: {types}", types = types.join(" / "))));
         }
         if let Some(s) = w.effective_size() {
-            tip.push_str(&format!("\nSize: {}", s.label().tr()));
+            tip.push_str(&format!("\n{}", crate::trf!("Size: {size}", size = s.label().tr())));
         }
         if let Some(m) = w.mass {
-            tip.push_str(&format!("\nMass: {}", m.short()));
+            tip.push_str(&format!("\n{}", crate::trf!("Mass: {mass}", mass = m.short())));
         }
         if let Some((life, _)) = life_badge(w, now, ui.visuals()) {
-            tip.push_str(&format!("\nLife: {life}"));
+            tip.push_str(&format!("\n{}", crate::trf!("Life: {life}", life = life)));
         }
         if let Some(opened) = crate::wh_graph::opened_line(w, now) {
             tip.push_str(&format!("\n{opened}"));
@@ -893,14 +907,17 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         if let Some(e) = edited {
             tip.push_str(&format!("\n{e}"));
         }
-        tip.push_str(&format!("\nSource: {}", w.source.label().tr()));
+        tip.push_str(&format!("\n{}", crate::trf!("Source: {source}", source = w.source.label().tr())));
         if let Some(name) = host.group_name(&w.uid) {
-            tip.push_str(&format!("\nShared in {name}"));
+            tip.push_str("\n");
+            tip.push_str(&crate::trf!("Shared in {name}", name = name));
         }
         if host.disabled(w) {
-            tip.push_str("\nSwitched off for routes");
+            tip.push_str("\n");
+            tip.push_str(crate::tr!("Switched off for routes"));
         } else if blocked.contains(&w.id) {
-            tip.push_str("\nOff routes: the filter hides it");
+            tip.push_str("\n");
+            tip.push_str(crate::tr!("Off routes: the filter hides it"));
         }
         line_tip(ui, pointer, tip);
     }
@@ -1058,7 +1075,7 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
             });
             ui.separator();
         }
-        ui.label(egui::RichText::new(crate::trf!("{rows} system{v}", rows = rows.len(), v = if rows.len() == 1 { "" } else { "s" })).weak());
+        ui.label(egui::RichText::new(if rows.len() == 1 { crate::tr!("1 system").to_owned() } else { crate::trf!("{rows} systems", rows = rows.len()) }).weak());
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("wh_graph_list_grid").spacing([6.0, 2.0]).show(ui, |ui| {
                 for (c, info, n) in &rows {
@@ -1068,8 +1085,8 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
                     let effect = whdata::jsystem(info.id).and_then(|j| j.effect.clone());
                     let r = ui.menu_label(on, display_name(info.id, &info.name));
                     let r = match effect {
-                        Some(e) => r.on_hover_text(crate::trf!("{e}: {v}\n{n} known connection{v2}", e = e, v = whdata::effect_summary(&e), n = n, v2 = if *n == 1 { "" } else { "s" })),
-                        None => r.on_hover_text(crate::trf!("{n} known connection{v}", n = n, v = if *n == 1 { "" } else { "s" })),
+                        Some(e) => r.on_hover_text(format!("{e}: {}\n{}", whdata::effect_summary(&e), known_connections(*n))),
+                        None => r.on_hover_text(known_connections(*n)),
                     };
                     if r.clicked() {
                         focus = Some(info.id);
@@ -1128,7 +1145,7 @@ fn legend(ui: &mut egui::Ui) {
                 Line::Mass(m) => stroke_hole(&p, &[a, b], egui::Stroke::new(2.5, v.weak_text_color()), m),
                 Line::Off(c) => slashed(&p, &[a, b], desaturate_stroke(egui::Stroke::new(2.5, c)), |p, l, s| stroke_hole(p, l, s, None)),
             }
-            ui.label(text);
+            ui.add(egui::Label::new(text).wrap());
         });
     };
     let chip = |ui: &mut egui::Ui, text: &str, border: Option<C>, what: &str| {
@@ -1142,7 +1159,7 @@ fn legend(ui: &mut egui::Ui) {
                 None => p.rect_filled(rect, 3.0, v.extreme_bg_color),
             };
             p.galley(rect.center() - g.size() / 2.0, g, v.text_color());
-            ui.label(what);
+            ui.add(egui::Label::new(what).wrap());
         });
     };
     let boxed_fill = |ui: &mut egui::Ui, fill: C, stroke: egui::Stroke, what: &str| {
@@ -1150,7 +1167,7 @@ fn legend(ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let (r, p) = ui.allocate_painter(egui::vec2(34.0, row_h), egui::Sense::hover());
             p.rect(r.rect.shrink2(egui::vec2(1.0, 3.0)), 4.0, fill, stroke, egui::StrokeKind::Inside);
-            ui.label(what);
+            ui.add(egui::Label::new(what).wrap());
         });
     };
     let boxed = |ui: &mut egui::Ui, stroke: egui::Stroke, what: &str| boxed_fill(ui, v.panel_fill, stroke, what);
@@ -1189,7 +1206,7 @@ fn legend(ui: &mut egui::Ui) {
                 let (r, p) = ui.allocate_painter(g.size() + egui::vec2(8.0, 2.0), egui::Sense::hover());
                 p.rect(r.rect, 4.0, v.extreme_bg_color, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
                 p.galley(r.rect.center() - g.size() / 2.0, g, color);
-                ui.label(what);
+                ui.add(egui::Label::new(what).wrap());
             });
         };
         ui.horizontal_wrapped(|ui| {
@@ -1218,7 +1235,7 @@ fn legend(ui: &mut egui::Ui) {
             for sec in [1.0, 0.5, 0.3, 0.0, -0.5] {
                 tag(ui, &format!("{sec:.1}"), class_color(Class::Ns, sec));
             }
-            room_for(ui, 0.0, "security");
+            room_for(ui, 0.0, crate::tr!("security"));
             ui.label(egui::RichText::new(crate::tr!("security")).weak());
         });
         ui.horizontal_wrapped(|ui| {
@@ -1227,8 +1244,8 @@ fn legend(ui: &mut egui::Ui) {
             }
         });
         ui.horizontal_wrapped(|ui| {
-            boxed(ui, egui::Stroke::new(2.5, v.selection.stroke.color), "selected");
-            boxed(ui, egui::Stroke::new(2.5, v.hyperlink_color), "focused");
+            boxed(ui, egui::Stroke::new(2.5, v.selection.stroke.color), crate::tr!("selected"));
+            boxed(ui, egui::Stroke::new(2.5, v.hyperlink_color), crate::tr!("focused"));
             boxed_fill(ui, drifter_fill(v.panel_fill), egui::Stroke::new(1.5, v.widgets.noninteractive.bg_stroke.color), crate::tr!("drifter system"));
             room_for(ui, 30.0, crate::tr!("your characters there"));
             ui.label(egui::RichText::new(format!("{} 2", icon::USER)).color(v.hyperlink_color));
@@ -1290,12 +1307,12 @@ pub fn wh_filter_ui(ui: &mut egui::Ui, f: &mut spai_core::wormholes::WhFilter) -
         ui.end_row();
         ui.label(crate::tr!("Size"));
         let mut sizes: Vec<(&str, &str)> = ShipSize::ALL.into_iter().map(|s| (s.code(), s.short())).collect();
-        sizes.push((UNKNOWN, "Unknown"));
+        sizes.push((UNKNOWN, crate::tr!("Unknown")));
         changed |= code_toggles(ui, &mut f.size, &sizes);
         ui.end_row();
         ui.label(crate::tr!("Mass left"));
         let mut masses: Vec<(&str, &str)> = Mass::ALL.into_iter().map(|m| (m.code(), m.short())).collect();
-        masses.push((UNKNOWN, "Unknown"));
+        masses.push((UNKNOWN, crate::tr!("Unknown")));
         changed |= code_toggles(ui, &mut f.mass, &masses);
         ui.end_row();
         ui.label(crate::tr!("Time left"));
@@ -1491,7 +1508,13 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
             Dest::AnyKspace => "k-space".into(),
             Dest::Unknown => "the other side".into(),
         };
-        ui.label(format!("{} {} {dest}, {}", t.code, icon::ARROW_RIGHT, t.size_label())).on_hover_text(crate::trf!("{v} t per jump\n{v2} t in all\nLasts {v3}h{v4}", v = tonnes(t.jump_mass), v2 = tonnes(t.total_mass), v3 = t.lifetime_h, v4 = if t.is_static { "\nA static somewhere" } else { "" }));
+        ui.label(format!("{} {} {dest}, {}", t.code, icon::ARROW_RIGHT, t.size_label())).on_hover_text({
+            let mut s = crate::trf!("{v} t per jump\n{v2} t in all\nLasts {v3}h", v = tonnes(t.jump_mass), v2 = tonnes(t.total_mass), v3 = t.lifetime_h);
+            if t.is_static {
+                s = format!("{s}\n{}", crate::tr!("A static somewhere"));
+            }
+            s
+        });
     };
     if let Some(j) = whdata::jsystem(sys) {
         if j.shattered() && class != Class::W(13) {
@@ -1532,7 +1555,12 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
                 None => kinds.push((p.as_str(), 1)),
             }
         }
-        ui.label(crate::trf!("Sun {v} \u{b7} {v2} planet{v3} \u{b7} {v4} moon{v5}", v = j.sun, v2 = j.planets.len(), v3 = if j.planets.len() == 1 { "" } else { "s" }, v4 = j.moons, v5 = if j.moons == 1 { "" } else { "s" }));
+        ui.label(format!(
+            "{} \u{b7} {} \u{b7} {}",
+            crate::trf!("Sun {v}", v = j.sun),
+            if j.planets.len() == 1 { crate::tr!("1 planet").to_owned() } else { crate::trf!("{n} planets", n = j.planets.len()) },
+            if j.moons == 1 { crate::tr!("1 moon").to_owned() } else { crate::trf!("{n} moons", n = j.moons) },
+        ));
         if !kinds.is_empty() {
             ui.label(kinds.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", "));
         }
@@ -1627,7 +1655,7 @@ pub fn holes_table(
                     Some(i) => (i.name, i.constellation, i.region),
                     None => (w.dest.label().tr().to_string(), String::new(), String::new()),
                 };
-                let seen = |at: Option<i64>| at.map(|t| format!(", seen {} ago", crate::widgets::human_ago(now - t))).unwrap_or_default();
+                let seen = |at: Option<i64>| at.map(|t| crate::trf!(", seen {ago} ago", ago = crate::widgets::human_ago(now - t))).unwrap_or_default();
                 let life = if let Some(l) = w.life {
                     format!("{}{}", l.label().tr(), seen(w.observed_at))
                 } else if w.explicit_expiry.is_some() {
@@ -1636,7 +1664,7 @@ pub fn holes_table(
                         None => "expired".into(),
                     }
                 } else {
-                    format!("reported {} ago", crate::widgets::human_ago(now - w.reported_at))
+                    crate::trf!("reported {ago} ago", ago = crate::widgets::human_ago(now - w.reported_at))
                 };
                 // The entry's origin first, then whoever else has seen it.
                 let mut source = match (&w.detected_by, w.source) {
@@ -1745,3 +1773,11 @@ pub fn holes_table(
         });
         act
     }
+
+fn known_connections(n: usize) -> String {
+    if n == 1 {
+        crate::tr!("1 known connection").to_owned()
+    } else {
+        crate::trf!("{n} known connections", n = n)
+    }
+}

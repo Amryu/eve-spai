@@ -98,7 +98,7 @@ pub fn human_ago(secs: i64) -> String {
 /// hole has been open starts there.
 pub fn found_at(at: i64, now: i64, _eve: bool) -> String {
     // How long ago, which is what matters for a signature; the time itself is on hover.
-    format!("{} ago", human_ago(now - at))
+    crate::trf!("{age} ago", age = human_ago(now - at))
 }
 
 /// A signature's kind as a leading icon, so the two read apart at a glance: a magnifying glass for
@@ -115,7 +115,7 @@ pub fn sig_icon(kind: &str) -> &'static str {
 pub fn found_hover(at: i64, now: i64, eve: bool) -> String {
     let Some(t) = chrono::DateTime::from_timestamp(at, 0) else { return String::new() };
     let when = if eve { format!("{} EVE", t.format("%Y-%m-%d %H:%M")) } else { t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string() };
-    format!("First seen {when}, {} ago", human_ago(now - at))
+    crate::trf!("First seen {when}, {ago} ago", when = when, ago = human_ago(now - at))
 }
 
 /// Unseen in a paste for over a day: yellow; over three: grey.

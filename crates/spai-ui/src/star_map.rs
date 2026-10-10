@@ -651,14 +651,9 @@ pub fn paint_region_labels(painter: &egui::Painter, draw: &[MapSystem], pos: &Ha
             let Some((_, name)) = regions.iter().find(|(id, _)| *id == rid) else {
                 continue;
             };
-            painter.text(
-                c + egui::vec2(1.0, 1.0),
-                egui::Align2::CENTER_CENTER,
-                name,
-                font.clone(),
-                egui::Color32::from_black_alpha(180),
-            );
-            painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), egui::Color32::from_gray(220));
+            let col = painter.ctx().global_style().visuals.strong_text_color();
+            painter.text(c + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, name, font.clone(), crate::theme::halo(col));
+            painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), col);
         }
 }
 
@@ -667,13 +662,13 @@ pub fn paint_region_labels(painter: &egui::Painter, draw: &[MapSystem], pos: &Ha
 /// of leg, so a jump, a bridge or a hole stands out from the gates around it. `None` is a gate.
 pub fn hop_tail(h: &spai_core::route::Hop, first: bool) -> (String, Option<egui::Color32>) {
     if first {
-        return ("start".to_owned(), None);
+        return (crate::tr!("start").to_owned(), None);
     }
     match h.kind {
-        2 => (format!("jump {:.1} ly", h.ly.unwrap_or_default()), Some(egui::Color32::from_rgb(0xE0, 0x7B, 0xE0))),
-        1 => ("ansiblex".to_owned(), Some(egui::Color32::from_rgb(0x3A, 0xD0, 0x6A))),
-        _ if h.hole => ("wormhole".to_owned(), Some(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4))),
-        _ => ("gate".to_owned(), None),
+        2 => (crate::trf!("jump {ly} ly", ly = format!("{:.1}", h.ly.unwrap_or_default())), Some(egui::Color32::from_rgb(0xE0, 0x7B, 0xE0))),
+        1 => (crate::tr!("ansiblex").to_owned(), Some(egui::Color32::from_rgb(0x3A, 0xD0, 0x6A))),
+        _ if h.hole => (crate::tr!("wormhole").to_owned(), Some(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4))),
+        _ => (crate::tr!("gate").to_owned(), None),
     }
 }
 

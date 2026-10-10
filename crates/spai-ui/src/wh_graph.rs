@@ -54,15 +54,15 @@ pub fn who_lines(w: &spai_core::wormholes::Wormhole, now: i64) -> (String, Optio
     use spai_core::wormholes::Source;
     let ago = |t: i64| crate::widgets::human_ago(now - t);
     let added = match w.created_by.as_ref().or(w.detected_by.as_ref()) {
-        Some(who) => format!("Added by {who} {} ago", ago(w.reported_at)),
+        Some(who) => crate::trf!("Added by {who} {ago} ago", who = who, ago = ago(w.reported_at)),
         None => match w.source {
-            Source::Manual => format!("Added by hand {} ago", ago(w.reported_at)),
-            Source::Auto => format!("Detected {} ago", ago(w.reported_at)),
-            s => format!("Added from {} {} ago", s.label().tr(), ago(w.reported_at)),
+            Source::Manual => crate::trf!("Added by hand {ago} ago", ago = ago(w.reported_at)),
+            Source::Auto => crate::trf!("Detected {ago} ago", ago = ago(w.reported_at)),
+            s => crate::trf!("Added from {source} {ago} ago", source = s.label().tr(), ago = ago(w.reported_at)),
         },
     };
     // A change within a minute of adding it is the adding itself.
-    let edited = w.edited_by.as_ref().filter(|(_, at)| *at > w.reported_at + 60).map(|(who, at)| format!("Edited by {who} {} ago", ago(*at)));
+    let edited = w.edited_by.as_ref().filter(|(_, at)| *at > w.reported_at + 60).map(|(who, at)| crate::trf!("Edited by {who} {ago} ago", who = who, ago = ago(*at)));
     (added, edited)
 }
 
@@ -70,7 +70,7 @@ pub fn who_lines(w: &spai_core::wormholes::Wormhole, now: i64) -> (String, Optio
 pub fn opened_line(w: &spai_core::wormholes::Wormhole, now: i64) -> Option<String> {
     let born = w.born_after?;
     let sure = spai_core::wormholes::sure_left(w, now)?;
-    Some(format!("New since a paste {} ago: at least {} left", crate::widgets::human_ago(now - born), crate::widgets::human_ago(sure)))
+    Some(crate::trf!("New since a paste {ago} ago: at least {left} left", ago = crate::widgets::human_ago(now - born), left = crate::widgets::human_ago(sure)))
 }
 
 /// The same as [`who_lines`] for a list cell: how long ago and who, the edit marked with a pencil,

@@ -96,7 +96,7 @@ impl SpaiApp {
                         .color(if marked { teal } else { ui.visuals().weak_text_color() });
                     if ui
                         .add(egui::Button::new(icon).frame(false))
-                        .on_hover_text(if marked { "Remove bookmark" } else { "Bookmark this system" })
+                        .on_hover_text(if marked { tr!("Remove bookmark") } else { tr!("Bookmark this system") })
                         .clicked()
                     {
                         if marked {
@@ -184,7 +184,7 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             ui.menu_value(&mut self.system_kills_tab, 0u8, tr!("Overview"));
             let n = sys_reports.len();
-            ui.menu_value(&mut self.system_kills_tab, 1u8, if n > 0 { format!("Intel ({n})") } else { "Intel".to_owned() });
+            ui.menu_value(&mut self.system_kills_tab, 1u8, if n > 0 { trf!("Intel ({n})", n = n) } else { tr!("Intel").to_owned() });
             ui.menu_value(&mut self.system_kills_tab, 2u8, tr!("Kills"));
         });
         ui.separator();
@@ -210,7 +210,11 @@ impl SpaiApp {
                 };
                 let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
                 ui.label(egui::RichText::new(tr!("Last hour")).weak()).on_hover_text(tr!("Red at twice the region's average, amber above it"));
-                egui::Grid::new("sys_hour").num_columns(4).spacing([10.0, 2.0]).show(ui, |ui| {
+                // Two stats a row where they fit; one in a narrow dock or with longer labels.
+                let labels = [tr!("Jumps"), tr!("Ship kills"), tr!("Pod kills"), tr!("NPC kills")];
+                let widest = labels.iter().map(|l| egui::WidgetText::from(*l).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x).fold(0.0, f32::max);
+                let pair = ui.available_width() >= 2.0 * (widest + 50.0) + 30.0;
+                egui::Grid::new("sys_hour").num_columns(if pair { 4 } else { 2 }).spacing([10.0, 2.0]).show(ui, |ui| {
                     let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
                         let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
                             crate::theme::standing::HOSTILE
@@ -222,12 +226,13 @@ impl SpaiApp {
                         ui.label(egui::RichText::new(label).weak());
                         ui.label(egui::RichText::new(v.to_string()).color(col).strong());
                     };
-                    stat(ui, tr!("Jumps"), flags.jumps, aj);
-                    stat(ui, tr!("Ship kills"), flags.ship_kills, ak);
-                    ui.end_row();
-                    stat(ui, tr!("Pod kills"), flags.pod_kills, ak);
-                    stat(ui, tr!("NPC kills"), flags.npc_kills, an);
-                    ui.end_row();
+                    let all = [(labels[0], flags.jumps, aj), (labels[1], flags.ship_kills, ak), (labels[2], flags.pod_kills, ak), (labels[3], flags.npc_kills, an)];
+                    for (i, (label, v, avg)) in all.into_iter().enumerate() {
+                        stat(ui, label, v, avg);
+                        if !pair || i % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
                 });
                 }
                 self.camp_line(ui, info.id);
@@ -437,7 +442,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "system_window",
-            "EVE Spai - System info",
+            tr!("EVE Spai - System info"),
             [470.0, 620.0],
             |ui| {
                 out = self.system_info_body(ui, id, false);
@@ -525,7 +530,7 @@ impl SpaiApp {
                         let sz = if i == 0 { 56.0 } else { 34.0 };
                         let url = eve_alliance_logo_url(aid, sz);
                         let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(sz)));
-                        let label = name.clone().unwrap_or_else(|| "Alliance".to_owned());
+                        let label = name.clone().unwrap_or_else(|| tr!("Alliance").to_owned());
                         r.on_hover_text(trf!("{label} — {count} systems", label = label, count = count));
                     }
                 });
@@ -552,7 +557,7 @@ impl SpaiApp {
     pub(crate) fn constellation_window(&mut self, ctx: &egui::Context) {
         let Some(cid) = self.constellation_window else { return };
         let Some(store) = &self.store else { return };
-        let name = store.constellation_name(cid).unwrap_or_else(|| "Constellation".to_owned());
+        let name = store.constellation_name(cid).unwrap_or_else(|| tr!("Constellation").to_owned());
         let region = store.region_of_constellation(cid);
         let region_name = region.and_then(|r| store.region_name(r)).unwrap_or_default();
         let systems = store.constellation_systems(cid);
@@ -565,7 +570,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "constellation_window",
-            "EVE Spai - Constellation",
+            tr!("EVE Spai - Constellation"),
             [420.0, 560.0],
             |ui| {
                 ui.heading(&name);
@@ -624,7 +629,7 @@ impl SpaiApp {
     pub(crate) fn region_window(&mut self, ctx: &egui::Context) {
         let Some(rid) = self.region_window else { return };
         let Some(store) = &self.store else { return };
-        let name = store.region_name(rid).unwrap_or_else(|| "Region".to_owned());
+        let name = store.region_name(rid).unwrap_or_else(|| tr!("Region").to_owned());
         let constellations = store.constellations_in_region(rid);
         let neighbours = store.region_neighbours(rid);
         let sys_ids: Vec<i64> = store.region_systems(rid).iter().map(|s| s.id).collect();
@@ -635,7 +640,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "region_window",
-            "EVE Spai - Region",
+            tr!("EVE Spai - Region"),
             [420.0, 580.0],
             |ui| {
                 ui.heading(&name);
@@ -703,7 +708,7 @@ impl SpaiApp {
         };
         self.ensure_type_names(&skill_ids, ctx);
         let names = self.type_names.lock().unwrap().clone();
-        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai - Ship", [380.0, 600.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "ship_window", tr!("EVE Spai - Ship"), [380.0, 600.0], |ui| {
             ui.horizontal(|ui| {
                 let url = eve_type_render_url(id, 96.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(96.0)));

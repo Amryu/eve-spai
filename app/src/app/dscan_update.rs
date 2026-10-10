@@ -44,7 +44,7 @@ impl SpaiApp {
         let mut close = false;
         let mut start_install = false;
         let mut restart = false;
-        egui::Window::new(format!("{}  Update available", egui_phosphor::regular::DOWNLOAD_SIMPLE))
+        egui::Window::new(trf!("{icon}  Update available", icon = egui_phosphor::regular::DOWNLOAD_SIMPLE))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
@@ -71,11 +71,11 @@ impl SpaiApp {
                 }
                 if let Some(e) = &st.error {
                     ui.colored_label(crate::theme::standing::WARNING, trf!("Update failed: {e}", e = e));
-                    ui.hyperlink_to("Download manually", &av.html_url);
+                    ui.hyperlink_to(tr!("Download manually"), &av.html_url);
                     ui.add_space(4.0);
                 }
                 ui.label(trf!("EVE Spai v{v} is available. You have v{v2}.", v = av.version, v2 = crate::update::current()));
-                ui.hyperlink_to("Release notes", &av.html_url);
+                ui.hyperlink_to(tr!("Release notes"), &av.html_url);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button(tr!("Yes, update")).clicked() {
@@ -145,7 +145,7 @@ impl SpaiApp {
             return;
         }
         let mut close = false;
-        egui::Window::new(format!("{}  Check for updates", egui_phosphor::regular::ARROWS_CLOCKWISE))
+        egui::Window::new(trf!("{icon}  Check for updates", icon = egui_phosphor::regular::ARROWS_CLOCKWISE))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
@@ -185,7 +185,7 @@ impl SpaiApp {
             return;
         }
         let locked = self.store.as_ref().is_some_and(crate::store::Store::settings_locked);
-        egui::Window::new(format!("{}  Storage problem", egui_phosphor::regular::WARNING))
+        egui::Window::new(trf!("{icon}  Storage problem", icon = egui_phosphor::regular::WARNING))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -358,7 +358,7 @@ impl SpaiApp {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("dscan_popup"),
             egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title("EVE Spai - D-scan")
+                .with_title(tr!("EVE Spai - D-scan"))
                 .with_visible(active)
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
                 .with_active(false)
@@ -408,7 +408,7 @@ impl SpaiApp {
                             let (n, kind) = (*n, *kind);
                             let ada = format!("{}  adashboard.info", icon::UPLOAD_SIMPLE);
                             let ada_hint =
-                                "Copy and open adashboard.info/intel, then paste it there (Ctrl+V)";
+                                tr!("Copy and open adashboard.info/intel, then paste it there (Ctrl+V)");
                             match kind {
                                 PasteKind::Dscan => {
                                     ui.label(trf!("D-scan detected ({n} rows). Share with:", n = n));
@@ -428,9 +428,9 @@ impl SpaiApp {
                                         }
                                     });
                                     let auto_label = if adashboard {
-                                        "Auto-open (also in Settings)"
+                                        tr!("Auto-open (also in Settings)")
                                     } else {
-                                        "Auto-upload (also in Settings)"
+                                        tr!("Auto-upload (also in Settings)")
                                     };
                                     if ui.checkbox(&mut self.settings.dscan_autoupload, auto_label).changed()
                                     {

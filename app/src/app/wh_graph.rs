@@ -104,9 +104,9 @@ impl SpaiApp {
                 ui.add_space(4.0);
                 let n_sigs = self.wh_graph_sigs(sel).len();
                 let tabs = [
-                    (SideTab::Info, "Info".to_owned()),
-                    (SideTab::Routes, "Routes".to_owned()),
-                    (SideTab::Sigs, if n_sigs == 0 { "Signatures".to_owned() } else { format!("Signatures ({n_sigs})") }),
+                    (SideTab::Info, tr!("Info").to_owned()),
+                    (SideTab::Routes, tr!("Routes").to_owned()),
+                    (SideTab::Sigs, if n_sigs == 0 { tr!("Signatures").to_owned() } else { trf!("Signatures ({n_sigs})", n_sigs = n_sigs) }),
                 ];
                 // Each tab as wide as its label: tabs sized from the panel would hold it at that width.
                 ui.horizontal(|ui| {
@@ -141,11 +141,11 @@ impl SpaiApp {
                     toggle = conn.toggle;
                 }
                 if !any {
-                    ui.label(egui::RichText::new(if hidden > 0 { "None shown" } else { "None known" }).weak());
+                    ui.label(egui::RichText::new(if hidden > 0 { tr!("None shown") } else { tr!("None known") }).weak());
                 }
                 if hidden > 0 {
-                    ui.horizontal(|ui| {
-                        let text = if hidden == 1 { "1 connection hidden by the filter".to_owned() } else { format!("{hidden} connections hidden by the filter") };
+                    ui.horizontal_wrapped(|ui| {
+                        let text = if hidden == 1 { tr!("1 connection hidden by the filter").to_owned() } else { trf!("{hidden} connections hidden by the filter", hidden = hidden) };
                         ui.label(egui::RichText::new(text).color(crate::theme::standing::WARNING));
                         if ui.button(trf!("{icon}  Clear filter", icon = icon::FUNNEL_X)).clicked() {
                             clear_filter = true;
@@ -224,9 +224,11 @@ impl SpaiApp {
                 // Always one line, so a paste never pushes the list down: the count, then what the
                 // last paste did.
                 let summary = match (&self.wh_graph.sig_note, sigs.len()) {
-                    (_, 0) => "No signatures pasted for this system".to_owned(),
-                    (Some(note), n) => format!("{n} signatures \u{b7} {note}"),
-                    (None, n) => format!("{n} signatures"),
+                    (_, 0) => tr!("No signatures pasted for this system").to_owned(),
+                    (Some(note), 1) => trf!("1 signature \u{b7} {note}", note = note),
+                    (Some(note), n) => trf!("{n} signatures \u{b7} {note}", n = n, note = note),
+                    (None, 1) => tr!("1 signature").to_owned(),
+                    (None, n) => trf!("{n} signatures", n = n),
                 };
                 ui.add(egui::Label::new(egui::RichText::new(summary).weak()).truncate());
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -316,7 +318,7 @@ impl SpaiApp {
         });
         let scan = crate::wormholes::probe_scan(text.as_deref().unwrap_or(""));
         if scan.is_empty() {
-            self.wh_graph.sig_note = Some("The clipboard holds no probe scanner rows.".into());
+            self.wh_graph.sig_note = Some(tr!("The clipboard holds no probe scanner rows.").into());
             return;
         }
         let who = {
@@ -331,7 +333,7 @@ impl SpaiApp {
         self.wh_reloaded = None;
         self.wh_graph.sigs = None;
         self.wh_graph_sigs(system);
-        self.wh_graph.sig_note = Some(format!("{added} new, {updated} updated, {removed} removed{linked}"));
+        self.wh_graph.sig_note = Some(trf!("{added} new, {updated} updated, {removed} removed{linked}", added = added, updated = updated, removed = removed, linked = linked));
     }
 
     /// Carries a saved probe scan over to the holes: a lone unclaimed wormhole signature goes on
@@ -353,7 +355,7 @@ impl SpaiApp {
                 w.updated_at = now;
                 store.write_wormhole(&w);
                 store.audit_wormhole(&w.uid, who, crate::wormholes::Source::Manual, &[("signature", sig.clone())]);
-                note = format!(", {sig} put on its hole");
+                note = trf!(", {sig} put on its hole", sig = sig);
                 self.wh_reloaded = None;
             }
         }
@@ -413,7 +415,7 @@ impl SpaiApp {
             return;
         }
         let mut act: Option<bool> = None;
-        egui::Window::new("Holes gone from the scan")
+        egui::Window::new(tr!("Holes gone from the scan"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)

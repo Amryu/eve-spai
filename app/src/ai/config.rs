@@ -71,11 +71,12 @@ impl AiSettings {
 }
 
 /// Languages the assistant can be asked to answer in: (code, name as shown, name in English).
-pub const LANGUAGES: [(&str, &str, &str); 6] = [
+pub const LANGUAGES: [(&str, &str, &str); 7] = [
     ("auto", "Same as the question", ""),
     ("en", "English", "English"),
     ("de", "Deutsch", "German"),
     ("es", "Español", "Spanish"),
+    ("fr", "Français", "French"),
     ("ru", "Русский", "Russian"),
     ("zh", "中文", "Chinese (Simplified)"),
 ];

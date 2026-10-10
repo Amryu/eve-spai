@@ -112,7 +112,7 @@ pub(crate) use spai_ui::wh_form::known_type;
 
 /// A known hole as the user would tell it from another: its signature, type and when it was found.
 pub(crate) fn twin_label(w: &Wormhole) -> String {
-    let sig = w.signature.clone().or_else(|| w.dest_signature.clone()).unwrap_or_else(|| "no signature".to_owned());
+    let sig = w.signature.clone().or_else(|| w.dest_signature.clone()).unwrap_or_else(|| tr!("no signature").to_owned());
     let kind = w.wh_type.clone().or_else(|| w.dest_wh_type.clone()).map(|t| format!(" {t}")).unwrap_or_default();
     let when = chrono::DateTime::from_timestamp(w.reported_at, 0).map(|d| d.format(", found %H:%M").to_string()).unwrap_or_default();
     format!("{sig}{kind}{when}")
@@ -356,7 +356,7 @@ impl SpaiApp {
             .wh_probe
             .as_ref()
             .filter(|(_, at)| at.elapsed() < PROBE_SCAN_FOR)
-            .map(|(sigs, _)| sigs.iter().filter_map(|(id, _)| Some((sig_id(id)?, "from your last probe scanner copy".to_owned()))).collect())
+            .map(|(sigs, _)| sigs.iter().filter_map(|(id, _)| Some((sig_id(id)?, tr!("from your last probe scanner copy").to_owned()))).collect())
             .unwrap_or_default();
         // Each side's wormhole signatures from its saved scans, then the clipboard's.
         let (from, to) = self.wh_pending.front().map(|p| (p.from, p.to)).unwrap_or_default();
@@ -376,7 +376,7 @@ impl SpaiApp {
             let mut o: Vec<(String, String)> = saved(system)
                 .into_iter()
                 .map(|(sig, name, group)| {
-                    let what = if name.is_empty() { if group.is_empty() { "not scanned yet".to_owned() } else { group } } else { name };
+                    let what = if name.is_empty() { if group.is_empty() { tr!("not scanned yet").to_owned() } else { group } } else { name };
                     (sig, what)
                 })
                 .collect();
@@ -420,7 +420,7 @@ impl SpaiApp {
             egui::ViewportId::from_hash_of("wh_prompt"),
             egui::ViewportBuilder::default()
                 .with_icon(app_icon())
-                .with_title("EVE Spai - Wormhole")
+                .with_title(tr!("EVE Spai - Wormhole"))
                 .with_visible(true)
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
                 .with_active(false)
@@ -510,7 +510,7 @@ impl SpaiApp {
         let Some(store) = &self.store else { return };
         // Only a different signature makes another hole between the same two systems.
         if let Some((_, known)) = p.twin_of.as_ref().filter(|(id, _)| p.second && store.wormhole_by_id(*id).is_some_and(|k| k.same_hole(&entry))) {
-            p.error = Some(format!("Another hole needs a signature other than the known one's ({known})."));
+            p.error = Some(trf!("Another hole needs a signature other than the known one's ({known}).", known = known));
             self.wh_pending.push_front(p);
             return;
         }
@@ -578,8 +578,8 @@ pub(crate) fn wh_prompt_body(
 ) -> PromptAct {
     use egui_phosphor::regular as icon;
     let mut act = PromptAct::None;
-    let n = if count > 1 { format!(" (1 of {count})") } else { String::new() };
-    ui.label(egui::RichText::new(trf!("{icon}  Wormhole?{n}", icon = icon::SPIRAL, n = n)).strong());
+    let title = if count > 1 { trf!("{icon}  Wormhole? (1 of {count})", icon = icon::SPIRAL, count = count) } else { trf!("{icon}  Wormhole?", icon = icon::SPIRAL) };
+    ui.label(egui::RichText::new(title).strong());
     let when = chrono::DateTime::from_timestamp(p.at, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default();
     ui.label(trf!("{v}: {v2} {icon} {v3} at {when}", v = p.character, v2 = name(p.from), icon = egui_phosphor::regular::ARROW_RIGHT, v3 = name(p.to), when = when));
     if !(p.certain || p.confirmed) {

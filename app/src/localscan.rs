@@ -16,7 +16,7 @@ const ZKILL_TRIES: u32 = 3;
 
 /// zKillboard's attacker-count labels. Each kill carries exactly one.
 pub const GROUPS: [(&str, &str); 8] = [
-    ("#:1", "solo"),
+    ("#:1", tr_noop!("solo")),
     ("#:2+", "2-4"),
     ("#:5+", "5-9"),
     ("#:10+", "10-24"),
@@ -26,15 +26,15 @@ pub const GROUPS: [(&str, &str); 8] = [
     ("#:1000+", "1000+"),
 ];
 pub const SPACE: [(&str, &str); 6] = [
-    ("loc:highsec", "High sec"),
-    ("loc:lowsec", "Low sec"),
-    ("loc:nullsec", "Null sec"),
-    ("loc:w-space", "Wormhole"),
-    ("loc:pochven", "Pochven"),
-    ("loc:abyssal", "Abyssal"),
+    ("loc:highsec", tr_noop!("High sec")),
+    ("loc:lowsec", tr_noop!("Low sec")),
+    ("loc:nullsec", tr_noop!("Null sec")),
+    ("loc:w-space", tr_noop!("Wormhole")),
+    ("loc:pochven", tr_noop!("Pochven")),
+    ("loc:abyssal", tr_noop!("Abyssal")),
 ];
 pub const ISK: [(&str, &str); 4] =
-    [("isk:under1b", "under 1b"), ("isk:1b+", "1b-5b"), ("isk:5b+", "5b-10b"), ("isk:10b+", "10b+")];
+    [("isk:under1b", tr_noop!("under 1b")), ("isk:1b+", tr_noop!("1b-5b")), ("isk:5b+", tr_noop!("5b-10b")), ("isk:10b+", tr_noop!("10b+"))];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bar {

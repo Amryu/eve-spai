@@ -40,6 +40,8 @@ pub const CATALOG: &[VoiceInfo] = &[
     VoiceInfo { id: "en_US-libritts_r-medium", lang: "en", label: "English (US), LibriTTS", license: "CC BY 4.0", path: "en/en_US/libritts_r/medium", onnx_sha: "10bb85e071d616fcf4071f369f1799d0491492ab3c5d552ec19fb548fac13195", json_sha: "b471dc60d2d8335e819c393d196d6fbf792817f40051257b269878505bc9afb3" },
     VoiceInfo { id: "de_DE-thorsten-medium", lang: "de", label: "Deutsch, Thorsten", license: "CC0", path: "de/de_DE/thorsten/medium", onnx_sha: "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819", json_sha: "974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85" },
     VoiceInfo { id: "es_ES-davefx-medium", lang: "es", label: "Español, Davefx", license: "CC0", path: "es/es_ES/davefx/medium", onnx_sha: "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917", json_sha: "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842" },
+    VoiceInfo { id: "fr_FR-siwis-medium", lang: "fr", label: "Français, Siwis", license: "CC BY 4.0", path: "fr/fr_FR/siwis/medium", onnx_sha: "641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99", json_sha: "39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959" },
+    VoiceInfo { id: "fr_FR-gilles-low", lang: "fr", label: "Français, Gilles", license: "CC0", path: "fr/fr_FR/gilles/low", onnx_sha: "5cd711846720e261c2a176f6924c198a7424d0a75dd4b0a5357a5fb9cb739285", json_sha: "5a47cc0789e91267d17666bbec842dd92950669271a09023eb6970ee364cf88a" },
     VoiceInfo { id: "ru_RU-denis-medium", lang: "ru", label: "Русский, Denis", license: "CC0", path: "ru/ru_RU/denis/medium", onnx_sha: "15fab56e11a097858ee115545d0f697fc2a316c41a291a5362349fb870411b0a", json_sha: "831c860dac0b5073eaa81610a0a638ec23d90a6cf8e5f871b4485c2cec3767c8" },
     VoiceInfo { id: "ru_RU-dmitri-medium", lang: "ru", label: "Русский, Dmitri", license: "CC0", path: "ru/ru_RU/dmitri/medium", onnx_sha: "f073356ebc4bd0f80c5af58df2953a5988bd5bdab1eb38635ce960b071fbefcb", json_sha: "667ef3117bc642c2892dff7690d8bdc8ca4228aeaa783b2dc1416df632855e0d" },
     VoiceInfo { id: "zh_CN-chaowen-medium", lang: "zh", label: "中文, Chaowen", license: "CC0", path: "zh/zh_CN/chaowen/medium", onnx_sha: "820d64ac16048fbcf38dd0823d37fab5f5e0c2bd71b01ca5a50f553fac19e746", json_sha: "a6bb2caafa0645642f13cbf7e2f6fbbb16fded66e51109fc26d622f6472fa16f" },
@@ -198,13 +200,14 @@ mod tests {
 
     #[test]
     fn every_language_has_a_voice_and_sums_are_well_formed() {
-        for lang in ["en", "de", "es", "ru", "zh"] {
+        for lang in ["en", "de", "es", "fr", "ru", "zh"] {
             assert!(default_voice(lang).is_some(), "{lang}");
         }
         for v in CATALOG {
             assert_eq!(v.onnx_sha.len(), 64);
             assert_eq!(v.json_sha.len(), 64);
-            assert!(v.path.ends_with("/medium") && v.id.ends_with("-medium"));
+            let quality = v.path.rsplit('/').next().unwrap();
+            assert!(v.id.ends_with(&format!("-{quality}")) && v.path.contains(v.id.split('-').nth(1).unwrap()), "{}", v.id);
         }
         assert!(piper_asset().is_some(), "this build host has a Piper");
         assert_eq!(sha_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");

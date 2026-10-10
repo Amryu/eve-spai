@@ -113,26 +113,26 @@ impl Col {
 
     fn tip(self) -> &'static str {
         match self {
-            Col::Standing => "Your standing towards them: your own contact, else your corporation's, else your alliance's. Your own alliance is excellent",
-            Col::Fw => "Faction warfare militia",
-            Col::Age => "Years since the character was created",
-            Col::Danger => "zKillboard danger ratio: share of ships destroyed among ships destroyed and lost",
-            Col::Security => "Security status",
-            Col::Gang => "Share of kills made with others, and the average number of attackers",
-            Col::Solo => "Solo kills",
-            Col::Kd => "Kills per loss, with kills / losses below",
-            Col::Groups => "Ships destroyed (blue) and lost (red) by attacker count: solo, 2-4, 5-9, 10-24, 25-49, 50-99, 100-999, 1000+",
-            Col::Space => "Ships destroyed (blue) and lost (red) in high, low and null sec, wormholes, Pochven and Abyssal",
-            Col::Isk => "Ships destroyed (blue) and lost (red) by value: under 1b, 1b-5b, 5b-10b, 10b+",
-            Col::Tags => "Worked out from the ships flown",
-            Col::Ships => "Ships flown recently",
-            Col::Affiliates => "Alliances they share the most kills with",
-            Col::Associates => "Alliances they have shared kills with",
-            Col::Cyno => "zKillboard: ships lost with a cynosural field fitted in the past year, covert and standard",
-            Col::Fc => "zKillboard's FC label: Low, Medium or High from Monitor, command ship and large-fleet appearances in the past year. Hover a row for the points",
-            Col::Bait => "zKillboard's bait label: cheap losses followed within five minutes by a nearby fight of three or more, past year",
-            Col::Gank => "zKillboard: high-sec gank killmails as an attacker, past year. The GANKER label starts at 10",
-            Col::Awox => "zKillboard: final blows on their own corporation, past year. The AWOX label starts at 10",
+            Col::Standing => tr!("Your standing towards them: your own contact, else your corporation's, else your alliance's. Your own alliance is excellent"),
+            Col::Fw => tr!("Faction warfare militia"),
+            Col::Age => tr!("Years since the character was created"),
+            Col::Danger => tr!("zKillboard danger ratio: share of ships destroyed among ships destroyed and lost"),
+            Col::Security => tr!("Security status"),
+            Col::Gang => tr!("Share of kills made with others, and the average number of attackers"),
+            Col::Solo => tr!("Solo kills"),
+            Col::Kd => tr!("Kills per loss, with kills / losses below"),
+            Col::Groups => tr!("Ships destroyed (blue) and lost (red) by attacker count: solo, 2-4, 5-9, 10-24, 25-49, 50-99, 100-999, 1000+"),
+            Col::Space => tr!("Ships destroyed (blue) and lost (red) in high, low and null sec, wormholes, Pochven and Abyssal"),
+            Col::Isk => tr!("Ships destroyed (blue) and lost (red) by value: under 1b, 1b-5b, 5b-10b, 10b+"),
+            Col::Tags => tr!("Worked out from the ships flown"),
+            Col::Ships => tr!("Ships flown recently"),
+            Col::Affiliates => tr!("Alliances they share the most kills with"),
+            Col::Associates => tr!("Alliances they have shared kills with"),
+            Col::Cyno => tr!("zKillboard: ships lost with a cynosural field fitted in the past year, covert and standard"),
+            Col::Fc => tr!("zKillboard's FC label: Low, Medium or High from Monitor, command ship and large-fleet appearances in the past year. Hover a row for the points"),
+            Col::Bait => tr!("zKillboard's bait label: cheap losses followed within five minutes by a nearby fight of three or more, past year"),
+            Col::Gank => tr!("zKillboard: high-sec gank killmails as an attacker, past year. The GANKER label starts at 10"),
+            Col::Awox => tr!("zKillboard: final blows on their own corporation, past year. The AWOX label starts at 10"),
         }
     }
 
@@ -273,7 +273,7 @@ fn bars(ui: &mut egui::Ui, data: &[Bar], tips: &[&str], width: f32) -> egui::Res
     let hovered = resp.hover_pos().map(|p| (((p.x - rect.left()) / slot) as usize).min(data.len() - 1));
     resp.on_hover_ui(|ui| {
         for (i, (b, t)) in data.iter().zip(tips).enumerate() {
-            let line = format!("{t}: {} destroyed, {} lost", b.kills, b.losses);
+            let line = trf!("{group}: {kills} destroyed, {losses} lost", group = t, kills = b.kills, losses = b.losses);
             if Some(i) == hovered {
                 ui.label(egui::RichText::new(line).strong());
             } else {
@@ -386,7 +386,7 @@ impl SpaiApp {
         let text = self.dscan_clip.as_mut().and_then(|c| c.get_text().ok()).unwrap_or_default();
         let names = crate::localscan::names_of(&text);
         if names.is_empty() {
-            self.lookup_note = Some("The clipboard holds no pilot names.".into());
+            self.lookup_note = Some(tr!("The clipboard holds no pilot names.").into());
         } else {
             self.lookup_note = None;
             self.lookup_load(names, ctx);
@@ -415,7 +415,7 @@ impl SpaiApp {
 
     pub(crate) fn open_local_scan(&mut self, url: String, ctx: &egui::Context) {
         self.view = View::Lookup;
-        self.lookup_note = Some("Fetching the local scan\u{2026}".into());
+        self.lookup_note = Some(tr!("Fetching the local scan\u{2026}").into());
         let (slot, ctx) = (self.lookup_incoming.clone(), ctx.clone());
         std::thread::spawn(move || {
             let result = crate::http::client(20)
@@ -433,7 +433,7 @@ impl SpaiApp {
                 self.lookup_note = None;
                 self.lookup_load(names, ctx);
             }
-            Some(Ok(_)) => self.lookup_note = Some("The local scan lists no pilots.".into()),
+            Some(Ok(_)) => self.lookup_note = Some(tr!("The local scan lists no pilots.").into()),
             Some(Err(e)) => self.lookup_note = Some(e),
             None => {}
         }
@@ -475,7 +475,7 @@ impl SpaiApp {
             let history = self.settings.lookup_history.clone();
             let mut pick: Option<Vec<String>> = None;
             ui.add_enabled_ui(!history.is_empty(), |ui| {
-                ui.menu_button(format!("{}  History", icon::CLOCK_COUNTER_CLOCKWISE), |ui| {
+                ui.menu_button(trf!("{icon}  History", icon = icon::CLOCK_COUNTER_CLOCKWISE), |ui| {
                     for h in &history {
                         let preview = h.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
                         let more = if h.len() > 3 { ", …" } else { "" };
@@ -491,7 +491,7 @@ impl SpaiApp {
                 self.lookup_current = names;
                 crate::localscan::request(&self.lookup_table, &self.lookup_current, self.lookup_standings(), self.settings.lookup_hide_blues, &ctx);
             }
-            ui.menu_button(format!("{}  Columns", icon::COLUMNS), |ui| {
+            ui.menu_button(trf!("{icon}  Columns", icon = icon::COLUMNS), |ui| {
                 for col in Col::ALL {
                     let mut shown = self.lookup_column_shown(col);
                     if ui.checkbox(&mut shown, col.title().tr()).on_hover_text(col.tip()).changed() {
@@ -554,7 +554,7 @@ impl SpaiApp {
         });
         let hidden = before - rows.len();
         if hidden > 0 {
-            ui.label(egui::RichText::new(trf!("{hidden} blue{v} hidden", hidden = hidden, v = if hidden == 1 { "" } else { "s" })).weak());
+            ui.label(egui::RichText::new(if hidden == 1 { tr!("1 blue hidden").to_owned() } else { trf!("{hidden} blues hidden", hidden = hidden) }).weak());
         }
         let mut done: Vec<&Summary> = rows.iter().filter_map(|(_, r)| match r {
             Row::Done(s) => Some(s.as_ref()),
@@ -609,10 +609,13 @@ impl SpaiApp {
                             format!(" {}", egui_phosphor::regular::CARET_UP)
                         };
                         let text = egui::RichText::new(format!("{title}{arrow}")).strong();
+                        // Columns keep their width in every language; a longer title is cut and
+                        // the hover gives it whole.
+                        let tip = format!("{title}\n{tip}");
                         let resp = if key.is_some() {
-                            ui.add(egui::Label::new(text).sense(egui::Sense::click())).on_hover_text(tip)
+                            ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_text(tip)
                         } else {
-                            ui.label(text).on_hover_text(tip)
+                            ui.add(egui::Label::new(text).truncate()).on_hover_text(tip)
                         };
                         if let (Some(k), true) = (key, resp.clicked()) {
                             if self.lookup_sort == k {
@@ -894,15 +897,15 @@ impl SpaiApp {
                 Some(format!("{} / {}", thousands(s.kills), thousands(s.losses))),
             ),
             Col::Groups => {
-                let tips: Vec<&str> = crate::localscan::GROUPS.iter().map(|(_, t)| *t).collect();
+                let tips: Vec<&str> = crate::localscan::GROUPS.iter().map(|(_, t)| spai_ui::i18n::t(t)).collect();
                 bars(ui, &s.groups, &tips, col.width() - 8.0);
             }
             Col::Space => {
-                let tips: Vec<&str> = crate::localscan::SPACE.iter().map(|(_, t)| *t).collect();
+                let tips: Vec<&str> = crate::localscan::SPACE.iter().map(|(_, t)| spai_ui::i18n::t(t)).collect();
                 bars(ui, &s.space, &tips, col.width() - 8.0);
             }
             Col::Isk => {
-                let tips: Vec<&str> = crate::localscan::ISK.iter().map(|(_, t)| *t).collect();
+                let tips: Vec<&str> = crate::localscan::ISK.iter().map(|(_, t)| spai_ui::i18n::t(t)).collect();
                 bars(ui, &s.isk, &tips, col.width() - 8.0)
                     .on_hover_text(trf!("{v} destroyed, {v2} lost", v = fmt_isk(s.isk_destroyed), v2 = fmt_isk(s.isk_lost)));
             }

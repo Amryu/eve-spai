@@ -193,6 +193,28 @@ fn i18n_files_are_in_sync() {
     }
 }
 
+/// The `{name}` placeholders of a text, sorted.
+fn placeholders(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s.replace("{{", "").replace("}}", "");
+    while let Some(i) = rest.find('{') {
+        let Some(j) = rest[i..].find('}') else { break };
+        out.push(rest[i + 1..i + j].to_owned());
+        rest = rest[i + j + 1..].to_owned();
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn translations_keep_their_placeholders() {
+    for (code, _) in spai_ui::i18n::LANGUAGES.iter().skip(1) {
+        let have = spai_ui::i18n::parse(&std::fs::read_to_string(file_of(code)).unwrap()).unwrap();
+        let bad: Vec<_> = have.iter().filter(|(k, v)| !v.is_empty() && placeholders(k) != placeholders(v)).map(|(k, v)| format!("{k:?} -> {v:?}")).take(5).collect();
+        assert!(bad.is_empty(), "{code}.json: {bad:#?}");
+    }
+}
+
 #[test]
 #[ignore = "rewrites the language files"]
 fn i18n_update() {

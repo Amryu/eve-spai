@@ -27,8 +27,8 @@ impl NotifyMark {
     pub(crate) fn glyph(self) -> Option<(&'static str, &'static str)> {
         match self {
             NotifyMark::Normal => None,
-            NotifyMark::Mentions => Some(("@", "Sounds for mentions only")),
-            NotifyMark::Muted => Some((egui_phosphor::regular::BELL_SLASH, "Muted")),
+            NotifyMark::Mentions => Some(("@", tr!("Sounds for mentions only"))),
+            NotifyMark::Muted => Some((egui_phosphor::regular::BELL_SLASH, tr!("Muted"))),
         }
     }
 }
@@ -173,9 +173,9 @@ impl SpaiApp {
         match self.settings.jabber_muted.get(key).copied().filter(|_| self.jabber_is_muted(key)) {
             Some(until) => {
                 let text = if until == i64::MAX {
-                    "Muted until turned back on".to_owned()
+                    tr!("Muted until turned back on").to_owned()
                 } else {
-                    format!("Muted for {} more", human_ago(until - now))
+                    trf!("Muted for {v} more", v = human_ago(until - now))
                 };
                 ui.label(egui::RichText::new(text).weak());
                 if ui.button(tr!("Unmute")).clicked() {
@@ -185,9 +185,9 @@ impl SpaiApp {
                 }
             }
             None => {
-                ui.menu_button("Mute", |ui| {
+                ui.menu_button(tr!("Mute"), |ui| {
                     for (label, secs) in MUTE_FOR {
-                        if ui.button(label).clicked() {
+                        if ui.button(label.tr()).clicked() {
                             let until = secs.map_or(i64::MAX, |s| now + s);
                             self.settings.jabber_muted.insert(key.to_owned(), until);
                             self.needs_save = true;
@@ -256,10 +256,10 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let sub = self.jabber_sub(jid);
         let (glyph, col, tip) = match sub {
-            Some(s) if s.theirs => (icon::STAR, ui.visuals().hyperlink_color, "Contact: you see their online status"),
-            Some(s) if s.asked => (icon::STAR_HALF, ui.visuals().hyperlink_color, "Contact: waiting for them to share their status"),
-            Some(_) => (icon::STAR, ui.visuals().weak_text_color(), "Contact, without their status"),
-            None => (icon::STAR, ui.visuals().weak_text_color(), "Not a contact: their online status is not shared"),
+            Some(s) if s.theirs => (icon::STAR, ui.visuals().hyperlink_color, tr!("Contact: you see their online status")),
+            Some(s) if s.asked => (icon::STAR_HALF, ui.visuals().hyperlink_color, tr!("Contact: waiting for them to share their status")),
+            Some(_) => (icon::STAR, ui.visuals().weak_text_color(), tr!("Contact, without their status")),
+            None => (icon::STAR, ui.visuals().weak_text_color(), tr!("Not a contact: their online status is not shared")),
         };
         ui.menu_button(egui::RichText::new(glyph).size(15.0).color(col), |ui| self.jabber_contact_menu(ui, jid))
             .response
@@ -298,8 +298,8 @@ impl SpaiApp {
                 }
             }
             Some(s) => {
-                weak(ui, if s.theirs { "You see their status" } else if s.asked { "Waiting for them to accept" } else { "You do not see their status" });
-                weak(ui, if s.ours { "They see yours" } else { "They do not see yours" });
+                weak(ui, if s.theirs { tr!("You see their status") } else if s.asked { tr!("Waiting for them to accept") } else { tr!("You do not see their status") });
+                weak(ui, if s.ours { tr!("They see yours") } else { tr!("They do not see yours") });
                 if !s.theirs && ui.button(trf!("{icon}  Ask for their status", icon = icon::ARROW_CLOCKWISE)).on_hover_text(tr!("Sends the request again")).clicked() {
                     self.jabber_add_contact(jid);
                     ui.close();
@@ -473,13 +473,13 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "jabber_alerts_window",
-            "EVE Spai - Jabber alerts",
+            tr!("EVE Spai - Jabber alerts"),
             [540.0, 620.0],
             |ui| {
               egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("snd").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                     ui.label("");
-                    if ui.link("Sounds and their volume are under Settings, Sounds").clicked() {
+                    if ui.link(tr!("Sounds and their volume are under Settings, Sounds")).clicked() {
                         go_sounds = true;
                     }
                     ui.end_row();
@@ -570,7 +570,7 @@ impl SpaiApp {
                     ui.push_id(i, |ui| {
                         ui.horizontal(|ui| {
                             changed |= ui.checkbox(&mut r.enabled, "").changed();
-                            let nm = if r.name.is_empty() { "(unnamed rule)" } else { &r.name };
+                            let nm = if r.name.is_empty() { tr!("(unnamed rule)") } else { &r.name };
                             let txt = if r.enabled {
                                 egui::RichText::new(nm).strong()
                             } else {
@@ -654,7 +654,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "ping_rule_editor",
-            "EVE Spai - Fleet ping rule",
+            tr!("EVE Spai - Fleet ping rule"),
             [420.0, 460.0],
             |ui| {
               // Scope the rule borrow so the "Done" button below can touch `self.ping_rule_editing`.
@@ -1155,7 +1155,7 @@ impl SpaiApp {
         };
         let name = jid.split('@').next().unwrap_or(&jid).to_owned();
         let mut open = true;
-        egui::Window::new(format!("{}  {name} MOTD", egui_phosphor::regular::ARTICLE))
+        egui::Window::new(trf!("{icon}  {name} MOTD", icon = egui_phosphor::regular::ARTICLE, name = name))
             .id(egui::Id::new("jabber_motd"))
             .collapsible(false)
             .resizable(true)
@@ -1207,9 +1207,9 @@ impl SpaiApp {
             channels.iter().map(|c| c.jid.as_str()).collect();
         let rooms_mode = self.jabber_join_rooms;
         egui::Window::new(if rooms_mode {
-            format!("{}  Join a room", egui_phosphor::regular::USERS_THREE)
+            trf!("{icon}  Join a room", icon = egui_phosphor::regular::USERS_THREE)
         } else {
-            format!("{}  Start a DM", egui_phosphor::regular::CHAT_CIRCLE_DOTS)
+            trf!("{icon}  Start a DM", icon = egui_phosphor::regular::CHAT_CIRCLE_DOTS)
         })
         .collapsible(false)
         .resizable(false)
@@ -1476,7 +1476,7 @@ impl SpaiApp {
                 let row = if shared { row } else { row.on_hover_text(NOT_SHARED_TIP) };
                 row.context_menu(|ui| {
                     if !crate::jabber::is_room_private(&c.jid) {
-                        ui.menu_button(format!("{}  Contact", egui_phosphor::regular::STAR), |ui| self.jabber_contact_menu(ui, &c.jid));
+                        ui.menu_button(trf!("{icon}  Contact", icon = egui_phosphor::regular::STAR), |ui| self.jabber_contact_menu(ui, &c.jid));
                     }
                     self.jabber_notify_menu(ui, &c.jid);
                     ui.separator();
