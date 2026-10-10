@@ -6,6 +6,12 @@ use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection};
 
 const BASE: &str = "https://www.fuzzwork.co.uk/dump/latest/csv";
+/// The same files on eve-spai.com, refreshed daily (crates/server/deploy/sde-mirror.sh), behind
+/// Cloudflare: tried first, as pilots far from the UK (China) got fuzzwork at a crawl.
+const MIRROR: &str = "https://eve-spai.com/sde";
+/// A source still this slow after [`SLOW_AFTER`] is left for the next one.
+const SLOW_BYTES_PER_SEC: f64 = 50.0 * 1024.0;
+const SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 /// FC's static data export, which the map layout, gates and celestials come from.
 pub const JSONL_URL: &str = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip";
 /// The whole download on a slow line: the JSONL zip alone is about 100 MB.
@@ -64,11 +70,9 @@ pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
         else {
             return;
         };
-        let Ok(csv) = client
-            .get(format!("{BASE}/invTraits.csv"))
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
+        let Some(csv) = sources("invTraits.csv", &format!("{BASE}/invTraits.csv"))
+            .into_iter()
+            .find_map(|url| client.get(url).send().and_then(|r| r.error_for_status()).and_then(|r| r.text()).ok())
         else {
             return;
         };
@@ -121,7 +125,7 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context, z
                 ctx.request_repaint();
             }
         };
-        set(SdeStatus::Downloading("Connecting…".to_owned()));
+        set(SdeStatus::Downloading(tr!("Connecting…").to_owned()));
         match run(&path, &set, zip.as_deref(), me) {
             Ok(()) => set(SdeStatus::Ready),
             Err(e) => set(SdeStatus::Failed(format!("{e:#}"))),
@@ -129,35 +133,89 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context, z
     });
 }
 
-/// The body of `url`, with how much has arrived shown as it comes in.
-fn download(client: &reqwest::blocking::Client, url: &str, what: &str, set: &impl Fn(SdeStatus), me: u64) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    const MB: f64 = 1_048_576.0;
-    set(SdeStatus::Downloading(format!("Downloading {what}…")));
-    let mut resp = client.get(url).send()?.error_for_status().with_context(|| format!("fetching {what}"))?;
-    let total = resp.content_length();
-    let mut body = Vec::with_capacity(total.unwrap_or(0) as usize);
-    let mut buf = vec![0u8; 256 * 1024];
-    let started = std::time::Instant::now();
-    let mut shown = std::time::Instant::now();
-    loop {
-        if cancelled(me) {
-            anyhow::bail!("download cancelled");
-        }
-        let n = resp.read(&mut buf).with_context(|| format!("reading {what}"))?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&buf[..n]);
-        if shown.elapsed() >= std::time::Duration::from_millis(250) {
-            shown = std::time::Instant::now();
-            let got = body.len() as f64 / MB;
-            let rate = got / started.elapsed().as_secs_f64().max(0.001);
-            let of = total.map(|t| format!(" / {:.1}", t as f64 / MB)).unwrap_or_default();
-            set(SdeStatus::Downloading(format!("Downloading {what}… {got:.1}{of} MB at {rate:.1} MB/s")));
+/// The body of the first of `urls` that delivers, with how much has arrived shown as it comes in.
+/// A source that fails, stalls or crawls is left for the next.
+fn download(client: &reqwest::blocking::Client, urls: &[String], what: &str, set: &impl Fn(SdeStatus), me: u64) -> Result<Vec<u8>> {
+    let mut last = anyhow::anyhow!("no source for {what}");
+    for url in urls {
+        match download_from(client, url, what, set, me) {
+            Ok(body) => return Ok(body),
+            Err(e) if cancelled(me) => return Err(e),
+            Err(e) => last = e,
         }
     }
-    Ok(body)
+    Err(last)
+}
+
+/// One source, read on its own thread so a read that hangs (the client allows hours for one) can be
+/// given up on: no new bytes or a crawl past [`SLOW_AFTER`] ends it.
+fn download_from(client: &reqwest::blocking::Client, url: &str, what: &str, set: &impl Fn(SdeStatus), me: u64) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    const MB: f64 = 1_048_576.0;
+    set(SdeStatus::Downloading(trf!("Downloading {what}…", what = what)));
+    let got = Arc::new(AtomicU64::new(0));
+    let total = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let (client, url, what) = (client.clone(), url.to_owned(), what.to_owned());
+        let (got, total, stop) = (got.clone(), total.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let r = (|| -> Result<Vec<u8>> {
+                let mut resp = client.get(&url).send()?.error_for_status().with_context(|| format!("fetching {what}"))?;
+                total.store(resp.content_length().unwrap_or(0), Ordering::Relaxed);
+                let mut body = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
+                let mut buf = vec![0u8; 256 * 1024];
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        anyhow::bail!("stopped");
+                    }
+                    let n = resp.read(&mut buf).with_context(|| format!("reading {what}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    body.extend_from_slice(&buf[..n]);
+                    got.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                Ok(body)
+            })();
+            let _ = tx.send(r);
+        });
+    }
+    let started = std::time::Instant::now();
+    let host = url.split('/').nth(2).unwrap_or(url).to_owned();
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(r) => return r,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("the download of {what} stopped"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if cancelled(me) {
+            stop.store(true, Ordering::Relaxed);
+            anyhow::bail!("download cancelled");
+        }
+        let (n, of) = (got.load(Ordering::Relaxed) as f64, total.load(Ordering::Relaxed) as f64);
+        let rate = n / started.elapsed().as_secs_f64().max(0.001);
+        let left = if of > 0.0 { of - n } else { f64::MAX };
+        if started.elapsed() >= SLOW_AFTER && rate < SLOW_BYTES_PER_SEC && left > MB {
+            stop.store(true, Ordering::Relaxed);
+            anyhow::bail!("{what} from {host} was too slow ({:.0} KB/s)", rate / 1024.0);
+        }
+        let of = if of > 0.0 { format!(" / {:.1}", of / MB) } else { String::new() };
+        set(SdeStatus::Downloading(trf!("Downloading {what} from {host}… {got}{of} MB at {rate} MB/s", what = what, host = host, got = format!("{:.1}", n / MB), of = of, rate = format!("{:.1}", rate / MB))));
+    }
+}
+
+/// Whether a status line is a download still running, which can be cancelled: in the language shown.
+pub fn cancellable(msg: &str) -> bool {
+    let head = |t: &str| t.split('{').next().unwrap_or(t).trim_end().to_owned();
+    msg.starts_with(tr!("Connecting…")) || msg.starts_with(&head(tr!("Downloading {what}…")))
+}
+
+/// Where a file can come from, nearest first.
+fn sources(name: &str, original: &str) -> Vec<String> {
+    vec![format!("{MIRROR}/{name}"), original.to_owned()]
 }
 
 /// Whether `bytes` is a zip holding the JSONL SDE's solar systems.
@@ -172,7 +230,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
     // A file picked by hand is checked before anything is downloaded.
     let local = match zip {
         Some(file) => {
-            set(SdeStatus::Downloading(format!("Reading {}…", file.display())));
+            set(SdeStatus::Downloading(trf!("Reading {file}…", file = file.display())));
             let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
             check_jsonl_zip(&bytes).with_context(|| format!("{} is not the JSONL SDE zip", file.display()))?;
             Some(bytes)
@@ -180,7 +238,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
         None => None,
     };
     let fetch = |name: &str| -> Result<String> {
-        let body = download(&client, &format!("{BASE}/{name}"), name, set, me)?;
+        let body = download(&client, &sources(name, &format!("{BASE}/{name}")), name, set, me)?;
         String::from_utf8(body).with_context(|| format!("reading {name}"))
     };
 
@@ -194,13 +252,13 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
 
     let zip_bytes = match local {
         Some(b) => b,
-        None => download(&client, JSONL_URL, "the JSONL SDE", set, me)?,
+        None => download(&client, &sources("eve-online-static-data-latest-jsonl.zip", JSONL_URL), "the JSONL SDE", set, me)?,
     };
     // Past here the build writes the database; a cancel no longer stops it.
     if cancelled(me) {
         anyhow::bail!("download cancelled");
     }
-    set(SdeStatus::Downloading("Building local database…".to_owned()));
+    set(SdeStatus::Downloading(tr!("Building local database…").to_owned()));
     let mut conn = Connection::open(path)?;
     crate::store::apply_pragmas(&conn);
     let tx = conn.transaction()?;
@@ -289,7 +347,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
         }
     }
 
-    set(SdeStatus::Downloading("Building ship data…".to_owned()));
+    set(SdeStatus::Downloading(tr!("Building ship data…").to_owned()));
     tx.execute("DELETE FROM sde_ships", [])?;
     tx.execute("DELETE FROM sde_ship_attrs", [])?;
 
@@ -397,7 +455,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
             .read_to_string(&mut jsonl)
             .context("reading mapSolarSystems.jsonl")?;
 
-        set(SdeStatus::Downloading("Building 2D map layout…".to_owned()));
+        set(SdeStatus::Downloading(tr!("Building 2D map layout…").to_owned()));
         let mut stmt = tx.prepare("UPDATE sde_systems SET x2d = ?2, z2d = ?3 WHERE id = ?1")?;
         for line in jsonl.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -415,7 +473,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
         }
         drop(stmt);
 
-        set(SdeStatus::Downloading("Indexing stargates…".to_owned()));
+        set(SdeStatus::Downloading(tr!("Indexing stargates…").to_owned()));
         let mut gates_jsonl = String::new();
         let _ = archive
             .by_name("mapStargates.jsonl")
@@ -438,7 +496,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
             }
         }
 
-        set(SdeStatus::Downloading("Indexing ship translations…".to_owned()));
+        set(SdeStatus::Downloading(tr!("Indexing ship translations…").to_owned()));
         let ship_ids: HashSet<i64> = {
             let mut s = HashSet::new();
             let mut q = tx.prepare("SELECT id FROM sde_ships")?;
@@ -506,7 +564,7 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
 
     const CHUNK: usize = 30_000;
 
-    set(SdeStatus::Downloading("Indexing celestials…".to_owned()));
+    set(SdeStatus::Downloading(tr!("Indexing celestials…").to_owned()));
 
     let sys_names: HashMap<i64, String> = {
         let mut m = HashMap::new();
@@ -609,7 +667,7 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
 
     total += buf.len();
     commit_chunk(conn, &mut buf)?;
-    set(SdeStatus::Downloading(format!("Indexing celestials… {total}")));
+    set(SdeStatus::Downloading(trf!("Indexing celestials… {total}", total = total)));
     Ok(())
 }
 
@@ -623,7 +681,7 @@ fn flush_if_full(
     if buf.len() >= chunk {
         *total += buf.len();
         commit_chunk(conn, buf)?;
-        set(SdeStatus::Downloading(format!("Indexing celestials… {total}")));
+        set(SdeStatus::Downloading(trf!("Indexing celestials… {total}", total = total)));
     }
     Ok(())
 }
@@ -702,6 +760,26 @@ mod download_tests {
         let set = |s: super::SdeStatus| eprintln!("{s:?}");
         super::run(&path, &set, Some(std::path::Path::new(&zip)), me).unwrap();
         assert!(crate::store::Store::open().unwrap().sde_ready());
+    }
+
+    /// A source that answers with an error is left for the next one, which delivers.
+    #[test]
+    fn a_failing_source_falls_through_to_the_next() {
+        let serve = |status: u16, body: &'static str| {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/file.csv", server.server_addr().to_ip().unwrap());
+            std::thread::spawn(move || {
+                if let Ok(req) = server.recv() {
+                    let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+                }
+            });
+            url
+        };
+        let (down, up) = (serve(404, ""), serve(200, "regionID,regionName"));
+        let client = crate::http::client(30).unwrap();
+        let me = super::RUN.load(std::sync::atomic::Ordering::SeqCst);
+        let body = super::download(&client, &[down, up], "file.csv", &|_| {}, me).unwrap();
+        assert_eq!(body, b"regionID,regionName");
     }
 
     /// A live download stopped once it has started: `SDE_TEST_DIR`.
