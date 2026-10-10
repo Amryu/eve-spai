@@ -967,7 +967,7 @@ pub struct SpaiApp {
     /// Settings should scroll to the Assistant section once.
     pub(crate) settings_scroll_to_ai: bool,
     /// The assistant is being drawn in its own window this pass.
-    ai_in_window: bool,
+    pub(crate) ai_in_window: bool,
     ai_geom_applied: bool,
     ai_pos_fix: Option<crate::app::alert_window::PosFix>,
     /// An OpenAI-compatible server's address and the models it listed.
