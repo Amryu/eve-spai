@@ -258,7 +258,7 @@ fn whisper_live() {
     let (rate, pcm) = super::playback::read_wav(&wav).unwrap();
     let pcm = if rate == super::capture::RATE { pcm } else { super::capture::resample(&pcm.iter().map(|s| *s as f32 / 32768.0).collect::<Vec<_>>(), rate) };
     let t0 = Instant::now();
-    let hint = super::stt::hint(&["Muninn".into()], &["1DQ1-A".into()]);
+    let hint = super::stt::hint(&[], &["1DQ1-A".into()], &["Muninn".into()]);
     let text = transcribe(&file, &pcm, "auto", &hint).unwrap();
     println!("{file}: {:?} in {:?}", text, t0.elapsed());
     assert!(!text.is_empty());

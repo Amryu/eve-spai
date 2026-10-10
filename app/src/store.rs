@@ -472,6 +472,7 @@ pub struct Store {
 
 /// How long the kill archive is kept. The firehose writes a row per killmail, so without retention
 /// the archive grows by hundreds of megabytes.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const ENGAGEMENT_RETENTION_SECS: i64 = 30 * 86_400;
 
 mod systems;
