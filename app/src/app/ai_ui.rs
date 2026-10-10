@@ -1071,34 +1071,55 @@ fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Opti
         let mut chars = job.text.chars().count();
         for sp in crate::ai::links::spans(body, names) {
             let mut fmt = egui::TextFormat::simple(font.clone(), if sp.bold || heading { strong } else { normal });
+            let start = chars;
             // A killmail opens something else than a ship or system name does, and looks it: a
-            // skull and the warning colour, underlined.
-            let text = match &sp.link {
-                Some(Link::Kill(_)) => format!("{} {}", egui_phosphor::regular::SKULL, sp.text),
-                _ => sp.text.clone(),
-            };
-            let n = text.chars().count();
-            if let Some(l) = sp.link {
+            // skull and the warning colour, the words underlined. The skull is not: the icon font
+            // sits lower, and its underline would hang below the words'.
+            if matches!(sp.link, Some(Link::Kill(_))) {
+                let skull = format!("{} ", egui_phosphor::regular::SKULL);
+                chars += skull.chars().count();
+                job.append(&skull, 0.0, egui::TextFormat::simple(font.clone(), crate::theme::standing::WARNING));
+            }
+            if let Some(l) = &sp.link {
                 fmt.color = if matches!(l, Link::Kill(_)) { crate::theme::standing::WARNING } else { link_col };
                 if matches!(l, Link::Kill(_)) {
                     fmt.underline = egui::Stroke::new(1.0, crate::theme::standing::WARNING);
                 }
-                ranges.push((chars..chars + n, l));
             }
-            job.append(&text, 0.0, fmt);
-            chars += n;
+            chars += sp.text.chars().count();
+            job.append(&sp.text, 0.0, fmt);
+            if let Some(l) = sp.link {
+                ranges.push((start..chars, l));
+            }
         }
         job.wrap.max_width = w;
+        // Selectable like any label, so an answer or a link in it can be copied; a click that does
+        // not drag still opens the link under it.
         let sense = if ranges.is_empty() { egui::Sense::hover() } else { egui::Sense::click() };
-        let (pos, galley, resp) = egui::Label::new(job).sense(sense).layout_in_ui(ui);
+        let (pos, galley, resp) = egui::Label::new(job).sense(sense).selectable(true).layout_in_ui(ui);
         let under = resp
             .hover_pos()
             .map(|p| galley.cursor_from_pos(p - pos).index)
             .and_then(|i| ranges.iter().find(|(r, _)| r.contains(&i)).map(|(_, l)| l.clone()));
-        ui.painter().galley(pos, galley, normal);
+        // Only what is in view: a line scrolled away has nothing to paint or select.
+        if ui.is_rect_visible(resp.rect) {
+            egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, pos, galley, normal, egui::Stroke::NONE);
+        }
         if let Some(l) = under {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            let resp = resp.on_hover_text(link_hint(&l));
+            let hint = match &l {
+                Link::Url(u) => format!("{}\n{u}", link_hint(&l)),
+                _ => link_hint(&l).to_owned(),
+            };
+            let resp = resp.on_hover_text(hint);
+            if let Link::Url(u) = &l {
+                resp.context_menu(|ui| {
+                    if ui.button(tr!("Copy link")).clicked() {
+                        ui.ctx().copy_text(u.clone());
+                        ui.close();
+                    }
+                });
+            }
             if resp.clicked() {
                 clicked = Some(l);
             }

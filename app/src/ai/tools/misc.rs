@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_TRACKING, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_ROOMS, &JABBER_CHAT, &LOCALSCAN, &PILOT_INFO, &NOTES, &MY_SETUP];
+    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_TRACKING, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_ROOMS, &JABBER_CHAT, &LOCALSCAN, &LOOKUP_PILOTS, &PILOT_INFO, &NOTES, &MY_SETUP];
 
 static MY_CHARACTERS: ToolSpec = ToolSpec {
     name: "my_characters",
@@ -429,9 +429,60 @@ pub(crate) fn pilot_row(name: &str, row: Option<&crate::localscan::Row>, orgs: &
     }
 }
 
+static LOOKUP_PILOTS: ToolSpec = ToolSpec {
+    name: "lookup_pilots",
+    description: "Looks pilots up on zKillboard now, by name, up to 50 at once: corporation, alliance, danger, kills and \
+                  losses, gang size, what they fly, cyno, FC and bait signs. Use it for any pilot not looked up yet; \
+                  pilot_info adds what intel and saved local scans say of one. Results also land in the Lookup tab.",
+    need: Need::All(&["pilots.lookup"]),
+    kind: Kind::Read,
+    schema: || {
+        schema(
+            json!({
+                "names": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+                "wait_seconds": {"type": "integer", "minimum": 1, "maximum": 25, "description": "How long to wait for slow lookups, 15 by default"}
+            }),
+            &["names"],
+        )
+    },
+    run: |ctx, v| {
+        let names: Vec<String> = v
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).take(50).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            return Err("which pilots?".into());
+        }
+        if !ctx.deps.online {
+            return Err("offline: pilots cannot be looked up now".into());
+        }
+        let standings = ctx.deps.standings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Not left out as blues: the user asked about these pilots by name.
+        crate::localscan::request(&ctx.deps.lookup_table, &names, standings, false, &egui::Context::default());
+        let wait = std::time::Duration::from_secs(u64_arg(v, "wait_seconds", 15, 25));
+        let started = std::time::Instant::now();
+        let lows: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        loop {
+            let pending = {
+                let t = ctx.deps.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
+                lows.iter().any(|n| matches!(t.rows.get(n), Some(crate::localscan::Row::Pending) | None))
+            };
+            if !pending || started.elapsed() >= wait {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let ships = ctx.store.map(super::intel::ship_names).unwrap_or_default();
+        let t = ctx.deps.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
+        let out: Vec<Value> = names.iter().zip(&lows).map(|(n, l)| pilot_row(n, t.rows.get(l), &t.orgs, &ships)).collect();
+        Ok(json!({"pilots": out}))
+    },
+};
+
 static PILOT_INFO: ToolSpec = ToolSpec {
     name: "pilot_info",
-    description: "What the app knows of one pilot: their zKillboard summary if looked up this session (corporation, alliance, \
+    description: "What the app knows of one pilot: their zKillboard summary if looked up this session (lookup_pilots looks one up; corporation, alliance, \
                   danger, what they fly, cyno, FC or bait signs), when and where intel last named them, and in which of the \
                   user's saved local scans they were.",
     need: Need::Any(&["pilots.lookup", "pilots.localscan"]),
@@ -584,5 +635,27 @@ mod fleet_rescue_tests {
         assert_eq!(out["by_system"]["1DQ1-A"], 2);
         let (none, _) = run(&deps(&[]), "rescue_history", json!({}));
         assert!(none.to_string().contains("not allowed"), "{none}");
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::super::testkit::*;
+    use crate::ai::deps::AiDeps;
+    use serde_json::json;
+
+    #[test]
+    fn pilots_are_looked_up_by_name_and_offline_says_so() {
+        let mut deps = AiDeps::for_tests(facts(&["pilots.lookup"]));
+        let (r, err) = run(&deps, "lookup_pilots", json!({"names": ["Nobody Here"]}));
+        assert!(err && r.to_string().contains("offline"), "{r}");
+        deps.online = true;
+        // Already known as missing, so nothing goes out and the answer comes at once.
+        deps.lookup_table.lock().unwrap().rows.insert("nobody here".into(), crate::localscan::Row::Missing);
+        let (r, err) = run(&deps, "lookup_pilots", json!({"names": ["Nobody Here"], "wait_seconds": 1}));
+        assert!(!err, "{r}");
+        assert_eq!(r["pilots"][0]["status"], "no such character");
+        let (r, err) = run(&deps, "lookup_pilots", json!({"names": []}));
+        assert!(err, "{r}");
     }
 }
