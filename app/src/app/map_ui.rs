@@ -331,7 +331,9 @@ impl SpaiApp {
             return;
         }
 
-        if self.map_loaded != Some(self.map_view) {
+        // Not before the systems graph is in: without it nothing tells known space from wormhole,
+        // abyssal and Void regions, and an unfiltered universe, once cached, stayed that way.
+        if self.map_loaded != Some(self.map_view) && self.systems.is_some() {
             if let Some(old) = self.map_loaded {
                 self.map_systems_cache.insert(old, std::mem::take(&mut self.map_systems));
             }
@@ -343,15 +345,13 @@ impl SpaiApp {
                     MapView::Region(id) => self.store.as_ref().map(|s| s.region_systems(id)),
                 }
                 .unwrap_or_default();
-                self.map_systems = if let Some(g) = &self.systems {
-                    raw.into_iter()
+                self.map_systems = match &self.systems {
+                    Some(g) => raw
+                        .into_iter()
                         .filter(|s| !g.neighbors(s.id).is_empty())
-                        .filter(|s| {
-                            g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true)
-                        })
-                        .collect()
-                } else {
-                    raw
+                        .filter(|s| g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true))
+                        .collect(),
+                    None => Vec::new(),
                 };
             }
             self.map_loaded = Some(self.map_view);

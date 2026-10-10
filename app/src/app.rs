@@ -2141,6 +2141,10 @@ impl SpaiApp {
         self.bridges_applied = crate::ansiblex::feed(&self.settings, &mut systems);
         let systems = std::sync::Arc::new(systems);
         self.systems = Some(systems.clone());
+        // Anything the map drew before the graph was in was not filtered: draw it again.
+        self.map_loaded = None;
+        self.map_systems_cache.clear();
+        self.map_draw_cache.clear();
 
         if let Some(store) = &self.store {
             if !store.traits_baked() {
