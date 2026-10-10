@@ -393,7 +393,7 @@ fn lookup() -> Scene {
 }
 
 /// Answers the EVE image server's URLs from bundled files: a ship icon by type id, one default
-/// portrait for every character and one default logo for every group. Headless loads no images,
+/// portrait for every character and the logos of a few real alliances and one default logo for every other group. Headless loads no images,
 /// and the grey squares it leaves read as broken on a website.
 struct Images(std::collections::HashMap<String, std::sync::Arc<[u8]>>);
 
@@ -423,6 +423,7 @@ impl egui::load::BytesLoader for Images {
         let key = match rest.split('/').collect::<Vec<_>>().as_slice() {
             ["types", id, ..] => (*id).to_owned(),
             ["characters", ..] => "portrait".to_owned(),
+            ["alliances", id, ..] if self.0.contains_key(&format!("alliance:{id}")) => format!("alliance:{id}"),
             _ => "corp".to_owned(),
         };
         match self.0.get(&key) {
