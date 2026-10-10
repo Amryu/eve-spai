@@ -172,6 +172,24 @@ struct Snapshot {
     live: Vec<(i64, crate::settings::Severity)>,
     lit: HashMap<i64, (crate::settings::Severity, i64)>,
     map: Option<MiniMap>,
+    battles: Vec<BattleRow>,
+}
+
+struct BattleRow {
+    /// The battle's highest kill id, which opens it.
+    id: i64,
+    systems: String,
+    end: i64,
+    kills: usize,
+    isk: f64,
+    sides: Vec<SideRow>,
+}
+
+struct SideRow {
+    name: String,
+    logo: Option<String>,
+    losses: u32,
+    efficiency: String,
 }
 
 #[derive(Default)]
@@ -325,7 +343,8 @@ impl SpaiApp {
         let entries = self.dash_entries(&near, since);
         let lit = self.intel_highlights();
         let map = self.dash_layout_minimap();
-        self.dash.snap = Some(Snapshot { built: std::time::Instant::now(), chars, per_char, near, entries, live, lit, map });
+        let battles = self.dash_battle_rows();
+        self.dash.snap = Some(Snapshot { built: std::time::Instant::now(), chars, per_char, near, entries, live, lit, map, battles });
     }
 
     fn dash_entries(&self, near: &HashMap<i64, u32>, since: i64) -> Vec<Entry> {
@@ -937,46 +956,67 @@ impl SpaiApp {
         resp.clicked().then_some(hovered)
     }
 
+    /// The three latest battles as the tile shows them, without their kills: a battle carries
+    /// every killmail, and copying those each frame churned megabytes a second.
+    fn dash_battle_rows(&self) -> Vec<BattleRow> {
+        let battles = self.battles.lock().unwrap();
+        let mut latest: Vec<&br_core::battle::Battle> = battles.iter().filter(|b| b.kills >= 2).collect();
+        latest.sort_by_key(|b| std::cmp::Reverse(b.end));
+        latest
+            .into_iter()
+            .take(3)
+            .map(|b| BattleRow {
+                id: b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0),
+                systems: b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                end: b.end,
+                kills: b.kills,
+                isk: b.isk,
+                sides: b
+                    .sides
+                    .iter()
+                    .take(3)
+                    .map(|side| SideRow {
+                        name: side.coalition.clone().or_else(|| side.parties.first().map(|p| p.name.clone())).unwrap_or_default(),
+                        logo: side.parties.iter().find_map(|p| match p.kind {
+                            br_core::battle::PartyKind::Alliance => Some(eve_alliance_logo_url(p.id, 20.0)),
+                            br_core::battle::PartyKind::Corporation => Some(eve_corp_logo_url(p.id, 20.0)),
+                            _ => None,
+                        }),
+                        losses: side.losses,
+                        efficiency: side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "–".into()),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
     fn dash_battles(&mut self, ui: &mut egui::Ui) {
         let now = crate::clock::utc().timestamp();
-        let battles: Vec<br_core::battle::Battle> = {
-            let mut v: Vec<br_core::battle::Battle> = self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2).cloned().collect();
-            v.sort_by_key(|b| std::cmp::Reverse(b.end));
-            v.truncate(3);
-            v
-        };
-        if battles.is_empty() {
+        let Some(snap) = &self.dash.snap else { return };
+        if snap.battles.is_empty() {
             ui.label(egui::RichText::new(tr!("No battles near you yet.")).weak());
             return;
         }
         let mut open = None;
-        for (i, b) in battles.iter().enumerate() {
+        for (i, b) in snap.battles.iter().enumerate() {
             if i > 0 {
                 ui.separator();
             }
-            let where_ = b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
             ui.horizontal(|ui| {
-                if ui.add(egui::Link::new(egui::RichText::new(&where_).strong())).on_hover_text(tr!("Open the battle report")).clicked() {
-                    open = b.engagements.iter().map(|e| e.kill_id).max();
+                if ui.add(egui::Link::new(egui::RichText::new(&b.systems).strong())).on_hover_text(tr!("Open the battle report")).clicked() {
+                    open = Some(b.id);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(trf!("{age} ago", age = fmt_age_compact(now - b.end))).weak());
                 });
             });
             ui.label(trf!("{kills} kills, {isk} destroyed", kills = b.kills, isk = fmt_isk(b.isk)));
-            for side in b.sides.iter().take(3) {
-                let name = side.coalition.clone().or_else(|| side.parties.first().map(|p| p.name.clone())).unwrap_or_default();
-                let eff = side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "–".into());
+            for side in &b.sides {
                 ui.horizontal(|ui| {
-                    let logo = side.parties.iter().find_map(|p| match p.kind {
-                        br_core::battle::PartyKind::Alliance => Some(eve_alliance_logo_url(p.id, 20.0)),
-                        br_core::battle::PartyKind::Corporation => Some(eve_corp_logo_url(p.id, 20.0)),
-                        _ => None,
-                    });
-                    super::killmail_ui::eve_image(ui, logo, 20.0);
-                    ui.add(egui::Label::new(name).truncate());
+                    super::killmail_ui::eve_image(ui, side.logo.clone(), 20.0);
+                    ui.add(egui::Label::new(&side.name).truncate());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(trf!("{lost} lost, {eff} efficiency", lost = side.losses, eff = eff)).weak());
+                        ui.label(egui::RichText::new(trf!("{lost} lost, {eff} efficiency", lost = side.losses, eff = side.efficiency)).weak());
                     });
                 });
             }
