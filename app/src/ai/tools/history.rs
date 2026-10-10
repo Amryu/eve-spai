@@ -14,9 +14,21 @@ fn days(v: &Value, default: u64) -> u64 {
 
 /// Alliance names for ids, from what the app knows and, when online, from ESI.
 fn alliance_names(ctx: &Ctx, ids: &[i64]) -> HashMap<i64, String> {
-    let mut out = HashMap::new();
-    if ctx.deps.online && !ids.is_empty() {
-        out = crate::universe::lookup_names(ids);
+    let mut out: HashMap<i64, String> = HashMap::new();
+    // Sov holders are named on the map already; the rest come from ESI when online.
+    {
+        let st = ctx.deps.system_status.lock().unwrap_or_else(|e| e.into_inner());
+        for f in st.values() {
+            if let (Some(id), Some(n)) = (f.sov_alliance, f.sov.as_ref()) {
+                if ids.contains(&id) {
+                    out.insert(id, n.clone());
+                }
+            }
+        }
+    }
+    let rest: Vec<i64> = ids.iter().copied().filter(|i| !out.contains_key(i)).collect();
+    if ctx.deps.online && !rest.is_empty() {
+        out.extend(crate::universe::lookup_names(&rest));
     }
     out
 }
@@ -79,7 +91,8 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
     name: "kills_anywhere",
     description: "Every kill in EVE the app saw, from the saved history, not just those near the user: by system or region, \
                   by an alliance as victim or attacker, over days. Gives totals, the systems and alliances most involved, \
-                  and the latest kills. For 'where is this alliance active', 'what died in this region this week'.",
+                  the ships the attackers flew, and the latest kills. For 'where is this alliance active', 'what does \
+                  Fraternity fly this week', 'what died in this region'.",
     need: Need::All(&["kills.history"]),
     kind: Kind::Read,
     schema: || {
@@ -129,6 +142,14 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
         }
         let mut top_sys: Vec<_> = by_sys.into_iter().collect();
         top_sys.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let mut hulls: HashMap<i64, usize> = HashMap::new();
+        for k in &kills {
+            for s in &k.attacker_ships {
+                *hulls.entry(*s).or_default() += 1;
+            }
+        }
+        let mut top_hulls: Vec<_> = hulls.into_iter().collect();
+        top_hulls.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         let mut top_ally: Vec<_> = by_ally.into_iter().collect();
         top_ally.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         let ally_ids: Vec<i64> = top_ally.iter().take(8).map(|(a, _)| *a).collect();
@@ -139,6 +160,7 @@ static KILLS_ANYWHERE: ToolSpec = ToolSpec {
             "kills": kills.len(),
             "isk_billions": (isk / 1e8).round() / 10.0,
             "top_systems": top_sys.iter().take(8).map(|(s, n)| json!({"system": ctx.system_name(*s), "kills": n})).collect::<Vec<_>>(),
+            "attacker_ships": top_hulls.iter().take(12).map(|(s, n)| json!({"ship": ships.get(s).cloned().unwrap_or_else(|| format!("type {s}")), "kills": n})).collect::<Vec<_>>(),
             "top_attacking_alliances": top_ally.iter().take(8).map(|(a, n)| json!({"alliance": names.get(a).cloned().unwrap_or_else(|| format!("alliance {a}")), "kills": n})).collect::<Vec<_>>(),
             "latest": kills.iter().take(limit).map(|k| json!({
                 "kill_id": k.kill_id, "when": eve_time(k.time), "age": fmt_age(ctx.now, k.time), "system": ctx.system_name(k.system_id),

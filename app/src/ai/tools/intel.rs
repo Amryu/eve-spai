@@ -18,6 +18,7 @@ static SEARCH_INTEL: ToolSpec = ToolSpec {
                 "query": {"type": "string", "description": "Words to find in the report, its pilots, ships or channel"},
                 "system": {"type": "string"},
                 "within_jumps": {"type": "integer", "minimum": 0, "maximum": 15},
+                "kinds": {"type": "array", "items": {"type": "string", "enum": KINDS}, "description": "Only reports of any of these kinds"},
                 "since_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
                 "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Look back this many days instead, into the saved history"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 60}
@@ -27,6 +28,30 @@ static SEARCH_INTEL: ToolSpec = ToolSpec {
     },
     run: search_intel,
 };
+
+const KINDS: [&str; 13] = ["cyno", "bubble", "camp", "tackle", "capital_tackled", "dropper", "wormhole", "spike", "help", "clear", "ess", "skyhook", "structure"];
+
+/// The kinds a report is, by the names in [`KINDS`].
+fn kinds_of(r: &crate::intel::IntelReport) -> Vec<&'static str> {
+    [
+        (r.cyno, "cyno"),
+        (r.bubble, "bubble"),
+        (r.camp, "camp"),
+        (r.tackled, "tackle"),
+        (r.cap_tackled, "capital_tackled"),
+        (r.dropper, "dropper"),
+        (r.wormhole, "wormhole"),
+        (r.spike, "spike"),
+        (r.help, "help"),
+        (r.clear, "clear"),
+        (r.ess, "ess"),
+        (r.skyhook, "skyhook"),
+        (!r.structures.is_empty(), "structure"),
+    ]
+    .into_iter()
+    .filter_map(|(on, k)| on.then_some(k))
+    .collect()
+}
 
 fn report_json(ctx: &Ctx, r: &crate::intel::IntelReport, jumps: Option<u32>) -> Value {
     let sev = crate::app::severity_of(r, &ctx.facts.severity);
@@ -45,6 +70,37 @@ fn report_json(ctx: &Ctx, r: &crate::intel::IntelReport, jumps: Option<u32>) -> 
     });
     if !r.alliances.is_empty() {
         v["alliances"] = json!(r.alliances.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+    }
+    let kinds = kinds_of(r);
+    if !kinds.is_empty() {
+        v["kinds"] = json!(kinds);
+    }
+    if !r.gates.is_empty() {
+        v["gates"] = json!(r.gates);
+    }
+    if let Some((c, d)) = &r.near_celestial {
+        v["near"] = json!(format!("{c} ({d:.0} km)"));
+    }
+    if let Some(m) = &r.movement {
+        v["came_from"] = json!({"system": m.from, "jumps": m.jumps});
+    }
+    if !r.tackled_targets.is_empty() {
+        v["tackled"] = json!(r.tackled_targets);
+    }
+    if !r.structures.is_empty() {
+        v["structures"] = json!(r.structures.iter().map(|(a, b)| b.as_ref().map_or(a.clone(), |b| format!("{a} {b}"))).collect::<Vec<_>>());
+    }
+    if r.wormhole {
+        v["wormhole"] = json!({"type": r.wh_type, "signature": r.wh_sig, "end_of_life": r.wh_eol, "drifter": r.wh_drifter});
+    }
+    if let Some(i) = r.isk {
+        v["isk"] = json!(i);
+    }
+    if !r.classes.is_empty() {
+        v["classes"] = json!(r.classes);
+    }
+    if r.no_visual {
+        v["no_visual"] = json!(true);
     }
     if let Some(j) = jumps {
         v["jumps_from_filter_system"] = json!(j);
@@ -65,8 +121,12 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     };
     let area: Vec<i64> = around.as_ref().map(|d| d.keys().copied().take(400).collect()).unwrap_or_default();
     let reports = intel_since(ctx, since, q.as_deref(), &area);
+    let want_kinds: Vec<String> = v.get("kinds").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
     let mut out = Vec::new();
     for r in &reports {
+        if !want_kinds.is_empty() && !kinds_of(r).iter().any(|k| want_kinds.iter().any(|w| w == k)) {
+            continue;
+        }
         let mut jumps = None;
         if let Some(d) = &around {
             match r.systems.iter().filter_map(|s| d.get(&s.id)).min() {

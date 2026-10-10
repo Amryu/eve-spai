@@ -13,6 +13,7 @@ mod memory;
 mod misc;
 mod history;
 mod watch;
+mod extra;
 mod web;
 
 use serde_json::{json, Value};
@@ -86,6 +87,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(misc::TOOLS);
     v.extend(history::TOOLS);
     v.extend(watch::TOOLS);
+    v.extend(extra::TOOLS);
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);

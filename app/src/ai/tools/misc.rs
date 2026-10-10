@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_CHAT, &LOCALSCAN, &NOTES];
+    &[&MY_CHARACTERS, &FLEETS_CURRENT, &FLEETS_HISTORY, &FLEET_DETAIL, &FLEET_PRESETS, &RESCUE, &RESCUE_HISTORY, &JABBER_PINGS, &JABBER_ROOMS, &JABBER_CHAT, &LOCALSCAN, &PILOT_INFO, &NOTES];
 
 static MY_CHARACTERS: ToolSpec = ToolSpec {
     name: "my_characters",
@@ -212,14 +212,69 @@ static RESCUE_HISTORY: ToolSpec = ToolSpec {
 
 static JABBER_PINGS: ToolSpec = ToolSpec {
     name: "jabber_pings",
-    description: "Recent fleet pings received over Jabber, newest first.",
+    description: "Fleet pings received over Jabber, newest first: the FC, doctrine, formup, comms and text. Search them by \
+                  words (an FC, a doctrine, a fleet name) and how many days back.",
     need: Need::All(&["jabber.pings"]),
     kind: Kind::Read,
-    schema: || schema(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 30}}), &[]),
+    schema: || schema(json!({"query": {"type": "string"}, "days": {"type": "integer", "minimum": 1, "maximum": 365}, "limit": {"type": "integer", "minimum": 1, "maximum": 30}}), &[]),
     run: |ctx, v| {
         let n = u64_arg(v, "limit", 10, 30) as usize;
+        let since = v.get("days").and_then(Value::as_u64).map(|d| ctx.now - d as i64 * 86_400);
+        let words: Vec<String> = str_arg(v, "query").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
         let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(serde_json::to_value(st.pings.iter().rev().take(n).collect::<Vec<_>>()).unwrap_or_default())
+        let hits: Vec<&crate::pings::Ping> = st
+            .pings
+            .iter()
+            .rev()
+            .filter(|p| since.is_none_or(|s| p.timestamp() >= s))
+            .filter(|p| {
+                if words.is_empty() {
+                    return true;
+                }
+                let hay = serde_json::to_string(p).unwrap_or_default().to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .take(n)
+            .collect();
+        Ok(json!(hits.iter().map(|p| {
+            let mut x = serde_json::to_value(p).unwrap_or_default();
+            if let Some(o) = x.as_object_mut().and_then(|o| o.values_mut().next()).and_then(Value::as_object_mut) {
+                o.insert("when".into(), json!(eve_time(p.timestamp())));
+                o.insert("age".into(), json!(fmt_age(ctx.now, p.timestamp())));
+            }
+            x
+        }).collect::<Vec<_>>()))
+    },
+};
+
+static JABBER_ROOMS: ToolSpec = ToolSpec {
+    name: "jabber_rooms",
+    description: "The user's Jabber rooms with their message of the day (often the standing fleet, formup and comms), unread \
+                  counts and whether the user was mentioned, plus which contacts are online.",
+    need: Need::All(&["jabber.chats"]),
+    kind: Kind::Read,
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
+        let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        let local = |j: &str| j.split('@').next().unwrap_or(j).to_owned();
+        let rooms: Vec<Value> = st
+            .rooms
+            .iter()
+            .map(|r| json!({"room": local(r), "address": r, "motd": st.room_subjects.get(r), "unread": st.unread_counts.get(r).copied().unwrap_or(0), "mentioned": st.mentions.contains(r)}))
+            .collect();
+        let online: Vec<Value> = st
+            .roster
+            .iter()
+            .filter(|(_, c)| c.presence != crate::jabber::Presence::Offline)
+            .map(|(j, c)| json!({"name": c.name.clone().unwrap_or_else(|| local(j)), "status": format!("{:?}", c.presence), "says": c.status_text}))
+            .collect();
+        let dms: Vec<Value> = st
+            .chats
+            .keys()
+            .filter(|k| !st.rooms.contains(*k) && st.unread_counts.get(*k).copied().unwrap_or(0) > 0)
+            .map(|k| json!({"from": local(k), "unread": st.unread_counts.get(k)}))
+            .collect();
+        Ok(json!({"connected": st.ever_online, "rooms": rooms, "unread_direct_messages": dms, "contacts_online": online}))
     },
 };
 
@@ -233,7 +288,8 @@ static JABBER_CHAT: ToolSpec = ToolSpec {
         let want = str_arg(v, "conversation").unwrap_or_default().to_lowercase();
         let n = u64_arg(v, "limit", 30, 80) as usize;
         let st = ctx.deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
-        let (jid, msgs) = st.chats.iter().find(|(j, _)| j.to_lowercase().contains(&want)).ok_or_else(|| format!("no conversation matching {want:?}"))?;
+        let t = super::actions::resolve_jabber(&st, &ctx.facts.jabber_domain, &want, None)?;
+        let (jid, msgs) = st.chats.get_key_value(&t.jid).ok_or_else(|| format!("no messages with {} yet", t.label))?;
         let tail: Vec<Value> = msgs.iter().rev().take(n).rev().map(|m| json!({"when": eve_time(m.time), "from": m.from, "text": m.body})).collect();
         Ok(json!({"conversation": jid, "messages": tail}))
     },
@@ -241,20 +297,99 @@ static JABBER_CHAT: ToolSpec = ToolSpec {
 
 static LOCALSCAN: ToolSpec = ToolSpec {
     name: "local_scan",
-    description: "The pilots in the user's last local scan with their zKillboard summary: kills, losses, danger, gang size, \
-                  and alliance and corporation ids.",
+    description: "The pilots in the local the user is looking up now, each with corporation and alliance, zKillboard danger, \
+                  kills and losses, gang size, what they fly, and whether they look like a cyno pilot, an FC or bait. Blues \
+                  the user leaves out are listed as such.",
     need: Need::All(&["pilots.localscan"]),
     kind: Kind::Read,
     schema: || schema(json!({}), &[]),
     run: |ctx, _| {
-        let t = ctx.deps.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
-        let mut out = Vec::new();
-        for row in t.rows.values() {
-            if let crate::localscan::Row::Done(s) = row {
-                out.push(json!({"name": s.name, "danger": s.danger, "kills": s.kills, "losses": s.losses, "avg_gang": s.avg_gang, "solo": s.solo, "alliance_id": s.alliance_id, "corp_id": s.corp_id}));
-            }
+        let names: Vec<String> = ctx.facts.lookup_current.iter().map(|n| n.to_lowercase()).collect();
+        if names.is_empty() {
+            return Ok(json!({"pilots": [], "note": "no local is being looked up"}));
         }
+        let ships = ctx.store.map(super::intel::ship_names).unwrap_or_default();
+        let t = ctx.deps.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
+        let out: Vec<Value> = names.iter().map(|n| pilot_row(n, t.rows.get(n), &t.orgs, &ships)).collect();
         Ok(json!({"pilots": out}))
+    },
+};
+
+/// One looked-up pilot as the assistant reads it.
+pub(crate) fn pilot_row(name: &str, row: Option<&crate::localscan::Row>, orgs: &std::collections::HashMap<i64, crate::localscan::Org>, ships: &std::collections::HashMap<i64, String>) -> Value {
+    use crate::localscan::Row;
+    let org = |id: i64| orgs.get(&id).map(|o| format!("{} [{}]", o.name, o.ticker)).or_else(|| (id > 0).then(|| format!("#{id}")));
+    match row {
+        Some(Row::Done(s)) => {
+            let mut top: Vec<&crate::localscan::Ship> = s.ships.iter().collect();
+            top.sort_by_key(|x| std::cmp::Reverse(x.kills + x.losses));
+            json!({
+                "name": s.name,
+                "corporation": org(s.corp_id),
+                "alliance": org(s.alliance_id),
+                "security": s.security,
+                "age_days": s.birthday.map(|b| (crate::clock::utc().timestamp() - b) / 86_400),
+                "danger": s.danger, "kills": s.kills, "losses": s.losses, "solo": s.solo, "avg_gang": s.avg_gang,
+                "isk_destroyed_billions": (s.isk_destroyed / 1e8).round() / 10.0,
+                "flies": top.iter().take(6).map(|x| json!({"ship": ships.get(&x.type_id).cloned().unwrap_or_else(|| format!("type {}", x.type_id)), "kills": x.kills, "losses": x.losses})).collect::<Vec<_>>(),
+                "cyno": s.cyno.as_ref().map(|c| json!({"standard": c.standard, "covert": c.covert, "industrial": c.industrial})),
+                "fc": s.fc.as_ref().map(|f| f.level.clone()),
+                "bait": s.bait.as_ref().map(|b| b.level.clone()),
+                "awox_kills": s.awox.iter().sum::<u32>(),
+                "tags": s.tags.iter().map(|(t, n)| format!("{t:?} {n}")).collect::<Vec<_>>(),
+            })
+        }
+        Some(Row::Blue(st)) => json!({"name": name, "blue": st}),
+        Some(Row::Missing) => json!({"name": name, "status": "no such character"}),
+        Some(Row::Failed(e)) => json!({"name": name, "status": format!("lookup failed: {e}")}),
+        Some(Row::Pending) => json!({"name": name, "status": "still being looked up"}),
+        None => json!({"name": name, "status": "not looked up"}),
+    }
+}
+
+static PILOT_INFO: ToolSpec = ToolSpec {
+    name: "pilot_info",
+    description: "What the app knows of one pilot: their zKillboard summary if looked up this session (corporation, alliance, \
+                  danger, what they fly, cyno, FC or bait signs), when and where intel last named them, and in which of the \
+                  user's saved local scans they were.",
+    need: Need::Any(&["pilots.lookup", "pilots.localscan"]),
+    kind: Kind::Read,
+    schema: || schema(json!({"name": {"type": "string"}, "days": {"type": "integer", "minimum": 1, "maximum": 365}}), &["name"]),
+    run: |ctx, v| {
+        let name = str_arg(v, "name").ok_or("which pilot?")?.trim().to_owned();
+        let low = name.to_lowercase();
+        let since = ctx.now - u64_arg(v, "days", 30, 365) as i64 * 86_400;
+        let ships = ctx.store.map(super::intel::ship_names).unwrap_or_default();
+        let summary = {
+            let t = ctx.deps.lookup_table.lock().unwrap_or_else(|e| e.into_inner());
+            pilot_row(&name, t.rows.get(&low), &t.orgs, &ships)
+        };
+        let mut out = json!({"pilot": summary});
+        if ctx.facts.allowed("intel.reports") {
+            let mut seen: Vec<crate::intel::IntelReport> = {
+                let st = ctx.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+                st.reports.iter().filter(|r| r.pilots.iter().any(|p| p.to_lowercase() == low)).cloned().collect()
+            };
+            if let Some(store) = ctx.store {
+                seen.extend(store.intel_history(since, ctx.now, &[], Some(&low), None, 20));
+            }
+            seen.sort_by_key(|r| std::cmp::Reverse(r.received));
+            seen.dedup_by_key(|r| (r.received, r.text.clone()));
+            out["intel"] = json!(seen.iter().take(10).map(|r| json!({"when": eve_time(r.received), "age": fmt_age(ctx.now, r.received), "systems": r.systems.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), "text": r.text})).collect::<Vec<_>>());
+        }
+        if let (true, Some(store)) = (ctx.facts.allowed("pilots.localscan"), ctx.store) {
+            let scans: Vec<Value> = store
+                .local_scan_history(since, 500)
+                .into_iter()
+                .filter_map(|(t, sys, j)| {
+                    let s: crate::localscan::SavedLookup = serde_json::from_str(&j).ok()?;
+                    s.names.iter().any(|n| n.to_lowercase() == low).then(|| json!({"when": eve_time(t), "system": sys.map(|x| ctx.system_name(x))}))
+                })
+                .take(10)
+                .collect();
+            out["in_local_scans"] = json!(scans);
+        }
+        Ok(out)
     },
 };
 

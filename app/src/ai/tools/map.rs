@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use super::{schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 
-pub static TOOLS: &[&ToolSpec] = &[&SYSTEM_INFO, &ROUTE, &SYSTEMS_WITHIN, &JOVE_NEAR, &CAMPS, &WORMHOLES_NEAR, &SHIP_INFO];
+pub static TOOLS: &[&ToolSpec] = &[&SYSTEM_INFO, &MAP_QUERY, &ROUTE, &SYSTEMS_WITHIN, &JOVE_NEAR, &CAMPS, &WORMHOLES_NEAR, &SHIP_INFO];
 
 static SYSTEM_INFO: ToolSpec = ToolSpec {
     name: "system_info",
@@ -41,6 +41,27 @@ fn system_info(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             out["adm"] = json!(f.adm);
             out["last_hour"] = json!({"ship_kills": f.ship_kills, "pod_kills": f.pod_kills, "npc_kills": f.npc_kills, "jumps": f.jumps});
             out["incursion"] = json!(f.incursion);
+            out["faction_warfare"] = json!(f.fw);
+        }
+    }
+    if ctx.allowed("map.bridges") {
+        let up: Vec<&str> = ctx.facts.sov_upgrades.iter().filter(|u| u.system.eq_ignore_ascii_case(&info.name)).map(|u| u.upgrade.as_str()).collect();
+        if !up.is_empty() {
+            out["sov_upgrades"] = json!(up);
+        }
+        if let Some(b) = ctx.facts.jump_bridges.iter().find(|b| b.from.eq_ignore_ascii_case(&info.name) || b.to.eq_ignore_ascii_case(&info.name)) {
+            out["jump_bridge_to"] = json!(if b.from.eq_ignore_ascii_case(&info.name) { &b.to } else { &b.from });
+        }
+    }
+    if let (true, Some(store)) = (ctx.allowed("wormholes"), ctx.store) {
+        let holes: Vec<Value> = store
+            .wormholes()
+            .into_iter()
+            .filter(|w| w.system_id == id && !w.is_expired(ctx.now))
+            .map(|w| json!({"signature": w.signature, "type": w.wh_type, "leads_to": w.dest_system_id.map(|b| ctx.system_name(b)), "hours_left": w.hours_left(ctx.now)}))
+            .collect();
+        if !holes.is_empty() {
+            out["wormholes"] = json!(holes);
         }
     }
     if ctx.allowed("map.camps") {
@@ -55,6 +76,109 @@ fn system_info(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
         out["friendly_cyno_generator"] = json!(ctx.facts.cyno_generators.contains(&id));
     }
     Ok(out)
+}
+
+static MAP_QUERY: ToolSpec = ToolSpec {
+    name: "map_query",
+    description: "Systems across the map from the live ESI statistics, filtered and sorted: by region or around a system, by \
+                  sov holder, incursions or faction warfare, sorted by NPC kills (ratting), jumps (traffic), ship kills or \
+                  ADM. For 'quietest ratting systems in Delve', 'where are the incursions', 'what does Fraternity hold'.",
+    need: Need::All(&["map.status"]),
+    kind: Kind::Read,
+    schema: || {
+        schema(
+            json!({
+                "region": {"type": "string"},
+                "near": {"type": "string", "description": "A system to search around"},
+                "jumps": {"type": "integer", "minimum": 0, "maximum": 15},
+                "sov": {"type": "string", "description": "Part of the sov holder's name"},
+                "incursion": {"type": "boolean"},
+                "faction_warfare": {"type": "boolean"},
+                "sort_by": {"type": "string", "enum": ["npc_kills", "jumps", "ship_kills", "adm"]},
+                "ascending": {"type": "boolean", "description": "Lowest first, e.g. the quietest"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+            }),
+            &[],
+        )
+    },
+    run: map_query,
+};
+
+fn map_query(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
+    let geo = ctx.geo()?;
+    let around = match str_arg(v, "near") {
+        Some(n) => Some(geo.distances_from(ctx.system(n)?, u64_arg(v, "jumps", 5, 15) as u32)),
+        None => None,
+    };
+    let region = str_arg(v, "region").map(|r| r.trim().to_lowercase());
+    let sov = str_arg(v, "sov").map(|s| s.trim().to_lowercase());
+    let st = ctx.deps.system_status.lock().unwrap_or_else(|e| e.into_inner());
+    if st.is_empty() {
+        return Err("no ESI map statistics yet".into());
+    }
+    let mut rows: Vec<(i64, &crate::systemstatus::SysFlags, Option<u32>)> = Vec::new();
+    for id in geo.all_ids() {
+        let Some(info) = geo.info_of(id) else { continue };
+        if region.as_ref().is_some_and(|r| info.region.to_lowercase() != *r) {
+            continue;
+        }
+        let jumps = match &around {
+            Some(d) => match d.get(&id) {
+                Some(j) => Some(*j),
+                None => continue,
+            },
+            None => None,
+        };
+        let Some(f) = st.get(&id) else { continue };
+        if sov.as_ref().is_some_and(|s| !f.sov.as_deref().unwrap_or("").to_lowercase().contains(s.as_str())) {
+            continue;
+        }
+        if v.get("incursion").and_then(Value::as_bool).is_some_and(|w| w != f.incursion) {
+            continue;
+        }
+        if v.get("faction_warfare").and_then(Value::as_bool).is_some_and(|w| w != f.fw.is_some()) {
+            continue;
+        }
+        rows.push((id, f, jumps));
+    }
+    let key = str_arg(v, "sort_by").unwrap_or("npc_kills");
+    let val = |f: &crate::systemstatus::SysFlags| -> f64 {
+        match key {
+            "jumps" => f.jumps as f64,
+            "ship_kills" => (f.ship_kills + f.pod_kills) as f64,
+            "adm" => f.adm.unwrap_or(0.0),
+            _ => f.npc_kills as f64,
+        }
+    };
+    rows.sort_by(|a, b| val(b.1).partial_cmp(&val(a.1)).unwrap_or(std::cmp::Ordering::Equal));
+    if v.get("ascending").and_then(Value::as_bool) == Some(true) {
+        rows.reverse();
+    }
+    let total = rows.len();
+    let limit = u64_arg(v, "limit", 15, 50) as usize;
+    let out: Vec<Value> = rows
+        .iter()
+        .take(limit)
+        .map(|(id, f, j)| {
+            let mut b = sys_brief(ctx, *id);
+            b["npc_kills"] = json!(f.npc_kills);
+            b["jumps"] = json!(f.jumps);
+            b["ship_kills"] = json!(f.ship_kills + f.pod_kills);
+            b["sov"] = json!(f.sov);
+            b["adm"] = json!(f.adm);
+            if f.incursion {
+                b["incursion"] = json!(true);
+            }
+            if let Some(w) = &f.fw {
+                b["faction_warfare"] = json!(w);
+            }
+            if let Some(j) = j {
+                b["jumps_away"] = json!(j);
+            }
+            b
+        })
+        .collect();
+    Ok(json!({"matching": total, "systems": out, "note": "figures are ESI's for the last hour"}))
 }
 
 static ROUTE: ToolSpec = ToolSpec {
