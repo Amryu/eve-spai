@@ -455,7 +455,11 @@ impl SpaiApp {
                 main: s.fleet_hulls.iter().filter(|h| h.setup_id == id && h.main).map(|h| h.name.clone()).collect(),
                 support: s.fleet_hulls.iter().filter(|h| (h.setup_id == id || h.setup_id == 0) && !h.main).map(|h| h.name.clone()).collect(),
                 tank: s.fleet_doctrine_tanks.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
-                url: s.fleet_doctrine_urls.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
+                url: s.fleet_doctrine_urls.iter().find(|x| x.0 == id).map(|x| x.1.clone()).or_else(|| {
+                    st.seed.setup_name(crate::fleets::model::SetupId(id)).and_then(crate::doctrines::link_for).map(str::to_owned)
+                }),
+                strict: s.fleet_doctrine_strict.contains(&id),
+                boosts: s.fleet_boost_requirements.iter().filter(|b| b.setup_id == id).map(|b| (b.charge.clone(), b.priority.clone())).collect(),
                 line: s.fleet_doctrine_lines.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
             })
             .collect()

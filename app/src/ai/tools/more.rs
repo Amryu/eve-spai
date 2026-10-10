@@ -173,8 +173,9 @@ static KILL_DETAIL: ToolSpec = ToolSpec {
 
 static DOCTRINES: ToolSpec = ToolSpec {
     name: "doctrines",
-    description: "The doctrines the user has set up for fleets: each one's hulls (main and support), how it tanks, its fit \
-                  link and its ping line.",
+    description: "The fleet doctrines: each one's hulls (main and support), how it tanks, the forum topic with its fits, \
+                  its ping line, whether only its own hulls belong, and the boosts it wants. The forum topics need the user's \
+                  forum login; link them for the user to open.",
     need: Need::Any(&["fleets.presets", "fleets.current"]),
     kind: Kind::Read,
     schema: || schema(json!({"name": {"type": "string", "description": "Part of a doctrine's name"}}), &[]),
@@ -185,7 +186,11 @@ static DOCTRINES: ToolSpec = ToolSpec {
             .doctrines
             .iter()
             .filter(|d| want.as_ref().is_none_or(|w| d.name.to_lowercase().contains(w.as_str())))
-            .map(|d| json!({"name": d.name, "main_hulls": d.main, "support_hulls": d.support, "tank": d.tank, "fits": d.url, "ping_line": d.line}))
+            .map(|d| json!({
+                "name": d.name, "main_hulls": d.main, "support_hulls": d.support, "tank": d.tank,
+                "fits_forum_topic": d.url, "ping_line": d.line, "only_its_own_hulls": d.strict.then_some(true),
+                "boosts_wanted": d.boosts.iter().map(|(c, p)| format!("{c} ({p})")).collect::<Vec<_>>(),
+            }))
             .collect::<Vec<_>>()))
     },
 };
@@ -369,7 +374,7 @@ mod tests {
     #[test]
     fn rats_and_doctrines_answer_from_what_is_known() {
         let mut f = facts(&["fleets.presets"]);
-        f.doctrines = vec![crate::ai::deps::DoctrineFacts { name: "Muninn Fleet".into(), main: vec!["Muninn".into()], support: vec!["Scimitar".into()], tank: Some("armor".into()), url: Some("https://example.invalid/fits".into()), line: None }];
+        f.doctrines = vec![crate::ai::deps::DoctrineFacts { name: "Muninn Fleet".into(), main: vec!["Muninn".into()], support: vec!["Scimitar".into()], tank: Some("armor".into()), url: Some("https://example.invalid/fits".into()), line: None, strict: false, boosts: vec![] }];
         let deps = AiDeps::for_tests(f);
         let (r, err) = run(&deps, "rats", json!({"system": "1DQ1-A"}));
         assert!(!err, "{r}");

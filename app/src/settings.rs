@@ -43,6 +43,9 @@ pub struct Settings {
     /// The version of the bundled bridge and upgrade defaults already applied.
     #[serde(default)]
     pub baked_defaults: u32,
+    /// The version of the bundled doctrine defaults already applied.
+    #[serde(default)]
+    pub baked_doctrines: u32,
     #[serde(default = "default_true")]
     pub alert_enabled: bool,
     #[serde(default = "default_alert_jumps")]
@@ -1482,6 +1485,7 @@ impl Default for Settings {
             ansiblex_capital: default_ansiblex_capital(),
             ansiblex_max_zone: default_ansiblex_max_zone(),
             baked_defaults: 0,
+            baked_doctrines: 0,
             lookup_history: Vec::new(),
             lookup_hidden_columns: Vec::new(),
             lookup_hide_blues: false,
@@ -2654,5 +2658,70 @@ impl Retention {
 impl Default for Retention {
     fn default() -> Self {
         Self { intel: 90, kills_nearby: 30, kills_all: 30, system_stats: 30, sov: 365, moves: 365, local_scans: 90 }
+    }
+}
+
+
+/// The doctrine setup shipped with the app: hulls, tank, fit links, ping lines, strict doctrines and
+/// wanted boosts, by fleet setup.
+#[derive(Deserialize)]
+pub struct DoctrineDefaults {
+    pub fleet_hulls: Vec<FleetHull>,
+    pub fleet_doctrine_tanks: Vec<(i32, String)>,
+    pub fleet_doctrine_urls: Vec<(i32, String)>,
+    pub fleet_doctrine_lines: Vec<(i32, String)>,
+    pub fleet_doctrine_strict: Vec<i32>,
+    pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
+}
+
+pub const BAKED_DOCTRINES: u32 = 1;
+const DOCTRINES_JSON: &str = include_str!("../assets/default_doctrines.json");
+
+impl Settings {
+    /// Gives every doctrine the user has set nothing up for the shipped hulls, tank, links, lines,
+    /// strictness and boosts, once per [`BAKED_DOCTRINES`]. What the user set is never touched.
+    /// Returns whether anything changed.
+    pub fn apply_doctrine_defaults(&mut self) -> bool {
+        if self.baked_doctrines >= BAKED_DOCTRINES {
+            return false;
+        }
+        self.baked_doctrines = BAKED_DOCTRINES;
+        let Ok(d) = serde_json::from_str::<DoctrineDefaults>(DOCTRINES_JSON) else { return true };
+        let mut known: std::collections::HashSet<i32> = self.fleet_hulls.iter().map(|h| h.setup_id).collect();
+        known.extend(self.fleet_doctrine_tanks.iter().map(|x| x.0));
+        known.extend(self.fleet_doctrine_urls.iter().map(|x| x.0));
+        known.extend(self.fleet_doctrine_lines.iter().map(|x| x.0));
+        known.extend(self.fleet_doctrine_strict.iter().copied());
+        known.extend(self.fleet_boost_requirements.iter().map(|b| b.setup_id));
+        // Hulls welcome in any fleet (setup 0) come along only for someone with none of their own.
+        let fresh = |id: i32| if id == 0 { !known.contains(&0) } else { !known.contains(&id) };
+        self.fleet_hulls.extend(d.fleet_hulls.into_iter().filter(|h| fresh(h.setup_id)));
+        self.fleet_doctrine_tanks.extend(d.fleet_doctrine_tanks.into_iter().filter(|x| fresh(x.0)));
+        self.fleet_doctrine_urls.extend(d.fleet_doctrine_urls.into_iter().filter(|x| fresh(x.0)));
+        self.fleet_doctrine_lines.extend(d.fleet_doctrine_lines.into_iter().filter(|x| fresh(x.0)));
+        self.fleet_doctrine_strict.extend(d.fleet_doctrine_strict.into_iter().filter(|x| fresh(*x)));
+        self.fleet_boost_requirements.extend(d.fleet_boost_requirements.into_iter().filter(|b| fresh(b.setup_id)));
+        true
+    }
+}
+
+#[cfg(test)]
+mod doctrine_default_tests {
+    use super::*;
+
+    #[test]
+    fn shipped_doctrines_fill_what_is_unset_and_leave_the_rest() {
+        let d: DoctrineDefaults = serde_json::from_str(DOCTRINES_JSON).expect("the shipped doctrines parse");
+        assert!(d.fleet_hulls.len() > 50 && d.fleet_doctrine_urls.iter().all(|(_, u)| u.starts_with("https://")));
+        let mut fresh = Settings::default();
+        assert!(fresh.apply_doctrine_defaults());
+        assert_eq!(fresh.fleet_hulls.len(), d.fleet_hulls.len(), "a new user gets all of it");
+        assert!(!fresh.apply_doctrine_defaults(), "once per version");
+        let mut mine = Settings::default();
+        mine.fleet_doctrine_tanks = vec![(140, "shield".into())];
+        mine.apply_doctrine_defaults();
+        assert_eq!(mine.fleet_doctrine_tanks.iter().filter(|x| x.0 == 140).collect::<Vec<_>>(), vec![&(140, "shield".to_owned())], "the user's own choice stays");
+        assert!(!mine.fleet_hulls.iter().any(|h| h.setup_id == 140), "nothing added to a doctrine the user set up");
+        assert!(mine.fleet_hulls.iter().any(|h| h.setup_id == 65), "other doctrines still come");
     }
 }
