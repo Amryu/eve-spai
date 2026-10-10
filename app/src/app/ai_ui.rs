@@ -182,6 +182,13 @@ impl SpaiApp {
             }
             // Through the Fleet tab's own way in: a mumble:// link goes straight to Mumble, a short link
             // is resolved first and only opened in the browser when that fails.
+            ActionKind::MumbleSet { mute, deaf, transmit } => {
+                let ok = mute.is_none_or(crate::mumble::set_self_muted) & deaf.is_none_or(crate::mumble::set_self_deaf) & transmit.is_none_or(crate::mumble::set_transmit);
+                if !ok {
+                    self.toast_error("Mumble did not take that; is it running?");
+                    return format!("Mumble did not take it: {summary}");
+                }
+            }
             ActionKind::JoinMumble { url } if url.starts_with("mumble://") => crate::mumble::open_url(url),
             ActionKind::JoinMumble { url } => self.comms_join(crate::fleets::comms::Links { mumble: None, short: Some(url.clone()) }),
             ActionKind::KeepWatching(id) => {
@@ -1032,13 +1039,22 @@ fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Opti
         let mut ranges: Vec<(std::ops::Range<usize>, Link)> = Vec::new();
         let mut chars = job.text.chars().count();
         for sp in crate::ai::links::spans(body, names) {
-            let n = sp.text.chars().count();
             let mut fmt = egui::TextFormat::simple(font.clone(), if sp.bold || heading { strong } else { normal });
+            // A killmail opens something else than a ship or system name does, and looks it: a
+            // skull and the warning colour, underlined.
+            let text = match &sp.link {
+                Some(Link::Kill(_)) => format!("{} {}", egui_phosphor::regular::SKULL, sp.text),
+                _ => sp.text.clone(),
+            };
+            let n = text.chars().count();
             if let Some(l) = sp.link {
-                fmt.color = link_col;
+                fmt.color = if matches!(l, Link::Kill(_)) { crate::theme::standing::WARNING } else { link_col };
+                if matches!(l, Link::Kill(_)) {
+                    fmt.underline = egui::Stroke::new(1.0, crate::theme::standing::WARNING);
+                }
                 ranges.push((chars..chars + n, l));
             }
-            job.append(&sp.text, 0.0, fmt);
+            job.append(&text, 0.0, fmt);
             chars += n;
         }
         job.wrap.max_width = w;

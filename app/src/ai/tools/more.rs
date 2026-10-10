@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &DOCTRINES, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &COMMS, &JOIN_MUMBLE];
+    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &DOCTRINES, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &MUMBLE_SET, &COMMS, &JOIN_MUMBLE];
 
 static JUMP_ROUTE: ToolSpec = ToolSpec {
     name: "jump_route",
@@ -285,12 +285,70 @@ static WH_LOG: ToolSpec = ToolSpec {
 };
 
 static MUMBLE_NOW: ToolSpec = ToolSpec {
-    name: "mumble_channel",
-    description: "The Mumble channel the user is in now, if Mumble is running.",
+    name: "mumble_status",
+    description: "How the user's Mumble stands: the channel they are in, whether they are muted or deafened, who is talking \
+                  right now, and whether it transmits by push to talk, voice activity or always. Linux only.",
     need: Need::Any(&["actions.mumble", "jabber.pings"]),
     kind: Kind::Read,
     schema: || schema(json!({}), &[]),
-    run: |_, _| Ok(json!({"channel": crate::mumble::current_url().and_then(|u| crate::mumble::channel_path(&u))})),
+    run: |_, _| {
+        let channel = crate::mumble::current_url().and_then(|u| crate::mumble::channel_path(&u));
+        let Some(st) = crate::mumble::status() else {
+            return Ok(json!({"channel": channel, "note": "Mumble is not running, or this system gives no access to it"}));
+        };
+        Ok(json!({
+            "channel": channel,
+            "muted": st.muted,
+            "deafened": st.deaf,
+            "talking": st.talking,
+            "transmits": match st.transmit { 0 => "always", 1 => "voice activity", _ => "push to talk" },
+        }))
+    },
+};
+
+static MUMBLE_SET: ToolSpec = ToolSpec {
+    name: "mumble_control",
+    description: "Mutes or unmutes, deafens or undeafens the user in Mumble, or switches how it transmits (push to talk, \
+                  voice activity, always). Only the user's own client: Mumble offers no way from outside to move or mute \
+                  other people. Waits for a click unless the user lets Mumble actions through.",
+    need: Need::All(&["actions.mumble"]),
+    kind: Kind::Action,
+    schema: || {
+        schema(
+            json!({
+                "mute": {"type": "boolean"},
+                "deafen": {"type": "boolean"},
+                "transmit": {"type": "string", "enum": ["push_to_talk", "voice_activity", "always"]}
+            }),
+            &[],
+        )
+    },
+    run: |ctx, v| {
+        let mute = v.get("mute").and_then(Value::as_bool);
+        let deaf = v.get("deafen").and_then(Value::as_bool);
+        let transmit = str_arg(v, "transmit").map(|t| match t {
+            "always" => 0,
+            "voice_activity" => 1,
+            _ => 2,
+        });
+        if mute.is_none() && deaf.is_none() && transmit.is_none() {
+            return Err("say what to change: mute, deafen or transmit".into());
+        }
+        if crate::mumble::status().is_none() {
+            return Err("Mumble is not running, or this system gives no access to it".into());
+        }
+        let mut what = Vec::new();
+        if let Some(m) = mute {
+            what.push(if m { "mute" } else { "unmute" });
+        }
+        if let Some(d) = deaf {
+            what.push(if d { "deafen" } else { "undeafen" });
+        }
+        if let Some(t) = transmit {
+            what.push(match t { 0 => "transmit always", 1 => "voice activity", _ => "push to talk" });
+        }
+        super::actions::queue_pub(ctx, super::ActionKind::MumbleSet { mute, deaf, transmit }, format!("Mumble: {}", what.join(", ")))
+    },
 };
 
 static JOIN_MUMBLE: ToolSpec = ToolSpec {
