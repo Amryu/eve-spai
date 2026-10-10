@@ -9,7 +9,9 @@ pub static TOOLS: &[&ToolSpec] = &[&SEARCH_INTEL, &CHAT_LOG, &TRACK];
 static SEARCH_INTEL: ToolSpec = ToolSpec {
     name: "search_intel",
     description: "Intel reports from the user's intel channels, newest first: text, reporter, channel, systems, ships, \
-                  pilots, hostile count and severity. Filter by words in the text, by a system and a jump radius, and by age.",
+                  pilots, hostile count and severity. Filter by words, a system and jump radius, kinds and age (days reach \
+                  into the saved history). Page with offset, or count the matches by system, channel, reporter, pilot, \
+                  alliance, ship or hour instead of listing them.",
     need: Need::All(&["intel.reports"]),
     kind: Kind::Read,
     schema: || {
@@ -21,7 +23,9 @@ static SEARCH_INTEL: ToolSpec = ToolSpec {
                 "kinds": {"type": "array", "items": {"type": "string", "enum": KINDS}, "description": "Only reports of any of these kinds"},
                 "since_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
                 "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Look back this many days instead, into the saved history"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 60}
+                "limit": {"type": "integer", "minimum": 1, "maximum": 60},
+                "offset": {"type": "integer", "minimum": 0},
+                "group_by": {"type": "string", "enum": ["system", "channel", "reporter", "pilot", "alliance", "ship", "hour"], "description": "Count the matches by this instead of listing them"}
             }),
             &[],
         )
@@ -121,6 +125,9 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let area: Vec<i64> = around.as_ref().map(|d| d.keys().copied().take(400).collect()).unwrap_or_default();
     let reports = intel_since(ctx, since, q.as_deref(), &area);
     let want_kinds: Vec<String> = v.get("kinds").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+    let offset = v.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let group = str_arg(v, "group_by");
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut out = Vec::new();
     let mut matched = 0;
     for r in &reports {
@@ -150,11 +157,32 @@ fn search_intel(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
             }
         }
         matched += 1;
-        if out.len() < limit {
+        if let Some(g) = group {
+            let keys: Vec<String> = match g {
+                "system" => r.systems.iter().map(|s| s.name.clone()).collect(),
+                "channel" => vec![r.channel.clone()],
+                "reporter" => vec![r.reporter.clone()],
+                "pilot" => r.pilots.clone(),
+                "alliance" => r.alliances.iter().map(|(a, _)| a.clone()).collect(),
+                "ship" => r.ships.iter().map(|s| s.name.clone()).collect(),
+                _ => vec![eve_time(r.received - r.received % 3600)],
+            };
+            for k in keys {
+                *counts.entry(k).or_default() += 1;
+            }
+            continue;
+        }
+        if matched > offset && out.len() < limit {
             out.push(report_json(ctx, r, jumps));
         }
     }
-    Ok(json!({"matching": matched, "shown": out.len(), "reports": out}))
+    if let Some(g) = group {
+        let mut rows: Vec<_> = counts.into_iter().collect();
+        rows.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        return Ok(json!({"matching": matched, "by": g, "counts": rows.iter().take(40).map(|(k, n)| json!({"key": k, "reports": n})).collect::<Vec<_>>()}));
+    }
+    let next = (offset + out.len() < matched).then_some(offset + out.len());
+    Ok(json!({"matching": matched, "offset": offset, "next_offset": next, "reports": out}))
 }
 
 static CHAT_LOG: ToolSpec = ToolSpec {

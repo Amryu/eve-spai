@@ -332,6 +332,32 @@ impl Store {
         rows.map(|it| it.flatten().collect()).unwrap_or_default()
     }
 
+    /// Stored Jabber messages from `since`, newest first, holding every word of `words`, in
+    /// conversations whose address contains `jid` when given. Returns the total and one page.
+    pub fn search_chats(&self, words: &[String], jid: Option<&str>, since: i64, offset: usize, limit: usize) -> (usize, Vec<(String, String, String, i64)>) {
+        let mut cond = String::from("time >= ?1");
+        let mut args: Vec<rusqlite::types::Value> = vec![since.into()];
+        for w in words {
+            args.push(format!("%{w}%").into());
+            cond.push_str(&format!(" AND (body LIKE ?{n} OR sender LIKE ?{n})", n = args.len()));
+        }
+        if let Some(j) = jid.filter(|j| !j.is_empty()) {
+            args.push(format!("%{j}%").into());
+            cond.push_str(&format!(" AND jid LIKE ?{}", args.len()));
+        }
+        let total: usize = self
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM chats WHERE {cond}"), rusqlite::params_from_iter(args.clone()), |r| r.get::<_, i64>(0))
+            .map(|n| n as usize)
+            .unwrap_or(0);
+        args.push((limit as i64).into());
+        args.push((offset as i64).into());
+        let sql = format!("SELECT jid, sender, body, time FROM chats WHERE {cond} ORDER BY time DESC LIMIT ?{} OFFSET ?{}", args.len() - 1, args.len());
+        let Ok(mut stmt) = self.conn.prepare(&sql) else { return (total, Vec::new()) };
+        let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)));
+        (total, rows.map(|it| it.flatten().collect()).unwrap_or_default())
+    }
+
     /// Drops what is older than each kind's retention. Returns the rows deleted.
     pub fn prune_history(&self, r: &Retention, now: i64) -> usize {
         let cut = |days: u32| if days >= Retention::FOREVER { None } else { Some(now - days as i64 * 86_400) };
