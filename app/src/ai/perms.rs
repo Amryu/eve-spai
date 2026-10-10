@@ -103,6 +103,7 @@ pub const TREE: &[Node] = &[
             leaf("actions.route", "Plan routes", ""),
             leaf("actions.destination", "Set destination in game", ""),
             leaf("actions.settings", "Add alert rules and watches", ""),
+            leaf("actions.jabber", "Write Jabber messages", "Each message is shown to you before it is sent; broadcast commands only when you ask for them by name"),
         ],
     },
 ];

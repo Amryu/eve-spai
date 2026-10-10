@@ -945,6 +945,8 @@ pub struct SpaiApp {
     /// Microphones, listed when the settings first show them.
     ai_mics: Option<Vec<String>>,
     pub(crate) ai_feeds: crate::ai::feeds::SharedFeeds,
+    /// Shared with the session: the conversation has read opsec data.
+    ai_opsec: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The feed definitions as the poller reads them, kept in step with the settings.
     ai_feed_defs: std::sync::Arc<std::sync::Mutex<Vec<crate::ai::feeds::FeedDef>>>,
     ai_feeds_started: bool,
@@ -1789,6 +1791,7 @@ impl SpaiApp {
             ai_listen: Default::default(),
             ai_mics: None,
             ai_feeds: Default::default(),
+            ai_opsec: Default::default(),
             ai_feed_defs: Default::default(),
             ai_feeds_started: false,
             ai_feeds_open: false,

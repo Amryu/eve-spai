@@ -22,6 +22,11 @@ pub struct AiDeps {
     pub memories: crate::ai::memory::SharedMemories,
     pub watches: crate::ai::watch::SharedWatches,
     pub feeds: crate::ai::feeds::SharedFeeds,
+    /// Set once the conversation has read Jabber, rescue or feed messages, which must not leave
+    /// the app: from then on nothing may reach the web. A new chat clears it.
+    pub opsec: Arc<std::sync::atomic::AtomicBool>,
+    /// The user's latest question, for safeguards that depend on what was actually asked.
+    pub last_question: Arc<Mutex<String>>,
     /// Whether tools may reach ESI and the web. Off in tests.
     pub online: bool,
 }
@@ -43,6 +48,8 @@ pub struct AiFacts {
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
+    /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
+    pub opsec: bool,
 }
 
 impl AiFacts {
@@ -73,6 +80,8 @@ impl AiDeps {
             memories: Default::default(),
             watches: Default::default(),
             feeds: Default::default(),
+            opsec: Default::default(),
+            last_question: Default::default(),
             online: false,
         }
     }

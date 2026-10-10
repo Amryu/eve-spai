@@ -120,11 +120,34 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, input: &Value) -> (String, bool) {
     if !permitted(spec, ctx.facts) {
         return (format!("{name} is not allowed: the user has not given access to that data"), true);
     }
+    if WEB.contains(&name) && ctx.deps.opsec.load(std::sync::atomic::Ordering::Relaxed) {
+        return (
+            "Web lookups are off for this conversation: it has read Jabber, rescue or feed messages, which must not leave the app. \
+             Answer without the web, or tell the user to start a new chat for web questions."
+                .into(),
+            true,
+        );
+    }
+    // A memory outlives the conversation, and a later one has the web again.
+    if ["remember", "update_memory"].contains(&name) && ctx.deps.opsec.load(std::sync::atomic::Ordering::Relaxed) {
+        return ("Memories are not saved in a conversation that read Jabber, rescue or feed messages, so they cannot leave the app later.".into(), true);
+    }
     match (spec.run)(ctx, input) {
-        Ok(v) => (cap(&json!({"untrusted_data": v}).to_string()), false),
+        Ok(v) => {
+            if OPSEC.contains(&name) {
+                ctx.deps.opsec.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            (cap(&json!({"untrusted_data": v}).to_string()), false)
+        }
         Err(e) => (e, true),
     }
 }
+
+/// Tools whose results are opsec: Jabber messages, the rescue's pings, and outside feeds. Once one
+/// has been read, the conversation may not reach the web.
+pub const OPSEC: &[&str] = &["jabber_chat", "jabber_pings", "jabber_rooms", "jabber_search", "rescue_status", "rescue_history", "feed_items"];
+/// Tools that reach the web with words the model chose.
+pub const WEB: &[&str] = &["web_search", "web_fetch"];
 
 fn cap(s: &str) -> String {
     if s.len() <= RESULT_CAP {
@@ -216,13 +239,34 @@ mod tests {
         assert!(tools_for(&deps.facts()).iter().any(|t| t.name == "search_intel"));
     }
 
+    /// The one tool that writes to anyone is send_jabber, and it only proposes: the user clicks.
     #[test]
-    fn no_tool_sends_messages() {
+    fn only_send_jabber_sends_and_it_waits_for_a_click() {
         for t in registry() {
             let n = t.name.to_lowercase();
-            for word in ["send", "post", "jabber_send", "message", "ping_", "broadcast", "notify"] {
+            if n == "send_jabber" {
+                assert_eq!(t.kind, Kind::Action);
+                assert!(matches!(t.need, Need::All(&["actions.jabber"])));
+                continue;
+            }
+            for word in ["send", "post", "message", "ping_", "broadcast", "notify"] {
                 assert!(!n.contains(word), "{} looks like it sends something", t.name);
             }
+        }
+    }
+
+    #[test]
+    fn reading_jabber_or_feeds_closes_the_web_for_the_conversation() {
+        let deps = AiDeps::for_tests(facts(&["internet", "jabber"]));
+        let (_, err) = run(&deps, "jabber_pings", json!({}));
+        assert!(!err);
+        assert!(deps.opsec.load(std::sync::atomic::Ordering::Relaxed));
+        let (out, err) = run(&deps, "web_search", json!({"query": "anything"}));
+        assert!(err && out.to_string().contains("must not leave"), "{out}");
+        let (out, err) = run(&deps, "remember", json!({"kind": "other", "text": "the ops room said X"}));
+        assert!(err && out.to_string().contains("not saved"), "{out}");
+        for t in OPSEC {
+            assert!(registry().iter().any(|r| r.name == *t) || ["jabber_rooms", "jabber_search"].contains(t), "{t} is a tool");
         }
     }
 
