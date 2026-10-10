@@ -1,3 +1,4 @@
+use spai_ui::i18n::Tr;
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
@@ -106,7 +107,7 @@ pub fn rail(
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(
-                egui::RichText::new("EVE SPAI")
+                egui::RichText::new(tr!("EVE SPAI"))
                     .color(accent)
                     .strong()
                     .size(16.0),
@@ -114,7 +115,7 @@ pub fn rail(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 if icon_button(ui, icon::CARET_LEFT, weak)
-                    .on_hover_text("Collapse")
+                    .on_hover_text(tr!("Collapse"))
                     .clicked()
                 {
                     *expanded = false;
@@ -124,7 +125,7 @@ pub fn rail(
     } else {
         ui.vertical_centered(|ui| {
             if icon_button(ui, icon::LIST, accent)
-                .on_hover_text("Expand")
+                .on_hover_text(tr!("Expand"))
                 .clicked()
             {
                 *expanded = true;
@@ -178,7 +179,7 @@ fn primary_items(
         if nav_item(
             ui,
             v.icon(),
-            v.label(),
+            v.label().tr(),
             v == *selected,
             expanded,
             badges.contains(&v),
@@ -212,7 +213,7 @@ fn scrolled_items(
         if nav_item(
             ui,
             v.icon(),
-            v.label(),
+            v.label().tr(),
             v == *selected,
             expanded,
             badges.contains(&v),
@@ -238,7 +239,7 @@ fn settings_item(ui: &mut egui::Ui, selected: &mut View, expanded: bool) {
     if nav_item(
         ui,
         icon::GEAR_SIX,
-        "Settings",
+        tr!("Settings"),
         *selected == View::Settings,
         expanded,
         false,

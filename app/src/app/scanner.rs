@@ -76,7 +76,7 @@ impl SpaiApp {
             Some((who, _)) => format!("Following {who}: while their system is selected, the selection moves with them"),
             None => "No scanner yet: whoever of your characters pastes a probe scan, enters a hole or takes a detected one next".to_owned(),
         };
-        if ui.checkbox(&mut self.settings.wh_track_scanner, "Track active scanner").on_hover_text(hover).changed() {
+        if ui.checkbox(&mut self.settings.wh_track_scanner, tr!("Track active scanner")).on_hover_text(hover).changed() {
             self.needs_save = true;
             if self.settings.wh_track_scanner {
                 if let Some((_, at)) = scanner {

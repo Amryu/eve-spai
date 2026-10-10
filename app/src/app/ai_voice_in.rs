@@ -90,7 +90,7 @@ impl SpaiApp {
                 crate::sound::play("info", 0.6);
                 self.ai_listen = Listen::Recording(r, source);
             }
-            Err(e) => self.toast_error(format!("Microphone: {e}")),
+            Err(e) => self.toast_error(trf!("Microphone: {e}", e = e)),
         }
     }
 
@@ -175,8 +175,8 @@ impl SpaiApp {
                     let h = self.ai_handle(&ctx);
                     h.send(crate::ai::session::Command::Send { text, voice: true });
                 }
-                Ok(None) => self.toast("Nothing heard"),
-                Err(e) => self.toast_error(format!("Speech recognition: {e}")),
+                Ok(None) => self.toast(tr!("Nothing heard")),
+                Err(e) => self.toast_error(trf!("Speech recognition: {e}", e = e)),
             }
         }
     }

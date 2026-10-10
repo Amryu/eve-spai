@@ -2,6 +2,8 @@
 //! and when, what it was worth and what dropped, the fit and holds, and every attacker with their
 //! damage. Any number may be open at once.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::killmail::{Hold, KillDetail, KillState, SharedKill};
 use std::collections::HashMap;
@@ -53,7 +55,7 @@ impl SpaiApp {
             let title = match &snapshot {
                 KillState::Done(d) => {
                     let who = d.name(d.victim.char_id).or(d.name(d.victim.corp_id)).unwrap_or("?").to_owned();
-                    let ship = names.get(&d.victim.ship).cloned().unwrap_or_default();
+                    let ship = names.get(&d.victim.ship).map(|n| crate::shipnames::shown(n)).unwrap_or_default();
                     format!("EVE Spai - {who} ({ship})")
                 }
                 _ => format!("EVE Spai - Kill {kill_id}"),
@@ -67,12 +69,12 @@ impl SpaiApp {
                 KillState::Loading => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(format!("Fetching kill {kill_id} from zKillboard and ESI\u{2026}"));
+                        ui.label(trf!("Fetching kill {kill_id} from zKillboard and ESI\u{2026}", kill_id = kill_id));
                     });
                     ui.horizontal(|ui| kill_actions(ui, kill_id, None));
                 }
                 KillState::Failed(e) => {
-                    ui.colored_label(crate::theme::standing::WARNING, format!("Could not load kill {kill_id}: {e}"));
+                    ui.colored_label(crate::theme::standing::WARNING, trf!("Could not load kill {kill_id}: {e}", kill_id = kill_id, e = e));
                     ui.horizontal(|ui| kill_actions(ui, kill_id, None));
                 }
                 KillState::Done(d) => link = kill_body(ui, d, &names, sys.as_ref()),
@@ -97,14 +99,14 @@ pub(crate) fn killmail_viewport(kill_id: i64) -> egui::ViewportId {
 fn kill_actions(ui: &mut egui::Ui, kill_id: i64, esi: Option<String>) {
     use egui_phosphor::regular as icon;
     let url = crate::killmail::zkill_url(kill_id);
-    if ui.button(icon::COPY).on_hover_text("Copy the zKillboard link").clicked() {
+    if ui.button(icon::COPY).on_hover_text(tr!("Copy the zKillboard link")).clicked() {
         ui.ctx().copy_text(url.clone());
     }
-    if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(format!("Open on zKillboard: {url}")).clicked() {
+    if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(trf!("Open on zKillboard: {url}", url = url)).clicked() {
         let _ = open::that(&url);
     }
     if let Some(esi) = esi {
-        if ui.button(icon::LINK).on_hover_text("Copy the ESI link").clicked() {
+        if ui.button(icon::LINK).on_hover_text(tr!("Copy the ESI link")).clicked() {
             ui.ctx().copy_text(esi);
         }
     }
@@ -137,7 +139,7 @@ fn kill_body(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sy
 
 fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sys: Option<&(String, String, f64)>, wide: bool) -> Option<String> {
     let mut link = None;
-    let type_name = |id: i64| names.get(&id).cloned().unwrap_or_else(|| if id == 0 { String::new() } else { format!("Type {id}") });
+    let type_name = |id: i64| names.get(&id).map(|n| crate::shipnames::shown(n)).unwrap_or_else(|| if id == 0 { String::new() } else { format!("Type {id}") });
     let red = crate::theme::standing::HOSTILE;
     let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
 
@@ -149,7 +151,7 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
                 eve_image(ui, (d.victim.char_id != 0).then(|| eve_portrait_url(d.victim.char_id, 40.0)), 40.0);
                 ui.vertical(|ui| {
                     let victim = d.name(d.victim.char_id).or(d.name(d.victim.corp_id)).unwrap_or("?");
-                    if ui.link(egui::RichText::new(victim).strong().size(18.0)).on_hover_text("Open on zKillboard").clicked() {
+                    if ui.link(egui::RichText::new(victim).strong().size(18.0)).on_hover_text(tr!("Open on zKillboard")).clicked() {
                         link = Some(party_url(d.victim.char_id, d.victim.corp_id));
                     }
                     affiliation_line(ui, d, &d.victim);
@@ -186,10 +188,10 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
         ui.set_width(ui.available_width());
         // The total and the actions first, the rest wrapping below as whole items.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(d.zkb.total))).color(red).strong().size(22.0));
+            ui.label(egui::RichText::new(trf!("{v} ISK", v = fmt_isk(d.zkb.total))).color(red).strong().size(22.0));
             if d.zkb.estimated {
-                ui.label(egui::RichText::new("estimate").weak())
-                    .on_hover_text("zKillboard has no figures for this kill yet; worked out from market prices");
+                ui.label(egui::RichText::new(tr!("estimate")).weak())
+                    .on_hover_text(tr!("zKillboard has no figures for this kill yet; worked out from market prices"));
             }
             ui.add_space(8.0);
             kill_actions(ui, d.kill_id, Some(d.esi_url()));
@@ -198,10 +200,10 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
             let item = |ui: &mut egui::Ui, t: egui::RichText| {
                 ui.add(egui::Label::new(t).wrap_mode(egui::TextWrapMode::Extend));
             };
-            item(ui, egui::RichText::new(format!("{} fitted", fmt_isk(d.zkb.fitted))).weak());
-            item(ui, egui::RichText::new(format!("{} dropped", fmt_isk(d.zkb.dropped))).color(green));
-            item(ui, egui::RichText::new(format!("{} destroyed", fmt_isk(d.zkb.destroyed))).color(red));
-            item(ui, egui::RichText::new(format!("{} points", d.zkb.points)).weak());
+            item(ui, egui::RichText::new(trf!("{v} fitted", v = fmt_isk(d.zkb.fitted))).weak());
+            item(ui, egui::RichText::new(trf!("{v} dropped", v = fmt_isk(d.zkb.dropped))).color(green));
+            item(ui, egui::RichText::new(trf!("{v} destroyed", v = fmt_isk(d.zkb.destroyed))).color(red));
+            item(ui, egui::RichText::new(trf!("{v} points", v = d.zkb.points)).weak());
             let mut tags: Vec<&str> = Vec::new();
             if d.zkb.solo {
                 tags.push("solo");
@@ -274,7 +276,7 @@ fn pod_line(ui: &mut egui::Ui, ship: &KillDetail, pod: &KillDetail, type_name: &
     let implants: Vec<&crate::killmail::KillItem> = pod.items.iter().filter(|i| i.depth == 0).collect();
     ui.horizontal(|ui| {
         eve_image(ui, Some(eve_type_icon_url(pod.victim.ship, 24.0)), 24.0);
-        ui.add(egui::Label::new(egui::RichText::new(format!("Capsule {} ISK", fmt_isk(pod.zkb.total))).color(red).strong()).wrap_mode(egui::TextWrapMode::Extend));
+        ui.add(egui::Label::new(egui::RichText::new(trf!("Capsule {v} ISK", v = fmt_isk(pod.zkb.total))).color(red).strong()).wrap_mode(egui::TextWrapMode::Extend));
         kill_actions(ui, pod.kill_id, Some(pod.esi_url()));
         // As many implants as fit beside a little of the text, the rest behind "+N".
         let step = 26.0 + ui.spacing().item_spacing.x;
@@ -351,7 +353,7 @@ fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 fn items_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> String, h: Option<f32>) {
     let red = crate::theme::standing::HOSTILE;
     let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
-    ui.label(egui::RichText::new(format!("Fit and holds ({} items)", d.items.len())).strong());
+    ui.label(egui::RichText::new(trf!("Fit and holds ({v} items)", v = d.items.len())).strong());
     let mut holds: Vec<Hold> = d.items.iter().map(|i| Hold::of(i.flag)).collect();
     holds.sort();
     holds.dedup();
@@ -373,7 +375,7 @@ fn items_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> Stri
             let subtotal: f64 = rows.iter().map(|i| d.value_of(i, i.dropped + i.destroyed)).sum();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(hold.label()).strong());
+                ui.label(egui::RichText::new(hold.label().tr()).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(fmt_isk(subtotal)).weak());
                 });
@@ -423,7 +425,7 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
     let mut link = None;
     let total = d.total_damage().max(1) as f32;
     let top = d.attackers.iter().max_by_key(|a| a.damage).map(|a| (a.char_id, a.ship, a.damage));
-    ui.label(egui::RichText::new(format!("Attackers ({})", d.attackers.len())).strong());
+    ui.label(egui::RichText::new(trf!("Attackers ({v})", v = d.attackers.len())).strong());
     let mut body = |ui: &mut egui::Ui| {
         for a in &d.attackers {
             let is_top = top == Some((a.char_id, a.ship, a.damage)) && a.damage > 0;
@@ -467,7 +469,7 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
                                     ui.set_max_width((ui.available_width() - badges).max(60.0));
                                     if a.char_id != 0 {
                                         let text = egui::RichText::new(&who).strong().color(ui.visuals().hyperlink_color);
-                                        let r = ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_text(format!("{who}\nOpen on zKillboard"));
+                                        let r = ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_text(trf!("{who}\nOpen on zKillboard", who = who));
                                         if r.clicked() {
                                             link = Some(party_url(a.char_id, a.corp_id));
                                         }
@@ -477,10 +479,10 @@ fn attackers_list(ui: &mut egui::Ui, d: &KillDetail, type_name: &dyn Fn(i64) -> 
                                     }
                                 });
                                 if a.final_blow {
-                                    badge(ui, "Final blow", crate::theme::standing::HOSTILE);
+                                    badge(ui, tr!("Final blow"), crate::theme::standing::HOSTILE);
                                 }
                                 if is_top {
-                                    badge(ui, "Top damage", crate::theme::standing::WARNING);
+                                    badge(ui, tr!("Top damage"), crate::theme::standing::WARNING);
                                 }
                             });
                             affiliation_line(ui, d, a);

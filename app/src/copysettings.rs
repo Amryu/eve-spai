@@ -225,21 +225,14 @@ pub fn ui(
         let names = running.clone().unwrap_or_default();
         ui.colored_label(
             standing::HOSTILE,
-            format!(
-                "{} EVE is running ({}). Close every client before copying, or the game will \
-                 overwrite the files again on exit.",
-                egui_phosphor::regular::WARNING,
-                names.join(", ")
-            ),
+            trf!("{icon} EVE is running ({v}). Close every client before copying, or the game will \
+                 overwrite the files again on exit.", icon = egui_phosphor::regular::WARNING, v = names.join(", ")),
         );
         ui.add_space(4.0);
     } else if unverified {
         ui.colored_label(
             standing::WARNING,
-            format!(
-                "{} Could not check whether EVE is running. Make sure every client is closed.",
-                egui_phosphor::regular::WARNING
-            ),
+            trf!("{icon} Could not check whether EVE is running. Make sure every client is closed.", icon = egui_phosphor::regular::WARNING),
         );
         ui.add_space(4.0);
     }
@@ -247,7 +240,7 @@ pub fn ui(
     let Some(root) = state.root.clone() else {
         ui.colored_label(
             standing::WARNING,
-            "No EVE settings directory found. Set it in Settings > EVE settings directory.",
+            tr!("No EVE settings directory found. Set it in Settings > EVE settings directory."),
         );
         return;
     };
@@ -256,7 +249,7 @@ pub fn ui(
 
     if state.profiles.len() > 1 {
         ui.horizontal(|ui| {
-            ui.label("Copy from profile");
+            ui.label(tr!("Copy from profile"));
             let hint = state.hinted_profile.clone();
             let mut changed = false;
             egui::ComboBox::from_id_salt("copy_src_profile")
@@ -268,7 +261,7 @@ pub fn ui(
                             .changed();
                     }
                 });
-            ui.label("to");
+            ui.label(tr!("to"));
             egui::ComboBox::from_id_salt("copy_dst_profile")
                 .selected_text(state.dst_profile.clone())
                 .show_ui(ui, |ui| {
@@ -277,9 +270,9 @@ pub fn ui(
                     }
                 });
             if let Some(hint) = hint {
-                ui.label(egui::RichText::new(format!("· {hint} in use")).weak()).on_hover_text(
-                    "The profile your EVE client was last launched with, read from its command \
-                     line",
+                ui.label(egui::RichText::new(trf!("· {hint} in use", hint = hint)).weak()).on_hover_text(
+                    tr!("The profile your EVE client was last launched with, read from its command \
+                     line"),
                 );
             }
             if changed {
@@ -316,7 +309,7 @@ pub fn ui(
                 ui.add_enabled_ui(can_source, |ui| {
                     if ui
                         .radio(is_source, "")
-                        .on_hover_text("Copy settings from this character")
+                        .on_hover_text(tr!("Copy settings from this character"))
                         .clicked()
                     {
                         set_source = Some(row.id);
@@ -326,7 +319,7 @@ pub fn ui(
                 ui.add_enabled_ui(!is_source, |ui| {
                     if ui
                         .checkbox(&mut checked, "")
-                        .on_hover_text("Overwrite this character's settings")
+                        .on_hover_text(tr!("Overwrite this character's settings"))
                         .changed()
                     {
                         flip_dest = Some((row.id, checked));
@@ -335,36 +328,36 @@ pub fn ui(
 
                 ui.label(egui::RichText::new(row.display()).strong());
                 if !row.linked {
-                    ui.label(egui::RichText::new("not linked").weak()).on_hover_text(
-                        "Found by its settings file. Not authenticated in EVE Spai, which is fine \
-                         for copying.",
+                    ui.label(egui::RichText::new(tr!("not linked")).weak()).on_hover_text(
+                        tr!("Found by its settings file. Not authenticated in EVE Spai, which is fine \
+                         for copying."),
                     );
                 }
                 if !row.has_file {
                     ui.label(
-                        egui::RichText::new("no settings file").color(standing::WARNING),
+                        egui::RichText::new(tr!("no settings file")).color(standing::WARNING),
                     )
                     .on_hover_text(
-                        "This character has never been logged in on this machine, so it cannot be \
-                         a source. As a destination its file is created.",
+                        tr!("This character has never been logged in on this machine, so it cannot be \
+                         a source. As a destination its file is created."),
                     );
                 }
                 match row.account {
                     Some((acct, src)) => {
-                        ui.label(egui::RichText::new(format!("account {acct}")).weak())
+                        ui.label(egui::RichText::new(trf!("account {acct}", acct = acct)).weak())
                             .on_hover_text(src.label());
                     }
                     None => {
-                        ui.label(egui::RichText::new("account unknown").color(standing::WARNING))
+                        ui.label(egui::RichText::new(tr!("account unknown")).color(standing::WARNING))
                             .on_hover_text(
-                                "Account settings (overview, shortcuts) cannot be copied for this \
+                                tr!("Account settings (overview, shortcuts) cannot be copied for this \
                                  character until its account is known. It is detected \
-                                 automatically while the character is logged in, or set it here.",
+                                 automatically while the character is logged in, or set it here."),
                             );
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Set account").clicked() {
+                    if ui.button(tr!("Set account")).clicked() {
                         toggle_assign = Some(row.id);
                     }
                 });
@@ -373,10 +366,7 @@ pub fn ui(
             if state.assign_open == Some(row.id) {
                 ui.indent(row.id, |ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{} accounts found on this machine, oldest id first:",
-                            known_accounts.len()
-                        ))
+                        egui::RichText::new(trf!("{known_accounts} accounts found on this machine, oldest id first:", known_accounts = known_accounts.len()))
                         .weak(),
                     );
                     ui.horizontal_wrapped(|ui| {
@@ -392,8 +382,8 @@ pub fn ui(
                             let btn = ui.add(egui::Button::new(label).selected(mine));
                             let btn = if full {
                                 btn.on_hover_text(
-                                    "Already has three characters, which is an EVE account's \
-                                     limit. Pick it only if one of those is wrong.",
+                                    tr!("Already has three characters, which is an EVE account's \
+                                     limit. Pick it only if one of those is wrong."),
                                 )
                             } else {
                                 btn
@@ -406,15 +396,15 @@ pub fn ui(
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut state.assign_input)
-                                .hint_text("other account id")
+                                .hint_text(tr!("other account id"))
                                 .desired_width(140.0),
                         );
-                        if ui.button("Set").clicked() {
+                        if ui.button(tr!("Set")).clicked() {
                             if let Ok(id) = state.assign_input.trim().parse::<i64>() {
                                 assign = Some((row.id, Some(id)));
                             }
                         }
-                        if row.account.is_some() && ui.button("Clear").clicked() {
+                        if row.account.is_some() && ui.button(tr!("Clear")).clicked() {
                             assign = Some((row.id, None));
                         }
                     });
@@ -462,13 +452,13 @@ pub fn ui(
                 .filter(|r| state.dests.contains(&r.id))
                 .map(|r| r.display())
                 .collect();
-            ui.label(format!("Copying {} to {}.", name, dest_names.join(", ")));
+            ui.label(trf!("Copying {name} to {v}.", name = name, v = dest_names.join(", ")));
 
             if plan.source_account.is_none() {
                 ui.colored_label(
                     standing::WARNING,
-                    "The source character's account is unknown, so only per-character settings \
-                     (windows, chat tabs) are copied. Overview and shortcuts are not.",
+                    tr!("The source character's account is unknown, so only per-character settings \
+                     (windows, chat tabs) are copied. Overview and shortcuts are not."),
                 );
             } else {
                 let no_account: Vec<String> = state
@@ -480,21 +470,15 @@ pub fn ui(
                 if !no_account.is_empty() {
                     ui.colored_label(
                         standing::WARNING,
-                        format!(
-                            "No account known for {}, so they get per-character settings only.",
-                            no_account.join(", ")
-                        ),
+                        trf!("No account known for {v}, so they get per-character settings only.", v = no_account.join(", ")),
                     );
                 }
                 let collateral = state.collateral();
                 if !collateral.is_empty() {
                     ui.colored_label(
                         standing::WARNING,
-                        format!(
-                            "Account settings are shared. Overview and shortcuts will also change \
-                             for {}.",
-                            collateral.join(", ")
-                        ),
+                        trf!("Account settings are shared. Overview and shortcuts will also change \
+                             for {v}.", v = collateral.join(", ")),
                     );
                 }
             }
@@ -504,20 +488,20 @@ pub fn ui(
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let can_copy = !blocked && state.source.is_some() && !state.dests.is_empty();
-        let btn = ui.add_enabled(can_copy, egui::Button::new("Copy settings"));
+        let btn = ui.add_enabled(can_copy, egui::Button::new(tr!("Copy settings")));
         let btn = if blocked {
-            btn.on_disabled_hover_text("Close every EVE client first.")
+            btn.on_disabled_hover_text(tr!("Close every EVE client first."))
         } else if state.source.is_none() {
-            btn.on_disabled_hover_text("Pick a source character.")
+            btn.on_disabled_hover_text(tr!("Pick a source character."))
         } else if state.dests.is_empty() {
-            btn.on_disabled_hover_text("Pick at least one destination character.")
+            btn.on_disabled_hover_text(tr!("Pick at least one destination character."))
         } else {
-            btn.on_hover_text("Overwrite the destination settings, keeping a backup of each")
+            btn.on_hover_text(tr!("Overwrite the destination settings, keeping a backup of each"))
         };
         if btn.clicked() {
             state.confirm = true;
         }
-        if ui.button("Cancel").clicked() {
+        if ui.button(tr!("Cancel")).clicked() {
             state.clear_selection();
         }
     });
@@ -532,32 +516,24 @@ pub fn ui(
         let mut go = false;
         let resp = egui::Modal::new(egui::Id::new("copy_settings_confirm")).show(ui.ctx(), |ui| {
             ui.set_min_width(360.0);
-            ui.heading("Copy character settings");
+            ui.heading(tr!("Copy character settings"));
             ui.add_space(6.0);
-            ui.label(format!(
-                "From {} to {}.",
-                source_name.clone().unwrap_or_default(),
-                dest_names.join(", ")
-            ));
-            ui.label(format!(
-                "{} character file(s){}.",
-                dest_names.len(),
-                if plan.dest_accounts.is_empty() {
+            ui.label(trf!("From {v} to {v2}.", v = source_name.clone().unwrap_or_default(), v2 = dest_names.join(", ")));
+            ui.label(trf!("{dest_names} character file(s){v}.", dest_names = dest_names.len(), v = if plan.dest_accounts.is_empty() {
                     String::new()
                 } else {
                     format!(" and {} account file(s)", plan.dest_accounts.len())
-                }
-            ));
+                }));
             ui.label(
-                egui::RichText::new("Every file that gets overwritten is backed up next to it.")
+                egui::RichText::new(tr!("Every file that gets overwritten is backed up next to it."))
                     .weak(),
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Copy").clicked() {
+                if ui.button(tr!("Copy")).clicked() {
                     go = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     state.confirm = false;
                 }
             });
@@ -592,15 +568,12 @@ pub fn ui(
             ui.set_min_width(320.0);
             match &result {
                 Ok(report) => {
-                    ui.label(format!(
-                        "{} character file(s) and {} account file(s) written.",
-                        report.char_files, report.account_files
-                    ));
+                    ui.label(trf!("{v} character file(s) and {v2} account file(s) written.", v = report.char_files, v2 = report.account_files));
                     if !report.backups.is_empty() {
-                        ui.label(format!("{} backup(s) kept.", report.backups.len()));
+                        ui.label(trf!("{v} backup(s) kept.", v = report.backups.len()));
                     }
                     ui.label(
-                        egui::RichText::new("Start EVE to see the copied settings.").weak(),
+                        egui::RichText::new(tr!("Start EVE to see the copied settings.")).weak(),
                     );
                 }
                 Err(e) => {
@@ -608,7 +581,7 @@ pub fn ui(
                 }
             }
             ui.add_space(6.0);
-            if ui.button("Close").clicked() {
+            if ui.button(tr!("Close")).clicked() {
                 state.result = None;
             }
         });

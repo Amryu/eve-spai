@@ -29,6 +29,17 @@ impl Store {
         map
     }
 
+    /// English ship name to its name in `lang`, for the ships that have one.
+    pub fn ship_names_in(&self, lang: &str) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT s.name, n.name FROM sde_ship_names n JOIN sde_ships s ON s.id = n.ship_id WHERE n.lang = ?1") {
+            if let Ok(rows) = stmt.query_map([lang], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                map.extend(rows.flatten());
+            }
+        }
+        map
+    }
+
     pub fn all_ships(&self) -> Vec<(i64, String, String)> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(

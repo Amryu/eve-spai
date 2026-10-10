@@ -1,5 +1,7 @@
 //! The intel card: one report drawn as a row of chips, shared by the feed, the alert window, the system window and the threat board.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 /// A ship-class badge is worth showing only when the class is specific: a generic hull tier
@@ -30,7 +32,7 @@ pub(crate) fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
             DestClass::Thera => parts.push("Thera".into()),
             DestClass::Turnur => parts.push("Turnur".into()),
             DestClass::Unknown => {}
-            other => parts.push(format!("\u{2192} {}", other.label())),
+            other => parts.push(format!("\u{2192} {}", other.label().tr())),
         }
     }
     let icon = egui_phosphor::regular::SPIRAL;
@@ -161,7 +163,7 @@ pub(crate) fn char_jump_menu(ui: &mut egui::Ui, all: &CardChars) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (color, mark) = jump_chip_style(h.via);
                 let Some(j) = h.jumps else {
-                    ui.label(egui::RichText::new("out of range").weak());
+                    ui.label(egui::RichText::new(tr!("out of range")).weak());
                     return;
                 };
                 if let (Some(m), Some(why)) = (mark, jump_chip_tip(h.via, j)) {
@@ -254,7 +256,7 @@ pub(crate) fn intel_row(
                         );
                         match from_you {
                             Some(0) => {
-                                ui.label(egui::RichText::new("here").monospace().color(jumps_color));
+                                ui.label(egui::RichText::new(tr!("here")).monospace().color(jumps_color));
                             }
                             Some(j) => {
                                 ui.label(
@@ -413,7 +415,7 @@ pub(crate) fn intel_row(
                                 .strong(),
                             crate::theme::chip::CELESTIAL_BG,
                         )
-                        .on_hover_text(format!("Death {dist} from {cname}"));
+                        .on_hover_text(trf!("Death {dist} from {cname}", dist = dist, cname = cname));
                     }
                 }
 
@@ -430,7 +432,7 @@ pub(crate) fn intel_row(
                         .fill(red)
                         .sense(egui::Sense::hover()),
                     )
-                    .on_hover_text("hostiles");
+                    .on_hover_text(tr!("hostiles"));
                 }
 
                 if let Some(isk) = r.isk.filter(|_| !is_zkill) {
@@ -441,7 +443,7 @@ pub(crate) fn intel_row(
                             .strong(),
                         crate::theme::chip::ISK_BG,
                     )
-                    .on_hover_text("ISK posted");
+                    .on_hover_text(tr!("ISK posted"));
                 }
 
                 for (name, dist) in &r.structures {
@@ -454,7 +456,7 @@ pub(crate) fn intel_row(
                         let url = eve_type_render_url(tid, badge_isz);
                         let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(badge_isz));
                         ui.add(egui::Button::image_and_text(img, egui::RichText::new(text).color(col).strong()))
-                            .on_hover_text("Structure");
+                            .on_hover_text(tr!("Structure"));
                         continue;
                     }
                     chip(
@@ -488,7 +490,7 @@ pub(crate) fn intel_row(
                             .strong(),
                         crate::theme::chip::CELESTIAL_BG,
                     )
-                    .on_hover_text(format!("{cel} (celestial)"));
+                    .on_hover_text(trf!("{cel} (celestial)", cel = cel));
                 }
 
                 if let Some(probes) = r.probes {
@@ -499,7 +501,7 @@ pub(crate) fn intel_row(
                             .strong(),
                         crate::theme::chip::PROBES_BG,
                     )
-                    .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
+                    .on_hover_text(tr!("Scanning probes on D-Scan (someone is scanning)"));
                 }
 
                 let nothing_else = r.count.is_none()
@@ -589,7 +591,7 @@ pub(crate) fn intel_row(
                         )
                         .stroke(egui::Stroke::new(1.0, amber));
                         let (resp, _) = egui::containers::menu::MenuButton::from_button(btn).ui(ui, |ui| {
-                            ui.label(egui::RichText::new("Ambiguous abbreviation, could be:").weak());
+                            ui.label(egui::RichText::new(tr!("Ambiguous abbreviation, could be:")).weak());
                             for (id, name) in &amb.candidates {
                                 if *id == 0 {
                                     ui.label(name);
@@ -606,13 +608,13 @@ pub(crate) fn intel_row(
                                 }
                             }
                         });
-                        resp.on_hover_text(format!("Could be: {names}"));
+                        resp.on_hover_text(trf!("Could be: {names}", names = names));
                     }
                 }
 
                 for class in r.classes.iter().filter(|c| interesting_ship_class(c)) {
                     ui.add(egui::Button::new(egui::RichText::new(class).italics()))
-                        .on_hover_text("Ship class, no exact hull reported");
+                        .on_hover_text(tr!("Ship class, no exact hull reported"));
                 }
 
                 let tackled_badge = |ui: &mut egui::Ui, label: String| {
@@ -760,7 +762,7 @@ pub(crate) fn intel_row(
                         false,
                         egui::Button::new((egui::RichText::new(icon::USER).weak(), dots)),
                     )
-                    .on_disabled_hover_text("Resolving pilot…");
+                    .on_disabled_hover_text(tr!("Resolving pilot…"));
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(450));
                 }
 
@@ -777,12 +779,12 @@ pub(crate) fn intel_row(
                         let font = egui::TextStyle::Body.resolve(ui.style());
                         let w = ui
                             .painter()
-                            .layout_no_wrap("Last seen as:".to_owned(), font, egui::Color32::PLACEHOLDER)
+                            .layout_no_wrap(tr!("Last seen as:").to_owned(), font, egui::Color32::PLACEHOLDER)
                             .size()
                             .x;
                         ui.add_sized(
                             [w, row_h],
-                            egui::Label::new(egui::RichText::new("Last seen as:").weak())
+                            egui::Label::new(egui::RichText::new(tr!("Last seen as:")).weak())
                                 .wrap_mode(egui::TextWrapMode::Extend),
                         );
                         for (id, ship) in seen {
@@ -791,7 +793,7 @@ pub(crate) fn intel_row(
                                 .fit_to_exact_size(egui::Vec2::splat(badge_isz));
                             let mut panel = ui.add(egui::Button::image_and_text(
                                 img,
-                                egui::RichText::new(&ship).strong(),
+                                egui::RichText::new(crate::shipnames::shown(&ship)).strong(),
                             ));
                             if let Some(d) = ship_details.get(&id) {
                                 let roles =
@@ -935,7 +937,7 @@ pub(crate) fn intel_row(
                                             fb_alliance,
                                             inf.final_blow_corp,
                                             inf.final_blow_char,
-                                            "Attacker (final blow). Click for zKill.",
+                                            tr!("Attacker (final blow). Click for zKill."),
                                             tip,
                                         );
                                         if inf.attacker_count > 0 {
@@ -963,7 +965,7 @@ pub(crate) fn intel_row(
                                         inf.victim_alliance,
                                         inf.victim_corp,
                                         inf.victim_char,
-                                        "Victim. Click for zKill.",
+                                        tr!("Victim. Click for zKill."),
                                         tip,
                                     );
                                 }
@@ -972,10 +974,10 @@ pub(crate) fn intel_row(
                                         clicked = Some(c);
                                     }
                                 }
-                                let lbl = egui::RichText::new(format!("{} zKill", icon::ARROW_SQUARE_OUT))
+                                let lbl = egui::RichText::new(trf!("{icon} zKill", icon = icon::ARROW_SQUARE_OUT))
                                     .color(red)
                                     .strong();
-                                if ui.add(egui::Button::new(lbl)).on_hover_text("Open the killmail").clicked() {
+                                if ui.add(egui::Button::new(lbl)).on_hover_text(tr!("Open the killmail")).clicked() {
                                     match crate::zkill::parse_kill_id(&link.url) {
                                         Some(id) => clicked = Some(IntelClick::Kill(id, info.as_ref().and_then(|i| i.hash.clone()))),
                                         None => {
@@ -994,7 +996,7 @@ pub(crate) fn intel_row(
                         LinkKind::BattleReport => {
                             if ui
                                 .add(egui::Button::new(
-                                    egui::RichText::new(format!("{} BR", icon::CHART_LINE))
+                                    egui::RichText::new(trf!("{icon} BR", icon = icon::CHART_LINE))
                                         .color(accent)
                                         .strong(),
                                 ))
@@ -1008,7 +1010,7 @@ pub(crate) fn intel_row(
                         LinkKind::Dscan => {
                             if ui
                                 .add(egui::Button::new(
-                                    egui::RichText::new(format!("{} dscan", icon::SCAN)).color(accent),
+                                    egui::RichText::new(trf!("{icon} dscan", icon = icon::SCAN)).color(accent),
                                 ))
                                 .on_hover_text(&link.url)
                                 .clicked()
@@ -1019,9 +1021,9 @@ pub(crate) fn intel_row(
                         LinkKind::LocalScan => {
                             if ui
                                 .add(egui::Button::new(
-                                    egui::RichText::new(format!("{} local scan", icon::USERS_THREE)).color(accent),
+                                    egui::RichText::new(trf!("{icon} local scan", icon = icon::USERS_THREE)).color(accent),
                                 ))
-                                .on_hover_text(format!("Look these pilots up\n{}", link.url))
+                                .on_hover_text(trf!("Look these pilots up\n{v}", v = link.url))
                                 .clicked()
                             {
                                 clicked = Some(IntelClick::LocalScan(link.url.clone()));
@@ -1070,7 +1072,7 @@ pub(crate) fn intel_row(
                     tag(ui, "DROPPER", red);
                 }
                 if r.cap_tackled {
-                    tag(ui, "CAP TACKLED", red);
+                    tag(ui, tr!("CAP TACKLED"), red);
                 }
                 if r.wormhole {
                     tag(ui, &wormhole_badge_label(r), crate::theme::standing::ALLIANCE);
@@ -1085,7 +1087,7 @@ pub(crate) fn intel_row(
                     tag(ui, "FILAMENT", warn);
                 }
                 if r.diamond_rats {
-                    tag(ui, "\u{25C6} Rats \u{25C6}", red);
+                    tag(ui, tr!("\u{25C6} Rats \u{25C6}"), red);
                 }
                 for (kind, code) in &r.anom_sigs {
                     tag(ui, &anom_sig_badge_label(*kind, code), warn);
@@ -1099,7 +1101,7 @@ pub(crate) fn intel_row(
                     ui.label(egui::RichText::new(hint).italics().weak());
                 }
                 if stale {
-                    ui.label(egui::RichText::new("outdated").italics().weak());
+                    ui.label(egui::RichText::new(tr!("outdated")).italics().weak());
                 }
             };
             ui.horizontal_wrapped(render);

@@ -425,10 +425,7 @@ pub(crate) fn build_alert_viewport_cb(
                     // would steal the window drag.
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{}  Intel alerts",
-                                egui_phosphor::regular::DOTS_SIX
-                            ))
+                            egui::RichText::new(trf!("{icon}  Intel alerts", icon = egui_phosphor::regular::DOTS_SIX))
                             .strong(),
                         )
                         .selectable(false),
@@ -453,7 +450,7 @@ pub(crate) fn build_alert_viewport_cb(
                         |ui| {
                             if ui
                                 .button(egui_phosphor::regular::X)
-                                .on_hover_text("Dismiss")
+                                .on_hover_text(tr!("Dismiss"))
                                 .clicked()
                             {
                                 dismiss = true;
@@ -463,7 +460,7 @@ pub(crate) fn build_alert_viewport_cb(
                                     egui::Button::new(egui_phosphor::regular::PUSH_PIN)
                                         .selected(pinned),
                                 )
-                                .on_hover_text("Pin open (hold until closed)")
+                                .on_hover_text(tr!("Pin open (hold until closed)"))
                                 .clicked()
                             {
                                 pinned = !pinned;
@@ -473,7 +470,7 @@ pub(crate) fn build_alert_viewport_cb(
                                     egui::Button::new(egui_phosphor::regular::ALARM)
                                         .selected(snooze),
                                 )
-                                .on_hover_text("Snooze until I undock (keeps collecting intel)")
+                                .on_hover_text(tr!("Snooze until I undock (keeps collecting intel)"))
                                 .clicked()
                             {
                                 snooze = !snooze;
@@ -539,18 +536,18 @@ pub(crate) fn build_alert_viewport_cb(
                 let mut ack = false;
                 let resp = egui::Modal::new(egui::Id::new("overlay_verdict_explainer")).show(&ctx, |ui| {
                     ui.set_max_width(320.0);
-                    ui.heading("Uncertain pilot (?)");
+                    ui.heading(tr!("Uncertain pilot (?)"));
                     ui.add_space(4.0);
                     ui.label(
-                        "A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word.",
+                        tr!("A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word."),
                     );
                     ui.add_space(6.0);
                     ui.label(
-                        "Mark it \"Real pilot\" to keep it, or \"Not a pilot\" to hide it. Your \
-                         choice is remembered.",
+                        tr!("Mark it \"Real pilot\" to keep it, or \"Not a pilot\" to hide it. Your \
+                         choice is remembered."),
                     );
                     ui.add_space(8.0);
-                    if ui.button("Got it").clicked() {
+                    if ui.button(tr!("Got it")).clicked() {
                         ack = true;
                     }
                 });
@@ -563,20 +560,18 @@ pub(crate) fn build_alert_viewport_cb(
             } else {
                 let mut decision: Option<bool> = None;
                 let resp = egui::Modal::new(egui::Id::new("overlay_verdict_popup")).show(&ctx, |ui| {
-                    ui.heading(format!("Is \"{name}\" a pilot?"));
+                    ui.heading(trf!("Is \"{name}\" a pilot?", name = name));
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new(format!(
-                            "\"{name}\" matched a character that looks inactive."
-                        ))
+                        egui::RichText::new(trf!("\"{name}\" matched a character that looks inactive.", name = name))
                         .weak(),
                     );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Real pilot").clicked() {
+                        if ui.button(tr!("Real pilot")).clicked() {
                             decision = Some(false);
                         }
-                        if ui.button("Not a pilot (hide)").clicked() {
+                        if ui.button(tr!("Not a pilot (hide)")).clicked() {
                             decision = Some(true);
                         }
                     });

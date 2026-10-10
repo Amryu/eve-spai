@@ -1,6 +1,8 @@
 //! The add and edit wormhole form, shared by the desktop and the web app so the two look and work
 //! the same, and the widgets it is made of.
 
+use crate::i18n::Tr;
+
 use crate::widgets::SteadySelect as _;
 
 /// A system offered while typing a name: id, name, security, constellation, region.
@@ -113,7 +115,7 @@ pub fn sig_field(ui: &mut egui::Ui, salt: &str, value: &mut String, hint: &str, 
             }
         })
         .response
-        .on_hover_text("Signatures saved for this system");
+        .on_hover_text(crate::tr!("Signatures saved for this system"));
     });
 }
 
@@ -127,7 +129,7 @@ pub fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut Str
     let describe = |code: &str| {
         spai_core::whdata::hole_type(code).map_or(String::new(), |t| {
             let dest = match t.dest {
-                spai_core::whdata::Dest::Class(c) => c.label(),
+                spai_core::whdata::Dest::Class(c) => c.label().tr(),
                 spai_core::whdata::Dest::AnyKspace => "k-space".into(),
                 spai_core::whdata::Dest::Unknown => "the other side".into(),
             };
@@ -140,7 +142,7 @@ pub fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut Str
         .selected_text(if value.is_empty() { "unknown".to_owned() } else { value.clone() })
         .show_ui(ui, |ui| {
             let mut q: String = ui.data(|d| d.get_temp(q_id)).unwrap_or_default();
-            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search, e.g. C5 or H296").desired_width(width));
+            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(crate::tr!("Search, e.g. C5 or H296")).desired_width(width));
             if ui.data(|d| d.get_temp::<bool>(open_id)).is_none() {
                 r.request_focus();
                 ui.data_mut(|d| d.insert_temp(open_id, true));
@@ -158,13 +160,13 @@ pub fn wh_type_picker(ui: &mut egui::Ui, salt: &str, width: f32, value: &mut Str
                 }
             }
             if needle.is_empty() {
-                ui.menu_value(value, String::new(), "unknown");
+                ui.menu_value(value, String::new(), crate::tr!("unknown"));
             }
             for c in &hits {
                 ui.menu_value(value, (*c).to_owned(), format!("{c}  {}", describe(c)));
             }
             if hits.is_empty() {
-                ui.label(egui::RichText::new("No type matches").weak());
+                ui.label(egui::RichText::new(crate::tr!("No type matches")).weak());
             }
             ui.data_mut(|d| d.insert_temp(q_id, q));
         });
@@ -252,7 +254,7 @@ impl WhForm {
             // A far side known only by its kind shows the kind, so saving keeps it.
             dest: match w.dest_system_id {
                 Some(id) => name(id),
-                None if w.dest != spai_core::wormholes::DestClass::Unknown => w.dest.label().to_owned(),
+                None if w.dest != spai_core::wormholes::DestClass::Unknown => w.dest.label().tr().to_owned(),
                 None => String::new(),
             },
             dest_sig: w.dest_signature.clone().unwrap_or_default(),
@@ -285,13 +287,13 @@ pub type SystemInput<'a> = dyn FnMut(&mut egui::Ui, &'static str, &mut String, &
 pub fn form_ui(ui: &mut egui::Ui, form: &mut WhForm, system_input: &mut SystemInput, here_sigs: &[(String, String)], there_sigs: &[(String, String)]) -> bool {
     use spai_core::wormholes::ShipSize;
     egui::Grid::new("wh_form").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("System");
+        ui.label(crate::tr!("System"));
         system_input(ui, "wh_form_system", &mut form.system, "", 200.0);
         ui.end_row();
-        ui.label("Signature");
+        ui.label(crate::tr!("Signature"));
         sig_field(ui, "wh_form_sig", &mut form.sig, "ABC-123", &here_sigs);
         ui.end_row();
-        ui.label("Type");
+        ui.label(crate::tr!("Type"));
         let codes: Vec<&str> = spai_core::whdata::types().iter().map(|t| t.code.as_str()).collect();
         if wh_type_picker(ui, "wh_form_type", 200.0, &mut form.wh_type, &codes) {
             // A type's size is fixed by its jump mass; it can still be corrected below.
@@ -301,17 +303,17 @@ pub fn form_ui(ui: &mut egui::Ui, form: &mut WhForm, system_input: &mut SystemIn
             }
         }
         ui.end_row();
-        ui.label("Leads to");
-        system_input(ui, "wh_form_dest", &mut form.dest, "system or Highsec, C5...", 200.0);
+        ui.label(crate::tr!("Leads to"));
+        system_input(ui, "wh_form_dest", &mut form.dest, crate::tr!("system or Highsec, C5..."), 200.0);
         ui.end_row();
-        ui.label("Its signature");
+        ui.label(crate::tr!("Its signature"));
         sig_field(ui, "wh_form_dest_sig", &mut form.dest_sig, "ABC-123", &there_sigs);
         ui.end_row();
-        ui.label("Size");
+        ui.label(crate::tr!("Size"));
         // Every size stays open: a recorded type can be wrong, or be the other side's.
         let sizes: Vec<_> = [ShipSize::Frigate, ShipSize::Medium, ShipSize::Large, ShipSize::XLarge]
             .into_iter()
-            .map(|s| (s, s.short(), s.label()))
+            .map(|s| (s, s.short(), s.label().tr()))
             .collect();
         ui.vertical(|ui| {
             choice_row(ui, &mut form.size, &sizes);
@@ -322,37 +324,31 @@ pub fn form_ui(ui: &mut egui::Ui, form: &mut WhForm, system_input: &mut SystemIn
                     Some(chosen) if chosen != fits => {
                         ui.colored_label(
                             crate::theme::standing::WARNING,
-                            format!(
-                                "{} {} is always a {} hole, not {}: check the type or the size",
-                                egui_phosphor::regular::WARNING,
-                                t.code,
-                                fits.short(),
-                                chosen.short()
-                            ),
+                            crate::trf!("{icon} {v} is always a {fits} hole, not {chosen}: check the type or the size", icon = egui_phosphor::regular::WARNING, v = t.code, fits = fits.short(), chosen = chosen.short()),
                         );
                     }
                     _ => {
-                        ui.label(egui::RichText::new(format!("{} is always a {} hole", t.code, fits.short())).weak());
+                        ui.label(egui::RichText::new(crate::trf!("{v} is always a {fits} hole", v = t.code, fits = fits.short())).weak());
                     }
                 }
             }
         });
         ui.end_row();
-        ui.label("Time left");
-        let lives: Vec<_> = spai_core::wormholes::Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();
+        ui.label(crate::tr!("Time left"));
+        let lives: Vec<_> = spai_core::wormholes::Life::ALL.into_iter().map(|l| (l, l.short(), l.label().tr())).collect();
         choice_row(ui, &mut form.life, &lives);
         ui.end_row();
-        ui.label("Mass left");
-        let masses: Vec<_> = spai_core::wormholes::Mass::ALL.into_iter().map(|m| (m, m.short(), m.label())).collect();
+        ui.label(crate::tr!("Mass left"));
+        let masses: Vec<_> = spai_core::wormholes::Mass::ALL.into_iter().map(|m| (m, m.short(), m.label().tr())).collect();
         choice_row(ui, &mut form.mass, &masses);
         ui.end_row();
-        ui.label("Note");
+        ui.label(crate::tr!("Note"));
         ui.add(egui::TextEdit::singleline(&mut form.note).desired_width(200.0));
         ui.end_row();
         if let Some(twin) = &form.twin {
-            ui.label("Known hole");
-            ui.checkbox(&mut form.second, format!("Another one, not {twin}"))
-                .on_hover_text("Unticked, saving fills in the hole already known between these systems. Another one needs its own signature.");
+            ui.label(crate::tr!("Known hole"));
+            ui.checkbox(&mut form.second, crate::trf!("Another one, not {twin}", twin = twin))
+                .on_hover_text(crate::tr!("Unticked, saving fills in the hole already known between these systems. Another one needs its own signature."));
             ui.end_row();
         }
     });
@@ -360,13 +356,13 @@ pub fn form_ui(ui: &mut egui::Ui, form: &mut WhForm, system_input: &mut SystemIn
         ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
     }
     if !form.history.is_empty() {
-        egui::CollapsingHeader::new(format!("History ({})", form.history.len())).show(ui, |ui| {
+        egui::CollapsingHeader::new(crate::trf!("History ({v})", v = form.history.len())).show(ui, |ui| {
             for line in &form.history {
                 ui.label(line);
             }
         });
     }
-    ui.button(format!("{}  Save", egui_phosphor::regular::FLOPPY_DISK)).clicked()
+    ui.button(crate::trf!("{icon}  Save", icon = egui_phosphor::regular::FLOPPY_DISK)).clicked()
 }
 
 /// The hole the form describes, with what changed for the history, after the checks a save makes:
@@ -432,9 +428,9 @@ pub fn build(
         ("type", fresh.wh_type.clone()),
         ("leads to", (!form.dest.trim().is_empty()).then(|| form.dest.trim().to_owned())),
         ("far signature", fresh.dest_signature.clone()),
-        ("size", fresh.size.map(|s| s.label().to_owned())),
-        ("time left", fresh.life.map(|l| l.label().to_owned())),
-        ("mass left", fresh.mass.map(|m| m.label().to_owned())),
+        ("size", fresh.size.map(|s| s.label().tr().to_owned())),
+        ("time left", fresh.life.map(|l| l.label().tr().to_owned())),
+        ("mass left", fresh.mass.map(|m| m.label().tr().to_owned())),
         ("note", fresh.note.clone()),
     ]
     .into_iter()

@@ -1,5 +1,7 @@
 //! Wormhole connections and the wormholes view, with the kill history they depend on.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 impl SpaiApp {
@@ -209,7 +211,7 @@ impl SpaiApp {
             .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
             .map(|w| {
                 let (sig, far) = if w.system_id == sid { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
-                let far = far.and_then(|f| self.systems.as_ref()?.info_of(f)).map_or_else(|| w.dest.label().to_owned(), |i| i.name.clone());
+                let far = far.and_then(|f| self.systems.as_ref()?.info_of(f)).map_or_else(|| w.dest.label().tr().to_owned(), |i| i.name.clone());
                 let sig = sig.as_deref().map(|s| format!("{} ", s.chars().take(3).collect::<String>())).unwrap_or_default();
                 (w.uid.clone(), format!("{sig}to {far}"))
             })
@@ -220,11 +222,11 @@ impl SpaiApp {
         }
         let name = self.systems.as_ref().and_then(|g| g.info_of(sid)).map_or_else(|| format!("#{sid}"), |i| i.name.clone());
         ui.separator();
-        ui.label(egui::RichText::new("Wormholes routes may use").weak());
+        ui.label(egui::RichText::new(tr!("Wormholes routes may use")).weak());
         let mut all = !self.wh_system_disabled(sid);
         if ui
-            .checkbox(&mut all, format!("Any hole in {name}"))
-            .on_hover_text("Off keeps every hole here off routes, those found later too")
+            .checkbox(&mut all, trf!("Any hole in {name}", name = name))
+            .on_hover_text(tr!("Off keeps every hole here off routes, those found later too"))
             .changed()
         {
             self.toggle_wh_system(sid);
@@ -232,13 +234,13 @@ impl SpaiApp {
         ui.add_enabled_ui(all, |ui| {
             for (uid, label) in holes.iter().take(LISTED) {
                 let mut on = !self.settings.wh_disabled_holes.contains(uid);
-                if ui.checkbox(&mut on, label).on_hover_text("Both sides of this hole").changed() {
+                if ui.checkbox(&mut on, label).on_hover_text(tr!("Both sides of this hole")).changed() {
                     self.toggle_wh_hole(uid);
                 }
             }
         });
         if holes.len() > LISTED {
-            ui.label(egui::RichText::new(format!("{} more in the wormhole tab", holes.len() - LISTED)).weak());
+            ui.label(egui::RichText::new(trf!("{v} more in the wormhole tab", v = holes.len() - LISTED)).weak());
         }
     }
 
@@ -263,7 +265,7 @@ impl SpaiApp {
     /// Toggles for the kinds of hole routes may use. Returns whether any changed.
     pub(crate) fn wh_route_kinds_ui(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal(|ui| {
-            ui.label("Through");
+            ui.label(tr!("Through"));
             self.wh_route_kinds_button(ui)
         })
         .inner
@@ -279,7 +281,7 @@ impl SpaiApp {
         let text = match n {
             0 => "No holes".to_owned(),
             n if n == HoleKind::ALL.len() => "All kinds".to_owned(),
-            1 => HoleKind::ALL.iter().find(|k| on(**k, &self.settings)).map_or_else(String::new, |k| k.label().to_owned()),
+            1 => HoleKind::ALL.iter().find(|k| on(**k, &self.settings)).map_or_else(String::new, |k| k.label().tr().to_owned()),
             n => format!("{n} of {} kinds", HoleKind::ALL.len()),
         };
         let button = ui.button(format!("{text}  {}", egui_phosphor::regular::CARET_DOWN));
@@ -287,7 +289,7 @@ impl SpaiApp {
         egui::Popup::from_toggle_button_response(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             for k in HoleKind::ALL {
                 let was = on(k, &self.settings);
-                if ui.menu_label(was, k.label()).clicked() {
+                if ui.menu_label(was, k.label().tr()).clicked() {
                     if was {
                         self.settings.wh_route_kinds.retain(|c| c != k.code());
                     } else {
@@ -320,10 +322,10 @@ impl SpaiApp {
             changed
         };
         egui::Grid::new(ui.id().with("wh_route_opts")).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Through");
+            ui.label(tr!("Through"));
             changed |= self.wh_route_kinds_button(ui);
             ui.end_row();
-            ui.label("Mass");
+            ui.label(tr!("Mass"));
             changed |= combo(
                 ui,
                 "mass",
@@ -335,7 +337,7 @@ impl SpaiApp {
                 ],
             );
             ui.end_row();
-            ui.label("Time left");
+            ui.label(tr!("Time left"));
             changed |= combo(
                 ui,
                 "time",
@@ -349,7 +351,7 @@ impl SpaiApp {
                 ],
             );
             ui.end_row();
-            ui.label("Size");
+            ui.label(tr!("Size"));
             changed |= combo(
                 ui,
                 "size",
@@ -491,7 +493,7 @@ impl SpaiApp {
             ui.spacing_mut().item_spacing.x = 1.0;
             if ui
                 .add_enabled(enabled, egui::Button::new(label))
-                .on_disabled_hover_text("Log a character in to route in the game")
+                .on_disabled_hover_text(tr!("Log a character in to route in the game"))
                 .clicked()
             {
                 picked = Some(vec![self.active_character.clone()]);
@@ -501,7 +503,7 @@ impl SpaiApp {
                     picked = Some(p);
                 }
             });
-            r.response.on_hover_text("Set it for other characters");
+            r.response.on_hover_text(tr!("Set it for other characters"));
         });
         picked
     }
@@ -583,8 +585,8 @@ impl SpaiApp {
         let missing = (self.settings.wh_detect && !missing.is_empty()).then(|| missing.join(", "));
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            ui.heading(format!("{}  Wormholes", icon::SPIRAL));
-            ui.label(egui::RichText::new(format!("{} known", self.wh_cache.len())).weak());
+            ui.heading(trf!("{icon}  Wormholes", icon = icon::SPIRAL));
+            ui.label(egui::RichText::new(trf!("{v} known", v = self.wh_cache.len())).weak());
             ui.add_space(8.0);
             let (table, sigs) = (self.wh_graph.table, self.wh_graph.sig_browser);
             if ui.menu_label(!table && !sigs, format!("{}  Map", icon::GRAPH)).clicked() {
@@ -593,18 +595,18 @@ impl SpaiApp {
             if ui.menu_label(table && !sigs, format!("{}  Table", icon::TABLE)).clicked() {
                 (self.wh_graph.table, self.wh_graph.sig_browser) = (true, false);
             }
-            if ui.menu_label(sigs, format!("{}  Signatures", icon::LIST_MAGNIFYING_GLASS)).on_hover_text("Every probe scan signature pasted, to search and clean up").clicked() {
+            if ui.menu_label(sigs, format!("{}  Signatures", icon::LIST_MAGNIFYING_GLASS)).on_hover_text(tr!("Every probe scan signature pasted, to search and clean up")).clicked() {
                 self.wh_graph.sig_browser = true;
             }
             ui.add_space(8.0);
-            if ui.button(format!("{}  Add", icon::PLUS)).on_hover_text("Enter a hole by hand").clicked() {
+            if ui.button(trf!("{icon}  Add", icon = icon::PLUS)).on_hover_text(tr!("Enter a hole by hand")).clicked() {
                 let form = self.wh_form_here();
                 self.wh_form = Some(form);
             }
             ui.add_space(8.0);
             let active = self.settings.wh_filter.active();
             let label = if active == 0 { format!("{}  Filter", icon::FUNNEL) } else { format!("{}  Filter ({active})", icon::FUNNEL) };
-            let filter_btn = ui.button(label).on_hover_text("Which holes the map and the table show");
+            let filter_btn = ui.button(label).on_hover_text(tr!("Which holes the map and the table show"));
             let mut filter_changed = false;
             egui::Popup::from_toggle_button_response(&filter_btn)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -613,16 +615,16 @@ impl SpaiApp {
                 });
             if ui
                 .add_enabled(active > 0, egui::Button::new(icon::FUNNEL_X))
-                .on_hover_text("Clear the filter")
-                .on_disabled_hover_text("No filter set")
+                .on_hover_text(tr!("Clear the filter"))
+                .on_disabled_hover_text(tr!("No filter set"))
                 .clicked()
             {
                 self.settings.wh_filter = Default::default();
                 filter_changed = true;
             }
             let routes_changed = ui
-                .checkbox(&mut self.settings.wh_route_filtered, "Only filtered WH for routes")
-                .on_hover_text("Routes use only the holes the filter shows. The holes switched off by hand stay off either way.")
+                .checkbox(&mut self.settings.wh_route_filtered, tr!("Only filtered WH for routes"))
+                .on_hover_text(tr!("Routes use only the holes the filter shows. The holes switched off by hand stay off either way."))
                 .changed();
             if routes_changed || (filter_changed && self.settings.wh_route_filtered) {
                 self.wh_routing_changed();
@@ -631,7 +633,7 @@ impl SpaiApp {
             }
             ui.add_space(8.0);
             let look = ui.add(
-                egui::TextEdit::singleline(&mut self.wh_info_query).hint_text("System facts: J-name or system").desired_width(200.0),
+                egui::TextEdit::singleline(&mut self.wh_info_query).hint_text(tr!("System facts: J-name or system")).desired_width(200.0),
             );
             if look.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.wh_info = self.systems.as_ref().and_then(|g| g.lookup(self.wh_info_query.trim())).map(|i| i.id);
@@ -639,29 +641,29 @@ impl SpaiApp {
             let mut changed = false;
             ui.menu_button(icon::GEAR_SIX, |ui| {
                 changed |= ui
-                    .checkbox(&mut self.settings.wh_detect, "Record holes my characters go through")
-                    .on_hover_text("Watches how your signed-in characters move. A jump the gates cannot explain is recorded as a wormhole, or asked about when a filament, clone or capital jump fits too.")
+                    .checkbox(&mut self.settings.wh_detect, tr!("Record holes my characters go through"))
+                    .on_hover_text(tr!("Watches how your signed-in characters move. A jump the gates cannot explain is recorded as a wormhole, or asked about when a filament, clone or capital jump fits too."))
                     .changed();
                 changed |= ui
-                    .checkbox(&mut self.settings.wh_ask, "Ask for the signature")
-                    .on_hover_text("A small window beside the EVE client asks for the signature, type and state of each hole")
+                    .checkbox(&mut self.settings.wh_ask, tr!("Ask for the signature"))
+                    .on_hover_text(tr!("A small window beside the EVE client asks for the signature, type and state of each hole"))
                     .changed();
                 ui.horizontal(|ui| {
-                    ui.label("Pinned systems join clusters within");
+                    ui.label(tr!("Pinned systems join clusters within"));
                     changed |= ui
                         .add(egui::DragValue::new(&mut self.settings.wh_pin_jumps).range(1..=crate::settings::WH_PIN_JUMPS_MAX))
-                        .on_hover_text("Gate jumps from a cluster's nearest exit. Further out, a pinned system shows on its own.")
+                        .on_hover_text(tr!("Gate jumps from a cluster's nearest exit. Further out, a pinned system shows on its own."))
                         .changed();
-                    ui.label("jumps");
+                    ui.label(tr!("jumps"));
                 });
                 ui.separator();
-                if ui.button(format!("{}  Sharing…", icon::USERS_THREE)).on_hover_text("Share wormholes with others, end-to-end encrypted").clicked() {
+                if ui.button(trf!("{icon}  Sharing…", icon = icon::USERS_THREE)).on_hover_text(tr!("Share wormholes with others, end-to-end encrypted")).clicked() {
                     self.wh_share.open = true;
                     ui.close();
                 }
             })
             .response
-            .on_hover_text("Wormhole settings");
+            .on_hover_text(tr!("Wormhole settings"));
             if changed {
                 self.needs_save = true;
             }
@@ -674,14 +676,12 @@ impl SpaiApp {
                         ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate().sense(egui::Sense::click()))
                     })
                     .inner;
-                if r.on_hover_text(format!("{hover}\nClick for the sharing window")).clicked() {
+                if r.on_hover_text(trf!("{hover}\nClick for the sharing window", hover = hover)).clicked() {
                     self.wh_share.open = true;
                 }
             }
             if let Some(names) = &missing {
-                ui.label(egui::RichText::new(icon::WARNING).color(crate::theme::standing::WARNING)).on_hover_text(format!(
-                    "Sign in again with {names} to let deaths, clone jumps and bridges be told from wormholes."
-                ));
+                ui.label(egui::RichText::new(icon::WARNING).color(crate::theme::standing::WARNING)).on_hover_text(trf!("Sign in again with {names} to let deaths, clone jumps and bridges be told from wormholes.", names = names));
             }
         });
         self.wh_form_window(ui.ctx());
@@ -704,10 +704,10 @@ impl SpaiApp {
         if self.wh_cache.is_empty() {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("No wormholes known yet.").weak());
+                ui.label(egui::RichText::new(tr!("No wormholes known yet.")).weak());
                 ui.label(
                     egui::RichText::new(
-                        "Seeded from EVE-Scout (Thera/Turnur), intel channels, your own characters' jumps and what you add.",
+                        tr!("Seeded from EVE-Scout (Thera/Turnur), intel channels, your own characters' jumps and what you add."),
                     )
                     .weak(),
                 );
@@ -924,11 +924,11 @@ impl SpaiApp {
         let mut close = false;
         ui.horizontal(|ui| {
             ui.heading(&info.name);
-            if ui.button(egui_phosphor::regular::X).on_hover_text("Close").clicked() {
+            if ui.button(egui_phosphor::regular::X).on_hover_text(tr!("Close")).clicked() {
                 close = true;
             }
         });
-        ui.label(format!("{} \u{b7} {}", whdata::class_of(sys, info.security, &info.region).label(), info.region));
+        ui.label(format!("{} \u{b7} {}", whdata::class_of(sys, info.security, &info.region).label().tr(), info.region));
         wh_system_facts(ui, sys, &info, true);
         ui.add_space(8.0);
         ui.label(egui::RichText::new(whdata::ATTRIBUTION).weak());
@@ -976,10 +976,10 @@ pub(crate) use spai_core::wormholes::dest_class;
 pub(crate) fn pick_characters_menu(ui: &mut egui::Ui, choices: &[(String, Option<String>)]) -> Option<Vec<String>> {
     let mut picked = None;
     if choices.is_empty() {
-        ui.label(egui::RichText::new("No character may set waypoints. Sign one in again to allow it.").weak());
+        ui.label(egui::RichText::new(tr!("No character may set waypoints. Sign one in again to allow it.")).weak());
         return None;
     }
-    if choices.len() > 1 && ui.button(format!("{}  All characters", egui_phosphor::regular::USERS)).clicked() {
+    if choices.len() > 1 && ui.button(trf!("{icon}  All characters", icon = egui_phosphor::regular::USERS)).clicked() {
         picked = Some(choices.iter().map(|(n, _)| n.clone()).collect());
         ui.close();
     }

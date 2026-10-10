@@ -1,5 +1,7 @@
 //! The delve911 capital rescue mode: its feed, settings, ping builder, chat helpers and window.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 /// What an op's comms channel is doing, for the rescue's op picker.
@@ -171,8 +173,8 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(ctx, "rescue_history_window", "EVE Spai - Past rescues", [620.0, 560.0], |ui| {
             let r = rescue.lock().unwrap_or_else(|e| e.into_inner());
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter by system, pilot, ship or text").desired_width(ui.available_width() - 120.0));
-                ui.label(egui::RichText::new(format!("{} pings", r.history.len())).weak());
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr!("Filter by system, pilot, ship or text")).desired_width(ui.available_width() - 120.0));
+                ui.label(egui::RichText::new(trf!("{v} pings", v = r.history.len())).weak());
             });
             ui.separator();
             let f = filter.trim().to_lowercase();
@@ -198,7 +200,7 @@ impl SpaiApp {
                         ui.label(egui::RichText::new(when).weak());
                         let what = [h.system.clone(), h.class.clone(), h.pilot.clone()].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                            if ui.button(egui_phosphor::regular::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                 delete = Some((h.received, h.raw.clone()));
                             }
                             let done: Vec<&str> = [(h.coord_pinged, "coord"), (h.invited, "invited"), (h.comms, "comms")]
@@ -234,17 +236,17 @@ impl SpaiApp {
     /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
     pub(crate) fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
-        ui.heading("FC / Rescue (delve911)");
+        ui.heading(tr!("FC / Rescue (delve911)"));
         ui.label(
             egui::RichText::new(
-                "Capital rescues, run on a fleet preset tagged Capital Save and handed over to fleet tracking. Needs the fleet dashboard on and the delve911 rooms.",
+                tr!("Capital rescues, run on a fleet preset tagged Capital Save and handed over to fleet tracking. Needs the fleet dashboard on and the delve911 rooms."),
             )
             .weak(),
         );
         changed |= ui
             .checkbox(
                 &mut self.settings.fc_rescue_enabled,
-                "Enable delve911 Rescue Mode (FC only)",
+                tr!("Enable delve911 Rescue Mode (FC only)"),
             )
             .changed();
         if !self.settings.fc_rescue_enabled {
@@ -252,28 +254,28 @@ impl SpaiApp {
         }
         ui.add_space(4.0);
         egui::Grid::new("rescue_settings_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("delve911 room").on_hover_text(
-                "The Jabber room on conference.goonfleet.com where rescue requests come in.",
+            ui.label(tr!("delve911 room")).on_hover_text(
+                tr!("The Jabber room on conference.goonfleet.com where rescue requests come in."),
             );
             changed |= ui
-                .add(egui::TextEdit::singleline(&mut self.settings.rescue_delve911_jid).hint_text("delve911").desired_width(220.0))
+                .add(egui::TextEdit::singleline(&mut self.settings.rescue_delve911_jid).hint_text(tr!("delve911")).desired_width(220.0))
                 .changed();
             ui.end_row();
-            ui.label("Skirmish commanders room").on_hover_text("The Jabber room ping requests go to, on conference.goonfleet.com.");
+            ui.label(tr!("Skirmish commanders room")).on_hover_text(tr!("The Jabber room ping requests go to, on conference.goonfleet.com."));
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut self.settings.rescue_skirmish_jid)
-                        .hint_text("skirmish_commanders")
+                        .hint_text(tr!("skirmish_commanders"))
                         .desired_width(220.0),
                 )
                 .changed();
             ui.end_row();
         });
         ui.add_space(4.0);
-        ui.label("Ping template");
+        ui.label(tr!("Ping template"));
         ui.label(
             egui::RichText::new(
-                "Placeholders: {fc} {pilot} {system} {cyno} {anom} {op} {mumble} {doctrine} {staging}",
+                tr!("Placeholders: {fc} {pilot} {system} {cyno} {anom} {op} {mumble} {doctrine} {staging}"),
             )
             .weak(),
         );
@@ -561,14 +563,14 @@ impl SpaiApp {
     pub(crate) fn jabber_retry_button(&mut self, ui: &mut egui::Ui) {
         let (_, _, retry_in, _) = self.jabber_conn();
         if ui
-            .button(format!("{}  Retry now", egui_phosphor::regular::ARROWS_CLOCKWISE))
+            .button(trf!("{icon}  Retry now", icon = egui_phosphor::regular::ARROWS_CLOCKWISE))
             .clicked()
         {
             self.jabber_retry();
         }
         if let Some(secs) = retry_in.filter(|s| *s > 0) {
             ui.label(
-                egui::RichText::new(format!("retrying in {}:{:02}", secs / 60, secs % 60)).weak(),
+                egui::RichText::new(trf!("retrying in {v}:{v2}", v = secs / 60, v2 = format!("{:02}", secs % 60))).weak(),
             );
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
         }
@@ -601,8 +603,8 @@ impl SpaiApp {
     pub(crate) fn rescue_view(&mut self, ui: &mut egui::Ui) {
         if self.settings.rescue_popped {
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("Rescue is in its own window.").weak());
-            if ui.button("Dock rescue").clicked() {
+            ui.label(egui::RichText::new(tr!("Rescue is in its own window.")).weak());
+            if ui.button(tr!("Dock rescue")).clicked() {
                 self.settings.rescue_popped = false;
                 self.needs_save = true;
             }
@@ -793,7 +795,7 @@ impl SpaiApp {
                         format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber is not set up" } else { why }),
                     )
                     .on_hover_text(why);
-                    if ui.button("Set up Jabber").clicked() {
+                    if ui.button(tr!("Set up Jabber")).clicked() {
                         open_jabber = true;
                     }
                 });
@@ -806,16 +808,12 @@ impl SpaiApp {
                         format!("{}  {}", egui_phosphor::regular::PLUGS, if compact { "Jabber disconnected" } else { why.as_str() }),
                     )
                     .on_hover_text(&why);
-                    if ui.button("Retry now").clicked() {
+                    if ui.button(tr!("Retry now")).clicked() {
                         retry_click = true;
                     }
                     if let Some(secs) = jab_retry_in.filter(|s| *s > 0) {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "retrying in {}:{:02}",
-                                secs / 60,
-                                secs % 60
-                            ))
+                            egui::RichText::new(trf!("retrying in {v}:{v2}", v = secs / 60, v2 = format!("{:02}", secs % 60)))
                             .weak(),
                         );
                         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -858,14 +856,14 @@ impl SpaiApp {
             // the narrow pop-out.
             let mut chips = |ui: &mut egui::Ui| {
                 if listed.is_empty() {
-                    ui.label(egui::RichText::new("No delve911 pings yet").weak());
+                    ui.label(egui::RichText::new(tr!("No delve911 pings yet")).weak());
                     return;
                 }
                 let now = crate::clock::utc().timestamp();
                 // Newest first: in a right-to-left layout the first widget lands furthest right.
                 for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
                     if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CHECK)
-                        .on_hover_text("Resolved, dismiss this ping")
+                        .on_hover_text(tr!("Resolved, dismiss this ping"))
                         .clicked()
                     {
                         resolve = Some(*seq);
@@ -904,7 +902,7 @@ impl SpaiApp {
                 // Who, where and in what as one line that gives way to the buttons: cut, whole on hover.
                 let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
                 let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
-                let class = r.cap_class.map(|c| format!("  [{}]", c.label())).unwrap_or_default();
+                let class = r.cap_class.map(|c| format!("  [{}]", c.label().tr())).unwrap_or_default();
                 let head = {
                     let big_font = if compact { egui::TextStyle::Body } else { egui::TextStyle::Heading }.resolve(ui.style());
                     let body = egui::TextStyle::Body.resolve(ui.style());
@@ -929,24 +927,24 @@ impl SpaiApp {
                         }
                         if let Some(ly) = in_range_ly {
                             ui.label(egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE).color(crate::theme::standing::FRIENDLY))
-                                .on_hover_text(format!("In titan range, {ly:.1} ly from {staging_name}"));
+                                .on_hover_text(trf!("In titan range, {ly} ly from {staging_name}", ly = format!("{:.1}", ly), staging_name = staging_name));
                         }
                         if let Some((headline, detail)) = &range_warning {
-                            ui.label(egui::RichText::new(format!("{}  out of range", egui_phosphor::regular::WARNING)).strong().color(egui::Color32::from_rgb(0xE0, 0x3B, 0x2E)))
+                            ui.label(egui::RichText::new(trf!("{icon}  out of range", icon = egui_phosphor::regular::WARNING)).strong().color(egui::Color32::from_rgb(0xE0, 0x3B, 0x2E)))
                                 .on_hover_text(format!("{headline}\n{detail}"));
                         }
                         if test_mode {
                             ui.label(egui::RichText::new(egui_phosphor::regular::FLASK).color(egui::Color32::from_rgb(0x40, 0xB0, 0xF0)))
-                                .on_hover_text("Test: sending disabled");
+                                .on_hover_text(tr!("Test: sending disabled"));
                         }
                     } else if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROW_SQUARE_OUT)
-                        .on_hover_text("Pop out into its own window, over EVE")
+                        .on_hover_text(tr!("Pop out into its own window, over EVE"))
                         .clicked()
                     {
                         pop_out = true;
                     }
                     if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CLOCK_COUNTER_CLOCKWISE)
-                        .on_hover_text("Past rescues")
+                        .on_hover_text(tr!("Past rescues"))
                         .clicked()
                     {
                         open_history = true;
@@ -995,10 +993,7 @@ impl SpaiApp {
                 }
                 if let Some(ly) = in_range_ly {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{}  in titan range, {ly:.1} ly from {staging_name}",
-                            egui_phosphor::regular::CHECK_CIRCLE
-                        ))
+                        egui::RichText::new(trf!("{icon}  in titan range, {ly} ly from {staging_name}", icon = egui_phosphor::regular::CHECK_CIRCLE, ly = format!("{:.1}", ly), staging_name = staging_name))
                         .color(crate::theme::standing::FRIENDLY),
                     );
                 }
@@ -1017,7 +1012,7 @@ impl SpaiApp {
             if !compact && (r.cyno_pilot.is_some() || r.anomaly.is_some()) {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(cyno) = &r.cyno_pilot {
-                        ui.label(format!("cyno: {cyno}"));
+                        ui.label(trf!("cyno: {cyno}", cyno = cyno));
                     }
                     if let Some(anom) = &r.anomaly {
                         ui.label(format!("· @ {anom}"));
@@ -1027,7 +1022,7 @@ impl SpaiApp {
             if test_mode {
                 ui.colored_label(
                     egui::Color32::from_rgb(0x40, 0xB0, 0xF0),
-                    format!("{}  TEST — sending disabled", egui_phosphor::regular::FLASK),
+                    trf!("{icon}  TEST — sending disabled", icon = egui_phosphor::regular::FLASK),
                 );
             }
             }
@@ -1056,7 +1051,7 @@ impl SpaiApp {
                     }
                     let regen = |ui: &mut egui::Ui, r: &mut crate::rescue::RescueState| {
                         if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROWS_CLOCKWISE)
-                            .on_hover_text("Regenerate the ping from the template")
+                            .on_hover_text(tr!("Regenerate the ping from the template"))
                             .clicked()
                         {
                             r.pending_ping = ping.clone();
@@ -1066,7 +1061,7 @@ impl SpaiApp {
                     };
                     if !compact {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
+                            ui.label(egui::RichText::new(tr!("Ping (editable, not auto-sent)")).strong());
                             regen(ui, &mut r);
                         });
                     }
@@ -1074,7 +1069,7 @@ impl SpaiApp {
                         if compact {
                             regen(ui, &mut r);
                         }
-                        ui.label("Op");
+                        ui.label(tr!("Op"));
                         egui::ComboBox::from_id_salt("rescue_op")
                             .width(56.0)
                             .selected_text(r.op_channel.to_string())
@@ -1082,10 +1077,10 @@ impl SpaiApp {
                                 // Op 8 command comms does not exist.
                                 for (n, usage) in &op_usage {
                                     let text = match usage {
-                                        OpUsage::InUse => egui::RichText::new(format!("{n}  in use"))
+                                        OpUsage::InUse => egui::RichText::new(trf!("{n}  in use", n = n))
                                             .color(crate::theme::standing::HOSTILE),
                                         OpUsage::Ours => {
-                                            egui::RichText::new(format!("{n}  your fleet")).weak()
+                                            egui::RichText::new(trf!("{n}  your fleet", n = n)).weak()
                                         }
                                         _ => egui::RichText::new(n.to_string()),
                                     };
@@ -1102,27 +1097,24 @@ impl SpaiApp {
                         match &op_channel_name {
                             Some(name) => {
                                 ui.label(egui::RichText::new(name).weak())
-                                    .on_hover_text("The comms channel the ping will name.");
+                                    .on_hover_text(tr!("The comms channel the ping will name."));
                                 match usage {
                                     OpUsage::InUse => {
                                         ui.label(
-                                            egui::RichText::new(format!(
-                                                "{}  in use",
-                                                egui_phosphor::regular::WARNING
-                                            ))
+                                            egui::RichText::new(trf!("{icon}  in use", icon = egui_phosphor::regular::WARNING))
                                             .strong()
                                             .color(crate::theme::standing::HOSTILE),
                                         )
                                         .on_hover_text(
-                                            "Another fleet is on this channel. A rescue pinged \
+                                            tr!("Another fleet is on this channel. A rescue pinged \
                                              onto it puts two fleets in one channel: pick a free op \
-                                             first.",
+                                             first."),
                                         );
                                     }
                                     OpUsage::Ours => {
-                                        ui.label(egui::RichText::new("your fleet").weak())
+                                        ui.label(egui::RichText::new(tr!("your fleet")).weak())
                                             .on_hover_text(
-                                                "The fleet you are tracking is on this channel.",
+                                                tr!("The fleet you are tracking is on this channel."),
                                             );
                                     }
                                     OpUsage::Free | OpUsage::NoChannel => {}
@@ -1130,16 +1122,16 @@ impl SpaiApp {
                             }
                             None => {
                                 ui.label(
-                                    egui::RichText::new("no such channel")
+                                    egui::RichText::new(tr!("no such channel"))
                                         .color(crate::theme::standing::HOSTILE),
                                 )
                                 .on_hover_text(
-                                    "The dashboard has no channel by that name, so the ping \
-                                     would not name one. Pick another op.",
+                                    tr!("The dashboard has no channel by that name, so the ping \
+                                     would not name one. Pick another op."),
                                 );
                             }
                         }
-                        ui.label("Preset");
+                        ui.label(tr!("Preset"));
                         let cur = r.doctrine.clone();
                         let shown = crate::settings::find_preset(&presets, &cur)
                             .and_then(|p| presets.iter().position(|q| q.key() == p.key()))
@@ -1153,7 +1145,7 @@ impl SpaiApp {
                             .show_ui(ui, |ui| {
                                 if presets.is_empty() {
                                     ui.label(
-                                        egui::RichText::new("No preset tagged Capital Save").weak(),
+                                        egui::RichText::new(tr!("No preset tagged Capital Save")).weak(),
                                     );
                                 }
                                 for (i, p) in presets.iter().enumerate() {
@@ -1170,7 +1162,7 @@ impl SpaiApp {
                                 }
                             })
                             .response
-                            .on_hover_text("A different doctrine means a different preset.");
+                            .on_hover_text(tr!("A different doctrine means a different preset."));
                     });
                     let command_comms = |ui: &mut egui::Ui, wide: bool| -> bool {
                         let btn = egui::Button::new(format!(
@@ -1184,7 +1176,7 @@ impl SpaiApp {
                         };
                         let resp = if wide { ui.add_sized([ui.available_width(), 24.0], btn) } else { ui.add(btn) };
                         resp
-                            .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
+                            .on_hover_text(tr!("Open Command comms (Command Sector Alpha) for this op"))
                             .clicked()
                     };
                     if !compact && command_comms(ui, true) {
@@ -1235,7 +1227,7 @@ impl SpaiApp {
                         match rescue_comms_invite(ping_author.as_deref(), op_for_invite) {
                             None => {
                                 if !compact {
-                                    ui.label(egui::RichText::new("No ping author to invite").weak());
+                                    ui.label(egui::RichText::new(tr!("No ping author to invite")).weak());
                                 }
                             }
                             Some(msg) => {
@@ -1283,10 +1275,10 @@ impl SpaiApp {
                         let b = egui::Button::new(format!("{}  {}", egui_phosphor::regular::ROCKET_LAUNCH, if wide { "Start tracking" } else { "Track" }));
                         let b = if wide { b.min_size(egui::vec2(ui.available_width(), 24.0)) } else { b };
                         ui.add_enabled(can_track, b)
-                            .on_hover_text("Fill the start form from this preset and open the fleet tab")
+                            .on_hover_text(tr!("Fill the start form from this preset and open the fleet tab"))
                             .on_disabled_hover_text(
-                                "That character is not the boss of a fleet in game, so there would be \
-                                 nothing to track.",
+                                tr!("That character is not the boss of a fleet in game, so there would be \
+                                 nothing to track."),
                             )
                             .clicked()
                     };
@@ -1317,14 +1309,14 @@ impl SpaiApp {
                         }
                         if ui
                             .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                            .on_hover_text("Recheck the fleet boss and which op channels are free")
+                            .on_hover_text(tr!("Recheck the fleet boss and which op channels are free"))
                             .clicked()
                         {
                             recheck.set(true);
                         }
                     };
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                        if ui.button(trf!("{icon}  Copy", icon = egui_phosphor::regular::COPY)).clicked() {
                             if let Ok(mut clip) = arboard::Clipboard::new() {
                                 let _ = clip.set_text(r.pending_ping.clone());
                             }
@@ -1334,7 +1326,7 @@ impl SpaiApp {
                         // only after coord and never within 10s of the last ping. Off in test mode.
                         let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
                         if compact {
-                            ui.label("Ping");
+                            ui.label(tr!("Ping"));
                         }
                         let now = crate::clock::utc().timestamp();
                         let fc_ok = crate::rescue::fc_ping_wait(r.coord_pinged_at, r.bpinged_at, now);
@@ -1351,14 +1343,14 @@ impl SpaiApp {
                             Some(c) => coord.fill(c),
                             None => coord,
                         };
-                        if ui.add_enabled(can_send, coord).on_hover_text("!bping coord with the ping").clicked() {
+                        if ui.add_enabled(can_send, coord).on_hover_text(tr!("!bping coord with the ping")).clicked() {
                             send(format!("!bping coord\n\n{}", r.pending_ping));
                             mark_coord = true;
                             r.coord_pinged_at = Some(now);
                             r.bpinged_at = Some(now);
                         }
                         let fc = egui::Button::new(if compact { "fc" } else { "Ping fc" });
-                        let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text("!bping fc alone: the backup after coord, reaching more people");
+                        let resp = ui.add_enabled(can_send && fc_ok.is_ok(), fc).on_hover_text(tr!("!bping fc alone: the backup after coord, reaching more people"));
                         let resp = match &fc_ok {
                             Err((why, _)) => resp.on_disabled_hover_text(why),
                             Ok(()) => resp,
@@ -1398,7 +1390,7 @@ impl SpaiApp {
                     if !compact {
                         ui.add_space(6.0);
                         ui.separator();
-                        ui.label(egui::RichText::new("Comms invite").strong());
+                        ui.label(egui::RichText::new(tr!("Comms invite")).strong());
                         invite_ui(ui);
                     }
 
@@ -1461,12 +1453,12 @@ impl SpaiApp {
                     };
                     ui.add_space(2.0);
                     if test_mode {
-                        ui.label(egui::RichText::new("(reply disabled while testing)").weak());
+                        ui.label(egui::RichText::new(tr!("(reply disabled while testing)")).weak());
                     } else if !room_set {
-                        ui.label(egui::RichText::new("set this room's JID in settings to reply").weak());
+                        ui.label(egui::RichText::new(tr!("set this room's JID in settings to reply")).weak());
                     }
                     ui.horizontal(|ui| {
-                        let clicked = ui.button("Send").clicked();
+                        let clicked = ui.button(tr!("Send")).clicked();
                         // Multiline with Enter rebound to Shift+Enter, the same deal the jabber
                         // page makes: Enter sends, Shift+Enter breaks the line.
                         let shift_enter =
@@ -1475,7 +1467,7 @@ impl SpaiApp {
                             egui::TextEdit::multiline(&mut r.delve911_reply)
                                 .return_key(shift_enter)
                                 .desired_rows(1)
-                                .hint_text("respond… (Shift+Enter for a new line)")
+                                .hint_text(tr!("respond… (Shift+Enter for a new line)"))
                                 .margin(egui::Margin::same(2))
                                 .desired_width(ui.available_width()),
                         );
@@ -1637,11 +1629,9 @@ fn rescue_route_button(
         ui.spacing_mut().item_spacing.x = 1.0;
         let resp = ui.add_enabled(target.is_some() && fc.is_some(), egui::Button::new(label));
         let resp = match (target, fc) {
-            (None, _) => resp.on_disabled_hover_text("This ping has no system to route to"),
-            (_, None) => resp.on_disabled_hover_text("No signed-in character may set waypoints"),
-            (Some((_, name)), Some(fc)) => resp.on_hover_text(format!(
-                "Set Destination for {fc}: {name}, by the titan's landing system when it is out of range"
-            )),
+            (None, _) => resp.on_disabled_hover_text(tr!("This ping has no system to route to")),
+            (_, None) => resp.on_disabled_hover_text(tr!("No signed-in character may set waypoints")),
+            (Some((_, name)), Some(fc)) => resp.on_hover_text(trf!("Set Destination for {fc}: {name}, by the titan's landing system when it is out of range", fc = fc, name = name)),
         };
         if resp.clicked() {
             picked = fc.map(|f| vec![f.to_owned()]);
@@ -1653,7 +1643,7 @@ fn rescue_route_button(
                 }
             })
             .response
-            .on_hover_text("Set it for other characters");
+            .on_hover_text(tr!("Set it for other characters"));
         });
     });
     picked
@@ -1866,13 +1856,13 @@ pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
         _ => egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
     };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("SINCE PING").strong().color(color));
+        ui.label(egui::RichText::new(tr!("SINCE PING")).strong().color(color));
         ui.label(egui::RichText::new(since_ping(secs)).heading().strong().color(color));
     })
     .response
     .on_hover_text(
-        "Time since this delve911 ping. A PANIC is usually called as the ping goes out, so this is \
-         about how much of it has run.",
+        tr!("Time since this delve911 ping. A PANIC is usually called as the ping goes out, so this is \
+         about how much of it has run."),
     );
 }
 

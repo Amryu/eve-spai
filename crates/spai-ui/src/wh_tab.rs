@@ -1,6 +1,8 @@
 //! The wormhole map tab as both apps draw it. Everything app-specific (where holes and settings
 //! live, what opening a system means, the side panel) goes through [`WhHost`].
 
+use crate::i18n::Tr;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -94,7 +96,7 @@ pub fn tidy_layout(view: &mut WhGraphView, host: &mut impl WhHost) {
 /// system list and minimap. `host` is the app around it.
 pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     let Some(geo) = host.systems() else {
-        ui.label(egui::RichText::new("The system map is still loading.").weak());
+        ui.label(egui::RichText::new(crate::tr!("The system map is still loading.")).weak());
         return;
     };
     let now = spai_core::clock::utc().timestamp();
@@ -342,20 +344,20 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             ui.horizontal_wrapped(|ui| {
                     use crate::widgets::SteadySelect as _;
                     ui.add_space(8.0);
-                    if ui.button(icon::MINUS).on_hover_text("Zoom out").clicked() {
+                    if ui.button(icon::MINUS).on_hover_text(crate::tr!("Zoom out")).clicked() {
                         zoom_step = Some(1.0 / 1.25);
                     }
                     ui.label(format!("{:.0}%", view.zoom * 100.0));
-                    if ui.button(icon::PLUS).on_hover_text("Zoom in").clicked() {
+                    if ui.button(icon::PLUS).on_hover_text(crate::tr!("Zoom in")).clicked() {
                         zoom_step = Some(1.25);
                     }
-                    if ui.button(format!("{}  Fit", icon::CORNERS_OUT)).on_hover_text("Show everything").clicked() {
+                    if ui.button(crate::trf!("{icon}  Fit", icon = icon::CORNERS_OUT)).on_hover_text(crate::tr!("Show everything")).clicked() {
                         view.fit_pending = true;
                     }
                     if prefs.manual_tidy
                         && ui
-                            .button(format!("{}  Tidy", icon::TREE_STRUCTURE))
-                            .on_hover_text("Lay the whole map out afresh, forgetting where systems were dragged")
+                            .button(crate::trf!("{icon}  Tidy", icon = icon::TREE_STRUCTURE))
+                            .on_hover_text(crate::tr!("Lay the whole map out afresh, forgetting where systems were dragged"))
                             .clicked()
                     {
                         tidy = true;
@@ -365,34 +367,34 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                         use crate::wh_layout::Style;
                         let style = Style::from_code(&prefs.layout_style);
                         let pick = |ui: &mut egui::Ui, on: bool, label: &str, hint: &str| ui.menu_label(on, label).on_hover_text(hint).clicked();
-                        ui.label(egui::RichText::new("Style").weak());
-                        if pick(ui, style == Style::Tree, "Tree", "Each chain as a compact tree from its most important system") {
+                        ui.label(egui::RichText::new(crate::tr!("Style")).weak());
+                        if pick(ui, style == Style::Tree, crate::tr!("Tree"), crate::tr!("Each chain as a compact tree from its most important system")) {
                             prefs.layout_style = Style::Tree.code().to_owned();
                             tidy = true;
                         }
-                        if pick(ui, style == Style::Layered, "Layered", "Fewer crossing lines where holes close loops") {
+                        if pick(ui, style == Style::Layered, crate::tr!("Layered"), crate::tr!("Fewer crossing lines where holes close loops")) {
                             prefs.layout_style = Style::Layered.code().to_owned();
                             tidy = true;
                         }
                         ui.separator();
-                        ui.label(egui::RichText::new("Separate chains").weak());
-                        if pick(ui, prefs.layout_pack, "Packed to the window", "Side by side in rows, to fill the window's shape") {
+                        ui.label(egui::RichText::new(crate::tr!("Separate chains")).weak());
+                        if pick(ui, prefs.layout_pack, crate::tr!("Packed to the window"), crate::tr!("Side by side in rows, to fill the window's shape")) {
                             prefs.layout_pack = true;
                             tidy = true;
                         }
-                        if pick(ui, !prefs.layout_pack, "In one line", "One after another") {
+                        if pick(ui, !prefs.layout_pack, crate::tr!("In one line"), crate::tr!("One after another")) {
                             prefs.layout_pack = false;
                             tidy = true;
                         }
                         ui.separator();
                         let mut auto = !prefs.manual_tidy;
-                        if ui.checkbox(&mut auto, "Auto-tidy").on_hover_text("Tidy the chains as they change, each cluster kept where it is").changed() {
+                        if ui.checkbox(&mut auto, crate::tr!("Auto-tidy")).on_hover_text(crate::tr!("Tidy the chains as they change, each cluster kept where it is")).changed() {
                             prefs.manual_tidy = !auto;
                             if auto {
                                 view.tidy_due = true;
                             }
                         }
-                        ui.checkbox(&mut prefs.minimap, "Minimap");
+                        ui.checkbox(&mut prefs.minimap, crate::tr!("Minimap"));
                         if tidy {
                             ui.close();
                         }
@@ -423,7 +425,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                             view.focus_depth = d;
                             view.fit_pending = true;
                         }
-                        if ui.button(format!("{}  Show all", icon::X)).clicked() {
+                        if ui.button(crate::trf!("{icon}  Show all", icon = icon::X)).clicked() {
                             focus_on = Some(None);
                         }
                     }
@@ -752,11 +754,11 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         }
         let pinned = prefs.route_pins.iter().any(|n| n.eq_ignore_ascii_case(&info.name));
         resp.context_menu(|ui| {
-            if ui.button("Focus on this system").clicked() {
+            if ui.button(crate::tr!("Focus on this system")).clicked() {
                 focus_on = Some(Some(id));
                 ui.close();
             }
-            if ui.button("Open system").clicked() {
+            if ui.button(crate::tr!("Open system")).clicked() {
                 opened = Some(id);
                 ui.close();
             }
@@ -804,7 +806,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                             Class::Hs => "HS".into(),
                             Class::Ls => "LS".into(),
                             Class::Ns => "NS".into(),
-                            other => other.label(),
+                            other => other.label().tr(),
                         },
                         _ => s.clone(),
                     })
@@ -823,7 +825,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         let g2 = painter.layout(line2, font.clone(), visuals.weak_text_color(), (node_size(id).x - 16.0) * zoom);
         painter.galley(r.min + egui::vec2(8.0 * zoom, (27.0 * zoom).max(5.0 * zoom + line1_h + 1.0)), g2, visuals.weak_text_color());
         if resp.hovered() && !resp.dragged() {
-            let mut tip = format!("{} ({})", info.name, c.label());
+            let mut tip = format!("{} ({})", info.name, c.label().tr());
             if let Some(e) = effect {
                 tip.push_str(&format!("\n{e}"));
             }
@@ -875,7 +877,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
             tip.push_str(&format!("\nType: {}", types.join(" / ")));
         }
         if let Some(s) = w.effective_size() {
-            tip.push_str(&format!("\nSize: {}", s.label()));
+            tip.push_str(&format!("\nSize: {}", s.label().tr()));
         }
         if let Some(m) = w.mass {
             tip.push_str(&format!("\nMass: {}", m.short()));
@@ -891,7 +893,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
         if let Some(e) = edited {
             tip.push_str(&format!("\n{e}"));
         }
-        tip.push_str(&format!("\nSource: {}", w.source.label()));
+        tip.push_str(&format!("\nSource: {}", w.source.label().tr()));
         if let Some(name) = host.group_name(&w.uid) {
             tip.push_str(&format!("\nShared in {name}"));
         }
@@ -995,7 +997,7 @@ fn minimap(wh: &mut WhGraphView, ui: &mut egui::Ui, rect: egui::Rect, pos: &Hash
         wh.pan = rect.center() - rect.min - target.to_vec2() * zoom;
         ui.ctx().request_repaint();
     }
-    resp.on_hover_text("Click or drag to move the view");
+    resp.on_hover_text(crate::tr!("Click or drag to move the view"));
 }
 
 /// Every J-space system with a known connection, to jump the map to it.
@@ -1034,20 +1036,20 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
     egui::Panel::left("wh_graph_list").resizable(true).default_size(150.0).show_inside(ui, |ui| {
         if disabled > 0 {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("{} {disabled} off for routes", icon::PROHIBIT)).weak());
-                clear = ui.button("Allow all").on_hover_text("Let routes use every hole and system switched off").clicked();
+                ui.label(egui::RichText::new(crate::trf!("{icon} {disabled} off for routes", icon = icon::PROHIBIT, disabled = disabled)).weak());
+                clear = ui.button(crate::tr!("Allow all")).on_hover_text(crate::tr!("Let routes use every hole and system switched off")).clicked();
             });
             ui.separator();
         }
         if !chars.is_empty() {
-            ui.label(egui::RichText::new("Characters").weak());
+            ui.label(egui::RichText::new(crate::tr!("Characters")).weak());
             egui::Grid::new("wh_graph_chars_grid").spacing([6.0, 2.0]).show(ui, |ui| {
                 for (name, sys) in &chars {
                     let Some(i) = geo.info_of(*sys) else { continue };
                     let c = whdata::class_of(*sys, i.security, &i.region);
                     ui.label(egui::RichText::new(system_tag(c, i.security)).color(class_color(c, i.security)));
                     let on = view.selected == Some(*sys);
-                    if ui.menu_label(on, display_name(*sys, &i.name)).on_hover_text(format!("{name} is here: open its holes and signatures")).clicked() {
+                    if ui.menu_label(on, display_name(*sys, &i.name)).on_hover_text(crate::trf!("{name} is here: open its holes and signatures", name = name)).clicked() {
                         open_sys = Some(*sys);
                     }
                     ui.label(egui::RichText::new(name).weak());
@@ -1056,7 +1058,7 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
             });
             ui.separator();
         }
-        ui.label(egui::RichText::new(format!("{} system{}", rows.len(), if rows.len() == 1 { "" } else { "s" })).weak());
+        ui.label(egui::RichText::new(crate::trf!("{rows} system{v}", rows = rows.len(), v = if rows.len() == 1 { "" } else { "s" })).weak());
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("wh_graph_list_grid").spacing([6.0, 2.0]).show(ui, |ui| {
                 for (c, info, n) in &rows {
@@ -1066,12 +1068,8 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
                     let effect = whdata::jsystem(info.id).and_then(|j| j.effect.clone());
                     let r = ui.menu_label(on, display_name(info.id, &info.name));
                     let r = match effect {
-                        Some(e) => r.on_hover_text(format!(
-                            "{e}: {}\n{n} known connection{}",
-                            whdata::effect_summary(&e),
-                            if *n == 1 { "" } else { "s" }
-                        )),
-                        None => r.on_hover_text(format!("{n} known connection{}", if *n == 1 { "" } else { "s" })),
+                        Some(e) => r.on_hover_text(crate::trf!("{e}: {v}\n{n} known connection{v2}", e = e, v = whdata::effect_summary(&e), n = n, v2 = if *n == 1 { "" } else { "s" })),
+                        None => r.on_hover_text(crate::trf!("{n} known connection{v}", n = n, v = if *n == 1 { "" } else { "s" })),
                     };
                     if r.clicked() {
                         focus = Some(info.id);
@@ -1081,7 +1079,7 @@ fn list(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui, geo: 
                 }
             });
             if rows.is_empty() {
-                ui.label(egui::RichText::new("No J-space system with a known connection").weak());
+                ui.label(egui::RichText::new(crate::tr!("No J-space system with a known connection")).weak());
             }
         });
     });
@@ -1166,22 +1164,22 @@ fn legend(ui: &mut egui::Ui) {
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        heading(ui, "Holes");
+        heading(ui, crate::tr!("Holes"));
         ui.horizontal_wrapped(|ui| {
-            line(ui, Line::Solid(time_color(TimeLeft::Plenty)), "over 12 hours left");
-            line(ui, Line::Solid(time_color(TimeLeft::Under12h)), "under 12 hours");
-            line(ui, Line::Solid(time_color(TimeLeft::Under4h)), "under 4 hours");
-            line(ui, Line::Solid(time_color(TimeLeft::Under1h)), "under 1 hour");
-            line(ui, Line::Solid(time_color(TimeLeft::Expiring)), "could close any moment");
+            line(ui, Line::Solid(time_color(TimeLeft::Plenty)), crate::tr!("over 12 hours left"));
+            line(ui, Line::Solid(time_color(TimeLeft::Under12h)), crate::tr!("under 12 hours"));
+            line(ui, Line::Solid(time_color(TimeLeft::Under4h)), crate::tr!("under 4 hours"));
+            line(ui, Line::Solid(time_color(TimeLeft::Under1h)), crate::tr!("under 1 hour"));
+            line(ui, Line::Solid(time_color(TimeLeft::Expiring)), crate::tr!("could close any moment"));
         });
         ui.horizontal_wrapped(|ui| {
-            line(ui, Line::Mass(Some(Mass::Fresh)), "over 50% mass, or unknown");
-            line(ui, Line::Mass(Some(Mass::Reduced)), "under 50%");
-            line(ui, Line::Mass(Some(Mass::Critical)), "under 10%");
+            line(ui, Line::Mass(Some(Mass::Fresh)), crate::tr!("over 50% mass, or unknown"));
+            line(ui, Line::Mass(Some(Mass::Reduced)), crate::tr!("under 50%"));
+            line(ui, Line::Mass(Some(Mass::Critical)), crate::tr!("under 10%"));
         });
         ui.horizontal_wrapped(|ui| {
-            line(ui, Line::Off(time_color(TimeLeft::Plenty)), "off for routes (right-click a system)");
-            chip(ui, "ABC>XYZ", None, "signatures, from the hole's own system to the far one");
+            line(ui, Line::Off(time_color(TimeLeft::Plenty)), crate::tr!("off for routes (right-click a system)"));
+            chip(ui, "ABC>XYZ", None, crate::tr!("signatures, from the hole's own system to the far one"));
         });
         // The chips on a box, drawn as the map draws them.
         let mark = |ui: &mut egui::Ui, text: &str, color: C, what: &str| {
@@ -1195,15 +1193,15 @@ fn legend(ui: &mut egui::Ui) {
             });
         };
         ui.horizontal_wrapped(|ui| {
-            mark(ui, "Amamake 7j", close_color(7).unwrap_or(v.text_color()), "a pinned system this many gate jumps away (green under 5)");
+            mark(ui, crate::tr!("Amamake 7j"), close_color(7).unwrap_or(v.text_color()), crate::tr!("a pinned system this many gate jumps away (green under 5)"));
         });
         ui.horizontal_wrapped(|ui| {
-            mark(ui, "+8", v.text_color(), "holes to k-space leading to nothing pinned, not drawn");
+            mark(ui, "+8", v.text_color(), crate::tr!("holes to k-space leading to nothing pinned, not drawn"));
             mark(ui, icon::DIAMONDS_FOUR, SHATTERED_COLOR, "shattered");
-            mark(ui, icon::PROHIBIT, v.weak_text_color(), "every hole here off for routes");
+            mark(ui, icon::PROHIBIT, v.weak_text_color(), crate::tr!("every hole here off for routes"));
         });
         ui.add_space(4.0);
-        heading(ui, "Systems");
+        heading(ui, crate::tr!("Systems"));
         ui.horizontal_wrapped(|ui| {
             for (name, class) in [
                 ("C1-C3", Class::W(1)),
@@ -1221,7 +1219,7 @@ fn legend(ui: &mut egui::Ui) {
                 tag(ui, &format!("{sec:.1}"), class_color(Class::Ns, sec));
             }
             room_for(ui, 0.0, "security");
-            ui.label(egui::RichText::new("security").weak());
+            ui.label(egui::RichText::new(crate::tr!("security")).weak());
         });
         ui.horizontal_wrapped(|ui| {
             for effect in ["Magnetar", "Red Giant", "Pulsar", "Wolf-Rayet Star", "Cataclysmic Variable", "Black Hole"] {
@@ -1231,18 +1229,18 @@ fn legend(ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             boxed(ui, egui::Stroke::new(2.5, v.selection.stroke.color), "selected");
             boxed(ui, egui::Stroke::new(2.5, v.hyperlink_color), "focused");
-            boxed_fill(ui, drifter_fill(v.panel_fill), egui::Stroke::new(1.5, v.widgets.noninteractive.bg_stroke.color), "drifter system");
-            room_for(ui, 30.0, "your characters there");
+            boxed_fill(ui, drifter_fill(v.panel_fill), egui::Stroke::new(1.5, v.widgets.noninteractive.bg_stroke.color), crate::tr!("drifter system"));
+            room_for(ui, 30.0, crate::tr!("your characters there"));
             ui.label(egui::RichText::new(format!("{} 2", icon::USER)).color(v.hyperlink_color));
-            ui.label("your characters there");
-            room_for(ui, 30.0, "holes whose far side is unknown");
+            ui.label(crate::tr!("your characters there"));
+            room_for(ui, 30.0, crate::tr!("holes whose far side is unknown"));
             ui.label(egui::RichText::new("1 ?").color(v.warn_fg_color));
-            ui.label("holes whose far side is unknown");
+            ui.label(crate::tr!("holes whose far side is unknown"));
         });
         ui.add_space(2.0);
         ui.label(
             egui::RichText::new(
-                "Chains grow from a system one of your characters is in, else a pinned system, else the one with the most holes.",
+                crate::tr!("Chains grow from a system one of your characters is in, else a pinned system, else the one with the most holes."),
             )
             .weak(),
         );
@@ -1275,37 +1273,37 @@ pub fn wh_filter_ui(ui: &mut egui::Ui, f: &mut spai_core::wormholes::WhFilter) -
     use spai_core::wormholes::{DestClass, Mass, ShipSize, Source, TimeLeft, UNKNOWN};
     let mut changed = false;
     ui.set_min_width(540.0);
-    ui.label(egui::RichText::new("Nothing picked in a row lets everything through").weak());
+    ui.label(egui::RichText::new(crate::tr!("Nothing picked in a row lets everything through")).weak());
     egui::Grid::new("wh_filter_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label("Leads to");
+        ui.label(crate::tr!("Leads to"));
         let dests: Vec<(&str, &str)> = [DestClass::Highsec, DestClass::Lowsec, DestClass::Nullsec, DestClass::Wspace, DestClass::Thera, DestClass::Turnur, DestClass::Unknown]
             .into_iter()
-            .map(|d| (d.code(), d.label()))
+            .map(|d| (d.code(), d.label().tr()))
             .collect();
         changed |= code_toggles(ui, &mut f.dest, &dests);
         ui.end_row();
-        ui.label("Type");
+        ui.label(crate::tr!("Type"));
         changed |= ui
             .add(egui::TextEdit::singleline(&mut f.types).hint_text("C247 K162").desired_width(160.0))
-            .on_hover_text("Hole types, either side")
+            .on_hover_text(crate::tr!("Hole types, either side"))
             .changed();
         ui.end_row();
-        ui.label("Size");
+        ui.label(crate::tr!("Size"));
         let mut sizes: Vec<(&str, &str)> = ShipSize::ALL.into_iter().map(|s| (s.code(), s.short())).collect();
         sizes.push((UNKNOWN, "Unknown"));
         changed |= code_toggles(ui, &mut f.size, &sizes);
         ui.end_row();
-        ui.label("Mass left");
+        ui.label(crate::tr!("Mass left"));
         let mut masses: Vec<(&str, &str)> = Mass::ALL.into_iter().map(|m| (m.code(), m.short())).collect();
         masses.push((UNKNOWN, "Unknown"));
         changed |= code_toggles(ui, &mut f.mass, &masses);
         ui.end_row();
-        ui.label("Time left");
+        ui.label(crate::tr!("Time left"));
         let times: Vec<(&str, &str)> = TimeLeft::ALL.into_iter().map(|t| (t.code(), t.short())).collect();
         changed |= code_toggles(ui, &mut f.time, &times);
         ui.end_row();
-        ui.label("Source");
-        let sources: Vec<(&str, &str)> = Source::ALL.into_iter().map(|s| (s.code(), s.label())).collect();
+        ui.label(crate::tr!("Source"));
+        let sources: Vec<(&str, &str)> = Source::ALL.into_iter().map(|s| (s.code(), s.label().tr())).collect();
         changed |= code_toggles(ui, &mut f.source, &sources);
         ui.end_row();
     });
@@ -1327,7 +1325,7 @@ pub fn route_rows(
     for (label, dest, is_pin) in targets {
         let route = geo.route_with(sel, *dest, true, true, adj, |_| true);
         ui.horizontal(|ui| {
-            if *is_pin && crate::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
+            if *is_pin && crate::widgets::icon_button(ui, icon::X).on_hover_text(crate::tr!("Remove")).clicked() {
                 unpin = Some(label.clone());
             }
             if !*is_pin {
@@ -1340,7 +1338,7 @@ pub fn route_rows(
             }
             match &route {
                 Some(r) => ui.label(format!("{}j", r.len() - 1)),
-                None => ui.label(egui::RichText::new("no route").weak()),
+                None => ui.label(egui::RichText::new(crate::tr!("no route")).weak()),
             };
         });
         if let Some(r) = &route {
@@ -1489,17 +1487,11 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
     }
     let hole_line = |ui: &mut egui::Ui, t: &whdata::HoleType| {
         let dest = match t.dest {
-            Dest::Class(c) => c.label(),
+            Dest::Class(c) => c.label().tr(),
             Dest::AnyKspace => "k-space".into(),
             Dest::Unknown => "the other side".into(),
         };
-        ui.label(format!("{} {} {dest}, {}", t.code, icon::ARROW_RIGHT, t.size_label())).on_hover_text(format!(
-            "{} t per jump\n{} t in all\nLasts {}h{}",
-            tonnes(t.jump_mass),
-            tonnes(t.total_mass),
-            t.lifetime_h,
-            if t.is_static { "\nA static somewhere" } else { "" }
-        ));
+        ui.label(format!("{} {} {dest}, {}", t.code, icon::ARROW_RIGHT, t.size_label())).on_hover_text(crate::trf!("{v} t per jump\n{v2} t in all\nLasts {v3}h{v4}", v = tonnes(t.jump_mass), v2 = tonnes(t.total_mass), v3 = t.lifetime_h, v4 = if t.is_static { "\nA static somewhere" } else { "" }));
     };
     if let Some(j) = whdata::jsystem(sys) {
         if j.shattered() && class != Class::W(13) {
@@ -1515,13 +1507,13 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
                 }
             }
             None => {
-                ui.label(egui::RichText::new("No system effect").weak());
+                ui.label(egui::RichText::new(crate::tr!("No system effect")).weak());
             }
         }
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Statics").strong());
+        ui.label(egui::RichText::new(crate::tr!("Statics")).strong());
         if j.statics.is_empty() {
-            ui.label(egui::RichText::new("None").weak());
+            ui.label(egui::RichText::new(crate::tr!("None")).weak());
         }
         for code in &j.statics {
             match whdata::hole_type(code) {
@@ -1532,7 +1524,7 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
             }
         }
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Celestials").strong());
+        ui.label(egui::RichText::new(crate::tr!("Celestials")).strong());
         let mut kinds: Vec<(&str, usize)> = Vec::new();
         for p in &j.planets {
             match kinds.iter_mut().find(|(k, _)| *k == p.as_str()) {
@@ -1540,14 +1532,7 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
                 None => kinds.push((p.as_str(), 1)),
             }
         }
-        ui.label(format!(
-            "Sun {} \u{b7} {} planet{} \u{b7} {} moon{}",
-            j.sun,
-            j.planets.len(),
-            if j.planets.len() == 1 { "" } else { "s" },
-            j.moons,
-            if j.moons == 1 { "" } else { "s" }
-        ));
+        ui.label(crate::trf!("Sun {v} \u{b7} {v2} planet{v3} \u{b7} {v4} moon{v5}", v = j.sun, v2 = j.planets.len(), v3 = if j.planets.len() == 1 { "" } else { "s" }, v4 = j.moons, v5 = if j.moons == 1 { "" } else { "s" }));
         if !kinds.is_empty() {
             ui.label(kinds.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", "));
         }
@@ -1557,19 +1542,19 @@ pub fn wh_system_facts(ui: &mut egui::Ui, sys: i64, info: &spai_core::geo::Syste
     }
     if class == Class::Pochven {
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Its C729 can open in").strong());
+        ui.label(egui::RichText::new(crate::tr!("Its C729 can open in")).strong());
         let zone = whdata::c729_zone(&info.name);
         ui.label(if zone.is_empty() { "unknown".into() } else { zone.join(", ") });
     } else if class.is_kspace() {
         let targets = whdata::c729_targets(&info.name);
         if !targets.is_empty() {
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Can host the C729 of").strong());
+            ui.label(egui::RichText::new(crate::tr!("Can host the C729 of")).strong());
             ui.label(targets.join(", "));
         }
     }
     ui.add_space(6.0);
-    ui.label(egui::RichText::new("Holes that can open here").strong());
+    ui.label(egui::RichText::new(crate::tr!("Holes that can open here")).strong());
     let lowsec_hub = matches!(class, Class::Turnur | Class::Tabbetzur);
     for t in whdata::types().iter().filter(|t| t.src.contains(&class) || (lowsec_hub && t.src.contains(&Class::Ls))) {
         hole_line(ui, t);
@@ -1640,11 +1625,11 @@ pub fn holes_table(
                 }
                 let (dest, dest_const, dest_region) = match w.dest_system_id.and_then(info_of) {
                     Some(i) => (i.name, i.constellation, i.region),
-                    None => (w.dest.label().to_string(), String::new(), String::new()),
+                    None => (w.dest.label().tr().to_string(), String::new(), String::new()),
                 };
                 let seen = |at: Option<i64>| at.map(|t| format!(", seen {} ago", crate::widgets::human_ago(now - t))).unwrap_or_default();
                 let life = if let Some(l) = w.life {
-                    format!("{}{}", l.label(), seen(w.observed_at))
+                    format!("{}{}", l.label().tr(), seen(w.observed_at))
                 } else if w.explicit_expiry.is_some() {
                     match w.hours_left(now) {
                         Some(h) => format!("< {h}h left"),
@@ -1655,13 +1640,13 @@ pub fn holes_table(
                 };
                 // The entry's origin first, then whoever else has seen it.
                 let mut source = match (&w.detected_by, w.source) {
-                    (Some(who), spai_core::wormholes::Source::Auto) => format!("{} ({who})", w.source.label()),
-                    _ => w.source.label().to_string(),
+                    (Some(who), spai_core::wormholes::Source::Auto) => format!("{} ({who})", w.source.label().tr()),
+                    _ => w.source.label().tr().to_string(),
                 };
                 let also: Vec<&str> = spai_core::wormholes::Source::ALL
                     .into_iter()
                     .filter(|s| *s != w.source && w.seen_by & s.bit() != 0)
-                    .map(|s| s.label())
+                    .map(|s| s.label().tr())
                     .collect();
                 if !also.is_empty() {
                     source.push_str(&format!(", also {}", also.join(", ")));
@@ -1680,9 +1665,9 @@ pub fn holes_table(
                     dest_const,
                     dest_region,
                     size: {
-                        let size = w.effective_size().map(|s| s.label().to_string()).unwrap_or_else(|| "—".into());
+                        let size = w.effective_size().map(|s| s.label().tr().to_string()).unwrap_or_else(|| "—".into());
                         match w.mass {
-                            Some(m) => format!("{size}, mass {}", m.label().to_lowercase()),
+                            Some(m) => format!("{size}, mass {}", m.label().tr().to_lowercase()),
                             None => size,
                         }
                     },
@@ -1700,7 +1685,7 @@ pub fn holes_table(
                 ui,
                 |ui| {
                     for h in
-                        ["System", "Type", "Destination", "Constellation", "Region", "Size", "Life", "Source"]
+                        [crate::tr!("System"), crate::tr!("Type"), crate::tr!("Destination"), crate::tr!("Constellation"), crate::tr!("Region"), crate::tr!("Size"), crate::tr!("Life"), crate::tr!("Source")]
                     {
                         ui.label(egui::RichText::new(h).strong());
                     }
@@ -1711,15 +1696,15 @@ pub fn holes_table(
                         // window is small enough to need it.
                         ui.horizontal(|ui| {
                             if crate::widgets::icon_button(ui, icon::X)
-                                .on_hover_text("Mark this hole dead")
+                                .on_hover_text(crate::tr!("Mark this hole dead"))
                                 .clicked()
                             {
                                 act.kill = Some(r.id);
                             }
-                            if crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
+                            if crate::widgets::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(crate::tr!("Edit this hole")).clicked() {
                                 act.edit = Some(r.id);
                             }
-                            if crate::widgets::icon_button(ui, icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
+                            if crate::widgets::icon_button(ui, icon::INFO).on_hover_text(crate::tr!("Wormhole facts about this system")).clicked() {
                                 act.info = Some(r.sys_id);
                             }
                             if crate::wh_graph::wh_route_toggle(ui, r.off) {
@@ -1733,7 +1718,7 @@ pub fn holes_table(
                             ui.label(&r.wh_type);
                             if r.drifter {
                                 ui.label(
-                                    egui::RichText::new(format!("{} drifter", icon::WARNING))
+                                    egui::RichText::new(crate::trf!("{icon} drifter", icon = icon::WARNING))
                                         .color(crate::theme::standing::WARNING),
                                 );
                             }

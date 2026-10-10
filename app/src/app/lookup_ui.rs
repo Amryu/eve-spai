@@ -1,5 +1,7 @@
 //! The Lookup view: a pasted local as one row per pilot, summarised from zKillboard's stats.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::localscan::{Bar, Row, Summary};
 
@@ -459,13 +461,13 @@ impl SpaiApp {
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Look up", icon::MAGNIFYING_GLASS)).on_hover_text("Search one character").clicked() {
+            if ui.button(trf!("{icon}  Look up", icon = icon::MAGNIFYING_GLASS)).on_hover_text(tr!("Search one character")).clicked() {
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             if ui
-                .button(format!("{}  Look up from clipboard", icon::CLIPBOARD_TEXT))
-                .on_hover_text("A local member list copied in game. Copying one also loads it on its own.")
+                .button(trf!("{icon}  Look up from clipboard", icon = icon::CLIPBOARD_TEXT))
+                .on_hover_text(tr!("A local member list copied in game. Copying one also loads it on its own."))
                 .clicked()
             {
                 self.lookup_from_clipboard(&ctx);
@@ -492,7 +494,7 @@ impl SpaiApp {
             ui.menu_button(format!("{}  Columns", icon::COLUMNS), |ui| {
                 for col in Col::ALL {
                     let mut shown = self.lookup_column_shown(col);
-                    if ui.checkbox(&mut shown, col.title()).on_hover_text(col.tip()).changed() {
+                    if ui.checkbox(&mut shown, col.title().tr()).on_hover_text(col.tip()).changed() {
                         let hidden = &mut self.settings.lookup_hidden_columns;
                         hidden.retain(|k| k != col.key());
                         if !shown {
@@ -503,11 +505,8 @@ impl SpaiApp {
                 }
             });
             if ui
-                .checkbox(&mut self.settings.lookup_hide_blues, "Hide blues")
-                .on_hover_text(format!(
-                    "Leave out pilots at +{:.0} standing or better, from your character's, corporation's or alliance's contacts. They are not looked up on zKillboard either.",
-                    crate::localscan::BLUE
-                ))
+                .checkbox(&mut self.settings.lookup_hide_blues, tr!("Hide blues"))
+                .on_hover_text(trf!("Leave out pilots at +{blue} standing or better, from your character's, corporation's or alliance's contacts. They are not looked up on zKillboard either.", blue = format!("{:.0}", crate::localscan::BLUE)))
                 .changed()
             {
                 self.needs_save = true;
@@ -522,7 +521,7 @@ impl SpaiApp {
         if self.lookup_current.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Copy a local member list in game and it loads here. Intel's local scan links open here too.",
+                    tr!("Copy a local member list in game and it loads here. Intel's local scan links open here too."),
                 )
                 .weak(),
             );
@@ -555,7 +554,7 @@ impl SpaiApp {
         });
         let hidden = before - rows.len();
         if hidden > 0 {
-            ui.label(egui::RichText::new(format!("{hidden} blue{} hidden", if hidden == 1 { "" } else { "s" })).weak());
+            ui.label(egui::RichText::new(trf!("{hidden} blue{v} hidden", hidden = hidden, v = if hidden == 1 { "" } else { "s" })).weak());
         }
         let mut done: Vec<&Summary> = rows.iter().filter_map(|(_, r)| match r {
             Row::Done(s) => Some(s.as_ref()),
@@ -625,10 +624,10 @@ impl SpaiApp {
                         }
                     });
                 };
-                header(ui, "Character", "Click a row for the full report", CHARACTER_W, Some(None));
+                header(ui, tr!("Character"), tr!("Click a row for the full report"), CHARACTER_W, Some(None));
                 for c in &cols {
                     let sortable = c.sort_value(&Summary::default(), now).is_some();
-                    header(ui, c.title(), c.tip(), c.width(), sortable.then_some(Some(*c)));
+                    header(ui, c.title().tr(), c.tip(), c.width(), sortable.then_some(Some(*c)));
                 }
             });
             ui.add(egui::Separator::default().spacing(2.0));
@@ -687,23 +686,23 @@ impl SpaiApp {
         factions.sort_by(|a, b| b.1.cmp(&a.1));
         alliances.sort_by(|a, b| b.1.cmp(&a.1));
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("{total} characters")).strong());
+            ui.label(egui::RichText::new(trf!("{total} characters", total = total)).strong());
             if loading > 0 {
                 ui.spinner();
-                ui.label(egui::RichText::new(format!("{loading} loading")).weak());
+                ui.label(egui::RichText::new(trf!("{loading} loading", loading = loading)).weak());
                 if let Some(wait) = crate::zkapi::paused_for() {
                     ui.label(
-                        egui::RichText::new(format!("{}  zKillboard rate limit, resuming in {}s", egui_phosphor::regular::HOURGLASS_MEDIUM, wait.as_secs() + 1))
+                        egui::RichText::new(trf!("{icon}  zKillboard rate limit, resuming in {v}s", icon = egui_phosphor::regular::HOURGLASS_MEDIUM, v = wait.as_secs() + 1))
                             .color(crate::theme::standing::WARNING),
                     )
-                    .on_hover_text("zKillboard asked for fewer requests. Every lookup waits and carries on by itself; nothing is lost.");
+                    .on_hover_text(tr!("zKillboard asked for fewer requests. Every lookup waits and carries on by itself; nothing is lost."));
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
             }
             if failed > 0
                 && ui
-                    .button(format!("{}  Retry {failed} failed", egui_phosphor::regular::ARROW_CLOCKWISE))
-                    .on_hover_text("Look them up again")
+                    .button(trf!("{icon}  Retry {failed} failed", icon = egui_phosphor::regular::ARROW_CLOCKWISE, failed = failed))
+                    .on_hover_text(tr!("Look them up again"))
                     .clicked()
             {
                 retry = true;
@@ -722,14 +721,14 @@ impl SpaiApp {
             };
             group(
                 ui,
-                "Factions",
+                tr!("Factions"),
                 &factions,
                 &|id| crate::factions::corporation_id(id).map(|c| eve_corp_logo_url(c, 24.0)),
                 &|id| crate::factions::name(id).to_owned(),
             );
             group(
                 ui,
-                "Alliances",
+                tr!("Alliances"),
                 &alliances,
                 &|id| Some(eve_alliance_logo_url(id, 24.0)),
                 &|id| orgs.get(&id).map(|o| format!("{} [{}]", o.name, o.ticker)).unwrap_or_default(),
@@ -751,7 +750,7 @@ impl SpaiApp {
                     ui.spinner();
                 }
                 Row::Missing => {
-                    ui.label(egui::RichText::new("No character by that name").weak());
+                    ui.label(egui::RichText::new(tr!("No character by that name")).weak());
                 }
                 Row::Failed(e) => {
                     ui.label(egui::RichText::new(e).weak());
@@ -759,7 +758,7 @@ impl SpaiApp {
                 Row::Blue(v) => {
                     // Drawn means shown: looked up now, not with the rest.
                     crate::localscan::wake(&self.lookup_table, name, ui.ctx());
-                    ui.label(egui::RichText::new(format!("Blue ({v:+.0}), looking up\u{2026}")).weak());
+                    ui.label(egui::RichText::new(trf!("Blue ({v}), looking up\u{2026}", v = format!("{:+.0}", v))).weak());
                 }
                 Row::Done(_) => {}
             }
@@ -905,7 +904,7 @@ impl SpaiApp {
             Col::Isk => {
                 let tips: Vec<&str> = crate::localscan::ISK.iter().map(|(_, t)| *t).collect();
                 bars(ui, &s.isk, &tips, col.width() - 8.0)
-                    .on_hover_text(format!("{} destroyed, {} lost", fmt_isk(s.isk_destroyed), fmt_isk(s.isk_lost)));
+                    .on_hover_text(trf!("{v} destroyed, {v2} lost", v = fmt_isk(s.isk_destroyed), v2 = fmt_isk(s.isk_lost)));
             }
             Col::Tags => tags_cell(ui, &s.tags),
             Col::Ships => {
@@ -916,7 +915,7 @@ impl SpaiApp {
                 for sh in s.ships.iter().take(5) {
                     let name = self.ship_name(sh.type_id);
                     ui.add(egui::Image::new(eve_type_icon_url(sh.type_id, 28.0)).fit_to_exact_size(egui::vec2(28.0, 28.0)))
-                        .on_hover_text(format!("{name}: {} kills, {} losses", sh.kills, sh.losses));
+                        .on_hover_text(trf!("{name}: {v} kills, {v2} losses", name = name, v = sh.kills, v2 = sh.losses));
                 }
             }
             Col::Affiliates => {
@@ -927,7 +926,7 @@ impl SpaiApp {
                 for (id, shared) in s.affiliates.iter().take(6) {
                     let name = orgs.get(id).map(|o| o.name.clone()).unwrap_or_default();
                     ui.add(egui::Image::new(eve_alliance_logo_url(*id, 26.0)).fit_to_exact_size(egui::vec2(26.0, 26.0)))
-                        .on_hover_text(format!("{name}: {shared} shared kills"));
+                        .on_hover_text(trf!("{name}: {shared} shared kills", name = name, shared = shared));
                 }
             }
             Col::Associates => {
@@ -941,10 +940,10 @@ impl SpaiApp {
             Col::Cyno => match &s.cyno {
                 Some(c) => {
                     ui.label(egui::RichText::new(format!("{} {}", egui_phosphor::regular::EYE_SLASH, c.covert)).color(KILLS))
-                        .on_hover_text("Covert cyno losses");
+                        .on_hover_text(tr!("Covert cyno losses"));
                     ui.add_space(4.0);
                     ui.label(format!("{} {}", egui_phosphor::regular::SPARKLE, c.standard + c.industrial))
-                        .on_hover_text(format!("Standard cyno losses: {}, industrial: {}", c.standard, c.industrial));
+                        .on_hover_text(trf!("Standard cyno losses: {v}, industrial: {v2}", v = c.standard, v2 = c.industrial));
                 }
                 None => dash(ui),
             },
@@ -957,7 +956,7 @@ impl SpaiApp {
             Col::Bait => match &s.bait {
                 Some(b) => {
                     ui.label(egui::RichText::new(format!("{} ({})", title_case(&b.level), b.count)).color(level_color(&b.level)))
-                        .on_hover_text(format!("{} bait matches in the past year", b.count));
+                        .on_hover_text(trf!("{v} bait matches in the past year", v = b.count));
                 }
                 None => dash(ui),
             },
@@ -966,9 +965,7 @@ impl SpaiApp {
             }
             Col::Awox => {
                 let [corp, alliance, faction] = s.awox;
-                ui.label(if corp > 0 { corp.to_string() } else { "\u{2013}".into() }).on_hover_text(format!(
-                    "Final blows on their own corporation: {corp}, alliance: {alliance}, faction: {faction}"
-                ));
+                ui.label(if corp > 0 { corp.to_string() } else { "\u{2013}".into() }).on_hover_text(trf!("Final blows on their own corporation: {corp}, alliance: {alliance}, faction: {faction}", corp = corp, alliance = alliance, faction = faction));
             }
         }
     }
@@ -981,7 +978,7 @@ impl SpaiApp {
     }
 
     fn ship_name(&self, type_id: i64) -> String {
-        self.type_names.lock().unwrap().get(&type_id).cloned().unwrap_or_default()
+        self.type_names.lock().unwrap().get(&type_id).map(|n| crate::shipnames::shown(n)).unwrap_or_default()
     }
 }
 
@@ -1000,17 +997,17 @@ fn level_color(level: &str) -> egui::Color32 {
 
 fn fc_breakdown(ui: &mut egui::Ui, s: &Summary) {
     let Some(f) = &s.fc else { return };
-    ui.label(egui::RichText::new(format!("FC {} ({} points)", title_case(&f.level), f.score)).strong());
-    ui.label(format!("Monitor appearances: {} ({} of 100 points)", f.monitor, (f.monitor * 20).min(100)));
-    ui.label(format!("Command ship appearances: {} ({} of 40 points)", f.command, (f.command * 2).min(40)));
-    ui.label(format!("Fleets of 25+: {} ({} of 20 points)", f.large_fleet, (f.large_fleet / 5).min(20)));
-    ui.label(egui::RichText::new("zKillboard's label, past year. Low 35+, Medium 60+, High 100+.").weak());
+    ui.label(egui::RichText::new(trf!("FC {v} ({v2} points)", v = title_case(&f.level), v2 = f.score)).strong());
+    ui.label(trf!("Monitor appearances: {v} ({v2} of 100 points)", v = f.monitor, v2 = (f.monitor * 20).min(100)));
+    ui.label(trf!("Command ship appearances: {v} ({v2} of 40 points)", v = f.command, v2 = (f.command * 2).min(40)));
+    ui.label(trf!("Fleets of 25+: {v} ({v2} of 20 points)", v = f.large_fleet, v2 = (f.large_fleet / 5).min(20)));
+    ui.label(egui::RichText::new(tr!("zKillboard's label, past year. Low 35+, Medium 60+, High 100+.")).weak());
 }
 
 fn tags_breakdown(ui: &mut egui::Ui, s: &Summary) {
     for (t, n) in &s.tags {
         let count = if *n > 0 { format!(" ({n})") } else { String::new() };
-        ui.label(egui::RichText::new(format!("{}{count}", t.label())).strong());
+        ui.label(egui::RichText::new(format!("{}{count}", t.label().tr())).strong());
         ui.label(egui::RichText::new(t.explain()).weak());
     }
 }
@@ -1028,7 +1025,7 @@ fn tags_cell(ui: &mut egui::Ui, tags: &[(crate::localscan::Tag, u32)]) {
     let galleys: Vec<std::sync::Arc<egui::Galley>> =
         tags.iter()
             .map(|(t, n)| {
-                let text = if *n > 0 { format!("{} {n}", t.label()) } else { t.label().to_owned() };
+                let text = if *n > 0 { format!("{} {n}", t.label().tr()) } else { t.label().tr().to_owned() };
                 ui.painter().layout_no_wrap(text, font.clone(), color)
             })
             .collect();
@@ -1146,7 +1143,7 @@ fn standing_marker(ui: &mut egui::Ui, standing: f32) {
             bar(c + egui::vec2(0.0, 2.0), true);
         }
     }
-    resp.on_hover_text(format!("Standing {standing:+.1}"));
+    resp.on_hover_text(trf!("Standing {standing}", standing = format!("{:+.1}", standing)));
 }
 
 #[cfg(test)]

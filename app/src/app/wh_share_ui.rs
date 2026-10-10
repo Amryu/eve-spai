@@ -1,6 +1,8 @@
 //! The wormhole sharing window: groups, members, invites and join requests. The work happens on
 //! the share thread (`crate::share::engine`); this only shows its state and sends it commands.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::share::engine::{self, Cmd};
 use crate::share::ops::Role;
@@ -204,7 +206,7 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Groups are end-to-end encrypted: the server stores only what it cannot read, and only members hold the keys.",
+                        tr!("Groups are end-to-end encrypted: the server stores only what it cannot read, and only members hold the keys."),
                     )
                     .weak(),
                 );
@@ -217,9 +219,9 @@ impl SpaiApp {
                         ui.set_min_height(row);
                         if status.busy {
                             ui.add(egui::Spinner::new().size(row * 0.7));
-                            ui.label("Syncing");
+                            ui.label(tr!("Syncing"));
                         } else {
-                            ui.label(egui::RichText::new("Up to date").weak());
+                            ui.label(egui::RichText::new(tr!("Up to date")).weak());
                         }
                     },
                 );
@@ -227,34 +229,34 @@ impl SpaiApp {
                     ui.colored_label(crate::theme::standing::WARNING, e);
                 }
                 for name in &status.deleted {
-                    ui.colored_label(crate::theme::standing::WARNING, format!("{name} was deleted by its owner."));
+                    ui.colored_label(crate::theme::standing::WARNING, trf!("{name} was deleted by its owner.", name = name));
                 }
                 if let Some(fp) = &status.fingerprint {
                     ui.horizontal(|ui| {
-                        ui.label("Your key fingerprint");
+                        ui.label(tr!("Your key fingerprint"));
                         ui.label(egui::RichText::new(fp).monospace().strong());
                     })
                     .response
-                    .on_hover_text("When you ask to join, read this to whoever approves you so they can check it is really you");
+                    .on_hover_text(tr!("When you ask to join, read this to whoever approves you so they can check it is really you"));
                 }
                 ui.add_space(6.0);
                 if !groups.is_empty() {
-                    ui.label(egui::RichText::new("What each group gets and gives").strong());
+                    ui.label(egui::RichText::new(tr!("What each group gets and gives")).strong());
                     egui::ScrollArea::vertical().id_salt("wh_share_prefs_scroll").max_height(160.0).show(ui, |ui| {
                     egui::Grid::new("wh_share_prefs").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
                         ui.label("");
-                        ui.label(format!("{}  Send", icon::UPLOAD_SIMPLE)).on_hover_text("What of yours goes to the group. What came from another group never does.");
+                        ui.label(trf!("{icon}  Send", icon = icon::UPLOAD_SIMPLE)).on_hover_text(tr!("What of yours goes to the group. What came from another group never does."));
                         ui.label("");
-                        ui.label(format!("{}  Receive", icon::DOWNLOAD_SIMPLE)).on_hover_text("What the group's members share that is taken in here");
+                        ui.label(trf!("{icon}  Receive", icon = icon::DOWNLOAD_SIMPLE)).on_hover_text(tr!("What the group's members share that is taken in here"));
                         ui.label("");
                         ui.label("");
                         ui.end_row();
-                        ui.label(egui::RichText::new("Group").weak());
+                        ui.label(egui::RichText::new(tr!("Group")).weak());
                         for _ in 0..2 {
-                            ui.label(egui::RichText::new("Wormholes").weak());
-                            ui.label(egui::RichText::new("Probe scans").weak());
+                            ui.label(egui::RichText::new(tr!("Wormholes")).weak());
+                            ui.label(egui::RichText::new(tr!("Probe scans")).weak());
                         }
-                        ui.label(egui::RichText::new("Hide").weak());
+                        ui.label(egui::RichText::new(tr!("Hide")).weak());
                         ui.end_row();
                         for (g, (holes, sigs)) in groups.iter().zip(&counts) {
                             let was = g.prefs;
@@ -263,18 +265,15 @@ impl SpaiApp {
                             let viewer = !g.role.can_write();
                             let why = "A viewer sees the group's wormholes and shares nothing";
                             ui.add_enabled(!viewer, egui::Checkbox::without_text(&mut p.send_holes))
-                                .on_hover_text(format!("Send your wormholes to {}", g.name))
+                                .on_hover_text(trf!("Send your wormholes to {v}", v = g.name))
                                 .on_disabled_hover_text(why);
                             ui.add_enabled(!viewer, egui::Checkbox::without_text(&mut p.send_sigs))
-                                .on_hover_text(format!("Send your probe scans to {}", g.name))
+                                .on_hover_text(trf!("Send your probe scans to {v}", v = g.name))
                                 .on_disabled_hover_text(why);
-                            ui.checkbox(&mut p.recv_holes, "").on_hover_text(format!("Take in the wormholes {} shares", g.name));
-                            ui.checkbox(&mut p.recv_sigs, "").on_hover_text(format!("Take in the probe scans {} shares", g.name));
+                            ui.checkbox(&mut p.recv_holes, "").on_hover_text(trf!("Take in the wormholes {v} shares", v = g.name));
+                            ui.checkbox(&mut p.recv_sigs, "").on_hover_text(trf!("Take in the probe scans {v} shares", v = g.name));
                             let eye = if p.hidden { icon::EYE_SLASH } else { icon::EYE };
-                            ui.checkbox(&mut p.hidden, eye).on_hover_text(format!(
-                                "Hide the {holes} wormholes and {sigs} signatures that came from {} from the map, table and lists, until you switch it off. They stay stored and keep syncing.",
-                                g.name
-                            ));
+                            ui.checkbox(&mut p.hidden, eye).on_hover_text(trf!("Hide the {holes} wormholes and {sigs} signatures that came from {v} from the map, table and lists, until you switch it off. They stay stored and keep syncing.", holes = holes, sigs = sigs, v = g.name));
                             ui.end_row();
                             if p != was {
                                 prefs = Some((g.id.clone(), was, p));
@@ -289,33 +288,33 @@ impl SpaiApp {
                 let groups_h = (ctx.content_rect().height() * 0.5).max(200.0);
                 egui::ScrollArea::vertical().id_salt("wh_share_groups").max_height(groups_h).show(ui, |ui| {
                     if groups.is_empty() {
-                        ui.label(egui::RichText::new("Not in any group yet.").weak());
+                        ui.label(egui::RichText::new(tr!("Not in any group yet.")).weak());
                     }
                     for g in &groups {
                         let has_key = self.store.as_ref().is_some_and(|s| s.share_key(&g.id, g.epoch).is_some());
                         let synced = status.synced_at.get(&g.id).map(|t| format!(", synced {} ago", human_ago(crate::clock::utc().timestamp() - t)));
                         let title = if has_key {
-                            format!("{}  ({}{})", g.name, g.role.label(), synced.unwrap_or_default())
+                            format!("{}  ({}{})", g.name, g.role.label().tr(), synced.unwrap_or_default())
                         } else {
                             format!("{}  (waiting to be let in)", g.name)
                         };
                         egui::CollapsingHeader::new(title).id_salt(("wh_share_group", &g.id)).default_open(true).show(ui, |ui| {
                             if !has_key {
                                 if let Some(fp) = &status.fingerprint {
-                                    ui.label("The invite lets you in as soon as the EVE Spai that made it next syncs.");
-                                    ui.label(format!("Fingerprint: {fp}"));
+                                    ui.label(tr!("The invite lets you in as soon as the EVE Spai that made it next syncs."));
+                                    ui.label(trf!("Fingerprint: {fp}", fp = fp));
                                 }
                             }
                             let members = self.store.as_ref().map(|s| s.share_members(&g.id)).unwrap_or_default();
                             ui.horizontal(|ui| {
                                 let owner = members.iter().find(|m| m.role == Role::Owner).map_or("", |m| m.name.as_str());
                                 let n = members.len();
-                                ui.label(format!("{n} member{} \u{b7} owner {owner}", if n == 1 { "" } else { "s" }));
-                                if ui.button(format!("{}  Members\u{2026}", icon::USERS)).on_hover_text("Everyone in the group, their roles and keys").clicked() {
+                                ui.label(trf!("{n} member{v} \u{b7} owner {owner}", n = n, v = if n == 1 { "" } else { "s" }, owner = owner));
+                                if ui.button(trf!("{icon}  Members\u{2026}", icon = icon::USERS)).on_hover_text(tr!("Everyone in the group, their roles and keys")).clicked() {
                                     self.wh_share.members_of = Some(g.id.clone());
                                     self.wh_share.members_filter.clear();
                                 }
-                                if g.role == Role::Owner && has_key && ui.button(icon::TRASH).on_hover_text("Delete the group for every member").clicked() {
+                                if g.role == Role::Owner && has_key && ui.button(icon::TRASH).on_hover_text(tr!("Delete the group for every member")).clicked() {
                                     self.wh_share.delete = Some((g.id.clone(), g.name.clone(), String::new()));
                                 }
                             });
@@ -326,9 +325,9 @@ impl SpaiApp {
                                 let reqs = status.requests.get(&g.id).cloned().unwrap_or_default();
                                 if !reqs.is_empty() {
                                     ui.add_space(4.0);
-                                    ui.label(egui::RichText::new("Asking to join").strong());
+                                    ui.label(egui::RichText::new(tr!("Asking to join")).strong());
                                     ui.label(
-                                        egui::RichText::new("To be certain, have them read their key fingerprint to you and compare it before approving.")
+                                        egui::RichText::new(tr!("To be certain, have them read their key fingerprint to you and compare it before approving."))
                                             .weak(),
                                     );
                                 }
@@ -338,17 +337,17 @@ impl SpaiApp {
                                     ui.horizontal(|ui| {
                                         ui.label(&r.row.name);
                                         if let Some(role) = existing {
-                                            ui.label(egui::RichText::new(format!("another device ({})", role.label())).weak())
-                                                .on_hover_text("Already a member: the new device gets their role");
+                                            ui.label(egui::RichText::new(trf!("another device ({role})", role = role.label().tr())).weak())
+                                                .on_hover_text(tr!("Already a member: the new device gets their role"));
                                         }
                                         if r.verified {
-                                            ui.label(egui::RichText::new(format!("{} came through our invite", icon::CHECK)).color(crate::theme::chip::CLEAR));
+                                            ui.label(egui::RichText::new(trf!("{icon} came through our invite", icon = icon::CHECK)).color(crate::theme::chip::CLEAR));
                                         } else if let Some(meant) = &r.meant_for {
-                                            ui.colored_label(crate::theme::standing::WARNING, format!("{} the invite was for {meant}", icon::WARNING))
-                                                .on_hover_text("Someone else used the link. Do not approve; make a new invite for the right character.");
+                                            ui.colored_label(crate::theme::standing::WARNING, trf!("{icon} the invite was for {meant}", icon = icon::WARNING, meant = meant))
+                                                .on_hover_text(tr!("Someone else used the link. Do not approve; make a new invite for the right character."));
                                         } else {
-                                            ui.colored_label(crate::theme::standing::WARNING, format!("{} does not match an invite of ours", icon::WARNING))
-                                                .on_hover_text("The keys it carries are not the ones our invite link vouches for. Do not trust it.");
+                                            ui.colored_label(crate::theme::standing::WARNING, trf!("{icon} does not match an invite of ours", icon = icon::WARNING))
+                                                .on_hover_text(tr!("The keys it carries are not the ones our invite link vouches for. Do not trust it."));
                                         }
                                         if let Some(k) = r.keys {
                                             ui.label(egui::RichText::new(k.fingerprint()).monospace().weak());
@@ -361,55 +360,55 @@ impl SpaiApp {
                                         };
                                         if !admin {
                                             if existing.is_none()
-                                                && ui.add_enabled(r.verified, egui::Button::new("Approve as viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked()
+                                                && ui.add_enabled(r.verified, egui::Button::new(tr!("Approve as viewer"))).on_hover_text(tr!("Sees the group's wormholes, shares nothing")).clicked()
                                             {
                                                 cmd = Some(approve(Role::Viewer));
                                             }
                                         } else if existing.is_some() {
-                                            if ui.add_enabled(r.verified, egui::Button::new("Approve device")).clicked() {
+                                            if ui.add_enabled(r.verified, egui::Button::new(tr!("Approve device"))).clicked() {
                                                 cmd = Some(approve(Role::Member));
                                             }
                                         } else {
-                                            if ui.add_enabled(r.verified, egui::Button::new("Approve")).on_hover_text("As a member: sees and shares").clicked() {
+                                            if ui.add_enabled(r.verified, egui::Button::new(tr!("Approve"))).on_hover_text(tr!("As a member: sees and shares")).clicked() {
                                                 cmd = Some(approve(Role::Member));
                                             }
-                                            if ui.add_enabled(r.verified, egui::Button::new("As viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked() {
+                                            if ui.add_enabled(r.verified, egui::Button::new(tr!("As viewer"))).on_hover_text(tr!("Sees the group's wormholes, shares nothing")).clicked() {
                                                 cmd = Some(approve(Role::Viewer));
                                             }
                                         }
-                                        if ui.button("Reject").clicked() {
+                                        if ui.button(tr!("Reject")).clicked() {
                                             cmd = Some(Cmd::Reject { group: g.id.clone(), char_id: r.row.char_id, device_id: r.row.device_id.clone() });
                                         }
                                     });
                                 }
                                 ui.horizontal(|ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.invite_for).hint_text("Character it is for").desired_width(180.0));
+                                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.invite_for).hint_text(tr!("Character it is for")).desired_width(180.0));
                                     let typed = self.wh_share.invite_for.trim();
                                     // Yourself is another device: at your own rank, which no one picks.
                                     let me = members.iter().find(|m| m.char_id == g.char_id).is_some_and(|m| m.name.eq_ignore_ascii_case(typed));
                                     let ok = !typed.is_empty() && (me || g.role.can_write());
                                     if me {
-                                        ui.label(egui::RichText::new(format!("as {}", g.role.label())).weak())
-                                            .on_hover_text("Your own other device: it keeps your rank");
+                                        ui.label(egui::RichText::new(trf!("as {v}", v = g.role.label().tr())).weak())
+                                            .on_hover_text(tr!("Your own other device: it keeps your rank"));
                                     } else if !g.role.can_write() {
-                                        ui.label(egui::RichText::new("your own devices only").weak())
-                                            .on_hover_text("A viewer invites only their own character, for another device");
+                                        ui.label(egui::RichText::new(tr!("your own devices only")).weak())
+                                            .on_hover_text(tr!("A viewer invites only their own character, for another device"));
                                     } else if admin {
                                         let v = &mut self.wh_share.invite_viewer;
                                         egui::ComboBox::from_id_salt(("invite_role", &g.id))
                                             .width(80.0)
                                             .selected_text(if *v { "as Viewer" } else { "as Member" })
                                             .show_ui(ui, |ui| {
-                                                ui.menu_value(v, false, "as Member").on_hover_text("Sees and shares");
-                                                ui.menu_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
+                                                ui.menu_value(v, false, tr!("as Member")).on_hover_text(tr!("Sees and shares"));
+                                                ui.menu_value(v, true, tr!("as Viewer")).on_hover_text(tr!("Sees the group's wormholes, shares nothing"));
                                             });
                                     } else {
-                                        ui.label(egui::RichText::new("as Viewer").weak());
+                                        ui.label(egui::RichText::new(tr!("as Viewer")).weak());
                                     }
                                     if ui
-                                        .add_enabled(ok, egui::Button::new(format!("{}  New invite link", icon::LINK)))
+                                        .add_enabled(ok, egui::Button::new(trf!("{icon}  New invite link", icon = icon::LINK)))
                                         .on_hover_text(
-                                            "Only that character can use it, once, within two days. Using it lets them in, while this app is running.",
+                                            tr!("Only that character can use it, once, within two days. Using it lets them in, while this app is running."),
                                         )
                                         .clicked()
                                     {
@@ -424,15 +423,15 @@ impl SpaiApp {
                                         ui.horizontal(|ui| {
                                             let copy_w = ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 2.0 + 8.0;
                                             ui.add(egui::TextEdit::singleline(&mut web.clone()).desired_width((ui.available_width() - copy_w).max(80.0)));
-                                            if ui.button(icon::COPY).on_hover_text("Copy the link").clicked() {
+                                            if ui.button(icon::COPY).on_hover_text(tr!("Copy the link")).clicked() {
                                                 copy = Some(web.clone());
                                             }
                                         });
-                                        ui.label(egui::RichText::new(format!("For {for_name} only. Send it to them privately: it opens in EVE Spai or in a browser.")).weak());
+                                        ui.label(egui::RichText::new(trf!("For {for_name} only. Send it to them privately: it opens in EVE Spai or in a browser.", for_name = for_name)).weak());
                                     }
                                 }
                             }
-                            if g.role != Role::Owner && ui.button(format!("{}  Leave", icon::SIGN_OUT)).clicked() {
+                            if g.role != Role::Owner && ui.button(trf!("{icon}  Leave", icon = icon::SIGN_OUT)).clicked() {
                                 cmd = Some(Cmd::Leave { group: g.id.clone() });
                             }
 
@@ -441,7 +440,7 @@ impl SpaiApp {
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("As");
+                    ui.label(tr!("As"));
                     let name = chars.iter().find(|c| Some(c.0) == self.wh_share.char_id).map_or("no character", |c| c.1.as_str());
                     egui::ComboBox::from_id_salt("wh_share_char").selected_text(name).show_ui(ui, |ui| {
                         for (id, n) in &chars {
@@ -454,17 +453,17 @@ impl SpaiApp {
                 let char_id = self.wh_share.char_id;
                 let new_prefs = self.wh_share.new_prefs.get_or_insert_with(SharePrefs::default);
                 ui.horizontal(|ui| {
-                    ui.label("A new group gets");
-                    ui.checkbox(&mut new_prefs.send_holes, "my wormholes");
-                    ui.checkbox(&mut new_prefs.send_sigs, "my probe scans");
+                    ui.label(tr!("A new group gets"));
+                    ui.checkbox(&mut new_prefs.send_holes, tr!("my wormholes"));
+                    ui.checkbox(&mut new_prefs.send_sigs, tr!("my probe scans"));
                 })
                 .response
-                .on_hover_text("What of yours goes to a group you create or join here. Change it for each group above later.");
+                .on_hover_text(tr!("What of yours goes to a group you create or join here. Change it for each group above later."));
                 let new_prefs = *new_prefs;
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.new_name).hint_text("Group name").desired_width(200.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.new_name).hint_text(tr!("Group name")).desired_width(200.0));
                     let ok = char_id.is_some() && !self.wh_share.new_name.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new(format!("{}  Create group", icon::PLUS))).clicked() {
+                    if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Create group", icon = icon::PLUS))).clicked() {
                         let char_name = chars.iter().find(|c| Some(c.0) == char_id).map(|c| c.1.clone()).unwrap_or_default();
                         cmd = Some(Cmd::Create {
                             name: self.wh_share.new_name.trim().to_owned(),
@@ -478,7 +477,7 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.wh_share.join_link).hint_text("https://eve-spai.com/wh/join/…").desired_width(200.0));
                     let ok = char_id.is_some() && engine::parse_link(&self.wh_share.join_link).is_some();
-                    if ui.add_enabled(ok, egui::Button::new(format!("{}  Join", icon::SIGN_IN))).clicked() {
+                    if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Join", icon = icon::SIGN_IN))).clicked() {
                         cmd = Some(Cmd::Join { link: self.wh_share.join_link.trim().to_owned(), char_id: char_id.unwrap_or_default(), prefs: new_prefs });
                         self.wh_share.join_link.clear();
                     }
@@ -510,17 +509,17 @@ impl SpaiApp {
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone.");
-                ui.label("Holes already on members' maps stay until they expire.");
+                ui.label(tr!("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone."));
+                ui.label(tr!("Holes already on members' maps stay until they expire."));
                 ui.add_space(6.0);
-                ui.label(format!("Type the group's name, {name}, to delete it:"));
+                ui.label(trf!("Type the group's name, {name}, to delete it:", name = name));
                 let edit = ui.add(egui::TextEdit::singleline(&mut typed).hint_text(name.as_str()).desired_width(260.0));
                 let matches = typed == name;
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let delete = egui::Button::new(egui::RichText::new("Delete the group").color(if matches { crate::theme::standing::HOSTILE } else { ui.visuals().weak_text_color() }));
+                    let delete = egui::Button::new(egui::RichText::new(tr!("Delete the group")).color(if matches { crate::theme::standing::HOSTILE } else { ui.visuals().weak_text_color() }));
                     go = ui.add_enabled(matches, delete).clicked() || (matches && edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    cancel = ui.button("Cancel").clicked();
+                    cancel = ui.button(tr!("Cancel")).clicked();
                 });
             });
         if go {
@@ -552,8 +551,8 @@ impl SpaiApp {
             .default_pos(egui::pos2(ctx.content_rect().center().x + 4.0, ctx.content_rect().top() + 150.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.members_filter).hint_text("Filter by name").desired_width(200.0));
-                    ui.label(egui::RichText::new(format!("{} members", members.len())).weak());
+                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.members_filter).hint_text(tr!("Filter by name")).desired_width(200.0));
+                    ui.label(egui::RichText::new(trf!("{members} members", members = members.len())).weak());
                 });
                 let q = self.wh_share.members_filter.trim().to_lowercase();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -563,16 +562,16 @@ impl SpaiApp {
                             ui.label(&m.name);
                             if g.role == Role::Owner && !me && m.role != Role::Owner {
                                 let mut role = m.role;
-                                egui::ComboBox::from_id_salt(("wh_share_role", m.char_id)).selected_text(role.label()).show_ui(ui, |ui| {
+                                egui::ComboBox::from_id_salt(("wh_share_role", m.char_id)).selected_text(role.label().tr()).show_ui(ui, |ui| {
                                     for r in [Role::Viewer, Role::Member, Role::Admin] {
-                                        ui.menu_value(&mut role, r, r.label());
+                                        ui.menu_value(&mut role, r, r.label().tr());
                                     }
                                 });
                                 if role != m.role {
                                     cmd = Some(Cmd::SetRole { group: g.id.clone(), char_id: m.char_id, role });
                                 }
                             } else {
-                                ui.label(m.role.label());
+                                ui.label(m.role.label().tr());
                             }
                             // Each device with its key, compared over voice to be sure it is theirs.
                             let manage = g.role == Role::Owner || (g.role == Role::Admin && m.role < Role::Admin);
@@ -580,13 +579,13 @@ impl SpaiApp {
                                 for d in &m.devices {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(d.keys.fingerprint()).monospace().weak())
-                                            .on_hover_text("Key fingerprint: compare it with the member over voice to be sure it is theirs");
+                                            .on_hover_text(tr!("Key fingerprint: compare it with the member over voice to be sure it is theirs"));
                                         if !d.label.is_empty() {
                                             ui.label(egui::RichText::new(&d.label).weak());
                                         }
                                         let last_of_owner = m.role == Role::Owner && m.devices.len() == 1;
                                         if (manage || me) && m.devices.len() > 1 && !last_of_owner
-                                            && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove this device; the others keep their access").clicked()
+                                            && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Remove this device; the others keep their access")).clicked()
                                         {
                                             cmd = Some(Cmd::RemoveDevice { group: g.id.clone(), char_id: m.char_id, device_id: d.id.clone() });
                                         }
@@ -594,7 +593,7 @@ impl SpaiApp {
                                 }
                             });
                             let may_remove = !me && m.role != Role::Owner && manage;
-                            if may_remove && ui.small_button("Remove").on_hover_text("Takes them out, every device, and moves everyone else to a new key").clicked() {
+                            if may_remove && ui.small_button(tr!("Remove")).on_hover_text(tr!("Takes them out, every device, and moves everyone else to a new key")).clicked() {
                                 cmd = Some(Cmd::Remove { group: g.id.clone(), char_id: m.char_id });
                             }
                             ui.end_row();

@@ -453,7 +453,9 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
             .map(|mut e| e.read_to_string(&mut types_jsonl));
         if !types_jsonl.is_empty() {
             tx.execute("DELETE FROM sde_ship_i18n", [])?;
+            tx.execute("DELETE FROM sde_ship_names", [])?;
             let mut ins = tx.prepare("INSERT INTO sde_ship_i18n(ship_id, name) VALUES(?1, ?2)")?;
+            let mut by_lang = tx.prepare("INSERT OR REPLACE INTO sde_ship_names(ship_id, lang, name) VALUES(?1, ?2, ?3)")?;
             for line in types_jsonl.lines() {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 let Some(id) = v.get("_key").and_then(|k| k.as_i64()) else { continue };
@@ -469,6 +471,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
                     if let Some(loc) = val.as_str() {
                         if !loc.is_empty() && loc != en {
                             ins.execute(params![id, loc])?;
+                            by_lang.execute(params![id, lang, loc])?;
                         }
                     }
                 }

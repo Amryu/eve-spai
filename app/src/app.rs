@@ -587,6 +587,8 @@ pub struct SpaiApp {
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     eve_focus_checked: Option<std::time::Instant>,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
+    /// The language, ship-name toggle and static-data state last applied.
+    language_applied: Option<(String, bool, bool)>,
     update: crate::update::SharedUpdate,
     update_checked_at: Option<std::time::Instant>,
     update_dismissed: bool,
@@ -1530,6 +1532,7 @@ impl SpaiApp {
             eve_focused,
             eve_focus_checked: None,
             ship_index: None,
+            language_applied: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked_at: None,
             update_dismissed: false,
@@ -1930,7 +1933,7 @@ impl SpaiApp {
                 }),
         )
         .on_hover_text(
-            "How far from you a kill counts as intel. The lowest setting follows the intel feed's own jumps filter.",
+            tr!("How far from you a kill counts as intel. The lowest setting follows the intel feed's own jumps filter."),
         )
     }
 
@@ -1942,8 +1945,8 @@ impl SpaiApp {
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
             if ui
-                .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
-                .on_hover_text("Master switch for all intel alerts")
+                .checkbox(&mut self.settings.alert_enabled, tr!("Enable intel alerts"))
+                .on_hover_text(tr!("Master switch for all intel alerts"))
                 .changed()
             {
                 self.needs_save = true;
@@ -1953,13 +1956,10 @@ impl SpaiApp {
                 if ui
                     .checkbox(
                         &mut snooze,
-                        format!(
-                            "{}  Snooze alert window until I undock",
-                            egui_phosphor::regular::ALARM
-                        ),
+                        trf!("{icon}  Snooze alert window until I undock", icon = egui_phosphor::regular::ALARM),
                     )
                     .on_hover_text(
-                        "Suppress the alert window from opening. Intel is still collected. Clears when any character undocks.",
+                        tr!("Suppress the alert window from opening. Intel is still collected. Clears when any character undocks."),
                     )
                     .changed()
                 {
@@ -1967,8 +1967,8 @@ impl SpaiApp {
                 }
             }
             if ui
-                .checkbox(&mut self.settings.kill_intel, "zKill intel")
-                .on_hover_text("Within range, killmails appear as intel cards (and respect the alert rules)")
+                .checkbox(&mut self.settings.kill_intel, tr!("zKill intel"))
+                .on_hover_text(tr!("Within range, killmails appear as intel cards (and respect the alert rules)"))
                 .changed()
             {
                 self.needs_save = true;
@@ -1982,30 +1982,27 @@ impl SpaiApp {
         if !self.settings.alert_enabled {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "Intel alerts are off. No rule will fire until this is enabled.",
+                tr!("Intel alerts are off. No rule will fire until this is enabled."),
             );
         } else if !self.settings.alerts.rules.iter().any(|r| r.enabled) {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "No alert rule is enabled. Nothing will fire. Enable or add a rule below.",
+                tr!("No alert rule is enabled. Nothing will fire. Enable or add a rule below."),
             );
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let n = self.settings.alerts.rules.iter().filter(|r| r.enabled).count();
             if ui
-                .button(format!(
-                    "{}  Alert rules ({n} on)",
-                    egui_phosphor::regular::SLIDERS_HORIZONTAL
-                ))
-                .on_hover_text("Configure alert rules")
+                .button(trf!("{icon}  Alert rules ({n} on)", icon = egui_phosphor::regular::SLIDERS_HORIZONTAL, n = n))
+                .on_hover_text(tr!("Configure alert rules"))
                 .clicked()
             {
                 self.alert_rules_open = true;
             }
             if ui
-                .button(format!("{}  Pilot notes and tags", egui_phosphor::regular::TAG))
-                .on_hover_text("Manage pilot tags, notes and their folders")
+                .button(trf!("{icon}  Pilot notes and tags", icon = egui_phosphor::regular::TAG))
+                .on_hover_text(tr!("Manage pilot tags, notes and their folders"))
                 .clicked()
             {
                 self.open_notes_manager(crate::notes::NoteKind::Pilot);
@@ -2015,7 +2012,7 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(egui::RichText::new("Recent alerts").strong());
+            ui.label(egui::RichText::new(tr!("Recent alerts")).strong());
             self.alert_history_ui(ui);
         });
     }
@@ -2038,7 +2035,7 @@ impl SpaiApp {
     /// Alert cards, newest first, as (report, severity, suppressed).
     fn alert_cards_ui(&mut self, ui: &mut egui::Ui, mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>) {
         if feed.is_empty() {
-            ui.label(egui::RichText::new("None yet.").weak());
+            ui.label(egui::RichText::new(tr!("None yet.")).weak());
             return;
         }
         {
@@ -2085,7 +2082,7 @@ impl SpaiApp {
         for (r, sev, suppressed) in &feed {
             if *suppressed {
                 ui.label(
-                    egui::RichText::new(format!("{}  suppressed", egui_phosphor::regular::BELL_SLASH))
+                    egui::RichText::new(trf!("{icon}  suppressed", icon = egui_phosphor::regular::BELL_SLASH))
                         .color(crate::theme::standing::NEUTRAL),
                 );
             }
@@ -2244,6 +2241,22 @@ impl SpaiApp {
     /// Starts reading the chat logs once their folder is known. Until then it is looked for again
     /// every 15 seconds: the EVE client creates it on its first logged chat, which may well be after
     /// this app started, and a folder set in Settings later counts too.
+    /// Puts the chosen language in force, and the ship names in it when those are translated too.
+    /// Ship names come from the static data, so they are looked up again once it has loaded.
+    pub(crate) fn apply_language(&mut self) {
+        let key = (self.settings.language.clone(), self.settings.translate_ship_names, self.ship_index.is_some());
+        if self.language_applied.as_ref() == Some(&key) {
+            return;
+        }
+        // Renders stay the same on every machine, whatever its system language.
+        let auto = if cfg!(test) { "en" } else { "" };
+        spai_ui::i18n::set_language(if self.settings.language.is_empty() { auto } else { &self.settings.language });
+        let lang = spai_ui::i18n::language();
+        let ships = (self.settings.translate_ship_names && lang != "en").then(|| self.store.as_ref().map(|s| s.ship_names_in(lang))).flatten();
+        crate::shipnames::set_shown(ships);
+        self.language_applied = Some(key);
+    }
+
     fn start_intel_watcher(&mut self, ctx: &egui::Context) {
         if self.intel_watcher_running || !self.watcher_started || self.headless {
             return;
@@ -2391,10 +2404,10 @@ impl SpaiApp {
     /// Retry, and a way round a download that keeps failing: the zip fetched in a browser.
     pub(crate) fn sde_retry_row(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("Retry").clicked() {
+            if ui.button(tr!("Retry")).clicked() {
                 self.start_sde(&ui.ctx().clone(), None);
             }
-            if ui.button(format!("{}  Use a downloaded file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+            if ui.button(trf!("{icon}  Use a downloaded file…", icon = egui_phosphor::regular::FOLDER_OPEN)).clicked() {
                 self.sde_file_dialog = true;
             }
         });
@@ -2406,10 +2419,10 @@ impl SpaiApp {
     pub(crate) fn sde_cancel_row(&mut self, ui: &mut egui::Ui, msg: &str) {
         if msg.starts_with("Downloading") || msg.starts_with("Connecting") {
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     sde::cancel(&self.sde_status);
                 }
-                if ui.button(format!("{}  Use a downloaded file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+                if ui.button(trf!("{icon}  Use a downloaded file…", icon = egui_phosphor::regular::FOLDER_OPEN)).clicked() {
                     sde::cancel(&self.sde_status);
                     self.sde_file_dialog = true;
                 }
@@ -2432,16 +2445,16 @@ impl SpaiApp {
             .resizable(false)
             .default_width(460.0)
             .show(ctx, |ui| {
-                ui.label("Download FC's static data export (the JSONL zip, about 100 MB) in your browser, then choose the file. The smaller tables are still fetched from fuzzwork.co.uk.");
+                ui.label(tr!("Download FC's static data export (the JSONL zip, about 100 MB) in your browser, then choose the file. The smaller tables are still fetched from fuzzwork.co.uk."));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.hyperlink_to(format!("{}  Download the JSONL SDE", egui_phosphor::regular::DOWNLOAD_SIMPLE), sde::JSONL_URL);
-                    if ui.button(egui_phosphor::regular::COPY).on_hover_text("Copy the link").clicked() {
+                    if ui.button(egui_phosphor::regular::COPY).on_hover_text(tr!("Copy the link")).clicked() {
                         ui.ctx().copy_text(sde::JSONL_URL.to_owned());
                     }
                 });
                 ui.add_space(4.0);
-                if ui.button(format!("{}  Choose file…", egui_phosphor::regular::FOLDER_OPEN)).clicked() {
+                if ui.button(trf!("{icon}  Choose file…", icon = egui_phosphor::regular::FOLDER_OPEN)).clicked() {
                     picked = rfd::FileDialog::new().add_filter("JSONL SDE", &["zip"]).pick_file();
                 }
             });
@@ -3474,7 +3487,7 @@ impl SpaiApp {
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Character").weak());
+                    ui.label(egui::RichText::new(tr!("Character")).weak());
 
                     // egui's defaults are a 100px button and a 200px popup, which truncate long
                     // pilot names and cap the list at ~7 rows. Size the button to the widest name
@@ -3508,7 +3521,7 @@ impl SpaiApp {
                             ui.menu_value(
                                 &mut self.active_character,
                                 "No character".to_owned(),
-                                "No character",
+                                tr!("No character"),
                             );
                             for c in &self.characters {
                                 ui.menu_value(
@@ -3559,7 +3572,7 @@ impl SpaiApp {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
                     let intel = self.intel_state.lock().unwrap().reports.len();
-                    ui.label(format!("Intel: {intel}"));
+                    ui.label(trf!("Intel: {intel}", intel = intel));
                     ui.separator();
                     ui.label(egui::RichText::new(&self.active_character).weak());
                     ui.separator();
@@ -3567,35 +3580,27 @@ impl SpaiApp {
                     if let Some(av) = self.update.lock().unwrap().available.clone() {
                         if av.version != self.settings.update_skip_version {
                             ui.label(
-                                egui::RichText::new(format!("● v{} available", av.version))
+                                egui::RichText::new(trf!("● v{v} available", v = av.version))
                                     .color(egui::Color32::from_rgb(0x5a, 0xc8, 0x7a)),
                             )
-                            .on_hover_text("A newer version is available. See the update prompt.");
+                            .on_hover_text(tr!("A newer version is available. See the update prompt."));
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{:.0} fps   CPU {:.0}%   RAM {}",
-                                if cfg!(test) { 60.0 } else { self.frame_ms.max(0.1).recip() * 1000.0 },
-                                if cfg!(test) { 0.0 } else { self.proc_monitor.cpu_percent },
-                                if cfg!(test) { "100 MB".to_owned() } else { self.proc_monitor.rss_human() },
-                            ))
+                            egui::RichText::new(trf!("{v} fps   CPU {v2}%   RAM {v3}", v = format!("{:.0}", if cfg!(test) { 60.0 } else { self.frame_ms.max(0.1).recip() * 1000.0 }), v2 = format!("{:.0}", if cfg!(test) { 0.0 } else { self.proc_monitor.cpu_percent }), v3 = if cfg!(test) { "100 MB".to_owned() } else { self.proc_monitor.rss_human() }))
                             .weak(),
                         )
-                        .on_hover_text(format!(
-                            "{:.1} ms per frame, the slowest of the last 120 · CPU (share of one \
-                             core) · resident memory",
-                            self.frame_ms
-                        ));
+                        .on_hover_text(trf!("{v} ms per frame, the slowest of the last 120 · CPU (share of one \
+                             core) · resident memory", v = format!("{:.1}", self.frame_ms)));
                         if self.disk_level != crate::disk::Level::Normal {
                             if let Some(free) = self.disk_free {
                                 ui.label(
-                                    egui::RichText::new(format!("Disk {}", fmt_bytes(free)))
+                                    egui::RichText::new(trf!("Disk {v}", v = fmt_bytes(free)))
                                         .color(crate::theme::standing::WARNING),
                                 )
-                                .on_hover_text("Free space where EVE Spai stores its data");
+                                .on_hover_text(tr!("Free space where EVE Spai stores its data"));
                             }
                         }
                     });
@@ -3685,9 +3690,9 @@ impl SpaiApp {
                 // A number from a poll that has not fired yet would be a worse answer than saying
                 // what actually happened.
                 if self.disk_saw_failure {
-                    ui.label("A save just failed because the disk is full.");
+                    ui.label(tr!("A save just failed because the disk is full."));
                 } else if let Some(free) = &free {
-                    ui.label(format!("{free} free where EVE Spai stores its data."));
+                    ui.label(trf!("{free} free where EVE Spai stores its data.", free = free));
                 }
             });
             ui.label(match level {
@@ -3699,13 +3704,13 @@ impl SpaiApp {
                 _ => "Old battle history is being trimmed. Free some space to keep recording.",
             });
             ui.horizontal(|ui| {
-                if ui.button("Open data folder").clicked() {
+                if ui.button(tr!("Open data folder")).clicked() {
                     if let Ok(dir) = crate::store::data_dir() {
                         let _ = open::that(dir);
                     }
                 }
                 // Critical has no dismiss: it reports a live degradation, and it clears itself.
-                if level == crate::disk::Level::Low && ui.button("Dismiss").clicked() {
+                if level == crate::disk::Level::Low && ui.button(tr!("Dismiss")).clicked() {
                     self.disk_banner_dismissed = Some(level);
                 }
             })
@@ -3753,15 +3758,15 @@ impl SpaiApp {
             });
             if keyring {
                 ui.label(
-                    "The saved login could not be read back. A profile copied from another machine or account cannot be opened by design; logging in again replaces it.",
+                    tr!("The saved login could not be read back. A profile copied from another machine or account cannot be opened by design; logging in again replaces it."),
                 );
             } else {
                 ui.label(
-                    "Location, fleet and in-game routes stay blank until the character logs in again. Intel, alerts and Jabber are unaffected.",
+                    tr!("Location, fleet and in-game routes stay blank until the character logs in again. Intel, alerts and Jabber are unaffected."),
                 );
             }
             ui.horizontal(|ui| {
-                if ui.button("Log in again").clicked() {
+                if ui.button(tr!("Log in again")).clicked() {
                     login = true;
                 }
                 if hurt.len() > 1 {
@@ -4024,6 +4029,7 @@ impl eframe::App for SpaiApp {
         }
 
         self.settings.theme.apply(&ctx);
+        self.apply_language();
 
         self.refresh_characters();
         ft.mark("refresh_characters");
@@ -4458,7 +4464,7 @@ fn trim_url_tail(tok: &str) -> &str {
 /// often something to paste into chat or a fleet broadcast, not to open.
 fn link_copy_menu(resp: &egui::Response, url: &str) {
     resp.context_menu(|ui| {
-        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+        if ui.button(trf!("{icon}  Copy", icon = egui_phosphor::regular::COPY)).clicked() {
             ui.ctx().copy_text(url.to_owned());
             ui.close();
         }
@@ -4706,7 +4712,7 @@ fn forget_button(ui: &mut egui::Ui, name: &str, blocked: Option<&str>) -> bool {
             false
         }
         None => {
-            resp.on_hover_text(format!("Remove {name} from the list. Chat history is kept."))
+            resp.on_hover_text(trf!("Remove {name} from the list. Chat history is kept.", name = name))
                 .clicked()
         }
     }
@@ -5166,7 +5172,7 @@ fn jabber_tab_box(
                     egui::FontId::proportional(13.0),
                     pcol,
                 );
-                if presp.on_hover_text("Open in new window").clicked() {
+                if presp.on_hover_text(tr!("Open in new window")).clicked() {
                     popout = true;
                     select = false;
                 }
@@ -5180,7 +5186,7 @@ fn jabber_tab_box(
                 egui::FontId::proportional(13.0),
                 col,
             );
-            if cresp.on_hover_text("Close").clicked() {
+            if cresp.on_hover_text(tr!("Close")).clicked() {
                 close = true;
                 select = false;
             }
@@ -5313,7 +5319,7 @@ pub(crate) fn dscan_view_dialog_ui(
         taskbar_off,
         |ui| {
             ui.horizontal(|ui| {
-                if ui.button(format!("{}  Open on dscan.info", icon::ARROW_SQUARE_OUT)).clicked() {
+                if ui.button(trf!("{icon}  Open on dscan.info", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                     let _ = open::that(&url);
                 }
             });
@@ -5322,19 +5328,19 @@ pub(crate) fn dscan_view_dialog_ui(
                 DscanFetch::Loading => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Fetching scan…");
+                        ui.label(tr!("Fetching scan…"));
                     });
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 DscanFetch::Failed => {
-                    ui.label(egui::RichText::new("Couldn't read this scan. Open it on the site.").weak());
+                    ui.label(egui::RichText::new(tr!("Couldn't read this scan. Open it on the site.")).weak());
                 }
                 DscanFetch::Local(names) => {
-                    ui.label(format!("A local scan of {} pilots, opening in Lookup.", names.len()));
+                    ui.label(trf!("A local scan of {names} pilots, opening in Lookup.", names = names.len()));
                 }
                 DscanFetch::Ready(ships) => {
                     let total: u32 = ships.iter().map(|(_, _, n)| n).sum();
-                    ui.label(egui::RichText::new(format!("{} ships · {} types", total, ships.len())).weak());
+                    ui.label(egui::RichText::new(trf!("{total} ships · {ships} types", total = total, ships = ships.len())).weak());
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         for (id, name, n) in ships {
@@ -5345,7 +5351,7 @@ pub(crate) fn dscan_view_dialog_ui(
                                         egui::RichText::new(name).color(ui.visuals().hyperlink_color),
                                     )
                                     .sense(egui::Sense::click()))
-                                    .on_hover_text("Ship info")
+                                    .on_hover_text(tr!("Ship info"))
                                     .clicked()
                                 {
                                     open_ship = Some(*id);
@@ -5470,20 +5476,20 @@ fn system_chips_ex(
     }
     if crate::jove::has(system_id) {
         ui.label(
-            egui::RichText::new(format!("{}  Jove Observatory", egui_phosphor::regular::CELL_TOWER))
+            egui::RichText::new(trf!("{icon}  Jove Observatory", icon = egui_phosphor::regular::CELL_TOWER))
                 .color(JOVE_COLOR),
         );
     }
     if let Some(f) = status.get(&system_id) {
         if f.incursion {
-            ui.label(egui::RichText::new("INCURSION").color(standing::ALLIANCE));
+            ui.label(egui::RichText::new(tr!("INCURSION")).color(standing::ALLIANCE));
         }
         if let Some(fw) = &f.fw {
-            ui.label(egui::RichText::new(format!("FW {fw}")).color(standing::WARNING));
+            ui.label(egui::RichText::new(trf!("FW {fw}", fw = fw)).color(standing::WARNING));
         }
         if show_sov {
             if let Some(sov) = &f.sov {
-                ui.label(egui::RichText::new(format!("Sov: {sov}")).color(standing::CORP));
+                ui.label(egui::RichText::new(trf!("Sov: {sov}", sov = sov)).color(standing::CORP));
             }
         }
     }
@@ -5819,18 +5825,18 @@ fn toolbar_combo<R>(
 fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &br_core::battle::Battle) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(label).strong());
-        ui.label(format!("{} kills", b.kills));
-        ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
+        ui.label(trf!("{v} kills", v = b.kills));
+        ui.label(egui::RichText::new(trf!("{v} ISK", v = fmt_isk(b.isk))).weak());
         for (i, side) in b.sides.iter().take(2).enumerate() {
             if i > 0 {
-                ui.label(egui::RichText::new("vs").weak());
+                ui.label(egui::RichText::new(tr!("vs")).weak());
             }
             let name = side.parties.first().map(|p| p.name.as_str()).unwrap_or("?");
             ui.label(egui::RichText::new(name).color(side_color(i)).strong());
             ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
         }
         if b.sides.is_empty() {
-            ui.label(egui::RichText::new("no clear sides").weak());
+            ui.label(egui::RichText::new(tr!("no clear sides")).weak());
         }
     });
 }
@@ -5859,7 +5865,7 @@ pub(crate) fn battle_row(
                 ui.add(egui::Label::new(egui::RichText::new(figures).weak()).wrap_mode(egui::TextWrapMode::Extend));
                 if b.ambiguous {
                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(crate::theme::standing::WARNING).strong())
-                        .on_hover_text("This battle may be two fights. Open to review.");
+                        .on_hover_text(tr!("This battle may be two fights. Open to review."));
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let mut job = egui::text::LayoutJob::default();
@@ -5891,7 +5897,7 @@ pub(crate) fn battle_row(
                 for (j, side) in sides.iter().enumerate() {
                     let i = li * per_line + j;
                     if j > 0 {
-                        ui.add_sized([vs_w, 18.0], egui::Label::new(egui::RichText::new("vs").strong()));
+                        ui.add_sized([vs_w, 18.0], egui::Label::new(egui::RichText::new(tr!("vs")).strong()));
                     }
                     let col = side_color(i);
                     ui.scope(|ui| {
@@ -5970,7 +5976,7 @@ pub(crate) fn ship_row(
                         hull_badge(ui, pod, 16.0);
                         if l.pod_value >= 1_000_000.0 {
                             ui.label(egui::RichText::new(fmt_isk(l.pod_value)).color(red).weak())
-                                .on_hover_text("pod value");
+                                .on_hover_text(tr!("pod value"));
                         }
                     }
                 }
@@ -5979,14 +5985,14 @@ pub(crate) fn ship_row(
                 party_badge(ui, party, 14.0, true);
                 ui.label(egui::RichText::new(pilot).weak());
                 if let Some(damage) = damage {
-                    let text = egui::RichText::new(format!("{} dmg", fmt_count(damage)));
+                    let text = egui::RichText::new(trf!("{v} dmg", v = fmt_count(damage)));
                     let text = if damage > 0 { text.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { text.weak() };
-                    ui.label(text).on_hover_text(format!("{damage} damage dealt in this battle"));
+                    ui.label(text).on_hover_text(trf!("{damage} damage dealt in this battle", damage = damage));
                 }
                 if let Some(l) = lost {
                     if ui
-                        .button(format!("{} zKill", icon::LINK))
-                        .on_hover_text("Open the killmail")
+                        .button(trf!("{icon} zKill", icon = icon::LINK))
+                        .on_hover_text(tr!("Open the killmail"))
                         .clicked()
                     {
                         open_kill.set(Some(l.kill_id));
@@ -6125,22 +6131,22 @@ pub(crate) fn battle_summary(ui: &mut egui::Ui, b: &br_core::battle::Battle) -> 
     let mut open_system = None;
     for (id, name, sec) in &b.systems {
         ui.label(security_badge(*sec));
-        if ui.link(egui::RichText::new(name).strong()).on_hover_text("Open system info").clicked() {
+        if ui.link(egui::RichText::new(name).strong()).on_hover_text(tr!("Open system info")).clicked() {
             open_system = Some(*id);
         }
     }
     let at = |t: i64| chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default();
     let span_min = ((b.end - b.start) / 60).max(0);
     let span = if span_min >= 60 { format!("{}h {}m", span_min / 60, span_min % 60) } else { format!("{span_min}m") };
-    ui.label(egui::RichText::new(format!("{}\u{2013}{} EVE \u{00b7} {span}", at(b.start), at(b.end))).weak());
-    ui.label(format!("{} kills", b.kills));
-    ui.label(egui::RichText::new(format!("{} ISK lost", fmt_isk(b.isk))).color(egui::Color32::from_rgb(0x4f, 0xc3, 0xf7)).strong().size(18.0));
+    ui.label(egui::RichText::new(trf!("{v}\u{2013}{v2} EVE \u{00b7} {span}", v = at(b.start), v2 = at(b.end), span = span)).weak());
+    ui.label(trf!("{v} kills", v = b.kills));
+    ui.label(egui::RichText::new(trf!("{v} ISK lost", v = fmt_isk(b.isk))).color(egui::Color32::from_rgb(0x4f, 0xc3, 0xf7)).strong().size(18.0));
     let now = crate::clock::utc().timestamp();
     let remaining = br_core::battle::BATTLE_WINDOW_SECS - (now - b.end);
     if remaining > 0 {
         let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
-        ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
-            .on_hover_text(format!("Still accepting new kills for ~{}m. The view updates live.", remaining / 60 + 1));
+        ui.label(egui::RichText::new(trf!("{icon} Live", icon = icon::BROADCAST)).color(green).strong())
+            .on_hover_text(trf!("Still accepting new kills for ~{v}m. The view updates live.", v = remaining / 60 + 1));
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     }
     open_system
@@ -6194,7 +6200,7 @@ const CHIP_MAX_W: f32 = 240.0;
 pub(crate) fn side_chips(ui: &mut egui::Ui, b: &br_core::battle::Battle) {
     for (i, side) in b.sides.iter().enumerate() {
         if i > 0 {
-            ui.label(egui::RichText::new("vs").weak());
+            ui.label(egui::RichText::new(tr!("vs")).weak());
         }
         egui::Frame::new()
             .fill(side_color(i).gamma_multiply(0.10))
@@ -6249,7 +6255,7 @@ fn side_head(
                 if let Some(c) = &side.coalition {
                     ui.label(egui::RichText::new(c).color(col).strong());
                 }
-                ui.label(egui::RichText::new(format!("{} groups, {pilots} pilots", side.parties.len())).weak());
+                ui.label(egui::RichText::new(trf!("{v} groups, {pilots} pilots", v = side.parties.len(), pilots = pilots)).weak());
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     for (p, n) in who {
@@ -6266,9 +6272,9 @@ fn side_head(
                 });
             })
             .response
-            .on_hover_text("Everyone on this side");
+            .on_hover_text(tr!("Everyone on this side"));
         }
-        if rearrange && ui.button(icon::ARROWS_LEFT_RIGHT).on_hover_text("Rearrange sides").clicked() {
+        if rearrange && ui.button(icon::ARROWS_LEFT_RIGHT).on_hover_text(tr!("Rearrange sides")).clicked() {
             asked = true;
         }
     });
@@ -6277,7 +6283,7 @@ fn side_head(
     // What the side lost leads, large; the rest follows on one quieter line.
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(fmt_isk(side.isk_lost)).color(col).strong().size(24.0));
-        ui.label(egui::RichText::new("ISK lost").color(col.gamma_multiply(0.8)));
+        ui.label(egui::RichText::new(tr!("ISK lost")).color(col.gamma_multiply(0.8)));
     });
     // Each figure moves to the next line whole when the side is narrow, never broken inside.
     ui.horizontal_wrapped(|ui| {
@@ -6286,13 +6292,13 @@ fn side_head(
             ui.add(egui::Label::new(t).wrap_mode(egui::TextWrapMode::Extend));
         };
         let dot = || egui::RichText::new("\u{00b7}").weak();
-        item(ui, egui::RichText::new(format!("{pilots} pilots")).weak());
+        item(ui, egui::RichText::new(trf!("{pilots} pilots", pilots = pilots)).weak());
         item(ui, dot());
-        item(ui, egui::RichText::new(format!("{} kills", side.kills)).weak());
+        item(ui, egui::RichText::new(trf!("{v} kills", v = side.kills)).weak());
         item(ui, dot());
-        item(ui, egui::RichText::new(format!("{} losses", side.losses)).weak());
+        item(ui, egui::RichText::new(trf!("{v} losses", v = side.losses)).weak());
         item(ui, dot());
-        item(ui, egui::RichText::new(format!("{} destroyed", fmt_isk(side.isk_destroyed))).color(green));
+        item(ui, egui::RichText::new(trf!("{v} destroyed", v = fmt_isk(side.isk_destroyed))).color(green));
         item(ui, dot());
         item(ui, egui::RichText::new(eff.map_or("-".to_owned(), |e| format!("{e:.0}% efficiency"))).weak());
     });
@@ -6361,7 +6367,7 @@ fn ship_tile(ui: &mut egui::Ui, t: &crate::brview::ShipTile, name: &str, width: 
     };
     let g = ui.painter().layout_job(one_line(&label, font, text, bar.width() - 4.0));
     outlined_text(ui.painter(), bar.center() - g.size() / 2.0, g, text);
-    resp.on_hover_text(format!("{name}: {} of {} destroyed\nClick to list these pilots", t.lost, t.total))
+    resp.on_hover_text(trf!("{name}: {v} of {v2} destroyed\nClick to list these pilots", name = name, v = t.lost, v2 = t.total))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6398,7 +6404,7 @@ pub(crate) fn battle_detail(
         }
         crate::intel::structure_name_by_type(id)
             .map(|s| s.to_owned())
-            .or_else(|| type_names.get(&id).cloned())
+            .or_else(|| type_names.get(&id).map(|n| crate::shipnames::shown(n)))
             .unwrap_or_else(|| format!("Type {id}"))
     };
 
@@ -6418,7 +6424,7 @@ pub(crate) fn battle_detail(
         crate::app::br_timeline::timeline_chart(ui, b, 220.0, true);
         ui.add_space(6.0);
         let mut skip = ui.data_mut(|d| d.get_persisted::<bool>(egui::Id::new("br_skip_empty_pods"))).unwrap_or(true);
-        if ui.checkbox(&mut skip, "Filter empty capsules").on_hover_text("Leave out capsules lost with no implants").changed() {
+        if ui.checkbox(&mut skip, tr!("Filter empty capsules")).on_hover_text(tr!("Leave out capsules lost with no implants")).changed() {
             ui.data_mut(|d| d.insert_persisted(egui::Id::new("br_skip_empty_pods"), skip));
         }
         out.open_kill = crate::app::br_timeline::timeline_kills(ui, b, type_names, skip);
@@ -6477,7 +6483,7 @@ pub(crate) fn battle_detail(
                                         });
                                     }
                                     if side_tiles.is_empty() {
-                                        ui.label(egui::RichText::new("No ships").weak());
+                                        ui.label(egui::RichText::new(tr!("No ships")).weak());
                                     }
                                 });
                             return;
@@ -6523,7 +6529,7 @@ pub(crate) fn battle_detail(
                                         heights[0] = ui.cursor().top() - top;
                                     }
                                     if roster.is_empty() {
-                                        ui.label(egui::RichText::new("No ships").weak());
+                                        ui.label(egui::RichText::new(tr!("No ships")).weak());
                                     }
                                     return;
                                 }
@@ -6559,7 +6565,7 @@ pub(crate) fn battle_detail(
                                     heights[kind] = ui.cursor().top() - top;
                                 }
                                 if roster.is_empty() {
-                                    ui.label(egui::RichText::new("No ships").weak());
+                                    ui.label(egui::RichText::new(tr!("No ships")).weak());
                                 }
                             });
                         ui.data_mut(|d| d.insert_temp(heights_id, heights));
@@ -6602,21 +6608,21 @@ pub(crate) fn condensed_row(
             ui.label(egui::RichText::new(name_of(ship)).strong());
             ui.label(egui::RichText::new(format!("\u{00d7}{total}")).weak());
             if let Some(d) = damage {
-                let t = egui::RichText::new(format!("{} dmg", fmt_count(d)));
+                let t = egui::RichText::new(trf!("{v} dmg", v = fmt_count(d)));
                 ui.label(if d > 0 { t.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { t.weak() })
-                    .on_hover_text("Damage dealt by this side's pilots in this hull");
+                    .on_hover_text(tr!("Damage dealt by this side's pilots in this hull"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pod_isk > 0.0 {
-                    ui.label(egui::RichText::new(format!("+{} pods", fmt_isk(pod_isk))).weak())
-                        .on_hover_text("Cumulative pod ISK lost");
+                    ui.label(egui::RichText::new(trf!("+{v} pods", v = fmt_isk(pod_isk))).weak())
+                        .on_hover_text(tr!("Cumulative pod ISK lost"));
                 }
                 if ship_isk > 0.0 {
                     ui.label(egui::RichText::new(fmt_isk(ship_isk)).color(red))
-                        .on_hover_text("Cumulative ship ISK lost");
+                        .on_hover_text(tr!("Cumulative ship ISK lost"));
                 }
                 if lost > 0 {
-                    ui.label(egui::RichText::new(format!("{lost} lost")).color(red).strong());
+                    ui.label(egui::RichText::new(trf!("{lost} lost", lost = lost)).color(red).strong());
                 }
             });
         })
@@ -6849,7 +6855,7 @@ pub(crate) fn rescue_chat_feed(
     salt: &str,
 ) -> Option<(MsgRowAction, String, String)> {
     if msgs.is_empty() {
-        ui.label(egui::RichText::new("(no messages)").weak());
+        ui.label(egui::RichText::new(tr!("(no messages)")).weak());
         return None;
     }
     let now = crate::clock::utc().timestamp();
@@ -7082,8 +7088,8 @@ pub(crate) fn render_ping(
         ui.horizontal_wrapped(|ui| {
             ui.label(label);
             if ui
-                .button(format!("{}  Join Mumble", icon::HEADSET))
-                .on_hover_text("Open the Mumble client on this channel")
+                .button(trf!("{icon}  Join Mumble", icon = icon::HEADSET))
+                .on_hover_text(tr!("Open the Mumble client on this channel"))
                 .clicked()
             {
                 open_mumble(link.to_owned());
@@ -7129,7 +7135,7 @@ pub(crate) fn render_ping(
         Comms::Mumble { channel, link } => mumble_row(ui, format!("Comms: {channel}"), link),
         Comms::Text(t) => {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Comms:");
+                ui.label(tr!("Comms:"));
                 render_linked_text(ui, t, false);
             });
         }
@@ -7140,7 +7146,7 @@ pub(crate) fn render_ping(
                 let _ = open::that(url);
             }
         } else {
-            ui.label(format!("Doctrine: {d}"));
+            ui.label(trf!("Doctrine: {d}", d = d));
         }
     };
     let text_row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
@@ -7150,10 +7156,10 @@ pub(crate) fn render_ping(
     };
     let head_right = |ui: &mut egui::Ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(format!("{}  Copy", icon::COPY)).on_hover_text("Copy the ping text").clicked() {
+            if ui.button(trf!("{icon}  Copy", icon = icon::COPY)).on_hover_text(tr!("Copy the ping text")).clicked() {
                 ui.ctx().copy_text(p.raw().to_owned());
             }
-            ui.label(egui::RichText::new(format!("{ago} ago")).weak());
+            ui.label(egui::RichText::new(trf!("{ago} ago", ago = ago)).weak());
         });
     };
     frame.show(ui, |ui| {
@@ -7163,8 +7169,8 @@ pub(crate) fn render_ping(
                 use crate::pings::Part;
                 let n = parts.iter().filter(|x| matches!(x, Part::Fleet(_))).count();
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(format!("{}  Fleet ping", icon::MEGAPHONE)).strong());
-                    ui.label(egui::RichText::new(format!("{n} fleets")).weak());
+                    ui.label(egui::RichText::new(trf!("{icon}  Fleet ping", icon = icon::MEGAPHONE)).strong());
+                    ui.label(egui::RichText::new(trf!("{n} fleets", n = n)).weak());
                     head_right(ui);
                 });
                 for (i, part) in parts.iter().enumerate() {
@@ -7175,7 +7181,7 @@ pub(crate) fn render_ping(
                         Part::Text(t) => render_ping_body(ui, t, true),
                         Part::Fleet(f) => {
                             text_row(ui, &mut |ui| {
-                                ui.label(format!("FC: {}", f.fc));
+                                ui.label(trf!("FC: {v}", v = f.fc));
                                 if let Some(name) = &f.fleet {
                                     ui.label(egui::RichText::new(name).strong());
                                 }
@@ -7184,7 +7190,7 @@ pub(crate) fn render_ping(
                                 }
                             });
                             if !f.formup.is_empty() {
-                                ui.label(format!("Formup: {}", formup_str(&f.formup)));
+                                ui.label(trf!("Formup: {v}", v = formup_str(&f.formup)));
                             }
                             if let Some(c) = &f.comms {
                                 comms_row(ui, c);
@@ -7207,7 +7213,7 @@ pub(crate) fn render_ping(
             }
             Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(format!("{}  Fleet ping", icon::MEGAPHONE)).strong());
+                    ui.label(egui::RichText::new(trf!("{icon}  Fleet ping", icon = icon::MEGAPHONE)).strong());
                     if let Some(f) = fleet {
                         ui.label(egui::RichText::new(f).strong());
                     }
@@ -7216,9 +7222,9 @@ pub(crate) fn render_ping(
                     }
                     head_right(ui);
                 });
-                ui.label(format!("FC: {fc}"));
+                ui.label(trf!("FC: {fc}", fc = fc));
                 if !formup.is_empty() {
-                    ui.label(format!("Formup: {}", formup_str(formup)));
+                    ui.label(trf!("Formup: {v}", v = formup_str(formup)));
                 }
                 if let Some(c) = comms {
                     comms_row(ui, c);
@@ -7226,7 +7232,7 @@ pub(crate) fn render_ping(
                     match op_key(&op).and_then(|k| op_links.get(&k)) {
                         Some(link) => mumble_row(ui, format!("Comms: {op}"), link),
                         None => {
-                            ui.label(egui::RichText::new(format!("Comms: {op}?")).weak());
+                            ui.label(egui::RichText::new(trf!("Comms: {op}?", op = op)).weak());
                         }
                     }
                 }
@@ -7285,7 +7291,7 @@ fn warn_button(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) -> bool {
         return false;
     }
     ui.add(egui::Button::new(egui::RichText::new(text).color(col).size(11.0)).frame(false))
-        .on_hover_text("Show the intel for this system")
+        .on_hover_text(tr!("Show the intel for this system"))
         .clicked()
 }
 
@@ -7523,7 +7529,7 @@ fn sound_picker(
                         *value = p.to_owned();
                         changed = true;
                     }
-                    if spai_ui::widgets::icon_button(ui, icon::PLAY).on_hover_text("Preview").clicked() {
+                    if spai_ui::widgets::icon_button(ui, icon::PLAY).on_hover_text(tr!("Preview")).clicked() {
                         crate::sound::play(p, volume);
                     }
                 });
@@ -7538,7 +7544,7 @@ fn sound_picker(
                 }
             }
         });
-        if ui.button(icon::PLAY).on_hover_text("Test").clicked() {
+        if ui.button(icon::PLAY).on_hover_text(tr!("Test")).clicked() {
             crate::sound::play(value, volume);
         }
     });
@@ -7934,12 +7940,12 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
 
     egui::Grid::new("ship_resists").num_columns(7).spacing([10.0, 2.0]).show(ui, |ui| {
         ui.label("");
-        ui.label(egui::RichText::new("HP").weak());
+        ui.label(egui::RichText::new(tr!("HP")).weak());
         for (i, lbl) in dmg_lbl.iter().enumerate() {
             let (g, _, full) = damage_type(lbl).unwrap_or(("", dmg_col[i], lbl));
             ui.label(egui::RichText::new(g).color(dmg_col[i]).size(16.0)).on_hover_text(full);
         }
-        ui.label(egui::RichText::new("EHP").strong());
+        ui.label(egui::RichText::new(tr!("EHP")).strong());
         ui.end_row();
         for (name, hp, r) in layers {
             if hp <= 0.0 {
@@ -7969,7 +7975,7 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     let total = layer_ehp(d.shield_hp, d.shield_resist)
         + layer_ehp(d.armor_hp, d.armor_resist)
         + layer_ehp(d.hull_hp, d.hull_resist);
-    ui.label(egui::RichText::new(format!("Total EHP {total:.0}")).strong());
+    ui.label(egui::RichText::new(trf!("Total EHP {total}", total = format!("{:.0}", total))).strong());
 
     ui.separator();
     let mut hp = Vec::new();
@@ -7980,18 +7986,15 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
         hp.push(format!("{} launcher", d.launcher_hardpoints));
     }
     if !hp.is_empty() {
-        ui.label(format!("Hardpoints: {}", hp.join(" · ")));
+        ui.label(trf!("Hardpoints: {v}", v = hp.join(" · ")));
     }
-    ui.label(format!(
-        "Slots: {} high · {} mid · {} low",
-        d.high_slots, d.mid_slots, d.low_slots
-    ));
+    ui.label(trf!("Slots: {v} high · {v2} mid · {v3} low", v = d.high_slots, v2 = d.mid_slots, v3 = d.low_slots));
     if d.drone_cap > 0.0 {
-        ui.label(format!("Drones: {:.0} m³ / {:.0} Mbit", d.drone_cap, d.drone_bw));
+        ui.label(trf!("Drones: {v} m³ / {v2} Mbit", v = format!("{:.0}", d.drone_cap), v2 = format!("{:.0}", d.drone_bw)));
     }
-    ui.label(format!("Max velocity: {:.0} m/s", d.max_velocity));
+    ui.label(trf!("Max velocity: {v} m/s", v = format!("{:.0}", d.max_velocity)));
     if d.warp_speed > 0.0 {
-        ui.label(format!("Warp speed: {:.2} AU/s", d.warp_speed));
+        ui.label(trf!("Warp speed: {v} AU/s", v = format!("{:.2}", d.warp_speed)));
     }
 }
 
@@ -8094,7 +8097,7 @@ fn dir_picker_row(ui: &mut egui::Ui, hint: &str, value: &mut String) -> bool {
         // is left, instead of a fixed width that clips long EVE paths.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .button(format!("{}  Browse…", egui_phosphor::regular::FOLDER_OPEN))
+                .button(trf!("{icon}  Browse…", icon = egui_phosphor::regular::FOLDER_OPEN))
                 .clicked()
             {
                 let mut dialog = rfd::FileDialog::new();

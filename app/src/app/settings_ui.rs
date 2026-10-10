@@ -1,5 +1,7 @@
 //! The setup wizard, the settings view and its configuration windows: alert rules, severity, coalitions, bridges, sov upgrades and channels.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 /// The Imperium forum topic carrying both the sov-upgrade list and the Ansiblex link.
@@ -56,28 +58,26 @@ impl SpaiApp {
             .default_width(460.0)
             .show(ctx, |ui| {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(format!("Step {} of {total}", idx + 1)).weak());
+                ui.label(egui::RichText::new(trf!("Step {v} of {total}", v = idx + 1, total = total)).weak());
                 ui.separator();
                 ui.add_space(4.0);
                 match cur {
                     S::Shortcut => {
                         let kind = crate::tray::menu_entry_label();
-                        ui.heading(format!("{}  Add a shortcut", icon::ROCKET_LAUNCH));
-                        ui.label(format!(
-                            "EVE Spai has no {kind} yet, so it only launches from where the \
-                             binary lives. Add one to start it like any other app.",
-                        ));
+                        ui.heading(trf!("{icon}  Add a shortcut", icon = icon::ROCKET_LAUNCH));
+                        ui.label(trf!("EVE Spai has no {kind} yet, so it only launches from where the \
+                             binary lives. Add one to start it like any other app.", kind = kind));
                         ui.add_space(6.0);
                         match &self.wizard_shortcut {
                             Some(Ok(())) => {
                                 ui.label(
-                                    egui::RichText::new(format!("{}  Shortcut created", icon::CHECK_CIRCLE))
+                                    egui::RichText::new(trf!("{icon}  Shortcut created", icon = icon::CHECK_CIRCLE))
                                         .color(crate::theme::standing::FRIENDLY),
                                 );
                             }
                             _ => {
                                 if ui
-                                    .button(format!("{}  Create {kind}", icon::PLUS))
+                                    .button(trf!("{icon}  Create {kind}", icon = icon::PLUS, kind = kind))
                                     .clicked()
                                 {
                                     self.wizard_shortcut =
@@ -85,7 +85,7 @@ impl SpaiApp {
                                 }
                                 if let Some(Err(e)) = &self.wizard_shortcut {
                                     ui.label(
-                                        egui::RichText::new(format!("Couldn't create it: {e}"))
+                                        egui::RichText::new(trf!("Couldn't create it: {e}", e = e))
                                             .color(crate::theme::standing::WARNING),
                                     );
                                 }
@@ -93,16 +93,16 @@ impl SpaiApp {
                         }
                     }
                     S::Welcome => {
-                        ui.heading("Welcome to EVE Spai");
+                        ui.heading(tr!("Welcome to EVE Spai"));
                         ui.label(
-                            "Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again.",
+                            tr!("Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again."),
                         );
                     }
                     S::Logs => {
-                        ui.heading(format!("{}  EVE chat logs", icon::FOLDER_OPEN));
+                        ui.heading(trf!("{icon}  EVE chat logs", icon = icon::FOLDER_OPEN));
                         ui.label(
-                            "EVE Spai reads your in-game intel-channel logs. Leave blank to \
-                             auto-detect the standard location.",
+                            tr!("EVE Spai reads your in-game intel-channel logs. Leave blank to \
+                             auto-detect the standard location."),
                         );
                         ui.add_space(4.0);
                         let hint = crate::logpaths::chat_logs_dir("")
@@ -120,42 +120,42 @@ impl SpaiApp {
                                     egui::RichText::new(icon::CHECK_CIRCLE)
                                         .color(crate::theme::standing::FRIENDLY),
                                 )
-                                .on_hover_text("Valid EVE chat-log folder");
+                                .on_hover_text(tr!("Valid EVE chat-log folder"));
                             } else {
                                 ui.label(
                                     egui::RichText::new(icon::X_CIRCLE)
                                         .color(crate::theme::standing::HOSTILE),
                                 )
-                                .on_hover_text("No EVE chat-log folder found here");
+                                .on_hover_text(tr!("No EVE chat-log folder found here"));
                             }
                         });
                         match &resolved {
                             Some(p) => {
                                 ui.label(
-                                    egui::RichText::new(format!("Using {}", p.display()))
+                                    egui::RichText::new(trf!("Using {p}", p = p.display()))
                                         .weak(),
                                 );
                             }
                             None if self.settings.eve_logs_dir.trim().is_empty() => {
                                 ui.label(
                                     egui::RichText::new(
-                                        "Couldn't auto-detect — enter the path to your EVE \
-                                         Chatlogs folder.",
+                                        tr!("Couldn't auto-detect — enter the path to your EVE \
+                                         Chatlogs folder."),
                                     )
                                     .color(crate::theme::standing::WARNING),
                                 );
                             }
                             None => {
                                 ui.label(
-                                    egui::RichText::new("That folder has no EVE chat logs.")
+                                    egui::RichText::new(tr!("That folder has no EVE chat logs."))
                                         .color(crate::theme::standing::WARNING),
                                 );
                             }
                         }
                     }
                     S::Channels => {
-                        ui.heading(format!("{}  Intel channels", icon::BROADCAST));
-                        ui.label("Apply the Imperium preset channels, or add them manually.");
+                        ui.heading(trf!("{icon}  Intel channels", icon = icon::BROADCAST));
+                        ui.label(tr!("Apply the Imperium preset channels, or add them manually."));
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             // Packs with no channels exist only for battle-report coalition
@@ -164,7 +164,7 @@ impl SpaiApp {
                             {
                                 let selected = self.settings.configuration_pack == pack.name;
                                 if ui
-                                    .add(egui::Button::new(format!("Apply {}", pack.name)).selected(selected))
+                                    .add(egui::Button::new(trf!("Apply {v}", v = pack.name)).selected(selected))
                                     .clicked()
                                 {
                                     for ch in pack.channels {
@@ -183,95 +183,82 @@ impl SpaiApp {
                             }
                         });
                         ui.add_space(4.0);
-                        if ui.button("Configure channels manually…").clicked() {
+                        if ui.button(tr!("Configure channels manually…")).clicked() {
                             self.intel_channels_open = true;
                         }
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} channel(s) configured",
-                                self.settings.intel_channels.len()
-                            ))
+                            egui::RichText::new(trf!("{v} channel(s) configured", v = self.settings.intel_channels.len()))
                             .weak(),
                         );
                     }
                     S::JumpBridges => {
-                        ui.heading(format!("{}  Jump bridges (optional)", icon::MAP_TRIFOLD));
+                        ui.heading(trf!("{icon}  Jump bridges (optional)", icon = icon::MAP_TRIFOLD));
                         ui.label(
-                            "Import your alliance's jump-bridge network so it's drawn on the map \
-                             and used for jump-range filters.",
+                            tr!("Import your alliance's jump-bridge network so it's drawn on the map \
+                             and used for jump-range filters."),
                         );
                         ui.add_space(4.0);
-                        if ui.button("Configure jump bridges…").clicked() {
+                        if ui.button(tr!("Configure jump bridges…")).clicked() {
                             self.jump_bridges_open = true;
                         }
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} bridge(s) configured",
-                                self.settings.jump_bridges.len()
-                            ))
+                            egui::RichText::new(trf!("{v} bridge(s) configured", v = self.settings.jump_bridges.len()))
                             .weak(),
                         );
                     }
                     S::SovUpgrades => {
-                        ui.heading(format!("{}  Sov upgrades (optional)", icon::GEAR_SIX));
+                        ui.heading(trf!("{icon}  Sov upgrades (optional)", icon = icon::GEAR_SIX));
                         ui.label(
-                            "Paste your alliance's iHub sov-upgrade data for the map overlay \
-                             (cyno jammers, Ansiblex enablement, …).",
+                            tr!("Paste your alliance's iHub sov-upgrade data for the map overlay \
+                             (cyno jammers, Ansiblex enablement, …)."),
                         );
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(
-                                    "Copy the formatted list linked inside the alliance forum post, not the forum page.",
+                                    tr!("Copy the formatted list linked inside the alliance forum post, not the forum page."),
                                 )
                                 .weak(),
                             );
                         });
                         ui.add_space(4.0);
-                        if ui.button("Configure sov upgrades…").clicked() {
+                        if ui.button(tr!("Configure sov upgrades…")).clicked() {
                             self.sov_upgrades_open = true;
                         }
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} system(s) configured",
-                                self.settings.sov_upgrades.len()
-                            ))
+                            egui::RichText::new(trf!("{v} system(s) configured", v = self.settings.sov_upgrades.len()))
                             .weak(),
                         );
                     }
                     S::Jabber => {
-                        ui.heading(format!("{}  Jabber (optional)", icon::CHAT_TEXT));
-                        ui.label("Connect to alliance Jabber (XMPP) for chat and fleet pings.");
+                        ui.heading(trf!("{icon}  Jabber (optional)", icon = icon::CHAT_TEXT));
+                        ui.label(tr!("Connect to alliance Jabber (XMPP) for chat and fleet pings."));
                         ui.add_space(4.0);
                         let connected = self.settings.jabber_enabled
                             && crate::jabber::has_password(self.settings.jabber_jid.trim());
                         if connected {
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{}  Connected as {}",
-                                    icon::CHECK_CIRCLE,
-                                    self.settings.jabber_jid
-                                ))
+                                egui::RichText::new(trf!("{icon}  Connected as {v}", icon = icon::CHECK_CIRCLE, v = self.settings.jabber_jid))
                                 .color(crate::theme::standing::ALLIANCE),
                             );
                         } else {
                             egui::Grid::new("wiz_jabber").num_columns(2).spacing([8.0, 6.0]).show(
                                 ui,
                                 |ui| {
-                                    ui.label("JID");
+                                    ui.label(tr!("JID"));
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.settings.jabber_jid)
-                                            .hint_text("MyCharacter@goonfleet.com")
+                                            .hint_text(tr!("MyCharacter@goonfleet.com"))
                                             .desired_width(260.0),
                                     );
                                     ui.end_row();
-                                    ui.label("Server");
+                                    ui.label(tr!("Server"));
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.settings.jabber_server)
-                                            .hint_text("jabber-server.goonfleet.com")
+                                            .hint_text(tr!("jabber-server.goonfleet.com"))
                                             .desired_width(260.0),
                                     );
                                     ui.end_row();
-                                    ui.label("Password");
+                                    ui.label(tr!("Password"));
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.jabber_pw_input)
                                             .password(true)
@@ -280,7 +267,7 @@ impl SpaiApp {
                                     ui.end_row();
                                 },
                             );
-                            if ui.button("Connect").clicked() {
+                            if ui.button(tr!("Connect")).clicked() {
                                 let jid = self.settings.jabber_jid.trim().to_owned();
                                 if !jid.is_empty() && !self.jabber_pw_input.is_empty() {
                                     match crate::jabber::save_password(&jid, &self.jabber_pw_input) {
@@ -299,29 +286,25 @@ impl SpaiApp {
                         }
                     }
                     S::Character => {
-                        ui.heading(format!("{}  Log in a character", icon::SIGN_IN));
+                        ui.heading(trf!("{icon}  Log in a character", icon = icon::SIGN_IN));
                         ui.label(
-                            "Log in with EVE SSO so EVE Spai knows your location for \
-                             distance / near-me filters and the map.",
+                            tr!("Log in with EVE SSO so EVE Spai knows your location for \
+                             distance / near-me filters and the map."),
                         );
                         ui.add_space(4.0);
-                        if ui.button(format!("{}  Log in with EVE", icon::SIGN_IN)).clicked() {
+                        if ui.button(trf!("{icon}  Log in with EVE", icon = icon::SIGN_IN)).clicked() {
                             self.start_login(ctx);
                         }
                         if !self.characters.is_empty() {
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{}  {} character(s) linked",
-                                    icon::CHECK_CIRCLE,
-                                    self.characters.len()
-                                ))
+                                egui::RichText::new(trf!("{icon}  {v} character(s) linked", icon = icon::CHECK_CIRCLE, v = self.characters.len()))
                                 .color(crate::theme::standing::ALLIANCE),
                             );
                         }
                     }
                     S::Theme => {
-                        ui.heading(format!("{}  Theme", icon::PALETTE));
-                        ui.label("Pick a colour preset (fine-tune fully in Settings).");
+                        ui.heading(trf!("{icon}  Theme", icon = icon::PALETTE));
+                        ui.label(tr!("Pick a colour preset (fine-tune fully in Settings)."));
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             for preset in Theme::presets() {
@@ -337,19 +320,19 @@ impl SpaiApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let mut step_changed = false;
-                    if ui.button("Skip setup").clicked() {
+                    if ui.button(tr!("Skip setup")).clicked() {
                         close = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if idx >= last {
-                            if ui.button(format!("{}  Finish", icon::CHECK_CIRCLE)).clicked() {
+                            if ui.button(trf!("{icon}  Finish", icon = icon::CHECK_CIRCLE)).clicked() {
                                 finish = true;
                             }
-                        } else if ui.button("Next").clicked() {
+                        } else if ui.button(tr!("Next")).clicked() {
                             idx += 1;
                             step_changed = true;
                         }
-                        if idx > 0 && ui.button("Back").clicked() {
+                        if idx > 0 && ui.button(tr!("Back")).clicked() {
                             idx -= 1;
                             step_changed = true;
                         }
@@ -443,7 +426,7 @@ impl SpaiApp {
                     Err(e) => picker.add_status = Some(e),
                 }
             }
-            let title = format!("{}  filter: {}", egui_phosphor::regular::FUNNEL, picker.kind.title());
+            let title = format!("{}  filter: {}", egui_phosphor::regular::FUNNEL, picker.kind.title().tr());
             let mut actions = crate::pickers::PickerActions::default();
             egui::Window::new(title)
                 .open(&mut open)
@@ -539,18 +522,18 @@ impl SpaiApp {
             egui::Grid::new(id).num_columns(2).spacing([16.0, 8.0]).min_col_width(110.0).show(ui, |ui| f(ui));
         };
 
-        ui.label(egui::RichText::new("When").strong());
+        ui.label(egui::RichText::new(tr!("When")).strong());
         ui.add_space(2.0);
         grid(ui, ("rule_when", i), &mut |ui| {
-            row(ui, "Severity", "The least severe report that counts");
-            egui::ComboBox::from_id_salt(("rsev", i)).selected_text(format!("{:?} or worse", ru.min_severity)).show_ui(ui, |ui| {
+            row(ui, tr!("Severity"), tr!("The least severe report that counts"));
+            egui::ComboBox::from_id_salt(("rsev", i)).selected_text(trf!("{v} or worse", v = format!("{:?}", ru.min_severity))).show_ui(ui, |ui| {
                 for lvl in [Info, Warning, Danger, Critical] {
-                    changed |= ui.menu_value(&mut ru.min_severity, lvl, format!("{lvl:?} or worse")).changed();
+                    changed |= ui.menu_value(&mut ru.min_severity, lvl, trf!("{lvl} or worse", lvl = format!("{:?}", lvl))).changed();
                 }
             });
             ui.end_row();
 
-            row(ui, "Distance", "Jumps from the rule's characters, or from any of yours when it names none");
+            row(ui, tr!("Distance"), tr!("Jumps from the rule's characters, or from any of yours when it names none"));
             ui.horizontal(|ui| {
                 let mut mj = ru.max_jumps.unwrap_or(0);
                 if ui
@@ -561,13 +544,13 @@ impl SpaiApp {
                     changed = true;
                 }
                 changed |= ui
-                    .add_enabled(ru.max_jumps.is_some(), egui::Checkbox::new(&mut ru.count_bridges, "Count jump bridges"))
-                    .on_hover_text("Off: gates only, as far as a hostile who cannot use your bridges really is")
+                    .add_enabled(ru.max_jumps.is_some(), egui::Checkbox::new(&mut ru.count_bridges, tr!("Count jump bridges")))
+                    .on_hover_text(tr!("Off: gates only, as far as a hostile who cannot use your bridges really is"))
                     .changed();
             });
             ui.end_row();
 
-            row(ui, "Hostiles", "The number in the report, such as \"+5\" or \"10 reds\"");
+            row(ui, tr!("Hostiles"), tr!("The number in the report, such as \"+5\" or \"10 reds\""));
             let mut mc = ru.min_count.unwrap_or(0);
             if ui
                 .add(egui::DragValue::new(&mut mc).range(0..=999).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("at least {n}") }))
@@ -578,7 +561,7 @@ impl SpaiApp {
             }
             ui.end_row();
 
-            row(ui, "Mentions", "The report has to mention one of these");
+            row(ui, tr!("Mentions"), tr!("The report has to mention one of these"));
             const KINDS: [(&str, &str); 10] = [
                 ("bubble", "Bubble"),
                 ("camp", "Camp"),
@@ -610,62 +593,62 @@ impl SpaiApp {
             });
             ui.end_row();
 
-            row(ui, "Where", "Regions, constellations and systems the report is about");
+            row(ui, tr!("Where"), tr!("Regions, constellations and systems the report is about"));
             let places: Vec<String> = ru.regions.iter().chain(&ru.constellations).chain(&ru.systems).cloned().collect();
-            if summary(ui, &places, "Anywhere") {
+            if summary(ui, &places, tr!("Anywhere")) {
                 want = Some(PickerKind::Systems);
             }
             ui.end_row();
 
-            row(ui, "Channels", "The intel channels the report came from");
-            if summary(ui, &ru.channels, "Any channel") {
+            row(ui, tr!("Channels"), tr!("The intel channels the report came from"));
+            if summary(ui, &ru.channels, tr!("Any channel")) {
                 want = Some(PickerKind::Channels);
             }
             ui.end_row();
 
-            row(ui, "Ships", "Ships the report names");
-            if summary(ui, &ru.ships, "Any ship") {
+            row(ui, tr!("Ships"), tr!("Ships the report names"));
+            if summary(ui, &ru.ships, tr!("Any ship")) {
                 want = Some(PickerKind::Ships);
             }
             ui.end_row();
 
-            row(ui, "Characters", "Whose distance counts; also who the alert is for");
-            if summary(ui, &ru.characters, "Any of yours") {
+            row(ui, tr!("Characters"), tr!("Whose distance counts; also who the alert is for"));
+            if summary(ui, &ru.characters, tr!("Any of yours")) {
                 want = Some(PickerKind::Characters);
             }
             ui.end_row();
 
-            row(ui, "Pilot tags", "A reported pilot carries one of these tags");
+            row(ui, tr!("Pilot tags"), tr!("A reported pilot carries one of these tags"));
             changed |= rule_tag_menu(ui, ("pilot_tags", i), notes, crate::notes::NoteKind::Pilot, &mut ru.pilot_tags);
             ui.end_row();
 
-            row(ui, "System tags", "A reported system carries one of these tags");
+            row(ui, tr!("System tags"), tr!("A reported system carries one of these tags"));
             changed |= rule_tag_menu(ui, ("system_tags", i), notes, crate::notes::NoteKind::System, &mut ru.system_tags);
             ui.end_row();
         });
 
         ui.add_space(10.0);
-        ui.label(egui::RichText::new("Then").strong());
+        ui.label(egui::RichText::new(tr!("Then")).strong());
         ui.add_space(2.0);
         grid(ui, ("rule_then", i), &mut |ui| {
-            row(ui, "Action", "Stay quiet keeps later rules from alerting on it too");
+            row(ui, tr!("Action"), tr!("Stay quiet keeps later rules from alerting on it too"));
             egui::ComboBox::from_id_salt(("raction", i)).selected_text(if ru.suppress { "Stay quiet" } else { "Alert" }).show_ui(ui, |ui| {
-                changed |= ui.menu_value(&mut ru.suppress, false, "Alert").changed();
-                changed |= ui.menu_value(&mut ru.suppress, true, "Stay quiet").changed();
+                changed |= ui.menu_value(&mut ru.suppress, false, tr!("Alert")).changed();
+                changed |= ui.menu_value(&mut ru.suppress, true, tr!("Stay quiet")).changed();
             });
             ui.end_row();
 
-            row(ui, "Show in", "Sounds are set per rule under Settings, Sounds");
+            row(ui, tr!("Show in"), tr!("Sounds are set per rule under Settings, Sounds"));
             ui.add_enabled_ui(!ru.suppress, |ui| {
                 ui.horizontal(|ui| {
-                    changed |= ui.checkbox(&mut ru.custom_window, "Alert window").changed();
-                    changed |= ui.checkbox(&mut ru.system_notification, "Desktop notification").changed();
-                    changed |= ui.checkbox(&mut ru.push, "Push").on_hover_text("To your phone, when push is set up").changed();
+                    changed |= ui.checkbox(&mut ru.custom_window, tr!("Alert window")).changed();
+                    changed |= ui.checkbox(&mut ru.system_notification, tr!("Desktop notification")).changed();
+                    changed |= ui.checkbox(&mut ru.push, tr!("Push")).on_hover_text(tr!("To your phone, when push is set up")).changed();
                 });
             });
             ui.end_row();
 
-            row(ui, "As severity", "Changes the alert's colour and sound; Info shows it silently");
+            row(ui, tr!("As severity"), tr!("Changes the alert's colour and sound; Info shows it silently"));
             ui.add_enabled_ui(!ru.suppress, |ui| {
                 egui::ComboBox::from_id_salt(("rsevover", i))
                     .selected_text(match ru.severity_override {
@@ -673,7 +656,7 @@ impl SpaiApp {
                         Some(s) => format!("{s:?}"),
                     })
                     .show_ui(ui, |ui| {
-                        changed |= ui.menu_value(&mut ru.severity_override, None, "As reported").changed();
+                        changed |= ui.menu_value(&mut ru.severity_override, None, tr!("As reported")).changed();
                         for lvl in [Info, Warning, Danger, Critical] {
                             changed |= ui.menu_value(&mut ru.severity_override, Some(lvl), format!("{lvl:?}")).changed();
                         }
@@ -681,7 +664,7 @@ impl SpaiApp {
             });
             ui.end_row();
 
-            row(ui, "Quiet for", "After an alert, the same rule stays quiet this long");
+            row(ui, tr!("Quiet for"), tr!("After an alert, the same rule stays quiet this long"));
             changed |= ui
                 .add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "no pause".into() } else { format!("{n}s") }))
                 .changed();
@@ -702,14 +685,14 @@ impl SpaiApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui
-                .button(format!("{}  Back", ic::ARROW_LEFT))
-                .on_hover_text("Back to alerts")
+                .button(trf!("{arrow_left}  Back", arrow_left = ic::ARROW_LEFT))
+                .on_hover_text(tr!("Back to alerts"))
                 .clicked()
             {
                 self.alert_rules_open = false;
             }
             ui.separator();
-            if ui.button(format!("{}  Add rule", ic::PLUS)).clicked() {
+            if ui.button(trf!("{plus}  Add rule", plus = ic::PLUS)).clicked() {
                 self.settings
                     .alerts
                     .rules
@@ -720,9 +703,9 @@ impl SpaiApp {
             }
             let watching = self.chat_dir.is_some();
             if ui
-                .add_enabled(watching, egui::Button::new(format!("{}  Test intel", ic::FLASK)))
-                .on_hover_text("Send a line through the intel parser as if it came from game, to check the rules")
-                .on_disabled_hover_text("Needs the EVE chat log folder, which the intel reader watches")
+                .add_enabled(watching, egui::Button::new(trf!("{flask}  Test intel", flask = ic::FLASK)))
+                .on_hover_text(tr!("Send a line through the intel parser as if it came from game, to check the rules"))
+                .on_disabled_hover_text(tr!("Needs the EVE chat log folder, which the intel reader watches"))
                 .clicked()
             {
                 let channel = self.settings.intel_channels.first().cloned().unwrap_or_default();
@@ -761,7 +744,7 @@ impl SpaiApp {
                                 sel_idx.is_some_and(|i| i > 0),
                                 egui::Button::new(ic::ARROW_UP),
                             )
-                            .on_hover_text("Move the selected rule up")
+                            .on_hover_text(tr!("Move the selected rule up"))
                             .clicked()
                         {
                             move_up = sel_idx;
@@ -771,7 +754,7 @@ impl SpaiApp {
                                 sel_idx.is_some_and(|i| i + 1 < n_rules),
                                 egui::Button::new(ic::ARROW_DOWN),
                             )
-                            .on_hover_text("Move the selected rule down")
+                            .on_hover_text(tr!("Move the selected rule down"))
                             .clicked()
                         {
                             move_down = sel_idx;
@@ -779,8 +762,8 @@ impl SpaiApp {
                     });
                     ui.add_space(4.0);
                 });
-                ui.label(egui::RichText::new("The first rule that matches decides").weak())
-                    .on_hover_text("Drag a rule by its handle, or select it and use the arrows below, to change the order");
+                ui.label(egui::RichText::new(tr!("The first rule that matches decides")).weak())
+                    .on_hover_text(tr!("Drag a rule by its handle, or select it and use the arrows below, to change the order"));
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("alert_rule_list")
@@ -807,7 +790,7 @@ impl SpaiApp {
                                                 ui.label(
                                                     egui::RichText::new(ic::DOTS_SIX_VERTICAL).weak(),
                                                 )
-                                                .on_hover_text("Drag to reorder");
+                                                .on_hover_text(tr!("Drag to reorder"));
                                             },
                                         );
                                         let label =
@@ -844,7 +827,7 @@ impl SpaiApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let Some(sel_id) = self.alert_selected_rule else {
                 ui.add_space(20.0);
-                ui.label(egui::RichText::new("Select a rule to configure it.").weak());
+                ui.label(egui::RichText::new(tr!("Select a rule to configure it.")).weak());
                 return;
             };
             let Some(idx) = self.settings.alerts.rules.iter().position(|r| r.id == sel_id) else {
@@ -856,14 +839,14 @@ impl SpaiApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut en = self.settings.alerts.rules[idx].enabled;
-                        if ui.checkbox(&mut en, "").on_hover_text("Rule on").changed() {
+                        if ui.checkbox(&mut en, "").on_hover_text(tr!("Rule on")).changed() {
                             self.settings.alerts.rules[idx].enabled = en;
                             changed = true;
                         }
                         changed |= ui
                             .add(
                                 egui::TextEdit::singleline(&mut self.settings.alerts.rules[idx].name)
-                                    .hint_text("Rule name")
+                                    .hint_text(tr!("Rule name"))
                                     .desired_width((ui.available_width() - 110.0).clamp(160.0, 420.0)),
                             )
                             .changed();
@@ -871,8 +854,8 @@ impl SpaiApp {
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 if ui
-                                    .button(format!("{}  Delete", ic::TRASH))
-                                    .on_hover_text("Delete rule")
+                                    .button(trf!("{trash}  Delete", trash = ic::TRASH))
+                                    .on_hover_text(tr!("Delete rule"))
                                     .clicked()
                                 {
                                     remove = Some(idx);
@@ -894,7 +877,7 @@ impl SpaiApp {
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Recent matches").strong());
+                    ui.label(egui::RichText::new(tr!("Recent matches")).strong());
                     ui.add_space(4.0);
                     self.rule_feed_ui(ui, sel_id);
                 });
@@ -946,14 +929,14 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Read as a new line in the channel's chat log: it lands in the intel feed and \
-                         the alert rules act on it.",
+                        tr!("Read as a new line in the channel's chat log: it lands in the intel feed and \
+                         the alert rules act on it."),
                     )
                     .weak(),
                 );
                 ui.add_space(6.0);
                 egui::Grid::new("test_intel_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Channel");
+                    ui.label(tr!("Channel"));
                     if channels.is_empty() {
                         ui.add(egui::TextEdit::singleline(&mut t.channel).desired_width(260.0));
                     } else {
@@ -967,13 +950,13 @@ impl SpaiApp {
                             });
                     }
                     ui.end_row();
-                    ui.label("Reporter");
+                    ui.label(tr!("Reporter"));
                     ui.add(egui::TextEdit::singleline(&mut t.reporter).desired_width(260.0));
                     ui.end_row();
-                    ui.label("Message");
+                    ui.label(tr!("Message"));
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut t.text)
-                            .hint_text("Rancer 3 reds Loki Sabre")
+                            .hint_text(tr!("Rancer 3 reds Loki Sabre"))
                             .desired_width(260.0),
                     );
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -990,7 +973,7 @@ impl SpaiApp {
                     if ui
                         .add_enabled(
                             ready,
-                            egui::Button::new(format!("{}  Send", egui_phosphor::regular::PAPER_PLANE_TILT)),
+                            egui::Button::new(trf!("{icon}  Send", icon = egui_phosphor::regular::PAPER_PLANE_TILT)),
                         )
                         .clicked()
                     {
@@ -1028,7 +1011,7 @@ impl SpaiApp {
             [620.0, 480.0],
             |ui| {
                 ui.label(
-                    egui::RichText::new("Pick the severity (card colour) for each condition.")
+                    egui::RichText::new(tr!("Pick the severity (card colour) for each condition."))
                         .weak(),
                 );
                 ui.add_space(4.0);
@@ -1053,7 +1036,7 @@ impl SpaiApp {
                     ch
                 };
                 ui.horizontal(|ui| {
-                    ui.label("Big-gang threshold (≥)");
+                    ui.label(tr!("Big-gang threshold (≥)"));
                     changed |=
                         ui.add(egui::DragValue::new(&mut sv.big_gang_threshold).range(2..=100)).changed();
                 });
@@ -1072,7 +1055,7 @@ impl SpaiApp {
                     changed |= combo(&mut c[1], "High-threat ships", &mut sv.threat_ship);
                 });
                 ui.separator();
-                ui.label(egui::RichText::new("High-threat hulls (one per line)").weak());
+                ui.label(egui::RichText::new(tr!("High-threat hulls (one per line)")).weak());
                 if ui
                     .add(
                         egui::TextEdit::multiline(&mut threat_text)
@@ -1085,7 +1068,7 @@ impl SpaiApp {
                         threat_text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect();
                     changed = true;
                 }
-                if ui.button("Reset to defaults").clicked() {
+                if ui.button(tr!("Reset to defaults")).clicked() {
                     *sv = crate::settings::SeverityRules::default();
                     changed = true;
                 }
@@ -1119,15 +1102,15 @@ impl SpaiApp {
             |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Coalitions for the sov layer. Names must match the sov holder exactly, some end with a period; unlisted alliances show on their own.",
+                        tr!("Coalitions for the sov layer. Names must match the sov holder exactly, some end with a period; unlisted alliances show on their own."),
                     )
                     .weak(),
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Add coalition").clicked() {
+                    if ui.button(tr!("Add coalition")).clicked() {
                         add = true;
                     }
-                    if ui.button("Reset to defaults").clicked() {
+                    if ui.button(tr!("Reset to defaults")).clicked() {
                         reset = true;
                     }
                 });
@@ -1136,7 +1119,7 @@ impl SpaiApp {
                     for (i, (name, alliances)) in self.coal_edit.iter_mut().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Coalition").weak());
+                                ui.label(egui::RichText::new(tr!("Coalition")).weak());
                                 ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
                                 let cur = self
                                     .settings
@@ -1151,7 +1134,7 @@ impl SpaiApp {
                                 if ui.color_edit_button_srgb(&mut rgb).changed() {
                                     coal_color.push((name.trim().to_owned(), Some((rgb[0], rgb[1], rgb[2]))));
                                 }
-                                if ui.button("Remove").clicked() {
+                                if ui.button(tr!("Remove")).clicked() {
                                     remove = Some(i);
                                 }
                             });
@@ -1159,21 +1142,21 @@ impl SpaiApp {
                                 egui::TextEdit::multiline(alliances)
                                     .desired_rows(3)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text("One alliance name per line\nGoonswarm Federation"),
+                                    .hint_text(tr!("One alliance name per line\nGoonswarm Federation")),
                             );
                         });
                     }
                 });
 
                 ui.separator();
-                ui.label(egui::RichText::new("Alliances (sov holders)").strong());
+                ui.label(egui::RichText::new(tr!("Alliances (sov holders)")).strong());
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.alliance_add)
                             .desired_width(220.0)
-                            .hint_text("Add alliance by name"),
+                            .hint_text(tr!("Add alliance by name")),
                     );
-                    if ui.button("Add").clicked() {
+                    if ui.button(tr!("Add")).clicked() {
                         ally_add = true;
                     }
                 });
@@ -1316,7 +1299,7 @@ impl SpaiApp {
             [460.0, 560.0],
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Paste the dotlan bridge link.").weak());
+                    ui.label(egui::RichText::new(tr!("Paste the dotlan bridge link.")).weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
                         "Imperium members: open the forum topic and copy its dotlan Ansiblex \
                          link (https://evemaps.dotlan.net/universe/A::B,C::D), which lists the \
@@ -1337,10 +1320,10 @@ impl SpaiApp {
                         );
                     });
                 ui.horizontal(|ui| {
-                    let add = ui.button("Add from paste").clicked();
+                    let add = ui.button(tr!("Add from paste")).clicked();
                     let replace = ui
-                        .button("Replace all")
-                        .on_hover_text("A dotlan link is the whole network: drop bridges it no longer lists.")
+                        .button(tr!("Replace all"))
+                        .on_hover_text(tr!("A dotlan link is the whole network: drop bridges it no longer lists."))
                         .clicked();
                     if add || replace {
                         if let Some(g) = self.systems.clone() {
@@ -1360,7 +1343,7 @@ impl SpaiApp {
                         }
                         self.jb_paste.clear();
                     }
-                    if !self.settings.jump_bridges.is_empty() && ui.button("Delete all").clicked() {
+                    if !self.settings.jump_bridges.is_empty() && ui.button(tr!("Delete all")).clicked() {
                         self.settings.jump_bridges.clear();
                         changed = true;
                     }
@@ -1368,7 +1351,7 @@ impl SpaiApp {
                 ui.separator();
                 let graph = self.systems.clone();
                 ui.horizontal(|ui| {
-                    ui.label("Capital system");
+                    ui.label(tr!("Capital system"));
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.settings.ansiblex_capital).desired_width(90.0),
                     );
@@ -1376,17 +1359,17 @@ impl SpaiApp {
                     let found = graph.as_ref().and_then(|g| g.lookup(self.settings.ansiblex_capital.trim()));
                     match (found, &graph) {
                         (Some(info), _) => ui.label(egui::RichText::new(&info.region).weak()),
-                        (None, Some(_)) => ui.colored_label(ui.visuals().warn_fg_color, "unknown system"),
+                        (None, Some(_)) => ui.colored_label(ui.visuals().warn_fg_color, tr!("unknown system")),
                         (None, None) => ui.label(""),
                     };
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
-                        "Zones are measured from the alliance capital, which is not the staging \
+                        tr!("Zones are measured from the alliance capital, which is not the staging \
                          system. A jump is priced by where it lands: Zone 1 (within 5 LY) is free, \
-                         then x2, x6, x9 and x15 per 5 LY.",
+                         then x2, x6, x9 and x15 per 5 LY."),
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Use Ansiblexes up to");
+                    ui.label(tr!("Use Ansiblexes up to"));
                     let max = &mut self.settings.ansiblex_max_zone;
                     egui::ComboBox::from_id_salt("ansiblex_max_zone")
                         .selected_text(crate::ansiblex::zone_label(*max))
@@ -1396,7 +1379,7 @@ impl SpaiApp {
                             }
                         });
                 });
-                ui.label(egui::RichText::new("Capitals and supers can't use Ansiblexes.").weak());
+                ui.label(egui::RichText::new(tr!("Capitals and supers can't use Ansiblexes.")).weak());
                 ui.separator();
                 let max = self.settings.ansiblex_max_zone;
                 let zones = graph
@@ -1417,10 +1400,7 @@ impl SpaiApp {
                     }
                 }
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{} bridges: {both} both ways, {one} one-way, {none} excluded",
-                        self.settings.jump_bridges.len()
-                    ))
+                    egui::RichText::new(trf!("{v} bridges: {both} both ways, {one} one-way, {none} excluded", v = self.settings.jump_bridges.len(), both = both, one = one, none = none))
                     .strong(),
                 );
                 // One bridge at a time: the add row, or the one being edited, in place.
@@ -1432,11 +1412,11 @@ impl SpaiApp {
                     };
                     let mut add = false;
                     ui.horizontal(|ui| {
-                        ui.label("Add");
-                        self.system_input(ui, "jb_new_from", &mut a, "From", 120.0);
+                        ui.label(tr!("Add"));
+                        self.system_input(ui, "jb_new_from", &mut a, tr!("From"), 120.0);
                         ui.label(egui_phosphor::regular::ARROWS_LEFT_RIGHT);
-                        self.system_input(ui, "jb_new_to", &mut b, "To", 120.0);
-                        add = ui.add_enabled(resolve(&graph, &a).is_some() && resolve(&graph, &b).is_some(), egui::Button::new("Add")).clicked();
+                        self.system_input(ui, "jb_new_to", &mut b, tr!("To"), 120.0);
+                        add = ui.add_enabled(resolve(&graph, &a).is_some() && resolve(&graph, &b).is_some(), egui::Button::new(tr!("Add"))).clicked();
                     });
                     if add {
                         if let (Some(from), Some(to)) = (resolve(&graph, &a), resolve(&graph, &b)) {
@@ -1460,14 +1440,14 @@ impl SpaiApp {
                             let (mut ea, mut eb) = (ea, eb);
                             let mut done = None;
                             ui.horizontal(|ui| {
-                                self.system_input(ui, "jb_edit_from", &mut ea, "From", 120.0);
+                                self.system_input(ui, "jb_edit_from", &mut ea, tr!("From"), 120.0);
                                 ui.label(egui_phosphor::regular::ARROWS_LEFT_RIGHT);
-                                self.system_input(ui, "jb_edit_to", &mut eb, "To", 120.0);
+                                self.system_input(ui, "jb_edit_to", &mut eb, tr!("To"), 120.0);
                                 let ok = resolve(&graph, &ea).is_some() && resolve(&graph, &eb).is_some();
-                                if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                                if ui.add_enabled(ok, egui::Button::new(tr!("Save"))).clicked() {
                                     done = Some(true);
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button(tr!("Cancel")).clicked() {
                                     done = Some(false);
                                 }
                             });
@@ -1486,15 +1466,15 @@ impl SpaiApp {
                                     if ok { egui::RichText::new(t) } else { egui::RichText::new(t).weak().strikethrough() }
                                 };
                                 ui.label(dir(egui_phosphor::regular::ARROW_RIGHT, z.zone_at_b, z.forward(max)))
-                                    .on_hover_text(format!("{} to {}", b.from, b.to));
+                                    .on_hover_text(trf!("{v} to {v2}", v = b.from, v2 = b.to));
                                 ui.label(dir(egui_phosphor::regular::ARROW_LEFT, z.zone_at_a, z.back(max)))
-                                    .on_hover_text(format!("{} to {}", b.to, b.from));
+                                    .on_hover_text(trf!("{v} to {v2}", v = b.to, v2 = b.from));
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                     remove = Some(i);
                                 }
-                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text(tr!("Edit")).clicked() {
                                     self.jb_edit = Some((Some(i), b.from.clone(), b.to.clone()));
                                 }
                             });
@@ -1535,12 +1515,12 @@ impl SpaiApp {
             [460.0, 520.0],
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Paste sov-upgrade data (one per line).").weak());
+                    ui.label(egui::RichText::new(tr!("Paste sov-upgrade data (one per line).")).weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
-                        "Imperium members: open the forum topic, then follow the link inside it to \
+                        tr!("Imperium members: open the forum topic, then follow the link inside it to \
                          the formatted upgrade list and copy THAT. The forum page itself is not the \
                          paste. The first system matched on each line is used; the rest of the line \
-                         becomes the upgrade label.",
+                         becomes the upgrade label."),
                     );
                     ui.hyperlink_to("Equinox upgrades", EQUINOX_TOPIC);
                 });
@@ -1553,11 +1533,11 @@ impl SpaiApp {
                             egui::TextEdit::multiline(&mut self.sov_paste)
                                 .desired_rows(4)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("e.g.  1DQ1-A Cynosural Suppression   (or paste the in-game I-Hub window)"),
+                                .hint_text(tr!("e.g.  1DQ1-A Cynosural Suppression   (or paste the in-game I-Hub window)")),
                         );
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("Add from paste").clicked() {
+                    if ui.button(tr!("Add from paste")).clicked() {
                         if let Some(g) = self.systems.clone() {
                             for u in parse_sov_upgrades(&self.sov_paste, &g) {
                                 if !self.settings.sov_upgrades.contains(&u) {
@@ -1568,13 +1548,13 @@ impl SpaiApp {
                         }
                         self.sov_paste.clear();
                     }
-                    if !self.settings.sov_upgrades.is_empty() && ui.button("Delete all").clicked() {
+                    if !self.settings.sov_upgrades.is_empty() && ui.button(tr!("Delete all")).clicked() {
                         self.settings.sov_upgrades.clear();
                         changed = true;
                     }
                 });
                 ui.separator();
-                ui.label(egui::RichText::new(format!("{} upgrades", self.settings.sov_upgrades.len())).strong());
+                ui.label(egui::RichText::new(trf!("{v} upgrades", v = self.settings.sov_upgrades.len())).strong());
                 let graph = self.systems.clone();
                 let resolve = |n: &str| graph.as_ref().and_then(|g| g.lookup(n.trim()).map(|i| i.name.clone()));
                 // The add row, unless an upgrade is being edited in place.
@@ -1585,10 +1565,10 @@ impl SpaiApp {
                     };
                     let mut add = false;
                     ui.horizontal(|ui| {
-                        ui.label("Add");
-                        self.system_input(ui, "sov_new_sys", &mut sys, "System", 110.0);
-                        ui.add(egui::TextEdit::singleline(&mut up).hint_text("Upgrade, e.g. Cynosural Suppression").desired_width(ui.available_width() - 60.0));
-                        add = ui.add_enabled(resolve(&sys).is_some() && !up.trim().is_empty(), egui::Button::new("Add")).clicked();
+                        ui.label(tr!("Add"));
+                        self.system_input(ui, "sov_new_sys", &mut sys, tr!("System"), 110.0);
+                        ui.add(egui::TextEdit::singleline(&mut up).hint_text(tr!("Upgrade, e.g. Cynosural Suppression")).desired_width(ui.available_width() - 60.0));
+                        add = ui.add_enabled(resolve(&sys).is_some() && !up.trim().is_empty(), egui::Button::new(tr!("Add"))).clicked();
                     });
                     if add {
                         if let Some(system) = resolve(&sys) {
@@ -1611,12 +1591,12 @@ impl SpaiApp {
                         if let Some((ei, mut es, mut eu)) = self.sov_edit.as_mut().filter(|e| e.0 == Some(i)).map(|e| (i, std::mem::take(&mut e.1), std::mem::take(&mut e.2))) {
                             let mut done = None;
                             ui.horizontal(|ui| {
-                                self.system_input(ui, "sov_edit_sys", &mut es, "System", 110.0);
+                                self.system_input(ui, "sov_edit_sys", &mut es, tr!("System"), 110.0);
                                 ui.add(egui::TextEdit::singleline(&mut eu).desired_width(ui.available_width() - 130.0));
-                                if ui.add_enabled(resolve(&es).is_some() && !eu.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                                if ui.add_enabled(resolve(&es).is_some() && !eu.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
                                     done = Some(true);
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button(tr!("Cancel")).clicked() {
                                     done = Some(false);
                                 }
                             });
@@ -1630,10 +1610,10 @@ impl SpaiApp {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&u.system).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                     remove = Some(i);
                                 }
-                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text(tr!("Edit")).clicked() {
                                     self.sov_edit = Some((Some(i), u.system.clone(), u.upgrade.clone()));
                                 }
                                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1679,12 +1659,12 @@ impl SpaiApp {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "EVE chat channels to watch for intel. Match the in-game channel name.",
+                        tr!("EVE chat channels to watch for intel. Match the in-game channel name."),
                     )
                     .weak(),
                 );
                 ui.add_space(6.0);
-                if ui.button("Add channel").clicked() {
+                if ui.button(tr!("Add channel")).clicked() {
                     self.settings.intel_channels.push(String::new());
                     changed = true;
                 }
@@ -1696,7 +1676,7 @@ impl SpaiApp {
                             if ui.text_edit_singleline(ch).changed() {
                                 changed = true;
                             }
-                            if ui.button("Remove").clicked() {
+                            if ui.button(tr!("Remove")).clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -1719,7 +1699,7 @@ impl SpaiApp {
     /// How long each kind of history is kept.
     pub(crate) fn history_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
-        ui.label(egui::RichText::new("History").strong());
+        ui.label(egui::RichText::new(tr!("History")).strong());
         let size = self.store.as_ref().and_then(|s| std::fs::metadata(s.path()).ok()).map(|m| m.len());
         ui.label(
             egui::RichText::new(match size {
@@ -1771,7 +1751,7 @@ impl SpaiApp {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Friendly cyno generators, by system name: ESI does not list them. Shown by the Cyno generators layer.",
+                        tr!("Friendly cyno generators, by system name: ESI does not list them. Shown by the Cyno generators layer."),
                     )
                     .weak(),
                 );
@@ -1779,11 +1759,11 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.rescue_cyno_input)
-                            .hint_text("Add system by name")
+                            .hint_text(tr!("Add system by name"))
                             .desired_width(200.0),
                     );
                     let can_add = systems.is_some();
-                    if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
+                    if ui.add_enabled(can_add, egui::Button::new(tr!("Add"))).clicked() {
                         if let Some(s) = &systems {
                             let tok = self.rescue_cyno_input.trim();
                             if let Some(info) = s.lookup(tok).or_else(|| s.lookup_prefix(tok)) {
@@ -1797,7 +1777,7 @@ impl SpaiApp {
                     }
                 });
                 if systems.is_none() {
-                    ui.label(egui::RichText::new("(map data still loading…)").weak());
+                    ui.label(egui::RichText::new(tr!("(map data still loading…)")).weak());
                 }
                 ui.separator();
                 let list = self.settings.cyno_generators.clone();
@@ -1812,12 +1792,12 @@ impl SpaiApp {
                         if let Some(mut typed) = self.cyno_edit.as_mut().filter(|e| e.0 == i).map(|e| std::mem::take(&mut e.1)) {
                             let mut done = None;
                             ui.horizontal(|ui| {
-                                let picked = self.system_input(ui, "cyno_edit", &mut typed, "System", 160.0);
+                                let picked = self.system_input(ui, "cyno_edit", &mut typed, tr!("System"), 160.0);
                                 let id = picked.or_else(|| systems.as_ref().and_then(|s| s.lookup(typed.trim()).map(|x| x.id)));
-                                if ui.add_enabled(id.is_some(), egui::Button::new("Save")).clicked() {
+                                if ui.add_enabled(id.is_some(), egui::Button::new(tr!("Save"))).clicked() {
                                     done = id.map(Some);
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button(tr!("Cancel")).clicked() {
                                     done = Some(None);
                                 }
                             });
@@ -1831,10 +1811,10 @@ impl SpaiApp {
                         ui.horizontal(|ui| {
                             ui.label(name.clone());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                if ui.button(egui_phosphor::regular::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                     remove = Some(i);
                                 }
-                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text("Move to another system").clicked() {
+                                if ui.button(egui_phosphor::regular::PENCIL_SIMPLE).on_hover_text(tr!("Move to another system")).clicked() {
                                     self.cyno_edit = Some((i, name.clone()));
                                 }
                             });
@@ -1872,7 +1852,7 @@ impl SpaiApp {
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
                     if ui
-                        .button(format!("{}  Run setup wizard", egui_phosphor::regular::MAGIC_WAND))
+                        .button(trf!("{icon}  Run setup wizard", icon = egui_phosphor::regular::MAGIC_WAND))
                         .clicked()
                     {
                         self.wizard_step = 0;
@@ -1880,7 +1860,24 @@ impl SpaiApp {
                     }
                     ui.separator();
 
-                    ui.label(egui::RichText::new("Theme (3 colours)").strong());
+                    ui.label(egui::RichText::new(tr!("Language")).strong());
+                    let name_of = |code: &str| spai_ui::i18n::LANGUAGES.iter().find(|(c, _)| *c == code).map_or(code.to_owned(), |(_, n)| (*n).to_owned());
+                    let system = name_of(&spai_ui::i18n::system_language());
+                    let auto = trf!("System ({lang})", lang = system);
+                    let current = if self.settings.language.is_empty() { auto.clone() } else { name_of(&self.settings.language) };
+                    egui::ComboBox::from_id_salt("settings_language").selected_text(current).show_ui(ui, |ui| {
+                        changed |= ui.menu_value(&mut self.settings.language, String::new(), auto).changed();
+                        for (code, name) in spai_ui::i18n::LANGUAGES {
+                            changed |= ui.menu_value(&mut self.settings.language, code.to_owned(), name).changed();
+                        }
+                    });
+                    changed |= ui
+                        .checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
+                        .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."))
+                        .changed();
+                    ui.separator();
+
+                    ui.label(egui::RichText::new(tr!("Theme (3 colours)")).strong());
                     ui.horizontal_wrapped(|ui| {
                         for preset in Theme::presets() {
                             if ui.button(&preset.name).clicked() {
@@ -1890,30 +1887,30 @@ impl SpaiApp {
                     });
                     ui.add_space(4.0);
 
-                    changed |= color_row(ui, "Background", &mut self.settings.theme.background);
-                    changed |= color_row(ui, "Foreground", &mut self.settings.theme.foreground);
-                    changed |= color_row(ui, "Accent", &mut self.settings.theme.accent);
+                    changed |= color_row(ui, tr!("Background"), &mut self.settings.theme.background);
+                    changed |= color_row(ui, tr!("Foreground"), &mut self.settings.theme.foreground);
+                    changed |= color_row(ui, tr!("Accent"), &mut self.settings.theme.accent);
 
                     ui.separator();
 
-                    ui.label(egui::RichText::new("General").strong());
+                    ui.label(egui::RichText::new(tr!("General")).strong());
                     changed |= ui
-                        .checkbox(&mut self.settings.use_eve_time, "Show EVE time (UTC)")
+                        .checkbox(&mut self.settings.use_eve_time, tr!("Show EVE time (UTC)"))
                         .changed();
                     changed |= ui
                         .checkbox(
                             &mut self.settings.dscan_autoprompt,
-                            "Offer to share d-scans from the clipboard",
+                            tr!("Offer to share d-scans from the clipboard"),
                         )
                         .changed();
                     changed |= ui
                         .checkbox(
                             &mut self.settings.dscan_autoupload,
-                            "Auto-upload detected d-scans (skip the prompt)",
+                            tr!("Auto-upload detected d-scans (skip the prompt)"),
                         )
                         .changed();
                     ui.horizontal(|ui| {
-                        ui.label("D-scan service");
+                        ui.label(tr!("D-scan service"));
                         use crate::settings::DscanService as Dsc;
                         egui::ComboBox::from_id_salt("dscan_service")
                             .selected_text(match self.settings.dscan_service {
@@ -1926,38 +1923,38 @@ impl SpaiApp {
                                     .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::Auto,
-                                        format!("Auto ({imp_target})"),
+                                        trf!("Auto ({imp_target})", imp_target = imp_target),
                                     )
                                     .changed();
                                 changed |= ui
                                     .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::DscanInfo,
-                                        "dscan.info",
+                                        tr!("dscan.info"),
                                     )
                                     .changed();
                                 changed |= ui
                                     .menu_value(
                                         &mut self.settings.dscan_service,
                                         Dsc::Adashboard,
-                                        "adashboard.info (Imperium)",
+                                        tr!("adashboard.info (Imperium)"),
                                     )
                                     .changed();
                             });
                     })
                     .response
                     .on_hover_text(
-                        "Auto uses adashboard.info/intel when an *.imperium intel channel is configured, \
-                         else dscan.info. adashboard opens in your browser to paste (it needs your login).",
+                        tr!("Auto uses adashboard.info/intel when an *.imperium intel channel is configured, \
+                         else dscan.info. adashboard opens in your browser to paste (it needs your login)."),
                     );
                     changed |= ui
                         .checkbox(
                             &mut self.settings.minimize_to_tray,
-                            "Close to system tray (keep running)",
+                            tr!("Close to system tray (keep running)"),
                         )
                         .changed();
                     if ui
-                        .checkbox(&mut self.settings.autostart, "Start automatically on login")
+                        .checkbox(&mut self.settings.autostart, tr!("Start automatically on login"))
                         .changed()
                     {
                         if let Err(e) = crate::tray::set_autostart(self.settings.autostart) {
@@ -1969,10 +1966,7 @@ impl SpaiApp {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .button(format!(
-                                "{}  Check for updates",
-                                egui_phosphor::regular::ARROWS_CLOCKWISE
-                            ))
+                            .button(trf!("{icon}  Check for updates", icon = egui_phosphor::regular::ARROWS_CLOCKWISE))
                             .clicked()
                         {
                             self.update_dismissed = false;
@@ -1992,7 +1986,7 @@ impl SpaiApp {
                     });
 
                     ui.add_space(6.0);
-                    ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
+                    ui.label(tr!("Fit preview site")).on_hover_text(tr!("Where the fit window's \"Open in\" button sends a loss"));
                     ui.horizontal_wrapped(|ui| {
                         for (id, label) in FIT_SITES {
                             if selectable_chip(ui, self.settings.fit_site == *id, *label).clicked() {
@@ -2000,7 +1994,7 @@ impl SpaiApp {
                                 changed = true;
                             }
                         }
-                        if selectable_chip(ui, self.settings.fit_site.is_empty(), "Ask each time").clicked() {
+                        if selectable_chip(ui, self.settings.fit_site.is_empty(), tr!("Ask each time")).clicked() {
                             self.settings.fit_site.clear();
                             changed = true;
                         }
@@ -2010,13 +2004,13 @@ impl SpaiApp {
                     let logs_hint = crate::logpaths::chat_logs_dir("")
                         .and_then(|p| p.parent().map(|p| p.display().to_string()))
                         .unwrap_or_else(|| "auto-detect".to_owned());
-                    ui.label("EVE chat-log directory");
+                    ui.label(tr!("EVE chat-log directory"));
                     changed |= dir_picker_row(ui, &logs_hint, &mut self.settings.eve_logs_dir);
                     let settings_hint = crate::charsettings::settings_root("")
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "auto-detect".to_owned());
-                    ui.label("EVE settings directory")
-                        .on_hover_text("Used by Characters > Copy settings");
+                    ui.label(tr!("EVE settings directory"))
+                        .on_hover_text(tr!("Used by Characters > Copy settings"));
                     if dir_picker_row(ui, &settings_hint, &mut self.settings.eve_settings_dir) {
                         changed = true;
                         if let Ok(mut slot) = self.eve_settings_path.lock() {
@@ -2031,13 +2025,13 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    ui.label(egui::RichText::new("Alerts").strong());
+                    ui.label(egui::RichText::new(tr!("Alerts")).strong());
                     changed |= ui
-                        .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
-                        .on_hover_text("Master switch. Configure what fires in the Alerts tab.")
+                        .checkbox(&mut self.settings.alert_enabled, tr!("Enable intel alerts"))
+                        .on_hover_text(tr!("Master switch. Configure what fires in the Alerts tab."))
                         .changed();
                     changed |= ui
-                        .checkbox(&mut self.settings.alert_only_undocked, "Only alert while undocked")
+                        .checkbox(&mut self.settings.alert_only_undocked, tr!("Only alert while undocked"))
                         .changed();
 
                     ui.add_space(6.0);
@@ -2045,7 +2039,7 @@ impl SpaiApp {
                         use crate::settings::OnTop;
                         let a = &mut self.settings.alerts;
                         ui.horizontal(|ui| {
-                            ui.label("Alert window stays");
+                            ui.label(tr!("Alert window stays"));
                             changed |= ui
                                 .add(
                                     egui::DragValue::new(&mut a.window_timeout)
@@ -2054,9 +2048,9 @@ impl SpaiApp {
                                             if n <= 0.0 { "never hides".to_owned() } else { format!("{n}s") }
                                         }),
                                 )
-                                .on_hover_text("0 = never auto-hide")
+                                .on_hover_text(tr!("0 = never auto-hide"))
                                 .changed();
-                            ui.label("· on top");
+                            ui.label(tr!("· on top"));
                             egui::ComboBox::from_id_salt("on_top")
                                 .selected_text(match a.on_top {
                                     OnTop::Always => "Always",
@@ -2064,57 +2058,57 @@ impl SpaiApp {
                                     OnTop::Never => "Never",
                                 })
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Always, "Always").changed();
-                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Smart, "Smart (only when EVE is active)").changed();
-                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Never, "Never").changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Always, tr!("Always")).changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Smart, tr!("Smart (only when EVE is active)")).changed();
+                                    changed |= ui.menu_value(&mut a.on_top, OnTop::Never, tr!("Never")).changed();
                                 });
                         });
                         changed |= ui
-                            .checkbox(&mut a.compact_mode, "Compact alert window")
-                            .on_hover_text("Tighter rows and title bar. Hover cards pop out in their own window.")
+                            .checkbox(&mut a.compact_mode, tr!("Compact alert window"))
+                            .on_hover_text(tr!("Tighter rows and title bar. Hover cards pop out in their own window."))
                             .changed();
-                        ui.label(egui::RichText::new("Alert sounds and their volume are under Sounds, above.").weak());
+                        ui.label(egui::RichText::new(tr!("Alert sounds and their volume are under Sounds, above.")).weak());
                         changed |= ui
-                            .checkbox(&mut a.push_enabled, "Mobile push (Pushover)")
-                            .on_hover_text("Install the Pushover app; create an application for the token")
+                            .checkbox(&mut a.push_enabled, tr!("Mobile push (Pushover)"))
+                            .on_hover_text(tr!("Install the Pushover app; create an application for the token"))
                             .changed();
                         if a.push_enabled {
                             ui.horizontal(|ui| {
-                                ui.label("App token");
+                                ui.label(tr!("App token"));
                                 changed |= ui.add(egui::TextEdit::singleline(&mut a.pushover_token).desired_width(220.0)).changed();
                             });
                             ui.horizontal(|ui| {
-                                ui.label("User key ");
+                                ui.label(tr!("User key "));
                                 changed |= ui.add(egui::TextEdit::singleline(&mut a.pushover_user).desired_width(220.0)).changed();
                             });
                         }
                         changed |= ui
-                            .checkbox(&mut a.ntfy_enabled, "Mobile push (ntfy)")
-                            .on_hover_text("Install the ntfy app and subscribe to the same topic. Anyone who knows a public topic's name can read it, so pick one nobody will guess, or use a token.")
+                            .checkbox(&mut a.ntfy_enabled, tr!("Mobile push (ntfy)"))
+                            .on_hover_text(tr!("Install the ntfy app and subscribe to the same topic. Anyone who knows a public topic's name can read it, so pick one nobody will guess, or use a token."))
                             .changed();
                         if a.ntfy_enabled {
                             egui::Grid::new("ntfy_settings").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                                ui.label("Server");
+                                ui.label(tr!("Server"));
                                 changed |= ui
                                     .add(egui::TextEdit::singleline(&mut a.ntfy_server).hint_text(crate::settings::DEFAULT_NTFY_SERVER).desired_width(220.0))
                                     .changed();
                                 ui.end_row();
-                                ui.label("Topic");
+                                ui.label(tr!("Topic"));
                                 changed |= ui.add(egui::TextEdit::singleline(&mut a.ntfy_topic).desired_width(220.0)).changed();
                                 ui.end_row();
-                                ui.label("Token");
+                                ui.label(tr!("Token"));
                                 changed |= ui
-                                    .add(egui::TextEdit::singleline(&mut a.ntfy_token).password(true).hint_text("only for a protected topic").desired_width(220.0))
+                                    .add(egui::TextEdit::singleline(&mut a.ntfy_token).password(true).hint_text(tr!("only for a protected topic")).desired_width(220.0))
                                     .changed();
                                 ui.end_row();
                             });
-                            if ui.button("Send a test").on_hover_text("Push a test message to the topic").clicked() {
+                            if ui.button(tr!("Send a test")).on_hover_text(tr!("Push a test message to the topic")).clicked() {
                                 crate::push::ntfy(&a.ntfy_server, &a.ntfy_topic, &a.ntfy_token, "EVE Spai", "Test push from EVE Spai", 0);
                             }
                         }
                     }
                     ui.label(
-                        egui::RichText::new("Alert rules live in the Alerts tab.").weak(),
+                        egui::RichText::new(tr!("Alert rules live in the Alerts tab.")).weak(),
                     );
 
                     ui.separator();
@@ -2129,15 +2123,15 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    ui.label(egui::RichText::new("Battle reports").strong());
+                    ui.label(egui::RichText::new(tr!("Battle reports")).strong());
                     if ui
                         .checkbox(
                             &mut self.settings.battles_enabled,
-                            "Enable battle report generation",
+                            tr!("Enable battle report generation"),
                         )
                         .on_hover_text(
-                            "Turn off to stop all battle-report clustering and computation. \
-                             Gate-camp warnings and the kill feed keep working.",
+                            tr!("Turn off to stop all battle-report clustering and computation. \
+                             Gate-camp warnings and the kill feed keep working."),
                         )
                         .changed()
                     {
@@ -2150,13 +2144,13 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    ui.label(egui::RichText::new("Configuration packs").strong());
+                    ui.label(egui::RichText::new(tr!("Configuration packs")).strong());
                     ui.label(
-                        egui::RichText::new("Apply the Imperium preset intel channels.").weak(),
+                        egui::RichText::new(tr!("Apply the Imperium preset intel channels.")).weak(),
                     );
                     for pack in br_core::packs::PACKS.iter().filter(|p| !p.channels.is_empty()) {
                         ui.horizontal(|ui| {
-                            if ui.button(format!("Apply {}", pack.name)).clicked() {
+                            if ui.button(trf!("Apply {v}", v = pack.name)).clicked() {
                                 for ch in pack.channels {
                                     if !self
                                         .settings
@@ -2171,17 +2165,14 @@ impl SpaiApp {
                                 changed = true;
                             }
                             ui.label(
-                                egui::RichText::new(format!("{} channels", pack.channels.len()))
+                                egui::RichText::new(trf!("{v} channels", v = pack.channels.len()))
                                     .weak(),
                             );
                         });
                     }
                     if !self.settings.configuration_pack.is_empty() {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "Applied: {}",
-                                self.settings.configuration_pack
-                            ))
+                            egui::RichText::new(trf!("Applied: {v}", v = self.settings.configuration_pack))
                             .weak(),
                         );
                     }
@@ -2189,36 +2180,32 @@ impl SpaiApp {
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Intel channels").strong());
+                        ui.label(egui::RichText::new(tr!("Intel channels")).strong());
                         ui.label(
-                            egui::RichText::new(format!("{} configured", self.settings.intel_channels.len()))
+                            egui::RichText::new(trf!("{v} configured", v = self.settings.intel_channels.len()))
                                 .weak(),
                         );
                     });
-                    if ui.button("Configure intel channels…").clicked() {
+                    if ui.button(tr!("Configure intel channels…")).clicked() {
                         self.intel_channels_open = true;
                     }
 
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Coalition data").strong());
+                        ui.label(egui::RichText::new(tr!("Coalition data")).strong());
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} bridges · {} upgrades",
-                                self.settings.jump_bridges.len(),
-                                self.settings.sov_upgrades.len()
-                            ))
+                            egui::RichText::new(trf!("{v} bridges · {v2} upgrades", v = self.settings.jump_bridges.len(), v2 = self.settings.sov_upgrades.len()))
                             .weak(),
                         );
                     });
-                    if ui.button("Configure jump bridges…").clicked() {
+                    if ui.button(tr!("Configure jump bridges…")).clicked() {
                         self.jump_bridges_open = true;
                     }
-                    if ui.button("Configure sov upgrades…").clicked() {
+                    if ui.button(tr!("Configure sov upgrades…")).clicked() {
                         self.sov_upgrades_open = true;
                     }
-                    if ui.button("Configure coalitions…").clicked() {
+                    if ui.button(tr!("Configure coalitions…")).clicked() {
                         self.coal_edit = self
                             .settings
                             .coalitions
@@ -2227,7 +2214,7 @@ impl SpaiApp {
                             .collect();
                         self.coalitions_open = true;
                     }
-                    if ui.button("Configure cyno generators…").clicked() {
+                    if ui.button(tr!("Configure cyno generators…")).clicked() {
                         self.cyno_generators_open = true;
                     }
                     {
@@ -2243,17 +2230,17 @@ impl SpaiApp {
 
                     ui.add_space(12.0);
                     ui.separator();
-                    ui.heading("About");
-                    ui.label(format!("EVE Spai v{}", env!("CARGO_PKG_VERSION")));
+                    ui.heading(tr!("About"));
+                    ui.label(trf!("EVE Spai v{v}", v = env!("CARGO_PKG_VERSION")));
                     ui.horizontal(|ui| {
-                        ui.label("Project:");
+                        ui.label(tr!("Project:"));
                         ui.hyperlink_to(
                             "github.com/Amryu/eve-spai",
                             "https://github.com/Amryu/eve-spai",
                         );
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Community:");
+                        ui.label(tr!("Community:"));
                         ui.hyperlink_to("Discord", "https://discord.gg/u4bDqB9rjn");
                     });
                     ui.add_space(4.0);
@@ -2263,10 +2250,10 @@ impl SpaiApp {
                                 .fit_to_exact_size(egui::Vec2::splat(48.0)),
                         );
                         ui.vertical(|ui| {
-                            ui.label("Built by Amryu.");
+                            ui.label(tr!("Built by Amryu."));
                             ui.label(
                                 egui::RichText::new(
-                                    "If you find it useful, ISK donations to Amryu in-game are welcome.",
+                                    tr!("If you find it useful, ISK donations to Amryu in-game are welcome."),
                                 )
                                 .weak(),
                             );
@@ -2292,16 +2279,16 @@ impl SpaiApp {
     /// feature that is switched off (or locked) is left out, and so are its sounds.
     pub(crate) fn sounds_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
-        ui.label(egui::RichText::new("Sounds").strong());
+        ui.label(egui::RichText::new(tr!("Sounds")).strong());
         ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut self.settings.sound_muted, "Mute all").changed();
+            changed |= ui.checkbox(&mut self.settings.sound_muted, tr!("Mute all")).changed();
             ui.add_space(12.0);
-            ui.label("Master volume");
+            ui.label(tr!("Master volume"));
             ui.add_enabled_ui(!self.settings.sound_muted, |ui| {
                 changed |= volume_slider(ui, &mut self.settings.sound_master_volume);
             });
         });
-        ui.label(egui::RichText::new("Each sound's own volume is scaled by the master volume.").weak());
+        ui.label(egui::RichText::new(tr!("Each sound's own volume is scaled by the master volume.")).weak());
 
         // A per-rule volume that falls back to a shared one until it is set.
         fn own_volume(ui: &mut egui::Ui, v: &mut Option<f32>, shared: f32) -> bool {
@@ -2311,7 +2298,7 @@ impl SpaiApp {
                 *v = Some(x);
                 changed = true;
             }
-            if v.is_some() && spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to the shared volume").clicked() {
+            if v.is_some() && spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).on_hover_text(tr!("Back to the shared volume")).clicked() {
                 *v = None;
                 changed = true;
             }
@@ -2322,7 +2309,7 @@ impl SpaiApp {
             let text = egui::RichText::new(format!("{} {name}", egui_phosphor::regular::FUNNEL));
             let r = ui.label(if enabled { text } else { text.weak() });
             if !enabled {
-                r.on_hover_text("This rule is switched off");
+                r.on_hover_text(tr!("This rule is switched off"));
             }
         }
         let group = |ui: &mut egui::Ui, title: &str| {
@@ -2333,15 +2320,15 @@ impl SpaiApp {
         let muted = self.settings.sound_muted;
         ui.add_enabled_ui(!muted, |ui| {
             if self.settings.alert_enabled {
-                group(ui, "Intel alerts");
+                group(ui, tr!("Intel alerts"));
                 egui::Grid::new("sounds_alerts").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                     let a = &mut self.settings.alerts;
-                    ui.label("Shared volume");
+                    ui.label(tr!("Shared volume"));
                     ui.label("");
                     changed |= volume_slider(ui, &mut a.alert_volume);
                     ui.end_row();
                     let vol = a.alert_volume;
-                    for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
+                    for (i, lbl) in [tr!("Info"), tr!("Warning"), tr!("Danger"), tr!("Critical")].iter().enumerate() {
                         if a.sounds.len() <= i {
                             a.sounds.resize(i + 1, "off".to_owned());
                         }
@@ -2361,8 +2348,8 @@ impl SpaiApp {
             }
 
             if self.settings.jabber_enabled || !self.settings.jabber_jid.trim().is_empty() {
-                group(ui, "Jabber");
-                changed |= ui.checkbox(&mut self.settings.jabber_sound_enabled, "Play Jabber sounds").changed();
+                group(ui, tr!("Jabber"));
+                changed |= ui.checkbox(&mut self.settings.jabber_sound_enabled, tr!("Play Jabber sounds")).changed();
                 ui.add_enabled_ui(self.settings.jabber_sound_enabled, |ui| {
                     egui::Grid::new("sounds_jabber").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                         let st = &mut self.settings;
@@ -2388,7 +2375,7 @@ impl SpaiApp {
                 });
             }
 
-            group(ui, "Map and travel");
+            group(ui, tr!("Map and travel"));
             egui::Grid::new("sounds_map").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                 let st = &mut self.settings;
                 for (label, hint, salt, sound, vol) in [
@@ -2403,10 +2390,10 @@ impl SpaiApp {
             });
 
             if self.rescue_on() {
-                group(ui, "Rescue");
+                group(ui, tr!("Rescue"));
                 egui::Grid::new("sounds_rescue").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                     let st = &mut self.settings;
-                    ui.label("delve911 callout").on_hover_text("A rescue request in delve911. At most once every five minutes.");
+                    ui.label(tr!("delve911 callout")).on_hover_text(tr!("A rescue request in delve911. At most once every five minutes."));
                     changed |= sound_picker(ui, ("sounds_rescue", 0), false, &mut st.sound_delve911, st.sound_delve911_volume);
                     changed |= volume_slider(ui, &mut st.sound_delve911_volume);
                     ui.end_row();
@@ -2451,7 +2438,7 @@ fn rule_tag_menu(
                         changed = true;
                     }
                 };
-                toggle(ui, ANY_TAG, egui::RichText::new("Any tag"));
+                toggle(ui, ANY_TAG, egui::RichText::new(tr!("Any tag")));
                 ui.separator();
                 for t in notes.tags(kind) {
                     toggle(ui, &t.id, egui::RichText::new(&t.name).color(crate::notes::color32(t.color)));
@@ -2459,9 +2446,9 @@ fn rule_tag_menu(
                 let dangling: Vec<String> = list.iter().filter(|id| *id != ANY_TAG && notes.tag(id).is_none()).cloned().collect();
                 if !dangling.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new("Deleted, matching nothing:").weak());
+                    ui.label(egui::RichText::new(tr!("Deleted, matching nothing:")).weak());
                     for id in dangling {
-                        if ui.button(format!("{}  Remove", egui_phosphor::regular::X)).clicked() {
+                        if ui.button(trf!("{icon}  Remove", icon = egui_phosphor::regular::X)).clicked() {
                             list.retain(|x| *x != id);
                             changed = true;
                         }

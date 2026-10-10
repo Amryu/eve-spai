@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "9";
+pub const SDE_SCHEMA_VERSION: &str = "10";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS sde_ship_i18n (
     name    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_ship_i18n ON sde_ship_i18n(ship_id);
+CREATE TABLE IF NOT EXISTS sde_ship_names (
+    ship_id INTEGER NOT NULL,
+    lang    TEXT NOT NULL,
+    name    TEXT NOT NULL,
+    PRIMARY KEY (ship_id, lang)
+);
 CREATE TABLE IF NOT EXISTS characters (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -1544,7 +1550,21 @@ mod tests {
         assert!(left.contains(&"WKR-862".to_owned()) && left.contains(&"XYZ-999".to_owned()), "{left:?}");
     }
 
-    fn mem_store() -> Store {
+#[test]
+    fn ship_names_come_in_the_language_asked() {
+        let s = mem_store();
+        s.conn.execute_batch(
+            "INSERT INTO sde_ships(id, name) VALUES (12015, 'Muninn'), (22456, 'Sabre');
+             INSERT INTO sde_ship_names(ship_id, lang, name) VALUES (12015, 'zh', '缪宁级'), (12015, 'de', 'Muninn'), (22456, 'zh', '军刀级');",
+        )
+        .unwrap();
+        let zh = s.ship_names_in("zh");
+        assert_eq!(zh.get("Muninn").map(String::as_str), Some("缪宁级"));
+        assert_eq!(zh.len(), 2);
+        assert!(s.ship_names_in("fr").is_empty());
+    }
+
+        fn mem_store() -> Store {
         Store::mem()
     }
 

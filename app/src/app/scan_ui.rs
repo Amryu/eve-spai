@@ -256,7 +256,7 @@ impl SpaiApp {
         self.scan_poll(ui.ctx());
         let Some(&centre) = self.map_route_anchors.first() else {
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Right-click a system on the map and pick Start Scan Route: it becomes the centre.").weak());
+            ui.label(egui::RichText::new(tr!("Right-click a system on the map and pick Start Scan Route: it becomes the centre.")).weak());
             let geo = self.systems.clone();
             if let Some(saved) = self.scan_saved() {
                 let around = geo.as_ref().and_then(|g| g.info_of(saved.centre)).map_or_else(|| format!("#{}", saved.centre), |i| i.name.clone());
@@ -270,7 +270,7 @@ impl SpaiApp {
                     human_ago(crate::clock::utc().timestamp() - saved.at)
                 );
                 ui.add_space(4.0);
-                if ui.button(format!("{}  Resume the scan around {around}", icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text(hover).clicked() {
+                if ui.button(trf!("{icon}  Resume the scan around {around}", icon = icon::ARROW_COUNTER_CLOCKWISE, around = around)).on_hover_text(hover).clicked() {
                     self.scan_resume();
                 }
             }
@@ -280,15 +280,15 @@ impl SpaiApp {
         let name = move |id: i64| geo.as_ref().and_then(|g| g.info_of(id)).map_or_else(|| format!("#{id}"), |i| i.name.clone());
         let mut replan = false;
         ui.horizontal_wrapped(|ui| {
-            ui.label("Around");
+            ui.label(tr!("Around"));
             ui.label(egui::RichText::new(name(centre)).strong().color(ui.visuals().hyperlink_color));
         });
         ui.horizontal(|ui| {
-            ui.label("Jumps out");
+            ui.label(tr!("Jumps out"));
             replan |= ui.add(egui::Slider::new(&mut self.settings.scan.radius, 1..=MAX_RADIUS)).changed();
         });
         ui.horizontal(|ui| {
-            ui.label("Look for");
+            ui.label(tr!("Look for"));
             let kinds = [
                 ("any", "Any hole", "Every k-space system"),
                 ("drifter", "Drifter holes", "Only systems with a Jove Observatory, the only ones drifter holes open in"),
@@ -305,7 +305,7 @@ impl SpaiApp {
             });
         });
         ui.horizontal_wrapped(|ui| {
-            ui.label("Security");
+            ui.label(tr!("Security"));
             for (code, label) in [("hs", "High"), ("ls", "Low"), ("ns", "Null")] {
                 let set = &mut self.settings.scan.security;
                 let on = set.is_empty() || set.iter().any(|c| c == code);
@@ -325,35 +325,33 @@ impl SpaiApp {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Detours up to");
+            ui.label(tr!("Detours up to"));
             replan |= ui
                 .add(egui::DragValue::new(&mut self.settings.scan.detour).range(0..=MAX_DETOUR).suffix(" jumps"))
-                .on_hover_text("A system outside the radius joins a route that passes this close to it, when going there and back is worth it. 0 keeps strictly to the radius.")
+                .on_hover_text(tr!("A system outside the radius joins a route that passes this close to it, when going there and back is worth it. 0 keeps strictly to the radius."))
                 .changed();
         });
         let upgrades = self.systems.as_ref().map_or(0, |g| self.explo_upgrades(g).len());
         if upgrades > 0 {
             ui.horizontal(|ui| {
-                ui.label("Avoid exploration upgrades by");
+                ui.label(tr!("Avoid exploration upgrades by"));
                 replan |= ui
                     .add(egui::DragValue::new(&mut self.settings.scan.avoid_explo).range(0..=MAX_AVOID_EXPLO).suffix(" jumps"))
-                    .on_hover_text(format!(
-                        "Leaves out the systems this close to one of the {upgrades} known Exploration Detectors: their sites fill the area with signatures that are slow to scan. 0 leaves none out."
-                    ))
+                    .on_hover_text(trf!("Leaves out the systems this close to one of the {upgrades} known Exploration Detectors: their sites fill the area with signatures that are slow to scan. 0 leaves none out.", upgrades = upgrades))
                     .changed();
             });
         }
         ui.horizontal(|ui| {
-            ui.label("Skip scanned in the last");
-            replan |= ui.add(egui::DragValue::new(&mut self.settings.scan.skip_hours).range(0..=168).suffix(" h")).on_hover_text("0 plans every system, scanned or not").changed();
+            ui.label(tr!("Skip scanned in the last"));
+            replan |= ui.add(egui::DragValue::new(&mut self.settings.scan.skip_hours).range(0..=168).suffix(" h")).on_hover_text(tr!("0 plans every system, scanned or not")).changed();
         });
         replan |= self.route_zone_combo(ui);
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Scouts").strong());
+        ui.label(egui::RichText::new(tr!("Scouts")).strong());
         let locations = self.player.lock().unwrap().locations.clone();
         let chars: Vec<String> = self.characters.iter().map(|c| c.name.clone()).collect();
         if chars.is_empty() {
-            ui.label(egui::RichText::new("Sign in characters to plan a route for each.").weak());
+            ui.label(egui::RichText::new(tr!("Sign in characters to plan a route for each.")).weak());
         }
         for c in &chars {
             let at = locations.get(c).map(|(s, _)| *s);
@@ -363,7 +361,7 @@ impl SpaiApp {
                 None => format!("{c}  \u{b7}  location unknown"),
             };
             let r = ui.add_enabled(at.is_some(), egui::Checkbox::new(&mut on, label));
-            if r.on_disabled_hover_text("Its location is not known yet").changed() {
+            if r.on_disabled_hover_text(tr!("Its location is not known yet")).changed() {
                 if on {
                     self.settings.scan.scouts.push(c.clone());
                 } else {
@@ -389,7 +387,7 @@ impl SpaiApp {
         }
         ui.label(egui::RichText::new(head).strong());
         if !plan.unreached.is_empty() {
-            ui.label(egui::RichText::new(format!("{} out of reach with these settings", plan.unreached.len())).color(crate::theme::standing::WARNING));
+            ui.label(egui::RichText::new(trf!("{v} out of reach with these settings", v = plan.unreached.len())).color(crate::theme::standing::WARNING));
         }
         let can_send = self.characters.iter().filter(|c| c.scopes.split_whitespace().any(|s| s == "esi-ui.write_waypoint.v1")).map(|c| c.name.clone()).collect::<HashSet<_>>();
         let mut send: Option<usize> = None;
@@ -400,28 +398,28 @@ impl SpaiApp {
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(icon::CIRCLE).color(color));
                 ui.label(egui::RichText::new(&r.name).strong());
-                ui.label(egui::RichText::new(format!("{} systems \u{b7} {} jumps", r.stops.len(), r.jumps)).weak());
+                ui.label(egui::RichText::new(trf!("{v} systems \u{b7} {v2} jumps", v = r.stops.len(), v2 = r.jumps)).weak());
                 if r.name != NO_SCOUT {
                     let ok = can_send.contains(&r.name);
                     if ui
-                        .add_enabled(ok && r.path.len() > 1, egui::Button::new(format!("{}  Set in game", icon::NAVIGATION_ARROW)))
-                        .on_hover_text(format!("Waypoints for {} in the game, up to {MAX_WAYPOINTS}", r.name))
-                        .on_disabled_hover_text("Sign this character in again to let it set waypoints")
+                        .add_enabled(ok && r.path.len() > 1, egui::Button::new(trf!("{icon}  Set in game", icon = icon::NAVIGATION_ARROW)))
+                        .on_hover_text(trf!("Waypoints for {v} in the game, up to {MAX_WAYPOINTS}", v = r.name, MAX_WAYPOINTS = MAX_WAYPOINTS))
+                        .on_disabled_hover_text(tr!("Sign this character in again to let it set waypoints"))
                         .clicked()
                     {
                         send = Some(k);
                     }
                 }
             });
-            egui::CollapsingHeader::new(format!("Stops ({})", r.stops.len())).id_salt(("scan_stops", k)).show(ui, |ui| {
+            egui::CollapsingHeader::new(trf!("Stops ({v})", v = r.stops.len())).id_salt(("scan_stops", k)).show(ui, |ui| {
                 for (i, s) in r.stops.iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(format!("{}.", i + 1)).weak());
                         ui.label(name(*s));
                         if r.detours.contains(s) {
-                            ui.label(egui::RichText::new("detour").weak()).on_hover_text("Outside the radius, a few jumps off the route");
+                            ui.label(egui::RichText::new(tr!("detour")).weak()).on_hover_text(tr!("Outside the radius, a few jumps off the route"));
                         }
-                        if spai_ui::widgets::icon_button(ui, icon::CHECK).on_hover_text("Done: leave it out of the next plan").clicked() {
+                        if spai_ui::widgets::icon_button(ui, icon::CHECK).on_hover_text(tr!("Done: leave it out of the next plan")).clicked() {
                             tick = Some(*s);
                         }
                     });
@@ -430,10 +428,10 @@ impl SpaiApp {
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button(format!("{}  Replan from here", icon::ARROWS_CLOCKWISE)).on_hover_text("From where every scout is now, leaving out what was ticked off or scanned").clicked() {
+            if ui.button(trf!("{icon}  Replan from here", icon = icon::ARROWS_CLOCKWISE)).on_hover_text(tr!("From where every scout is now, leaving out what was ticked off or scanned")).clicked() {
                 self.scan_replan();
             }
-            if !self.scan_route.done.is_empty() && ui.button(format!("Forget {} ticked", self.scan_route.done.len())).clicked() {
+            if !self.scan_route.done.is_empty() && ui.button(trf!("Forget {v} ticked", v = self.scan_route.done.len())).clicked() {
                 self.scan_route.done.clear();
                 self.scan_replan();
             }

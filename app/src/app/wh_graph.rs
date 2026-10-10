@@ -2,6 +2,8 @@
 //! Laid out as a tree per chain, from the side our characters are on; a system the user dragged
 //! keeps its place, and whatever grows off it later is laid out relative to it.
 
+use spai_ui::i18n::Tr;
+
 use std::collections::HashMap;
 
 use egui_phosphor::regular as icon;
@@ -86,19 +88,19 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.heading(&info.name);
                     if self.wh_graph.focus != Some(sel)
-                        && ui.button(icon::CROSSHAIR).on_hover_text("Show only this system and those near it").clicked()
+                        && ui.button(icon::CROSSHAIR).on_hover_text(tr!("Show only this system and those near it")).clicked()
                     {
                         focus = true;
                     }
-                    if ui.button(icon::INFO).on_hover_text("Wormhole facts about this system").clicked() {
+                    if ui.button(icon::INFO).on_hover_text(tr!("Wormhole facts about this system")).clicked() {
                         facts = true;
                     }
-                    if ui.button(icon::X).on_hover_text("Deselect").clicked() {
+                    if ui.button(icon::X).on_hover_text(tr!("Deselect")).clicked() {
                         select = Some(0);
                     }
                 });
                 let c = whdata::class_of(sel, info.security, &info.region);
-                ui.label(format!("{} \u{b7} {}", c.label(), info.region));
+                ui.label(format!("{} \u{b7} {}", c.label().tr(), info.region));
                 ui.add_space(4.0);
                 let n_sigs = self.wh_graph_sigs(sel).len();
                 let tabs = [
@@ -120,7 +122,7 @@ impl SpaiApp {
                 ui.separator();
                 match self.wh_graph.side_tab {
                     SideTab::Info => {
-                ui.label(egui::RichText::new("Connections").strong());
+                ui.label(egui::RichText::new(tr!("Connections")).strong());
                 let here: Vec<&crate::wormholes::Wormhole> = holes.iter().filter(|w| w.system_id == sel || w.dest_system_id == Some(sel)).collect();
                 let any = !here.is_empty();
                 let disabled = &self.settings.wh_disabled_holes;
@@ -145,7 +147,7 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         let text = if hidden == 1 { "1 connection hidden by the filter".to_owned() } else { format!("{hidden} connections hidden by the filter") };
                         ui.label(egui::RichText::new(text).color(crate::theme::standing::WARNING));
-                        if ui.button(format!("{}  Clear filter", icon::FUNNEL_X)).clicked() {
+                        if ui.button(trf!("{icon}  Clear filter", icon = icon::FUNNEL_X)).clicked() {
                             clear_filter = true;
                         }
                     });
@@ -157,7 +159,7 @@ impl SpaiApp {
 
                     }
                     SideTab::Routes => {
-                ui.label(egui::RichText::new("Jumps from here, through the holes allowed below").weak());
+                ui.label(egui::RichText::new(tr!("Jumps from here, through the holes allowed below")).weak());
                 let adj = self.wh_adjacency();
                 let mut targets: Vec<(String, i64, bool)> = Vec::new();
                 for p in &self.settings.wh_route_pins {
@@ -171,7 +173,7 @@ impl SpaiApp {
                     targets.push((n.clone(), chars[n].0, false));
                 }
                 if targets.is_empty() {
-                    ui.label(egui::RichText::new("Pin a system to see how far it is.").weak());
+                    ui.label(egui::RichText::new(tr!("Pin a system to see how far it is.")).weak());
                 }
                 let (un, sel_to) = spai_ui::wh_tab::route_rows(ui, &geo, sel, &targets, &adj);
                 if un.is_some() {
@@ -182,9 +184,9 @@ impl SpaiApp {
                 }
                 ui.horizontal(|ui| {
                     let mut q = std::mem::take(&mut self.wh_graph.pin_query);
-                    let picked = self.system_input(ui, "wh_route_pin", &mut q, "Add a system", 160.0);
+                    let picked = self.system_input(ui, "wh_route_pin", &mut q, tr!("Add a system"), 160.0);
                     self.wh_graph.pin_query = q;
-                    let add = picked.is_some() || ui.button(icon::PLUS).on_hover_text("Measure routes to this system").clicked();
+                    let add = picked.is_some() || ui.button(icon::PLUS).on_hover_text(tr!("Measure routes to this system")).clicked();
                     if let Some(i) = geo.lookup(self.wh_graph.pin_query.trim()).filter(|_| add) {
                         if !self.settings.wh_route_pins.iter().any(|n| n.eq_ignore_ascii_case(&i.name)) {
                             self.settings.wh_route_pins.push(i.name.clone());
@@ -202,14 +204,14 @@ impl SpaiApp {
                 let sigs = self.wh_graph_sigs(sel);
                 ui.horizontal_wrapped(|ui| {
                     if ui
-                        .button(format!("{}  Paste probe scan", icon::CLIPBOARD_TEXT))
-                        .on_hover_text("In EVE, select everything in the probe scanner and copy it, then click here or press Ctrl+V over this panel")
+                        .button(trf!("{icon}  Paste probe scan", icon = icon::CLIPBOARD_TEXT))
+                        .on_hover_text(tr!("In EVE, select everything in the probe scanner and copy it, then click here or press Ctrl+V over this panel"))
                         .clicked()
                     {
                         paste = Some(None);
                     }
-                    ui.checkbox(&mut self.wh_graph.keep_missing, "Keep missing")
-                        .on_hover_text("Keep signatures the paste does not list. Off, a full paste replaces the list: what is missing is gone from space.");
+                    ui.checkbox(&mut self.wh_graph.keep_missing, tr!("Keep missing"))
+                        .on_hover_text(tr!("Keep signatures the paste does not list. Off, a full paste replaces the list: what is missing is gone from space."));
                     self.sig_undo_button(ui, icon::ARROW_COUNTER_CLOCKWISE);
                 });
                 if let Some(t) = ui.input(|i| {
@@ -416,25 +418,21 @@ impl SpaiApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "The probe scan of {} no longer lists the signature of {}. A hole's signature goes when it collapses.",
-                    name(system),
-                    if list.len() == 1 { "this hole" } else { "these holes" }
-                ));
+                ui.label(trf!("The probe scan of {v} no longer lists the signature of {v2}. A hole's signature goes when it collapses.", v = name(system), v2 = if list.len() == 1 { "this hole" } else { "these holes" }));
                 ui.add_space(4.0);
                 for (id, keep) in list.iter_mut() {
                     let w = &holes[id];
                     let (sig, far) = if w.system_id == system { (&w.signature, w.dest_system_id) } else { (&w.dest_signature, Some(w.system_id)) };
-                    let far = far.map_or_else(|| w.dest.label().to_owned(), name);
+                    let far = far.map_or_else(|| w.dest.label().tr().to_owned(), name);
                     let ty = hole_code(w).map(|t| format!(" ({t})")).unwrap_or_default();
                     ui.checkbox(keep, format!("{} \u{2192} {far}{ty}", sig.as_deref().unwrap_or("?")));
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Mark dead").clicked() {
+                    if ui.button(tr!("Mark dead")).clicked() {
                         act = Some(true);
                     }
-                    if ui.button("Keep them").clicked() {
+                    if ui.button(tr!("Keep them")).clicked() {
                         act = Some(false);
                     }
                 });

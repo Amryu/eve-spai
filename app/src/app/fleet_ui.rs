@@ -1,5 +1,7 @@
 //! The fleet dashboard tab: the fleet list, the start form, and a tracked fleet.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 use crate::fleets::{
@@ -305,7 +307,7 @@ impl SpaiApp {
             for sector in [comms::Sector::Alpha, comms::Sector::Bravo] {
                 if let Some(u) = comms::command_url(sector, &n) {
                     let c = comms::command_channel(&n).unwrap_or_default();
-                    out.push((format!("{c} ({})", sector.label()), Some(u), None));
+                    out.push((format!("{c} ({})", sector.label().tr()), Some(u), None));
                 }
             }
         }
@@ -766,7 +768,7 @@ impl SpaiApp {
             ui.horizontal_wrapped(|ui| {
                 let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
                 let tab = page.tab();
-                for (p, label) in [(Page::Fleets, "Fleets"), (Page::Start, "Start fleet")] {
+                for (p, label) in [(Page::Fleets, tr!("Fleets")), (Page::Start, tr!("Start fleet"))] {
                     if selectable_chip(ui, tab == p, label).clicked() && page != p {
                         goto = Some(p);
                     }
@@ -776,7 +778,7 @@ impl SpaiApp {
                     quick_open,
                     format!("{}  Quick Fleet", egui_phosphor::regular::LIGHTNING),
                 )
-                .on_hover_text("Start from a saved preset")
+                .on_hover_text(tr!("Start from a saved preset"))
                 .clicked()
                 {
                     toggle_quick = true;
@@ -806,24 +808,22 @@ impl SpaiApp {
                         .on_hover_text(why);
                     }
                     if st.seed.placeholder {
-                        ui.label(egui::RichText::new("placeholder data").weak()).on_hover_text(
-                            format!("Invented names. Drop a seed file at {seed_hint}."),
+                        ui.label(egui::RichText::new(tr!("placeholder data")).weak()).on_hover_text(
+                            trf!("Invented names. Drop a seed file at {seed_hint}.", seed_hint = seed_hint),
                         );
                     } else if st.seed.empty() {
                         // Empty tables and no invented ones to hide behind: say so, because every
                         // dropdown below this is about to be blank.
                         ui.label(
-                            egui::RichText::new("no reference data")
+                            egui::RichText::new(tr!("no reference data"))
                                 .color(crate::theme::standing::WARNING),
                         )
-                        .on_hover_text(format!(
-                            "Setups, channels and tags have not loaded. Sign in on the settings \
-                             page, or drop a seed file at {seed_hint}."
-                        ));
+                        .on_hover_text(trf!("Setups, channels and tags have not loaded. Sign in on the settings \
+                             page, or drop a seed file at {seed_hint}.", seed_hint = seed_hint));
                     }
                     if let Some(s) = &st.session {
                         ui.label(egui::RichText::new(s.identity.name.clone()).weak())
-                            .on_hover_text(format!("Command group: {}", s.identity.command_group));
+                            .on_hover_text(trf!("Command group: {v}", v = s.identity.command_group));
                     }
                     let n = st.journal.len();
                     if selectable_chip(ui, journal_open, format!("{n} recorded"))
@@ -1353,10 +1353,10 @@ impl SpaiApp {
 
     /// Settings before the dashboard has confirmed a commander: only the sign-in.
     fn fleet_locked_section(&mut self, ui: &mut egui::Ui) -> bool {
-        ui.heading("Fleet command");
+        ui.heading(tr!("Fleet command"));
         ui.label(
             egui::RichText::new(
-                "Fleet tracking, pings, composition and the delve911 rescue, for GSF skirmish commanders and up. Sign in to the fleet dashboard to unlock.",
+                tr!("Fleet tracking, pings, composition and the delve911 rescue, for GSF skirmish commanders and up. Sign in to the fleet dashboard to unlock."),
             )
             .weak(),
         );
@@ -1375,30 +1375,30 @@ impl SpaiApp {
         if !self.fleet_unlocked() {
             return changed | self.fleet_locked_section(ui);
         }
-        ui.heading("Fleet dashboard");
+        ui.heading(tr!("Fleet dashboard"));
         ui.label(
             egui::RichText::new(
-                "Tracking, pings and composition for fleet commanders. Off by default.",
+                tr!("Tracking, pings and composition for fleet commanders. Off by default."),
             )
             .weak(),
         );
         changed |= ui
-            .checkbox(&mut self.settings.fleet_enabled, "Enable the fleet dashboard (FC only)")
+            .checkbox(&mut self.settings.fleet_enabled, tr!("Enable the fleet dashboard (FC only)"))
             .changed();
         if !self.settings.fleet_enabled {
             return changed;
         }
         ui.add_space(4.0);
         egui::Grid::new("fleet_settings_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Staging system");
+            ui.label(tr!("Staging system"));
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut self.settings.rescue_staging_system)
                         .desired_width(220.0),
                 )
                 .on_hover_text(
-                    "Home staging. The default formup for a fleet, where a rescue measures titan \
-                     range from, and what the map marks.",
+                    tr!("Home staging. The default formup for a fleet, where a rescue measures titan \
+                     range from, and what the map marks."),
                 )
                 .changed();
             ui.end_row();
@@ -1409,12 +1409,9 @@ impl SpaiApp {
         changed |= self.fleet_boost_rules(ui);
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new(format!(
-                "Reference data comes from {}, and falls back to placeholder names when it is \
+            egui::RichText::new(trf!("Reference data comes from {v}, and falls back to placeholder names when it is \
                  missing. Boost coverage is read from the EVE chat log of whichever boost channel \
-                 the fleet uses, so there is nothing to set here.",
-                crate::fleets::seed_path_hint()
-            ))
+                 the fleet uses, so there is nothing to set here.", v = crate::fleets::seed_path_hint()))
             .weak(),
         );
         changed
@@ -1487,14 +1484,14 @@ impl SpaiApp {
             .default_size([360.0, 150.0])
             .show(ctx, |ui| {
                 egui::Grid::new("preset_rename").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Name");
+                    ui.label(tr!("Name"));
                     ui.add(egui::TextEdit::singleline(&mut label).desired_width(220.0));
                     ui.end_row();
-                    ui.label("Folder");
+                    ui.label(tr!("Folder"));
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut folder)
-                                .hint_text("top level")
+                                .hint_text(tr!("top level"))
                                 .desired_width(160.0),
                         );
                         egui::ComboBox::from_id_salt("preset_rename_folder")
@@ -1516,7 +1513,7 @@ impl SpaiApp {
                 ui.add_space(6.0);
                 if taken_now {
                     ui.label(
-                        egui::RichText::new("That folder already has a preset by that name.")
+                        egui::RichText::new(tr!("That folder already has a preset by that name."))
                             .color(crate::theme::standing::WARNING),
                     );
                 }
@@ -1524,7 +1521,7 @@ impl SpaiApp {
                     if ui
                         .add_enabled(
                             !label.trim().is_empty() && !taken_now,
-                            egui::Button::new("Save"),
+                            egui::Button::new(tr!("Save")),
                         )
                         .on_disabled_hover_text(if taken_now {
                             "That folder already has a preset by that name."
@@ -1535,7 +1532,7 @@ impl SpaiApp {
                     {
                         apply = true;
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(tr!("Cancel")).clicked();
                 });
             });
         let taken = self.fleet_preset_taken(i, label.trim(), folder.trim());
@@ -1582,19 +1579,19 @@ impl SpaiApp {
             .max_height((ctx.content_rect().height() - 80.0).max(240.0))
             .show(ctx, |ui| {
                 let Some(c) = cover.as_ref() else {
-                    ui.label(egui::RichText::new("Nobody is holding this one.").weak());
+                    ui.label(egui::RichText::new(tr!("Nobody is holding this one.")).weak());
                     return;
                 };
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("{} pilot(s)", c.pilots)).strong(),
+                        egui::RichText::new(trf!("{v} pilot(s)", v = c.pilots)).strong(),
                     );
                     ui.label(
-                        egui::RichText::new(format!("{} with a mindlink", c.mindlinked)).weak(),
+                        egui::RichText::new(trf!("{v} with a mindlink", v = c.mindlinked)).weak(),
                     );
                     if c.generic {
                         ui.label(
-                            egui::RichText::new("named by burst, not by charge")
+                            egui::RichText::new(tr!("named by burst, not by charge"))
                                 .color(crate::theme::standing::WARNING),
                         );
                     }
@@ -1620,7 +1617,7 @@ impl SpaiApp {
                             let on = picked.eq_ignore_ascii_case(pilot);
                             if ui
                                 .menu_label(on, format!("{pilot}   {ship}"))
-                                .on_hover_text("Show what they posted")
+                                .on_hover_text(tr!("Show what they posted"))
                                 .clicked()
                             {
                                 picked = if on { String::new() } else { pilot.clone() };
@@ -1664,8 +1661,8 @@ impl SpaiApp {
                     });
                 ui.add_space(4.0);
                 if ui
-                    .button(format!("{}  Mark as not covered", egui_phosphor::regular::X))
-                    .on_hover_text("Drop it from coverage until someone posts again")
+                    .button(trf!("{icon}  Mark as not covered", icon = egui_phosphor::regular::X))
+                    .on_hover_text(tr!("Drop it from coverage until someone posts again"))
                     .clicked()
                 {
                     clear = Some(what.clone());
@@ -1723,7 +1720,7 @@ impl SpaiApp {
             .default_size([460.0, 240.0])
             .max_height((ctx.content_rect().height() - 80.0).max(200.0))
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("What the dashboard said:").weak());
+                ui.label(egui::RichText::new(tr!("What the dashboard said:")).weak());
                 ui.add_space(4.0);
                 // The scroll area is sized from what is left after the button below it, measured
                 // last frame. Claiming `available_height` and then putting anything underneath
@@ -1740,7 +1737,7 @@ impl SpaiApp {
                         );
                     });
                 ui.add_space(6.0);
-                if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                if ui.button(trf!("{icon}  Copy", icon = egui_phosphor::regular::COPY)).clicked() {
                     ui.ctx().copy_text(text.clone());
                 }
                 let used = ui.min_rect().height();
@@ -1761,11 +1758,11 @@ impl SpaiApp {
         let signed_in = crate::fleets::creds::has()
             || std::env::var(crate::fleets::COOKIE_ENV).is_ok_and(|t| !t.trim().is_empty());
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Sign in...", egui_phosphor::regular::SIGN_IN)).clicked() {
+            if ui.button(trf!("{icon}  Sign in...", icon = egui_phosphor::regular::SIGN_IN)).clicked() {
                 crate::fleets::login::spawn_login(self.fleet_login.clone(), ui.ctx().clone());
             }
             if signed_in
-                && ui.button(format!("{}  Sign out", egui_phosphor::regular::SIGN_OUT)).clicked()
+                && ui.button(trf!("{icon}  Sign out", icon = egui_phosphor::regular::SIGN_OUT)).clicked()
             {
                 crate::fleets::creds::forget();
                 self.fleet_set_backend(std::sync::Arc::new(
@@ -1776,16 +1773,16 @@ impl SpaiApp {
             match crate::fleets::login::status(&self.fleet_login) {
                 LoginStatus::Waiting => {
                     ui.spinner();
-                    ui.label(egui::RichText::new("finish the login in the window").weak());
+                    ui.label(egui::RichText::new(tr!("finish the login in the window")).weak());
                 }
                 LoginStatus::Failed(why) => {
                     ui.label(egui::RichText::new(why).color(crate::theme::standing::HOSTILE));
                 }
                 _ if signed_in => {
-                    ui.label(egui::RichText::new("session stored").weak());
+                    ui.label(egui::RichText::new(tr!("session stored")).weak());
                 }
                 _ => {
-                    ui.label(egui::RichText::new("no session stored").weak());
+                    ui.label(egui::RichText::new(tr!("no session stored")).weak());
                 }
             }
         });
@@ -1796,7 +1793,7 @@ impl SpaiApp {
         use crate::fleets::backend::Mode;
 
         let mut changed = false;
-        ui.label(egui::RichText::new("Sign-in").strong());
+        ui.label(egui::RichText::new(tr!("Sign-in")).strong());
         changed |= self.fleet_sign_in_row(ui);
         let mode = self.fleet_backend.mode();
         ui.add_space(4.0);
@@ -1849,10 +1846,7 @@ impl SpaiApp {
         let n = self.settings.fleet_boost_requirements.len();
         ui.horizontal(|ui| {
             if ui
-                .button(format!(
-                    "{}  Doctrines...",
-                    egui_phosphor::regular::SLIDERS_HORIZONTAL
-                ))
+                .button(trf!("{icon}  Doctrines...", icon = egui_phosphor::regular::SLIDERS_HORIZONTAL))
                 .clicked()
             {
                 self.fleet_boost_editor = true;
@@ -1978,7 +1972,7 @@ impl SpaiApp {
                         if ui
                             .add(
                                 egui::TextEdit::singleline(&mut query)
-                                    .hint_text("Search doctrines")
+                                    .hint_text(tr!("Search doctrines"))
                                     .desired_width(f32::INFINITY),
                             )
                             .changed()
@@ -2024,11 +2018,7 @@ impl SpaiApp {
                         if ui
                             .add_enabled(
                                 !typed.is_empty() && !known,
-                                egui::Button::new(format!(
-                                    "{}  Add \"{}\"",
-                                    egui_phosphor::regular::PLUS,
-                                    clip(&typed, 14)
-                                )),
+                                egui::Button::new(trf!("{icon}  Add \"{v}\"", icon = egui_phosphor::regular::PLUS, v = clip(&typed, 14))),
                             )
                             .on_disabled_hover_text(if typed.is_empty() {
                                 "Type a name above first."
@@ -2042,23 +2032,17 @@ impl SpaiApp {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             if ui
-                                .button(format!(
-                                    "{}  Export",
-                                    egui_phosphor::regular::UPLOAD_SIMPLE
-                                ))
-                                .on_hover_text("Save every doctrine's hulls and boosts to a file")
+                                .button(trf!("{icon}  Export", icon = egui_phosphor::regular::UPLOAD_SIMPLE))
+                                .on_hover_text(tr!("Save every doctrine's hulls and boosts to a file"))
                                 .clicked()
                             {
                                 io = Some(false);
                             }
                             if ui
-                                .button(format!(
-                                    "{}  Import",
-                                    egui_phosphor::regular::DOWNLOAD_SIMPLE
-                                ))
+                                .button(trf!("{icon}  Import", icon = egui_phosphor::regular::DOWNLOAD_SIMPLE))
                                 .on_hover_text(
-                                    "Read a file back. Doctrines it names are replaced, the rest \
-                                     are left alone.",
+                                    tr!("Read a file back. Doctrines it names are replaced, the rest \
+                                     are left alone."),
                                 )
                                 .clicked()
                             {
@@ -2107,11 +2091,11 @@ impl SpaiApp {
                             let strict = &mut self.settings.fleet_doctrine_strict;
                             let mut on = strict.contains(&picked);
                             if ui
-                                .checkbox(&mut on, "Only these hulls")
+                                .checkbox(&mut on, tr!("Only these hulls"))
                                 .on_hover_text(
-                                    "Nothing is waved through, not even the always-allowed ones. \
+                                    tr!("Nothing is waved through, not even the always-allowed ones. \
                                      For a fleet restricted enough that a bridging titan parked \
-                                     in it is still the wrong ship.",
+                                     in it is still the wrong ship."),
                                 )
                                 .changed()
                             {
@@ -2126,7 +2110,7 @@ impl SpaiApp {
                                 ui,
                                 picked,
                                 &name,
-                                "flown by this doctrine",
+                                tr!("flown by this doctrine"),
                                 &mut self.settings.fleet_hulls,
                                 &ships,
                                 body_h,
@@ -2147,16 +2131,12 @@ impl SpaiApp {
                             if ui
                                 .add_enabled(
                                     mine == 0,
-                                    egui::Button::new(format!(
-                                        "{}  Fill ({})",
-                                        egui_phosphor::regular::PLUS,
-                                        if armor { "armor" } else { "shield" }
-                                    )),
+                                    egui::Button::new(trf!("{icon}  Fill ({v})", icon = egui_phosphor::regular::PLUS, v = if armor { "armor" } else { "shield" })),
                                 )
-                                .on_disabled_hover_text("This doctrine already has boosts set.")
+                                .on_disabled_hover_text(tr!("This doctrine already has boosts set."))
                                 .on_hover_text(
-                                    "Add every relevant charge at Medium, guessing the tank from \
-                                     the name.",
+                                    tr!("Add every relevant charge at Medium, guessing the tank from \
+                                     the name."),
                                 )
                                 .clicked()
                             {
@@ -2168,7 +2148,7 @@ impl SpaiApp {
                                     mine == 0,
                                     egui::Button::new(if armor { "Fill (shield)" } else { "Fill (armor)" }),
                                 )
-                                .on_disabled_hover_text("This doctrine already has boosts set.")
+                                .on_disabled_hover_text(tr!("This doctrine already has boosts set."))
                                 .clicked()
                             {
                                 rules.extend(boosts::default_rules(picked.into(), !armor));
@@ -2183,10 +2163,7 @@ impl SpaiApp {
                             let mut copy_from: Option<i32> = None;
                             ui.add_enabled_ui(mine == 0 && !sources.is_empty(), |ui| {
                                 egui::ComboBox::from_id_salt("boost_copy_from")
-                                    .selected_text(format!(
-                                        "{}  Copy from",
-                                        egui_phosphor::regular::COPY
-                                    ))
+                                    .selected_text(trf!("{icon}  Copy from", icon = egui_phosphor::regular::COPY))
                                     .width(150.0)
                                     .show_ui(ui, |ui| {
                                         for (id, name) in &sources {
@@ -2222,8 +2199,8 @@ impl SpaiApp {
                                 changed = true;
                             }
                             if ui
-                                .add_enabled(mine > 0, egui::Button::new("Clear"))
-                                .on_disabled_hover_text("Nothing to clear.")
+                                .add_enabled(mine > 0, egui::Button::new(tr!("Clear")))
+                                .on_disabled_hover_text(tr!("Nothing to clear."))
                                 .clicked()
                             {
                                 rules.retain(|r| r.setup_id != picked);
@@ -2285,7 +2262,7 @@ impl SpaiApp {
                                         cell(ui, 120.0, |ui| {
                                             let mut prio = Priority::parse(&rule.priority);
                                             egui::ComboBox::from_id_salt(("boost_prio", i))
-                                                .selected_text(prio.label())
+                                                .selected_text(prio.label().tr())
                                                 .width(110.0)
                                                 .show_ui(ui, |ui| {
                                                     for p in Priority::ALL {
@@ -2293,7 +2270,7 @@ impl SpaiApp {
                                                             .menu_value(
                                                                 &mut prio,
                                                                 p,
-                                                                p.label(),
+                                                                p.label().tr(),
                                                             )
                                                             .changed()
                                                         {
@@ -2306,7 +2283,7 @@ impl SpaiApp {
                                         });
                                         if ui
                                             .button(egui_phosphor::regular::TRASH)
-                                            .on_hover_text("Remove this boost")
+                                            .on_hover_text(tr!("Remove this boost"))
                                             .clicked()
                                         {
                                             remove = Some(i);
@@ -2316,7 +2293,7 @@ impl SpaiApp {
                                 });
                             if mine == 0 {
                                 ui.label(
-                                    egui::RichText::new("No boosts set for this doctrine.").weak(),
+                                    egui::RichText::new(tr!("No boosts set for this doctrine.")).weak(),
                                 );
                             }
                         });
@@ -2326,7 +2303,7 @@ impl SpaiApp {
                         }
                         ui.add_space(4.0);
                         if ui
-                            .button(format!("{}  Add a boost", egui_phosphor::regular::PLUS))
+                            .button(trf!("{icon}  Add a boost", icon = egui_phosphor::regular::PLUS))
                             .clicked()
                         {
                             rules.push(crate::settings::FleetBoostRequirement {
@@ -2390,19 +2367,16 @@ fn fleets_page(
 ) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button(format!("{}  Refresh", egui_phosphor::regular::ARROWS_CLOCKWISE)).clicked() {
+        if ui.button(trf!("{icon}  Refresh", icon = egui_phosphor::regular::ARROWS_CLOCKWISE)).clicked() {
             *refresh = true;
         }
         let can_start = st.can(Perm::StartFleet);
         if ui
             .add_enabled(
                 can_start,
-                egui::Button::new(format!(
-                    "{}  Start a fleet",
-                    egui_phosphor::regular::ROCKET_LAUNCH
-                )),
+                egui::Button::new(trf!("{icon}  Start a fleet", icon = egui_phosphor::regular::ROCKET_LAUNCH)),
             )
-            .on_disabled_hover_text("Your account does not have the startFleet permission.")
+            .on_disabled_hover_text(tr!("Your account does not have the startFleet permission."))
             .clicked()
         {
             *goto = Some(Page::Start);
@@ -2413,9 +2387,9 @@ fn fleets_page(
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let strat = st.active_strat.clone();
         let pct = st.active_pct.clone();
-        section(ui, "Strategic", &strat, goto);
+        section(ui, tr!("Strategic"), &strat, goto);
         ui.add_space(8.0);
-        section(ui, "Peacetime", &pct, goto);
+        section(ui, tr!("Peacetime"), &pct, goto);
         ui.add_space(8.0);
 
         let history = st.history.clone();
@@ -2423,11 +2397,11 @@ fn fleets_page(
         // Server side, so finding a fleet from last year is one request rather than paging back
         // through every month between here and it.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Find a fleet").strong());
+            ui.label(egui::RichText::new(tr!("Find a fleet")).strong());
             let mut q = st.history_search.clone();
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut q)
-                    .hint_text("name, FC or doctrine")
+                    .hint_text(tr!("name, FC or doctrine"))
                     .desired_width(240.0),
             );
             if resp.changed() {
@@ -2439,7 +2413,7 @@ fn fleets_page(
                 });
             }
             if !st.history_search.trim().is_empty()
-                && ui.button(egui_phosphor::regular::X).on_hover_text("Clear").clicked()
+                && ui.button(egui_phosphor::regular::X).on_hover_text(tr!("Clear")).clicked()
             {
                 st.history_search.clear();
                 st.history_skip = 0;
@@ -2463,14 +2437,14 @@ fn fleets_page(
             let more = (st.history_skip + page_size) < p.total as u32;
             if st.history_skip > 0 || more {
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(st.history_skip > 0, egui::Button::new("Newer")).clicked() {
+                    if ui.add_enabled(st.history_skip > 0, egui::Button::new(tr!("Newer"))).clicked() {
                         st.history_skip = st.history_skip.saturating_sub(page_size);
                         *cmd = Some(Cmd::LoadHistory {
                             skip: st.history_skip,
                             search: st.history_search.clone(),
                         });
                     }
-                    if ui.add_enabled(more, egui::Button::new("Older")).clicked() {
+                    if ui.add_enabled(more, egui::Button::new(tr!("Older"))).clicked() {
                         st.history_skip += page_size;
                         *cmd = Some(Cmd::LoadHistory {
                             skip: st.history_skip,
@@ -2501,16 +2475,16 @@ fn rows<T>(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(heading).strong());
         if slot.loading {
-            ui.label(egui::RichText::new("loading").weak());
+            ui.label(egui::RichText::new(tr!("loading")).weak());
         }
         if slot.stale {
-            ui.label(egui::RichText::new("stale").color(crate::theme::standing::WARNING))
-                .on_hover_text("The last refresh failed, so this is the previous answer.");
+            ui.label(egui::RichText::new(tr!("stale")).color(crate::theme::standing::WARNING))
+                .on_hover_text(tr!("The last refresh failed, so this is the previous answer."));
         }
     });
     let Some(items) = items else { return };
     if items.is_empty() {
-        ui.label(egui::RichText::new("Nothing here.").weak());
+        ui.label(egui::RichText::new(tr!("Nothing here.")).weak());
         return;
     }
     let now = crate::clock::utc().timestamp();
@@ -2761,10 +2735,10 @@ fn start_page(
         if let Some((id, name)) = st.already_tracking() {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("This FC is already tracked as {name}."))
+                    egui::RichText::new(trf!("This FC is already tracked as {name}.", name = name))
                         .color(crate::theme::standing::WARNING),
                 );
-                if ui.button("Open it").clicked() {
+                if ui.button(tr!("Open it")).clicked() {
                     act.open_fleet = Some(id);
                 }
             });
@@ -2794,12 +2768,12 @@ fn start_page(
                         return;
                     }
                     ui.label(
-                        egui::RichText::new("Track fleet: not sent")
+                        egui::RichText::new(tr!("Track fleet: not sent"))
                             .color(crate::theme::standing::WARNING),
                     )
                     .on_hover_text(
-                        "Tracking is recorded rather than issued until writes are on. The Ping \
-                         buttons go straight to Jabber and are not affected.",
+                        tr!("Tracking is recorded rather than issued until writes are on. The Ping \
+                         buttons go straight to Jabber and are not affected."),
                     );
                 };
                 // Straight to skirmish_commanders, the way the rescue pings: it needs nothing
@@ -2810,13 +2784,10 @@ fn start_page(
                     let resp = ui
                         .add_enabled(
                             can_jabber,
-                            egui::Button::new(format!(
-                                "{}  Request ping",
-                                egui_phosphor::regular::PAPER_PLANE_TILT
-                            )),
+                            egui::Button::new(trf!("{icon}  Request ping", icon = egui_phosphor::regular::PAPER_PLANE_TILT)),
                         )
                         .on_hover_text(
-                            "Post the ping to skirmish_commanders as !bping coord",
+                            tr!("Post the ping to skirmish_commanders as !bping coord"),
                         )
                         .on_disabled_hover_text(jabber_why);
                     if resp.clicked() {
@@ -2843,26 +2814,24 @@ fn start_page(
                             )),
                         )
                         .on_hover_text(
-                            "Records the request this would send. Nothing leaves the app.",
+                            tr!("Records the request this would send. Nothing leaves the app."),
                         );
                     let resp = if starting {
-                        resp.on_disabled_hover_text("Waiting for the dashboard to answer.")
+                        resp.on_disabled_hover_text(tr!("Waiting for the dashboard to answer."))
                     } else if let Some((_, name)) = &tracked {
-                        resp.on_disabled_hover_text(format!(
-                            "This FC is already boss of a tracked fleet: {name}. Tracking it \
-                             again would split one fleet's pilots and participation across two."
-                        ))
+                        resp.on_disabled_hover_text(trf!("This FC is already boss of a tracked fleet: {name}. Tracking it \
+                             again would split one fleet's pilots and participation across two.", name = name))
                     } else if !can_start {
                         resp.on_disabled_hover_text(
-                            "Your account does not have the startFleet permission.",
+                            tr!("Your account does not have the startFleet permission."),
                         )
                     } else if !ready {
-                        resp.on_disabled_hover_text("Give the fleet a name first.")
+                        resp.on_disabled_hover_text(tr!("Give the fleet a name first."))
                     } else {
                         resp.on_disabled_hover_text(
-                            "That character is not the boss of a fleet in game. The dashboard \
+                            tr!("That character is not the boss of a fleet in game. The dashboard \
                              reads the fleet through their token, so there would be nothing to \
-                             read.",
+                             read."),
                         )
                     };
                     if resp.clicked() {
@@ -2917,24 +2886,21 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
     let open_id = id.with("open");
     let mut open: bool = ui.data(|d| d.get_temp(open_id).unwrap_or(false));
     if ui
-        .add(egui::Button::new(format!(
-            "{}  Save as preset",
-            egui_phosphor::regular::BOOKMARK_SIMPLE
-        )))
-        .on_hover_text("Keep this form as a preset for next time.")
+        .add(egui::Button::new(trf!("{icon}  Save as preset", icon = egui_phosphor::regular::BOOKMARK_SIMPLE)))
+        .on_hover_text(tr!("Keep this form as a preset for next time."))
         .clicked()
     {
         open = !open;
     }
     if open {
         ui.add(
-            egui::TextEdit::singleline(&mut label).hint_text("Preset name").desired_width(150.0),
+            egui::TextEdit::singleline(&mut label).hint_text(tr!("Preset name")).desired_width(150.0),
         );
         // Typed, not picked: a new folder is made by naming it, and the existing ones are one
         // click away in the dropdown beside it.
         ui.add(
             egui::TextEdit::singleline(&mut folder)
-                .hint_text("Folder (optional)")
+                .hint_text(tr!("Folder (optional)"))
                 .desired_width(130.0),
         );
         let combo = egui::ComboBox::from_id_salt("preset_folder_pick").width(0.0);
@@ -2950,8 +2916,8 @@ fn save_preset_button(ui: &mut egui::Ui, folders: &[String], act: &mut FormAct) 
         });
         let ready = !label.trim().is_empty();
         if ui
-            .add_enabled(ready, egui::Button::new("Save"))
-            .on_disabled_hover_text("Name the preset first.")
+            .add_enabled(ready, egui::Button::new(tr!("Save")))
+            .on_disabled_hover_text(tr!("Name the preset first."))
             .clicked()
         {
             act.save_preset = Some((label.trim().to_owned(), folder.trim().to_owned()));
@@ -3083,7 +3049,7 @@ fn form_identity(
         .min_col_width(LABEL_W)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            ui.label("FC");
+            ui.label(tr!("FC"));
             ui.vertical(|ui| {
                 let signed_in = st.session.as_ref().map(|s| (s.character_id, s.character_name.clone()));
                 let current = st
@@ -3097,7 +3063,7 @@ fn form_identity(
                     .selected_text(current)
                     .show_ui(ui, |ui| {
                         if let Some((id, name)) = &signed_in {
-                            ui.menu_value(&mut pick, None, format!("{name}  (signed in)"));
+                            ui.menu_value(&mut pick, None, trf!("{name}  (signed in)", name = name));
                             let _ = id;
                         }
                         for c in seed.characters.iter().filter(|c| !c.is_hidden) {
@@ -3113,14 +3079,14 @@ fn form_identity(
             });
             ui.end_row();
 
-            ui.label("Name");
+            ui.label(tr!("Name"));
             let d = &mut st.draft;
             act.edited |= ui
                 .add(egui::TextEdit::singleline(&mut d.form.name).desired_width(field_w(ui)))
                 .changed();
             ui.end_row();
 
-            ui.label("Description");
+            ui.label(tr!("Description"));
             act.edited |= ui
                 .add(
                     egui::TextEdit::multiline(&mut d.form.description)
@@ -3130,7 +3096,7 @@ fn form_identity(
                 .changed();
             ui.end_row();
 
-            ui.label("Setup");
+            ui.label(tr!("Setup"));
             let current = seed
                 .setups
                 .iter()
@@ -3142,7 +3108,7 @@ fn form_identity(
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     act.edited |= ui
-                        .menu_value(&mut d.form.setup_id, 0, "== Choose a setup ==")
+                        .menu_value(&mut d.form.setup_id, 0, tr!("== Choose a setup =="))
                         .changed();
                     for s in &seed.setups {
                         act.edited |= ui
@@ -3152,7 +3118,7 @@ fn form_identity(
                 });
             ui.end_row();
 
-            ui.label("SIG");
+            ui.label(tr!("SIG"));
             let sig = d
                 .form
                 .group_id
@@ -3163,7 +3129,7 @@ fn form_identity(
                 ui,
                 |ui| {
                     act.edited |=
-                        ui.menu_value(&mut d.form.group_id, None, "== None ==").changed();
+                        ui.menu_value(&mut d.form.group_id, None, tr!("== None ==")).changed();
                     for s in &seed.sigs {
                         let id = Some(crate::fleets::model::GroupId(s.id as i32));
                         act.edited |=
@@ -3174,17 +3140,17 @@ fn form_identity(
             let _ = d;
             ui.end_row();
 
-            ui.label("Formup");
+            ui.label(tr!("Formup"));
             act.edited |= formup_field(ui, &mut st.draft, places, act);
             ui.end_row();
 
-            ui.label("Doctrine notes");
+            ui.label(tr!("Doctrine notes"));
             let d = &mut st.draft;
             let mut notes = d.form.doctrine_notes.clone().unwrap_or_default();
             if ui
                 .add(
                     egui::TextEdit::singleline(&mut notes)
-                        .hint_text("Optional, shown in the ping")
+                        .hint_text(tr!("Optional, shown in the ping"))
                         .desired_width(field_w(ui)),
                 )
                 .changed()
@@ -3208,32 +3174,32 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
         .show(ui, |ui| {
             // A hand-picked channel is what "Force configured" puts back, so the choice is recorded
             // as configured and stops reading as a switch.
-            if channel_row(ui, "Mumble", "fleet_mumble", &seed.mumble_channels,
+            if channel_row(ui, tr!("Mumble"), "fleet_mumble", &seed.mumble_channels,
                            &mut d.form.mumble_channel_id, auto.mumble) {
                 d.configured.mumble = d.form.mumble_channel_id;
                 d.auto.mumble = false;
                 act.edited = true;
             }
-            if channel_row(ui, "Logi", "fleet_logi", &seed.logi_channels,
+            if channel_row(ui, tr!("Logi"), "fleet_logi", &seed.logi_channels,
                            &mut d.form.logi_channel_id, auto.logi) {
                 d.configured.logi = d.form.logi_channel_id;
                 d.auto.logi = false;
                 act.edited = true;
             }
-            if channel_row(ui, "Boost", "fleet_boost", &seed.boost_channels,
+            if channel_row(ui, tr!("Boost"), "fleet_boost", &seed.boost_channels,
                            &mut d.form.boost_channel_id, auto.boost) {
                 d.configured.boost = d.form.boost_channel_id;
                 d.auto.boost = false;
                 act.edited = true;
             }
 
-            ui.label("Auto close");
+            ui.label(tr!("Auto close"));
             ui.horizontal(|ui| {
                 let mut kind = d.form.auto_close_type.unwrap_or(1);
-                act.edited |= selectable_chip(ui, kind == 0, "Start").clicked().then(|| {
+                act.edited |= selectable_chip(ui, kind == 0, tr!("Start")).clicked().then(|| {
                     kind = 0;
                 }).is_some();
-                act.edited |= selectable_chip(ui, kind == 1, "FC left").clicked().then(|| {
+                act.edited |= selectable_chip(ui, kind == 1, tr!("FC left")).clicked().then(|| {
                     kind = 1;
                 }).is_some();
                 d.form.auto_close_type = Some(kind);
@@ -3244,16 +3210,16 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
             });
             ui.end_row();
 
-            ui.label("Options");
+            ui.label(tr!("Options"));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
-                act.edited |= ui.checkbox(&mut d.form.set_motd, "Set the fleet MOTD").changed();
+                act.edited |= ui.checkbox(&mut d.form.set_motd, tr!("Set the fleet MOTD")).changed();
                 act.edited |=
-                    ui.checkbox(&mut d.form.is_corporation_fleet, "Corporation fleet").changed();
+                    ui.checkbox(&mut d.form.is_corporation_fleet, tr!("Corporation fleet")).changed();
                 act.edited |= ui
                     .checkbox(
                         &mut d.form.ignore_participation_requirements,
-                        "Ignore participation requirements",
+                        tr!("Ignore participation requirements"),
                     )
                     .changed();
             });
@@ -3265,15 +3231,15 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         if ui
-            .button(format!("{}  Auto", egui_phosphor::regular::MAGIC_WAND))
-            .on_hover_text("Keep the channels already chosen and replace only the ones that are taken.")
+            .button(trf!("{icon}  Auto", icon = egui_phosphor::regular::MAGIC_WAND))
+            .on_hover_text(tr!("Keep the channels already chosen and replace only the ones that are taken."))
             .clicked()
         {
             act.auto_channels = true;
         }
         if ui
-            .button(format!("{}  Pick free comms", egui_phosphor::regular::ARROWS_CLOCKWISE))
-            .on_hover_text("Start again from the lowest free channel for all three.")
+            .button(trf!("{icon}  Pick free comms", icon = egui_phosphor::regular::ARROWS_CLOCKWISE))
+            .on_hover_text(tr!("Start again from the lowest free channel for all three."))
             .clicked()
         {
             act.free_channels = true;
@@ -3282,10 +3248,10 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
         if ui
             .add_enabled(
                 configured,
-                egui::Button::new(format!("{}  Force configured", egui_phosphor::regular::LOCK)),
+                egui::Button::new(trf!("{icon}  Force configured", icon = egui_phosphor::regular::LOCK)),
             )
-            .on_disabled_hover_text("Nothing was configured to go back to.")
-            .on_hover_text("Put back the channels this preset asked for, taken or not.")
+            .on_disabled_hover_text(tr!("Nothing was configured to go back to."))
+            .on_hover_text(tr!("Put back the channels this preset asked for, taken or not."))
             .clicked()
         {
             act.force_channels = true;
@@ -3318,7 +3284,7 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
                             .wrap_mode(egui::TextWrapMode::Extend)
                             .sense(egui::Sense::click()),
                         );
-                        if resp.on_hover_text("Show what the dashboard said").clicked() {
+                        if resp.on_hover_text(tr!("Show what the dashboard said")).clicked() {
                             act.boss_detail = Some(full.to_owned());
                         }
                     }
@@ -3328,11 +3294,11 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
                 }
             }
             None => {
-                ui.label(egui::RichText::new("Fleet boss not checked").weak());
+                ui.label(egui::RichText::new(tr!("Fleet boss not checked")).weak());
             }
         }
         if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::ARROWS_CLOCKWISE)
-            .on_hover_text("Ask again whether this character is boss of a fleet")
+            .on_hover_text(tr!("Ask again whether this character is boss of a fleet"))
             .clicked()
         {
             act.check_boss = true;
@@ -3370,7 +3336,7 @@ fn formup_field(
                         .fill(ui.visuals().selection.bg_fill)
                         .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)),
                 )
-                .on_hover_text("Clear the formup location")
+                .on_hover_text(tr!("Clear the formup location"))
                 .clicked()
             {
                 draft.formup = None;
@@ -3380,7 +3346,7 @@ fn formup_field(
         let width = (ui.available_width() - 40.0).clamp(80.0, FIELD_W);
         let field = ui.add(
             egui::TextEdit::singleline(&mut query)
-                .hint_text("Search systems")
+                .hint_text(tr!("Search systems"))
                 .desired_width(width),
         );
         if field.changed() {
@@ -3392,8 +3358,8 @@ fn formup_field(
                     !at_staging,
                     egui::Button::new(egui_phosphor::regular::HOUSE).frame(false),
                 )
-                .on_hover_text(format!("Form up at {name}, the staging set in settings"))
-                .on_disabled_hover_text("Already forming up at staging.")
+                .on_hover_text(trf!("Form up at {name}, the staging set in settings", name = name))
+                .on_disabled_hover_text(tr!("Already forming up at staging."))
                 .clicked()
             {
                 draft.formup = Some(Labelled { id, label: name });
@@ -3448,10 +3414,10 @@ fn channel_row(
             .map(|c| c.name.trim().to_owned())
             .unwrap_or_else(|| "none".to_owned());
         egui::ComboBox::from_id_salt(salt).width(180.0).selected_text(current).show_ui(ui, |ui| {
-            changed |= ui.menu_value(slot, None, "none").changed();
+            changed |= ui.menu_value(slot, None, tr!("none")).changed();
             for c in list {
                 let text = if c.is_in_use {
-                    egui::RichText::new(format!("{}  in use", c.name.trim())).weak()
+                    egui::RichText::new(trf!("{v}  in use", v = c.name.trim())).weak()
                 } else {
                     egui::RichText::new(c.name.trim().to_owned())
                 };
@@ -3460,15 +3426,15 @@ fn channel_row(
         });
         if auto {
             ui.label(
-                egui::RichText::new("switched").color(crate::theme::standing::WARNING),
+                egui::RichText::new(tr!("switched")).color(crate::theme::standing::WARNING),
             )
-            .on_hover_text("The channel asked for was taken, so this free one was picked.");
+            .on_hover_text(tr!("The channel asked for was taken, so this free one was picked."));
         }
         if slot.is_some_and(|id| list.iter().any(|c| c.id == id && c.is_in_use)) {
             ui.label(
-                egui::RichText::new("in use").color(crate::theme::standing::WARNING),
+                egui::RichText::new(tr!("in use")).color(crate::theme::standing::WARNING),
             )
-            .on_hover_text("Another fleet has this channel.");
+            .on_hover_text(tr!("Another fleet has this channel."));
         }
     });
     ui.end_row();
@@ -3484,7 +3450,7 @@ fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut 
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             for (title, salt, primary) in
-                [("Primary tag", "fleet_tag_primary", true), ("Secondary tags", "fleet_tag_secondary", false)]
+                [(tr!("Primary tag"), "fleet_tag_primary", true), (tr!("Secondary tags"), "fleet_tag_secondary", false)]
             {
                 ui.label(title);
                 let mut pool: Vec<_> =
@@ -3595,7 +3561,7 @@ fn tag_field(
                         .fill(ui.visuals().selection.bg_fill)
                         .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)),
                     )
-                    .on_hover_text("Remove this tag")
+                    .on_hover_text(tr!("Remove this tag"))
                     .clicked()
                 {
                     remove = Some(t.id);
@@ -3624,7 +3590,7 @@ fn tag_field(
             let mut query: String = ui.data(|d| d.get_temp(search_id).unwrap_or_default());
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut query)
-                    .hint_text("Search tags")
+                    .hint_text(tr!("Search tags"))
                     .desired_width(f32::INFINITY),
             );
             if edit.changed() {
@@ -3663,7 +3629,7 @@ fn tag_field(
                         }
                     });
                     if !any {
-                        ui.label(egui::RichText::new("Nothing matches.").weak());
+                        ui.label(egui::RichText::new(tr!("Nothing matches.")).weak());
                     }
                 });
         });
@@ -3678,22 +3644,22 @@ fn tag_field(
 /// The pilots called out in the ping.
 fn snowflake_summary(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAct) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Snowflakes").strong());
+        ui.label(egui::RichText::new(tr!("Snowflakes")).strong());
         if ui
-            .button(format!("{}  Manage...", egui_phosphor::regular::USER_LIST))
-            .on_hover_text("Who gets named in the ping")
+            .button(trf!("{icon}  Manage...", icon = egui_phosphor::regular::USER_LIST))
+            .on_hover_text(tr!("Who gets named in the ping"))
             .clicked()
         {
             act.open_snowflakes = true;
         }
         match st.draft.snowflakes.len() {
             0 => {
-                ui.label(egui::RichText::new("none").weak());
+                ui.label(egui::RichText::new(tr!("none")).weak());
             }
             _ => {
                 for s in &st.draft.snowflakes {
                     ui.label(
-                        egui::RichText::new(format!("{} {}", s.kind.label(), s.character_name))
+                        egui::RichText::new(format!("{} {}", s.kind.label().tr(), s.character_name))
                             .weak(),
                     );
                 }
@@ -3744,17 +3710,17 @@ fn snowflake_rows(
 
     let mut drop: Option<usize> = None;
     if target.list(st).is_empty() {
-        ui.label(egui::RichText::new("None.").weak());
+        ui.label(egui::RichText::new(tr!("None.")).weak());
     }
     for (i, s) in target.list(st).iter_mut().enumerate() {
         ui.horizontal(|ui| {
             cell(ui, 110.0, |ui| {
                 egui::ComboBox::from_id_salt(("snowflake", salt, i))
                     .width(100.0)
-                    .selected_text(s.kind.label())
+                    .selected_text(s.kind.label().tr())
                     .show_ui(ui, |ui| {
                         for k in SnowflakeType::ALL {
-                            act.edited |= ui.menu_value(&mut s.kind, k, k.label()).changed();
+                            act.edited |= ui.menu_value(&mut s.kind, k, k.label().tr()).changed();
                         }
                     });
             });
@@ -3764,9 +3730,9 @@ fn snowflake_rows(
             if ui
                 .add_enabled(can, egui::Button::new(egui_phosphor::regular::TRASH).frame(false))
                 .on_disabled_hover_text(
-                    "Your account does not have the manageFleetSnowflakes permission.",
+                    tr!("Your account does not have the manageFleetSnowflakes permission."),
                 )
-                .on_hover_text(format!("Drop {}", s.character_name))
+                .on_hover_text(trf!("Drop {v}", v = s.character_name))
                 .clicked()
             {
                 drop = Some(i);
@@ -3790,23 +3756,23 @@ fn snowflake_rows(
         cell(ui, 110.0, |ui| {
             egui::ComboBox::from_id_salt(("snowflake_new_kind", salt))
                 .width(100.0)
-                .selected_text(kind.label())
+                .selected_text(kind.label().tr())
                 .show_ui(ui, |ui| {
                     for k in SnowflakeType::ALL {
-                        ui.menu_value(&mut kind, k, k.label());
+                        ui.menu_value(&mut kind, k, k.label().tr());
                     }
                 });
         });
         let edit = ui.add(
             egui::TextEdit::singleline(&mut name)
-                .hint_text("Character name")
+                .hint_text(tr!("Character name"))
                 .desired_width(180.0),
         );
         if edit.changed() {
             act.search_character = Some(name.trim().to_owned());
         }
         if hits.loading {
-            ui.label(egui::RichText::new("looking").weak());
+            ui.label(egui::RichText::new(tr!("looking")).weak());
         } else if let Some(why) = &search_error {
             search_failed_note(ui, why);
         }
@@ -3823,7 +3789,7 @@ fn snowflake_rows(
         let already = |id: i64| taken.contains(&id);
         let ready = can && exact.is_some_and(|l| !already(l.id));
         let add = ui
-            .add_enabled(ready, egui::Button::new(format!("{}  Add", egui_phosphor::regular::PLUS)))
+            .add_enabled(ready, egui::Button::new(trf!("{icon}  Add", icon = egui_phosphor::regular::PLUS)))
             .on_disabled_hover_text(if !can {
                 "Your account does not have the manageFleetSnowflakes permission."
             } else if name.trim().is_empty() {
@@ -3850,7 +3816,7 @@ fn snowflake_rows(
     // Anything the search turned up that is not the exact name, one click away.
     if let Some(v) = hits.value.as_ref().filter(|v| v.len() > 1) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Did you mean").weak());
+            ui.label(egui::RichText::new(tr!("Did you mean")).weak());
             for l in v.iter().take(6) {
                 if selectable_chip(ui, false, l.label.trim()).clicked() {
                     ui.data_mut(|d| {
@@ -3905,13 +3871,13 @@ fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
             ui.add_space(6.0);
             let resp = ui.add_sized([20.0, 70.0], egui::Button::new("\u{00AB}"));
             if fits {
-                if resp.on_hover_text("Show fleet chat").clicked() {
+                if resp.on_hover_text(tr!("Show fleet chat")).clicked() {
                     d.open = true;
                 }
             } else {
                 resp.on_hover_text(
-                    "Not enough width for the chat beside this page. Widen the window, or \
-                     collapse the panel on the right.",
+                    tr!("Not enough width for the chat beside this page. Widen the window, or \
+                     collapse the panel on the right."),
                 );
             }
         });
@@ -3933,7 +3899,7 @@ fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         let ready = d.connected && !d.drafts[i].trim().is_empty();
-                        if ui.add_enabled(ready, egui::Button::new("Send")).clicked() {
+                        if ui.add_enabled(ready, egui::Button::new(tr!("Send"))).clicked() {
                             d.send = Some((d.rooms[i].clone(), std::mem::take(&mut d.drafts[i])));
                         }
                         let w = (ui.available_width() - 4.0).max(60.0);
@@ -3964,7 +3930,7 @@ fn chat_dock(ui: &mut egui::Ui, d: &mut ChatDock, min_central: f32) {
                 });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("\u{00BB}").on_hover_text("Hide fleet chat").clicked() {
+                if ui.button("\u{00BB}").on_hover_text(tr!("Hide fleet chat")).clicked() {
                     d.open = false;
                 }
                 let w = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
@@ -4050,12 +4016,12 @@ fn side_pane(
         let w = (row_w - CLEAR_W - ui.spacing().item_spacing.x).max(60.0);
         ui.add_sized(
             [w, 22.0],
-            egui::TextEdit::singleline(&mut query).hint_text("Search saved fleets"),
+            egui::TextEdit::singleline(&mut query).hint_text(tr!("Search saved fleets")),
         );
         if ui
             .add_enabled_ui(!query.trim().is_empty(), |ui| {
                 ui.add_sized([CLEAR_W, 22.0], egui::Button::new(egui_phosphor::regular::X))
-                    .on_hover_text("Clear")
+                    .on_hover_text(tr!("Clear"))
             })
             .inner
             .clicked()
@@ -4108,7 +4074,7 @@ fn preset_tree(
     act: &mut FormAct,
 ) {
     if presets.is_empty() {
-        ui.label(egui::RichText::new("No saved fleets yet.").weak());
+        ui.label(egui::RichText::new(tr!("No saved fleets yet.")).weak());
         return;
     }
     let shown = |p: &crate::settings::FleetPreset| {
@@ -4130,7 +4096,7 @@ fn preset_tree(
         }
     }
     if groups.iter().all(|(_, idx)| idx.is_empty()) {
-        ui.label(egui::RichText::new("Nothing matches.").weak());
+        ui.label(egui::RichText::new(tr!("Nothing matches.")).weak());
         return;
     }
     for (folder, idx) in groups.iter().filter(|(_, idx)| !idx.is_empty()) {
@@ -4167,7 +4133,7 @@ fn preset_tree(
                         },
                     )
                     .response
-                    .on_hover_text(format!("Drag {folder} onto another folder to go before it"));
+                    .on_hover_text(trf!("Drag {folder} onto another folder to go before it", folder = folder));
                     ui.label(egui::RichText::new(folder).strong());
                 })
                 .body(|ui| {
@@ -4215,7 +4181,7 @@ fn preset_tree(
 /// body is on the hover, since it is usually a scrap of HTML with nothing in it.
 fn search_failed_note(ui: &mut egui::Ui, why: &str) {
     ui.label(
-        egui::RichText::new("search failed, keep typing to retry")
+        egui::RichText::new(tr!("search failed, keep typing to retry"))
             .color(crate::theme::standing::WARNING),
     )
     .on_hover_text(crate::fleets::state::strip_tags(why));
@@ -4256,14 +4222,14 @@ fn preset_row(
             };
             if ui
                 .add(icon(egui_phosphor::regular::TRASH))
-                .on_hover_text(format!("Forget the {} preset", p.label))
+                .on_hover_text(trf!("Forget the {v} preset", v = p.label))
                 .clicked()
             {
                 act.delete_preset = Some(i);
             }
             if ui
                 .add(icon(egui_phosphor::regular::PENCIL_SIMPLE))
-                .on_hover_text(format!("Rename {} or move it to another folder", p.label))
+                .on_hover_text(trf!("Rename {v} or move it to another folder", v = p.label))
                 .clicked()
             {
                 act.rename_preset = Some(i);
@@ -4282,7 +4248,7 @@ fn preset_row(
                             egui::Button::new(&p.label)
                                 .wrap_mode(egui::TextWrapMode::Truncate),
                         )
-                        .on_hover_text(format!("Load {}", p.label))
+                        .on_hover_text(trf!("Load {v}", v = p.label))
                         .clicked()
                     {
                         act.load_preset = Some(i);
@@ -4334,9 +4300,9 @@ fn preset_row(
 fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Ping preview").strong());
+        ui.label(egui::RichText::new(tr!("Ping preview")).strong());
         if st.preview.loading {
-            ui.label(egui::RichText::new("rendering").weak());
+            ui.label(egui::RichText::new(tr!("rendering")).weak());
         }
     });
     ui.separator();
@@ -4347,7 +4313,7 @@ fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &
         // FC who cannot ping cannot call a fleet.
         None => {
             ui.label(
-                egui::RichText::new("From the local template: the dashboard did not render one.")
+                egui::RichText::new(tr!("From the local template: the dashboard did not render one."))
                     .color(crate::theme::standing::WARNING),
             );
             ui.add_space(4.0);
@@ -4359,13 +4325,13 @@ fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &
         }
     };
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for (title, text) in [("Ping", &p.ping), ("MOTD", &p.motd)] {
+        for (title, text) in [(tr!("Ping"), &p.ping), ("MOTD", &p.motd)] {
             if text.trim().is_empty() {
                 continue;
             }
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(title).strong());
-                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text(tr!("Copy")).clicked() {
                     ui.ctx().copy_text(text.clone());
                 }
             });
@@ -4386,21 +4352,21 @@ fn preview_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState, local_ping: &
 /// What this tab would have sent, newest first.
 fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Recorded requests").strong());
+    ui.label(egui::RichText::new(tr!("Recorded requests")).strong());
     ui.label(
-        egui::RichText::new("Built and kept, never sent. This is what the real client would post.")
+        egui::RichText::new(tr!("Built and kept, never sent. This is what the real client would post."))
             .weak(),
     );
     ui.separator();
     if st.journal.is_empty() {
-        ui.label(egui::RichText::new("Nothing yet.").weak());
+        ui.label(egui::RichText::new(tr!("Nothing yet.")).weak());
         return;
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         for (i, rec) in st.journal.iter().enumerate().rev() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(rec.line()).monospace());
-                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text("Copy").clicked() {
+                if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::COPY).on_hover_text(tr!("Copy")).clicked() {
                     let text = match rec.pretty_body() {
                         Some(b) => format!("{}\n{b}", rec.line()),
                         None => rec.line(),
@@ -4409,7 +4375,7 @@ fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
                 }
             });
             if let Some(body) = rec.pretty_body() {
-                egui::CollapsingHeader::new("body").id_salt(("journal", i)).show(ui, |ui| {
+                egui::CollapsingHeader::new(tr!("body")).id_salt(("journal", i)).show(ui, |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(body).monospace()).wrap());
                 });
             }
@@ -4565,15 +4531,15 @@ fn br_buttons(
 ) {
     use crate::app::fleet_map::BrClick;
     use egui_phosphor::regular as ic;
-    if br.has_kills && ui.button("In-app report").on_hover_text("The fleet's fights as one battle in the Battles tab").clicked() {
+    if br.has_kills && ui.button(tr!("In-app report")).on_hover_text(tr!("The fleet's fights as one battle in the Battles tab")).clicked() {
         *click = Some(BrClick::InApp);
     }
     match &br.url {
         Some(url) => {
             if br.stale {
                 let update = ui
-                    .add_enabled(!br.busy, egui::Button::new(format!("{}  Update BR", ic::ARROWS_CLOCKWISE)))
-                    .on_hover_text("The fleet's kills changed since the report was made. br.evetools cannot edit a report, so this makes a new one and replaces the saved link.");
+                    .add_enabled(!br.busy, egui::Button::new(trf!("{arrows_clockwise}  Update BR", arrows_clockwise = ic::ARROWS_CLOCKWISE)))
+                    .on_hover_text(tr!("The fleet's kills changed since the report was made. br.evetools cannot edit a report, so this makes a new one and replaces the saved link."));
                 if update.clicked() {
                     *click = Some(BrClick::Create);
                 }
@@ -4581,10 +4547,10 @@ fn br_buttons(
                     ui.spinner();
                 }
             }
-            if ui.button(format!("{}  Copy BR", ic::COPY)).on_hover_text(url.as_str()).clicked() {
+            if ui.button(trf!("{copy}  Copy BR", copy = ic::COPY)).on_hover_text(url.as_str()).clicked() {
                 *click = Some(BrClick::Copy);
             }
-            if ui.button(format!("{}  Open BR", ic::ARROW_SQUARE_OUT)).on_hover_text(url.as_str()).clicked() {
+            if ui.button(trf!("{arrow_square_out}  Open BR", arrow_square_out = ic::ARROW_SQUARE_OUT)).on_hover_text(url.as_str()).clicked() {
                 *click = Some(BrClick::Open);
             }
         }
@@ -4593,14 +4559,14 @@ fn br_buttons(
                 ui.spinner();
             }
             if br.backfilling {
-                ui.spinner().on_hover_text("Fetching this fleet's kills and losses from zKillboard");
+                ui.spinner().on_hover_text(tr!("Fetching this fleet's kills and losses from zKillboard"));
             }
             let tip = match (&br.error, br.has_kills) {
                 (Some(e), _) => e.clone(),
                 (None, true) => "Make a battle report on br.evetools from the systems and times the fleet fought in".into(),
                 (None, false) => "No kills or losses recorded for this fleet yet".into(),
             };
-            let button = egui::Button::new(format!("{}  Battle report", ic::SWORD));
+            let button = egui::Button::new(trf!("{sword}  Battle report", sword = ic::SWORD));
             let resp = ui.add_enabled(br.has_kills && !br.busy, button);
             let resp = if br.has_kills && !br.busy { resp.on_hover_text(tip) } else { resp.on_disabled_hover_text(tip) };
             if resp.clicked() {
@@ -4734,8 +4700,8 @@ fn tracking_page(
             // The fleet's own record, not the route to the page: a fleet that closed under the
             // tracking page has to say so there too.
             if let Some(at) = open.fleet.closed_at.as_deref() {
-                ui.label(egui::RichText::new("closed").color(crate::theme::standing::WARNING))
-                    .on_hover_text(format!("Closed {at}"));
+                ui.label(egui::RichText::new(tr!("closed")).color(crate::theme::standing::WARNING))
+                    .on_hover_text(trf!("Closed {at}", at = at));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let now = crate::clock::utc().timestamp();
@@ -4747,7 +4713,7 @@ fn tracking_page(
                         .and_then(crate::fleets::model::parse_iso)
                         .unwrap_or(now);
                     ui.label(egui::RichText::new(fmt_age(end - t)).strong())
-                        .on_hover_text("How long the fleet has been up.");
+                        .on_hover_text(tr!("How long the fleet has been up."));
                 }
                 if let Some(c) = &open.fleet.commander {
                     ui.label(egui::RichText::new(&c.label).weak());
@@ -4763,21 +4729,18 @@ fn tracking_page(
                 match advert {
                     Some(true) => {
                         ui.label(
-                            egui::RichText::new("advert up").color(crate::theme::standing::FRIENDLY),
+                            egui::RichText::new(tr!("advert up")).color(crate::theme::standing::FRIENDLY),
                         )
-                        .on_hover_text("The fleet is listed in the Fleet Finder.");
+                        .on_hover_text(tr!("The fleet is listed in the Fleet Finder."));
                     }
                     Some(false) => {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{}  advert off",
-                                egui_phosphor::regular::WARNING
-                            ))
+                            egui::RichText::new(trf!("{icon}  advert off", icon = egui_phosphor::regular::WARNING))
                             .color(crate::theme::standing::WARNING),
                         )
                         .on_hover_text(
-                            "The fleet is not listed in the Fleet Finder, so nobody can find it \
-                             there. Advertise it in game.",
+                            tr!("The fleet is not listed in the Fleet Finder, so nobody can find it \
+                             there. Advertise it in game."),
                         );
                     }
                     None => {}
@@ -4785,19 +4748,19 @@ fn tracking_page(
             });
         });
         if let Some(f) = &open.fleet.formup_location {
-            ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
+            ui.label(egui::RichText::new(trf!("Formup: {v}", v = f.label)).weak());
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             for (t, label) in
-                [(DetailTab::Members, "Members"), (DetailTab::Composition, "Composition"), (DetailTab::Map, "Map")]
+                [(DetailTab::Members, tr!("Members")), (DetailTab::Composition, tr!("Composition")), (DetailTab::Map, tr!("Map"))]
             {
                 if selectable_chip(ui, tab == t, label).clicked() {
                     *set_tab = Some(t);
                 }
             }
             ui.label(
-                egui::RichText::new(format!("{} pilots", open.composition.total())).weak(),
+                egui::RichText::new(trf!("{v} pilots", v = open.composition.total())).weak(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if selectable_chip(
@@ -4805,14 +4768,14 @@ fn tracking_page(
                     *sidebar,
                     format!("{}  Settings", egui_phosphor::regular::SLIDERS_HORIZONTAL),
                 )
-                .on_hover_text("Change the doctrine or the comms of this fleet")
+                .on_hover_text(tr!("Change the doctrine or the comms of this fleet"))
                 .clicked()
                 {
                     *sidebar = !*sidebar;
                 }
                 if ui
-                    .button(format!("{}  Dashboard", egui_phosphor::regular::ARROW_SQUARE_OUT))
-                    .on_hover_text("Open this fleet on the fleet dashboard in the browser")
+                    .button(trf!("{icon}  Dashboard", icon = egui_phosphor::regular::ARROW_SQUARE_OUT))
+                    .on_hover_text(tr!("Open this fleet on the fleet dashboard in the browser"))
                     .clicked()
                 {
                     let _ = open::that(format!("{}/fleet/overview/{}", crate::fleets::http::BASE, open.fleet.id));
@@ -4941,7 +4904,7 @@ fn comms_buttons(
     // Drawn in a right-to-left strip, so the order here is the reverse of how it reads: the
     // fleet's own comms end up first.
     for (label, target) in [
-        (format!("Join {} command", sector.label()), &targets.command),
+        (format!("Join {} command", sector.label().tr()), &targets.command),
         ("Join comms".to_owned(), &targets.op),
     ] {
         // The FC of this fleet is the one who set its comms and is already in them.
@@ -4958,7 +4921,7 @@ fn comms_buttons(
                             egui_phosphor::regular::HEADPHONES
                         )),
                     )
-                    .on_disabled_hover_text(format!("No comms link is known for {name}."));
+                    .on_disabled_hover_text(trf!("No comms link is known for {name}.", name = name));
                 }
             }
             continue;
@@ -5052,18 +5015,18 @@ fn hull_editor(
                             if owner != 0 {
                                 cell(ui, 70.0, |ui| {
                                     changed |= ui
-                                        .checkbox(&mut h.main, "Main")
+                                        .checkbox(&mut h.main, tr!("Main"))
                                         .on_hover_text(
-                                            "This is what the fleet is built around. A Flycatcher \
+                                            tr!("This is what the fleet is built around. A Flycatcher \
                                              is an Interdictor, which reads as support in every \
-                                             fleet except the one flying them as the damage.",
+                                             fleet except the one flying them as the damage."),
                                         )
                                         .changed();
                                 });
                             }
                             if ui
                                 .button(egui_phosphor::regular::TRASH)
-                                .on_hover_text(format!("Drop {}", h.name))
+                                .on_hover_text(trf!("Drop {v}", v = h.name))
                                 .clicked()
                             {
                                 remove = Some(i);
@@ -5085,7 +5048,7 @@ fn hull_editor(
         let width = ui.available_width().max(260.0);
         ui.horizontal(|ui| {
             let field = ui.add(
-                egui::TextEdit::singleline(&mut query).hint_text("Add a hull").desired_width(200.0),
+                egui::TextEdit::singleline(&mut query).hint_text(tr!("Add a hull")).desired_width(200.0),
             );
             let hits: Vec<&(i64, String, String)> = if query.trim().len() >= 2 {
                 ships
@@ -5126,7 +5089,7 @@ fn hull_editor(
             let over = popup.as_ref().is_some_and(|r| r.response.contains_pointer());
             ui.data_mut(|d| d.insert_temp(hov_id, over));
             if ships.is_empty() {
-                ui.label(egui::RichText::new("no ship data loaded").weak());
+                ui.label(egui::RichText::new(tr!("no ship data loaded")).weak());
             }
         });
         ui.data_mut(|d| d.insert_temp(q_id, query));
@@ -5149,13 +5112,13 @@ fn tank_row(ui: &mut egui::Ui, setup_id: i32, tanks: &mut Vec<(i32, String)>) ->
         .find(|(id, _)| *id == setup_id)
         .and_then(|(_, t)| Tank::parse(t));
     ui.horizontal(|ui| {
-        ui.label("Tanks with");
+        ui.label(tr!("Tanks with"));
         egui::ComboBox::from_id_salt("doctrine_tank")
-            .selected_text(tank.map(|t| t.label()).unwrap_or("not set"))
+            .selected_text(tank.map(|t| t.label().tr()).unwrap_or("not set"))
             .width(130.0)
             .show_ui(ui, |ui| {
                 for t in [None, Some(Tank::Shield), Some(Tank::Armor)] {
-                    let label = t.map(|t| t.label()).unwrap_or("not set");
+                    let label = t.map(|t| t.label().tr()).unwrap_or("not set");
                     if ui.menu_value(&mut tank, t, label).changed() {
                         tanks.retain(|(id, _)| *id != setup_id);
                         if let Some(t) = t {
@@ -5165,7 +5128,7 @@ fn tank_row(ui: &mut egui::Ui, setup_id: i32, tanks: &mut Vec<(i32, String)>) ->
                     }
                 }
             });
-        ui.label(egui::RichText::new("logi that reps the other way does not count").weak());
+        ui.label(egui::RichText::new(tr!("logi that reps the other way does not count")).weak());
     });
     changed
 }
@@ -5179,7 +5142,7 @@ fn doctrine_link_row(ui: &mut egui::Ui, setup_id: i32, urls: &mut Vec<(i32, Stri
         .map(|(_, u)| u.clone())
         .unwrap_or_default();
     ui.horizontal(|ui| {
-        ui.label("Forum link");
+        ui.label(tr!("Forum link"));
         if ui
             .add(
                 egui::TextEdit::singleline(&mut url)
@@ -5197,16 +5160,16 @@ fn doctrine_link_row(ui: &mut egui::Ui, setup_id: i32, urls: &mut Vec<(i32, Stri
         let has = !url.trim().is_empty();
         if ui
             .add_enabled(has, egui::Button::new(egui_phosphor::regular::COPY).frame(false))
-            .on_disabled_hover_text("Nothing to copy.")
-            .on_hover_text("Copy the link")
+            .on_disabled_hover_text(tr!("Nothing to copy."))
+            .on_hover_text(tr!("Copy the link"))
             .clicked()
         {
             ui.ctx().copy_text(url.trim().to_owned());
         }
         if ui
             .add_enabled(has, egui::Button::new(egui_phosphor::regular::ARROW_SQUARE_OUT).frame(false))
-            .on_disabled_hover_text("Nothing to open.")
-            .on_hover_text("Open it")
+            .on_disabled_hover_text(tr!("Nothing to open."))
+            .on_hover_text(tr!("Open it"))
             .clicked()
         {
             let _ = open::that(url.trim());
@@ -5227,19 +5190,19 @@ fn always_allowed(
 ) -> bool {
     ui.label(
         egui::RichText::new(
-            "Never out of doctrine, in any fleet. The fleet commander's own ship is exempt too.",
+            tr!("Never out of doctrine, in any fleet. The fleet commander's own ship is exempt too."),
         )
         .weak(),
     );
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Always:").strong());
+        ui.label(egui::RichText::new(tr!("Always:")).strong());
         for g in crate::fleets::doctrine::SUPPORT_GROUPS {
             ui.label(egui::RichText::new(*g).color(ui.visuals().hyperlink_color));
         }
     });
     ui.add_space(8.0);
-    hull_editor(ui, 0, "Hulls", "", hulls, ships, body_h)
+    hull_editor(ui, 0, tr!("Hulls"), "", hulls, ships, body_h)
 }
 
 /// Shortens a label so a long one cannot widen the panel it sits in.
@@ -5291,11 +5254,11 @@ fn readiness_pane(
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Readiness").strong());
+        ui.label(egui::RichText::new(tr!("Readiness")).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(egui::Button::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).frame(false))
-                .on_hover_text("Set which boosts this doctrine wants")
+                .on_hover_text(tr!("Set which boosts this doctrine wants"))
                 .clicked()
             {
                 *open_editor = true;
@@ -5311,8 +5274,8 @@ fn readiness_pane(
             "{} brought, {} usable, wants {} {}",
             report.brought(),
             report.counted,
-            report.size.label(),
-            tank.map(|t| t.label()).unwrap_or("logi"),
+            report.size.label().tr(),
+            tank.map(|t| t.label().tr()).unwrap_or("logi"),
         ),
         None,
     );
@@ -5325,7 +5288,7 @@ fn readiness_pane(
                 egui::RichText::new(format!("{} {}", g.pilots.len(), g.ship))
                     .color(crate::theme::standing::HOSTILE),
             );
-            ui.label(egui::RichText::new(g.why.label()).weak());
+            ui.label(egui::RichText::new(g.why.label().tr()).weak());
         })
         .response
         .on_hover_text(g.pilots.join("\n"));
@@ -5351,7 +5314,7 @@ fn readiness_pane(
     if !gaps.is_empty() && !boosts_loading {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Not covered").weak());
+            ui.label(egui::RichText::new(tr!("Not covered")).weak());
             for g in &gaps {
                 if gap_chip(ui, g).clicked() {
                     marks.insert(g.what.clone(), true);
@@ -5365,7 +5328,7 @@ fn readiness_pane(
     if !by_hand.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("By hand").weak());
+            ui.label(egui::RichText::new(tr!("By hand")).weak());
             for (what, on) in &by_hand {
                 let text = egui::RichText::new(format!(
                     "{what} {}",
@@ -5377,7 +5340,7 @@ fn readiness_pane(
                             .wrap_mode(egui::TextWrapMode::Extend)
                             .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color())),
                     )
-                    .on_hover_text("Go back to what the channel says")
+                    .on_hover_text(tr!("Go back to what the channel says"))
                     .clicked()
                 {
                     undo = Some(what.clone());
@@ -5433,7 +5396,7 @@ fn readiness_pane(
             .inner;
         // Opens the breakdown rather than toggling: the interesting question about a covered
         // boost is who is holding it and what they posted, and dropping it is one click inside.
-        if resp.on_hover_text("Who is holding this, and what they posted").clicked() {
+        if resp.on_hover_text(tr!("Who is holding this, and what they posted")).clicked() {
             *detail = Some(c.what.clone());
         }
     }
@@ -5459,10 +5422,7 @@ fn gap_chip(ui: &mut egui::Ui, g: &crate::fleets::boosts::Wanted) -> egui::Respo
         Priority::Medium => button.stroke(egui::Stroke::new(1.0, colour.gamma_multiply(0.6))),
         Priority::Low => button.frame(false),
     };
-    ui.add(button).on_hover_text(format!(
-        "{} priority. Click to mark it covered.",
-        g.priority.label()
-    ))
+    ui.add(button).on_hover_text(trf!("{v} priority. Click to mark it covered.", v = g.priority.label().tr()))
 }
 
 /// One check as a coloured headline plus its reason.
@@ -5530,7 +5490,7 @@ fn fleet_sidebar(
     let e = &mut st.edit;
 
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Fleet settings").strong());
+    ui.label(egui::RichText::new(tr!("Fleet settings")).strong());
     ui.add_space(4.0);
 
     // Setup and comms describe a fleet that is running. On a closed one they are shown but not
@@ -5541,7 +5501,7 @@ fn fleet_sidebar(
         .min_col_width(60.0)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            ui.label("Setup");
+            ui.label(tr!("Setup"));
             let current = seed
                 .setups
                 .iter()
@@ -5571,10 +5531,10 @@ fn fleet_sidebar(
                 egui::ComboBox::from_id_salt(salt).width(190.0).selected_text(current).show_ui(
                     ui,
                     |ui| {
-                        ui.menu_value(slot, None, "none");
+                        ui.menu_value(slot, None, tr!("none"));
                         for c in list {
                             let text = if c.is_in_use {
-                                egui::RichText::new(format!("{}  in use", c.name.trim())).weak()
+                                egui::RichText::new(trf!("{v}  in use", v = c.name.trim())).weak()
                             } else {
                                 egui::RichText::new(c.name.trim().to_owned())
                             };
@@ -5588,7 +5548,7 @@ fn fleet_sidebar(
     });
 
     ui.add_space(6.0);
-    ui.label("Tags");
+    ui.label(tr!("Tags"));
     let tags = seed.tags.clone();
     for (salt, primary) in [("track_tag_primary", true), ("track_tag_secondary", false)] {
         let mut pool: Vec<_> = tags.iter().filter(|t| t.is_primary == primary).cloned().collect();
@@ -5606,14 +5566,14 @@ fn fleet_sidebar(
     // be read back to see who was on it.
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label("Snowflakes");
+        ui.label(tr!("Snowflakes"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Not gated on `can`: who was on the fleet is corrected after it ends, which is the
             // whole point of the record.
             if ui
-                .add_enabled(st_can_snowflakes, egui::Button::new("Edit"))
+                .add_enabled(st_can_snowflakes, egui::Button::new(tr!("Edit")))
                 .on_disabled_hover_text(
-                    "Your account does not have the manageFleetSnowflakes permission.",
+                    tr!("Your account does not have the manageFleetSnowflakes permission."),
                 )
                 .clicked()
             {
@@ -5622,12 +5582,12 @@ fn fleet_sidebar(
         });
     });
     if e.snowflakes.is_empty() {
-        ui.label(egui::RichText::new("None.").weak());
+        ui.label(egui::RichText::new(tr!("None.")).weak());
     }
     for s in &e.snowflakes {
         ui.horizontal(|ui| {
             cell(ui, 70.0, |ui| {
-                ui.label(egui::RichText::new(s.kind.label()).color(ui.visuals().hyperlink_color));
+                ui.label(egui::RichText::new(s.kind.label().tr()).color(ui.visuals().hyperlink_color));
             });
             ui.label(&s.character_name);
         });
@@ -5636,8 +5596,8 @@ fn fleet_sidebar(
     // There is no in-game fleet left to carry a MOTD once it has closed.
     if !read_only {
         ui.add_space(6.0);
-        ui.checkbox(&mut e.set_motd, "Re-set the MOTD")
-            .on_hover_text("The MOTD names the channels, so it goes stale when they change.");
+        ui.checkbox(&mut e.set_motd, tr!("Re-set the MOTD"))
+            .on_hover_text(tr!("The MOTD names the channels, so it goes stale when they change."));
     }
     ui.add_space(6.0);
 
@@ -5656,7 +5616,7 @@ fn fleet_sidebar(
         let apply = ui
             .add_enabled(
                 sendable,
-                egui::Button::new(format!("{}  Apply", egui_phosphor::regular::CHECK)),
+                egui::Button::new(trf!("{icon}  Apply", icon = egui_phosphor::regular::CHECK)),
             )
             .on_disabled_hover_text(if !dirty {
                 "Nothing changed."
@@ -5672,8 +5632,8 @@ fn fleet_sidebar(
             }
         }
         if ui
-            .add_enabled(dirty, egui::Button::new("Discard"))
-            .on_disabled_hover_text("Nothing changed.")
+            .add_enabled(dirty, egui::Button::new(tr!("Discard")))
+            .on_disabled_hover_text(tr!("Nothing changed."))
             .clicked()
         {
             e.of = None;
@@ -5682,7 +5642,7 @@ fn fleet_sidebar(
     });
     if dirty {
         ui.label(
-            egui::RichText::new("Not applied yet.").color(crate::theme::standing::WARNING),
+            egui::RichText::new(tr!("Not applied yet.")).color(crate::theme::standing::WARNING),
         );
     }
     if open_snowflakes {
@@ -5738,7 +5698,7 @@ fn action_bar(
                 );
             let n = victims.len();
             let allowed = st.can(Perm::KickMember);
-            let text = egui::RichText::new(format!("{}  Kick off-doctrine  {n}", icon::BROOM))
+            let text = egui::RichText::new(trf!("{icon}  Kick off-doctrine  {n}", icon = icon::BROOM, n = n))
                 .color(crate::theme::standing::HOSTILE);
             let resp = ui
                 .add_enabled(
@@ -5792,12 +5752,9 @@ fn action_bar(
                 Danger::Caution => egui::Button::new(text.color(crate::theme::standing::WARNING)),
                 Danger::None => egui::Button::new(text),
             };
-            let resp = ui.add_enabled(allowed, button).on_disabled_hover_text(format!(
-                "Your account does not have the {} permission.",
-                perm.as_str()
-            ));
+            let resp = ui.add_enabled(allowed, button).on_disabled_hover_text(trf!("Your account does not have the {perm} permission.", perm = perm.as_str()));
             let resp = if allowed {
-                resp.on_hover_text("Records the request this would send. Nothing leaves the app.")
+                resp.on_hover_text(tr!("Records the request this would send. Nothing leaves the app."))
             } else {
                 resp
             };
@@ -5811,21 +5768,18 @@ fn action_bar(
         if ui
             .add_enabled(
                 allowed,
-                egui::Button::new(egui::RichText::new(format!(
-                    "{}  Migrate fleet",
-                    egui_phosphor::regular::USER_SWITCH
-                ))
+                egui::Button::new(egui::RichText::new(trf!("{icon}  Migrate fleet", icon = egui_phosphor::regular::USER_SWITCH))
                 .color(crate::theme::standing::WARNING)),
             )
-            .on_disabled_hover_text("Your account does not have the accessFleet permission.")
-            .on_hover_text("Hand this fleet to another FC who is already boss of a fleet.")
+            .on_disabled_hover_text(tr!("Your account does not have the accessFleet permission."))
+            .on_hover_text(tr!("Hand this fleet to another FC who is already boss of a fleet."))
             .clicked()
         {
             *open_migrate = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
-                egui::RichText::new("recorded, not sent").color(crate::theme::standing::WARNING),
+                egui::RichText::new(tr!("recorded, not sent")).color(crate::theme::standing::WARNING),
             );
         });
     });
@@ -5926,7 +5880,7 @@ fn members_view(
                                 ui.dnd_drop_zone::<DragPilot, _>(egui::Frame::NONE, |ui| {
                                     ui.set_min_size(egui::vec2(ui.available_width(), 16.0));
                                     if squad.members.is_empty() {
-                                        ui.label(egui::RichText::new("Empty").weak());
+                                        ui.label(egui::RichText::new(tr!("Empty")).weak());
                                     }
                                     for m in &squad.members {
                                         member_row(ui, open, left, m,
@@ -5978,7 +5932,7 @@ fn commander_seat(
             None => {
                 ui.horizontal(|ui| {
                     seat_badge(ui, title, seat);
-                    ui.label(egui::RichText::new("empty").weak());
+                    ui.label(egui::RichText::new(tr!("empty")).weak());
                 });
             }
         }
@@ -6033,7 +5987,7 @@ fn seat_badge(ui: &mut egui::Ui, title: &str, seat: crate::fleets::model::Seat) 
     cell(ui, BADGE_W, |ui| {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(title).strong().color(ui.visuals().hyperlink_color))
-            .on_hover_text(seat.label());
+            .on_hover_text(seat.label().tr());
     });
 }
 
@@ -6115,7 +6069,7 @@ fn member_row(
                         ));
                     })
                     .response
-                    .on_hover_text("Drag onto another squad to move this pilot.");
+                    .on_hover_text(tr!("Drag onto another squad to move this pilot."));
                 } else {
                     ui.label(&m.name);
                 }
@@ -6131,7 +6085,7 @@ fn member_row(
                     egui::Label::new(&m.ship_type_name)
                         .wrap_mode(egui::TextWrapMode::Truncate),
                 )
-                .on_hover_text(format!("{} ({})", m.ship_type_name, standing.label()));
+                .on_hover_text(format!("{} ({})", m.ship_type_name, standing.label().tr()));
             });
             // Truncated for the same reason as the hull: a table column that grows to its
             // content is not a column.
@@ -6154,12 +6108,12 @@ fn member_row(
             if open.composition.flat {
                 cell(ui, PAP_W, |ui| {
                     let text = match m.pap_count {
-                        0 => egui::RichText::new("no PAP").weak(),
-                        n => egui::RichText::new(format!("{n} PAP")).strong(),
+                        0 => egui::RichText::new(tr!("no PAP")).weak(),
+                        n => egui::RichText::new(trf!("{n} PAP", n = n)).strong(),
                     };
                     ui.label(text).on_hover_text(
-                        "Participation credits the dashboard recorded for this pilot in this \
-                         fleet.",
+                        tr!("Participation credits the dashboard recorded for this pilot in this \
+                         fleet."),
                     );
                 });
             }
@@ -6201,8 +6155,8 @@ fn member_row(
                     ctx.can_kick,
                     egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false),
                 )
-                .on_disabled_hover_text("Your account does not have the kickMember permission.")
-                .on_hover_text(format!("Kick {}", m.name))
+                .on_disabled_hover_text(tr!("Your account does not have the kickMember permission."))
+                .on_hover_text(trf!("Kick {v}", v = m.name))
                 .clicked()
             {
                 act_on.push(Action::Kick { character_id: m.character_id, exclude: false });
@@ -6223,7 +6177,7 @@ fn composition_view(
     let doctrine = open.doctrine.as_ref();
     let lines = by_ship(&open.composition, doctrine);
     if lines.is_empty() {
-        ui.label(egui::RichText::new("Nobody in the fleet.").weak());
+        ui.label(egui::RichText::new(tr!("Nobody in the fleet.")).weak());
         return;
     }
     // Everything above the tables lives in the readiness pane now, so the tab is the tables.
@@ -6247,8 +6201,8 @@ fn composition_view(
         if in_role.is_empty() {
             continue;
         }
-        section_head(ui, role.label(), in_role.iter().map(|l| l.count).sum(), Standing::Doctrine);
-        egui::Grid::new(("comp_doctrine", role.label()))
+        section_head(ui, role.label().tr(), in_role.iter().map(|l| l.count).sum(), Standing::Doctrine);
+        egui::Grid::new(("comp_doctrine", role.label().tr()))
             .num_columns(4)
             .striped(true)
             .spacing([12.0, 3.0])
@@ -6266,7 +6220,7 @@ fn composition_view(
     if !odd_lines.is_empty() {
         section_head(
             ui,
-            "Not in doctrine",
+            tr!("Not in doctrine"),
             odd_lines.iter().map(|l| l.count).sum(),
             Standing::Unexpected,
         );
@@ -6369,7 +6323,7 @@ fn off_doctrine_report(
         .unwrap_or(0);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("Who is off doctrine")
+            egui::RichText::new(tr!("Who is off doctrine"))
                 .strong()
                 .color(crate::theme::standing::HOSTILE),
         );
@@ -6409,7 +6363,7 @@ fn off_doctrine_report(
                             // clock at all, and says nothing rather than something wrong.
                             let Some(age) = age else { return };
                             let text = if age <= 0 {
-                                egui::RichText::new("just seen").weak()
+                                egui::RichText::new(tr!("just seen")).weak()
                             } else if loud {
                                 egui::RichText::new(fmt_age(age))
                                     .strong()
@@ -6418,8 +6372,8 @@ fn off_doctrine_report(
                                 egui::RichText::new(fmt_age(age)).weak()
                             };
                             ui.label(text).on_hover_text(
-                                "Counted from when this app first saw the pilot in this hull, \
-                                 not from when they got into it.",
+                                tr!("Counted from when this app first saw the pilot in this hull, \
+                                 not from when they got into it."),
                             );
                         });
                         cell(ui, COL[1] + COL[2], |ui| {
@@ -6472,7 +6426,7 @@ impl SpaiApp {
                 if presets.is_empty() {
                     ui.label(
                         egui::RichText::new(
-                            "No presets yet. Fill the start form and save it as one.",
+                            tr!("No presets yet. Fill the start form and save it as one."),
                         )
                         .weak(),
                     );
@@ -6482,7 +6436,7 @@ impl SpaiApp {
                 let mut query: String = ui.data(|d| d.get_temp(search_id).unwrap_or_default());
                 let edit = ui.add(
                     egui::TextEdit::singleline(&mut query)
-                        .hint_text("Search presets")
+                        .hint_text(tr!("Search presets"))
                         .desired_width(f32::INFINITY),
                 );
                 edit.request_focus();
@@ -6540,7 +6494,7 @@ impl SpaiApp {
                         ui.add_space(4.0);
                     }
                     if !any {
-                        ui.label(egui::RichText::new("Nothing matches.").weak());
+                        ui.label(egui::RichText::new(tr!("Nothing matches.")).weak());
                     }
                 });
             });
@@ -6563,17 +6517,17 @@ impl SpaiApp {
                 ui.label(line);
             }
             ui.label(
-                egui::RichText::new("This build records the request and sends nothing.").weak(),
+                egui::RichText::new(tr!("This build records the request and sends nothing.")).weak(),
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     decided = Some(false);
                 }
                 if ui
                     .add(
                         egui::Button::new(
-                            egui::RichText::new("Do it").color(crate::theme::standing::HOSTILE),
+                            egui::RichText::new(tr!("Do it")).color(crate::theme::standing::HOSTILE),
                         )
                         .stroke(egui::Stroke::new(1.0, crate::theme::standing::HOSTILE)),
                     )
@@ -6720,14 +6674,14 @@ impl SpaiApp {
                 let any = st.can(Perm::StartFleetOther);
                 drop(st);
 
-                ui.label("Boss of the new fleet");
+                ui.label(tr!("Boss of the new fleet"));
                 ui.add_space(4.0);
                 let name_id = egui::Id::new(NAME);
                 let mut name: String = ui.data(|d| d.get_temp(name_id).unwrap_or_default());
                 if any {
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut name)
-                            .hint_text("Character name")
+                            .hint_text(tr!("Character name"))
                             .desired_width(240.0),
                     );
                     if edit.changed() {
@@ -6735,14 +6689,14 @@ impl SpaiApp {
                     }
                     ui.data_mut(|d| d.insert_temp(name_id, name.clone()));
                     if hits.loading {
-                        ui.label(egui::RichText::new("looking").weak());
+                        ui.label(egui::RichText::new(tr!("looking")).weak());
                     } else if let Some(why) = &search_error {
                         search_failed_note(ui, why);
                     }
                 } else {
                     ui.label(
                         egui::RichText::new(
-                            "Your account may only hand a fleet to its own characters.",
+                            tr!("Your account may only hand a fleet to its own characters."),
                         )
                         .weak(),
                     );
@@ -6770,18 +6724,18 @@ impl SpaiApp {
 
                 ui.add_space(6.0);
                 let Some(who) = picked else {
-                    ui.label(egui::RichText::new("Pick a character.").weak());
+                    ui.label(egui::RichText::new(tr!("Pick a character.")).weak());
                     return;
                 };
                 let answer = boss.as_ref().filter(|(id, _)| *id == who.id).map(|(_, c)| c);
                 let ready = match answer {
                     None => {
-                        ui.label(egui::RichText::new("Checking the fleet boss\u{2026}").weak());
+                        ui.label(egui::RichText::new(tr!("Checking the fleet boss\u{2026}")).weak());
                         false
                     }
                     Some(c) if c.is_fleet_boss => {
                         ui.label(
-                            egui::RichText::new(format!("{} is boss of a fleet.", who.label))
+                            egui::RichText::new(trf!("{v} is boss of a fleet.", v = who.label))
                                 .color(crate::theme::standing::FRIENDLY),
                         );
                         true
@@ -6806,13 +6760,10 @@ impl SpaiApp {
                     if ui
                         .add_enabled(
                             ready,
-                            egui::Button::new(format!(
-                                "{}  Migrate",
-                                egui_phosphor::regular::HAND_ARROW_DOWN
-                            )),
+                            egui::Button::new(trf!("{icon}  Migrate", icon = egui_phosphor::regular::HAND_ARROW_DOWN)),
                         )
                         .on_disabled_hover_text(
-                            "The character has to be boss of an in-game fleet first.",
+                            tr!("The character has to be boss of an in-game fleet first."),
                         )
                         .clicked()
                     {

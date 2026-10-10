@@ -1,4 +1,21 @@
 use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// English ship name to the one shown, when ship names are translated.
+static SHOWN: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
+
+/// Sets the translated ship names, or None to show the game's English ones.
+pub fn set_shown(names: Option<HashMap<String, String>>) {
+    *SHOWN.write().unwrap_or_else(|e| e.into_inner()) = names.filter(|m| !m.is_empty());
+}
+
+/// A ship's name as the UI shows it: the English one unless ship names are translated.
+pub fn shown(english: &str) -> String {
+    match &*SHOWN.read().unwrap_or_else(|e| e.into_inner()) {
+        Some(m) => m.get(english).cloned().unwrap_or_else(|| english.to_owned()),
+        None => english.to_owned(),
+    }
+}
 
 /// Abbreviations that map to more than one real hull. These are intentionally left unresolved and
 /// surfaced as an informational badge (the candidates) rather than guessed. Keys are lowercase.

@@ -2,6 +2,8 @@
 //! pasted signatures. Both are tables whose middle column takes the width the panel has left, so
 //! resizing the panel widens what is worth reading, and nothing wraps.
 
+use crate::i18n::Tr;
+
 use egui_phosphor::regular as icon;
 use spai_core::geo::Systems;
 use spai_core::wormholes::{SystemSig, Wormhole};
@@ -56,7 +58,7 @@ fn dest_text(w: &Wormhole, sel: i64, geo: &Systems) -> String {
                 None => format!("{} {name}", icon::ARROW_RIGHT),
             }
         }
-        None => format!("{} {}", icon::ARROW_RIGHT, w.dest.label()),
+        None => format!("{} {}", icon::ARROW_RIGHT, w.dest.label().tr()),
     }
 }
 
@@ -71,7 +73,7 @@ fn who_texts(w: &Wormhole, now: i64) -> (String, String) {
     let (_, edited) = who_lines(w, now);
     match (&edited, &w.edited_by) {
         (Some(_), Some((who, at))) => (format!("{} {} ago", icon::PENCIL_SIMPLE, human_ago(now - at)), who.clone()),
-        _ => (format!("{} ago", human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().to_owned())),
+        _ => (format!("{} ago", human_ago(now - w.reported_at)), w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().tr().to_owned())),
     }
 }
 
@@ -81,8 +83,8 @@ fn who_width(ui: &egui::Ui, here: &[&Wormhole], now: i64) -> f32 {
         let (at, by) = who_texts(w, now);
         text_w(ui, &at).max(text_w(ui, &by))
     })
-    .fold(text_w(ui, "88m ago"), f32::max)
-    .min(text_w(ui, "Mmmmmmmmmmmmmmmm"))
+    .fold(text_w(ui, crate::tr!("88m ago")), f32::max)
+    .min(text_w(ui, crate::tr!("Mmmmmmmmmmmmmmmm")))
 }
 
 /// The width the connections list needs to show every row whole.
@@ -149,7 +151,7 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                                         }
                                     }
                                     None => {
-                                        ui.add(egui::Label::new(format!("{} {}", icon::ARROW_RIGHT, w.dest.label())).truncate());
+                                        ui.add(egui::Label::new(format!("{} {}", icon::ARROW_RIGHT, w.dest.label().tr())).truncate());
                                     }
                                 }
                                 // One label, so a narrow column cuts it short with an ellipsis.
@@ -172,7 +174,7 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                                     part(&mut job, m.short(), mass_color(Some(m)));
                                 }
                                 let read = w.observed_at.map(|t| format!(", read {} ago", human_ago(now - t))).unwrap_or_default();
-                                let hover = [hole_code(w), w.hours_left(now).map(|h| format!("Time left: {h}h{read}")), crate::wh_graph::opened_line(w, now), w.mass.map(|m| format!("Mass: {}", m.label()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
+                                let hover = [hole_code(w), w.hours_left(now).map(|h| format!("Time left: {h}h{read}")), crate::wh_graph::opened_line(w, now), w.mass.map(|m| format!("Mass: {}", m.label().tr()))].into_iter().flatten().collect::<Vec<_>>().join("\n");
                                 if !job.text.is_empty() {
                                     ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false)).on_hover_text(hover);
                                 }
@@ -195,10 +197,10 @@ pub fn connections(ui: &mut egui::Ui, sel: i64, here: &[&Wormhole], now: i64, ge
                         row.col(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             if can_edit {
-                                if icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text("Edit this hole").clicked() {
+                                if icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(crate::tr!("Edit this hole")).clicked() {
                                     act.edit = Some(w.uid.clone());
                                 }
-                                if icon_button(ui, icon::X).on_hover_text("Mark this hole dead").clicked() {
+                                if icon_button(ui, icon::X).on_hover_text(crate::tr!("Mark this hole dead")).clicked() {
                                     act.kill = Some(w.uid.clone());
                                 }
                             }
@@ -220,7 +222,7 @@ fn sig_info_text(sg: &SystemSig, sel: i64, every: &[Wormhole], geo: &Systems) ->
     let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
     let info = match hole.map(|w| if w.system_id == sel { w.dest_system_id } else { Some(w.system_id) }) {
         Some(Some(f)) => format!("{code}{} {}", icon::ARROW_RIGHT, name(f)),
-        Some(None) => format!("{code}{} {}", icon::ARROW_RIGHT, hole.map_or("?", |w| w.dest.label())),
+        Some(None) => format!("{code}{} {}", icon::ARROW_RIGHT, hole.map_or("?", |w| w.dest.label().tr())),
         None => match unidentified_type(sel, &sg.name) {
             Some(c) => format!("{c} \u{b7} {}", sg.name),
             None if sg.name.is_empty() => "\u{2014}".to_owned(),
@@ -233,7 +235,7 @@ fn sig_info_text(sg: &SystemSig, sel: i64, every: &[Wormhole], geo: &Systems) ->
 /// The width the signatures list needs to show every row whole.
 pub fn sig_table_fit(ui: &egui::Ui, sel: i64, sigs: &[SystemSig], every: &[Wormhole], now: i64, eve: bool, geo: &Systems) -> f32 {
     let id_w = text_w(ui, &format!("{} MMM-888", icon::MAGNIFYING_GLASS));
-    let found_w = sigs.iter().map(|sg| text_w(ui, &found_at(sg.added_at, now, eve))).fold(text_w(ui, "Found"), f32::max);
+    let found_w = sigs.iter().map(|sg| text_w(ui, &found_at(sg.added_at, now, eve))).fold(text_w(ui, crate::tr!("Found")), f32::max);
     let info_w = sigs.iter().map(|sg| text_w(ui, &sig_info_text(sg, sel, every, geo))).fold(40.0, f32::max);
     let gaps = 5.0 * ui.spacing().item_spacing.x;
     id_w + found_w + info_w + buttons_w(ui, 2) + scrollbar_gutter(ui) + gaps + 8.0
@@ -298,7 +300,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
     let row_h = ui.spacing().interact_size.y + 4.0;
     let id_w = text_w(ui, &format!("{} MMM-888", icon::MAGNIFYING_GLASS));
     // As wide as the times shown: a weekday only for the ones not from today.
-    let found_head = egui::WidgetText::from(egui::RichText::new("Found").strong()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
+    let found_head = egui::WidgetText::from(egui::RichText::new(crate::tr!("Found")).strong()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
     let found_w = sigs.iter().map(|sg| text_w(ui, &found_at(sg.added_at, now, eve))).fold(found_head, f32::max);
     let room = egui::vec2(ui.available_width() - ui.spacing().item_spacing.x, 0.0);
     let actions_w = buttons_w(ui, 2) + scrollbar_gutter(ui);
@@ -315,7 +317,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
             .column(egui_extras::Column::remainder().at_least(40.0).clip(true))
             .column(egui_extras::Column::exact(actions_w))
             .header(row_h, |mut header| {
-                for h in ["Id", "Found", "Info", ""] {
+                for h in [crate::tr!("Id"), crate::tr!("Found"), crate::tr!("Info"), ""] {
                     header.col(|ui| {
                         ui.label(egui::RichText::new(h).strong());
                     });
@@ -333,7 +335,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
                                 None if anomaly => egui::RichText::new(text).weak(),
                                 None => egui::RichText::new(text),
                             });
-                            id.on_hover_text(format!("{}\nAdded {} ago by {}, last seen in a paste {} ago", sg.kind, human_ago(now - sg.added_at), sg.who, human_ago(now - sg.updated_at)));
+                            id.on_hover_text(crate::trf!("{v}\nAdded {v2} ago by {v3}, last seen in a paste {v4} ago", v = sg.kind, v2 = human_ago(now - sg.added_at), v3 = sg.who, v4 = human_ago(now - sg.updated_at)));
                         });
                         row.col(|ui| {
                             let t = egui::RichText::new(found_at(sg.added_at, now, eve));
@@ -359,7 +361,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
                                 // Known to be a hole, its far side only a kind of space so far.
                                 Some(None) => {
                                     let code = hole.and_then(hole_code).map(|c| format!("{c} ")).unwrap_or_default();
-                                    let dest = hole.map_or("?", |w| w.dest.label());
+                                    let dest = hole.map_or("?", |w| w.dest.label().tr());
                                     ui.add(egui::Label::new(format!("{code}{} {dest}", icon::ARROW_RIGHT)).truncate());
                                 }
                                 _ => {
@@ -376,7 +378,7 @@ pub fn sig_table(ui: &mut egui::Ui, sel: i64, sys_name: &str, sigs: &[SystemSig]
                         row.col(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             // Remove first, so those line up whether or not an edit button follows.
-                            if icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
+                            if icon_button(ui, icon::X).on_hover_text(crate::tr!("Remove")).clicked() {
                                 act.delete = Some(sg.clone());
                             }
                             let is_hole = hole.is_some() || sg.group == "Wormhole";
