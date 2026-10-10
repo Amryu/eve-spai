@@ -96,7 +96,7 @@ pub const TREE: &[Node] = &[
     leaf("feeds", "External feeds", "Feeds you add under Assistant"),
     Node {
         key: "actions",
-        label: "Actions (each asks you first)",
+        label: "Actions",
         hint: "",
         gate: Gate::None,
         children: &[

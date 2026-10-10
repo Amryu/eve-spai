@@ -30,6 +30,9 @@ pub struct AiSettings {
     pub glossary: super::glossary::Edits,
     /// Outside sources for the assistant to read and watch.
     pub feeds: Vec<super::feeds::FeedDef>,
+    /// Action kinds (their Data access keys, like "actions.destination") the assistant may carry out
+    /// without a click. Broadcasts and the watch question always ask.
+    pub auto_actions: Vec<String>,
     /// The Assistant tab is in its own window, and where that window was left.
     pub popped: bool,
     pub popout_pos: Option<(f32, f32)>,
@@ -106,6 +109,7 @@ impl Default for AiSettings {
             language: "auto".into(),
             glossary: Default::default(),
             feeds: Vec::new(),
+            auto_actions: Vec::new(),
             popped: false,
             popout_pos: None,
             popout_size: None,

@@ -391,7 +391,7 @@ impl SpaiApp {
                 .show_inside(ui, |ui| self.ai_memories_ui(ui));
         }
 
-        let mut card_click: Option<(u64, bool)> = None;
+        let mut card_click: Option<(u64, u8)> = None;
         let mut link_click: Option<Link> = None;
         if self.ai_ship_names.0 != self.ship_by_id.len() {
             self.ai_ship_names = (self.ship_by_id.len(), self.ship_by_id.iter().map(|(id, n)| (n.clone(), *id)).collect());
@@ -428,7 +428,18 @@ impl SpaiApp {
         if let Some(text) = send.filter(|t| !t.trim().is_empty()) {
             handle.send(Command::Send { text, voice: false });
         }
-        if let Some((id, applied)) = card_click {
+        if let Some((id, how)) = card_click {
+            let applied = how > 0;
+            if how == 2 {
+                let key = turns.iter().flat_map(|t| t.cards.iter()).find(|c| c.action.id == id).and_then(|c| c.action.kind.perm_key());
+                if let Some(k) = key {
+                    if !self.settings.ai.auto_actions.iter().any(|a| a == k) {
+                        self.settings.ai.auto_actions.push(k.to_owned());
+                        self.needs_save = true;
+                        self.ai_push_facts(true);
+                    }
+                }
+            }
             let card = turns.iter().flat_map(|t| t.cards.iter()).find(|c| c.action.id == id).cloned();
             if let Some(card) = card {
                 if let (false, ActionKind::KeepWatching(wid)) = (applied, &card.action.kind) {
@@ -472,7 +483,7 @@ impl SpaiApp {
             let mut v = h.view.lock().unwrap_or_else(|e| e.into_inner());
             let mut out = Vec::new();
             for c in v.turns.iter_mut().flat_map(|t| t.cards.iter_mut()) {
-                if c.state == CardState::Pending && c.action.kind.immediate() {
+                if c.state == CardState::Pending && c.action.kind.immediate(&self.settings.ai.auto_actions) {
                     c.state = CardState::Applied;
                     out.push((c.action.id, c.action.kind.clone(), c.action.summary.clone()));
                 }
@@ -859,7 +870,8 @@ impl SpaiApp {
 }
 
 /// One turn. Returns an action card's Apply (true) or Dismiss (false), by the card's id.
-fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Option<Link>) -> Option<(u64, bool)> {
+/// A card clicked: its id and 0 dismiss, 1 apply, 2 apply and never ask again for its kind.
+fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Option<Link>) -> Option<(u64, u8)> {
     use egui_phosphor::regular as icon;
     let mut click = None;
     if t.user {
@@ -949,12 +961,17 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
                     match c.state {
                         CardState::Pending => {
                             let watch = matches!(c.action.kind, ActionKind::KeepWatching(_));
+                            if c.action.kind.perm_key().is_some()
+                                && ui.button("Always").on_hover_text("Apply, and do this kind of thing without asking from now on (Data access can take it back)").clicked()
+                            {
+                                click = Some((c.action.id, 2));
+                            }
                             if ui.button(if watch { "Stop" } else { "Dismiss" }).clicked() {
-                                click = Some((c.action.id, false));
+                                click = Some((c.action.id, 0));
                             }
                             let yes = if watch { format!("{}  Keep watching", icon::BINOCULARS) } else { format!("{}  Apply", icon::CHECK) };
                             if ui.button(yes).clicked() {
-                                click = Some((c.action.id, true));
+                                click = Some((c.action.id, 1));
                             }
                         }
                         CardState::Applied => {
