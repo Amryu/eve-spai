@@ -138,8 +138,39 @@ impl SpaiApp {
         format!("The user applied: {summary}")
     }
 
+    /// The Assistant tab: an introduction while the assistant is off, a note while it is in its own
+    /// window, else the conversation.
     pub(crate) fn assistant_view(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
+        if !self.ai_on() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(520.0);
+                ui.label(egui::RichText::new(format!("{}  Assistant", icon::SPARKLE)).heading());
+                ui.add_space(8.0);
+                ui.label(
+                    "Ask about intel, kills, routes, wormholes and fleets in plain words, typed or spoken while you play. \
+                     It reads only the data you allow, can keep watch for you, and every change it proposes waits for your click.",
+                );
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("It needs a model service: an API key, a local model, or a Claude or ChatGPT subscription.").weak());
+                ui.add_space(12.0);
+                if ui.button(format!("{}  Set it up in Settings", icon::GEAR_SIX)).clicked() {
+                    self.view = View::Settings;
+                    self.settings_scroll_to_ai = true;
+                }
+            });
+            return;
+        }
+        if self.settings.ai.popped && !self.ai_in_window {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("The assistant is in its own window.").weak());
+            if ui.button(format!("{}  Dock it here", icon::ARROW_SQUARE_IN)).clicked() {
+                self.settings.ai.popped = false;
+                self.needs_save = true;
+            }
+            return;
+        }
         let handle = self.ai_handle(ui.ctx());
         self.ai_push_facts(false);
         let (turns, busy, usage) = {
@@ -154,6 +185,17 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let n = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner()).list.len();
+                    if self.ai_in_window {
+                        super::ontop_pin_ui(ui, "ai_window");
+                        if ui.button(icon::ARROW_SQUARE_IN).on_hover_text("Back into the main window").clicked() {
+                            self.settings.ai.popped = false;
+                            self.needs_save = true;
+                        }
+                    } else if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Into its own window, over the game").clicked() {
+                        self.settings.ai.popped = true;
+                        self.ai_geom_applied = false;
+                        self.needs_save = true;
+                    }
                     if ui
                         .add(egui::Button::new(format!("{}  Memories ({n})", icon::BRAIN)).selected(self.ai_memories_open))
                         .on_hover_text("What the assistant remembers between conversations")
@@ -190,9 +232,8 @@ impl SpaiApp {
                     let used = format!("{} in \u{00b7} {} out", fmt_count(usage.input as i64), fmt_count(usage.output as i64));
                     ui.label(egui::RichText::new(used).weak()).on_hover_text(format!("Tokens this session; {} read from cache", fmt_count(usage.cached as i64)));
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        let what = if model.is_empty() { provider.to_owned() } else { format!("{provider} \u{00b7} {model}") };
-                        ui.add(egui::Label::new(egui::RichText::new(format!("{}  {what}", icon::SPARKLE)).strong()).truncate())
-                            .on_hover_text("Change it in Settings, Assistant");
+                        let _ = (&model, provider);
+                        self.ai_model_picker(ui);
                     });
                 });
             });
@@ -467,6 +508,126 @@ impl SpaiApp {
             }
         }
         ui.separator();
+    }
+
+    /// The model in use, picked in the tab: the service's models, then the other services.
+    fn ai_model_picker(&mut self, ui: &mut egui::Ui) {
+        use crate::ai::config::{model_choices, ProviderKind};
+        use egui_phosphor::regular as icon;
+        let a = &self.settings.ai;
+        let provider = a.provider;
+        let cur = match provider {
+            ProviderKind::Anthropic => a.anthropic.model.clone(),
+            ProviderKind::OpenaiCompat => a.openai.model.clone(),
+            ProviderKind::Gemini => a.gemini.model.clone(),
+            ProviderKind::ClaudeCli => a.claude_cli.model.clone(),
+            ProviderKind::CodexCli => a.codex_cli.model.clone(),
+            ProviderKind::Unknown => String::new(),
+        };
+        let choices = model_choices(provider);
+        let label = choices.iter().find(|(k, _)| *k == cur).map(|(_, l)| (*l).to_owned()).unwrap_or_else(|| if cur.is_empty() { "default model".into() } else { cur.clone() });
+        let shown = format!("{}  {} \u{b7} {label}", icon::SPARKLE, provider.label());
+        // The server's own list, asked for once per address.
+        let mut fetched: Vec<String> = Vec::new();
+        if provider == ProviderKind::OpenaiCompat {
+            let base = a.openai.base();
+            let mut st = self.ai_oa_models.lock().unwrap_or_else(|e| e.into_inner());
+            if st.0 != base && !base.is_empty() {
+                st.0 = base.clone();
+                st.1 = None;
+                let key = self.ai_secrets.get(&a.openai.preset.key_account());
+                let slot = self.ai_oa_models.clone();
+                let ctx = ui.ctx().clone();
+                let _ = std::thread::Builder::new().name("ai-models".into()).spawn(move || {
+                    let got = crate::ai::openai_compat::list_models(&base, key.as_deref()).unwrap_or_default();
+                    let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    if s.0 == base {
+                        s.1 = Some(got);
+                    }
+                    ctx.request_repaint();
+                });
+            }
+            fetched = st.1.clone().unwrap_or_default();
+        }
+        let mut changed = false;
+        let width = ui.available_width().clamp(160.0, 340.0);
+        egui::ComboBox::from_id_salt("ai_tab_model").selected_text(shown).width(width).truncate().height(420.0).show_ui(ui, |ui| {
+            let a = &mut self.settings.ai;
+            if let Some(m) = a.model_mut() {
+                for &(k, l) in choices {
+                    changed |= ui.menu_value(m, k.to_owned(), l).changed();
+                }
+                for id in &fetched {
+                    changed |= ui.menu_value(m, id.clone(), id).changed();
+                }
+                if !cur.is_empty() && !choices.iter().any(|(k, _)| *k == cur) && !fetched.contains(&cur) {
+                    changed |= ui.menu_value(m, cur.clone(), &cur).changed();
+                }
+            }
+            if provider == ProviderKind::OpenaiCompat && fetched.is_empty() {
+                ui.label(egui::RichText::new("The server listed no models; type one in Settings").weak());
+            }
+            ui.separator();
+            ui.label(egui::RichText::new("Service").weak());
+            for p in ProviderKind::CHOICES {
+                changed |= ui.menu_value(&mut a.provider, p, p.label()).changed();
+            }
+        });
+        if changed {
+            self.needs_save = true;
+            self.ai_push_facts(true);
+        }
+    }
+
+    /// The Assistant tab in its own window, kept over the game.
+    #[allow(deprecated)]
+    pub(crate) fn ai_popout_window(&mut self, ctx: &egui::Context) {
+        let mut builder = egui::ViewportBuilder::default()
+            .with_icon(super::app_icon())
+            .with_title("EVE Spai - Assistant")
+            .with_min_inner_size([420.0, 360.0])
+            .with_window_level(egui::WindowLevel::AlwaysOnTop);
+        if !self.ai_geom_applied {
+            let (w, h) = self.settings.ai.popout_size.unwrap_or((560.0, 680.0));
+            builder = builder.with_inner_size([w, h]);
+            if let Some((x, y)) = self.settings.ai.popout_pos {
+                builder = builder.with_position([x, y]);
+            }
+            self.ai_pos_fix = super::alert_window::PosFix::new(self.settings.ai.popout_pos);
+            self.ai_geom_applied = true;
+        }
+        let mut keep = true;
+        let mut geom: Option<((f32, f32), Option<(f32, f32)>)> = None;
+        let mut pos_fix = self.ai_pos_fix;
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("ai_window"), builder, |ctx, _| {
+            super::alert_window::apply_pos_fix(ctx, &mut pos_fix);
+            self.ai_in_window = true;
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill)).show(ctx, |ui| self.assistant_view(ui));
+            self.ai_in_window = false;
+            let sz = ctx.content_rect().size();
+            if sz.x > 100.0 && sz.y > 100.0 {
+                geom = Some(((sz.x, sz.y), ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)))));
+            }
+            if ctx.input(|i| i.viewport().close_requested()) {
+                keep = false;
+            }
+        });
+        self.ai_pos_fix = pos_fix;
+        if let Some((sz, pos)) = geom.filter(|_| pos_fix.is_none()) {
+            if let Some(s) = super::alert_window::geometry_update(self.settings.ai.popout_size, sz, 2.0) {
+                self.settings.ai.popout_size = Some(s);
+                self.needs_save = true;
+            }
+            if let Some(p) = pos.and_then(|p| super::alert_window::geometry_update(self.settings.ai.popout_pos, p, 1.0)) {
+                self.settings.ai.popout_pos = Some(p);
+                self.needs_save = true;
+            }
+        }
+        if !keep {
+            self.settings.ai.popped = false;
+            self.ai_geom_applied = false;
+            self.needs_save = true;
+        }
     }
 
     fn ai_open_link(&mut self, l: Link, ctx: &egui::Context) {

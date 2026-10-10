@@ -22,7 +22,10 @@ impl SpaiApp {
     pub(crate) fn assistant_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         use egui_phosphor::regular as icon;
         let mut changed = false;
-        ui.label(egui::RichText::new("Assistant").strong());
+        let head = ui.label(egui::RichText::new("Assistant").strong());
+        if std::mem::take(&mut self.settings_scroll_to_ai) {
+            head.scroll_to_me(Some(egui::Align::TOP));
+        }
         changed |= ui
             .checkbox(&mut self.settings.ai.enabled, "AI assistant")
             .on_hover_text("Adds the Assistant tab: ask about intel, kills, routes and wormholes, by text or voice")
@@ -111,14 +114,13 @@ impl SpaiApp {
                     ui.label("Model");
                     if claude {
                         // The program takes these short names and any full model id.
-                        const CLAUDE_MODELS: [(&str, &str); 5] =
-                            [("", "The program's default"), ("opus", "Opus 5.5"), ("sonnet", "Sonnet 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("haiku", "Haiku 4.5")];
-                        let known = CLAUDE_MODELS.iter().find(|(k, _)| *k == cfg.model.trim());
+                        let claude_models = crate::ai::config::model_choices(ProviderKind::ClaudeCli);
+                        let known = claude_models.iter().find(|(k, _)| *k == cfg.model.trim());
                         let other = known.is_none() || self.ai_cli_other_model;
                         let shown = if other { "Other\u{2026}".to_owned() } else { known.map_or("", |(_, l)| l).to_owned() };
                         ui.vertical(|ui| {
                             egui::ComboBox::from_id_salt("ai_claude_model").selected_text(shown).width(280.0).show_ui(ui, |ui| {
-                                for (k, l) in CLAUDE_MODELS {
+                                for &(k, l) in claude_models {
                                     if ui.menu_value(&mut cfg.model, k.to_owned(), l).changed() {
                                         self.ai_cli_other_model = false;
                                         changed = true;

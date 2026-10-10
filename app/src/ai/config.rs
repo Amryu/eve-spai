@@ -30,6 +30,41 @@ pub struct AiSettings {
     pub glossary: super::glossary::Edits,
     /// Outside sources for the assistant to read and watch.
     pub feeds: Vec<super::feeds::FeedDef>,
+    /// The Assistant tab is in its own window, and where that window was left.
+    pub popped: bool,
+    pub popout_pos: Option<(f32, f32)>,
+    pub popout_size: Option<(f32, f32)>,
+}
+
+/// Models offered for a service, as (what is sent, what is shown). An empty id is the service's own
+/// default. OpenAI-compatible servers list their own.
+pub fn model_choices(kind: ProviderKind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        ProviderKind::Anthropic => &[
+            ("claude-opus-5-5", "Opus 5.5"),
+            ("claude-sonnet-5-5", "Sonnet 5.5"),
+            ("claude-fable-5-1", "Fable 5.1"),
+            ("claude-haiku-4-5", "Haiku 4.5"),
+        ],
+        ProviderKind::ClaudeCli => &[("", "The program's default"), ("opus", "Opus 5.5"), ("sonnet", "Sonnet 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("haiku", "Haiku 4.5")],
+        ProviderKind::Gemini => &[("gemini-2.5-pro", "Gemini 2.5 Pro"), ("gemini-2.5-flash", "Gemini 2.5 Flash"), ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite")],
+        ProviderKind::CodexCli => &[("", "The program's default")],
+        ProviderKind::OpenaiCompat | ProviderKind::Unknown => &[],
+    }
+}
+
+impl AiSettings {
+    /// The model setting of the service in use.
+    pub fn model_mut(&mut self) -> Option<&mut String> {
+        match self.provider {
+            ProviderKind::Anthropic => Some(&mut self.anthropic.model),
+            ProviderKind::OpenaiCompat => Some(&mut self.openai.model),
+            ProviderKind::Gemini => Some(&mut self.gemini.model),
+            ProviderKind::ClaudeCli => Some(&mut self.claude_cli.model),
+            ProviderKind::CodexCli => Some(&mut self.codex_cli.model),
+            ProviderKind::Unknown => None,
+        }
+    }
 }
 
 /// Languages the assistant can be asked to answer in: (code, name as shown, name in English).
@@ -71,6 +106,9 @@ impl Default for AiSettings {
             language: "auto".into(),
             glossary: Default::default(),
             feeds: Vec::new(),
+            popped: false,
+            popout_pos: None,
+            popout_size: None,
         }
     }
 }

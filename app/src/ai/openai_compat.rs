@@ -186,6 +186,19 @@ pub fn parse_stream<R: std::io::Read>(r: R, cancel: &AtomicBool, out: &mut dyn F
     Ok(())
 }
 
+/// The models a server offers, by id, sorted.
+pub fn list_models(base: &str, key: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let client = crate::http::client(15)?;
+    let mut req = client.get(format!("{}/models", base.trim_end_matches('/')));
+    if let Some(k) = key.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(k);
+    }
+    let v: serde_json::Value = req.send()?.error_for_status()?.json()?;
+    let mut ids: Vec<String> = v["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_owned)).collect();
+    ids.sort();
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

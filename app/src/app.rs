@@ -954,6 +954,14 @@ pub struct SpaiApp {
     ai_stt_key_input: String,
     /// The Claude program's model is being typed rather than picked.
     ai_cli_other_model: bool,
+    /// Settings should scroll to the Assistant section once.
+    pub(crate) settings_scroll_to_ai: bool,
+    /// The assistant is being drawn in its own window this pass.
+    ai_in_window: bool,
+    ai_geom_applied: bool,
+    ai_pos_fix: Option<crate::app::alert_window::PosFix>,
+    /// An OpenAI-compatible server's address and the models it listed.
+    ai_oa_models: std::sync::Arc<std::sync::Mutex<(String, Option<Vec<String>>)>>,
     rescue_history_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
@@ -1788,6 +1796,11 @@ impl SpaiApp {
             ai_feed_secret: String::new(),
             ai_stt_key_input: String::new(),
             ai_cli_other_model: false,
+            settings_scroll_to_ai: false,
+            ai_in_window: false,
+            ai_geom_applied: false,
+            ai_pos_fix: Default::default(),
+            ai_oa_models: Default::default(),
             rescue_history_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,
@@ -3587,7 +3600,6 @@ impl SpaiApp {
                     .copied()
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
-                    .filter(|v| *v != nav::View::Assistant || self.ai_on())
                     .collect();
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows);
                 if selected != self.view {
@@ -3794,6 +3806,9 @@ impl SpaiApp {
         }
         self.cyno_generators_window(ctx);
         self.rescue_history_window(ctx);
+        if self.ai_on() && self.settings.ai.popped {
+            self.ai_popout_window(ctx);
+        }
         if self.settings.fc_rescue_enabled && self.settings.rescue_popped && self.rescue_on() {
             self.rescue_popout_window(ctx);
         }
