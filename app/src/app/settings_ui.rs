@@ -310,7 +310,7 @@ impl SpaiApp {
                         self.language_picker(ui);
                         if ui
                             .checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
-                            .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."))
+                            .on_hover_text(tr!("Off, ship names stay in English, the way pilots across languages call them. On, they follow this language as its game client shows them. Systems, alliances and pilots always keep their names."))
                             .changed()
                         {
                             self.needs_save = true;
@@ -405,7 +405,7 @@ impl SpaiApp {
                 ui.add_space(4.0);
                 self.language_picker(ui);
                 ui.checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
-                    .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."));
+                    .on_hover_text(tr!("Off, ship names stay in English, the way pilots across languages call them. On, they follow this language as its game client shows them. Systems, alliances and pilots always keep their names."));
                 ui.add_space(6.0);
                 let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
                 ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1932,7 +1932,7 @@ impl SpaiApp {
                     changed |= self.language_picker(ui);
                     changed |= ui
                         .checkbox(&mut self.settings.translate_ship_names, tr!("Translate ship names"))
-                        .on_hover_text(tr!("Ship names as a game client in this language shows them. Systems, alliances and pilots keep their names."))
+                        .on_hover_text(tr!("Off, ship names stay in English, the way pilots across languages call them. On, they follow this language as its game client shows them. Systems, alliances and pilots always keep their names."))
                         .changed();
                     ui.separator();
 
