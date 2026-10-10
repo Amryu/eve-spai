@@ -5173,6 +5173,17 @@ struct DscanShare {
     error: Option<String>,
 }
 
+impl SpaiApp {
+    /// The d-scan last opened, for the assistant: its link and (ship, count).
+    pub(crate) fn ai_last_dscan(&self) -> Option<(String, Vec<(String, u32)>)> {
+        let v = self.dscan_view.as_ref()?;
+        match &*v.fetch.lock().unwrap_or_else(|e| e.into_inner()) {
+            DscanFetch::Ready(ships) => Some((v.url.clone(), ships.iter().map(|(_, n, c)| (n.clone(), *c)).collect())),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) struct DscanView {
     url: String,
     fetch: std::sync::Arc<std::sync::Mutex<DscanFetch>>,

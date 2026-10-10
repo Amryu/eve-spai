@@ -24,6 +24,8 @@ pub enum ActionKind {
     /// Shows a conversation: in the Jabber tab, a new window, or a window already open, brought to
     /// the front. Only shows what is on the user's screen already, so it happens without a click.
     OpenChat { jid: String, window: ChatWindowPick },
+    /// Moves the user's Mumble into a channel.
+    JoinMumble { url: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -69,6 +71,10 @@ pub struct PendingAction {
     pub kind: ActionKind,
     /// What will happen, in words, for the card.
     pub summary: String,
+}
+
+pub(crate) fn queue_pub(ctx: &mut Ctx, kind: ActionKind, summary: String) -> Result<Value, String> {
+    queue(ctx, kind, summary)
 }
 
 fn queue(ctx: &mut Ctx, kind: ActionKind, summary: String) -> Result<Value, String> {

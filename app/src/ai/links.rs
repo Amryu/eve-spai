@@ -19,6 +19,8 @@ pub enum Link {
     /// The wormholes of a system.
     Wormholes(i64),
     Url(String),
+    /// A page of the app, by its name.
+    Page(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +35,9 @@ pub trait Names {
     fn system(&self, name: &str) -> Option<i64>;
     fn ship(&self, name: &str) -> Option<i64>;
 }
+
+/// The pages a link can open.
+pub const PAGES: [&str; 12] = ["overview", "map", "wormholes", "intel", "alerts", "battles", "lookup", "characters", "jabber", "fleet", "rescue", "settings"];
 
 /// Longest system or ship name, in words.
 const MAX_WORDS: usize = 4;
@@ -96,6 +101,7 @@ fn target_link(target: &str, names: &dyn Names) -> Option<Link> {
         "fleet" if !arg.is_empty() => Some(Link::Fleet(arg.to_owned())),
         "chat" if !arg.is_empty() => Some(Link::Chat(arg.to_owned())),
         "pings" => Some(Link::Pings),
+        "page" if PAGES.contains(&arg.to_lowercase().as_str()) => Some(Link::Page(arg.to_lowercase())),
         _ => None,
     }
 }
@@ -212,5 +218,6 @@ mod tests {
         let all: String = s.iter().map(|x| x.text.as_str()).collect();
         assert!(all.ends_with("or bad [x]"), "an unknown target leaves its label, a lone bracket stays: {all}");
         assert_eq!(spans("[pings](spai:pings) in [Jita](spai:wh/Jita)", &Fake).iter().filter_map(|x| x.link.clone()).collect::<Vec<_>>(), vec![Link::Pings, Link::Wormholes(4)]);
+        assert_eq!(spans("[the map](spai:page/Map) [x](spai:page/nowhere)", &Fake).iter().filter_map(|x| x.link.clone()).collect::<Vec<_>>(), vec![Link::Page("map".into())]);
     }
 }

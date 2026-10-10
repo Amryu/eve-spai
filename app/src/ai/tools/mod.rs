@@ -14,6 +14,7 @@ mod misc;
 mod history;
 mod watch;
 mod extra;
+mod more;
 #[cfg(test)]
 mod audit;
 mod web;
@@ -90,6 +91,7 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(history::TOOLS);
     v.extend(watch::TOOLS);
     v.extend(extra::TOOLS);
+    v.extend(more::TOOLS);
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);

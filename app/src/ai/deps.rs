@@ -27,6 +27,8 @@ pub struct AiDeps {
     pub opsec: Arc<std::sync::atomic::AtomicBool>,
     /// The alerts the app raised: when and what.
     pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
+    /// Jump Drive Calibration and Jump Fuel Conservation of the active character, when read.
+    pub jump_skills: crate::esi::SharedJumpSkills,
     /// Standings from the user's contacts, by character, corporation or alliance id.
     pub standings: Arc<Mutex<std::collections::HashMap<i64, f32>>>,
     /// The user's latest question, for safeguards that depend on what was actually asked.
@@ -54,6 +56,11 @@ pub struct AiFacts {
     pub ai: crate::ai::config::AiSettings,
     pub alert_rules: Vec<crate::settings::AlertRule>,
     pub setup: Setup,
+    pub doctrines: Vec<DoctrineFacts>,
+    pub route_anchors: Vec<i64>,
+    pub route_destination: Option<i64>,
+    /// The d-scan last opened: its link and (ship, count).
+    pub last_dscan: Option<(String, Vec<(String, u32)>)>,
     pub coalitions: Vec<crate::settings::Coalition>,
     /// The names in the local being looked up now.
     pub lookup_current: Vec<String>,
@@ -63,6 +70,17 @@ pub struct AiFacts {
     pub jabber_domain: String,
     /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
     pub opsec: bool,
+}
+
+/// A doctrine as the user set it up for fleets.
+#[derive(Clone, Default)]
+pub struct DoctrineFacts {
+    pub name: String,
+    pub main: Vec<String>,
+    pub support: Vec<String>,
+    pub tank: Option<String>,
+    pub url: Option<String>,
+    pub line: Option<String>,
 }
 
 /// The parts of the user's setup the assistant reads.
@@ -109,6 +127,7 @@ impl AiDeps {
             last_question: Default::default(),
             alerts: Default::default(),
             standings: Default::default(),
+            jump_skills: Default::default(),
             online: false,
         }
     }
