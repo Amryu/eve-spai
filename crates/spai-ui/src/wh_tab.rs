@@ -276,6 +276,12 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
     pins_now.sort_unstable();
     let pin_added = view.pins_seen.as_ref().is_some_and(|was| pins_now.iter().any(|p| !was.contains(p)));
     view.pins_seen = Some(pins_now);
+    // With auto-tidy on, the map is laid out afresh once per run, as soon as there is anything on it.
+    if !p0.manual_tidy && !view.tidied_this_run && !auto.is_empty() && view.drag.is_none() && focus.is_none() {
+        view.tidied_this_run = true;
+        tidy_layout(view, host);
+        ui.ctx().request_repaint();
+    }
     // Waits while a box is held or one system is in focus.
     let auto_tidy = view.tidy_due && !p0.manual_tidy && view.drag.is_none() && focus.is_none();
     if auto_tidy {
@@ -354,11 +360,10 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                     if ui.button(crate::trf!("{icon}  Fit", icon = icon::CORNERS_OUT)).on_hover_text(crate::tr!("Show everything")).clicked() {
                         view.fit_pending = true;
                     }
-                    if prefs.manual_tidy
-                        && ui
-                            .button(crate::trf!("{icon}  Tidy", icon = icon::TREE_STRUCTURE))
-                            .on_hover_text(crate::tr!("Lay the whole map out afresh, forgetting where systems were dragged"))
-                            .clicked()
+                    if ui
+                        .button(crate::trf!("{icon}  Tidy", icon = icon::TREE_STRUCTURE))
+                        .on_hover_text(crate::tr!("Lay the whole map out afresh, forgetting where systems were dragged"))
+                        .clicked()
                     {
                         tidy = true;
                     }

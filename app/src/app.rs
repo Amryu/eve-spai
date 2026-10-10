@@ -6348,22 +6348,38 @@ fn side_head(
         ui.label(egui::RichText::new(fmt_isk(side.isk_lost)).color(col).strong().size(24.0));
         ui.label(egui::RichText::new(tr!("ISK lost")).color(col.gamma_multiply(0.8)));
     });
-    // Each figure moves to the next line whole when the side is narrow, never broken inside.
+    // The figures in words when they fit on one line, else in short form (the words on hover), and
+    // only then moved to the next line, each whole.
+    let eff_pct = eff.map_or("-".to_owned(), |e| format!("{e:.0}%"));
+    let figures: [(String, String, Option<egui::Color32>); 5] = [
+        (trf!("{pilots} pilots", pilots = pilots), trf!("{v} P", v = pilots), None),
+        (trf!("{v} kills", v = side.kills), trf!("{v} K", v = side.kills), None),
+        (trf!("{v} losses", v = side.losses), trf!("{v} L", v = side.losses), None),
+        (trf!("{v} destroyed", v = fmt_isk(side.isk_destroyed)), fmt_isk(side.isk_destroyed), Some(green)),
+        (eff.map_or("-".to_owned(), |e| trf!("{pct} efficiency", pct = format!("{e:.0}%"))), eff_pct, None),
+    ];
+    let spacing = 4.0;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let measure = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x);
+    let dot_w = measure("\u{00b7}");
+    let full_w: f32 = figures.iter().map(|(f, _, _)| measure(f)).sum::<f32>() + (figures.len() as f32 - 1.0) * (dot_w + 2.0 * spacing);
+    let short = full_w > ui.available_width();
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let item = |ui: &mut egui::Ui, t: egui::RichText| {
-            ui.add(egui::Label::new(t).wrap_mode(egui::TextWrapMode::Extend));
-        };
-        let dot = || egui::RichText::new("\u{00b7}").weak();
-        item(ui, egui::RichText::new(trf!("{pilots} pilots", pilots = pilots)).weak());
-        item(ui, dot());
-        item(ui, egui::RichText::new(trf!("{v} kills", v = side.kills)).weak());
-        item(ui, dot());
-        item(ui, egui::RichText::new(trf!("{v} losses", v = side.losses)).weak());
-        item(ui, dot());
-        item(ui, egui::RichText::new(trf!("{v} destroyed", v = fmt_isk(side.isk_destroyed))).color(green));
-        item(ui, dot());
-        item(ui, egui::RichText::new(eff.map_or("-".to_owned(), |e| format!("{e:.0}% efficiency"))).weak());
+        ui.spacing_mut().item_spacing.x = spacing;
+        for (i, (full, compact, color)) in figures.iter().enumerate() {
+            if i > 0 {
+                ui.add(egui::Label::new(egui::RichText::new("\u{00b7}").weak()).wrap_mode(egui::TextWrapMode::Extend));
+            }
+            let text = egui::RichText::new(if short { compact } else { full });
+            let text = match color {
+                Some(c) => text.color(*c),
+                None => text.weak(),
+            };
+            let r = ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+            if short {
+                r.on_hover_text(full);
+            }
+        }
     });
     ui.add_space(2.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 4.0), egui::Sense::hover());

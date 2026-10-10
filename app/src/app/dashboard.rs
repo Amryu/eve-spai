@@ -5,14 +5,21 @@ use super::*;
 use egui_phosphor::regular as icon;
 use spai_ui::i18n::Tr;
 use spai_ui::widgets::SteadySelect as _;
+use std::collections::HashMap;
 
 /// How long the window has to be out of focus before coming back counts as having been away.
 const AWAY_SECS: i64 = 15 * 60;
 /// How far back the timeline and the fleet board look.
 const LOOKBACK_SECS: i64 = 2 * 3600;
 const PING_LOOKBACK_SECS: i64 = 3 * 3600;
-const MINIMAP_JUMPS: u32 = 4;
+const MINIMAP_JUMPS: u32 = 6;
+/// Intel in the timeline reaches further out than the alert radius.
+const TIMELINE_JUMPS: u32 = 10;
+/// How far the Thera and Turnur entrances are looked for.
+const HUB_JUMPS: u32 = 15;
 const TILE_MIN_WIDTH: f32 = 420.0;
+/// How often the tiles' data is worked out again. Painting reads the last result.
+const SNAPSHOT_SECS: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tile {
@@ -21,10 +28,13 @@ pub(crate) enum Tile {
     Fleets,
     Timeline,
     Minimap,
+    Battles,
+    Wormholes,
+    Assistant,
 }
 
 impl Tile {
-    pub(crate) const ALL: [Tile; 5] = [Tile::Away, Tile::Situation, Tile::Fleets, Tile::Timeline, Tile::Minimap];
+    pub(crate) const ALL: [Tile; 8] = [Tile::Away, Tile::Situation, Tile::Fleets, Tile::Timeline, Tile::Minimap, Tile::Battles, Tile::Wormholes, Tile::Assistant];
 
     pub(crate) fn code(self) -> &'static str {
         match self {
@@ -33,6 +43,9 @@ impl Tile {
             Tile::Fleets => "fleets",
             Tile::Timeline => "timeline",
             Tile::Minimap => "minimap",
+            Tile::Battles => "battles",
+            Tile::Wormholes => "wormholes",
+            Tile::Assistant => "assistant",
         }
     }
 
@@ -47,16 +60,21 @@ impl Tile {
             Tile::Fleets => tr_noop!("Fleets"),
             Tile::Timeline => tr_noop!("Timeline"),
             Tile::Minimap => tr_noop!("Around you"),
+            Tile::Battles => tr_noop!("Recent battles"),
+            Tile::Wormholes => tr_noop!("Wormholes"),
+            Tile::Assistant => tr_noop!("Assistant"),
         }
     }
 
     fn view(self) -> Option<View> {
         match self {
             Tile::Away => None,
-            Tile::Situation => Some(View::Intel),
+            Tile::Situation | Tile::Timeline => Some(View::Intel),
             Tile::Fleets => Some(View::Jabber),
-            Tile::Timeline => Some(View::Intel),
             Tile::Minimap => Some(View::Map),
+            Tile::Battles => Some(View::Battles),
+            Tile::Wormholes => Some(View::Wormholes),
+            Tile::Assistant => Some(View::Assistant),
         }
     }
 }
@@ -104,7 +122,7 @@ impl Kind {
     }
 }
 
-/// What a timeline row opens.
+/// What a row or link opens.
 #[derive(Clone, Debug, PartialEq)]
 enum Open {
     System(i64),
@@ -117,20 +135,47 @@ struct Entry {
     at: i64,
     kind: Kind,
     text: String,
-    color: Option<egui::Color32>,
+    severity: Option<crate::settings::Severity>,
     open: Open,
+}
+
+/// The gate map around the active character, laid out once per snapshot.
+struct MiniMap {
+    dist: HashMap<i64, u32>,
+    pts: Vec<crate::store::MapSystem>,
+    edges: Vec<(i64, i64)>,
+    bridges: Vec<(i64, i64)>,
+}
+
+/// Everything the tiles show that costs a graph walk or a pass over the feeds, worked out every
+/// [`SNAPSHOT_SECS`] instead of every frame.
+struct Snapshot {
+    built: std::time::Instant,
+    chars: Vec<(String, i64, bool)>,
+    /// Jumps from each character, in `chars` order, out to [`TIMELINE_JUMPS`] or the radius.
+    per_char: Vec<HashMap<i64, u32>>,
+    /// The fewest jumps from any character.
+    near: HashMap<i64, u32>,
+    /// Newest first, from two hours back or the start of the away stretch.
+    entries: Vec<Entry>,
+    /// Live, unclear intel: system and severity.
+    live: Vec<(i64, crate::settings::Severity)>,
+    lit: HashMap<i64, (crate::settings::Severity, i64)>,
+    map: Option<MiniMap>,
 }
 
 #[derive(Default)]
 pub(crate) struct DashState {
-    heights: std::collections::HashMap<Tile, f32>,
+    heights: HashMap<Tile, f32>,
     kills: Vec<br_core::battle::Engagement>,
     kills_at: Option<std::time::Instant>,
+    snap: Option<Snapshot>,
     unfocused_at: Option<i64>,
     /// The stretch the window was out of focus, shown until dismissed.
     pub(crate) away: Option<(i64, i64)>,
     brief: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     brief_text: Option<Result<String, String>>,
+    ask: String,
 }
 
 /// What happened in a stretch of time, counted for the away tile.
@@ -144,9 +189,42 @@ struct Tally {
     alerts: usize,
 }
 
+impl Snapshot {
+    fn tally(&self, from: i64) -> Tally {
+        let mut t = Tally::default();
+        for e in self.entries.iter().filter(|e| e.at >= from) {
+            match e.kind {
+                Kind::Intel => {
+                    t.intel_near += 1;
+                    t.intel_worst = t.intel_worst.max(e.severity);
+                }
+                Kind::Kill => t.kills_near += 1,
+                Kind::Battle => t.battles += 1,
+                Kind::Ping => t.pings += 1,
+                Kind::Alert => t.alerts += 1,
+            }
+        }
+        t
+    }
+}
+
 impl SpaiApp {
     pub(crate) fn dashboard_tiles(&self) -> Vec<Tile> {
         self.settings.dashboard_tiles.iter().filter_map(|c| Tile::from_code(c)).collect()
+    }
+
+    /// Tiles added in a later version join the end of the user's list once, so they are seen
+    /// without undoing what the user took out.
+    fn dash_offer_new_tiles(&mut self) {
+        for t in Tile::ALL {
+            if !self.settings.dashboard_seen.iter().any(|c| c == t.code()) {
+                self.settings.dashboard_seen.push(t.code().to_owned());
+                if !self.settings.dashboard_tiles.iter().any(|c| c == t.code()) {
+                    self.settings.dashboard_tiles.push(t.code().to_owned());
+                }
+                self.needs_save = true;
+            }
+        }
     }
 
     /// Notes when the window loses focus and, on coming back after a while, opens the away tile.
@@ -166,6 +244,7 @@ impl SpaiApp {
                     self.dash.away = Some((from, now));
                     self.dash.brief = None;
                     self.dash.brief_text = None;
+                    self.dash.snap = None;
                 }
             }
             _ => {}
@@ -189,12 +268,6 @@ impl SpaiApp {
         out
     }
 
-    /// The fewest jumps from any character to `sys`, within `max`.
-    fn dash_jumps(&self, chars: &[(String, i64, bool)], sys: i64, max: u32) -> Option<u32> {
-        let bridges = self.settings.intel_count_bridges;
-        chars.iter().filter_map(|(_, from, _)| char_rings::jumps_from_you(&self.systems, Some(*from), Some(sys), bridges)).min().filter(|j| *j <= max)
-    }
-
     fn dash_radius(&self) -> u32 {
         self.settings.alert_within_jumps.max(1)
     }
@@ -210,9 +283,123 @@ impl SpaiApp {
         }
     }
 
+    fn dash_snapshot(&mut self) {
+        if self.dash.snap.as_ref().is_some_and(|s| s.built.elapsed().as_secs_f32() < SNAPSHOT_SECS) {
+            return;
+        }
+        let now = crate::clock::utc().timestamp();
+        let since = self.dash.away.map_or(now - LOOKBACK_SECS, |(f, _)| f.min(now - LOOKBACK_SECS));
+        let chars = self.dash_characters();
+        let reach = self.dash_radius().max(TIMELINE_JUMPS).max(HUB_JUMPS);
+        let per_char: Vec<HashMap<i64, u32>> = match &self.systems {
+            Some(g) => chars
+                .iter()
+                .map(|(_, s, _)| if self.settings.intel_count_bridges { g.distances_from(*s, reach) } else { g.gate_distances_from(*s, reach) })
+                .collect(),
+            None => vec![HashMap::new(); chars.len()],
+        };
+        let mut near: HashMap<i64, u32> = HashMap::new();
+        for m in &per_char {
+            for (s, j) in m {
+                near.entry(*s).and_modify(|v| *v = (*v).min(*j)).or_insert(*j);
+            }
+        }
+        let live = {
+            let state = self.intel_state.lock().unwrap();
+            state
+                .reports
+                .iter()
+                .filter(|r| !r.clear && !state.is_stale(r))
+                .filter_map(|r| Some((r.primary_system()?.id, severity_of(r, &self.settings.severity))))
+                .collect()
+        };
+        let entries = self.dash_entries(&near, since);
+        let lit = self.intel_highlights();
+        let map = self.dash_layout_minimap();
+        self.dash.snap = Some(Snapshot { built: std::time::Instant::now(), chars, per_char, near, entries, live, lit, map });
+    }
+
+    fn dash_entries(&self, near: &HashMap<i64, u32>, since: i64) -> Vec<Entry> {
+        let radius = self.dash_radius();
+        let within = |sys: i64, max: u32| near.get(&sys).copied().filter(|j| *j <= max);
+        let mut out = Vec::new();
+        {
+            let state = self.intel_state.lock().unwrap();
+            for r in state.reports.iter().filter(|r| r.received >= since && !r.clear && !r.killmail) {
+                let Some(sys) = r.primary_system() else { continue };
+                let Some(j) = within(sys.id, radius.max(TIMELINE_JUMPS)) else { continue };
+                let sev = severity_of(r, &self.settings.severity);
+                out.push(Entry {
+                    at: r.received,
+                    kind: Kind::Intel,
+                    text: trf!("{sys} ({j} j): {text}", sys = sys.name, j = j, text = r.text.trim()),
+                    severity: Some(sev),
+                    open: Open::System(sys.id),
+                });
+            }
+        }
+        for k in self.dash.kills.iter().filter(|k| k.time >= since) {
+            let Some(j) = within(k.system_id, radius) else { continue };
+            let ship = self.ship_by_id.get(&k.victim_ship).map(|n| crate::shipnames::shown(n)).unwrap_or_default();
+            out.push(Entry {
+                at: k.time,
+                kind: Kind::Kill,
+                text: trf!("{ship} killed in {sys} ({j} j), {isk}", ship = ship, sys = k.system_name, j = j, isk = fmt_isk(k.isk)),
+                severity: None,
+                open: Open::System(k.system_id),
+            });
+        }
+        for b in self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2 && b.end >= since) {
+            let Some(id) = b.engagements.iter().map(|e| e.kill_id).max() else { continue };
+            let where_ = b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+            out.push(Entry {
+                at: b.end,
+                kind: Kind::Battle,
+                text: trf!("Battle in {systems}: {kills} kills, {isk}", systems = where_, kills = b.kills, isk = fmt_isk(b.isk)),
+                severity: None,
+                open: Open::Battle(id),
+            });
+        }
+        for p in self.jabber.lock().unwrap().pings.iter().filter(|p| p.is_fleet_call() && p.timestamp() >= since) {
+            for f in p.fleets() {
+                let doctrine = f.doctrine.clone().unwrap_or_default();
+                out.push(Entry {
+                    at: p.timestamp(),
+                    kind: Kind::Ping,
+                    text: if doctrine.is_empty() { trf!("{fc} pinged a fleet", fc = f.fc) } else { trf!("{fc} pinged {doctrine}", fc = f.fc, doctrine = doctrine) },
+                    severity: None,
+                    open: Open::Tab(View::Jabber),
+                });
+            }
+        }
+        for (t, text) in self.recent_alerts.lock().unwrap().iter().filter(|(t, _)| *t >= since) {
+            out.push(Entry { at: *t, kind: Kind::Alert, text: text.clone(), severity: None, open: Open::Tab(View::Alerts) });
+        }
+        out.sort_by(|a, b| b.at.cmp(&a.at));
+        out
+    }
+
+    /// The gate map within [`MINIMAP_JUMPS`] of the active character, on the 2D map layout.
+    fn dash_layout_minimap(&self) -> Option<MiniMap> {
+        let g = self.systems.as_ref()?;
+        let center = self.player_system()?;
+        let coords: HashMap<i64, &crate::store::MapSystem> = match &self.map_coords {
+            Some(c) => c.iter().map(|s| (s.id, s)).collect(),
+            None => self.map_systems.iter().map(|s| (s.id, s)).collect(),
+        };
+        // Over gates and jump bridges alike, so what a bridge puts within reach is on the map too.
+        let dist: HashMap<i64, u32> = g.distances_from(center, MINIMAP_JUMPS).into_iter().filter(|(id, _)| coords.contains_key(id)).collect();
+        let pts: Vec<crate::store::MapSystem> = dist.keys().filter_map(|id| coords.get(id)).map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..(*s).clone() }).collect();
+        let edges = dist.keys().flat_map(|a| g.neighbors_gates_only(*a).iter().filter(|b| *a < **b && dist.contains_key(b)).map(move |b| (*a, *b))).collect();
+        let bridges = dist.keys().flat_map(|a| g.neighbors(*a).iter().filter(|b| *a < **b && dist.contains_key(b) && g.is_bridge(*a, **b)).map(move |b| (*a, *b))).collect();
+        Some(MiniMap { dist, pts, edges, bridges })
+    }
+
     pub(crate) fn dashboard_view(&mut self, ui: &mut egui::Ui) {
+        self.dash_offer_new_tiles();
         self.dash_refresh_kills();
         self.reload_wormholes();
+        self.dash_snapshot();
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -221,18 +408,29 @@ impl SpaiApp {
         });
         ui.add_space(4.0);
 
-        let tiles: Vec<Tile> = self.dashboard_tiles().into_iter().filter(|t| *t != Tile::Away || self.dash.away.is_some()).collect();
+        let ai = self.ai_on();
+        let tiles: Vec<Tile> = self
+            .dashboard_tiles()
+            .into_iter()
+            .filter(|t| match t {
+                Tile::Away => self.dash.away.is_some(),
+                Tile::Assistant => ai,
+                _ => true,
+            })
+            .collect();
         if tiles.is_empty() {
             ui.label(egui::RichText::new(tr!("No tiles picked. Add some with Tiles above.")).weak());
             return;
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Tiles stand as far apart down a column as the columns stand apart.
+            let gap = ui.spacing().item_spacing.x;
             // The away tile spans the full width: it is the one thing to read first.
             let mut rest = tiles.clone();
             if let Some(i) = rest.iter().position(|t| *t == Tile::Away) {
                 rest.remove(i);
                 self.dash_tile(ui, Tile::Away);
-                ui.add_space(8.0);
+                ui.add_space(gap - ui.spacing().item_spacing.y);
             }
             let cols = ((ui.available_width() / TILE_MIN_WIDTH).floor() as usize).clamp(1, 3);
             // Each tile goes into the shortest column so far, by last frame's heights.
@@ -240,14 +438,16 @@ impl SpaiApp {
             let mut sums = vec![0.0_f32; cols];
             for t in rest {
                 let c = (0..cols).min_by(|a, b| sums[*a].total_cmp(&sums[*b])).unwrap_or(0);
-                sums[c] += self.dash.heights.get(&t).copied().unwrap_or(200.0) + 8.0;
+                sums[c] += self.dash.heights.get(&t).copied().unwrap_or(200.0) + gap;
                 placed[c].push(t);
             }
             ui.columns(cols, |columns| {
                 for (col, list) in columns.iter_mut().zip(placed) {
-                    for t in list {
+                    for (i, t) in list.into_iter().enumerate() {
+                        if i > 0 {
+                            col.add_space(gap - col.spacing().item_spacing.y);
+                        }
                         self.dash_tile(col, t);
-                        col.add_space(8.0);
                     }
                 }
             });
@@ -298,61 +498,91 @@ impl SpaiApp {
         });
     }
 
+    /// Puts `moved` before `target`, or after it.
+    fn dash_move(&mut self, moved: Tile, target: Tile, after: bool) {
+        let tiles = &mut self.settings.dashboard_tiles;
+        tiles.retain(|c| c != moved.code());
+        let at = tiles.iter().position(|c| c == target.code()).map_or(tiles.len(), |i| i + usize::from(after));
+        tiles.insert(at, moved.code().to_owned());
+        self.needs_save = true;
+    }
+
     fn dash_tile(&mut self, ui: &mut egui::Ui, tile: Tile) {
         let resp = egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tile.label().tr()).strong());
+                // The row as tall as its text, so the title sits as far from the top edge as from
+                // the left: the theme's 26 px buttons would add room above it.
+                let text_h = ui.text_style_height(&egui::TextStyle::Body);
+                ui.spacing_mut().interact_size.y = text_h;
+                ui.spacing_mut().button_padding.y = 0.0;
+                let title = |ui: &mut egui::Ui| {
+                    ui.horizontal(|ui| {
+                        if tile != Tile::Away {
+                            ui.label(egui::RichText::new(icon::DOTS_SIX_VERTICAL).weak());
+                        }
+                        ui.label(egui::RichText::new(tile.label().tr()).strong());
+                    });
+                };
+                if tile == Tile::Away {
+                    title(ui);
+                } else {
+                    ui.dnd_drag_source(egui::Id::new(("dash_tile_drag", tile.code())), tile, title).response.on_hover_text(tr!("Drag to move this tile"));
+                }
                 if let Some(v) = tile.view() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let open = ui.add(egui::Button::new(icon::ARROW_RIGHT).frame(false)).on_hover_text(trf!("Open {tab}", tab = v.label().tr()));
+                        ui.spacing_mut().button_padding.x = 4.0;
+                        let open = ui.add(egui::Button::new(icon::ARROW_RIGHT).frame(true).frame_when_inactive(false)).on_hover_text(trf!("Open {tab}", tab = v.label().tr()));
                         if open.clicked() {
                             self.view = v;
                         }
                     });
                 }
             });
-            ui.add_space(4.0);
             match tile {
                 Tile::Away => self.dash_away(ui),
                 Tile::Situation => self.dash_situation(ui),
                 Tile::Fleets => self.dash_fleets(ui),
                 Tile::Timeline => self.dash_timeline(ui),
                 Tile::Minimap => self.dash_minimap(ui),
+                Tile::Battles => self.dash_battles(ui),
+                Tile::Wormholes => self.dash_wormholes(ui),
+                Tile::Assistant => self.dash_assistant(ui),
             }
         });
-        self.dash.heights.insert(tile, resp.response.rect.height());
+        let r = resp.response;
+        self.dash.heights.insert(tile, r.rect.height());
+        if tile == Tile::Away {
+            return;
+        }
+        let after = ui.ctx().pointer_interact_pos().is_some_and(|p| p.y > r.rect.center().y);
+        if r.dnd_hover_payload::<Tile>().is_some_and(|m| *m != tile) {
+            let y = if after { r.rect.bottom() + 4.0 } else { r.rect.top() - 4.0 };
+            ui.painter().hline(r.rect.x_range(), y, egui::Stroke::new(3.0, ui.visuals().selection.stroke.color));
+        }
+        if let Some(moved) = r.dnd_release_payload::<Tile>().filter(|m| **m != tile) {
+            self.dash_move(*moved, tile, after);
+        }
     }
 
     fn dash_situation(&mut self, ui: &mut egui::Ui) {
-        let chars = self.dash_characters();
-        if chars.is_empty() {
+        let Some(snap) = self.dash.snap.take() else { return };
+        if snap.chars.is_empty() {
             ui.label(egui::RichText::new(tr!("No character location yet. Log in a character to see where they are.")).weak());
+            self.dash.snap = Some(snap);
             return;
         }
         let now = crate::clock::utc().timestamp();
         let radius = self.dash_radius();
-        let systems = self.systems.clone();
-        let bridges = self.settings.intel_count_bridges;
-        let live: Vec<(i64, crate::settings::Severity)> = {
-            let state = self.intel_state.lock().unwrap();
-            state
-                .reports
-                .iter()
-                .filter(|r| !r.clear && !state.is_stale(r))
-                .filter_map(|r| Some((r.primary_system()?.id, severity_of(r, &self.settings.severity))))
-                .collect()
-        };
-        let kills: Vec<i64> = self.dash.kills.iter().filter(|k| now - k.time <= 3600).map(|k| k.system_id).collect();
         let mut open = None;
-        for (i, (name, sys, docked)) in chars.iter().enumerate() {
+        for (i, ((name, sys, docked), dist)) in snap.chars.iter().zip(&snap.per_char).enumerate() {
             if i > 0 {
                 ui.separator();
             }
-            let jumps = |target: i64| char_rings::jumps_from_you(&systems, Some(*sys), Some(target), bridges).filter(|j| *j <= radius);
+            let jumps = |target: i64| dist.get(&target).copied().filter(|j| *j <= radius);
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(name).strong());
-                match systems.as_ref().and_then(|g| g.info_of(*sys)) {
+                match self.systems.as_ref().and_then(|g| g.info_of(*sys)) {
                     Some(info) => {
                         ui.label(security_badge(info.security));
                         if ui.link(&info.name).on_hover_text(tr!("Open the system")).clicked() {
@@ -368,7 +598,7 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(tr!("docked")).weak());
                 }
             });
-            let near: Vec<(u32, crate::settings::Severity)> = live.iter().filter_map(|(s, sev)| Some((jumps(*s)?, *sev))).collect();
+            let near: Vec<(u32, crate::settings::Severity)> = snap.live.iter().filter_map(|(s, sev)| Some((jumps(*s)?, *sev))).collect();
             if near.is_empty() {
                 ui.label(egui::RichText::new(trf!("Quiet within {n} jumps", n = radius)).weak());
             } else {
@@ -380,14 +610,18 @@ impl SpaiApp {
                     } else {
                         trf!("{count} reports within {n} jumps, one in this system", count = near.len(), n = radius)
                     }
+                } else if near.len() == 1 && nearest == 1 {
+                    trf!("1 report within {n} jumps, 1 jump away", n = radius)
                 } else if near.len() == 1 {
                     trf!("1 report within {n} jumps, nearest {j} jumps away", n = radius, j = nearest)
+                } else if nearest == 1 {
+                    trf!("{count} reports within {n} jumps, nearest 1 jump away", count = near.len(), n = radius)
                 } else {
                     trf!("{count} reports within {n} jumps, nearest {j} jumps away", count = near.len(), n = radius, j = nearest)
                 };
                 ui.label(egui::RichText::new(text).color(severity_color(worst)));
             }
-            let kills_near = kills.iter().filter(|s| jumps(**s).is_some()).count();
+            let kills_near = self.dash.kills.iter().filter(|k| now - k.time <= 3600 && jumps(k.system_id).is_some()).count();
             if kills_near > 0 {
                 ui.label(if kills_near == 1 {
                     trf!("1 kill within {n} jumps in the last hour", n = radius)
@@ -406,6 +640,7 @@ impl SpaiApp {
                 }
             }
         }
+        self.dash.snap = Some(snap);
         if let Some(s) = open {
             self.open_system(s);
         }
@@ -472,65 +707,6 @@ impl SpaiApp {
         }
     }
 
-    fn dash_entries(&mut self, chars: &[(String, i64, bool)], since: i64) -> Vec<Entry> {
-        let radius = self.dash_radius();
-        let mut out = Vec::new();
-        {
-            let state = self.intel_state.lock().unwrap();
-            for r in state.reports.iter().filter(|r| r.received >= since && !r.clear && !r.killmail) {
-                let Some(sys) = r.primary_system() else { continue };
-                let Some(j) = self.dash_jumps(chars, sys.id, radius.max(10)) else { continue };
-                let sev = severity_of(r, &self.settings.severity);
-                out.push(Entry {
-                    at: r.received,
-                    kind: Kind::Intel,
-                    text: trf!("{sys} ({j} j): {text}", sys = sys.name, j = j, text = r.text.trim()),
-                    color: Some(severity_color(sev)),
-                    open: Open::System(sys.id),
-                });
-            }
-        }
-        for k in self.dash.kills.iter().filter(|k| k.time >= since) {
-            let Some(j) = self.dash_jumps(chars, k.system_id, radius) else { continue };
-            let ship = self.ship_by_id.get(&k.victim_ship).map(|n| crate::shipnames::shown(n)).unwrap_or_default();
-            out.push(Entry {
-                at: k.time,
-                kind: Kind::Kill,
-                text: trf!("{ship} killed in {sys} ({j} j), {isk}", ship = ship, sys = k.system_name, j = j, isk = fmt_isk(k.isk)),
-                color: None,
-                open: Open::System(k.system_id),
-            });
-        }
-        for b in self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2 && b.end >= since) {
-            let Some(id) = b.engagements.iter().map(|e| e.kill_id).max() else { continue };
-            let where_ = b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
-            out.push(Entry {
-                at: b.start,
-                kind: Kind::Battle,
-                text: trf!("Battle in {systems}: {kills} kills, {isk}", systems = where_, kills = b.kills, isk = fmt_isk(b.isk)),
-                color: None,
-                open: Open::Battle(id),
-            });
-        }
-        for p in self.jabber.lock().unwrap().pings.iter().filter(|p| p.is_fleet_call() && p.timestamp() >= since) {
-            for f in p.fleets() {
-                let doctrine = f.doctrine.clone().unwrap_or_default();
-                out.push(Entry {
-                    at: p.timestamp(),
-                    kind: Kind::Ping,
-                    text: if doctrine.is_empty() { trf!("{fc} pinged a fleet", fc = f.fc) } else { trf!("{fc} pinged {doctrine}", fc = f.fc, doctrine = doctrine) },
-                    color: None,
-                    open: Open::Tab(View::Jabber),
-                });
-            }
-        }
-        for (t, text) in self.recent_alerts.lock().unwrap().iter().filter(|(t, _)| *t >= since) {
-            out.push(Entry { at: *t, kind: Kind::Alert, text: text.clone(), color: None, open: Open::Tab(View::Alerts) });
-        }
-        out.sort_by(|a, b| b.at.cmp(&a.at));
-        out
-    }
-
     fn dash_open(&mut self, o: Open) {
         match o {
             Open::System(s) => self.open_system(s),
@@ -562,27 +738,26 @@ impl SpaiApp {
             });
         });
         ui.add_space(4.0);
-        let chars = self.dash_characters();
-        let entries: Vec<Entry> = self.dash_entries(&chars, now - LOOKBACK_SECS).into_iter().filter(|e| filter.is_none_or(|k| e.kind == k)).take(60).collect();
+        let Some(snap) = &self.dash.snap else { return };
+        let entries: Vec<&Entry> = snap.entries.iter().filter(|e| e.at >= now - LOOKBACK_SECS && filter.is_none_or(|k| e.kind == k)).take(60).collect();
         if entries.is_empty() {
             ui.label(egui::RichText::new(tr!("Nothing in the last two hours.")).weak());
             return;
         }
         let mut open = None;
         egui::ScrollArea::vertical().id_salt("dash_timeline").max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
-            for e in &entries {
+            for e in entries {
                 let row = ui.horizontal(|ui| {
                     ui.add_sized([40.0, 18.0], egui::Label::new(egui::RichText::new(fmt_age_compact(now - e.at)).weak()));
                     ui.label(egui::RichText::new(e.kind.icon()).weak()).on_hover_text(e.kind.label().tr());
                     let text = egui::RichText::new(&e.text);
-                    let text = match e.color {
-                        Some(c) => text.color(c),
+                    let text = match e.severity {
+                        Some(s) => text.color(severity_color(s)),
                         None => text,
                     };
                     ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
                 });
-                let r = row.inner.on_hover_text(&e.text);
-                if r.clicked() {
+                if row.inner.on_hover_text(&e.text).clicked() {
                     open = Some(e.open.clone());
                 }
             }
@@ -593,109 +768,269 @@ impl SpaiApp {
     }
 
     fn dash_minimap(&mut self, ui: &mut egui::Ui) {
-        let (Some(g), Some(center)) = (self.systems.clone(), self.player_system()) else {
-            ui.label(egui::RichText::new(tr!("Shows the systems around you once your location is known.")).weak());
-            return;
-        };
-        let coords: std::collections::HashMap<i64, &crate::store::MapSystem> = match &self.map_coords {
-            Some(c) => c.iter().map(|s| (s.id, s)).collect(),
-            None => self.map_systems.iter().map(|s| (s.id, s)).collect(),
-        };
-        let mut dist = std::collections::HashMap::from([(center, 0u32)]);
-        let mut frontier = vec![center];
-        for d in 1..=MINIMAP_JUMPS {
-            let mut next = Vec::new();
-            for s in frontier {
-                for n in g.neighbors_gates_only(s) {
-                    if !dist.contains_key(n) && coords.contains_key(n) {
-                        dist.insert(*n, d);
-                        next.push(*n);
-                    }
-                }
-            }
-            frontier = next;
-        }
-        let pts: Vec<crate::store::MapSystem> = dist.keys().filter_map(|id| coords.get(id)).map(|s| (*s).clone()).collect();
-        let here: std::collections::HashSet<i64> = self.dash_characters().into_iter().map(|(_, s, _)| s).collect();
-        let Some(bounds) = crate::map::Bounds::of(&pts) else {
-            ui.label(egui::RichText::new(tr!("No map data for this system.")).weak());
-            return;
-        };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 260.0), egui::Sense::click());
-        let inner = rect.shrink(18.0);
-        let pos: std::collections::HashMap<i64, egui::Pos2> = pts.iter().map(|s| (s.id, crate::map::project(s.x, s.z, &bounds, inner, 1.0, egui::Vec2::ZERO))).collect();
-        let painter = ui.painter_at(rect);
-        let visuals = ui.visuals().clone();
-        let line = egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.6));
-        for (a, pa) in &pos {
-            for b in g.neighbors_gates_only(*a) {
-                if a < b {
-                    if let Some(pb) = pos.get(b) {
-                        painter.line_segment([*pa, *pb], line);
-                    }
-                }
-            }
-        }
-        let lit = self.intel_highlights();
-        let hover = resp.hover_pos().and_then(|p| pos.iter().map(|(id, q)| (*id, q.distance(p))).filter(|(_, d)| *d < 10.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id));
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        for (id, p) in &pos {
-            let info = g.info_of(*id);
-            let sev = lit.get(id).map(|(s, _)| *s);
-            let fill = match sev {
-                Some(s) => severity_color(s),
-                None => info.map_or(visuals.weak_text_color(), |i| spai_ui::colors::security_color(i.security)),
-            };
-            let r = if sev.is_some() { 5.0 } else { 3.5 };
-            painter.circle_filled(*p, r, fill);
-            if here.contains(id) {
-                painter.circle_stroke(*p, 9.0, egui::Stroke::new(2.0, visuals.selection.stroke.color));
-            }
-            if (here.contains(id) || sev.is_some()) && Some(*id) != hover {
-                if let Some(i) = info {
-                    painter.text(*p + egui::vec2(0.0, -10.0), egui::Align2::CENTER_BOTTOM, &i.name, font.clone(), visuals.text_color());
-                }
-            }
-        }
-        if let Some(h) = hover {
-            if let Some(i) = g.info_of(h) {
-                let j = dist.get(&h).copied().unwrap_or(0);
-                resp.clone().on_hover_text_at_pointer(trf!("{sys}, {j} jumps", sys = i.name, j = j));
-            }
-            if resp.clicked() {
-                self.open_system(h);
-            }
+        let Some(snap) = self.dash.snap.take() else { return };
+        let open = self.dash_paint_minimap(ui, &snap);
+        self.dash.snap = Some(snap);
+        if let Some(s) = open {
+            self.open_system(s);
         }
     }
 
-    fn dash_tally(&mut self, from: i64) -> Tally {
-        let chars = self.dash_characters();
-        let radius = self.dash_radius();
-        let mut t = Tally::default();
-        for e in self.dash_entries(&chars, from) {
-            match e.kind {
-                Kind::Intel => t.intel_near += 1,
-                Kind::Kill => t.kills_near += 1,
-                Kind::Battle => t.battles += 1,
-                Kind::Ping => t.pings += 1,
-                Kind::Alert => t.alerts += 1,
+    fn dash_paint_minimap(&self, ui: &mut egui::Ui, snap: &Snapshot) -> Option<i64> {
+        let (Some(g), Some(m)) = (self.systems.as_ref(), snap.map.as_ref()) else {
+            ui.label(egui::RichText::new(tr!("Shows the systems around you once your location is known.")).weak());
+            return None;
+        };
+        let Some(bounds) = crate::map::Bounds::of(&m.pts) else {
+            ui.label(egui::RichText::new(tr!("No map data for this system.")).weak());
+            return None;
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 244.0), egui::Sense::click());
+        let pos: HashMap<i64, egui::Pos2> = m.pts.iter().map(|s| (s.id, crate::map::project(s.x, s.z, &bounds, rect.shrink(12.0), 1.0, egui::Vec2::ZERO))).collect();
+        let painter = ui.painter_at(rect);
+        let visuals = ui.visuals();
+        let line = egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.6));
+        for (a, b) in &m.edges {
+            if let (Some(pa), Some(pb)) = (pos.get(a), pos.get(b)) {
+                painter.line_segment([*pa, *pb], line);
             }
         }
-        let state = self.intel_state.lock().unwrap();
-        t.intel_worst = state
-            .reports
+        for (a, b) in &m.bridges {
+            if let (Some(pa), Some(pb)) = (pos.get(a), pos.get(b)) {
+                let (ca, cb) = spai_ui::star_map::bridge_colors(g, &self.settings.ansiblex_capital, *a, *b, spai_ui::theme::standing::FRIENDLY);
+                spai_ui::star_map::gradient_polyline(&painter, &spai_ui::star_map::arc_polyline(*pa, *pb, spai_ui::star_map::BRIDGE_BOW), ca, cb, 1.5);
+            }
+        }
+        // Region names, faint, where the area spans more than one.
+        let mut regions: HashMap<&str, (egui::Vec2, f32)> = HashMap::new();
+        for (id, p) in &pos {
+            if let Some(i) = g.info_of(*id) {
+                let e = regions.entry(i.region.as_str()).or_insert((egui::Vec2::ZERO, 0.0));
+                e.0 += p.to_vec2();
+                e.1 += 1.0;
+            }
+        }
+        if regions.len() > 1 {
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            for (name, (sum, n)) in &regions {
+                painter.text((*sum / *n).to_pos2(), egui::Align2::CENTER_CENTER, *name, font.clone(), visuals.weak_text_color().gamma_multiply(0.7));
+            }
+        }
+        let here: std::collections::HashSet<i64> = snap.chars.iter().map(|(_, s, _)| *s).collect();
+        let hover = resp.hover_pos().and_then(|p| pos.iter().map(|(id, q)| (*id, q.distance(p))).filter(|(_, d)| *d < 10.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id));
+        for (id, p) in &pos {
+            let sev = snap.lit.get(id).map(|(s, _)| *s);
+            let fill = match sev {
+                Some(s) => severity_color(s),
+                None => g.info_of(*id).map_or(visuals.weak_text_color(), |i| spai_ui::colors::security_color(i.security)),
+            };
+            painter.circle_filled(*p, if sev.is_some() { 5.0 } else { 3.5 }, fill);
+            if here.contains(id) {
+                painter.circle_stroke(*p, 9.0, egui::Stroke::new(2.0, visuals.selection.stroke.color));
+            }
+        }
+        // Names last and on a backing, the characters' first, each only where it overlaps no name
+        // already placed: lines and dots never run through them.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut named: Vec<i64> = pos.keys().copied().filter(|id| here.contains(id) || snap.lit.contains_key(id) || Some(*id) == hover).collect();
+        named.sort_by_key(|id| (Some(*id) != hover, Some(*id) != snap.chars.first().map(|c| c.1), !here.contains(id), *id));
+        // A name may cover a plain dot, never a character's ring or a lit system.
+        let mut taken: Vec<egui::Rect> = pos
             .iter()
-            .filter(|r| r.received >= from && !r.clear && !r.killmail)
-            .filter(|r| r.primary_system().is_some_and(|s| self.dash_jumps(&chars, s.id, radius.max(10)).is_some()))
-            .map(|r| severity_of(r, &self.settings.severity))
-            .max();
-        t
+            .filter(|(id, _)| here.contains(*id) || snap.lit.contains_key(*id))
+            .map(|(id, p)| egui::Rect::from_center_size(*p, egui::Vec2::splat(if here.contains(id) { 20.0 } else { 11.0 })))
+            .collect();
+        let backing = visuals.extreme_bg_color.gamma_multiply(0.85);
+        for id in named {
+            let (Some(p), Some(info)) = (pos.get(&id), g.info_of(id)) else { continue };
+            let galley = painter.layout_no_wrap(info.name.clone(), font.clone(), visuals.text_color());
+            let size = galley.size() + egui::vec2(8.0, 2.0);
+            let spots = [egui::pos2(p.x - size.x / 2.0, p.y - 12.0 - size.y), egui::pos2(p.x - size.x / 2.0, p.y + 12.0), egui::pos2(p.x + 12.0, p.y - size.y / 2.0), egui::pos2(p.x - 12.0 - size.x, p.y - size.y / 2.0)];
+            let Some(r) = spots.into_iter().map(|at| egui::Rect::from_min_size(at, size)).find(|r| rect.contains_rect(*r) && !taken.iter().any(|t| t.intersects(*r))) else { continue };
+            taken.push(r);
+            painter.rect_filled(r, 3.0, backing);
+            painter.galley(r.min + egui::vec2(4.0, 1.0), galley, visuals.text_color());
+        }
+        let hovered = hover?;
+        if let Some(i) = g.info_of(hovered) {
+            let j = m.dist.get(&hovered).copied().unwrap_or(0);
+            resp.clone().on_hover_text_at_pointer(trf!("{sys}, {j} jumps", sys = i.name, j = j));
+        }
+        resp.clicked().then_some(hovered)
+    }
+
+    fn dash_battles(&mut self, ui: &mut egui::Ui) {
+        let now = crate::clock::utc().timestamp();
+        let battles: Vec<br_core::battle::Battle> = {
+            let mut v: Vec<br_core::battle::Battle> = self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2).cloned().collect();
+            v.sort_by_key(|b| std::cmp::Reverse(b.end));
+            v.truncate(3);
+            v
+        };
+        if battles.is_empty() {
+            ui.label(egui::RichText::new(tr!("No battles near you yet.")).weak());
+            return;
+        }
+        let mut open = None;
+        for (i, b) in battles.iter().enumerate() {
+            if i > 0 {
+                ui.separator();
+            }
+            let where_ = b.systems.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+            ui.horizontal(|ui| {
+                if ui.add(egui::Link::new(egui::RichText::new(&where_).strong())).on_hover_text(tr!("Open the battle report")).clicked() {
+                    open = b.engagements.iter().map(|e| e.kill_id).max();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(trf!("{age} ago", age = fmt_age_compact(now - b.end))).weak());
+                });
+            });
+            ui.label(trf!("{kills} kills, {isk} destroyed", kills = b.kills, isk = fmt_isk(b.isk)));
+            for side in b.sides.iter().take(3) {
+                let name = side.coalition.clone().or_else(|| side.parties.first().map(|p| p.name.clone())).unwrap_or_default();
+                let eff = side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "–".into());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(name).truncate());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(trf!("{lost} lost, {eff} efficiency", lost = side.losses, eff = eff)).weak());
+                    });
+                });
+            }
+        }
+        if let Some(id) = open {
+            self.dash_open(Open::Battle(id));
+        }
+    }
+
+    fn dash_wormholes(&mut self, ui: &mut egui::Ui) {
+        let Some(snap) = self.dash.snap.take() else { return };
+        let name = |id: i64| self.systems.as_ref().and_then(|g| g.info_of(id)).map_or_else(|| id.to_string(), |i| i.name.clone());
+        let mut shown = false;
+        for (who, sys, _) in &snap.chars {
+            let holes: Vec<&crate::wormholes::Wormhole> = self.wh_cache.iter().filter(|w| w.system_id == *sys).collect();
+            if holes.is_empty() {
+                continue;
+            }
+            shown = true;
+            ui.label(egui::RichText::new(trf!("{pilot} in {sys}", pilot = who, sys = name(*sys))).strong());
+            for w in holes {
+                let to = w.dest_system_id.map(name).unwrap_or_else(|| w.dest.label().tr().to_owned());
+                let sig = w.signature.clone().unwrap_or_default();
+                let mut bits = vec![to];
+                if let Some(l) = w.life {
+                    bits.push(l.label().tr().to_owned());
+                }
+                if let Some(m) = w.mass {
+                    bits.push(m.label().tr().to_owned());
+                }
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(sig).monospace());
+                    ui.add(egui::Label::new(bits.join(" · ")).truncate());
+                });
+            }
+        }
+        for (hub, label) in [(crate::whdata::THERA, "Thera"), (crate::whdata::TURNUR, "Turnur")] {
+            let best = self
+                .wh_cache
+                .iter()
+                .filter(|w| w.dest_system_id == Some(hub) || (hub == crate::whdata::THERA && w.dest == crate::wormholes::DestClass::Thera) || (hub == crate::whdata::TURNUR && w.dest == crate::wormholes::DestClass::Turnur))
+                .filter_map(|w| Some((snap.near.get(&w.system_id).copied()?, w)))
+                .min_by_key(|(j, _)| *j);
+            match best {
+                Some((j, w)) => {
+                    let via = name(w.system_id);
+                    if ui.link(trf!("{hub}: {j} jumps, through {sys}", hub = label, j = j, sys = via)).clicked() {
+                        self.dash.snap = Some(snap);
+                        self.open_system(w.system_id);
+                        return;
+                    }
+                }
+                None => {
+                    ui.label(egui::RichText::new(trf!("{hub}: no known connection within {n} jumps", hub = label, n = HUB_JUMPS)).weak());
+                }
+            }
+            shown = true;
+        }
+        if !shown {
+            ui.label(egui::RichText::new(tr!("No known wormholes where your characters are.")).weak());
+        }
+        self.dash.snap = Some(snap);
+    }
+
+    /// Ask from the dashboard, the latest answer, and the watches running. The conversation is the
+    /// same one the Assistant tab shows.
+    fn dash_assistant(&mut self, ui: &mut egui::Ui) {
+        let now = crate::clock::utc().timestamp();
+        let handle = self.ai_handle(ui.ctx());
+        let (busy, last) = {
+            let v = handle.view.lock().unwrap_or_else(|e| e.into_inner());
+            let last = v.turns.iter().rev().find(|t| !t.user && (!t.text.trim().is_empty() || t.error.is_some())).map(|t| (t.text.clone(), t.error.clone(), t.streaming));
+            (v.busy, last)
+        };
+        let mut send = None;
+        // The button first, from the right, so the field takes exactly what is left.
+        ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let go = ui.add_enabled(!busy && !self.dash.ask.trim().is_empty(), egui::Button::new(icon::PAPER_PLANE_RIGHT)).on_hover_text(tr!("Send"));
+            let edit = ui.add_enabled(!busy, egui::TextEdit::singleline(&mut self.dash.ask).hint_text(tr!("Ask about the situation…")).desired_width(ui.available_width()));
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (enter || go.clicked()) && !self.dash.ask.trim().is_empty() {
+                send = Some(std::mem::take(&mut self.dash.ask));
+                edit.request_focus();
+            }
+        }));
+        if let Some(text) = send {
+            handle.send(crate::ai::session::Command::Send { text, voice: false });
+        }
+        match last {
+            Some((text, error, streaming)) => {
+                ui.add_space(4.0);
+                if let Some(e) = error {
+                    ui.label(egui::RichText::new(e).color(ui.visuals().warn_fg_color));
+                }
+                let plain: Vec<String> = text.lines().map(crate::ai::voice::sentences::speakable).filter(|l| !l.is_empty()).collect();
+                let shown = plain.iter().take(6).cloned().collect::<Vec<_>>().join("\n");
+                if !shown.is_empty() {
+                    ui.label(shown);
+                }
+                if streaming || busy {
+                    ui.add(egui::Spinner::new());
+                } else if plain.len() > 6 && ui.link(tr!("Read the rest in the Assistant tab")).clicked() {
+                    self.view = View::Assistant;
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new(tr!("Ask here or in the Assistant tab; answers show up here too.")).weak());
+            }
+        }
+
+        let watches: Vec<(String, crate::ai::watch::WatchState, u32, Option<i64>)> =
+            self.ai_watches.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|w| (w.goal.clone(), w.state.clone(), w.hits, w.until)).collect();
+        if watches.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.label(egui::RichText::new(tr!("Watches")).strong());
+        for (goal, state, hits, until) in watches {
+            ui.add(egui::Label::new(&goal).truncate()).on_hover_text(&goal);
+            let mut bits = vec![if hits == 1 { tr!("1 match").to_owned() } else { trf!("{n} matches", n = hits) }];
+            match state {
+                crate::ai::watch::WatchState::Active => {
+                    if let Some(u) = until.filter(|u| *u > now) {
+                        bits.push(trf!("{left} left", left = fmt_age_compact(u - now)));
+                    }
+                }
+                crate::ai::watch::WatchState::Asking(_) => bits.push(tr!("waiting for you").to_owned()),
+                crate::ai::watch::WatchState::Stopped(_) => bits.push(tr!("stopped").to_owned()),
+            }
+            ui.label(egui::RichText::new(bits.join(" · ")).weak());
+            ui.add_space(4.0);
+        }
     }
 
     fn dash_away(&mut self, ui: &mut egui::Ui) {
         let Some((from, to)) = self.dash.away else { return };
         let now = crate::clock::utc().timestamp();
-        let tally = self.dash_tally(from);
+        let tally = self.dash.snap.as_ref().map(|s| s.tally(from)).unwrap_or_default();
         ui.label(egui::RichText::new(trf!("You were away for {span}.", span = fmt_age(to - from))).weak());
         ui.add_space(2.0);
         let mut go = None;
@@ -764,10 +1099,11 @@ impl SpaiApp {
     /// read.
     fn dash_request_brief(&mut self, ctx: &egui::Context, from: i64, now: i64) {
         let facts = self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let chars = self.dash_characters();
-        let lines: Vec<String> = self
-            .dash_entries(&chars, from)
-            .into_iter()
+        let Some(snap) = &self.dash.snap else { return };
+        let lines: Vec<String> = snap
+            .entries
+            .iter()
+            .filter(|e| e.at >= from)
             .filter(|e| match e.kind {
                 Kind::Intel | Kind::Alert => facts.allowed("intel.reports"),
                 Kind::Kill => facts.allowed("kills.feed") || facts.allowed("kills.history"),
@@ -781,7 +1117,8 @@ impl SpaiApp {
             self.dash.brief_text = Some(Err(tr!("Nothing the assistant may read happened while you were away. Data access is set in Settings, Assistant.").to_owned()));
             return;
         }
-        let where_ = chars
+        let where_ = snap
+            .chars
             .iter()
             .map(|(n, s, _)| format!("{n} in {}", self.systems.as_ref().and_then(|g| g.info_of(*s)).map_or("an unknown system".to_owned(), |i| i.name.clone())))
             .collect::<Vec<_>>()
@@ -812,6 +1149,7 @@ impl SpaiApp {
         self.ship_by_id.extend(ships.iter().map(|(id, n)| (*id, (*n).to_owned())));
         *self.recent_alerts.lock().unwrap() = alerts;
         self.dash.away = away;
+        self.dash.snap = None;
     }
 }
 
@@ -884,20 +1222,31 @@ mod tests {
     fn the_timeline_is_newest_first_and_leaves_out_kills_beyond_the_radius() {
         let region = crate::uitest::fixtures::insmother();
         let g = region.systems.clone();
-        let id = |n: &str| g.lookup(n).map(|i| i.id).unwrap();
+        let home = g.lookup("A24L-V").unwrap().id;
         let mut a = crate::app::SpaiApp::build(&egui::Context::default(), true);
         a.systems = Some(g.clone());
         a.settings.alert_within_jumps = 3;
-        let home = id("A24L-V");
-        a.player.lock().unwrap().locations.insert("Pilot".into(), (home, false));
-        let far = g.all_ids().find(|s| char_rings::jumps_from_you(&a.systems, Some(home), Some(*s), false).is_some_and(|j| j > 6)).unwrap();
+        let near = g.gate_distances_from(home, 20);
+        let far = *near.iter().find(|(_, j)| **j > 6).unwrap().0;
         let base = crate::uitest::fixtures::real_battle().0.engagements[0].clone();
         let kill = |kill_id: i64, sys: i64, time: i64| br_core::battle::Engagement { kill_id, time, system_id: sys, system_name: g.info_of(sys).unwrap().name.clone(), ..base.clone() };
         a.dash.kills = vec![kill(1, home, 100), kill(2, far, 300), kill(3, home, 200)];
         a.recent_alerts.lock().unwrap().push((250, "alert".into()));
-        let chars = vec![("Pilot".to_owned(), home, false)];
-        let got: Vec<(i64, Kind)> = a.dash_entries(&chars, 0).into_iter().map(|e| (e.at, e.kind)).collect();
+        let got: Vec<(i64, Kind)> = a.dash_entries(&near, 0).into_iter().map(|e| (e.at, e.kind)).collect();
         assert_eq!(got, vec![(250, Kind::Alert), (200, Kind::Kill), (100, Kind::Kill)]);
+    }
+
+    #[test]
+    fn tiles_added_later_join_the_list_once_and_stay_out_when_removed() {
+        let mut a = crate::app::SpaiApp::build(&egui::Context::default(), true);
+        a.settings.dashboard_tiles = vec!["situation".into()];
+        a.settings.dashboard_seen = vec!["situation".into(), "timeline".into()];
+        a.dash_offer_new_tiles();
+        assert!(a.settings.dashboard_tiles.iter().any(|c| c == "battles"), "a new tile is offered");
+        assert!(!a.settings.dashboard_tiles.iter().any(|c| c == "timeline"), "one the user removed stays removed");
+        a.settings.dashboard_tiles.retain(|c| c != "battles");
+        a.dash_offer_new_tiles();
+        assert!(!a.settings.dashboard_tiles.iter().any(|c| c == "battles"), "offered only once");
     }
 
     #[test]

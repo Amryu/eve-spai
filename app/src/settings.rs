@@ -300,6 +300,9 @@ pub struct Settings {
     /// The dashboard timeline's filter, a `dashboard::Kind` code; empty for everything.
     #[serde(default)]
     pub dashboard_timeline: String,
+    /// Every tile the dashboard has offered, so one added later is offered once.
+    #[serde(default)]
+    pub dashboard_seen: Vec<String>,
     /// The least mass a hole on a route may have left: a `Mass` code, empty for any.
     #[serde(default)]
     pub wh_route_min_mass: String,
@@ -706,7 +709,7 @@ fn default_wh_pin_jumps() -> u32 {
 }
 
 pub(crate) fn default_dashboard_tiles() -> Vec<String> {
-    ["away", "situation", "fleets", "timeline", "minimap"].map(String::from).to_vec()
+    ["away", "situation", "fleets", "timeline", "minimap", "battles", "wormholes", "assistant"].map(String::from).to_vec()
 }
 
 fn default_wh_route_kinds() -> Vec<String> {
@@ -1606,6 +1609,7 @@ impl Default for Settings {
             wh_route_pins: Vec::new(),
             dashboard_tiles: default_dashboard_tiles(),
             dashboard_timeline: String::new(),
+            dashboard_seen: Vec::new(),
             wh_route_min_mass: String::new(),
             wh_route_min_time: String::new(),
             wh_route_min_size: String::new(),
