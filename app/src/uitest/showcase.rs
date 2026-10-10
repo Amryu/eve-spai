@@ -187,7 +187,8 @@ pub(crate) fn home_defence_ping() -> crate::pings::Ping {
     }
 }
 
-/// Made-up fleet pings from around the home defence op, older than it, in the same format. Two, so the
+/// Made-up fleet pings from around the home defence op, older than it, in the same format: made-up
+/// FCs, the staging system and real doctrine strings. Two, so the
 /// feed, newest at the bottom, still shows the home defence op whole.
 fn evening_pings() -> Vec<crate::pings::Ping> {
     use crate::pings::{Comms, Formup, PapType, Ping};
@@ -212,8 +213,8 @@ fn evening_pings() -> Vec<crate::pings::Ping> {
         }
     };
     vec![
-        ping(9 * 60, "Bombers on standby, light cyno pilot wanted", "Mira Ostwald", "EKPB-3", PapType::Peacetime, "Op 9", "Purifier Bombers (Purifier > Sabre)"),
-        ping(23 * 60, "Ihub timer in Z182-R, we need every Ferox", "Dain Morrow", "KDG-TA", PapType::Strategic, "Op 2", "Ferox Navy Issue (Ferox > Scimitar > Sabre)"),
+        ping(9 * 60, "Svipul roam through the backyard, Kirins and Scalpels welcome", "Mira Ostwald", "C-J6MT", PapType::Peacetime, "Op 9", "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"),
+        ping(23 * 60, "Ihub timer in Z182-R, we need every Ferox", "Dain Morrow", "C-J6MT", PapType::Strategic, "Op 2", "Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)"),
     ]
 }
 
