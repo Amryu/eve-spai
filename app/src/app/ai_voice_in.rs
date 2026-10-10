@@ -82,13 +82,20 @@ impl SpaiApp {
         }
         let Listen::Recording(rec, _) = std::mem::take(&mut self.ai_listen) else { return };
         crate::sound::play("beep", 0.4);
-        let pcm = rec.stop();
+        // A cpal stream cannot change threads, and dropping one is instant; Linux's recorder process
+        // is ended on the worker instead.
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let rec = rec.stop();
         let cfg = self.ai_stt_cfg();
         let lang = self.settings.ai.language.clone();
         let hint = self.ai_stt_hint();
         let ctx = self.ui_ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = std::thread::Builder::new().name("ai-stt".into()).spawn(move || {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            let pcm = rec.stop();
+            #[cfg(not(all(unix, not(target_os = "macos"))))]
+            let pcm = rec;
             let out = match crate::ai::voice::capture::trim(&pcm) {
                 Some(speech) => crate::ai::voice::stt::transcribe(&cfg, &speech, &lang, &hint).map(|t| (!t.is_empty()).then_some(t)),
                 None => Ok(None),

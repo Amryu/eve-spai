@@ -133,6 +133,10 @@ pub fn install(file: String, progress: super::models::SharedProgress, ctx: Optio
     });
 }
 
+/// The model last loaded, readable while a transcription holds [`LOADED`].
+#[cfg(feature = "local-stt")]
+static LAST: Mutex<Option<String>> = Mutex::new(None);
+
 #[cfg(feature = "local-stt")]
 static LOADED: Mutex<Option<(String, whisper_rs::WhisperContext, Instant)>> = Mutex::new(None);
 
@@ -140,7 +144,9 @@ static LOADED: Mutex<Option<(String, whisper_rs::WhisperContext, Instant)>> = Mu
 pub fn unload_idle() {
     #[cfg(feature = "local-stt")]
     {
-        let mut g = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+        // Never waits: the lock is held for the whole of a load or a transcription, and this runs
+        // on the UI thread.
+        let Ok(mut g) = LOADED.try_lock() else { return };
         if g.as_ref().is_some_and(|(_, _, used)| used.elapsed() >= IDLE_UNLOAD) {
             *g = None;
         }
@@ -151,7 +157,12 @@ pub fn unload_idle() {
 pub fn loaded() -> Option<String> {
     #[cfg(feature = "local-stt")]
     {
-        LOADED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(f, _, _)| f.clone())
+        // Busy counts as loaded; asking must not wait for a transcription to finish.
+        match LOADED.try_lock() {
+            Ok(g) => g.as_ref().map(|(f, _, _)| f.clone()),
+            Err(std::sync::TryLockError::WouldBlock) => LAST.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().as_ref().map(|(f, _, _)| f.clone()),
+        }
     }
     #[cfg(not(feature = "local-stt"))]
     {
@@ -188,6 +199,7 @@ pub fn transcribe(file: &str, pcm: &[i16], lang: &str, hint: &str) -> anyhow::Re
             *g = None;
             let ctx = WhisperContext::new_with_params(&p, WhisperContextParameters::default()).map_err(|e| anyhow::anyhow!("could not load {}: {e}", m.label()))?;
             *g = Some((m.file.to_owned(), ctx, Instant::now()));
+            *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(m.file.to_owned());
         }
         let (_, ctx, used) = g.as_mut().expect("loaded");
         *used = Instant::now();

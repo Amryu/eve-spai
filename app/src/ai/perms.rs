@@ -201,6 +201,14 @@ pub fn visible(node: &Node, u: Unlocked) -> bool {
 }
 
 /// A chat channel's key under `intel.chatlogs`.
+/// What the Data access dialog calls a key.
+pub fn label_of(key: &str) -> Option<&'static str> {
+    fn walk(nodes: &'static [Node], key: &str) -> Option<&'static str> {
+        nodes.iter().find_map(|n| if n.key == key { Some(n.label) } else { walk(n.children, key) })
+    }
+    walk(TREE, key)
+}
+
 pub fn channel_key(channel: &str) -> String {
     format!("intel.chatlogs.{}", channel.replace('.', "_"))
 }
