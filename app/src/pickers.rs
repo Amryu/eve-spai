@@ -253,7 +253,7 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
         ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
         ui.add(
             egui::TextEdit::singleline(&mut picker.query)
-                .hint_text("Search")
+                .hint_text(tr!("Search"))
                 .desired_width(220.0),
         );
         let count = if is_geo {
@@ -261,8 +261,8 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
         } else {
             picker.selected.len()
         };
-        ui.label(format!("{count} selected"));
-        if count > 0 && ui.button("Clear").clicked() {
+        ui.label(trf!("{count} selected", count = count));
+        if count > 0 && ui.button(tr!("Clear")).clicked() {
             picker.selected.clear();
             picker.geo_regions.clear();
             picker.geo_consts.clear();
@@ -272,7 +272,7 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     });
     if is_geo {
         ui.label(
-            egui::RichText::new("Tick a region, constellation, or system at any level.").weak(),
+            egui::RichText::new(tr!("Tick a region, constellation, or system at any level.")).weak(),
         );
     }
     ui.separator();
@@ -309,14 +309,14 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     if picker.kind == PickerKind::Characters {
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Add pilot:");
+            ui.label(tr!("Add pilot:"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut picker.add_name)
-                    .hint_text("exact name")
+                    .hint_text(tr!("exact name"))
                     .desired_width(200.0),
             );
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("Add").clicked() || enter) && !picker.add_name.trim().is_empty() {
+            if (ui.button(tr!("Add")).clicked() || enter) && !picker.add_name.trim().is_empty() {
                 act.add_clicked = true;
             }
         });
@@ -337,7 +337,7 @@ fn render_node(ui: &mut egui::Ui, node: &Node, selected: &mut HashSet<String>, c
         node.collect_leaves(&mut leaves);
         let all = !leaves.is_empty() && leaves.iter().all(|l| selected.contains(*l));
         let mut all_mut = all;
-        if ui.checkbox(&mut all_mut, egui::RichText::new("All").italics()).changed() {
+        if ui.checkbox(&mut all_mut, egui::RichText::new(tr!("All")).italics()).changed() {
             for l in &leaves {
                 if all_mut {
                     selected.insert((*l).to_owned());
@@ -374,10 +374,10 @@ fn render_search(
         shown += 1;
     }
     if shown == 0 {
-        ui.label(egui::RichText::new("No matches.").weak());
+        ui.label(egui::RichText::new(tr!("No matches.")).weak());
     }
     if hidden > 0 {
-        ui.label(egui::RichText::new(format!("+{hidden} more, refine your search")).weak());
+        ui.label(egui::RichText::new(trf!("+{hidden} more, refine your search", hidden = hidden)).weak());
     }
 }
 
@@ -401,14 +401,14 @@ fn geo_body(ui: &mut egui::Ui, picker: &mut FilterPicker, q: &str, changed: &mut
             egui::CollapsingHeader::new(&region.name).id_salt(("gr", region.name.as_str())).show(
                 ui,
                 |ui| {
-                    geo_check(ui, "Match this whole region", &region.name, geo_regions, changed);
+                    geo_check(ui, tr!("Match this whole region"), &region.name, geo_regions, changed);
                     for cons in &region.children {
                         egui::CollapsingHeader::new(&cons.name)
                             .id_salt(("gc", region.name.as_str(), cons.name.as_str()))
                             .show(ui, |ui| {
                                 geo_check(
                                     ui,
-                                    "Match this whole constellation",
+                                    tr!("Match this whole constellation"),
                                     &cons.name,
                                     geo_consts,
                                     changed,
@@ -449,10 +449,10 @@ fn geo_body(ui: &mut egui::Ui, picker: &mut FilterPicker, q: &str, changed: &mut
             shown += 1;
         }
         if shown == 0 {
-            ui.label(egui::RichText::new("No matches.").weak());
+            ui.label(egui::RichText::new(tr!("No matches.")).weak());
         }
         if hidden > 0 {
-            ui.label(egui::RichText::new(format!("+{hidden} more, refine your search")).weak());
+            ui.label(egui::RichText::new(trf!("+{hidden} more, refine your search", hidden = hidden)).weak());
         }
     }
 }

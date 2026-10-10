@@ -201,18 +201,18 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let mut changed = false;
 
-        ui.label(egui::RichText::new(format!("{}  Remote web view", icon::BROADCAST)).strong());
+        ui.label(egui::RichText::new(trf!("{icon}  Remote web view", icon = icon::BROADCAST)).strong());
         changed |= ui
-            .checkbox(&mut self.settings.web.enabled, "Serve the intel feed to a browser")
+            .checkbox(&mut self.settings.web.enabled, tr!("Serve the intel feed to a browser"))
             .on_hover_text(
-                "Opens a page on this machine showing the intel feed, alerts, fleet pings and the                  map. Pair a phone once and it stays paired.",
+                tr!("Opens a page on this machine showing the intel feed, alerts, fleet pings and the                  map. Pair a phone once and it stays paired."),
             )
             .changed();
 
         if !self.settings.web.enabled {
             ui.label(
                 egui::RichText::new(
-                    "LAN only, and not encrypted. Do not forward this port to the internet.",
+                    tr!("LAN only, and not encrypted. Do not forward this port to the internet."),
                 )
                 .weak(),
             );
@@ -220,20 +220,20 @@ impl SpaiApp {
         }
 
         ui.horizontal_wrapped(|ui| {
-            ui.label("Port");
+            ui.label(tr!("Port"));
             changed |= ui
                 .add(egui::DragValue::new(&mut self.settings.web.port).range(1024..=65535))
                 .changed();
             changed |= ui
-                .checkbox(&mut self.settings.web.bind_lan, "Reachable from the network")
+                .checkbox(&mut self.settings.web.bind_lan, tr!("Reachable from the network"))
                 .on_hover_text(
-                    "Off binds this machine only, which needs a tunnel to reach from a phone.",
+                    tr!("Off binds this machine only, which needs a tunnel to reach from a phone."),
                 )
                 .changed();
             changed |= ui
-                .checkbox(&mut self.settings.web.allow_writeback, "Allow changes from the page")
+                .checkbox(&mut self.settings.web.allow_writeback, tr!("Allow changes from the page"))
                 .on_hover_text(
-                    "Classifying an uncertain pilot and acknowledging an alert. Off makes the page                      read-only.",
+                    tr!("Classifying an uncertain pilot and acknowledging an alert. Off makes the page                      read-only."),
                 )
                 .changed();
         });
@@ -248,18 +248,18 @@ impl SpaiApp {
         let url = self.web_pairing_url();
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button(format!("{}  Copy pairing link", icon::COPY))
-                .on_hover_text("Carries the token. Treat it as a password.")
+                .button(trf!("{icon}  Copy pairing link", icon = icon::COPY))
+                .on_hover_text(tr!("Carries the token. Treat it as a password."))
                 .clicked()
             {
                 ui.ctx().copy_text(url.clone());
             }
-            if ui.button(format!("{}  Open in browser", icon::ARROW_SQUARE_OUT)).clicked() {
+            if ui.button(trf!("{icon}  Open in browser", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 let _ = open::that(&url);
             }
             if ui
-                .button(format!("{}  Regenerate link", icon::ARROWS_CLOCKWISE))
-                .on_hover_text("Invalidates every paired device. They have to open a new link.")
+                .button(trf!("{icon}  Regenerate link", icon = icon::ARROWS_CLOCKWISE))
+                .on_hover_text(tr!("Invalidates every paired device. They have to open a new link."))
                 .clicked()
             {
                 self.settings.web.token.clear();
@@ -286,7 +286,7 @@ impl SpaiApp {
         if self.web_reveal {
             ui.label(egui::RichText::new(&url).monospace());
             ui.label(
-                egui::RichText::new("Scan this from the phone. Anyone who reads it is paired.")
+                egui::RichText::new(tr!("Scan this from the phone. Anyone who reads it is paired."))
                     .weak(),
             );
             if let Some(tex) = self.web_qr_texture(ui.ctx(), &url) {
@@ -312,37 +312,37 @@ impl SpaiApp {
         let holds_something = !self.settings.web.bind_addr.is_empty()
             || self.settings.web.no_pairing
             || self.web_bind_draft.is_some();
-        egui::CollapsingHeader::new(format!("{}  Advanced", icon::GEAR_SIX))
+        egui::CollapsingHeader::new(trf!("{icon}  Advanced", icon = icon::GEAR_SIX))
             .id_salt("web_advanced")
             .default_open(holds_something)
             .show(ui, |ui| {
                 if !self.settings.web.advanced_ack {
                     ui.label(
-                        egui::RichText::new(format!("{}  Read this first", icon::WARNING))
+                        egui::RichText::new(trf!("{icon}  Read this first", icon = icon::WARNING))
                             .color(crate::theme::standing::HOSTILE)
                             .strong(),
                     );
                     ui.label(
-                        "These two settings can put this page on the public internet. Anyone who \
+                        tr!("These two settings can put this page on the public internet. Anyone who \
                          reaches it sees everything the app sees: the intel feed, fleet pings, your \
                          jabber conversations and any opsec channel you are in. There is no TLS and, \
-                         with pairing off, no password either.",
+                         with pairing off, no password either."),
                     );
                     ui.label(
                         egui::RichText::new(
-                            "Only turn these on if you understand exactly what you are exposing and \
-                             to whom.",
+                            tr!("Only turn these on if you understand exactly what you are exposing and \
+                             to whom."),
                         )
                         .strong(),
                     );
-                    if ui.button("I understand, show the advanced settings").clicked() {
+                    if ui.button(tr!("I understand, show the advanced settings")).clicked() {
                         self.settings.web.advanced_ack = true;
                         changed = true;
                     }
                     return;
                 }
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Bind address");
+                    ui.label(tr!("Bind address"));
                     let mut draft = match &self.web_bind_draft {
                         Some((t, _)) => t.clone(),
                         None => self.settings.web.bind_addr.clone(),
@@ -350,14 +350,14 @@ impl SpaiApp {
                     let edit = ui
                         .add(
                             egui::TextEdit::singleline(&mut draft)
-                                .hint_text("blank = the choice above")
+                                .hint_text(tr!("blank = the choice above"))
                                 .desired_width(160.0),
                         )
                         .on_hover_text(
-                            "An interface address to listen on instead. Blank uses the LAN setting \
+                            tr!("An interface address to listen on instead. Blank uses the LAN setting \
                              above, which is what you want unless you are binding one specific \
                              interface, such as a VPN. The socket is rebound once you stop typing, \
-                             since a half-typed address is a different one.",
+                             since a half-typed address is a different one."),
                         );
                     if edit.changed() {
                         self.web_bind_draft = Some((draft, std::time::Instant::now()));
@@ -371,18 +371,15 @@ impl SpaiApp {
                     }
                 });
                 changed |= ui
-                    .checkbox(&mut self.settings.web.no_pairing, "Serve without pairing")
+                    .checkbox(&mut self.settings.web.no_pairing, tr!("Serve without pairing"))
                     .on_hover_text(
-                        "Anyone who can reach the port gets in, with no token and no password. Only \
-                         sensible behind something else that does the authenticating.",
+                        tr!("Anyone who can reach the port gets in, with no token and no password. Only \
+                         sensible behind something else that does the authenticating."),
                     )
                     .changed();
                 if self.settings.web.no_pairing {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{}  This page is open to anyone who can reach it.",
-                            icon::WARNING
-                        ))
+                        egui::RichText::new(trf!("{icon}  This page is open to anyone who can reach it.", icon = icon::WARNING))
                         .color(crate::theme::standing::HOSTILE),
                     );
                 }

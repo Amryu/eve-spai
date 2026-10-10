@@ -1,6 +1,8 @@
 //! The wormhole tab's signature browser: every probe scan signature pasted, in every system, to
 //! search, filter and clean up. Each app loads the rows and stores deletes itself.
 
+use crate::i18n::Tr;
+
 use std::collections::BTreeSet;
 
 use egui_phosphor::regular as icon;
@@ -209,7 +211,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
     // Two fixed rows, filters then actions, so the table starts at the same height whatever
     // is picked and however narrow the window.
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut b.query).hint_text("Search system, signature, site, who").desired_width(220.0));
+        ui.add(egui::TextEdit::singleline(&mut b.query).hint_text(crate::tr!("Search system, signature, site, who")).desired_width(220.0));
         let n = b.groups.len();
         let label = match n {
             0 => "All groups".to_owned(),
@@ -229,14 +231,14 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                 }
             }
         });
-        egui::ComboBox::from_id_salt("sig_browser_kinds").selected_text(b.kinds.label()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("sig_browser_kinds").selected_text(b.kinds.label().tr()).show_ui(ui, |ui| {
             for k in SigKinds::ALL {
-                ui.menu_value(&mut b.kinds, k, k.label());
+                ui.menu_value(&mut b.kinds, k, k.label().tr());
             }
         });
         let windows = [(0u32, "Any time"), (1, "Last hour"), (6, "Last 6 h"), (24, "Last day"), (72, "Last 3 days")];
         let current = windows.iter().find(|w| w.0 == b.within_h).map_or("Any time", |w| w.1);
-        egui::ComboBox::from_id_salt("sig_browser_within").selected_text(format!("Seen: {current}")).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("sig_browser_within").selected_text(crate::trf!("Seen: {current}", current = current)).show_ui(ui, |ui| {
             for (h, label) in windows {
                 ui.menu_value(&mut b.within_h, h, label);
             }
@@ -268,17 +270,17 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
     let mut delete: Vec<(i64, String)> = Vec::new();
     ui.horizontal(|ui| {
         let systems: BTreeSet<i64> = rows.iter().map(|r| r.0).collect();
-        ui.label(egui::RichText::new(format!("{} of {} signatures in {} systems", rows.len(), b.rows.len(), systems.len())).weak());
+        ui.label(egui::RichText::new(crate::trf!("{rows} of {v} signatures in {systems} systems", rows = rows.len(), v = b.rows.len(), systems = systems.len())).weak());
         ui.add_space(8.0);
-        if ui.add_enabled(!picked.is_empty(), egui::Button::new(format!("{}  Delete {} picked", icon::TRASH, picked.len()))).clicked() {
+        if ui.add_enabled(!picked.is_empty(), egui::Button::new(crate::trf!("{icon}  Delete {picked} picked", icon = icon::TRASH, picked = picked.len()))).clicked() {
             delete = picked.clone();
         }
         act.restored = b.undo_button(ui, &format!("{}  Undo", icon::ARROW_COUNTER_CLOCKWISE), geo);
         ui.add_space(8.0);
-        if ui.menu_label(!b.tree, icon::ROWS).on_hover_text("One list").clicked() {
+        if ui.menu_label(!b.tree, icon::ROWS).on_hover_text(crate::tr!("One list")).clicked() {
             b.tree = false;
         }
-        if ui.menu_label(b.tree, icon::TREE_VIEW).on_hover_text("By system: signatures under their system, with each system's latest paste").clicked() {
+        if ui.menu_label(b.tree, icon::TREE_VIEW).on_hover_text(crate::tr!("By system: signatures under their system, with each system's latest paste")).clicked() {
             b.tree = true;
         }
         if !rows.is_empty() {
@@ -296,8 +298,8 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
     if b.rows.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("No probe scans pasted yet.").weak());
-            ui.label(egui::RichText::new("Select a system on the map and paste the probe scanner on its Signatures tab.").weak());
+            ui.label(egui::RichText::new(crate::tr!("No probe scans pasted yet.")).weak());
+            ui.label(egui::RichText::new(crate::tr!("Select a system on the map and paste the probe scanner on its Signatures tab.")).weak());
         });
         return act;
     }
@@ -404,7 +406,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                             (true, false) => format!(" {}", icon::CARET_UP),
                             _ => String::new(),
                         };
-                        if ui.add(egui::Label::new(egui::RichText::new(format!("{label}{arrow}")).strong()).sense(egui::Sense::click())).on_hover_text("Sort").clicked() {
+                        if ui.add(egui::Label::new(egui::RichText::new(format!("{label}{arrow}")).strong()).sense(egui::Sense::click())).on_hover_text(crate::tr!("Sort")).clicked() {
                             resort = Some(key);
                         }
                     });
@@ -423,7 +425,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                                 }
                             });
                             row.col(|ui| {
-                                if ui.add(egui::Link::new(egui::RichText::new(name_of(*id)).strong())).on_hover_text("Show it on the wormhole map").clicked() {
+                                if ui.add(egui::Link::new(egui::RichText::new(name_of(*id)).strong())).on_hover_text(crate::tr!("Show it on the wormhole map")).clicked() {
                                     act.open = Some(*id);
                                 }
                             });
@@ -446,7 +448,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                                     Some(c) => t.color(c),
                                     None => t,
                                 })
-                                .on_hover_text(format!("Latest paste {} ago by {who}", human_ago(now - last)));
+                                .on_hover_text(crate::trf!("Latest paste {v} ago by {who}", v = human_ago(now - last), who = who));
                             });
                             if show_by {
                                 row.col(|ui| {
@@ -478,7 +480,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                             && ui
                                 .add(egui::Label::new(link).truncate().show_tooltip_when_elided(false).sense(egui::Sense::click()))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(format!("{sys_name}: show it on the wormhole map"))
+                                .on_hover_text(crate::trf!("{sys_name}: show it on the wormhole map", sys_name = sys_name))
                                 .clicked()
                         {
                             act.open = Some(*sys);
@@ -495,7 +497,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                     row.col(|ui| {
                         let info = match hole.map(|w| if w.system_id == *sys { w.dest_system_id } else { Some(w.system_id) }) {
                             Some(Some(far)) => format!("{} {}", icon::ARROW_RIGHT, name_of(far)),
-                            Some(None) => format!("{} {}", icon::ARROW_RIGHT, hole.map_or("?", |w| w.dest.label())),
+                            Some(None) => format!("{} {}", icon::ARROW_RIGHT, hole.map_or("?", |w| w.dest.label().tr())),
                             _ if s.name.is_empty() => "\u{2014}".to_owned(),
                             _ => s.name.clone(),
                         };
@@ -507,7 +509,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                     });
                     row.col(|ui| {
                         ui.label(tint(egui::RichText::new(human_ago(now - s.updated_at))))
-                            .on_hover_text(format!("Last seen in a paste {} ago by {}", human_ago(now - s.updated_at), s.who));
+                            .on_hover_text(crate::trf!("Last seen in a paste {v} ago by {v2}", v = human_ago(now - s.updated_at), v2 = s.who));
                     });
                     if show_by {
                         row.col(|ui| {
@@ -515,7 +517,7 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                         });
                     }
                     row.col(|ui| {
-                        if crate::widgets::icon_button(ui, icon::X).on_hover_text("Delete").clicked() {
+                        if crate::widgets::icon_button(ui, icon::X).on_hover_text(crate::tr!("Delete")).clicked() {
                             delete = vec![key.clone()];
                         }
                         if (hole.is_some() || s.group == "Wormhole")

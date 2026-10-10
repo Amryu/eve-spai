@@ -1,6 +1,8 @@
 //! The assistant's settings: switching it on, the model and its key, limits, and the data it may
 //! read, as a tree of checkboxes in its own window.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::ai::config::{OpenAiPreset, ProviderKind};
 use crate::ai::perms::{self, Node, Tri};
@@ -22,13 +24,13 @@ impl SpaiApp {
     pub(crate) fn assistant_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         use egui_phosphor::regular as icon;
         let mut changed = false;
-        let head = ui.label(egui::RichText::new("Assistant").strong());
+        let head = ui.label(egui::RichText::new(tr!("Assistant")).strong());
         if std::mem::take(&mut self.settings_scroll_to_ai) {
             head.scroll_to_me(Some(egui::Align::TOP));
         }
         changed |= ui
-            .checkbox(&mut self.settings.ai.enabled, "AI assistant")
-            .on_hover_text("Adds the Assistant tab: ask about intel, kills, routes and wormholes, by text or voice")
+            .checkbox(&mut self.settings.ai.enabled, tr!("AI assistant"))
+            .on_hover_text(tr!("Adds the Assistant tab: ask about intel, kills, routes and wormholes, by text or voice"))
             .changed();
         if !self.settings.ai.enabled {
             return changed;
@@ -37,19 +39,19 @@ impl SpaiApp {
         let stored = account.as_deref().is_some_and(|a| self.ai_secrets.has(a));
         egui::Grid::new("ai_settings").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
             let a = &mut self.settings.ai;
-            ui.label("Model service");
-            egui::ComboBox::from_id_salt("ai_provider").selected_text(a.provider.label()).width(280.0).show_ui(ui, |ui| {
+            ui.label(tr!("Model service"));
+            egui::ComboBox::from_id_salt("ai_provider").selected_text(a.provider.label().tr()).width(280.0).show_ui(ui, |ui| {
                 for p in ProviderKind::CHOICES {
-                    changed |= ui.menu_value(&mut a.provider, p, p.label()).changed();
+                    changed |= ui.menu_value(&mut a.provider, p, p.label().tr()).changed();
                 }
             });
             ui.end_row();
             match a.provider {
                 ProviderKind::Anthropic => {
-                    ui.label("Model");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut a.anthropic.model).hint_text("claude-opus-5-5").desired_width(280.0)).changed();
+                    ui.label(tr!("Model"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut a.anthropic.model).hint_text(tr!("claude-opus-5-5")).desired_width(280.0)).changed();
                     ui.end_row();
-                    ui.label("Effort").on_hover_text("How much the model thinks before answering: lower answers sooner");
+                    ui.label(tr!("Effort")).on_hover_text(tr!("How much the model thinks before answering: lower answers sooner"));
                     let cur = EFFORTS.iter().find(|(k, _)| *k == a.anthropic.effort).map_or("Default", |(_, l)| l);
                     egui::ComboBox::from_id_salt("ai_effort").selected_text(cur).width(280.0).show_ui(ui, |ui| {
                         for (k, l) in EFFORTS {
@@ -59,34 +61,34 @@ impl SpaiApp {
                     ui.end_row();
                 }
                 ProviderKind::OpenaiCompat => {
-                    ui.label("Server");
-                    egui::ComboBox::from_id_salt("ai_preset").selected_text(a.openai.preset.label()).width(280.0).show_ui(ui, |ui| {
+                    ui.label(tr!("Server"));
+                    egui::ComboBox::from_id_salt("ai_preset").selected_text(a.openai.preset.label().tr()).width(280.0).show_ui(ui, |ui| {
                         for p in OpenAiPreset::CHOICES {
-                            changed |= ui.menu_value(&mut a.openai.preset, p, p.label()).changed();
+                            changed |= ui.menu_value(&mut a.openai.preset, p, p.label().tr()).changed();
                         }
                     });
                     ui.end_row();
-                    ui.label("Address");
+                    ui.label(tr!("Address"));
                     changed |= ui
                         .add(egui::TextEdit::singleline(&mut a.openai.base_url).hint_text(a.openai.preset.base_url()).desired_width(280.0))
-                        .on_hover_text("Leave empty for the server's usual address")
+                        .on_hover_text(tr!("Leave empty for the server's usual address"))
                         .changed();
                     ui.end_row();
-                    ui.label("Model");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut a.openai.model).hint_text("e.g. qwen3:14b or gpt-5-mini").desired_width(280.0)).changed();
+                    ui.label(tr!("Model"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut a.openai.model).hint_text(tr!("e.g. qwen3:14b or gpt-5-mini")).desired_width(280.0)).changed();
                     ui.end_row();
-                    ui.label("Tool calls");
+                    ui.label(tr!("Tool calls"));
                     changed |= ui
-                        .checkbox(&mut a.openai.tools, "The model can look things up")
-                        .on_hover_text("Turn off for models without tool calling: they then answer from the summary alone")
+                        .checkbox(&mut a.openai.tools, tr!("The model can look things up"))
+                        .on_hover_text(tr!("Turn off for models without tool calling: they then answer from the summary alone"))
                         .changed();
                     ui.end_row();
                 }
                 ProviderKind::Gemini => {
-                    ui.label("Model");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut a.gemini.model).hint_text("gemini-2.5-flash").desired_width(280.0)).changed();
+                    ui.label(tr!("Model"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut a.gemini.model).hint_text(tr!("gemini-2.5-flash")).desired_width(280.0)).changed();
                     ui.end_row();
-                    ui.label("Effort").on_hover_text("How much the model thinks before answering: lower answers sooner");
+                    ui.label(tr!("Effort")).on_hover_text(tr!("How much the model thinks before answering: lower answers sooner"));
                     let cur = EFFORTS.iter().find(|(k, _)| *k == a.gemini.effort).map_or("Default", |(_, l)| l);
                     egui::ComboBox::from_id_salt("ai_gemini_effort").selected_text(cur).width(280.0).show_ui(ui, |ui| {
                         for (k, l) in EFFORTS {
@@ -99,19 +101,19 @@ impl SpaiApp {
                     let claude = a.provider == ProviderKind::ClaudeCli;
                     let cfg = if claude { &mut a.claude_cli } else { &mut a.codex_cli };
                     let default = if claude { "claude" } else { "codex" };
-                    ui.label("Program");
+                    ui.label(tr!("Program"));
                     ui.horizontal(|ui| {
                         changed |= ui.add(egui::TextEdit::singleline(&mut cfg.path).hint_text(default).desired_width(200.0)).changed();
                         let prog = if cfg.path.trim().is_empty() { default } else { cfg.path.trim() };
                         if crate::ai::cli::find(prog).is_some() {
-                            ui.label(egui::RichText::new(format!("{}  Found", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                            ui.label(egui::RichText::new(trf!("{icon}  Found", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
                         } else {
-                            ui.label(egui::RichText::new(format!("{}  Not found", icon::WARNING)).color(crate::theme::standing::WARNING))
+                            ui.label(egui::RichText::new(trf!("{icon}  Not found", icon = icon::WARNING)).color(crate::theme::standing::WARNING))
                                 .on_hover_text(if claude { "Install Claude Code and sign in with `claude` once." } else { "Install Codex and sign in with `codex login` once." });
                         }
                     });
                     ui.end_row();
-                    ui.label("Model");
+                    ui.label(tr!("Model"));
                     if claude {
                         // The program takes these short names and any full model id.
                         let claude_models = crate::ai::config::model_choices(ProviderKind::ClaudeCli);
@@ -126,27 +128,27 @@ impl SpaiApp {
                                         changed = true;
                                     }
                                 }
-                                if ui.add(egui::Button::new("Other\u{2026}").selected(other)).clicked() {
+                                if ui.add(egui::Button::new(tr!("Other\u{2026}")).selected(other)).clicked() {
                                     self.ai_cli_other_model = true;
                                     ui.close();
                                 }
                             });
                             if other {
                                 changed |= ui
-                                    .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("a model id, e.g. claude-opus-5-5").desired_width(280.0))
+                                    .add(egui::TextEdit::singleline(&mut cfg.model).hint_text(tr!("a model id, e.g. claude-opus-5-5")).desired_width(280.0))
                                     .changed();
                             }
                         });
                     } else {
                         changed |= ui
-                            .add(egui::TextEdit::singleline(&mut cfg.model).hint_text("the program's own default").desired_width(280.0))
+                            .add(egui::TextEdit::singleline(&mut cfg.model).hint_text(tr!("the program's own default")).desired_width(280.0))
                             .changed();
                     }
                     ui.end_row();
                     ui.label("");
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new("Uses your subscription through the program you are signed in to. It reaches only EVE Spai's tools, never files or commands.")
+                            egui::RichText::new(tr!("Uses your subscription through the program you are signed in to. It reaches only EVE Spai's tools, never files or commands."))
                                 .weak(),
                         )
                         .wrap(),
@@ -155,24 +157,24 @@ impl SpaiApp {
                 }
                 ProviderKind::Unknown => {
                     ui.label("");
-                    ui.label(egui::RichText::new("Not available in this version yet").weak());
+                    ui.label(egui::RichText::new(tr!("Not available in this version yet")).weak());
                     ui.end_row();
                 }
             }
             if let Some(acc) = &account {
-                ui.label("API key");
+                ui.label(tr!("API key"));
                 ui.horizontal(|ui| {
                     if stored {
-                        ui.label(egui::RichText::new(format!("{}  Stored in the keychain", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
-                        if ui.button("Remove").clicked() {
+                        ui.label(egui::RichText::new(trf!("{icon}  Stored in the keychain", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        if ui.button(tr!("Remove")).clicked() {
                             self.ai_secrets.delete(acc);
                         }
                     } else {
-                        ui.add(egui::TextEdit::singleline(&mut self.ai_key_input).password(true).hint_text("Paste the key").desired_width(200.0));
-                        if ui.add_enabled(!self.ai_key_input.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                        ui.add(egui::TextEdit::singleline(&mut self.ai_key_input).password(true).hint_text(tr!("Paste the key")).desired_width(200.0));
+                        if ui.add_enabled(!self.ai_key_input.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
                             match self.ai_secrets.set(acc, &self.ai_key_input) {
-                                Ok(()) => self.toast("Key stored in the keychain"),
-                                Err(e) => self.toast_error(format!("Could not store the key: {e}")),
+                                Ok(()) => self.toast(tr!("Key stored in the keychain")),
+                                Err(e) => self.toast_error(trf!("Could not store the key: {e}", e = e)),
                             }
                             self.ai_key_input.clear();
                         }
@@ -181,7 +183,7 @@ impl SpaiApp {
                 ui.end_row();
             }
             let a = &mut self.settings.ai;
-            ui.label("Limits").on_hover_text("The assistant pauses when either is reached");
+            ui.label(tr!("Limits")).on_hover_text(tr!("The assistant pauses when either is reached"));
             ui.horizontal(|ui| {
                 changed |= ui.add(egui::DragValue::new(&mut a.caps.max_calls_per_hour).range(0..=10_000).suffix(" calls/hour")).changed();
                 changed |= ui
@@ -189,16 +191,16 @@ impl SpaiApp {
                     .changed();
             });
             ui.end_row();
-            ui.label("Nearby means");
+            ui.label(tr!("Nearby means"));
             changed |= ui
                 .add(egui::DragValue::new(&mut a.situation_jumps).range(1..=20).suffix(" jumps"))
-                .on_hover_text("How far from your characters the assistant's standing summary looks")
+                .on_hover_text(tr!("How far from your characters the assistant's standing summary looks"))
                 .changed();
             ui.end_row();
         });
         egui::Grid::new("ai_settings_lang").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
             let a = &mut self.settings.ai;
-            ui.label("Language");
+            ui.label(tr!("Language"));
             let cur = crate::ai::config::LANGUAGES.iter().find(|(c, _, _)| *c == a.language).map_or("Same as the question", |(_, l, _)| l);
             egui::ComboBox::from_id_salt("ai_language").selected_text(cur).width(280.0).show_ui(ui, |ui| {
                 for (code, label, _) in crate::ai::config::LANGUAGES {
@@ -206,25 +208,25 @@ impl SpaiApp {
                 }
             });
             ui.end_row();
-            ui.label("Your instructions").on_hover_text("Added to the assistant's own; yours win where they differ");
+            ui.label(tr!("Your instructions")).on_hover_text(tr!("Added to the assistant's own; yours win where they differ"));
             changed |= ui
                 .add(
                     egui::TextEdit::multiline(&mut a.instructions)
                         .desired_rows(3)
                         .desired_width(280.0)
-                        .hint_text("e.g. I fly with Goonswarm out of 1DQ1-A. Keep answers to two sentences."),
+                        .hint_text(tr!("e.g. I fly with Goonswarm out of 1DQ1-A. Keep answers to two sentences.")),
                 )
                 .changed();
             ui.end_row();
         });
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
+            if ui.button(trf!("{icon}  Data access\u{2026}", icon = icon::KEY)).on_hover_text(tr!("What the assistant may read and do")).clicked() {
                 self.ai_perms_open = true;
             }
-            if ui.button(format!("{}  Glossary\u{2026}", icon::BOOK_OPEN)).on_hover_text("How the assistant reads EVE terms").clicked() {
+            if ui.button(trf!("{icon}  Glossary\u{2026}", icon = icon::BOOK_OPEN)).on_hover_text(tr!("How the assistant reads EVE terms")).clicked() {
                 self.ai_glossary_open = true;
             }
-            if ui.button(format!("{}  Feeds\u{2026}", icon::RSS)).on_hover_text("Outside sources for the assistant to read and watch").clicked() {
+            if ui.button(trf!("{icon}  Feeds\u{2026}", icon = icon::RSS)).on_hover_text(tr!("Outside sources for the assistant to read and watch")).clicked() {
                 self.ai_feeds_open = true;
             }
         });
@@ -242,7 +244,7 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let mut changed = false;
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Voice").strong());
+        ui.label(egui::RichText::new(tr!("Voice")).strong());
         let label = |k: TtsKind| match k {
             TtsKind::Off => "Off",
             TtsKind::Piper => "Piper, on this computer",
@@ -257,17 +259,17 @@ impl SpaiApp {
             let key_input = &mut self.ai_voice_key_input;
             let v = &mut self.settings.ai.voice;
             let mut key_row = |ui: &mut egui::Ui, acc: &str| {
-                ui.label("API key");
+                ui.label(tr!("API key"));
                 ui.horizontal(|ui| {
                     if secrets.has(acc) {
-                        ui.label(egui::RichText::new(format!("{}  Stored in the keychain", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
-                        if ui.button("Remove").clicked() {
+                        ui.label(egui::RichText::new(trf!("{icon}  Stored in the keychain", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        if ui.button(tr!("Remove")).clicked() {
                             secrets.delete(acc);
                             reread = true;
                         }
                     } else {
-                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text("Paste the key").desired_width(200.0));
-                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text(tr!("Paste the key")).desired_width(200.0));
+                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
                             note = Some(secrets.set(acc, key_input.trim()).map(|_| "Key stored in the keychain".to_owned()).map_err(|e| format!("Could not store the key: {e}")));
                             key_input.clear();
                             reread = true;
@@ -276,7 +278,7 @@ impl SpaiApp {
                 });
                 ui.end_row();
             };
-            ui.label("Speech");
+            ui.label(tr!("Speech"));
             egui::ComboBox::from_id_salt("ai_tts").selected_text(label(v.tts)).width(280.0).show_ui(ui, |ui| {
                 for k in [TtsKind::Off, TtsKind::Piper, TtsKind::Openai, TtsKind::Elevenlabs] {
                     changed |= ui.menu_value(&mut v.tts, k, label(k)).changed();
@@ -288,16 +290,16 @@ impl SpaiApp {
             }
             ui.label("");
             changed |= ui
-                .checkbox(&mut v.speak_replies, "Speak every answer")
-                .on_hover_text("Answers to a push-to-talk question are spoken either way, and so are watch matches when this is on")
+                .checkbox(&mut v.speak_replies, tr!("Speak every answer"))
+                .on_hover_text(tr!("Answers to a push-to-talk question are spoken either way, and so are watch matches when this is on"))
                 .changed();
             ui.end_row();
-            ui.label("Volume");
+            ui.label(tr!("Volume"));
             changed |= ui.add(egui::Slider::new(&mut v.volume, 0.0..=1.0).show_value(false)).changed();
             ui.end_row();
             match v.tts {
                 TtsKind::Openai => {
-                    ui.label("Voice");
+                    ui.label(tr!("Voice"));
                     let voices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
                     egui::ComboBox::from_id_salt("ai_openai_voice").selected_text(v.cloud_voice.clone()).width(280.0).show_ui(ui, |ui| {
                         for n in voices {
@@ -308,10 +310,10 @@ impl SpaiApp {
                     key_row(ui, "openai:openai");
                 }
                 TtsKind::Elevenlabs => {
-                    ui.label("Voice id");
+                    ui.label(tr!("Voice id"));
                     changed |= ui
-                        .add(egui::TextEdit::singleline(&mut v.elevenlabs_voice).hint_text("a stock voice when empty").desired_width(280.0))
-                        .on_hover_text("From your ElevenLabs voice library. The multilingual model speaks every answer language.")
+                        .add(egui::TextEdit::singleline(&mut v.elevenlabs_voice).hint_text(tr!("a stock voice when empty")).desired_width(280.0))
+                        .on_hover_text(tr!("From your ElevenLabs voice library. The multilingual model speaks every answer language."))
                         .changed();
                     ui.end_row();
                     key_row(ui, "elevenlabs");
@@ -334,7 +336,7 @@ impl SpaiApp {
             changed |= self.ai_piper_voices_ui(ui);
         }
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Try it", icon::SPEAKER_HIGH)).on_hover_text("Says a sample answer in the answer language").clicked() {
+            if ui.button(trf!("{icon}  Try it", icon = icon::SPEAKER_HIGH)).on_hover_text(tr!("Says a sample answer in the answer language")).clicked() {
                 let lang = self.settings.ai.language.clone();
                 self.ai_voice_test(&lang);
             }
@@ -348,7 +350,7 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let mut changed = false;
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Voice questions").strong());
+        ui.label(egui::RichText::new(tr!("Voice questions")).strong());
         let label = |k: SttKind| match k {
             SttKind::Off => "Off",
             SttKind::Local => "A speech server on this computer",
@@ -369,7 +371,7 @@ impl SpaiApp {
         egui::Grid::new("ai_voice_in").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
             let key_input = &mut self.ai_stt_key_input;
             let v = &mut self.settings.ai.voice;
-            ui.label("Recognition");
+            ui.label(tr!("Recognition"));
             egui::ComboBox::from_id_salt("ai_stt").selected_text(label(v.stt)).width(280.0).show_ui(ui, |ui| {
                 let kinds: &[SttKind] = if crate::ai::voice::whisper::AVAILABLE {
                     &[SttKind::Off, SttKind::Whisper, SttKind::Local, SttKind::Openai, SttKind::Groq]
@@ -386,14 +388,14 @@ impl SpaiApp {
             }
             let account = match v.stt {
                 SttKind::Local => {
-                    ui.label("Address");
+                    ui.label(tr!("Address"));
                     changed |= ui
                         .add(egui::TextEdit::singleline(&mut v.stt_url).hint_text("http://localhost:8000/v1").desired_width(280.0))
-                        .on_hover_text("Any server with OpenAI's transcription API: speaches, faster-whisper-server, LocalAI")
+                        .on_hover_text(tr!("Any server with OpenAI's transcription API: speaches, faster-whisper-server, LocalAI"))
                         .changed();
                     ui.end_row();
-                    ui.label("Model");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut v.whisper_model).hint_text("Systran/faster-whisper-small").desired_width(280.0)).changed();
+                    ui.label(tr!("Model"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut v.whisper_model).hint_text(tr!("Systran/faster-whisper-small")).desired_width(280.0)).changed();
                     ui.end_row();
                     None
                 }
@@ -402,16 +404,16 @@ impl SpaiApp {
                 _ => None,
             };
             if let Some(acc) = account {
-                ui.label("API key");
+                ui.label(tr!("API key"));
                 ui.horizontal(|ui| {
                     if secrets.has(acc) {
-                        ui.label(egui::RichText::new(format!("{}  Stored in the keychain", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
-                        if ui.button("Remove").clicked() {
+                        ui.label(egui::RichText::new(trf!("{icon}  Stored in the keychain", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                        if ui.button(tr!("Remove")).clicked() {
                             secrets.delete(acc);
                         }
                     } else {
-                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text("Paste the key").desired_width(200.0));
-                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                        ui.add(egui::TextEdit::singleline(key_input).password(true).hint_text(tr!("Paste the key")).desired_width(200.0));
+                        if ui.add_enabled(!key_input.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
                             note = Some(secrets.set(acc, key_input.trim()).map(|_| "Key stored in the keychain".to_owned()).map_err(|e| format!("Could not store the key: {e}")));
                             key_input.clear();
                         }
@@ -419,10 +421,10 @@ impl SpaiApp {
                 });
                 ui.end_row();
             }
-            ui.label("Talk key");
+            ui.label(tr!("Talk key"));
             ui.horizontal(|ui| {
                 if !crate::ai::ptt::SUPPORTED {
-                    ui.label(egui::RichText::new("Bind `eve-spai --ptt` to a system shortcut to start and stop listening").weak());
+                    ui.label(egui::RichText::new(tr!("Bind `eve-spai --ptt` to a system shortcut to start and stop listening")).weak());
                     return;
                 }
                 let shown = if binding {
@@ -430,10 +432,10 @@ impl SpaiApp {
                 } else {
                     v.ptt.as_ref().filter(|k| k.platform == std::env::consts::OS).map_or("Not set".to_owned(), |k| k.label.clone())
                 };
-                if ui.button(format!("{}  {shown}", icon::KEYBOARD)).on_hover_text("Click, then press the key to hold while you talk").clicked() {
+                if ui.button(format!("{}  {shown}", icon::KEYBOARD)).on_hover_text(tr!("Click, then press the key to hold while you talk")).clicked() {
                     bind = true;
                 }
-                if v.ptt.is_some() && ui.button(icon::X).on_hover_text("No talk key").clicked() {
+                if v.ptt.is_some() && ui.button(icon::X).on_hover_text(tr!("No talk key")).clicked() {
                     v.ptt = None;
                     changed = true;
                 }
@@ -442,15 +444,15 @@ impl SpaiApp {
             if crate::ai::ptt::SUPPORTED {
                 ui.label("");
                 changed |= ui
-                    .checkbox(&mut v.ptt_exclusive, "Keep the key from the game")
-                    .on_hover_text("Off: the game sees the key too, handy when it is also your voice chat key")
+                    .checkbox(&mut v.ptt_exclusive, tr!("Keep the key from the game"))
+                    .on_hover_text(tr!("Off: the game sees the key too, handy when it is also your voice chat key"))
                     .changed();
                 ui.end_row();
             }
-            ui.label("Microphone");
+            ui.label(tr!("Microphone"));
             let cur = if v.input_device.is_empty() { "System default".to_owned() } else { v.input_device.clone() };
             egui::ComboBox::from_id_salt("ai_mic").selected_text(cur).width(280.0).truncate().show_ui(ui, |ui| {
-                changed |= ui.menu_value(&mut v.input_device, String::new(), "System default").changed();
+                changed |= ui.menu_value(&mut v.input_device, String::new(), tr!("System default")).changed();
                 for m in &mics {
                     changed |= ui.menu_value(&mut v.input_device, m.clone(), m).changed();
                 }
@@ -466,7 +468,7 @@ impl SpaiApp {
         if let Some(p) = problem {
             ui.label(egui::RichText::new(p).color(crate::theme::standing::WARNING));
         } else if cfg!(target_os = "linux") && crate::ai::ptt::SUPPORTED {
-            ui.label(egui::RichText::new("The talk key works while the game or another X11 window has focus; in EVE Spai, hold the mic button.").weak());
+            ui.label(egui::RichText::new(tr!("The talk key works while the game or another X11 window has focus; in EVE Spai, hold the mic button.")).weak());
         }
         match note {
             Some(Ok(m)) => self.toast(m),
@@ -489,13 +491,13 @@ impl SpaiApp {
         let mut changed = false;
         let progress = self.ai_whisper_progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let cur = self.settings.ai.voice.whisper_file.clone();
-        let shown = |m: &whisper::Model| format!("{}  \u{b7}  {}  \u{b7}  about {} MB memory", m.label(), super::fmt_bytes(m.bytes), m.ram_mb());
+        let shown = |m: &whisper::Model| format!("{}  \u{b7}  {}  \u{b7}  about {} MB memory", m.label().tr(), super::fmt_bytes(m.bytes), m.ram_mb());
         let mut get: Option<String> = None;
         egui::Grid::new("ai_whisper").num_columns(2).spacing([12.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
-            ui.label("Whisper model").on_hover_text(
-                "Bigger models hear better and take longer: tiny and base answer in well under a second, small in one or two, \
+            ui.label(tr!("Whisper model")).on_hover_text(
+                tr!("Bigger models hear better and take longer: tiny and base answer in well under a second, small in one or two, \
                  medium and large in several on a CPU. q5 and q8 are smaller copies that sound nearly the same. \
-                 English-only models hear every language as English.",
+                 English-only models hear every language as English."),
             );
             let sel = whisper::model(&cur).map_or(cur.clone(), &shown);
             let v = &mut self.settings.ai.voice;
@@ -511,11 +513,11 @@ impl SpaiApp {
                 if whisper::installed(&cur) {
                     let loaded = whisper::loaded().as_deref() == Some(cur.as_str());
                     ui.label(egui::RichText::new(if loaded { "Downloaded, loaded now" } else { "Downloaded" }).weak());
-                    if ui.button(format!("{}  Remove", icon::TRASH)).on_hover_text("Delete the file to free the disk space").clicked() {
+                    if ui.button(trf!("{icon}  Remove", icon = icon::TRASH)).on_hover_text(tr!("Delete the file to free the disk space")).clicked() {
                         whisper::remove(&cur);
                     }
                 } else if let Some(m) = whisper::model(&cur) {
-                    if ui.add_enabled(!progress.busy, egui::Button::new(format!("{}  Get, {}", icon::DOWNLOAD_SIMPLE, super::fmt_bytes(m.bytes)))).clicked() {
+                    if ui.add_enabled(!progress.busy, egui::Button::new(trf!("{icon}  Get, {v}", icon = icon::DOWNLOAD_SIMPLE, v = super::fmt_bytes(m.bytes)))).clicked() {
                         get = Some(cur.clone());
                     }
                 }
@@ -529,7 +531,7 @@ impl SpaiApp {
         } else if let Some(e) = &progress.error {
             ui.label(egui::RichText::new(e).color(crate::theme::standing::WARNING));
         }
-        ui.label(egui::RichText::new("The model loads when you ask and is let go after five idle minutes.").weak());
+        ui.label(egui::RichText::new(tr!("The model loads when you ask and is let go after five idle minutes.")).weak());
         if let Some(f) = get {
             crate::ai::voice::whisper::install(f, self.ai_whisper_progress.clone(), Some(self.ui_ctx.clone()));
         }
@@ -551,15 +553,15 @@ impl SpaiApp {
                 egui::ComboBox::from_id_salt(("piper_voice", *code)).selected_text(shown).width(200.0).show_ui(ui, |ui| {
                     let mut pick = chosen.clone();
                     for v in models::CATALOG.iter().filter(|v| v.lang == *code) {
-                        if ui.menu_value(&mut pick, v.id.to_owned(), v.label).on_hover_text(format!("Recordings licensed {}", v.license)).changed() {
+                        if ui.menu_value(&mut pick, v.id.to_owned(), v.label).on_hover_text(trf!("Recordings licensed {v}", v = v.license)).changed() {
                             self.settings.ai.voice.piper_voices.insert((*code).to_owned(), pick.clone());
                             changed = true;
                         }
                     }
                 });
                 if models::has_voice(&chosen) && program {
-                    ui.label(egui::RichText::new("Installed").weak());
-                } else if ui.add_enabled(!progress.busy, egui::Button::new(format!("{}  Get, 63 MB", egui_phosphor::regular::DOWNLOAD_SIMPLE))).clicked() {
+                    ui.label(egui::RichText::new(tr!("Installed")).weak());
+                } else if ui.add_enabled(!progress.busy, egui::Button::new(trf!("{icon}  Get, 63 MB", icon = egui_phosphor::regular::DOWNLOAD_SIMPLE))).clicked() {
                     fetch.push(chosen);
                 }
                 ui.end_row();
@@ -572,7 +574,7 @@ impl SpaiApp {
         } else if let Some(e) = &progress.error {
             ui.label(egui::RichText::new(e).color(crate::theme::standing::WARNING));
         } else if !program {
-            ui.label(egui::RichText::new("Piper itself (about 25 MB) comes with the first voice.").weak());
+            ui.label(egui::RichText::new(tr!("Piper itself (about 25 MB) comes with the first voice.")).weak());
         }
         if !fetch.is_empty() {
             models::install_missing(fetch, self.ai_piper_progress.clone(), Some(self.ui_ctx.clone()));
@@ -600,7 +602,7 @@ impl SpaiApp {
         let mut auto = std::mem::take(&mut self.settings.ai.auto_actions);
         let channels = self.settings.intel_channels.clone();
         let keep = Self::dialog_viewport(ctx, "ai_perms", "EVE Spai - Assistant data access", [460.0, 640.0], |ui| {
-            ui.label(egui::RichText::new("The assistant reads only what is ticked. Actions ask you first unless you let a kind through.").weak());
+            ui.label(egui::RichText::new(tr!("The assistant reads only what is ticked. Actions ask you first unless you let a kind through.")).weak());
             ui.add_space(4.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for node in perms::TREE {
@@ -657,8 +659,8 @@ fn perm_node(
                 let mut free = auto.iter().any(|a| a == node.key);
                 let shown = if free { "without asking" } else { "asks first" };
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| egui::ComboBox::from_id_salt(("ai_auto", node.key)).selected_text(shown).width(130.0).show_ui(ui, |ui| {
-                    let a = ui.menu_value(&mut free, false, "asks first").changed();
-                    let b = ui.menu_value(&mut free, true, "without asking").on_hover_text(if node.key == "actions.jabber" { "Broadcasts (!bping, !bcast) still ask" } else { "" }).changed();
+                    let a = ui.menu_value(&mut free, false, tr!("asks first")).changed();
+                    let b = ui.menu_value(&mut free, true, tr!("without asking")).on_hover_text(if node.key == "actions.jabber" { "Broadcasts (!bping, !bcast) still ask" } else { "" }).changed();
                     if a || b {
                         auto.retain(|k| k != node.key);
                         if free {
@@ -728,44 +730,44 @@ impl SpaiApp {
         };
         let mut note: Option<String> = None;
         let keep = Self::dialog_viewport(ctx, "ai_feeds", "EVE Spai - Assistant feeds", [560.0, 600.0], |ui| {
-            ui.label(egui::RichText::new("News, timers, broadcasts: anything with a feed. The assistant reads the ones allowed under Data access and watches them for you.").weak());
+            ui.label(egui::RichText::new(tr!("News, timers, broadcasts: anything with a feed. The assistant reads the ones allowed under Data access and watches them for you.")).weak());
             ui.add_space(4.0);
             if let Some(e) = edit.as_mut() {
                 egui::Grid::new("ai_feed_form").num_columns(2).spacing([12.0, 6.0]).min_col_width(100.0).show(ui, |ui| {
-                    ui.label("Name");
-                    ui.add(egui::TextEdit::singleline(&mut e.name).hint_text("Timers board").desired_width(360.0));
+                    ui.label(tr!("Name"));
+                    ui.add(egui::TextEdit::singleline(&mut e.name).hint_text(tr!("Timers board")).desired_width(360.0));
                     ui.end_row();
-                    ui.label("Address");
+                    ui.label(tr!("Address"));
                     ui.add(egui::TextEdit::singleline(&mut e.url).hint_text("https://\u{2026}").desired_width(360.0));
                     ui.end_row();
-                    ui.label("Kind");
-                    egui::ComboBox::from_id_salt("ai_feed_kind").selected_text(e.kind.label()).width(200.0).show_ui(ui, |ui| {
+                    ui.label(tr!("Kind"));
+                    egui::ComboBox::from_id_salt("ai_feed_kind").selected_text(e.kind.label().tr()).width(200.0).show_ui(ui, |ui| {
                         for k in FeedKind::CHOICES {
-                            ui.menu_value(&mut e.kind, k, k.label());
+                            ui.menu_value(&mut e.kind, k, k.label().tr());
                         }
                     });
                     ui.end_row();
                     if e.kind == FeedKind::Json {
-                        ui.label("Items at").on_hover_text("Where the list is, as dot-separated keys; empty when the answer is the list");
-                        ui.add(egui::TextEdit::singleline(&mut e.items_path).hint_text("data.items").desired_width(200.0));
+                        ui.label(tr!("Items at")).on_hover_text(tr!("Where the list is, as dot-separated keys; empty when the answer is the list"));
+                        ui.add(egui::TextEdit::singleline(&mut e.items_path).hint_text(tr!("data.items")).desired_width(200.0));
                         ui.end_row();
-                        for (label, f) in [("Text field", &mut e.text_field), ("Title field", &mut e.title_field), ("Time field", &mut e.time_field), ("Link field", &mut e.link_field)] {
+                        for (label, f) in [(tr!("Text field"), &mut e.text_field), (tr!("Title field"), &mut e.title_field), (tr!("Time field"), &mut e.time_field), (tr!("Link field"), &mut e.link_field)] {
                             ui.label(label);
                             ui.add(egui::TextEdit::singleline(f).desired_width(200.0));
                             ui.end_row();
                         }
                     }
-                    ui.label("Check every");
+                    ui.label(tr!("Check every"));
                     ui.add(egui::DragValue::new(&mut e.interval).range(MIN_INTERVAL..=86_400).suffix(" s"));
                     ui.end_row();
-                    ui.label("Header").on_hover_text("For feeds that want a key: the header name here, its value goes to the keychain");
+                    ui.label(tr!("Header")).on_hover_text(tr!("For feeds that want a key: the header name here, its value goes to the keychain"));
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut e.auth_header).hint_text("none, or e.g. Authorization").desired_width(160.0));
+                        ui.add(egui::TextEdit::singleline(&mut e.auth_header).hint_text(tr!("none, or e.g. Authorization")).desired_width(160.0));
                         if !e.auth_header.trim().is_empty() {
                             if secrets.has(&e.secret_account()) {
-                                ui.label(egui::RichText::new(format!("{}  Value stored", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                                ui.label(egui::RichText::new(trf!("{icon}  Value stored", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
                             } else {
-                                ui.add(egui::TextEdit::singleline(&mut secret).password(true).hint_text("its value").desired_width(150.0));
+                                ui.add(egui::TextEdit::singleline(&mut secret).password(true).hint_text(tr!("its value")).desired_width(150.0));
                             }
                         }
                     });
@@ -774,10 +776,10 @@ impl SpaiApp {
                 let ok = !e.name.trim().is_empty() && (e.url.starts_with("https://") || e.url.starts_with("http://"));
                 let mut done = None;
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(ok, egui::Button::new(format!("{}  Save", icon::CHECK))).clicked() {
+                    if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Save", icon = icon::CHECK))).clicked() {
                         done = Some(true);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr!("Cancel")).clicked() {
                         done = Some(false);
                     }
                 });
@@ -803,23 +805,23 @@ impl SpaiApp {
                     None => {}
                 }
                 ui.separator();
-            } else if ui.button(format!("{}  Add a feed", icon::PLUS)).clicked() {
+            } else if ui.button(trf!("{icon}  Add a feed", icon = icon::PLUS)).clicked() {
                 let id = feeds.iter().map(|f| f.id).max().unwrap_or(0) + 1;
                 edit = Some(FeedDef { id, ..Default::default() });
             }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 if feeds.is_empty() {
-                    ui.label(egui::RichText::new("No feeds yet.").weak());
+                    ui.label(egui::RichText::new(tr!("No feeds yet.")).weak());
                 }
                 let mut remove = None;
                 for f in feeds.iter_mut() {
                     ui.horizontal(|ui| {
-                        changed |= ui.checkbox(&mut f.enabled, "").on_hover_text("Checked: polled").changed();
+                        changed |= ui.checkbox(&mut f.enabled, "").on_hover_text(tr!("Checked: polled")).changed();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                            if ui.button(icon::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                 remove = Some(f.id);
                             }
-                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text(tr!("Edit")).clicked() {
                                 edit = Some(f.clone());
                             }
                             match errors.get(&f.id) {
@@ -827,7 +829,7 @@ impl SpaiApp {
                                     ui.label(egui::RichText::new(icon::WARNING).color(crate::theme::standing::WARNING)).on_hover_text(e);
                                 }
                                 None => {
-                                    ui.label(egui::RichText::new(format!("{} items", counts.get(&f.id).copied().unwrap_or(0))).weak());
+                                    ui.label(egui::RichText::new(trf!("{v} items", v = counts.get(&f.id).copied().unwrap_or(0))).weak());
                                 }
                             }
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -874,25 +876,25 @@ impl SpaiApp {
         let mut new = std::mem::take(&mut self.ai_glossary_new);
         let mut reset_all = self.ai_glossary_reset_all;
         let keep = Self::dialog_viewport(ctx, "ai_glossary", "EVE Spai - Assistant glossary", [620.0, 700.0], |ui| {
-            ui.label(egui::RichText::new("How the assistant reads EVE terms. Change any meaning, clear one to hide it, or add your own.").weak());
+            ui.label(egui::RichText::new(tr!("How the assistant reads EVE terms. Change any meaning, clear one to hide it, or add your own.")).weak());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(icon::MAGNIFYING_GLASS);
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Find a term").desired_width(200.0));
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr!("Find a term")).desired_width(200.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if reset_all {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(tr!("Cancel")).clicked() {
                             reset_all = false;
                         }
-                        if ui.button(egui::RichText::new("Reset all").color(crate::theme::standing::WARNING)).clicked() {
+                        if ui.button(egui::RichText::new(tr!("Reset all")).color(crate::theme::standing::WARNING)).clicked() {
                             edits.overrides.clear();
                             reset_all = false;
                             changed = true;
                         }
-                        ui.label("Put every base entry back?");
+                        ui.label(tr!("Put every base entry back?"));
                     } else if ui
-                        .add_enabled(!edits.overrides.is_empty(), egui::Button::new(format!("{}  Reset all", icon::ARROW_COUNTER_CLOCKWISE)))
-                        .on_hover_text("Every base entry back to the shipped meaning; your own entries stay")
+                        .add_enabled(!edits.overrides.is_empty(), egui::Button::new(trf!("{icon}  Reset all", icon = icon::ARROW_COUNTER_CLOCKWISE)))
+                        .on_hover_text(tr!("Every base entry back to the shipped meaning; your own entries stay"))
                         .clicked()
                     {
                         reset_all = true;
@@ -901,9 +903,9 @@ impl SpaiApp {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut new.0).hint_text("New term").desired_width(140.0));
-                ui.add(egui::TextEdit::singleline(&mut new.1).hint_text("What it means").desired_width(ui.available_width() - 70.0));
-                if ui.add_enabled(!new.0.trim().is_empty() && !new.1.trim().is_empty(), egui::Button::new(format!("{}  Add", icon::PLUS))).clicked() {
+                ui.add(egui::TextEdit::singleline(&mut new.0).hint_text(tr!("New term")).desired_width(140.0));
+                ui.add(egui::TextEdit::singleline(&mut new.1).hint_text(tr!("What it means")).desired_width(ui.available_width() - 70.0));
+                if ui.add_enabled(!new.0.trim().is_empty() && !new.1.trim().is_empty(), egui::Button::new(trf!("{icon}  Add", icon = icon::PLUS))).clicked() {
                     edits.custom.push(Entry { term: new.0.trim().to_owned(), meaning: new.1.trim().to_owned() });
                     new = Default::default();
                     changed = true;
@@ -933,22 +935,22 @@ impl SpaiApp {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if let Some(i) = ci {
-                                if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                                if ui.button(icon::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                     remove_custom = Some(i);
                                 }
                             } else if r.changed() || hidden {
-                                if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(format!("Back to: {}", r.base.unwrap_or_default())).clicked() {
+                                if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(trf!("Back to: {v}", v = r.base.unwrap_or_default())).clicked() {
                                     edits.overrides.remove(&r.term);
                                     changed = true;
                                 }
-                            } else if ui.button(icon::EYE_SLASH).on_hover_text("Hide this term from the assistant").clicked() {
+                            } else if ui.button(icon::EYE_SLASH).on_hover_text(tr!("Hide this term from the assistant")).clicked() {
                                 edits.overrides.insert(r.term.clone(), String::new());
                                 changed = true;
                             }
                             let mut meaning = r.meaning.clone();
                             let edit = egui::TextEdit::singleline(&mut meaning)
                                 .desired_width(ui.available_width())
-                                .hint_text("Hidden: the assistant does not get this term");
+                                .hint_text(tr!("Hidden: the assistant does not get this term"));
                             if ui.add(edit).on_hover_text(&r.meaning).changed() {
                                 match ci {
                                     Some(i) => edits.custom[i].meaning = meaning.clone(),

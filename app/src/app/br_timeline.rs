@@ -113,7 +113,7 @@ pub(crate) fn timeline_chart(ui: &mut egui::Ui, b: &br_core::battle::Battle, hei
         painter.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], egui::Stroke::new(1.0, ui.visuals().text_color().gamma_multiply(0.5)));
         let from = bk.start + i as i64 * bk.secs;
         resp.on_hover_ui_at_pointer(|ui| {
-            ui.label(egui::RichText::new(format!("{}\u{2013}{} EVE", hhmmss(from), hhmmss(from + bk.secs))).strong());
+            ui.label(egui::RichText::new(trf!("{v}\u{2013}{v2} EVE", v = hhmmss(from), v2 = hhmmss(from + bk.secs))).strong());
             // One line a side: the name cut to fit, the figures whole.
             for (s, side) in b.sides.iter().enumerate() {
                 let (isk, k) = (bk.lost[i][s], bk.kills[i][s]);
@@ -165,16 +165,16 @@ pub(crate) fn timeline_kills(
             row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(fmt_isk(e.isk)).color(col));
                 if let Some(fb) = e.attackers.iter().find(|a| a.final_blow) {
-                    ui.add(egui::Label::new(egui::RichText::new(format!("by {}", fb.pilot)).weak()).truncate());
+                    ui.add(egui::Label::new(egui::RichText::new(trf!("by {v}", v = fb.pilot)).weak()).truncate());
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     // The ship first and plain, the pilot after it, quieter: two names that read as two.
-                    let ship = type_names.get(&e.victim_ship).cloned().unwrap_or_default();
+                    let ship = type_names.get(&e.victim_ship).map(|n| crate::shipnames::shown(n)).unwrap_or_default();
                     ui.add(egui::Label::new(egui::RichText::new(ship).strong()).wrap_mode(egui::TextWrapMode::Extend));
                     ui.add(egui::Label::new(egui::RichText::new(&e.victim_pilot).weak()).truncate());
                 });
             });
-            if resp.on_hover_text("Open the killmail").clicked() {
+            if resp.on_hover_text(tr!("Open the killmail")).clicked() {
                 clicked = Some(e.kill_id);
             }
         }

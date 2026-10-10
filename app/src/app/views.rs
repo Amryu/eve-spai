@@ -9,7 +9,7 @@ impl SpaiApp {
         if self.chat_dir.is_none() {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "EVE chat logs not found. Set the logs directory in Settings.",
+                tr!("EVE chat logs not found. Set the logs directory in Settings."),
             );
             return;
         }
@@ -24,14 +24,14 @@ impl SpaiApp {
         toolbar(ui, |ui| {
             use egui_phosphor::regular as icon;
             use IntelTypeFilter::*;
-            let types = [("All intel", All), ("Hostile", Hostile), ("Clear", Clear), ("Kills", Kill), ("Threats", Threat)];
-            let type_label = types.iter().find(|(_, v)| *v == self.intel_type).map_or("All intel", |(l, _)| *l);
+            let types = [(tr!("All intel"), All), (tr!("Hostile"), Hostile), (tr!("Clear"), Clear), (tr!("Kills"), Kill), (tr!("Threats"), Threat)];
+            let type_label = types.iter().find(|(_, v)| *v == self.intel_type).map_or(tr!("All intel"), |(l, _)| *l);
             toolbar_combo(ui, "intel_type", type_label.to_owned(), |ui| {
                 for (l, v) in types {
                     ui.menu_value(&mut self.intel_type, v, l);
                 }
             })
-            .on_hover_text("Which reports to show");
+            .on_hover_text(tr!("Which reports to show"));
             let range = match self.intel_max_jumps {
                 0 => "Any distance".to_owned(),
                 1 => "Within 1 jump".to_owned(),
@@ -48,14 +48,14 @@ impl SpaiApp {
                 }
                 ui.separator();
                 if ui
-                    .checkbox(&mut self.settings.intel_count_bridges, "Count jump bridges")
-                    .on_hover_text("Off: gate jumps only, as a hostile would travel.")
+                    .checkbox(&mut self.settings.intel_count_bridges, tr!("Count jump bridges"))
+                    .on_hover_text(tr!("Off: gate jumps only, as a hostile would travel."))
                     .changed()
                 {
                     self.needs_save = true;
                 }
             })
-            .on_hover_text("How far from you a report may be");
+            .on_hover_text(tr!("How far from you a report may be"));
             let zkill = if !self.settings.kill_intel {
                 "zKill: off".to_owned()
             } else {
@@ -76,33 +76,33 @@ impl SpaiApp {
                         self.needs_save = true;
                     }
                 };
-                pick(ui, false, 0, "Off");
-                pick(ui, true, 0, "Within the feed's range");
+                pick(ui, false, 0, tr!("Off"));
+                pick(ui, true, 0, tr!("Within the feed's range"));
                 for n in [1u32, 2, 3, 5, 10] {
                     pick(ui, true, n, &if n == 1 { "Within 1 jump".to_owned() } else { format!("Within {n} jumps") });
                 }
             })
-            .on_hover_text("Kills from zKillboard, shown as intel cards");
+            .on_hover_text(tr!("Kills from zKillboard, shown as intel cards"));
             ui.menu_button(icon::GEAR_SIX, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Outdated after");
+                    ui.label(tr!("Outdated after"));
                     if ui.add(egui::DragValue::new(&mut self.settings.intel_ttl_secs).range(30..=3600).suffix(" s")).changed() {
                         self.needs_save = true;
                     }
                 });
-                if ui.button(format!("{}  Severity colours\u{2026}", icon::PALETTE)).clicked() {
+                if ui.button(trf!("{icon}  Severity colours\u{2026}", icon = icon::PALETTE)).clicked() {
                     self.severity_open = true;
                     ui.close();
                 }
-                if ui.button(format!("{}  Pilot notes and tags\u{2026}", icon::TAG)).clicked() {
+                if ui.button(trf!("{icon}  Pilot notes and tags\u{2026}", icon = icon::TAG)).clicked() {
                     self.open_notes_manager(crate::notes::NoteKind::Pilot);
                     ui.close();
                 }
             })
             .response
-            .on_hover_text("Intel settings");
+            .on_hover_text(tr!("Intel settings"));
             toolbar_sep(ui);
-            ui.label(egui::RichText::new(format!("{count} report{}", if count == 1 { "" } else { "s" })).weak());
+            ui.label(egui::RichText::new(trf!("{count} report{v}", count = count, v = if count == 1 { "" } else { "s" })).weak());
             ui.label(icon::MAGNIFYING_GLASS);
             ui.add_sized(
                 [
@@ -151,10 +151,10 @@ impl SpaiApp {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.label(
-                    egui::RichText::new("No reports match the current filters.").weak(),
+                    egui::RichText::new(tr!("No reports match the current filters.")).weak(),
                 );
                 ui.add_space(8.0);
-                clear = ui.button("Clear Filters").clicked();
+                clear = ui.button(tr!("Clear Filters")).clicked();
             });
             if clear {
                 self.intel_query.clear();
@@ -232,7 +232,7 @@ impl SpaiApp {
                     }
                     if matches.len() > CARD_CAP {
                         ui.label(
-                            egui::RichText::new(format!("+{} older", matches.len() - CARD_CAP))
+                            egui::RichText::new(trf!("+{v} older", v = matches.len() - CARD_CAP))
                                 .weak(),
                         );
                     }
@@ -264,17 +264,17 @@ impl SpaiApp {
             let mut ack = false;
             let resp = egui::Modal::new(egui::Id::new("verdict_explainer")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
-                ui.heading("Uncertain pilot (?)");
+                ui.heading(tr!("Uncertain pilot (?)"));
                 ui.add_space(4.0);
                 ui.label(
-                    "A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word that happens to be a name.",
+                    tr!("A \"?\" marks a name that matches a real but inactive character: a rarely used pilot, or a chat word that happens to be a name."),
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    "Real pilot keeps it, Not a pilot hides it. Remembered.",
+                    tr!("Real pilot keeps it, Not a pilot hides it. Remembered."),
                 );
                 ui.add_space(8.0);
-                if ui.button("Got it").clicked() {
+                if ui.button(tr!("Got it")).clicked() {
                     ack = true;
                 }
             });
@@ -290,18 +290,18 @@ impl SpaiApp {
         };
         let mut verdict: Option<bool> = None;
         let resp = egui::Modal::new(egui::Id::new("verdict_popup")).show(ctx, |ui| {
-            ui.heading(format!("Is \"{name}\" a pilot?"));
+            ui.heading(trf!("Is \"{name}\" a pilot?", name = name));
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new(format!("\"{name}\" matched a character that looks inactive."))
+                egui::RichText::new(trf!("\"{name}\" matched a character that looks inactive.", name = name))
                     .weak(),
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("Real pilot").clicked() {
+                if ui.button(tr!("Real pilot")).clicked() {
                     verdict = Some(false);
                 }
-                if ui.button("Not a pilot (hide)").clicked() {
+                if ui.button(tr!("Not a pilot (hide)")).clicked() {
                     verdict = Some(true);
                 }
             });
@@ -321,7 +321,7 @@ impl SpaiApp {
         reports: &[crate::intel::IntelReport],
     ) -> Option<IntelClick> {
         if reports.is_empty() {
-            ui.label(egui::RichText::new("No intel in range.").weak());
+            ui.label(egui::RichText::new(tr!("No intel in range.")).weak());
             return None;
         }
         let now = crate::clock::utc().timestamp();
@@ -386,13 +386,13 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(&self.active_character).strong());
                 match player_sys.and_then(|s| systems.as_ref().and_then(|sy| sy.info_of(s))) {
                     Some(info) => {
-                        ui.label("in");
+                        ui.label(tr!("in"));
                         ui.label(security_badge(info.security));
                         ui.label(egui::RichText::new(&info.name).strong());
                         system_chips(ui, &systems, &self.system_status.lock().unwrap(), info.id);
                     }
                     None => {
-                        ui.label(egui::RichText::new("location unknown").weak());
+                        ui.label(egui::RichText::new(tr!("location unknown")).weak());
                     }
                 }
             });
@@ -416,14 +416,14 @@ impl SpaiApp {
         let battle_count = self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2).count();
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("Live intel: {intel_count}"));
+            ui.label(trf!("Live intel: {intel_count}", intel_count = intel_count));
             ui.separator();
             if let Some((j, name)) = &nearest {
-                ui.label("Nearest hostile:");
+                ui.label(tr!("Nearest hostile:"));
                 ui.label(egui::RichText::new(name).strong());
                 ui.label(egui::RichText::new(format!("({j}j)")).weak());
             } else {
-                ui.label(egui::RichText::new("no nearby hostiles").weak());
+                ui.label(egui::RichText::new(tr!("no nearby hostiles")).weak());
             }
             ui.separator();
             if battle_count > 0 {
@@ -431,17 +431,17 @@ impl SpaiApp {
                     self.view = View::Battles;
                 }
             } else {
-                ui.label(format!("Battles: {battle_count}"));
+                ui.label(trf!("Battles: {battle_count}", battle_count = battle_count));
             }
         });
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(6.0);
 
-        ui.label(egui::RichText::new("Recent alerts").strong());
+        ui.label(egui::RichText::new(tr!("Recent alerts")).strong());
         let log = self.recent_alerts.lock().unwrap();
         if log.is_empty() {
-            ui.label(egui::RichText::new("None.").weak());
+            ui.label(egui::RichText::new(tr!("None.")).weak());
         } else {
             for (t, text) in log.iter().rev().take(5) {
                 ui.horizontal(|ui| {
@@ -489,11 +489,11 @@ impl SpaiApp {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            if selectable_chip(ui, !self.copy_settings.active, "Characters").clicked() {
+            if selectable_chip(ui, !self.copy_settings.active, tr!("Characters")).clicked() {
                 self.copy_settings.active = false;
             }
-            if selectable_chip(ui, self.copy_settings.active, "Copy settings")
-                .on_hover_text("Copy one character's EVE settings onto other characters")
+            if selectable_chip(ui, self.copy_settings.active, tr!("Copy settings"))
+                .on_hover_text(tr!("Copy one character's EVE settings onto other characters"))
                 .clicked()
             {
                 self.copy_settings.active = true;
@@ -518,7 +518,7 @@ impl SpaiApp {
             } else {
                 ui.colored_label(
                     crate::theme::standing::WARNING,
-                    "No database, cannot copy settings.",
+                    tr!("No database, cannot copy settings."),
                 );
             }
             return;
@@ -534,11 +534,11 @@ impl SpaiApp {
             AuthStatus::Success(name) => {
                 ui.colored_label(
                     egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
-                    format!("Logged in as {name}"),
+                    trf!("Logged in as {name}", name = name),
                 );
             }
             AuthStatus::Failed(err) => {
-                ui.colored_label(crate::theme::standing::WARNING, format!("Login failed: {err}"));
+                ui.colored_label(crate::theme::standing::WARNING, trf!("Login failed: {err}", err = err));
             }
             AuthStatus::Idle => {}
         }
@@ -548,23 +548,20 @@ impl SpaiApp {
         if crate::tokens::fallback_in_use() {
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(format!(
-                    "{}  Saved logins are in EVE Spai's encrypted file, not the system keychain.",
-                    egui_phosphor::regular::LOCK_KEY
-                ))
+                egui::RichText::new(trf!("{icon}  Saved logins are in EVE Spai's encrypted file, not the system keychain.", icon = egui_phosphor::regular::LOCK_KEY))
                 .color(crate::theme::standing::WARNING),
             )
             .on_hover_text(
-                "No system keychain could be used on this machine, so the refresh token is \
+                tr!("No system keychain could be used on this machine, so the refresh token is \
                  encrypted with a key derived from this user account and this machine. It cannot be \
                  opened from another account, another machine, or a copy of the profile folder. It \
                  cannot protect against a program already running as you — neither can an unlocked \
-                 keychain. Install or start a keychain provider and the token moves back on its own.",
+                 keychain. Install or start a keychain provider and the token moves back on its own."),
             );
         }
 
         ui.add_space(6.0);
-        if ui.button("Add character (EVE SSO)").clicked() {
+        if ui.button(tr!("Add character (EVE SSO)")).clicked() {
             self.start_login(&ui.ctx().clone());
         }
         ui.add_space(10.0);
@@ -574,7 +571,7 @@ impl SpaiApp {
         if self.characters.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "No characters yet. Click \"Add character\" to log in with EVE SSO.",
+                    tr!("No characters yet. Click \"Add character\" to log in with EVE SSO."),
                 )
                 .weak(),
             );
@@ -598,7 +595,7 @@ impl SpaiApp {
                 !self.settings.intel_disabled_chars.iter().any(|d| d.eq_ignore_ascii_case(&c.name));
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(&c.name).strong());
-                ui.label(egui::RichText::new(format!("· {scope_count} scopes")).weak());
+                ui.label(egui::RichText::new(trf!("· {scope_count} scopes", scope_count = scope_count)).weak());
                 let (col, txt) = if token_ok {
                     (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "signed in")
                 } else if problem == Some(crate::esi::AuthProblem::NoKeychain) {
@@ -610,26 +607,26 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(txt).color(col));
                 if !missing.is_empty() {
                     ui.label(
-                        egui::RichText::new(format!("{} missing scopes", egui_phosphor::regular::WARNING))
+                        egui::RichText::new(trf!("{icon} missing scopes", icon = egui_phosphor::regular::WARNING))
                             .color(crate::theme::standing::WARNING),
                     )
-                    .on_hover_text(format!("Re-auth to grant: {}", missing.join(", ")));
+                    .on_hover_text(trf!("Re-auth to grant: {v}", v = missing.join(", ")));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Remove").clicked() {
+                    if ui.button(tr!("Remove")).clicked() {
                         remove = Some(c.id);
                     }
                     if !missing.is_empty()
                         && ui
-                            .button("Re-auth")
-                            .on_hover_text("Log in again to grant the new scopes")
+                            .button(tr!("Re-auth"))
+                            .on_hover_text(tr!("Log in again to grant the new scopes"))
                             .clicked()
                     {
                         reauth = true;
                     }
                     if ui
-                        .checkbox(&mut intel_on, "Alert")
-                        .on_hover_text("Raise intel alerts while this character is active")
+                        .checkbox(&mut intel_on, tr!("Alert"))
+                        .on_hover_text(tr!("Raise intel alerts while this character is active"))
                         .changed()
                     {
                         toggle = Some((c.name.clone(), intel_on));
@@ -678,11 +675,11 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.pilot_query)
-                        .hint_text("Character name")
+                        .hint_text(tr!("Character name"))
                         .desired_width(220.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button(format!("{}  Look up", egui_phosphor::regular::MAGNIFYING_GLASS)).clicked() || enter {
+                if ui.button(trf!("{icon}  Look up", icon = egui_phosphor::regular::MAGNIFYING_GLASS)).clicked() || enter {
                     crate::lookup::spawn_lookup(
                         self.pilot_query.clone(),
                         self.pilot_lookup.clone(),
@@ -695,12 +692,12 @@ impl SpaiApp {
             let state = self.pilot_lookup.lock().unwrap().clone();
             match state {
                 LookupState::Idle => {
-                    ui.label(egui::RichText::new("Enter a pilot name.").weak());
+                    ui.label(egui::RichText::new(tr!("Enter a pilot name.")).weak());
                 }
                 LookupState::Loading(n) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(format!("Looking up {n}…"));
+                        ui.label(trf!("Looking up {n}…", n = n));
                     });
                 }
                 LookupState::Failed(e) => {
@@ -757,9 +754,9 @@ impl SpaiApp {
                     // The fixed-width tail is laid out from the right, so the ship name gets whatever
                     // is left and truncates. Left to itself, a long name sets the row's minimum width
                     // and drags the whole side panel wider as the list loads.
-                    let mut hit = img.on_hover_text("Show fit").clicked();
+                    let mut hit = img.on_hover_text(tr!("Show fit")).clicked();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("\u{2197}").on_hover_text("Open the killmail").clicked() {
+                        if ui.button("\u{2197}").on_hover_text(tr!("Open the killmail")).clicked() {
                             open_kill = Some((l.killmail_id, l.hash.clone()));
                         }
                         ui.label(egui::RichText::new(age_s).weak());
@@ -825,8 +822,8 @@ impl SpaiApp {
                                 }
                             });
                         };
-                        org(ui, p.alliance_id.map(|a| eve_alliance_logo_url(a, 20.0)), &p.alliance_name, "No alliance");
-                        org(ui, p.corp_id.map(|c| eve_corp_logo_url(c, 20.0)), &p.corp_name, "Unknown corporation");
+                        org(ui, p.alliance_id.map(|a| eve_alliance_logo_url(a, 20.0)), &p.alliance_name, tr!("No alliance"));
+                        org(ui, p.corp_id.map(|c| eve_corp_logo_url(c, 20.0)), &p.corp_name, tr!("Unknown corporation"));
                         let mut facts = Vec::new();
                         if let Some(b) = p.birthday {
                             facts.push(format!("{} old, born {}", span_text(now - b), day_text(b)));
@@ -839,28 +836,28 @@ impl SpaiApp {
                         }
                     }
                     None if report.loading => {
-                        ui.label(egui::RichText::new("Loading profile…").weak());
+                        ui.label(egui::RichText::new(tr!("Loading profile…")).weak());
                     }
                     None => {
-                        ui.label(egui::RichText::new("Profile unavailable").weak());
+                        ui.label(egui::RichText::new(tr!("Profile unavailable")).weak());
                     }
                 }
             });
         });
 
         ui.horizontal_wrapped(|ui| {
-            if ui.button(format!("{}  Notes and tags", icon::NOTE_PENCIL)).clicked() && id > 0 {
+            if ui.button(trf!("{icon}  Notes and tags", icon = icon::NOTE_PENCIL)).clicked() && id > 0 {
                 self.note_editor_pending =
                     Some(crate::notes::Subject::Pilot { id, name: report.name.clone() });
             }
-            if ui.button(format!("{}  zKillboard", icon::ARROW_SQUARE_OUT)).clicked() {
+            if ui.button(trf!("{icon}  zKillboard", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 let _ = open::that(format!("https://zkillboard.com/character/{id}/"));
             }
         });
         match NoteTip::of(&self.notes_view, self.notes_view.pilot(id)) {
             Some(n) => note_tip_ui(ui, &n),
             None => {
-                ui.label(egui::RichText::new("No notes or tags.").weak());
+                ui.label(egui::RichText::new(tr!("No notes or tags.")).weak());
             }
         }
 
@@ -887,9 +884,9 @@ impl SpaiApp {
             PilotPane::Ships => {}
         }
         ui.horizontal(|ui| {
-            ui.label("Sort:");
-            ui.menu_value(&mut self.pilot_sort, PilotSort::MostLost, "Most lost");
-            ui.menu_value(&mut self.pilot_sort, PilotSort::Recent, "Recent");
+            ui.label(tr!("Sort:"));
+            ui.menu_value(&mut self.pilot_sort, PilotSort::MostLost, tr!("Most lost"));
+            ui.menu_value(&mut self.pilot_sort, PilotSort::Recent, tr!("Recent"));
         });
 
         let mut agg: std::collections::HashMap<i64, (u32, i64)> = std::collections::HashMap::new();
@@ -913,7 +910,7 @@ impl SpaiApp {
 
         ui.add_space(4.0);
         if ships.is_empty() {
-            ui.label(egui::RichText::new("No relevant losses.").weak());
+            ui.label(egui::RichText::new(tr!("No relevant losses.")).weak());
             return;
         }
         egui::ScrollArea::vertical().id_salt("pilot_ships").auto_shrink([false, false]).show(ui, |ui| {
@@ -927,7 +924,7 @@ impl SpaiApp {
                     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
                     if ui
                         .add(egui::Button::new(format!("{name}  ×{count}")).frame(false))
-                        .on_hover_text("View fits")
+                        .on_hover_text(tr!("View fits"))
                         .clicked()
                     {
                         self.fit_view = Some((ship_id, FitMode::Recent));
@@ -941,54 +938,54 @@ impl SpaiApp {
     /// stranger before their kill list.
     pub(crate) fn pilot_info_pane(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport, now: i64) {
         egui::ScrollArea::vertical().id_salt("pilot_info").auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(egui::RichText::new("zKillboard").strong());
+            ui.label(egui::RichText::new(tr!("zKillboard")).strong());
             match &report.stats {
                 Some(s) => {
                     egui::Grid::new("pilot_zk_stats").num_columns(4).spacing([18.0, 4.0]).show(ui, |ui| {
-                        ui.label("Kills");
+                        ui.label(tr!("Kills"));
                         ui.label(egui::RichText::new(s.ships_destroyed.to_string()).strong());
-                        ui.label("Losses");
+                        ui.label(tr!("Losses"));
                         ui.label(s.ships_lost.to_string());
                         ui.end_row();
-                        ui.label("ISK killed");
+                        ui.label(tr!("ISK killed"));
                         ui.label(fmt_isk(s.isk_destroyed));
-                        ui.label("ISK lost");
+                        ui.label(tr!("ISK lost"));
                         ui.label(fmt_isk(s.isk_lost));
                         ui.end_row();
-                        ui.label("Danger");
+                        ui.label(tr!("Danger"));
                         ui.label(format!("{}%", s.danger_ratio));
-                        ui.label("Gang");
+                        ui.label(tr!("Gang"));
                         ui.label(format!("{}%", s.gang_ratio));
                         ui.end_row();
                     });
                     if !s.top_ships.is_empty() {
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new("Flies").weak());
+                            ui.label(egui::RichText::new(tr!("Flies")).weak());
                             for (tid, name, kills) in &s.top_ships {
                                 ui.add(
                                     egui::Image::new(eve_type_icon_url(*tid, 28.0))
                                         .fit_to_exact_size(egui::Vec2::splat(28.0)),
                                 )
-                                .on_hover_text(format!("{name}: {kills} kills"));
+                                .on_hover_text(trf!("{name}: {kills} kills", name = name, kills = kills));
                             }
                         });
                     }
                     if !s.top_systems.is_empty() {
                         let list: Vec<String> = s.top_systems.iter().map(|(n, k)| format!("{n} ({k})")).collect();
-                        ui.label(egui::RichText::new(format!("Active in {}", list.join(", "))).weak());
+                        ui.label(egui::RichText::new(trf!("Active in {v}", v = list.join(", "))).weak());
                     }
                 }
                 None if report.loading => {
-                    ui.label(egui::RichText::new("Loading…").weak());
+                    ui.label(egui::RichText::new(tr!("Loading…")).weak());
                 }
                 None => {
-                    ui.label(egui::RichText::new("No zKillboard record.").weak());
+                    ui.label(egui::RichText::new(tr!("No zKillboard record.")).weak());
                 }
             }
 
             ui.add_space(8.0);
             let history = report.profile.as_ref().map(|p| p.history.as_slice()).unwrap_or_default();
-            ui.label(egui::RichText::new(format!("Employment history ({})", history.len())).strong());
+            ui.label(egui::RichText::new(trf!("Employment history ({history})", history = history.len())).strong());
             if history.is_empty() {
                 ui.label(egui::RichText::new(if report.loading { "Loading…" } else { "Nothing known." }).weak());
             }
@@ -1065,14 +1062,14 @@ impl SpaiApp {
             });
             if has_mode {
                 ui.horizontal(|ui| {
-                    ui.label("Fit:");
-                    ui.menu_value(&mut new_mode, FitMode::Recent, "Most recent");
-                    ui.menu_value(&mut new_mode, FitMode::MostUsed, "Most used");
+                    ui.label(tr!("Fit:"));
+                    ui.menu_value(&mut new_mode, FitMode::Recent, tr!("Most recent"));
+                    ui.menu_value(&mut new_mode, FitMode::MostUsed, tr!("Most used"));
                 });
             }
             ui.separator();
             let Some(loss) = &loss else {
-                ui.label(egui::RichText::new("No fit found.").weak());
+                ui.label(egui::RichText::new(tr!("No fit found.")).weak());
                 return;
             };
 
@@ -1094,14 +1091,14 @@ impl SpaiApp {
                     }
                     ui.add_space(4.0);
                 };
-                section(ui, "High", Slot::High);
-                section(ui, "Mid", Slot::Mid);
-                section(ui, "Low", Slot::Low);
-                section(ui, "Rigs", Slot::Rig);
-                section(ui, "Subsystems", Slot::Subsystem);
+                section(ui, tr!("High"), Slot::High);
+                section(ui, tr!("Mid"), Slot::Mid);
+                section(ui, tr!("Low"), Slot::Low);
+                section(ui, tr!("Rigs"), Slot::Rig);
+                section(ui, tr!("Subsystems"), Slot::Subsystem);
                 if !cargo.is_empty() {
                     ui.label(
-                        egui::RichText::new("Cargo & drones").strong().color(ui.visuals().hyperlink_color),
+                        egui::RichText::new(tr!("Cargo & drones")).strong().color(ui.visuals().hyperlink_color),
                     );
                     for (tid, q) in &cargo {
                         let n = names.get(tid).cloned().unwrap_or_else(|| "…".to_owned());
@@ -1116,12 +1113,12 @@ impl SpaiApp {
 
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("Copy EFT").clicked() {
+                if ui.button(tr!("Copy EFT")).clicked() {
                     ui.ctx().copy_text(eft_string(&ship_name, loss, &names));
                 }
                 let has_char = self.active_character != "No character";
                 ui.add_enabled_ui(has_char, |ui| {
-                    if ui.button("Save Fit").on_hover_text("Save to your in-game fittings").clicked() {
+                    if ui.button(tr!("Save Fit")).on_hover_text(tr!("Save to your in-game fittings")).clicked() {
                         use crate::lookup::Slot;
                         let mut items: Vec<(i64, i64, i64)> = loss
                             .items
@@ -1148,14 +1145,14 @@ impl SpaiApp {
                 });
                 let site = self.settings.fit_site.clone();
                 if site.is_empty() {
-                    ui.label("Open in:");
+                    ui.label(tr!("Open in:"));
                     for (id, label) in FIT_SITES {
                         if ui.button(*label).clicked() {
                             self.settings.fit_site = (*id).to_owned();
                             self.needs_save = true;
                         }
                     }
-                } else if ui.button(format!("Open in {}", site_label(&site))).clicked() {
+                } else if ui.button(trf!("Open in {v}", v = site_label(&site))).clicked() {
                     let _ = open::that(fit_url(&site, loss));
                 }
             });

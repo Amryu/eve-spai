@@ -50,13 +50,13 @@ impl SpaiApp {
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
             .show(ctx, |ui| {
                 if st.done {
-                    ui.label(format!("Updated to v{}. It applies on restart.", av.version));
+                    ui.label(trf!("Updated to v{v}. It applies on restart.", v = av.version));
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Restart now").clicked() {
+                        if ui.button(tr!("Restart now")).clicked() {
                             restart = true;
                         }
-                        if ui.button("Later").clicked() {
+                        if ui.button(tr!("Later")).clicked() {
                             close = true;
                         }
                     });
@@ -65,32 +65,28 @@ impl SpaiApp {
                 if st.installing {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Downloading update…");
+                        ui.label(tr!("Downloading update…"));
                     });
                     return;
                 }
                 if let Some(e) = &st.error {
-                    ui.colored_label(crate::theme::standing::WARNING, format!("Update failed: {e}"));
+                    ui.colored_label(crate::theme::standing::WARNING, trf!("Update failed: {e}", e = e));
                     ui.hyperlink_to("Download manually", &av.html_url);
                     ui.add_space(4.0);
                 }
-                ui.label(format!(
-                    "EVE Spai v{} is available. You have v{}.",
-                    av.version,
-                    crate::update::current()
-                ));
+                ui.label(trf!("EVE Spai v{v} is available. You have v{v2}.", v = av.version, v2 = crate::update::current()));
                 ui.hyperlink_to("Release notes", &av.html_url);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Yes, update").clicked() {
+                    if ui.button(tr!("Yes, update")).clicked() {
                         start_install = true;
                     }
-                    if ui.button("No").clicked() {
+                    if ui.button(tr!("No")).clicked() {
                         self.settings.update_skip_version = av.version.clone();
                         self.needs_save = true;
                         close = true;
                     }
-                    if ui.button("Ask me again later").clicked() {
+                    if ui.button(tr!("Ask me again later")).clicked() {
                         self.update_dismissed = true;
                     }
                 });
@@ -157,23 +153,20 @@ impl SpaiApp {
                 if st.checking {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Checking for updates…");
+                        ui.label(tr!("Checking for updates…"));
                     });
                     return;
                 }
                 if let Some(e) = &st.check_failed {
                     ui.colored_label(
                         crate::theme::standing::WARNING,
-                        format!("Couldn't check for updates: {e}"),
+                        trf!("Couldn't check for updates: {e}", e = e),
                     );
                 } else {
-                    ui.label(format!(
-                        "You're on the latest version (v{}).",
-                        crate::update::current()
-                    ));
+                    ui.label(trf!("You're on the latest version (v{v}).", v = crate::update::current()));
                 }
                 ui.add_space(6.0);
-                if ui.button("OK").clicked() {
+                if ui.button(tr!("OK")).clicked() {
                     close = true;
                 }
             });
@@ -198,33 +191,33 @@ impl SpaiApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
-                ui.label("EVE Spai can't read or write its database, so settings and intel history won't be saved this session.");
+                ui.label(tr!("EVE Spai can't read or write its database, so settings and intel history won't be saved this session."));
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&err).weak());
                 ui.add_space(4.0);
                 // A full disk fails the same way as a permissions problem, so say which it is.
                 if self.disk_level == crate::disk::Level::Critical {
                     ui.label(
-                        "The disk holding the data folder is full. Free some space and restart; \
-                         nothing here is a permission problem.",
+                        tr!("The disk holding the data folder is full. Free some space and restart; \
+                         nothing here is a permission problem."),
                     );
                 } else {
                     ui.label(
-                        "This is usually a file-permission issue on the data folder. Check that \
-                         your user can write to it, or reinstall to a writable location.",
+                        tr!("This is usually a file-permission issue on the data folder. Check that \
+                         your user can write to it, or reinstall to a writable location."),
                     );
                 }
                 if locked {
                     ui.add_space(8.0);
                     ui.label(
-                        "Your saved settings could not be read, and could not be backed up either, \
-                         so saving now would overwrite the only copy with defaults.",
+                        tr!("Your saved settings could not be read, and could not be backed up either, \
+                         so saving now would overwrite the only copy with defaults."),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("Keep my old settings").clicked() {
+                        if ui.button(tr!("Keep my old settings")).clicked() {
                             self.store_warn_dismissed = true;
                         }
-                        if ui.button("Start fresh").clicked() {
+                        if ui.button(tr!("Start fresh")).clicked() {
                             if let Some(store) = &self.store {
                                 store.unlock_settings();
                             }
@@ -235,7 +228,7 @@ impl SpaiApp {
                     return;
                 }
                 ui.add_space(8.0);
-                if ui.button("Continue anyway").clicked() {
+                if ui.button(tr!("Continue anyway")).clicked() {
                     self.store_warn_dismissed = true;
                 }
             });
@@ -386,29 +379,29 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(format!("{}  {title}", icon::BROADCAST)).strong());
                     let (uploading, link, error) = (share.0, share.1.clone(), share.2.clone());
                     if let Some(link) = link {
-                        ui.label("Shared:");
+                        ui.label(tr!("Shared:"));
                         if ui.hyperlink(&link).clicked() {
                             self.dscan_link_used = true;
                         }
                         ui.horizontal(|ui| {
-                            if ui.button(format!("{}  Copy link", icon::COPY)).clicked() {
+                            if ui.button(trf!("{icon}  Copy link", icon = icon::COPY)).clicked() {
                                 ui.ctx().copy_text(link.clone());
                                 self.dscan_link_used = true;
                             }
-                            if ui.button("Close").clicked() {
+                            if ui.button(tr!("Close")).clicked() {
                                 dismiss = true;
                             }
                         });
                     } else if uploading {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Uploading to dscan.info…");
+                            ui.label(tr!("Uploading to dscan.info…"));
                         });
                     } else {
                         if let Some(e) = &error {
                             ui.colored_label(
                                 crate::theme::standing::WARNING,
-                                format!("Upload failed: {e}"),
+                                trf!("Upload failed: {e}", e = e),
                             );
                         }
                         if let Some((_, n, kind)) = &self.dscan_prompt {
@@ -418,11 +411,11 @@ impl SpaiApp {
                                 "Copy and open adashboard.info/intel, then paste it there (Ctrl+V)";
                             match kind {
                                 PasteKind::Dscan => {
-                                    ui.label(format!("D-scan detected ({n} rows). Share with:"));
+                                    ui.label(trf!("D-scan detected ({n} rows). Share with:", n = n));
                                     ui.horizontal(|ui| {
                                         if ui
-                                            .button(format!("{}  dscan.info", icon::UPLOAD_SIMPLE))
-                                            .on_hover_text("Upload to dscan.info and get a shareable link")
+                                            .button(trf!("{icon}  dscan.info", icon = icon::UPLOAD_SIMPLE))
+                                            .on_hover_text(tr!("Upload to dscan.info and get a shareable link"))
                                             .clicked()
                                         {
                                             start_upload = true;
@@ -430,7 +423,7 @@ impl SpaiApp {
                                         if ui.button(&ada).on_hover_text(ada_hint).clicked() {
                                             open_adashboard = true;
                                         }
-                                        if ui.button("Dismiss").clicked() {
+                                        if ui.button(tr!("Dismiss")).clicked() {
                                             dismiss = true;
                                         }
                                     });

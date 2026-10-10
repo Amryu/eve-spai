@@ -325,7 +325,7 @@ pub(crate) fn editor_body(
         .map(|(_, p)| p.clone())
         .unwrap_or_else(|| format!("{} (made on save)", crate::notes::DEFAULT_FOLDER));
     ui.horizontal(|ui| {
-        ui.label(format!("{}  Folder", icon::FOLDER));
+        ui.label(trf!("{icon}  Folder", icon = icon::FOLDER));
         egui::ComboBox::from_id_salt("note_editor_folder").selected_text(current).width(260.0).show_ui(ui, |ui| {
             for (id, path) in &choices {
                 if ui.add(egui::Button::new(path.as_str()).selected(*id == d.folder)).clicked() {
@@ -338,19 +338,19 @@ pub(crate) fn editor_body(
     });
     ui.add_space(6.0);
 
-    ui.label(format!("{}  Note", icon::NOTE));
+    ui.label(trf!("{icon}  Note", icon = icon::NOTE));
     ui.add(
         egui::TextEdit::multiline(&mut d.note)
             .desired_rows(5)
             .desired_width(f32::INFINITY)
-            .hint_text("What should you remember about this?"),
+            .hint_text(tr!("What should you remember about this?")),
     );
     let n = d.note.chars().count();
     let counter = egui::RichText::new(format!("{n} / {}", crate::notes::NOTE_MAX));
     ui.label(if n > crate::notes::NOTE_MAX { counter.color(crate::theme::standing::HOSTILE) } else { counter.weak() });
     ui.add_space(6.0);
 
-    ui.label(format!("{}  Tags", icon::TAG));
+    ui.label(trf!("{icon}  Tags", icon = icon::TAG));
     ui.horizontal_wrapped(|ui| {
         for t in view.tags(kind) {
             let on = d.tags.contains(&t.id);
@@ -367,8 +367,8 @@ pub(crate) fn editor_body(
         let hidden: Vec<String> = d.tags.iter().filter(|id| view.tag(id).is_none()).cloned().collect();
         for id in hidden {
             let name = book.tag(&id).map(|t| t.name.clone()).unwrap_or_else(|| "deleted tag".into());
-            if selectable_chip(ui, true, egui::RichText::new(format!("{name} (offline)")).weak())
-                .on_hover_text("Defined in an offline folder. Click to remove it from this entry.")
+            if selectable_chip(ui, true, egui::RichText::new(trf!("{name} (offline)", name = name)).weak())
+                .on_hover_text(tr!("Defined in an offline folder. Click to remove it from this entry."))
                 .clicked()
             {
                 d.tags.retain(|x| *x != id);
@@ -376,10 +376,10 @@ pub(crate) fn editor_body(
         }
     });
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut d.new_tag).hint_text("New tag").desired_width(180.0));
+        ui.add(egui::TextEdit::singleline(&mut d.new_tag).hint_text(tr!("New tag")).desired_width(180.0));
         ui.color_edit_button_srgb(&mut d.new_color);
         let ok = !d.new_tag.trim().is_empty();
-        if ui.add_enabled(ok, egui::Button::new(format!("{}  Add tag", icon::PLUS))).clicked() {
+        if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Add tag", icon = icon::PLUS))).clicked() {
             actions.push(EditorAction::NewTag);
         }
     });
@@ -389,7 +389,7 @@ pub(crate) fn editor_body(
         if !others.is_empty() {
             ui.add_space(8.0);
             ui.separator();
-            ui.label(egui::RichText::new("In other folders").strong());
+            ui.label(egui::RichText::new(tr!("In other folders")).strong());
             for p in others {
                 ui.label(egui::RichText::new(format!("{}  {}", icon::FOLDER, p.path)).weak());
                 ui.horizontal_wrapped(|ui| {
@@ -409,14 +409,14 @@ pub(crate) fn editor_body(
         ui.colored_label(crate::theme::standing::HOSTILE, e);
     }
     ui.horizontal(|ui| {
-        if ui.button(format!("{}  Save", icon::CHECK)).clicked() {
+        if ui.button(trf!("{icon}  Save", icon = icon::CHECK)).clicked() {
             actions.push(EditorAction::Save);
         }
         let saved = book.find(&d.folder).is_some_and(|f| f.entries(kind).contains_key(&d.subject.key()));
-        if ui.add_enabled(saved, egui::Button::new(format!("{}  Remove from folder", icon::TRASH))).clicked() {
+        if ui.add_enabled(saved, egui::Button::new(trf!("{icon}  Remove from folder", icon = icon::TRASH))).clicked() {
             actions.push(EditorAction::Remove);
         }
-        if ui.button(format!("{}  Manage…", icon::FOLDER_OPEN)).clicked() {
+        if ui.button(trf!("{icon}  Manage…", icon = icon::FOLDER_OPEN)).clicked() {
             actions.push(EditorAction::Manage);
         }
     });
@@ -438,7 +438,7 @@ pub(crate) fn manager_body(
 
     egui::Panel::left("notes_folder_tree").resizable(true).default_size(250.0).show_inside(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            for (k, label) in [(NoteKind::System, "Systems"), (NoteKind::Pilot, "Pilots")] {
+            for (k, label) in [(NoteKind::System, tr!("Systems")), (NoteKind::Pilot, tr!("Pilots"))] {
                 if selectable_chip(ui, m.kind == k, label).clicked() {
                     m.kind = k;
                     m.tag_edit = None;
@@ -447,17 +447,17 @@ pub(crate) fn manager_body(
         });
         ui.separator();
         ui.horizontal_wrapped(|ui| {
-            if ui.button(format!("{}  Folder", icon::FOLDER_PLUS)).on_hover_text("New top-level folder").clicked() {
+            if ui.button(trf!("{icon}  Folder", icon = icon::FOLDER_PLUS)).on_hover_text(tr!("New top-level folder")).clicked() {
                 actions.push(ManagerAction::CreateFolder { parent: None });
             }
-            if ui.button(format!("{}  Import…", icon::DOWNLOAD_SIMPLE)).clicked() {
+            if ui.button(trf!("{icon}  Import…", icon = icon::DOWNLOAD_SIMPLE)).clicked() {
                 m.import.get_or_insert_with(|| Import { text: String::new(), error: None, clash: None, into_selected: false });
             }
         });
         ui.add_space(4.0);
         egui::ScrollArea::vertical().id_salt("notes_tree_scroll").show(ui, |ui| {
             if book.folders.is_empty() {
-                ui.label(egui::RichText::new("No folders yet. The first note you save goes into a Default folder.").weak());
+                ui.label(egui::RichText::new(tr!("No folders yet. The first note you save goes into a Default folder.")).weak());
             }
             folder_rows(ui, &book.folders, 0, true, m, book, &view.target, actions, &[]);
         });
@@ -516,7 +516,7 @@ fn folder_rows(
             }
             if top {
                 let mut on = f.online;
-                if ui.checkbox(&mut on, "").on_hover_text("Online: shown and used by rules").changed() {
+                if ui.checkbox(&mut on, "").on_hover_text(tr!("Online: shown and used by rules")).changed() {
                     actions.push(ManagerAction::Op(NotesOp::SetOnline { id: f.id.clone(), on }));
                 }
             }
@@ -532,14 +532,14 @@ fn folder_rows(
                 m.tag_edit = None;
             }
             if f.id == target {
-                ui.label(egui::RichText::new(icon::CROSSHAIR_SIMPLE).weak()).on_hover_text("Quick edits go here");
+                ui.label(egui::RichText::new(icon::CROSSHAIR_SIMPLE).weak()).on_hover_text(tr!("Quick edits go here"));
             }
             if top && !f.online {
-                ui.label(egui::RichText::new("offline").weak());
+                ui.label(egui::RichText::new(tr!("offline")).weak());
             }
             if !open && !f.children.is_empty() {
                 ui.label(egui::RichText::new(format!("+{}", f.children.len())).weak())
-                    .on_hover_text("Subfolders hidden");
+                    .on_hover_text(tr!("Subfolders hidden"));
             }
             r.context_menu(|ui| folder_menu(ui, f, top, m, book, actions));
         });
@@ -581,16 +581,16 @@ fn folder_menu(
 ) {
     let id = f.id.clone();
     let mut pick = None;
-    if ui.button(format!("{}  New subfolder", icon::FOLDER_PLUS)).clicked() {
+    if ui.button(trf!("{icon}  New subfolder", icon = icon::FOLDER_PLUS)).clicked() {
         pick = Some(ManagerAction::CreateFolder { parent: Some(id.clone()) });
     }
-    if ui.button(format!("{}  Rename", icon::PENCIL_SIMPLE)).clicked() {
+    if ui.button(trf!("{icon}  Rename", icon = icon::PENCIL_SIMPLE)).clicked() {
         m.folder = id.clone();
         m.rename = Some((id.clone(), f.name.clone()));
         m.rename_focus = true;
         ui.close();
     }
-    if ui.button(format!("{}  Use for quick edits", icon::CROSSHAIR_SIMPLE)).clicked() {
+    if ui.button(trf!("{icon}  Use for quick edits", icon = icon::CROSSHAIR_SIMPLE)).clicked() {
         pick = Some(ManagerAction::SetTarget(id.clone()));
     }
     if top {
@@ -604,17 +604,17 @@ fn folder_menu(
         }
     }
     ui.separator();
-    if ui.button(format!("{}  Export to file…", icon::FILE_ARROW_DOWN)).clicked() {
+    if ui.button(trf!("{icon}  Export to file…", icon = icon::FILE_ARROW_DOWN)).clicked() {
         pick = Some(ManagerAction::ExportFile(id.clone()));
     }
-    if ui.button(format!("{}  Copy as JSON", icon::COPY)).clicked() {
+    if ui.button(trf!("{icon}  Copy as JSON", icon = icon::COPY)).clicked() {
         pick = Some(ManagerAction::Copy { id: id.clone(), compressed: false });
     }
-    if ui.button(format!("{}  Copy compressed", icon::COPY)).clicked() {
+    if ui.button(trf!("{icon}  Copy compressed", icon = icon::COPY)).clicked() {
         pick = Some(ManagerAction::Copy { id: id.clone(), compressed: true });
     }
     ui.separator();
-    if !top && ui.button(format!("{}  Move to top level", icon::ARROW_RIGHT)).clicked() {
+    if !top && ui.button(trf!("{icon}  Move to top level", icon = icon::ARROW_RIGHT)).clicked() {
         pick = Some(ManagerAction::Op(NotesOp::MoveFolder { id: id.clone(), parent: None }));
     }
     let mut inside = Vec::new();
@@ -630,7 +630,7 @@ fn folder_menu(
         }
     });
     ui.separator();
-    if ui.button(format!("{}  Delete…", icon::TRASH)).clicked() {
+    if ui.button(trf!("{icon}  Delete…", icon = icon::TRASH)).clicked() {
         m.confirm = Some(Confirm::Folder { id: id.clone(), name: f.name.clone(), items: count_items(f) });
         ui.close();
     }
@@ -685,10 +685,10 @@ fn folder_detail(
             if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 done = Some(false);
             }
-            if ui.button(icon::CHECK).on_hover_text("Rename").clicked() {
+            if ui.button(icon::CHECK).on_hover_text(tr!("Rename")).clicked() {
                 done = Some(true);
             }
-            if ui.button(icon::X).on_hover_text("Cancel").clicked() {
+            if ui.button(icon::X).on_hover_text(tr!("Cancel")).clicked() {
                 done = Some(false);
             }
         });
@@ -703,30 +703,30 @@ fn folder_detail(
     } else {
         ui.horizontal(|ui| {
             ui.heading(&folder.name);
-            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Rename folder").clicked() {
+            if ui.button(icon::PENCIL_SIMPLE).on_hover_text(tr!("Rename folder")).clicked() {
                 m.rename = Some((folder.id.clone(), folder.name.clone()));
                 m.rename_focus = true;
             }
             ui.menu_button(icon::EXPORT, |ui| {
-                if ui.button(format!("{}  Export to file…", icon::FILE_ARROW_DOWN)).clicked() {
+                if ui.button(trf!("{icon}  Export to file…", icon = icon::FILE_ARROW_DOWN)).clicked() {
                     actions.push(ManagerAction::ExportFile(folder.id.clone()));
                     ui.close();
                 }
-                if ui.button(format!("{}  Copy as JSON", icon::COPY)).clicked() {
+                if ui.button(trf!("{icon}  Copy as JSON", icon = icon::COPY)).clicked() {
                     actions.push(ManagerAction::Copy { id: folder.id.clone(), compressed: false });
                     ui.close();
                 }
-                if ui.button(format!("{}  Copy compressed", icon::COPY)).clicked() {
+                if ui.button(trf!("{icon}  Copy compressed", icon = icon::COPY)).clicked() {
                     actions.push(ManagerAction::Copy { id: folder.id.clone(), compressed: true });
                     ui.close();
                 }
             })
             .response
-            .on_hover_text("Export folder");
-            if ui.button(icon::FOLDER_PLUS).on_hover_text("New subfolder").clicked() {
+            .on_hover_text(tr!("Export folder"));
+            if ui.button(icon::FOLDER_PLUS).on_hover_text(tr!("New subfolder")).clicked() {
                 actions.push(ManagerAction::CreateFolder { parent: Some(folder.id.clone()) });
             }
-            if ui.button(icon::TRASH).on_hover_text("Delete folder").clicked() {
+            if ui.button(icon::TRASH).on_hover_text(tr!("Delete folder")).clicked() {
                 m.confirm = Some(Confirm::Folder { id: folder.id.clone(), name: folder.name.clone(), items: count_items(folder) });
             }
         });
@@ -735,18 +735,18 @@ fn folder_detail(
         if top {
             let mut on = folder.online;
             if ui
-                .checkbox(&mut on, "Online")
-                .on_hover_text("Offline folders, their subfolders and their tags are ignored everywhere")
+                .checkbox(&mut on, tr!("Online"))
+                .on_hover_text(tr!("Offline folders, their subfolders and their tags are ignored everywhere"))
                 .changed()
             {
                 actions.push(ManagerAction::Op(NotesOp::SetOnline { id: folder.id.clone(), on }));
             }
         } else {
-            ui.label(egui::RichText::new("Online state follows the top-level folder").weak());
+            ui.label(egui::RichText::new(tr!("Online state follows the top-level folder")).weak());
         }
         if view.target == folder.id {
-            ui.label(egui::RichText::new(format!("{}  Quick edits go here", icon::CROSSHAIR_SIMPLE)).weak());
-        } else if ui.button(format!("{}  Use for quick edits", icon::CROSSHAIR_SIMPLE)).clicked() {
+            ui.label(egui::RichText::new(trf!("{icon}  Quick edits go here", icon = icon::CROSSHAIR_SIMPLE)).weak());
+        } else if ui.button(trf!("{icon}  Use for quick edits", icon = icon::CROSSHAIR_SIMPLE)).clicked() {
             actions.push(ManagerAction::SetTarget(folder.id.clone()));
         }
     });
@@ -789,7 +789,7 @@ fn tags_tab(
 ) {
     let tags: Vec<_> = folder.tags.iter().filter(|t| t.kind == kind).collect();
     if tags.is_empty() {
-        ui.label(egui::RichText::new("None yet.").weak());
+        ui.label(egui::RichText::new(tr!("None yet.")).weak());
     }
     for t in tags {
         let editing = m.tag_edit.as_ref().is_some_and(|e| e.id == t.id);
@@ -808,10 +808,10 @@ fn tags_tab(
                         }
                     }
                 });
-                if ui.button(format!("{}  Save", icon::CHECK)).clicked() {
+                if ui.button(trf!("{icon}  Save", icon = icon::CHECK)).clicked() {
                     done = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     done = Some(false);
                 }
             });
@@ -835,19 +835,19 @@ fn tags_tab(
         let uses: usize = book.all().iter().map(|f| f.entries(kind).values().filter(|e| e.tags.contains(&t.id)).count()).sum();
         ui.horizontal(|ui| {
             tag_chip(ui, t, false);
-            ui.label(egui::RichText::new(format!("{uses} used")).weak());
-            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Rename, recolour or move").clicked() {
+            ui.label(egui::RichText::new(trf!("{uses} used", uses = uses)).weak());
+            if ui.button(icon::PENCIL_SIMPLE).on_hover_text(tr!("Rename, recolour or move")).clicked() {
                 m.tag_edit = Some(TagEdit { id: t.id.clone(), name: t.name.clone(), color: t.color, folder: folder.id.clone() });
             }
-            if ui.button(icon::TRASH).on_hover_text("Delete tag").clicked() {
+            if ui.button(icon::TRASH).on_hover_text(tr!("Delete tag")).clicked() {
                 m.confirm = Some(Confirm::Tag { id: t.id.clone(), name: t.name.clone(), uses });
             }
         });
     }
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut m.new_tag).hint_text("New tag").desired_width(160.0));
+        ui.add(egui::TextEdit::singleline(&mut m.new_tag).hint_text(tr!("New tag")).desired_width(160.0));
         ui.color_edit_button_srgb(&mut m.new_color);
-        if ui.add_enabled(!m.new_tag.trim().is_empty(), egui::Button::new(format!("{}  Add", icon::PLUS))).clicked() {
+        if ui.add_enabled(!m.new_tag.trim().is_empty(), egui::Button::new(trf!("{icon}  Add", icon = icon::PLUS))).clicked() {
             actions.push(ManagerAction::Op(NotesOp::PutTag {
                 folder: folder.id.clone(),
                 id: None,
@@ -859,11 +859,11 @@ fn tags_tab(
         }
     });
     ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!("Built-in {} tags", noun.to_lowercase()))
+    egui::CollapsingHeader::new(trf!("Built-in {noun} tags", noun = noun.to_lowercase()))
         .id_salt(("builtin", noun))
         .default_open(false)
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("Shared by every folder. Colours are yours to change.").weak());
+            ui.label(egui::RichText::new(tr!("Shared by every folder. Colours are yours to change.")).weak());
             egui::Grid::new(("builtin_grid", noun)).num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
                 for shipped in crate::notes::default_tags().iter().filter(|t| t.kind == kind) {
                     let current = view.tag(&shipped.id).cloned().unwrap_or_else(|| shipped.clone());
@@ -873,7 +873,7 @@ fn tags_tab(
                         actions.push(ManagerAction::DefaultColor { id: shipped.id.clone(), color: Some(c) });
                     }
                     if current.color != shipped.color {
-                        if ui.button("Reset").on_hover_text("Back to the shipped colour").clicked() {
+                        if ui.button(tr!("Reset")).on_hover_text(tr!("Back to the shipped colour")).clicked() {
                             actions.push(ManagerAction::DefaultColor { id: shipped.id.clone(), color: None });
                         }
                     } else {
@@ -898,11 +898,11 @@ fn notes_tab(
 ) {
     let entries = folder.entries(kind);
     if entries.is_empty() {
-        ui.label(egui::RichText::new(format!("No {} notes in this folder.", noun.to_lowercase())).weak());
+        ui.label(egui::RichText::new(trf!("No {noun} notes in this folder.", noun = noun.to_lowercase())).weak());
     }
     ui.horizontal(|ui| {
         ui.label(icon::MAGNIFYING_GLASS);
-        ui.add(egui::TextEdit::singleline(&mut m.search).hint_text("Name, note or tag").desired_width(220.0));
+        ui.add(egui::TextEdit::singleline(&mut m.search).hint_text(tr!("Name, note or tag")).desired_width(220.0));
     });
     let needle = m.search.trim().to_lowercase();
     let choices = folder_choices(book);
@@ -940,10 +940,10 @@ fn notes_tab(
             ui.label(egui::RichText::new(if more { format!("{first}…") } else { first }).weak());
         }
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Edit", icon::PENCIL_SIMPLE)).clicked() {
+            if ui.button(trf!("{icon}  Edit", icon = icon::PENCIL_SIMPLE)).clicked() {
                 actions.push(ManagerAction::Edit { folder: folder.id.clone(), subject: subject.clone() });
             }
-            if ui.button(format!("{}  Show", icon::ARROW_SQUARE_OUT)).clicked() {
+            if ui.button(trf!("{icon}  Show", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 actions.push(ManagerAction::Go(subject.clone()));
             }
             ui.menu_button(format!("{}  Move to", icon::FOLDER), |ui| {
@@ -961,7 +961,7 @@ fn notes_tab(
                     }
                 }
             });
-            if ui.button(format!("{}  Remove", icon::TRASH)).clicked() {
+            if ui.button(trf!("{icon}  Remove", icon = icon::TRASH)).clicked() {
                 actions.push(ManagerAction::Op(NotesOp::RemoveEntry { folder: folder.id.clone(), subject: subject.clone() }));
             }
         });
@@ -971,11 +971,11 @@ fn notes_tab(
 fn import_section(ui: &mut egui::Ui, m: &mut NotesManager, book: &NoteBook, actions: &mut Vec<ManagerAction>) {
     let selected_path = book.path(&m.folder).join(" / ");
     let Some(imp) = m.import.as_mut() else { return };
-    ui.label(egui::RichText::new(format!("{}  Import a folder", icon::DOWNLOAD_SIMPLE)).strong());
-    ui.label(egui::RichText::new("Paste exported JSON or compressed text, or open a file.").weak());
+    ui.label(egui::RichText::new(trf!("{icon}  Import a folder", icon = icon::DOWNLOAD_SIMPLE)).strong());
+    ui.label(egui::RichText::new(tr!("Paste exported JSON or compressed text, or open a file.")).weak());
     ui.add(egui::TextEdit::multiline(&mut imp.text).desired_rows(4).desired_width(f32::INFINITY).code_editor());
     if !selected_path.is_empty() {
-        ui.checkbox(&mut imp.into_selected, format!("Put a new folder inside \"{selected_path}\""));
+        ui.checkbox(&mut imp.into_selected, trf!("Put a new folder inside \"{selected_path}\"", selected_path = selected_path));
     }
     if let Some(e) = &imp.error {
         ui.colored_label(crate::theme::standing::HOSTILE, e);
@@ -984,26 +984,26 @@ fn import_section(ui: &mut egui::Ui, m: &mut NotesManager, book: &NoteBook, acti
     if let Some(export) = imp.clash.clone() {
         ui.colored_label(
             crate::theme::standing::WARNING,
-            format!("\"{}\" is already here. Overwrite drops the existing folder; merge keeps both and the import wins where they overlap.", export.folder.name),
+            trf!("\"{v}\" is already here. Overwrite drops the existing folder; merge keeps both and the import wins where they overlap.", v = export.folder.name),
         );
         ui.horizontal(|ui| {
-            if ui.button("Overwrite").clicked() {
+            if ui.button(tr!("Overwrite")).clicked() {
                 actions.push(ManagerAction::Import { export: export.clone(), mode: ImportMode::Overwrite });
             }
-            if ui.button("Merge").clicked() {
+            if ui.button(tr!("Merge")).clicked() {
                 actions.push(ManagerAction::Import { export: export.clone(), mode: ImportMode::Merge });
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(tr!("Cancel")).clicked() {
                 imp.clash = None;
             }
         });
         return;
     }
     ui.horizontal(|ui| {
-        if ui.button(format!("{}  Open file…", icon::FILE_ARROW_UP)).clicked() {
+        if ui.button(trf!("{icon}  Open file…", icon = icon::FILE_ARROW_UP)).clicked() {
             actions.push(ManagerAction::OpenImportFile);
         }
-        if ui.add_enabled(!imp.text.trim().is_empty(), egui::Button::new(format!("{}  Import", icon::CHECK))).clicked() {
+        if ui.add_enabled(!imp.text.trim().is_empty(), egui::Button::new(trf!("{icon}  Import", icon = icon::CHECK))).clicked() {
             match crate::notes::parse_export(&imp.text) {
                 Ok(export) => {
                     imp.error = None;
@@ -1016,7 +1016,7 @@ fn import_section(ui: &mut egui::Ui, m: &mut NotesManager, book: &NoteBook, acti
                 Err(e) => imp.error = Some(e),
             }
         }
-        if ui.button("Cancel").clicked() {
+        if ui.button(tr!("Cancel")).clicked() {
             close = true;
         }
     });
@@ -1047,10 +1047,10 @@ fn confirm_modal(ui: &mut egui::Ui, m: &mut NotesManager, actions: &mut Vec<Mana
         ui.label(body);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Delete", icon::TRASH)).clicked() {
+            if ui.button(trf!("{icon}  Delete", icon = icon::TRASH)).clicked() {
                 answer = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(tr!("Cancel")).clicked() {
                 answer = Some(false);
             }
         });

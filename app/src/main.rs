@@ -1,5 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[macro_use]
+extern crate spai_ui;
+
+#[cfg(test)]
+mod i18n_sync;
 mod activity;
 mod ai;
 mod frametime;

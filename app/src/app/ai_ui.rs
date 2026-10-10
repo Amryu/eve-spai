@@ -1,5 +1,7 @@
 //! The Assistant tab: the conversation, its tool calls and the actions waiting for the user.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::ai::session::{AiHandle, CardState, Command, Turn};
 use crate::ai::links::{Link, Names};
@@ -128,7 +130,7 @@ impl SpaiApp {
         match kind {
             ActionKind::SendJabber { to, room, join, body, .. } => {
                 let Some(tx) = self.jabber_tx.clone() else {
-                    self.toast_error("Jabber is not connected; nothing was sent");
+                    self.toast_error(tr!("Jabber is not connected; nothing was sent"));
                     return format!("Not sent, Jabber is not connected: {summary}");
                 };
                 if *join {
@@ -185,7 +187,7 @@ impl SpaiApp {
             ActionKind::MumbleSet { mute, deaf, transmit } => {
                 let ok = mute.is_none_or(crate::mumble::set_self_muted) & deaf.is_none_or(crate::mumble::set_self_deaf) & transmit.is_none_or(crate::mumble::set_transmit);
                 if !ok {
-                    self.toast_error("Mumble did not take that; is it running?");
+                    self.toast_error(tr!("Mumble did not take that; is it running?"));
                     return format!("Mumble did not take it: {summary}");
                 }
             }
@@ -238,16 +240,16 @@ impl SpaiApp {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.set_max_width(520.0);
-                ui.label(egui::RichText::new(format!("{}  Assistant", icon::SPARKLE)).heading());
+                ui.label(egui::RichText::new(trf!("{icon}  Assistant", icon = icon::SPARKLE)).heading());
                 ui.add_space(8.0);
                 ui.label(
-                    "Ask about intel, kills, routes, wormholes and fleets in plain words, typed or spoken while you play. \
-                     It reads only the data you allow, can keep watch for you, and every change it proposes waits for your click.",
+                    tr!("Ask about intel, kills, routes, wormholes and fleets in plain words, typed or spoken while you play. \
+                     It reads only the data you allow, can keep watch for you, and every change it proposes waits for your click."),
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("It needs a model service: an API key, a local model, or a Claude or ChatGPT subscription.").weak());
+                ui.label(egui::RichText::new(tr!("It needs a model service: an API key, a local model, or a Claude or ChatGPT subscription.")).weak());
                 ui.add_space(12.0);
-                if ui.button(format!("{}  Set it up in Settings", icon::GEAR_SIX)).clicked() {
+                if ui.button(trf!("{icon}  Set it up in Settings", icon = icon::GEAR_SIX)).clicked() {
                     self.view = View::Settings;
                     self.settings_scroll_to_ai = true;
                 }
@@ -256,8 +258,8 @@ impl SpaiApp {
         }
         if self.settings.ai.popped && !self.ai_in_window {
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("The assistant is in its own window.").weak());
-            if ui.button(format!("{}  Dock it here", icon::ARROW_SQUARE_IN)).clicked() {
+            ui.label(egui::RichText::new(tr!("The assistant is in its own window.")).weak());
+            if ui.button(trf!("{icon}  Dock it here", icon = icon::ARROW_SQUARE_IN)).clicked() {
                 self.settings.ai.popped = false;
                 self.needs_save = true;
             }
@@ -270,7 +272,7 @@ impl SpaiApp {
             (v.turns.clone(), v.busy, v.usage)
         };
         let (model, _) = crate::ai::session::model_of(&self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()));
-        let provider = self.settings.ai.provider.label();
+        let provider = self.settings.ai.provider.label().tr();
 
         egui::Panel::top("ai_top").show_inside(ui, |ui| {
             ui.add_space(4.0);
@@ -279,18 +281,18 @@ impl SpaiApp {
                     let n = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner()).list.len();
                     if self.ai_in_window {
                         super::ontop_pin_ui(ui, "ai_window");
-                        if ui.button(icon::ARROW_SQUARE_IN).on_hover_text("Back into the main window").clicked() {
+                        if ui.button(icon::ARROW_SQUARE_IN).on_hover_text(tr!("Back into the main window")).clicked() {
                             self.settings.ai.popped = false;
                             self.needs_save = true;
                         }
-                    } else if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Into its own window, over the game").clicked() {
+                    } else if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Into its own window, over the game")).clicked() {
                         self.settings.ai.popped = true;
                         self.ai_geom_applied = false;
                         self.needs_save = true;
                     }
                     if ui
-                        .add(egui::Button::new(format!("{}  Memories ({n})", icon::BRAIN)).selected(self.ai_memories_open))
-                        .on_hover_text("What the assistant remembers between conversations")
+                        .add(egui::Button::new(trf!("{icon}  Memories ({n})", icon = icon::BRAIN, n = n)).selected(self.ai_memories_open))
+                        .on_hover_text(tr!("What the assistant remembers between conversations"))
                         .clicked()
                     {
                         self.ai_memories_open = !self.ai_memories_open;
@@ -315,14 +317,14 @@ impl SpaiApp {
                             ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
                         }
                     }
-                    if ui.button(format!("{}  Data access\u{2026}", icon::KEY)).on_hover_text("What the assistant may read and do").clicked() {
+                    if ui.button(trf!("{icon}  Data access\u{2026}", icon = icon::KEY)).on_hover_text(tr!("What the assistant may read and do")).clicked() {
                         self.ai_perms_open = true;
                     }
-                    if ui.add_enabled(!turns.is_empty(), egui::Button::new(format!("{}  New chat", icon::PLUS))).clicked() {
+                    if ui.add_enabled(!turns.is_empty(), egui::Button::new(trf!("{icon}  New chat", icon = icon::PLUS))).clicked() {
                         handle.send(Command::NewChat);
                     }
                     let used = format!("{} in \u{00b7} {} out", fmt_count(usage.input as i64), fmt_count(usage.output as i64));
-                    ui.label(egui::RichText::new(used).weak()).on_hover_text(format!("Tokens this session; {} read from cache", fmt_count(usage.cached as i64)));
+                    ui.label(egui::RichText::new(used).weak()).on_hover_text(trf!("Tokens this session; {v} read from cache", v = fmt_count(usage.cached as i64)));
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         let _ = (&model, provider);
                         self.ai_model_picker(ui);
@@ -345,12 +347,12 @@ impl SpaiApp {
             {
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), field_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if busy {
-                        if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
+                        if ui.button(trf!("{icon}  Stop", icon = icon::STOP)).clicked() {
                             handle.stop();
                             self.ai_voice_stop();
                         }
                     } else if ui
-                        .add_enabled(!self.ai_input.trim().is_empty(), egui::Button::new(format!("{}  Ask", icon::PAPER_PLANE_RIGHT)))
+                        .add_enabled(!self.ai_input.trim().is_empty(), egui::Button::new(trf!("{icon}  Ask", icon = icon::PAPER_PLANE_RIGHT)))
                         .clicked()
                     {
                         send = Some(std::mem::take(&mut self.ai_input));
@@ -379,7 +381,7 @@ impl SpaiApp {
                         .id(egui::Id::new("ai_input"))
                         .desired_rows(2)
                         .desired_width(ui.available_width())
-                        .hint_text("Ask about intel, kills, routes, wormholes\u{2026} (Enter sends, Shift+Enter for a new line)");
+                        .hint_text(tr!("Ask about intel, kills, routes, wormholes\u{2026} (Enter sends, Shift+Enter for a new line)"));
                     let r = ui.add(edit);
                     if (r.rect.height() - field_h).abs() > 0.5 {
                         ui.data_mut(|d| d.insert_temp(h_id, r.rect.height()));
@@ -531,7 +533,7 @@ impl SpaiApp {
             }
         });
         for r in failed {
-            self.toast_error(format!("Could not join {r}; the message was not sent"));
+            self.toast_error(trf!("Could not join {r}; the message was not sent", r = r));
         }
         self.ui_ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
@@ -613,7 +615,7 @@ impl SpaiApp {
     pub(crate) fn ai_voice_tick(&mut self) {
         let Some(h) = self.ai.clone() else { return };
         if let Some(e) = self.ai_speaker.as_ref().and_then(|s| s.error.lock().unwrap_or_else(|e| e.into_inner()).take()) {
-            self.toast_error(format!("Voice: {e}"));
+            self.toast_error(trf!("Voice: {e}", e = e));
         }
         let (turn, text, voice_turn, finished) = {
             let mut v = h.view.lock().unwrap_or_else(|e| e.into_inner());
@@ -661,14 +663,14 @@ impl SpaiApp {
         for (id, goal, status, running, why) in &list {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !running && ui.button(icon::X).on_hover_text("Remove").clicked() {
+                    if !running && ui.button(icon::X).on_hover_text(tr!("Remove")).clicked() {
                         act = Some((*id, 2));
                     }
                     if *running {
-                        if ui.button(format!("{}  Stop", icon::STOP)).clicked() {
+                        if ui.button(trf!("{icon}  Stop", icon = icon::STOP)).clicked() {
                             act = Some((*id, 0));
                         }
-                    } else if ui.button(format!("{}  Resume", icon::PLAY)).clicked() {
+                    } else if ui.button(trf!("{icon}  Resume", icon = icon::PLAY)).clicked() {
                         act = Some((*id, 1));
                     }
                     let s = ui.label(egui::RichText::new(status).weak());
@@ -709,7 +711,7 @@ impl SpaiApp {
         };
         let choices = model_choices(provider);
         let label = choices.iter().find(|(k, _)| *k == cur).map(|(_, l)| (*l).to_owned()).unwrap_or_else(|| if cur.is_empty() { "default model".into() } else { cur.clone() });
-        let shown = format!("{}  {} \u{b7} {label}", icon::SPARKLE, provider.label());
+        let shown = format!("{}  {} \u{b7} {label}", icon::SPARKLE, provider.label().tr());
         // The server's own list, asked for once per address.
         let mut fetched: Vec<String> = Vec::new();
         if provider == ProviderKind::OpenaiCompat {
@@ -748,12 +750,12 @@ impl SpaiApp {
                 }
             }
             if provider == ProviderKind::OpenaiCompat && fetched.is_empty() {
-                ui.label(egui::RichText::new("The server listed no models; type one in Settings").weak());
+                ui.label(egui::RichText::new(tr!("The server listed no models; type one in Settings")).weak());
             }
             ui.separator();
-            ui.label(egui::RichText::new("Service").weak());
+            ui.label(egui::RichText::new(tr!("Service")).weak());
             for p in ProviderKind::CHOICES {
-                changed |= ui.menu_value(&mut a.provider, p, p.label()).changed();
+                changed |= ui.menu_value(&mut a.provider, p, p.label().tr()).changed();
             }
         });
         if changed {
@@ -833,7 +835,7 @@ impl SpaiApp {
             }
             // A link the model wrote could carry what it read out in its address.
             Link::Url(_) if self.ai_opsec.load(std::sync::atomic::Ordering::Relaxed) => {
-                self.toast("Web links are off in a conversation that read Jabber or feed messages; start a new chat");
+                self.toast(tr!("Web links are off in a conversation that read Jabber or feed messages; start a new chat"));
             }
             Link::Url(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
             Link::Page(p) => {
@@ -863,9 +865,9 @@ impl SpaiApp {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.set_max_width(520.0);
-            ui.label(egui::RichText::new("Ask about what is going on around you.").heading());
+            ui.label(egui::RichText::new(tr!("Ask about what is going on around you.")).heading());
             ui.add_space(8.0);
-            for ex in ["Where did the Frat gang go?", "Anything hostile within 5 jumps of me?", "Fastest safe route to Jita?", "Which wormholes are near 1DQ1-A?"] {
+            for ex in [tr!("Where did the Frat gang go?"), tr!("Anything hostile within 5 jumps of me?"), tr!("Fastest safe route to Jita?"), tr!("Which wormholes are near 1DQ1-A?")] {
                 if ui.link(ex).clicked() {
                     self.ai_input = ex.to_owned();
                 }
@@ -873,8 +875,8 @@ impl SpaiApp {
             ui.add_space(12.0);
             let shown = self.settings.ai.perms.values().filter(|v| **v).count();
             if shown == 0 {
-                ui.label(egui::RichText::new("It can only read static game data until you give it access to more.").weak());
-                if ui.button(format!("{}  Data access\u{2026}", egui_phosphor::regular::KEY)).clicked() {
+                ui.label(egui::RichText::new(tr!("It can only read static game data until you give it access to more.")).weak());
+                if ui.button(trf!("{icon}  Data access\u{2026}", icon = egui_phosphor::regular::KEY)).clicked() {
                     self.ai_perms_open = true;
                 }
             }
@@ -950,7 +952,7 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
         ui.add_space(4.0);
     }
     if t.watch.is_some() {
-        ui.label(egui::RichText::new(format!("{}  Watch", icon::BINOCULARS)).weak());
+        ui.label(egui::RichText::new(trf!("{icon}  Watch", icon = icon::BINOCULARS)).weak());
     }
     if !t.text.is_empty() {
         if let Some(l) = render_text(ui, &t.text, w, names) {
@@ -960,7 +962,7 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
     if t.streaming && t.text.is_empty() {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(egui::RichText::new("Thinking\u{2026}").weak());
+            ui.label(egui::RichText::new(tr!("Thinking\u{2026}")).weak());
         });
     } else if t.streaming {
         ui.spinner();
@@ -975,7 +977,7 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
                         CardState::Pending => {
                             let watch = matches!(c.action.kind, ActionKind::KeepWatching(_));
                             if c.action.kind.perm_key().is_some()
-                                && ui.button("Always").on_hover_text("Apply, and do this kind of thing without asking from now on (Data access can take it back)").clicked()
+                                && ui.button(tr!("Always")).on_hover_text(tr!("Apply, and do this kind of thing without asking from now on (Data access can take it back)")).clicked()
                             {
                                 click = Some((c.action.id, 2));
                             }
@@ -988,10 +990,10 @@ fn turn_ui(ui: &mut egui::Ui, t: &Turn, w: f32, names: &dyn Names, link: &mut Op
                             }
                         }
                         CardState::Applied => {
-                            ui.label(egui::RichText::new(format!("{}  Applied", icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
+                            ui.label(egui::RichText::new(trf!("{icon}  Applied", icon = icon::CHECK_CIRCLE)).color(crate::theme::standing::FRIENDLY));
                         }
                         CardState::Dismissed => {
-                            ui.label(egui::RichText::new("Dismissed").weak());
+                            ui.label(egui::RichText::new(tr!("Dismissed")).weak());
                         }
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1121,14 +1123,14 @@ impl SpaiApp {
         let now = crate::clock::utc().timestamp();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Memories").strong());
+            ui.label(egui::RichText::new(tr!("Memories")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(format!("{}  Add", icon::PLUS)).on_hover_text("Tell it something to keep").clicked() {
+                if ui.button(trf!("{icon}  Add", icon = icon::PLUS)).on_hover_text(tr!("Tell it something to keep")).clicked() {
                     self.ai_mem_edit = Some((0, MemKind::About, String::new()));
                 }
             });
         });
-        ui.label(egui::RichText::new("Kept between conversations. It saves them as it learns; you can change or delete any.").weak());
+        ui.label(egui::RichText::new(tr!("Kept between conversations. It saves them as it learns; you can change or delete any.")).weak());
         ui.separator();
         let list = self.ai_memories.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
         let mut delete: Option<u64> = None;
@@ -1137,17 +1139,17 @@ impl SpaiApp {
         let edit_ui = |ui: &mut egui::Ui, e: &mut (u64, MemKind, String), save: &mut Option<(u64, MemKind, String)>, cancel: &mut bool| {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ComboBox::from_id_salt(("mem_kind", e.0)).selected_text(e.1.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("mem_kind", e.0)).selected_text(e.1.label().tr()).show_ui(ui, |ui| {
                     for k in MemKind::CHOICES {
-                        ui.menu_value(&mut e.1, k, k.label());
+                        ui.menu_value(&mut e.1, k, k.label().tr());
                     }
                 });
-                ui.add(egui::TextEdit::multiline(&mut e.2).desired_rows(2).desired_width(f32::INFINITY).hint_text("e.g. I stage in 1DQ1-A and fly Eagles"));
+                ui.add(egui::TextEdit::multiline(&mut e.2).desired_rows(2).desired_width(f32::INFINITY).hint_text(tr!("e.g. I stage in 1DQ1-A and fly Eagles")));
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!e.2.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                    if ui.add_enabled(!e.2.trim().is_empty(), egui::Button::new(tr!("Save"))).clicked() {
                         *save = Some(e.clone());
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr!("Cancel")).clicked() {
                         *cancel = true;
                     }
                 });
@@ -1158,7 +1160,7 @@ impl SpaiApp {
                 edit_ui(ui, e, &mut save, &mut cancel);
             }
             if list.is_empty() && self.ai_mem_edit.is_none() {
-                ui.label(egui::RichText::new("Nothing yet.").weak());
+                ui.label(egui::RichText::new(tr!("Nothing yet.")).weak());
             }
             for k in MemKind::CHOICES {
                 let of: Vec<&crate::ai::memory::Memory> = list.iter().filter(|m| MemKind::from_code(m.kind.code()) == k).collect();
@@ -1166,7 +1168,7 @@ impl SpaiApp {
                     continue;
                 }
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(format!("{} ({})", k.label(), of.len())).weak());
+                ui.label(egui::RichText::new(format!("{} ({})", k.label().tr(), of.len())).weak());
                 for m in of {
                     if let Some(e) = self.ai_mem_edit.as_mut().filter(|e| e.0 == m.id) {
                         edit_ui(ui, e, &mut save, &mut cancel);
@@ -1174,15 +1176,15 @@ impl SpaiApp {
                     }
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if ui.button(icon::TRASH).on_hover_text("Delete").clicked() {
+                            if ui.button(icon::TRASH).on_hover_text(tr!("Delete")).clicked() {
                                 delete = Some(m.id);
                             }
-                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Edit").clicked() {
+                            if ui.button(icon::PENCIL_SIMPLE).on_hover_text(tr!("Edit")).clicked() {
                                 self.ai_mem_edit = Some((m.id, m.kind, m.text.clone()));
                             }
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                                 let who = if m.by_user { "you" } else { "the assistant" };
-                                ui.add(egui::Label::new(&m.text).wrap()).on_hover_text(format!("Saved by {who}, {}", crate::ai::tools::fmt_age(now, m.updated)));
+                                ui.add(egui::Label::new(&m.text).wrap()).on_hover_text(trf!("Saved by {who}, {v}", who = who, v = crate::ai::tools::fmt_age(now, m.updated)));
                             });
                         });
                     });

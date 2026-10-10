@@ -435,7 +435,7 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 if reports.is_empty() {
                     ui.label(
-                        egui::RichText::new("Nothing in the feed for this system any more.").weak(),
+                        egui::RichText::new(tr!("Nothing in the feed for this system any more.")).weak(),
                     );
                     return;
                 }
@@ -526,12 +526,12 @@ impl SpaiApp {
                             ui.label(egui::RichText::new(&i.name).strong());
                         }
                         if let Some(ly) = ly {
-                            ui.label(egui::RichText::new(format!("{ly:.1} ly")).weak());
+                            ui.label(egui::RichText::new(trf!("{ly} ly", ly = format!("{:.1}", ly))).weak());
                         }
-                        ui.label(egui::RichText::new(format!("{} by gate", jumps(gates))).weak());
+                        ui.label(egui::RichText::new(trf!("{v} by gate", v = jumps(gates))).weak());
                         if bridged.is_some() && bridged != gates {
                             ui.label(
-                                egui::RichText::new(format!("{} with bridges", jumps(bridged)))
+                                egui::RichText::new(trf!("{v} with bridges", v = jumps(bridged)))
                                     .weak(),
                             );
                         }

@@ -83,7 +83,7 @@ pub(crate) fn notes_quick_menu(
     use egui_phosphor::regular as icon;
     let mut out = notes_tag_toggles(ui, view, folder_label, subject);
     ui.separator();
-    if ui.button(format!("{}  Edit note and tags…", icon::NOTE_PENCIL)).clicked() {
+    if ui.button(trf!("{icon}  Edit note and tags…", icon = icon::NOTE_PENCIL)).clicked() {
         out = Some(IntelClick::Annotate(subject.clone()));
         ui.close();
     }
@@ -101,7 +101,7 @@ pub(crate) fn notes_tag_toggles(
     let m = view.entry(subject);
     let mine = m.and_then(|m| m.part_in(&view.target));
     let mut out = None;
-    ui.label(egui::RichText::new(format!("{}  Tags in {folder_label}", icon::TAG)).strong());
+    ui.label(egui::RichText::new(trf!("{icon}  Tags in {folder_label}", icon = icon::TAG, folder_label = folder_label)).strong());
     // The alert window can be a couple of hundred pixels tall, and a popup is clipped to its window,
     // so the list scrolls within whatever the window leaves after the header and the editor button.
     let room = ui.ctx().content_rect().height() - 4.0 * ui.spacing().interact_size.y;
@@ -119,8 +119,8 @@ pub(crate) fn notes_tag_toggles(
                 .unwrap_or_default();
             let mut resp = ui.checkbox(&mut on, egui::RichText::new(&t.name).color(crate::notes::color32(t.color)));
             if !elsewhere.is_empty() {
-                resp = resp.on_hover_text(format!("Also set in {}", elsewhere.join(", ")));
-                ui.label(egui::RichText::new(format!("also in {}", elsewhere.join(", "))).weak());
+                resp = resp.on_hover_text(trf!("Also set in {v}", v = elsewhere.join(", ")));
+                ui.label(egui::RichText::new(trf!("also in {v}", v = elsewhere.join(", "))).weak());
             }
             if resp.changed() {
                 out = Some(IntelClick::Notes(crate::notes::NotesOp::SetTag {

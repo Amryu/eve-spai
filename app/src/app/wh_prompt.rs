@@ -3,6 +3,8 @@
 //! one is queued for a small window beside the EVE client that asks the questions a scout would:
 //! the signatures on both sides, the type, how long it has left, how much mass and the size.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::whdetect::{Transition, Verdict};
 use crate::wormholes::{Life, Mass, ShipSize, Source, Wormhole};
@@ -577,28 +579,28 @@ pub(crate) fn wh_prompt_body(
     use egui_phosphor::regular as icon;
     let mut act = PromptAct::None;
     let n = if count > 1 { format!(" (1 of {count})") } else { String::new() };
-    ui.label(egui::RichText::new(format!("{}  Wormhole?{n}", icon::SPIRAL)).strong());
+    ui.label(egui::RichText::new(trf!("{icon}  Wormhole?{n}", icon = icon::SPIRAL, n = n)).strong());
     let when = chrono::DateTime::from_timestamp(p.at, 0).map(|d| d.format("%H:%M").to_string()).unwrap_or_default();
-    ui.label(format!("{}: {} {} {} at {when}", p.character, name(p.from), egui_phosphor::regular::ARROW_RIGHT, name(p.to)));
+    ui.label(trf!("{v}: {v2} {icon} {v3} at {when}", v = p.character, v2 = name(p.from), icon = egui_phosphor::regular::ARROW_RIGHT, v3 = name(p.to), when = when));
     if !(p.certain || p.confirmed) {
-        ui.label(egui::RichText::new("That jump fits a wormhole, a filament, a clone or a capital jump.").weak());
+        ui.label(egui::RichText::new(tr!("That jump fits a wormhole, a filament, a clone or a capital jump.")).weak());
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Wormhole", icon::SPIRAL)).clicked() {
+            if ui.button(trf!("{icon}  Wormhole", icon = icon::SPIRAL)).clicked() {
                 p.confirmed = true;
             }
-            if ui.button("Not a hole").on_hover_text("A filament, a clone or a jump. Not asked again for this pair for an hour.").clicked() {
+            if ui.button(tr!("Not a hole")).on_hover_text(tr!("A filament, a clone or a jump. Not asked again for this pair for an hour.")).clicked() {
                 act = PromptAct::NotAHole;
             }
         });
         return act;
     }
     if let Some((_, known)) = p.twin_of.as_ref().filter(|_| !p.second) {
-        ui.label(format!("A hole between these two is known already: {known}. Was it that one?"));
+        ui.label(trf!("A hole between these two is known already: {known}. Was it that one?", known = known));
         ui.horizontal(|ui| {
-            if ui.button("Same hole").clicked() {
+            if ui.button(tr!("Same hole")).clicked() {
                 act = PromptAct::SameHole;
             }
-            if ui.button(format!("{}  Another hole", icon::PLUS)).on_hover_text("A second drifter hole from the same system").clicked() {
+            if ui.button(trf!("{icon}  Another hole", icon = icon::PLUS)).on_hover_text(tr!("A second drifter hole from the same system")).clicked() {
                 p.second = true;
                 p.row = None;
             }
@@ -606,17 +608,17 @@ pub(crate) fn wh_prompt_body(
         return act;
     }
     if p.certain && !p.second {
-        ui.label(egui::RichText::new("Recorded as auto-detected. Add what you know:").weak());
+        ui.label(egui::RichText::new(tr!("Recorded as auto-detected. Add what you know:")).weak());
     }
     // One field with the known signatures in a list beside it: a button each floods the window.
     let sig_row = |ui: &mut egui::Ui, salt: &str, value: &mut String, opts: &[(String, String)]| {
         crate::app::wormholes_ui::sig_field(ui, salt, value, "ABC-123", opts);
     };
     egui::Grid::new("wh_prompt_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label(format!("Sig in {}", name(p.from)));
+        ui.label(trf!("Sig in {v}", v = name(p.from)));
         sig_row(ui, "wh_prompt_sig_here", &mut p.sig_here, here_opts);
         ui.end_row();
-        ui.label("Type");
+        ui.label(tr!("Type"));
         // The likely types first, then every other one: the guess can be wrong.
         let mut candidates: Vec<&str> = p.candidates.clone();
         for t in crate::whdata::types() {
@@ -629,25 +631,25 @@ pub(crate) fn wh_prompt_body(
             p.size = (sizes.len() == 1).then(|| sizes[0]);
         }
         ui.end_row();
-        ui.label(format!("Sig in {}", name(p.to)));
+        ui.label(trf!("Sig in {v}", v = name(p.to)));
         sig_row(ui, "wh_prompt_sig_there", &mut p.sig_there, there_opts);
         ui.end_row();
-        ui.label("Size");
+        ui.label(tr!("Size"));
         let known: Vec<&str> = if p.wh_type.is_empty() { p.candidates.clone() } else { vec![p.wh_type.as_str()] };
-        let sizes: Vec<_> = crate::wormholes::sizes_for(&known).into_iter().map(|s| (s, s.short(), s.label())).collect();
+        let sizes: Vec<_> = crate::wormholes::sizes_for(&known).into_iter().map(|s| (s, s.short(), s.label().tr())).collect();
         crate::app::wormholes_ui::choice_row(ui, &mut p.size, &sizes);
         ui.end_row();
-        ui.label("Time left");
-        let lives: Vec<_> = Life::ALL.into_iter().map(|l| (l, l.short(), l.label())).collect();
+        ui.label(tr!("Time left"));
+        let lives: Vec<_> = Life::ALL.into_iter().map(|l| (l, l.short(), l.label().tr())).collect();
         crate::app::wormholes_ui::choice_row(ui, &mut p.life, &lives);
         ui.end_row();
-        ui.label("Mass left");
-        let masses: Vec<_> = Mass::ALL.into_iter().map(|m| (m, m.short(), m.label())).collect();
+        ui.label(tr!("Mass left"));
+        let masses: Vec<_> = Mass::ALL.into_iter().map(|m| (m, m.short(), m.label().tr())).collect();
         crate::app::wormholes_ui::choice_row(ui, &mut p.mass, &masses);
         ui.end_row();
         if let Some(hull) = &p.rolling_hull {
-            ui.label("Rolling?");
-            ui.checkbox(&mut p.rolled, format!("Passed in a {hull}: mark it rolled"));
+            ui.label(tr!("Rolling?"));
+            ui.checkbox(&mut p.rolled, trf!("Passed in a {hull}: mark it rolled", hull = hull));
             ui.end_row();
         }
         if let Some(e) = &p.error {
@@ -655,16 +657,16 @@ pub(crate) fn wh_prompt_body(
             ui.label(egui::RichText::new(e).color(crate::theme::standing::HOSTILE));
             ui.end_row();
         }
-        ui.label("Note");
+        ui.label(tr!("Note"));
         ui.add(egui::TextEdit::singleline(&mut p.note).desired_width(170.0));
         ui.end_row();
     });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button(format!("{}  Save", icon::FLOPPY_DISK)).clicked() {
+        if ui.button(trf!("{icon}  Save", icon = icon::FLOPPY_DISK)).clicked() {
             act = PromptAct::Save;
         }
-        if ui.button("Skip").on_hover_text("Keep what was recorded and move on").clicked() {
+        if ui.button(tr!("Skip")).on_hover_text(tr!("Keep what was recorded and move on")).clicked() {
             act = PromptAct::Skip;
         }
     });

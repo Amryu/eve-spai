@@ -153,6 +153,12 @@ pub struct Settings {
     /// The assistant, all of it in one sub-struct: see `ai::config`.
     #[serde(default)]
     pub ai: crate::ai::config::AiSettings,
+    /// The app's language, a code from `spai_ui::i18n::LANGUAGES`; empty takes the system's.
+    #[serde(default)]
+    pub language: String,
+    /// Ship names in that language as well, as a client set to it shows them.
+    #[serde(default)]
+    pub translate_ship_names: bool,
     /// How long each kind of history is kept.
     #[serde(default)]
     pub retention: Retention,
@@ -1529,6 +1535,8 @@ impl Default for Settings {
             alerts: AlertSettings::default(),
             web: WebSettings::default(),
             ai: Default::default(),
+            language: String::new(),
+            translate_ship_names: false,
             retention: Default::default(),
             battles_enabled: true,
             battles: BattleFilter::default(),

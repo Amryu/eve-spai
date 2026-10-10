@@ -1,6 +1,8 @@
 //! The tracked fleet's Map tab: where the pilots are, where they were at any recorded moment, and
 //! for a capital save the titan route out of staging to the capital being worked.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 use crate::fleets::movement::{Kind, MoveEvent, Seen, Via};
 
@@ -178,7 +180,7 @@ fn clock(t: i64, with_date: bool) -> String {
 /// One line of a timeline.
 fn describe(e: &MoveEvent, name: &dyn Fn(i64) -> String, whose: bool) -> String {
     let who = if whose { format!("{} ", e.name) } else { String::new() };
-    let via = e.via.map(|v| format!(" by {}", v.label())).unwrap_or_default();
+    let via = e.via.map(|v| format!(" by {}", v.label().tr())).unwrap_or_default();
     match e.kind {
         Kind::Join => format!("{who}joined in {} ({})", name(e.system_id), e.ship_name),
         Kind::Leave => format!("{who}left, last in {} ({})", name(e.system_id), e.ship_name),
@@ -200,7 +202,7 @@ impl SpaiApp {
             }
             index
                 .as_ref()
-                .and_then(|i| i.values().find(|(t, _)| *t == id).map(|(_, n)| n.clone()))
+                .and_then(|i| i.values().find(|(t, _)| *t == id).map(|(_, n)| crate::shipnames::shown(n)))
                 .unwrap_or_else(|| format!("ship {id}"))
         }
     }
@@ -222,7 +224,7 @@ impl SpaiApp {
 
     pub(crate) fn fleet_map_ui(&mut self, ui: &mut egui::Ui, input: &FleetMapInput) {
         let (Some(graph), Some(coords)) = (self.systems.clone(), self.map_coords.clone()) else {
-            ui.label(egui::RichText::new("The map data is still loading.").weak());
+            ui.label(egui::RichText::new(tr!("The map data is still loading.")).weak());
             return;
         };
         let name = |id: i64| graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| "unknown".into());
@@ -389,7 +391,7 @@ impl SpaiApp {
         ids.dedup();
         if ids.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("No pilot locations yet.").weak());
+            ui.label(egui::RichText::new(tr!("No pilot locations yet.")).weak());
             for n in &notes {
                 ui.label(egui::RichText::new(n).weak());
             }
@@ -736,14 +738,14 @@ impl SpaiApp {
         let before = v.at;
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if live && ui.add_enabled(v.at.is_some(), egui::Button::new("Live")).on_hover_text("Follow the fleet as it is now").clicked() {
+            if live && ui.add_enabled(v.at.is_some(), egui::Button::new(tr!("Live"))).on_hover_text(tr!("Follow the fleet as it is now")).clicked() {
                 v.at = None;
                 v.playing = false;
             }
             // A step is to the next moment anything was recorded, not a fixed stretch of time.
             let prev = events.iter().rev().map(|e| e.at).find(|a| *a < t);
             let next = events.iter().map(|e| e.at).find(|a| *a > t);
-            if ui.add_enabled(prev.is_some(), egui::Button::new(ic::SKIP_BACK)).on_hover_text("Back to the previous change").clicked() {
+            if ui.add_enabled(prev.is_some(), egui::Button::new(ic::SKIP_BACK)).on_hover_text(tr!("Back to the previous change")).clicked() {
                 v.at = prev;
                 v.playing = false;
             }
@@ -756,7 +758,7 @@ impl SpaiApp {
                     v.at = Some(first);
                 }
             }
-            if ui.add_enabled(v.at.is_some(), egui::Button::new(ic::SKIP_FORWARD)).on_hover_text("On to the next change").clicked() {
+            if ui.add_enabled(v.at.is_some(), egui::Button::new(ic::SKIP_FORWARD)).on_hover_text(tr!("On to the next change")).clicked() {
                 v.at = next.filter(|n| *n < end);
                 v.playing = false;
             }
@@ -772,7 +774,7 @@ impl SpaiApp {
                     }
                 })
                 .response
-                .on_hover_text("Playback speed: record seconds per second");
+                .on_hover_text(tr!("Playback speed: record seconds per second"));
             ui.label(egui::RichText::new(clock(t, with_date)).monospace());
             ui.spacing_mut().slider_width = (ui.available_width() - 20.0).max(120.0);
             if ui.add(egui::Slider::new(&mut t, first..=last).show_value(false)).changed() {
@@ -832,14 +834,14 @@ impl SpaiApp {
                 egui::vec2(ui.available_width(), row_h),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    if focus.is_some() && ui.button(egui_phosphor::regular::X).on_hover_text("Back to the whole fleet").clicked() {
+                    if focus.is_some() && ui.button(egui_phosphor::regular::X).on_hover_text(tr!("Back to the whole fleet")).clicked() {
                         focus = None;
                     }
                     egui::ComboBox::from_id_salt("fleet_map_focus")
                         .width(ui.available_width().max(80.0))
                         .selected_text(current.clone().unwrap_or_else(|| "Whole fleet".to_owned()))
                         .show_ui(ui, |ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.fleet_map.search).hint_text("Search"));
+                            ui.add(egui::TextEdit::singleline(&mut self.fleet_map.search).hint_text(tr!("Search")));
                             if ui.menu_label(focus.is_none(), "Whole fleet").clicked() {
                                 focus = None;
                             }
@@ -908,7 +910,7 @@ impl SpaiApp {
                             let here = at_row == Some(range.start + i);
                             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let time = egui::RichText::new(clock(r.at, with_date)).monospace();
-                                if ui.link(if here { time.strong() } else { time }).on_hover_text("Show the map at this moment").clicked() {
+                                if ui.link(if here { time.strong() } else { time }).on_hover_text(tr!("Show the map at this moment")).clicked() {
                                     jump_to = Some(r.at);
                                 }
                                 let t = egui::RichText::new(&r.text);
@@ -940,7 +942,7 @@ impl SpaiApp {
                                     .allocate_ui_with_layout(
                                         egui::vec2(ui.available_width(), row_h),
                                         egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| ui.link(format!("{} ({n})", name(*sys))).on_hover_text("Who was here, in what"),
+                                        |ui| ui.link(format!("{} ({n})", name(*sys))).on_hover_text(tr!("Who was here, in what")),
                                     )
                                     .inner;
                                 if r.clicked() {
@@ -977,7 +979,7 @@ impl SpaiApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{} {won}", ic::CROSSHAIR)).color(KILL_COL));
             ui.label(egui::RichText::new(format!("{} {lost}", ic::SKULL)).color(LOSS_COL));
-            ui.label(format!("{} to {}", clock(first, with_date), clock(last, with_date)));
+            ui.label(trf!("{v} to {v2}", v = clock(first, with_date), v2 = clock(last, with_date)));
         });
     }
 
@@ -1162,11 +1164,11 @@ impl SpaiApp {
             .collapsible(false)
             .default_width(320.0)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(format!("{} pilots", who.len())).strong());
+                ui.label(egui::RichText::new(trf!("{who} pilots", who = who.len())).strong());
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     for (id, s) in &who {
                         ui.horizontal(|ui| {
-                            if ui.link(&s.name).on_hover_text("Follow this pilot on the map").clicked() {
+                            if ui.link(&s.name).on_hover_text(tr!("Follow this pilot on the map")).clicked() {
                                 follow = Some(*id);
                             }
                             ui.label(egui::RichText::new(&s.ship_name).weak());
@@ -1249,7 +1251,7 @@ impl SpaiApp {
                 let system = e.system_id?;
                 let where_ = e.system_name.clone().unwrap_or_default();
                 let label = match e.cap_class {
-                    Some(c) => format!("{} \u{b7} {where_}", c.label()),
+                    Some(c) => format!("{} \u{b7} {where_}", c.label().tr()),
                     None => where_,
                 };
                 Some(Ping { seq: e.seq, system, label })

@@ -411,7 +411,7 @@ mod tests {
         let ctx = egui::Context::default();
         super::install_fonts(&ctx);
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.label("中文测试 — CJK 字体 ABC");
+            ui.label(crate::tr!("中文测试 — CJK 字体 ABC"));
         });
     }
 }

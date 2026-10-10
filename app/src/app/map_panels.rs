@@ -18,7 +18,7 @@ impl SpaiApp {
         // Zone 0 is no Ansiblex at all: gates only.
         let zone_text = |z: u8| if z == 0 { "None".to_owned() } else { format!("Up to {}", crate::ansiblex::zone_label(z)) };
         ui.horizontal(|ui| {
-            ui.label("Ansiblexes");
+            ui.label(tr!("Ansiblexes"));
             egui::ComboBox::from_id_salt(ui.id().with("route_zone"))
                 .selected_text(zone_text(current))
                 .show_ui(ui, |ui| {
@@ -36,7 +36,7 @@ impl SpaiApp {
                     }
                 })
                 .response
-                .on_hover_text("For this route only. The jump bridge settings keep their own limit.");
+                .on_hover_text(tr!("For this route only. The jump bridge settings keep their own limit."));
         });
         changed
     }
@@ -52,24 +52,24 @@ impl SpaiApp {
         let head = if n > 0 { format!("{}  Avoid ({n})", icon::PROHIBIT) } else { format!("{}  Avoid", icon::PROHIBIT) };
         egui::CollapsingHeader::new(head).id_salt("route_rules").show(ui, |ui| {
             let st = &mut self.settings;
-            changed |= ui.checkbox(&mut st.route_avoid_camps, "Gate camps").on_hover_text("Systems with a likely or possible camp").changed();
+            changed |= ui.checkbox(&mut st.route_avoid_camps, tr!("Gate camps")).on_hover_text(tr!("Systems with a likely or possible camp")).changed();
             ui.horizontal(|ui| {
-                ui.label("Allow");
-                changed |= ui.checkbox(&mut st.route_sec[0], "High").changed();
-                changed |= ui.checkbox(&mut st.route_sec[1], "Low").changed();
-                changed |= ui.checkbox(&mut st.route_sec[2], "Null").changed();
+                ui.label(tr!("Allow"));
+                changed |= ui.checkbox(&mut st.route_sec[0], tr!("High")).changed();
+                changed |= ui.checkbox(&mut st.route_sec[1], tr!("Low")).changed();
+                changed |= ui.checkbox(&mut st.route_sec[2], tr!("Null")).changed();
             });
             ui.horizontal(|ui| {
-                ui.label("Kills last hour");
+                ui.label(tr!("Kills last hour"));
                 changed |= ui
                     .add(egui::DragValue::new(&mut st.route_max_kills).range(0..=500).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("at most {n}") }))
-                    .on_hover_text("Ship kills in the system in the last hour")
+                    .on_hover_text(tr!("Ship kills in the system in the last hour"))
                     .changed();
             });
-            changed |= ui.checkbox(&mut st.route_region_gates, "Cross regions by gate").changed();
+            changed |= ui.checkbox(&mut st.route_region_gates, tr!("Cross regions by gate")).changed();
             ui.horizontal(|ui| {
                 ui.set_max_width(ui.available_width());
-                ui.label("Sov held by");
+                ui.label(tr!("Sov held by"));
                 let text = if st.route_avoid_sov.is_empty() { "nobody".to_owned() } else { st.route_avoid_sov.join(", ") };
                 let menu = egui::containers::menu::MenuButton::from_button(egui::Button::new((text, egui::Atom::grow(), icon::CARET_DOWN)).truncate().min_size(egui::vec2(ui.available_width() - 2.0, 0.0)))
                     .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
@@ -94,7 +94,7 @@ impl SpaiApp {
                     }
                     let id = egui::Id::new("route_sov_input");
                     let mut q = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
-                    let resp = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Alliance").desired_width(f32::INFINITY));
+                    let resp = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr!("Alliance")).desired_width(f32::INFINITY));
                     let ql = q.trim().to_lowercase();
                     let mut holders: Vec<String> = self
                         .system_status
@@ -126,11 +126,11 @@ impl SpaiApp {
             });
             ui.separator();
             changed |= ui
-                .checkbox(&mut st.route_live, "Keep current")
-                .on_hover_text("Replan as intel and kills come in, with a sound when the route grows by more than four jumps")
+                .checkbox(&mut st.route_live, tr!("Keep current"))
+                .on_hover_text(tr!("Replan as intel and kills come in, with a sound when the route grows by more than four jumps"))
                 .changed();
             if st.route_live {
-                changed |= ui.checkbox(&mut st.travel_auto_dest, "Update the route in game").changed();
+                changed |= ui.checkbox(&mut st.travel_auto_dest, tr!("Update the route in game")).changed();
             }
         });
         changed
@@ -228,8 +228,8 @@ impl SpaiApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "Drag from one system to another on the map, or right-click a system to start a \
-                     route.",
+                    tr!("Drag from one system to another on the map, or right-click a system to start a \
+                     route."),
                 )
                 .weak(),
             );
@@ -267,7 +267,7 @@ impl SpaiApp {
                 } else {
                     txt
                 });
-                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
+                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
                     drop_anchor = Some(i);
                 }
             }
@@ -287,7 +287,7 @@ impl SpaiApp {
         }
         if gating
             && ui
-                .checkbox(&mut self.settings.route_via_wormholes, "Route via scanned wormholes")
+                .checkbox(&mut self.settings.route_via_wormholes, tr!("Route via scanned wormholes"))
                 .changed()
         {
             self.needs_save = true;
@@ -303,12 +303,7 @@ impl SpaiApp {
         }
 
         if self.map_route_has("jump") {
-            egui::CollapsingHeader::new(format!(
-                "{}  {} · {:.1} ly",
-                icon::SPIRAL,
-                SHIP_CLASSES[self.jump_ship].name,
-                max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc)
-            ))
+            egui::CollapsingHeader::new(trf!("{icon}  {v} · {v2} ly", icon = icon::SPIRAL, v = SHIP_CLASSES[self.jump_ship].name, v2 = format!("{:.1}", max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc))))
             .id_salt("route_ship")
             .show(ui, |ui| {
                 egui::ComboBox::from_id_salt(ui.id().with("jump_ship"))
@@ -327,19 +322,19 @@ impl SpaiApp {
                     replan = true;
                 }
                 ui.horizontal(|ui| {
-                    ui.label("JDC").on_hover_text("Jump Drive Calibration (range)");
+                    ui.label(tr!("JDC")).on_hover_text(tr!("Jump Drive Calibration (range)"));
                     replan |= ui
                         .add(egui::DragValue::new(&mut self.jump_jdc).range(0..=5))
                         .changed();
-                    ui.label("JFC").on_hover_text("Jump Fuel Conservation (fuel)");
+                    ui.label(tr!("JFC")).on_hover_text(tr!("Jump Fuel Conservation (fuel)"));
                     replan |= ui
                         .add(egui::DragValue::new(&mut self.jump_jfc).range(0..=5))
                         .changed();
                 });
                 if self.active_character != "No character"
                     && ui
-                        .button("Use my skills (ESI)")
-                        .on_hover_text("Needs the skills scope on this character")
+                        .button(tr!("Use my skills (ESI)"))
+                        .on_hover_text(tr!("Needs the skills scope on this character"))
                         .clicked()
                 {
                     let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
@@ -366,21 +361,16 @@ impl SpaiApp {
             .unwrap_or_default();
         if !listed.is_empty() {
             let mut stop: Option<(i64, bool)> = None;
-            egui::CollapsingHeader::new(format!(
-                "{}  avoiding {} system{}",
-                icon::EYE_SLASH,
-                listed.len(),
-                if listed.len() == 1 { "" } else { "s" }
-            ))
+            egui::CollapsingHeader::new(trf!("{icon}  avoiding {listed} system{v}", icon = icon::EYE_SLASH, listed = listed.len(), v = if listed.len() == 1 { "" } else { "s" }))
             .id_salt("route_avoid")
             .show(ui, |ui| {
                 for a in &listed {
                     ui.horizontal(|ui| {
                         ui.label(&a.name);
                         if a.always {
-                            ui.label(egui::RichText::new("always").weak().size(11.0));
+                            ui.label(egui::RichText::new(tr!("always")).weak().size(11.0));
                         }
-                        if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Stop avoiding").clicked() {
+                        if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Stop avoiding")).clicked() {
                             stop = Some((a.id, a.always));
                         }
                     });
@@ -407,7 +397,7 @@ impl SpaiApp {
         let Some(o) = self.map_route_opts.get(self.map_route_at) else {
             ui.separator();
             ui.label(
-                egui::RichText::new("No route with these settings.")
+                egui::RichText::new(tr!("No route with these settings."))
                     .color(crate::theme::standing::WARNING),
             );
             return;
@@ -441,13 +431,7 @@ impl SpaiApp {
         }
         if let Some(tj) = &o.titan_jump {
             ui.label(
-                egui::RichText::new(format!(
-                    "{}  Titan jumps {} → {}, {:.1} ly",
-                    egui_phosphor::regular::STAR_FOUR,
-                    tj.from_name,
-                    tj.to_name,
-                    tj.ly
-                ))
+                egui::RichText::new(trf!("{icon}  Titan jumps {v} → {v2}, {v3} ly", icon = egui_phosphor::regular::STAR_FOUR, v = tj.from_name, v2 = tj.to_name, v3 = format!("{:.1}", tj.ly)))
                 .color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)),
             );
         }
@@ -465,24 +449,24 @@ impl SpaiApp {
         ui.horizontal_wrapped(|ui| {
             let has_char = self.active_character != "No character";
             if ui
-                .add_enabled(has_char && !ingame.is_empty(), egui::Button::new(format!("{}  Set in game", icon::MAP_PIN_LINE)))
+                .add_enabled(has_char && !ingame.is_empty(), egui::Button::new(trf!("{icon}  Set in game", icon = icon::MAP_PIN_LINE)))
                 .on_hover_text(if self.map_route_kind == "gate" {
                     "Set this route in the game, one waypoint per system"
                 } else {
                     "Set waypoints in the game at both ends of each leg you fly yourself"
                 })
-                .on_disabled_hover_text("Log a character in to route in the game")
+                .on_disabled_hover_text(tr!("Log a character in to route in the game"))
                 .clicked()
             {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
                 crate::esi::set_route(cid, self.active_character.clone(), ingame.clone());
                 self.note_ingame_route();
             }
-            if ui.button(format!("{}  Save route", icon::COPY)).clicked() {
+            if ui.button(trf!("{icon}  Save route", icon = icon::COPY)).clicked() {
                 self.map_save_name.clear();
                 self.map_save_open = true;
             }
-            if ui.button(format!("{}  Load…", icon::ARROW_SQUARE_OUT)).clicked() {
+            if ui.button(trf!("{icon}  Load…", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 self.map_load_open = true;
             }
         });
@@ -539,7 +523,7 @@ impl SpaiApp {
                     {
                         ui.menu_button(icon::DOTS_THREE, |ui| {
                             if h.warn.is_some_and(|w| w.sev >= crate::web::route::WARN_SEVERITY)
-                                && ui.button("Show intel").clicked()
+                                && ui.button(tr!("Show intel")).clicked()
                             {
                                 show_intel = Some(h.id);
                                 ui.close();
@@ -570,7 +554,7 @@ impl SpaiApp {
                                     }
                                     ui.close();
                                 }
-                                if ui.button("Add waypoint here").clicked() {
+                                if ui.button(tr!("Add waypoint here")).clicked() {
                                     waypoint_now = Some((h.id, if h.kind == 2 { "jump" } else { "gate" }));
                                     ui.close();
                                 }
@@ -578,12 +562,12 @@ impl SpaiApp {
                             if h.kind == 2
                                 && i > 0
                                 && i + 1 < hops.len()
-                                && ui.button("Other systems between…").clicked()
+                                && ui.button(tr!("Other systems between…")).clicked()
                             {
                                 alts_for = Some(i);
                                 ui.close();
                             }
-                            if ui.button("Show info").clicked() {
+                            if ui.button(tr!("Show info")).clicked() {
                                 self.map_selected = Some(h.id);
                                 self.right_dock_open = true;
                                 self.right_dock_tab = RightDockTab::System;
@@ -613,12 +597,7 @@ impl SpaiApp {
                                 });
                                 if let Some(((fuel, fat), react)) = cost {
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} iso · fatigue {} · ready in {}",
-                                            fuel.round() as i64,
-                                            fmt_min(fat),
-                                            fmt_min(react)
-                                        ))
+                                        egui::RichText::new(trf!("{v} iso · fatigue {v2} · ready in {v3}", v = fuel.round() as i64, v2 = fmt_min(fat), v3 = fmt_min(react)))
                                         .weak()
                                         .size(11.0),
                                     );
@@ -645,7 +624,7 @@ impl SpaiApp {
                                             }
                                         })
                                         .response
-                                        .on_hover_text("Ways on from here, all the same length");
+                                        .on_hover_text(tr!("Ways on from here, all the same length"));
                                 }
                             });
                         });
@@ -722,17 +701,17 @@ impl SpaiApp {
                 .show(ctx, |ui| {
                     ui.set_min_width(280.0);
                     let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.map_save_name).hint_text("Name"),
+                        egui::TextEdit::singleline(&mut self.map_save_name).hint_text(tr!("Name")),
                     );
                     if wh {
                         ui.label(
                             egui::RichText::new(
-                                "Planned through scanned wormholes, so it is deleted a day after saving.",
+                                tr!("Planned through scanned wormholes, so it is deleted a day after saving."),
                             )
                             .color(crate::theme::standing::WARNING),
                         );
                     }
-                    go = ui.button("Save").clicked()
+                    go = ui.button(tr!("Save")).clicked()
                         || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 });
             if go && !self.map_save_name.trim().is_empty() {
@@ -779,7 +758,7 @@ impl SpaiApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     if rows.is_empty() {
-                        ui.label(egui::RichText::new("Nothing saved yet.").weak());
+                        ui.label(egui::RichText::new(tr!("Nothing saved yet.")).weak());
                         return;
                     }
                     let name_of = |id: i64| {
@@ -801,7 +780,7 @@ impl SpaiApp {
                                 if r.via_wormholes { " · expires" } else { "" }
                             );
                             ui.label(egui::RichText::new(ends).weak().size(11.0));
-                            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Forget").clicked() {
+                            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Forget")).clicked() {
                                 forget = Some(r.name.clone());
                             }
                         });
@@ -852,7 +831,7 @@ impl SpaiApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 if ids.is_empty() {
-                    ui.label(egui::RichText::new("Nothing else is in range of both.").weak());
+                    ui.label(egui::RichText::new(tr!("Nothing else is in range of both.")).weak());
                     return;
                 }
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -956,7 +935,7 @@ impl SpaiApp {
         let prox = |j: u32| if j <= 1 { red } else if j <= 3 { orange } else { yellow };
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(format!("Within {} jumps, nearest first", self.map_threat_jumps)).weak());
+        ui.label(egui::RichText::new(trf!("Within {v} jumps, nearest first", v = self.map_threat_jumps)).weak());
 
         let me_sys = self.player_system();
         let range = self.map_threat_jumps;
@@ -996,12 +975,12 @@ impl SpaiApp {
 
         ui.separator();
         if me_sys.is_none() {
-            ui.label(egui::RichText::new("No active-character location.").weak());
+            ui.label(egui::RichText::new(tr!("No active-character location.")).weak());
             return;
         }
         let danger = !reports.is_empty();
         ui.label(
-            egui::RichText::new(format!("Intel within {range}j: {}", reports.len()))
+            egui::RichText::new(trf!("Intel within {range}j: {reports}", range = range, reports = reports.len()))
                 .strong()
                 .size(14.0)
                 .color(if danger { red } else { green }),
@@ -1014,19 +993,19 @@ impl SpaiApp {
             .show(ui, |ui| {
                 let action = self.render_intel_cards(ui, &reports_only);
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("Kill hotspots (last hour)").strong().size(14.0));
+                ui.label(egui::RichText::new(tr!("Kill hotspots (last hour)")).strong().size(14.0));
                 if kills.is_empty() {
-                    ui.label(egui::RichText::new("none in range").weak());
+                    ui.label(egui::RichText::new(tr!("none in range")).weak());
                 }
                 for (name, j, sk, pk) in kills.iter().take(15) {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(name).strong().color(prox(*j)));
                         ui.label(egui::RichText::new(format!("{j}j")).weak());
                         if *sk > 0 {
-                            ui.label(egui::RichText::new(format!("{sk} ship")).color(red));
+                            ui.label(egui::RichText::new(trf!("{sk} ship", sk = sk)).color(red));
                         }
                         if *pk > 0 {
-                            ui.label(egui::RichText::new(format!("{pk} pod")).color(orange));
+                            ui.label(egui::RichText::new(trf!("{pk} pod", pk = pk)).color(orange));
                         }
                     });
                 }
@@ -1047,10 +1026,10 @@ impl SpaiApp {
                     .size_range(170.0..=300.0)
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("\u{00AB}").on_hover_text("Hide the panel").clicked() {
+                            if ui.button("\u{00AB}").on_hover_text(tr!("Hide the panel")).clicked() {
                                 self.left_dock_open = false;
                             }
-                            ui.label(egui::RichText::new("Map").strong());
+                            ui.label(egui::RichText::new(tr!("Map")).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.map_window_menu(ui));
                         });
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -1082,7 +1061,7 @@ impl SpaiApp {
                             }
                         }
                         ui.horizontal(|ui| {
-                            if ui.button("\u{00BB}").on_hover_text("Hide the panel").clicked() {
+                            if ui.button("\u{00BB}").on_hover_text(tr!("Hide the panel")).clicked() {
                                 self.right_dock_open = false;
                             }
                             for (tab, ok, label) in [
@@ -1122,17 +1101,17 @@ impl SpaiApp {
             return;
         }
         ui.menu_button(icon::DOTS_THREE, |ui| {
-            if !self.map_popped && ui.button(format!("{}  Pop out the map", icon::ARROW_SQUARE_OUT)).clicked() {
+            if !self.map_popped && ui.button(trf!("{icon}  Pop out the map", icon = icon::ARROW_SQUARE_OUT)).clicked() {
                 self.map_popped = true;
                 ui.close();
             }
             if self.map_popped && !self.map_overlay_mode {
-                ui.checkbox(&mut self.map_window_on_top, format!("{}  Keep on top", icon::PUSH_PIN));
+                ui.checkbox(&mut self.map_window_on_top, trf!("{icon}  Keep on top", icon = icon::PUSH_PIN));
             }
             let label = if self.map_overlay_mode { "Close the overlay" } else { "Overlay over EVE" };
             if ui
                 .button(format!("{}  {label}", icon::FRAME_CORNERS))
-                .on_hover_text("A borderless, see-through map to lay over the game")
+                .on_hover_text(tr!("A borderless, see-through map to lay over the game"))
                 .clicked()
             {
                 self.map_overlay_mode = !self.map_overlay_mode;
@@ -1163,7 +1142,7 @@ impl SpaiApp {
             }
         })
         .response
-        .on_hover_text("Map windows");
+        .on_hover_text(tr!("Map windows"));
     }
 
     pub(crate) fn map_controls_content(&mut self, ui: &mut egui::Ui) {
@@ -1186,16 +1165,16 @@ impl SpaiApp {
                 }
             })
             .response
-            .on_hover_text("The last two centre on you and list threats in range under Nearby");
+            .on_hover_text(tr!("The last two centre on you and list threats in range under Nearby"));
         if self.map_layout.is_threat() {
             ui.horizontal(|ui| {
-                ui.label("Range");
+                ui.label(tr!("Range"));
                 ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix(" jumps"));
             });
-            ui.checkbox(&mut self.threat_include_bridges, "Count jump bridges");
+            ui.checkbox(&mut self.threat_include_bridges, tr!("Count jump bridges"));
             if ui
-                .checkbox(&mut self.settings.map_threat_alarm, "Alarm on a new threat")
-                .on_hover_text("A sound and a red flash when a report or kill turns up in range")
+                .checkbox(&mut self.settings.map_threat_alarm, tr!("Alarm on a new threat"))
+                .on_hover_text(tr!("A sound and a red flash when a report or kill turns up in range"))
                 .changed()
             {
                 self.needs_save = true;
@@ -1204,22 +1183,22 @@ impl SpaiApp {
         ui.add_space(4.0);
         // One row of same-sized icon buttons for moving the view.
         ui.horizontal(|ui| {
-            if ui.button(icon::GLOBE_HEMISPHERE_WEST).on_hover_text("Universe (U)").clicked() {
+            if ui.button(icon::GLOBE_HEMISPHERE_WEST).on_hover_text(tr!("Universe (U)")).clicked() {
                 self.map_go(MapView::Universe);
             }
             let follow = egui::Button::new(icon::CROSSHAIR).selected(self.map_follow);
-            if ui.add(follow).on_hover_text("Follow your character (F)").clicked() {
+            if ui.add(follow).on_hover_text(tr!("Follow your character (F)")).clicked() {
                 self.map_follow = !self.map_follow;
             }
-            if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Reset the view (Home)").clicked() {
+            if ui.button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(tr!("Reset the view (Home)")).clicked() {
                 self.map_pan = egui::Vec2::ZERO;
                 self.map_zoom = 1.0;
                 self.map_follow = false;
             }
-            if (self.route_destination.is_some() || self.ingame_route) && ui.button(icon::X).on_hover_text("Clear the route").clicked() {
+            if (self.route_destination.is_some() || self.ingame_route) && ui.button(icon::X).on_hover_text(tr!("Clear the route")).clicked() {
                 self.clear_route();
             }
-            if !self.ai_highlight.is_empty() && ui.button(icon::ERASER).on_hover_text("Clear the assistant's marks").clicked() {
+            if !self.ai_highlight.is_empty() && ui.button(icon::ERASER).on_hover_text(tr!("Clear the assistant's marks")).clicked() {
                 self.ai_highlight.clear();
             }
         });
@@ -1353,7 +1332,7 @@ impl SpaiApp {
                         if let Some(up) = self.map_highlight_upgrade.clone() {
                             if ui
                                 .button(format!("{}  {up}  {}", icon::MAP_PIN_LINE, icon::X))
-                                .on_hover_text("Clear upgrade highlight")
+                                .on_hover_text(tr!("Clear upgrade highlight"))
                                 .clicked()
                             {
                                 clear_upgrade = true;
@@ -1372,7 +1351,7 @@ impl SpaiApp {
                             }
                         }
                         if hits.is_empty() {
-                            ui.label(egui::RichText::new("No match").weak());
+                            ui.label(egui::RichText::new(tr!("No match")).weak());
                         } else {
                             for (i, h) in hits.iter().enumerate().rev() {
                                 let label = match h {
@@ -1437,12 +1416,12 @@ impl SpaiApp {
                     ui.set_max_width(SEARCH_PANEL_W);
                     ui.horizontal(|ui| {
                         ui.add_enabled_ui(can_back, |ui| {
-                            if ui.button(icon::ARROW_LEFT).on_hover_text("Back").clicked() {
+                            if ui.button(icon::ARROW_LEFT).on_hover_text(tr!("Back")).clicked() {
                                 nav_back = true;
                             }
                         });
                         ui.add_enabled_ui(can_fwd, |ui| {
-                            if ui.button(icon::ARROW_RIGHT).on_hover_text("Forward").clicked() {
+                            if ui.button(icon::ARROW_RIGHT).on_hover_text(tr!("Forward")).clicked() {
                                 nav_fwd = true;
                             }
                         });
@@ -1456,15 +1435,15 @@ impl SpaiApp {
                                     }
                                 }
                             });
-                        ui.label(icon::MAGNIFYING_GLASS).on_hover_text("Ctrl+F");
+                        ui.label(icon::MAGNIFYING_GLASS).on_hover_text(tr!("Ctrl+F"));
                         let w = (ui.available_width() - if has_query { 30.0 } else { 0.0 }).max(60.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
                                 .id(egui::Id::new("map_search_input"))
-                                .hint_text("Find (Ctrl+F)")
+                                .hint_text(tr!("Find (Ctrl+F)"))
                                 .desired_width(w),
                         )
-                        .on_hover_text("A system, constellation, region or sov upgrade");
+                        .on_hover_text(tr!("A system, constellation, region or sov upgrade"));
                         if has_query && ui.button(icon::X).clicked() {
                             clear_search = true;
                         }

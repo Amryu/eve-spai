@@ -1,6 +1,8 @@
 //! The wormhole map's layout and drawing, free of the app: where systems go, how hole lines are
 //! routed between them, and the colours and marks they are drawn with.
 
+use crate::i18n::Tr;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use egui_phosphor::regular as icon;
@@ -56,7 +58,7 @@ pub fn who_lines(w: &spai_core::wormholes::Wormhole, now: i64) -> (String, Optio
         None => match w.source {
             Source::Manual => format!("Added by hand {} ago", ago(w.reported_at)),
             Source::Auto => format!("Detected {} ago", ago(w.reported_at)),
-            s => format!("Added from {} {} ago", s.label(), ago(w.reported_at)),
+            s => format!("Added from {} {} ago", s.label().tr(), ago(w.reported_at)),
         },
     };
     // A change within a minute of adding it is the adding itself.
@@ -76,7 +78,7 @@ pub fn opened_line(w: &spai_core::wormholes::Wormhole, now: i64) -> Option<Strin
 pub fn who_cell(ui: &mut egui::Ui, w: &spai_core::wormholes::Wormhole, now: i64) {
     let (added, edited) = who_lines(w, now);
     let ago = |t: i64| crate::widgets::human_ago(now - t);
-    let by = w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().to_owned());
+    let by = w.created_by.as_ref().or(w.detected_by.as_ref()).cloned().unwrap_or_else(|| w.source.label().tr().to_owned());
     let hover = match &edited {
         Some(e) => format!("{added}\n{e}"),
         None => added,
@@ -88,10 +90,10 @@ pub fn who_cell(ui: &mut egui::Ui, w: &spai_core::wormholes::Wormhole, now: i64)
         ui.set_min_width(56.0);
         ui.set_max_width(56.0);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-        ui.label(egui::RichText::new(format!("{} ago", ago(w.reported_at))).weak()).on_hover_text(&hover);
+        ui.label(egui::RichText::new(crate::trf!("{v} ago", v = ago(w.reported_at))).weak()).on_hover_text(&hover);
         ui.label(egui::RichText::new(by).weak()).on_hover_text(&hover);
         if let (Some(_), Some((who, at))) = (&edited, &w.edited_by) {
-            ui.label(egui::RichText::new(format!("{} {} ago", egui_phosphor::regular::PENCIL_SIMPLE, ago(*at))).weak()).on_hover_text(&hover);
+            ui.label(egui::RichText::new(crate::trf!("{icon} {v} ago", icon = egui_phosphor::regular::PENCIL_SIMPLE, v = ago(*at))).weak()).on_hover_text(&hover);
             ui.label(egui::RichText::new(who).weak()).on_hover_text(&hover);
         }
     });

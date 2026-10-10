@@ -50,11 +50,11 @@ impl SpaiApp {
         let mut close = false;
 
         let Some(graph) = self.systems.clone() else {
-            ui.label("SDE not ready.");
+            ui.label(tr!("SDE not ready."));
             return SystemInfoOut::default();
         };
         let Some(info) = graph.info_of(id).cloned() else {
-            ui.label("Unknown system.");
+            ui.label(tr!("Unknown system."));
             return SystemInfoOut::default();
         };
 
@@ -75,10 +75,10 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if docked {
-                        if ui.button(egui_phosphor::regular::X).on_hover_text("Close").clicked() {
+                        if ui.button(egui_phosphor::regular::X).on_hover_text(tr!("Close")).clicked() {
                             close = true;
                         }
-                        if ui.button(egui_phosphor::regular::ARROW_SQUARE_OUT).on_hover_text("Open in its own window").clicked() {
+                        if ui.button(egui_phosphor::regular::ARROW_SQUARE_OUT).on_hover_text(tr!("Open in its own window")).clicked() {
                             pop_out = true;
                         }
                     }
@@ -86,7 +86,7 @@ impl SpaiApp {
                     let pencil = egui::RichText::new(egui_phosphor::regular::NOTE_PENCIL)
                         .size(18.0)
                         .color(if noted { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() });
-                    if ui.add(egui::Button::new(pencil).frame(false)).on_hover_text("Notes and tags").clicked() {
+                    if ui.add(egui::Button::new(pencil).frame(false)).on_hover_text(tr!("Notes and tags")).clicked() {
                         edit_notes = true;
                     }
                     let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
@@ -117,8 +117,8 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(adm) = flags.adm {
-                            ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(adm_color(adm)).strong())
-                                .on_hover_text("Activity Defense Multiplier (ESI gives only the total)");
+                            ui.label(egui::RichText::new(trf!("ADM {adm}", adm = format!("{:.1}", adm))).color(adm_color(adm)).strong())
+                                .on_hover_text(tr!("Activity Defense Multiplier (ESI gives only the total)"));
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             if let Some(aid) = flags.sov_alliance {
@@ -138,7 +138,7 @@ impl SpaiApp {
                 Some(n) => note_tip_ui(ui, &n),
                 None => {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{}  No notes or tags", egui_phosphor::regular::TAG)).weak());
+                        ui.label(egui::RichText::new(trf!("{icon}  No notes or tags", icon = egui_phosphor::regular::TAG)).weak());
                         if ui.link("Add").clicked() {
                             self.note_editor_pending = Some(crate::notes::Subject::System(id));
                         }
@@ -164,28 +164,28 @@ impl SpaiApp {
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         let cname = self.active_character.clone();
         ui.horizontal(|ui| {
-            if let Some(names) = self.destination_split_button(ui, "Destination", has_char) {
+            if let Some(names) = self.destination_split_button(ui, tr!("Destination"), has_char) {
                 self.set_destination_for(&names, id);
             }
             if ui
                 .add_enabled(has_char, egui::Button::new(egui_phosphor::regular::PLUS))
-                .on_hover_text("Add as a waypoint in game")
-                .on_disabled_hover_text("Log a character in to route in game")
+                .on_hover_text(tr!("Add as a waypoint in game"))
+                .on_disabled_hover_text(tr!("Log a character in to route in game"))
                 .clicked()
             {
                 crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
             }
-            if !docked && ui.button(egui_phosphor::regular::MAP_TRIFOLD).on_hover_text("Show on the map").clicked() {
+            if !docked && ui.button(egui_phosphor::regular::MAP_TRIFOLD).on_hover_text(tr!("Show on the map")).clicked() {
                 show_on_map = true;
             }
         });
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.menu_value(&mut self.system_kills_tab, 0u8, "Overview");
+            ui.menu_value(&mut self.system_kills_tab, 0u8, tr!("Overview"));
             let n = sys_reports.len();
             ui.menu_value(&mut self.system_kills_tab, 1u8, if n > 0 { format!("Intel ({n})") } else { "Intel".to_owned() });
-            ui.menu_value(&mut self.system_kills_tab, 2u8, "Kills");
+            ui.menu_value(&mut self.system_kills_tab, 2u8, tr!("Kills"));
         });
         ui.separator();
         // Each tab scrolls in the room left under the header, so the header and tabs stay put.
@@ -209,7 +209,7 @@ impl SpaiApp {
                     sum as f64 / region_ids.len() as f64
                 };
                 let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
-                ui.label(egui::RichText::new("Last hour").weak()).on_hover_text("Red at twice the region's average, amber above it");
+                ui.label(egui::RichText::new(tr!("Last hour")).weak()).on_hover_text(tr!("Red at twice the region's average, amber above it"));
                 egui::Grid::new("sys_hour").num_columns(4).spacing([10.0, 2.0]).show(ui, |ui| {
                     let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
                         let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
@@ -222,30 +222,30 @@ impl SpaiApp {
                         ui.label(egui::RichText::new(label).weak());
                         ui.label(egui::RichText::new(v.to_string()).color(col).strong());
                     };
-                    stat(ui, "Jumps", flags.jumps, aj);
-                    stat(ui, "Ship kills", flags.ship_kills, ak);
+                    stat(ui, tr!("Jumps"), flags.jumps, aj);
+                    stat(ui, tr!("Ship kills"), flags.ship_kills, ak);
                     ui.end_row();
-                    stat(ui, "Pod kills", flags.pod_kills, ak);
-                    stat(ui, "NPC kills", flags.npc_kills, an);
+                    stat(ui, tr!("Pod kills"), flags.pod_kills, ak);
+                    stat(ui, tr!("NPC kills"), flags.npc_kills, an);
                     ui.end_row();
                 });
                 }
                 self.camp_line(ui, info.id);
                 if let Some(rp) = crate::rats::rat_profile(&info.region) {
                     ui.separator();
-                    ui.label(egui::RichText::new(format!("{}  Rats", egui_phosphor::regular::SKULL)).weak())
-                        .on_hover_text("Tank against what they deal, shoot what they are weak to");
+                    ui.label(egui::RichText::new(trf!("{icon}  Rats", icon = egui_phosphor::regular::SKULL)).weak())
+                        .on_hover_text(tr!("Tank against what they deal, shoot what they are weak to"));
                     egui::Grid::new("sys_rats").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
                         let row = |ui: &mut egui::Ui, k: &str, v: String| {
                             ui.label(egui::RichText::new(k).weak());
                             ui.add(egui::Label::new(&v).truncate()).on_hover_text(&v);
                             ui.end_row();
                         };
-                        row(ui, "Faction", rp.faction.to_string());
-                        ui.label(egui::RichText::new("Deal").weak());
+                        row(ui, tr!("Faction"), rp.faction.to_string());
+                        ui.label(egui::RichText::new(tr!("Deal")).weak());
                         damage_types_ui(ui, &rp.deal);
                         ui.end_row();
-                        ui.label(egui::RichText::new("Weak to").weak());
+                        ui.label(egui::RichText::new(tr!("Weak to")).weak());
                         damage_types_ui(ui, &rp.weak);
                         ui.end_row();
                         if rp.ewar != "None" {
@@ -262,7 +262,7 @@ impl SpaiApp {
                     .flat_map(|u| split_upgrade_label(&u.upgrade))
                     .collect();
                 if !upgrades.is_empty() {
-                    ui.label(egui::RichText::new("Sov upgrades").weak());
+                    ui.label(egui::RichText::new(tr!("Sov upgrades")).weak());
                     for u in upgrades {
                         let (kind, level) = upgrade_info(u);
                         let lcol = level_color(level);
@@ -294,7 +294,7 @@ impl SpaiApp {
                 drop(state);
 
                 ui.separator();
-                ui.label(egui::RichText::new("Neighbours").weak());
+                ui.label(egui::RichText::new(tr!("Neighbours")).weak());
                 ui.horizontal_wrapped(|ui| {
                     for &nid in graph.neighbors(id) {
                         if let Some(ni) = graph.info_of(nid) {
@@ -321,7 +321,7 @@ impl SpaiApp {
                                 resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
                             }
                             if cnt > 0 {
-                                resp = resp.on_hover_text(format!("{cnt} active intel"));
+                                resp = resp.on_hover_text(trf!("{cnt} active intel", cnt = cnt));
                             }
                             if resp.clicked() {
                                 nav = Some(nid);
@@ -353,7 +353,7 @@ impl SpaiApp {
                     _ => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Loading kills\u{2026}");
+                            ui.label(tr!("Loading kills\u{2026}"));
                         });
                     }
                 }
@@ -361,7 +361,7 @@ impl SpaiApp {
         } else {
             egui::ScrollArea::vertical().id_salt("sysintel").max_height(list_h).auto_shrink([false, docked]).show(ui, |ui| {
                 if sys_reports.is_empty() {
-                    ui.label(egui::RichText::new("No recent intel.").weak());
+                    ui.label(egui::RichText::new(tr!("No recent intel.")).weak());
                 }
                 for (i, r) in sys_reports.iter().enumerate() {
                     let target = r.primary_system().map(|s| s.id);
@@ -526,7 +526,7 @@ impl SpaiApp {
                         let url = eve_alliance_logo_url(aid, sz);
                         let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(sz)));
                         let label = name.clone().unwrap_or_else(|| "Alliance".to_owned());
-                        r.on_hover_text(format!("{label} — {count} systems"));
+                        r.on_hover_text(trf!("{label} — {count} systems", label = label, count = count));
                     }
                 });
             });
@@ -536,18 +536,15 @@ impl SpaiApp {
         if let Some(rp) = crate::rats::rat_profile(region_name) {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
+                ui.label(egui::RichText::new(trf!("{icon}  rats", icon = egui_phosphor::regular::SKULL)).strong());
                 ui.label(egui::RichText::new(rp.faction).strong());
             });
             ui.label(
-                egui::RichText::new(format!(
-                    "Deals {} / {}   ·   weak to {} / {}",
-                    rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
-                ))
+                egui::RichText::new(trf!("Deals {v} / {v2}   ·   weak to {v3} / {v4}", v = rp.deal[0], v2 = rp.deal[1], v3 = rp.weak[0], v4 = rp.weak[1]))
                 .weak(),
             );
             if rp.ewar != "None" {
-                ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
+                ui.label(egui::RichText::new(trf!("EWAR: {v}", v = rp.ewar)).weak());
             }
         }
     }
@@ -581,7 +578,7 @@ impl SpaiApp {
                 Self::rat_line(ui, &region_name);
                 if !neighbours.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new("Neighbouring constellations").strong());
+                    ui.label(egui::RichText::new(tr!("Neighbouring constellations")).strong());
                     ui.horizontal_wrapped(|ui| {
                         for (nid, nname) in &neighbours {
                             if ui.button(nname).clicked() {
@@ -591,7 +588,7 @@ impl SpaiApp {
                     });
                 }
                 ui.separator();
-                ui.label(egui::RichText::new(format!("Systems ({})", systems.len())).strong());
+                ui.label(egui::RichText::new(trf!("Systems ({systems})", systems = systems.len())).strong());
                 let h = ui.available_height();
                 egui::ScrollArea::vertical()
                     .id_salt("const_sys")
@@ -645,12 +642,12 @@ impl SpaiApp {
                 self.dominant_logos(ui, &sys_ids, "region_dom");
                 Self::rat_line(ui, &name);
                 ui.separator();
-                if ui.button("Show on map").clicked() {
+                if ui.button(tr!("Show on map")).clicked() {
                     show_map = true;
                 }
                 if !neighbours.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new("Neighbouring regions").strong());
+                    ui.label(egui::RichText::new(tr!("Neighbouring regions")).strong());
                     ui.horizontal_wrapped(|ui| {
                         for (nid, nname) in &neighbours {
                             if ui.button(nname).clicked() {
@@ -660,7 +657,7 @@ impl SpaiApp {
                     });
                 }
                 ui.separator();
-                ui.label(egui::RichText::new(format!("Constellations ({})", constellations.len())).strong());
+                ui.label(egui::RichText::new(trf!("Constellations ({constellations})", constellations = constellations.len())).strong());
                 let h = ui.available_height();
                 egui::ScrollArea::vertical()
                     .id_salt("region_const")
@@ -723,8 +720,8 @@ impl SpaiApp {
                             ui.label(egui::RichText::new(type_line).weak());
                         }
                         None => {
-                            ui.heading("Ship");
-                            ui.label(egui::RichText::new("No SDE details.").weak());
+                            ui.heading(tr!("Ship"));
+                            ui.label(egui::RichText::new(tr!("No SDE details.")).weak());
                         }
                     }
                     role_badges(ui, &roles);
@@ -757,7 +754,7 @@ impl SpaiApp {
                         for skill in &skills {
                             let sname =
                                 names.get(skill).cloned().unwrap_or_else(|| "…".to_owned());
-                            ui.label(egui::RichText::new(format!("{sname} (per level)")).strong());
+                            ui.label(egui::RichText::new(trf!("{sname} (per level)", sname = sname)).strong());
                             ui.indent(*skill, |ui| {
                                 for (s, bonus, text) in &traits {
                                     if s == skill {
@@ -769,7 +766,7 @@ impl SpaiApp {
                         let role: Vec<&(i64, f64, String)> =
                             traits.iter().filter(|t| t.0 == -1).collect();
                         if !role.is_empty() {
-                            ui.label(egui::RichText::new("Role Bonuses").strong());
+                            ui.label(egui::RichText::new(tr!("Role Bonuses")).strong());
                             ui.indent("trait_role", |ui| {
                                 for (_, bonus, text) in role {
                                     ui.label(fmt(*bonus, text));

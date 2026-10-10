@@ -1,5 +1,7 @@
 //! Jabber in the main window and its pop-outs: connection, rooms, conversations, tabs and fleet ping rules.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 /// How long a conversation can be muted for; `None` is until turned back on.
@@ -176,7 +178,7 @@ impl SpaiApp {
                     format!("Muted for {} more", human_ago(until - now))
                 };
                 ui.label(egui::RichText::new(text).weak());
-                if ui.button("Unmute").clicked() {
+                if ui.button(tr!("Unmute")).clicked() {
                     self.settings.jabber_muted.remove(key);
                     self.needs_save = true;
                     ui.close();
@@ -198,10 +200,10 @@ impl SpaiApp {
         ui.separator();
         let mut r = self.settings.jabber_room_notify.get(key).copied().unwrap_or_default();
         let was = r;
-        ui.checkbox(&mut r.sound, "Sounds from here");
+        ui.checkbox(&mut r.sound, tr!("Sounds from here"));
         ui.add_enabled_ui(r.sound, |ui| {
-            ui.checkbox(&mut r.messages, "For messages");
-            ui.checkbox(&mut r.mentions, "For mentions");
+            ui.checkbox(&mut r.messages, tr!("For messages"));
+            ui.checkbox(&mut r.mentions, tr!("For mentions"));
         });
         if r != was {
             if r == crate::settings::RoomNotify::default() {
@@ -273,12 +275,12 @@ impl SpaiApp {
             ui.label(egui::RichText::new(t).weak());
         };
         if requested {
-            weak(ui, "Wants to see your online status");
-            if ui.button(format!("{}  Accept", icon::CHECK)).on_hover_text("Share your status, and ask to see theirs").clicked() {
+            weak(ui, tr!("Wants to see your online status"));
+            if ui.button(trf!("{icon}  Accept", icon = icon::CHECK)).on_hover_text(tr!("Share your status, and ask to see theirs")).clicked() {
                 self.jabber_answer_request(jid, true);
                 ui.close();
             }
-            if ui.button(format!("{}  Decline", icon::X)).clicked() {
+            if ui.button(trf!("{icon}  Decline", icon = icon::X)).clicked() {
                 self.jabber_answer_request(jid, false);
                 ui.close();
             }
@@ -287,8 +289,8 @@ impl SpaiApp {
         match sub {
             None => {
                 if ui
-                    .button(format!("{}  Add to contacts", icon::STAR))
-                    .on_hover_text("Asks to see their online status. They have to accept, and see yours in turn.")
+                    .button(trf!("{icon}  Add to contacts", icon = icon::STAR))
+                    .on_hover_text(tr!("Asks to see their online status. They have to accept, and see yours in turn."))
                     .clicked()
                 {
                     self.jabber_add_contact(jid);
@@ -298,14 +300,14 @@ impl SpaiApp {
             Some(s) => {
                 weak(ui, if s.theirs { "You see their status" } else if s.asked { "Waiting for them to accept" } else { "You do not see their status" });
                 weak(ui, if s.ours { "They see yours" } else { "They do not see yours" });
-                if !s.theirs && ui.button(format!("{}  Ask for their status", icon::ARROW_CLOCKWISE)).on_hover_text("Sends the request again").clicked() {
+                if !s.theirs && ui.button(trf!("{icon}  Ask for their status", icon = icon::ARROW_CLOCKWISE)).on_hover_text(tr!("Sends the request again")).clicked() {
                     self.jabber_add_contact(jid);
                     ui.close();
                 }
                 ui.separator();
                 if ui
-                    .button(egui::RichText::new(format!("{}  Remove from contacts", icon::USER_MINUS)).color(crate::theme::standing::HOSTILE))
-                    .on_hover_text("Neither of you sees the other's status any more. The conversation stays.")
+                    .button(egui::RichText::new(trf!("{icon}  Remove from contacts", icon = icon::USER_MINUS)).color(crate::theme::standing::HOSTILE))
+                    .on_hover_text(tr!("Neither of you sees the other's status any more. The conversation stays."))
                     .clicked()
                 {
                     self.jabber_remove_contact(jid);
@@ -481,11 +483,11 @@ impl SpaiApp {
                         go_sounds = true;
                     }
                     ui.end_row();
-                    ui.label("Mention words");
+                    ui.label(tr!("Mention words"));
                     if ui
                         .add(
                             egui::TextEdit::singleline(&mut self.mention_input)
-                                .hint_text("extra words, comma separated"),
+                                .hint_text(tr!("extra words, comma separated")),
                         )
                         .changed()
                     {
@@ -502,9 +504,7 @@ impl SpaiApp {
                     ui.label("");
                     let me = self.settings.jabber_jid.split('@').next().unwrap_or_default();
                     ui.label(
-                        egui::RichText::new(format!(
-                            "your name \"{me}\" always counts as a mention"
-                        ))
+                        egui::RichText::new(trf!("your name \"{me}\" always counts as a mention", me = me))
                         .weak(),
                     );
                     ui.end_row();
@@ -512,11 +512,11 @@ impl SpaiApp {
                     changed |= ui
                         .checkbox(
                             &mut self.settings.jabber_mention_ignores_mute,
-                            "Mentions notify even in muted chats",
+                            tr!("Mentions notify even in muted chats"),
                         )
                         .changed();
                     ui.end_row();
-                    ui.label("Doctrine link");
+                    ui.label(tr!("Doctrine link"));
                     changed |= ui
                         .add(
                             egui::TextEdit::singleline(&mut self.settings.doctrine_url)
@@ -524,40 +524,40 @@ impl SpaiApp {
                         )
                         .changed();
                     ui.end_row();
-                    ui.label("Fleet ping window");
+                    ui.label(tr!("Fleet ping window"));
                     changed |= ui
                         .checkbox(
                             &mut self.settings.fleet_ping_window,
-                            "Pop a focused window on fleet pings",
+                            tr!("Pop a focused window on fleet pings"),
                         )
                         .changed();
                     ui.end_row();
-                    ui.label("Keep on top");
+                    ui.label(tr!("Keep on top"));
                     ui.horizontal(|ui| {
                         use crate::settings::OnTop;
                         changed |= ui
-                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Always, "Always")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Always, tr!("Always"))
                             .changed();
                         changed |= ui
-                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Smart, "When EVE focused")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Smart, tr!("When EVE focused"))
                             .changed();
                         changed |= ui
-                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Never, "Never")
+                            .menu_value(&mut self.settings.fleet_ping_on_top, OnTop::Never, tr!("Never"))
                             .changed();
                     });
                     ui.end_row();
-                    ui.label("Ping bot JID");
+                    ui.label(tr!("Ping bot JID"));
                     changed |= ui
                         .add(
                             egui::TextEdit::singleline(&mut self.settings.jabber_ping_bot)
-                                .hint_text("directorbot@…"),
+                                .hint_text(tr!("directorbot@…")),
                         )
                         .changed();
                     ui.end_row();
                 });
                 ui.separator();
                 ui.label(
-                    egui::RichText::new("Fleet-ping rules. A match plays its sound and highlights the ping.")
+                    egui::RichText::new(tr!("Fleet-ping rules. A match plays its sound and highlights the ping."))
                         .weak(),
                 );
                 let mut remove: Option<usize> = None;
@@ -578,22 +578,22 @@ impl SpaiApp {
                             };
                             if ui
                                 .add(egui::Label::new(txt).sense(egui::Sense::click()))
-                                .on_hover_text("Edit rule")
+                                .on_hover_text(tr!("Edit rule"))
                                 .clicked()
                             {
                                 edit = Some(i);
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(ic::X).on_hover_text("Delete").clicked() {
+                                if ui.button(ic::X).on_hover_text(tr!("Delete")).clicked() {
                                     remove = Some(i);
                                 }
-                                if i + 1 < n && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
+                                if i + 1 < n && ui.button(ic::ARROW_DOWN).on_hover_text(tr!("Move down")).clicked() {
                                     move_down = Some(i);
                                 }
-                                if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
+                                if i > 0 && ui.button(ic::ARROW_UP).on_hover_text(tr!("Move up")).clicked() {
                                     move_up = Some(i);
                                 }
-                                if ui.button(ic::PENCIL_SIMPLE).on_hover_text("Edit rule").clicked() {
+                                if ui.button(ic::PENCIL_SIMPLE).on_hover_text(tr!("Edit rule")).clicked() {
                                     edit = Some(i);
                                 }
                             });
@@ -621,7 +621,7 @@ impl SpaiApp {
                     self.ping_rule_editing = Some(i);
                 }
                 ui.separator();
-                if ui.button("+ Add rule").clicked() {
+                if ui.button(tr!("+ Add rule")).clicked() {
                     self.settings.jabber_ping_rules.push(crate::settings::PingRule::default());
                     self.ping_rule_editing = Some(self.settings.jabber_ping_rules.len() - 1);
                     changed = true;
@@ -661,54 +661,54 @@ impl SpaiApp {
               {
                 let r = &mut self.settings.jabber_ping_rules[i];
                 ui.horizontal(|ui| {
-                    ui.label("Name");
+                    ui.label(tr!("Name"));
                     changed |= ui
                         .add(egui::TextEdit::singleline(&mut r.name).desired_width(240.0))
                         .changed();
                 });
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new("Match on (blank = any). A ping must match every filled field.")
+                    egui::RichText::new(tr!("Match on (blank = any). A ping must match every filled field."))
                         .weak(),
                 );
                 egui::Grid::new("rule").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                     let wide = 250.0;
-                    ui.label("FC");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).hint_text("any").desired_width(wide)).changed();
+                    ui.label(tr!("FC"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).hint_text(tr!("any")).desired_width(wide)).changed();
                     ui.end_row();
-                    ui.label("PAP type");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("any  (strategic / peacetime)").desired_width(wide)).changed();
+                    ui.label(tr!("PAP type"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text(tr!("any  (strategic / peacetime)")).desired_width(wide)).changed();
                     ui.end_row();
-                    ui.label("Doctrine");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).hint_text("any").desired_width(wide)).changed();
+                    ui.label(tr!("Doctrine"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).hint_text(tr!("any")).desired_width(wide)).changed();
                     ui.end_row();
-                    ui.label("Form-up");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).hint_text("any").desired_width(wide)).changed();
+                    ui.label(tr!("Form-up"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).hint_text(tr!("any")).desired_width(wide)).changed();
                     ui.end_row();
-                    ui.label("Keyword");
-                    changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text("any").desired_width(wide)).changed();
+                    ui.label(tr!("Keyword"));
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text(tr!("any")).desired_width(wide)).changed();
                     ui.end_row();
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
                     changed |= ui
-                        .checkbox(&mut r.suppress, "Suppress")
-                        .on_hover_text("Ignore matching pings: no sound, no highlight, no push")
+                        .checkbox(&mut r.suppress, tr!("Suppress"))
+                        .on_hover_text(tr!("Ignore matching pings: no sound, no highlight, no push"))
                         .changed();
                     if r.suppress {
                         r.notify = false;
                         r.push = false;
                     }
                     ui.add_enabled_ui(!r.suppress, |ui| {
-                        changed |= ui.checkbox(&mut r.notify, "Notify").changed();
-                        changed |= ui.checkbox(&mut r.push, "Push").changed();
+                        changed |= ui.checkbox(&mut r.notify, tr!("Notify")).changed();
+                        changed |= ui.checkbox(&mut r.push, tr!("Push")).changed();
                     });
                 });
-                ui.label(egui::RichText::new("The rule's sound is set under Settings, Sounds.").weak());
+                ui.label(egui::RichText::new(tr!("The rule's sound is set under Settings, Sounds.")).weak());
               }
                 ui.add_space(8.0);
                 ui.separator();
-                if ui.button("Done").clicked() {
+                if ui.button(tr!("Done")).clicked() {
                     self.ping_rule_editing = None;
                 }
             },
@@ -1163,7 +1163,7 @@ impl SpaiApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                if ui.button(trf!("{icon}  Copy", icon = egui_phosphor::regular::COPY)).clicked() {
                     ui.ctx().copy_text(motd.clone());
                 }
                 ui.separator();
@@ -1230,11 +1230,11 @@ impl SpaiApp {
                     let resp = ui.add_sized(
                         [FIELD_W, 22.0],
                         egui::TextEdit::singleline(&mut self.jabber_room_input)
-                            .hint_text("room@conference.…"),
+                            .hint_text(tr!("room@conference.…")),
                     );
                     let enter =
                         resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.button("Join").clicked() || enter
+                    ui.button(tr!("Join")).clicked() || enter
                 })
                 .inner;
             // Recently active rooms, newest first, filtered by whatever is in the field. Typing an
@@ -1276,11 +1276,11 @@ impl SpaiApp {
                     let resp = ui.add_sized(
                         [FIELD_W, 22.0],
                         egui::TextEdit::singleline(&mut self.jabber_dm_input)
-                            .hint_text("Message someone…"),
+                            .hint_text(tr!("Message someone…")),
                     );
                     let enter =
                         resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.button("Open").clicked() || enter
+                    ui.button(tr!("Open")).clicked() || enter
                 })
                 .inner;
             let mut recent_dms: Vec<&Convo> = convos
@@ -1438,7 +1438,7 @@ impl SpaiApp {
             let title_h = 7.0 + ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(15.0))) + gap;
             let start_h = ui.spacing().interact_size.y + 2.0 * gap;
             let list_h = ((ui.available_height() - 2.0 * (title_h + start_h)) / 2.0).max(48.0);
-            section(ui, "Direct messages");
+            section(ui, tr!("Direct messages"));
             egui::ScrollArea::vertical().id_salt("dm_scroll").max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.push_id("dmlist", |ui| {
             // Someone waiting on an answer comes first: it is a question, not a conversation.
@@ -1447,12 +1447,12 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(egui_phosphor::regular::USER_PLUS).color(accent));
                     ui.add(egui::Label::new(crate::jabber::convo_name(&jid)).truncate().show_tooltip_when_elided(false))
-                        .on_hover_text(format!("{jid} wants to see your online status"));
+                        .on_hover_text(trf!("{jid} wants to see your online status", jid = jid));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).on_hover_text("Decline").clicked() {
+                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::X).on_hover_text(tr!("Decline")).clicked() {
                             self.jabber_answer_request(&jid, false);
                         }
-                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CHECK).on_hover_text("Accept: share your status and ask to see theirs").clicked() {
+                        if spai_ui::widgets::icon_button(ui, egui_phosphor::regular::CHECK).on_hover_text(tr!("Accept: share your status and ask to see theirs")).clicked() {
                             self.jabber_answer_request(&jid, true);
                         }
                     });
@@ -1480,7 +1480,7 @@ impl SpaiApp {
                     }
                     self.jabber_notify_menu(ui, &c.jid);
                     ui.separator();
-                    if ui.button(format!("{}  Remove from list", egui_phosphor::regular::X)).on_hover_text("A new message brings it back").clicked() {
+                    if ui.button(trf!("{icon}  Remove from list", icon = egui_phosphor::regular::X)).on_hover_text(tr!("A new message brings it back")).clicked() {
                         forget = Some(c.jid.clone());
                         ui.close();
                     }
@@ -1491,10 +1491,10 @@ impl SpaiApp {
             }
             });
             });
-            if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, "Start a DM") {
+            if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, tr!("Start a DM")) {
                 start = Some(false);
             }
-            section(ui, "Rooms");
+            section(ui, tr!("Rooms"));
             egui::ScrollArea::vertical().id_salt("room_scroll").max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.push_id("roomlist", |ui| {
             for c in &rooms {
@@ -1510,14 +1510,14 @@ impl SpaiApp {
                     !pinned.contains(&c.jid),
                 );
                 row.context_menu(|ui| {
-                    if !c.motd.trim().is_empty() && ui.button("Show MOTD").clicked() {
+                    if !c.motd.trim().is_empty() && ui.button(tr!("Show MOTD")).clicked() {
                         motd = Some(c.jid.clone());
                         ui.close();
                     }
                     self.jabber_notify_menu(ui, &c.jid);
                     if !pinned.contains(&c.jid) {
                         ui.separator();
-                        if ui.button(format!("{}  Leave", egui_phosphor::regular::SIGN_OUT)).clicked() {
+                        if ui.button(trf!("{icon}  Leave", icon = egui_phosphor::regular::SIGN_OUT)).clicked() {
                             leave = Some(c.jid.clone());
                             ui.close();
                         }
@@ -1538,7 +1538,7 @@ impl SpaiApp {
                 );
                 let left = ui
                     .put(btn, egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false))
-                    .on_hover_text("Leave this room. It stops receiving messages until you join it again.");
+                    .on_hover_text(tr!("Leave this room. It stops receiving messages until you join it again."));
                 if left.clicked() {
                     leave = Some(c.jid.clone());
                 } else if row.clicked() {
@@ -1547,7 +1547,7 @@ impl SpaiApp {
             }
             });
             });
-            if self.jabber_start_row(ui, egui_phosphor::regular::USERS_THREE, "Join a room") {
+            if self.jabber_start_row(ui, egui_phosphor::regular::USERS_THREE, tr!("Join a room")) {
                 start = Some(true);
             }
         }
@@ -2075,29 +2075,29 @@ impl SpaiApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "Connect to your alliance Jabber (XMPP) for chat and fleet pings.",
+                    tr!("Connect to your alliance Jabber (XMPP) for chat and fleet pings."),
                 )
                 .weak(),
             );
-            ui.label(egui::RichText::new("Imperium: jabber-server.goonfleet.com").weak());
+            ui.label(egui::RichText::new(tr!("Imperium: jabber-server.goonfleet.com")).weak());
             ui.add_space(6.0);
             egui::Grid::new("jabber_login").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                ui.label("JID");
+                ui.label(tr!("JID"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.settings.jabber_jid)
-                        .hint_text("MyCharacter@goonfleet.com")
+                        .hint_text(tr!("MyCharacter@goonfleet.com"))
                         .desired_width(260.0),
                 );
                 ui.end_row();
-                ui.label("Server");
+                ui.label(tr!("Server"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.settings.jabber_server)
-                        .hint_text("jabber-server.goonfleet.com")
+                        .hint_text(tr!("jabber-server.goonfleet.com"))
                         .desired_width(260.0),
                 )
-                .on_hover_text("XMPP server host (the JID domain usually has no SRV record)");
+                .on_hover_text(tr!("XMPP server host (the JID domain usually has no SRV record)"));
                 ui.end_row();
-                ui.label("Password");
+                ui.label(tr!("Password"));
                 let pw_hint = if crate::jabber::has_password(self.settings.jabber_jid.trim()) {
                     "<saved password>"
                 } else {
@@ -2111,7 +2111,7 @@ impl SpaiApp {
                 );
                 ui.end_row();
             });
-            if ui.button("Connect").clicked() {
+            if ui.button(tr!("Connect")).clicked() {
                 let jid = self.settings.jabber_jid.trim().to_owned();
                 if let Some(err) = crate::jabber::jid_format_error(&jid) {
                     let mut s = self.jabber.lock().unwrap();
@@ -2167,7 +2167,7 @@ impl SpaiApp {
                 let txt = if status.is_empty() { "Connecting…".to_owned() } else { status };
                 ui.label(egui::RichText::new(txt).weak());
                 ui.add_space(10.0);
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     self.settings.jabber_enabled = false;
                     self.needs_save = true;
                     self.jabber.lock().unwrap().status.clear();
@@ -2193,7 +2193,7 @@ impl SpaiApp {
         // round the status field kept its full width on a narrow window and the buttons drew over it.
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Disconnect").clicked() {
+                if ui.button(tr!("Disconnect")).clicked() {
                     self.settings.jabber_enabled = false;
                     self.needs_save = true;
                 }
@@ -2202,14 +2202,14 @@ impl SpaiApp {
                         !self.jabber_tabs.is_empty() && self.jabber_popouts.len() < MAX_POPOUTS,
                         egui::Button::new(egui_phosphor::regular::ARROW_SQUARE_OUT),
                     )
-                    .on_hover_text("Pop out all conversations into one window")
+                    .on_hover_text(tr!("Pop out all conversations into one window"))
                     .clicked()
                 {
                     pop_all = true;
                 }
                 if ui
                     .button(egui_phosphor::regular::BELL_RINGING)
-                    .on_hover_text("Ping alert rules")
+                    .on_hover_text(tr!("Ping alert rules"))
                     .clicked()
                 {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
@@ -2218,7 +2218,7 @@ impl SpaiApp {
                 if self.settings.fc_rescue_enabled
                     && ui
                         .button(egui_phosphor::regular::WARNING_OCTAGON)
-                        .on_hover_text("Open capital rescue (cap save)")
+                        .on_hover_text(tr!("Open capital rescue (cap save)"))
                         .clicked()
                 {
                     self.view = nav::View::Rescue;
@@ -2244,14 +2244,14 @@ impl SpaiApp {
                             );
                         });
                         egui::ComboBox::from_id_salt("my_presence")
-                            .selected_text(self.jabber_my_presence.label())
+                            .selected_text(self.jabber_my_presence.label().tr())
                             .width(PRESENCE_W)
                             .show_ui(ui, |ui| {
                                 for p in
                                     [Presence::Online, Presence::Away, Presence::Xa, Presence::Dnd]
                                 {
                                     if ui
-                                        .menu_value(&mut self.jabber_my_presence, p, p.label())
+                                        .menu_value(&mut self.jabber_my_presence, p, p.label().tr())
                                         .clicked()
                                     {
                                         presence_changed = true;
@@ -2260,7 +2260,7 @@ impl SpaiApp {
                             });
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.jabber_my_status)
-                                .hint_text("status message")
+                                .hint_text(tr!("status message"))
                                 .desired_width(ui.available_width().clamp(STATUS_MIN, 150.0)),
                         );
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2302,11 +2302,11 @@ impl SpaiApp {
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
                 ui.horizontal(|ui| {
-                    let con = selectable_chip(ui, self.jabber_pane == JabberPane::Convos, "Convos");
+                    let con = selectable_chip(ui, self.jabber_pane == JabberPane::Convos, tr!("Convos"));
                     if con.clicked() {
                         self.jabber_pane = JabberPane::Convos;
                     }
-                    let dir = selectable_chip(ui, self.jabber_pane == JabberPane::Directory, "Directory");
+                    let dir = selectable_chip(ui, self.jabber_pane == JabberPane::Directory, tr!("Directory"));
                     if dir.clicked() {
                         self.jabber_pane = JabberPane::Directory;
                     }
@@ -2318,7 +2318,7 @@ impl SpaiApp {
                 }
                 ui.add_sized(
                     [ui.available_width(), 20.0],
-                    egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text("Search"),
+                    egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text(tr!("Search")),
                 );
                 let search = self.jabber_contact_search.to_lowercase();
                 if self.jabber_pane == JabberPane::Convos {
@@ -2353,7 +2353,7 @@ impl SpaiApp {
                     w.active.bg_stroke = egui::Stroke::NONE;
                     if groups.is_empty() && !show_dir {
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new("No contacts yet. Add people from the Directory.").weak());
+                        ui.label(egui::RichText::new(tr!("No contacts yet. Add people from the Directory.")).weak());
                     }
                     for (group, mut members) in groups {
                         members.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -2455,9 +2455,9 @@ impl SpaiApp {
                             let tip = if !shared {
                                 NOT_SHARED_TIP.to_owned()
                             } else if c.status_text.is_empty() {
-                                c.presence.label().to_owned()
+                                c.presence.label().tr().to_owned()
                             } else {
-                                format!("{} — {}", c.presence.label(), c.status_text)
+                                format!("{} — {}", c.presence.label().tr(), c.status_text)
                             };
                             let r = resp.response.on_hover_text(tip);
                             if !f.channels.iter().any(|ch| ch.jid == c.jid) {
@@ -2507,7 +2507,7 @@ impl SpaiApp {
                 (_, None) => {
                     ui.add_space(12.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("No conversations in this window.").weak());
+                        ui.label(egui::RichText::new(tr!("No conversations in this window.")).weak());
                     });
                 }
                 (_, Some(jid)) => self.jabber_conversation_ui(ui, win, &jid, f, out),
@@ -2728,17 +2728,14 @@ impl SpaiApp {
                     if ui
                         .add_enabled(
                             can_new,
-                            egui::Button::new(format!(
-                                "{}  Open in new window",
-                                egui_phosphor::regular::ARROW_SQUARE_OUT
-                            )),
+                            egui::Button::new(trf!("{icon}  Open in new window", icon = egui_phosphor::regular::ARROW_SQUARE_OUT)),
                         )
                         .clicked()
                     {
                         move_new = Some(t.jid.clone());
                         ui.close();
                     }
-                    egui::containers::menu::SubMenuButton::new("Move to").ui(ui, |ui| {
+                    egui::containers::menu::SubMenuButton::new(tr!("Move to")).ui(ui, |ui| {
                         for (k, name) in &move_targets {
                             if ui
                                 .add_enabled(*k != win, egui::Button::new(name.as_str()))
@@ -2749,14 +2746,14 @@ impl SpaiApp {
                             }
                         }
                         ui.separator();
-                        if ui.add_enabled(can_new, egui::Button::new("New window")).clicked() {
+                        if ui.add_enabled(can_new, egui::Button::new(tr!("New window"))).clicked() {
                             move_new = Some(t.jid.clone());
                             ui.close();
                         }
                     });
                     ui.separator();
                     if ui
-                        .button(format!("{}  Close", egui_phosphor::regular::X))
+                        .button(trf!("{icon}  Close", icon = egui_phosphor::regular::X))
                         .clicked()
                     {
                         close_tab = Some((t.jid.clone(), t.is_room));
@@ -2786,7 +2783,7 @@ impl SpaiApp {
             // Only what the bar cannot show: a tab already on it is one click away there.
             let menu_list: Vec<&TabInfo> = overflow;
             if menu_list.is_empty() {
-                ui.add_enabled(false, dd_btn).on_disabled_hover_text("Every tab fits on the bar");
+                ui.add_enabled(false, dd_btn).on_disabled_hover_text(tr!("Every tab fits on the bar"));
             } else {
                 egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
                     for t in &menu_list {
@@ -2818,7 +2815,7 @@ impl SpaiApp {
                                     )
                                     .frame(false),
                                 )
-                                .on_hover_text("Close")
+                                .on_hover_text(tr!("Close"))
                                 .clicked()
                             {
                                 close_tab = Some((t.jid.clone(), t.is_room));
@@ -2893,7 +2890,7 @@ impl SpaiApp {
         let visible = self.jabber_pings_visible.min(pings.len());
         let out = egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
             if pings.is_empty() {
-                ui.label(egui::RichText::new("No pings yet.").weak());
+                ui.label(egui::RichText::new(tr!("No pings yet.")).weak());
             }
             for (i, p) in pings.iter().enumerate().rev().take(visible) {
                 render_ping(ui, p, &systems, hl[i], &doctrine_url, &op_links);
@@ -2901,7 +2898,7 @@ impl SpaiApp {
             if visible < pings.len() {
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new(format!("+{} older", pings.len() - visible))
+                    egui::RichText::new(trf!("+{v} older", v = pings.len() - visible))
                         .weak(),
                 );
             }
@@ -2966,7 +2963,7 @@ impl SpaiApp {
                 });
                 if ui
                     .add(egui::Button::new(egui::RichText::new(icon::ARTICLE)).frame(false))
-                    .on_hover_text("Show the full MOTD")
+                    .on_hover_text(tr!("Show the full MOTD"))
                     .clicked()
                 {
                     show_motd = true;
@@ -2981,7 +2978,7 @@ impl SpaiApp {
                     let bell = if mark == NotifyMark::Muted { icon::BELL_SLASH } else { icon::BELL };
                     ui.menu_button(bell, |ui| self.jabber_notify_menu(ui, &jid))
                     .response
-                    .on_hover_text("Notifications");
+                    .on_hover_text(tr!("Notifications"));
                 },
             );
         });
@@ -3047,7 +3044,7 @@ impl SpaiApp {
                         prev_sender = None;
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("— new —").weak());
+                            ui.label(egui::RichText::new(tr!("— new —")).weak());
                             ui.separator();
                         });
                     }
@@ -3102,7 +3099,7 @@ impl SpaiApp {
                                 if !grouped {
                                     if m.outgoing {
                                         ui.label(
-                                            egui::RichText::new("me:")
+                                            egui::RichText::new(tr!("me:"))
                                                 .color(me_col)
                                                 .strong(),
                                         );
@@ -3122,7 +3119,7 @@ impl SpaiApp {
                                         );
                                         let resp = if is_room {
                                             ui.add(lbl.sense(egui::Sense::click()))
-                                                .on_hover_text("Message")
+                                                .on_hover_text(tr!("Message"))
                                         } else {
                                             ui.add(lbl)
                                         };
@@ -3172,7 +3169,7 @@ impl SpaiApp {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "You're no longer in this channel, history only.",
+                    tr!("You're no longer in this channel, history only."),
                 )
                 .weak(),
             );
@@ -3195,7 +3192,7 @@ impl SpaiApp {
                         self.jabber_drafts.entry(jid.clone()).or_default(),
                     )
                     .frame(egui::Frame::NONE)
-                    .hint_text("Message (Shift+Enter for a new line)")
+                    .hint_text(tr!("Message (Shift+Enter for a new line)"))
                     .return_key(shift_enter)
                     .desired_rows(COMPOSER_MIN_ROWS as usize)
                     .desired_width(ui.available_width()),

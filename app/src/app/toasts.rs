@@ -69,7 +69,7 @@ impl SpaiApp {
                         })
                         .response
                         .interact(egui::Sense::click())
-                        .on_hover_text("Click to dismiss");
+                        .on_hover_text(tr!("Click to dismiss"));
                     if r.clicked() {
                         dismiss = Some(i);
                     }

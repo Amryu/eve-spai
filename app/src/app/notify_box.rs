@@ -137,7 +137,7 @@ impl SpaiApp {
         if lit {
             button = button.fill(ui.visuals().selection.bg_fill);
         }
-        let btn = ui.add(button).on_hover_text("New messages, pings and mentions");
+        let btn = ui.add(button).on_hover_text(tr!("New messages, pings and mentions"));
         if btn.clicked() {
             // Opened on the first tab with something new, not on whichever was last looked at.
             let (msgs, mentions) = (self.notify_messages_count(), self.jabber.lock().unwrap().mentions.len());
@@ -224,7 +224,7 @@ impl SpaiApp {
         };
         let requests: Vec<String> = self.jabber.lock().unwrap().sub_requests.iter().cloned().collect();
         if groups.is_empty() && requests.is_empty() {
-            empty(ui, "No new messages");
+            empty(ui, tr!("No new messages"));
             return;
         }
         for jid in requests {
@@ -233,12 +233,12 @@ impl SpaiApp {
                 use egui_phosphor::regular as icon;
                 ui.label(egui::RichText::new(format!("{}  {}", icon::USER_PLUS, crate::jabber::convo_name(&jid))).strong())
                     .on_hover_text(&jid);
-                ui.label(egui::RichText::new("wants to see your online status").weak());
+                ui.label(egui::RichText::new(tr!("wants to see your online status")).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(format!("{}  Decline", icon::X)).clicked() {
+                    if ui.button(trf!("{icon}  Decline", icon = icon::X)).clicked() {
                         self.jabber_answer_request(&jid, false);
                     }
-                    if ui.button(format!("{}  Accept", icon::CHECK)).on_hover_text("Share your status, and ask to see theirs").clicked() {
+                    if ui.button(trf!("{icon}  Accept", icon = icon::CHECK)).on_hover_text(tr!("Share your status, and ask to see theirs")).clicked() {
                         self.jabber_answer_request(&jid, true);
                     }
                 });
@@ -289,7 +289,7 @@ impl SpaiApp {
             out
         };
         if groups.is_empty() {
-            empty(ui, "No mentions");
+            empty(ui, tr!("No mentions"));
             return;
         }
         for mut g in groups {
@@ -305,7 +305,7 @@ impl SpaiApp {
     fn notify_pings(&mut self, ui: &mut egui::Ui, total: usize) {
         use egui_phosphor::regular as icon;
         if total == 0 {
-            empty(ui, "No pings yet");
+            empty(ui, tr!("No pings yet"));
             return;
         }
         let new = self.notify_new_pings();
@@ -315,12 +315,12 @@ impl SpaiApp {
         let fresh_n = *self.notify_box.pings_new_at_open.get_or_insert(new);
         let mut open = false;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{}  Fleet pings", icon::MEGAPHONE)).strong());
+            ui.label(egui::RichText::new(trf!("{icon}  Fleet pings", icon = icon::MEGAPHONE)).strong());
             if new > 0 {
-                ui.label(egui::RichText::new(format!("{new} new")).color(ui.visuals().hyperlink_color));
+                ui.label(egui::RichText::new(trf!("{new} new", new = new)).color(ui.visuals().hyperlink_color));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                open = ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Open in the Jabber tab").clicked();
+                open = ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Open in the Jabber tab")).clicked();
             });
         });
         let draw = |app: &Self, ui: &mut egui::Ui, list: &[crate::pings::Ping]| {
@@ -356,7 +356,7 @@ impl SpaiApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let glyph = if g.is_room { icon::USERS_THREE } else { icon::USER };
-            if ui.link(egui::RichText::new(format!("{glyph}  {}", g.name)).strong()).on_hover_text("Open in the Jabber tab").clicked() {
+            if ui.link(egui::RichText::new(format!("{glyph}  {}", g.name)).strong()).on_hover_text(tr!("Open in the Jabber tab")).clicked() {
                 open = true;
             }
             if let Some((mark, hover)) = self.jabber_notify_mark(&g.key).glyph() {
@@ -367,12 +367,12 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(text).color(ui.visuals().hyperlink_color));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                open |= ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Open in the Jabber tab").clicked();
+                open |= ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Open in the Jabber tab")).clicked();
             });
         });
         let expanded = self.notify_box.expanded.contains(&g.key);
         let more = if expanded { 0 } else { g.msgs.len().saturating_sub(SHOWN) };
-        if more > 0 && ui.link(format!("+{more} more\u{2026}")).on_hover_text("Show them all").clicked() {
+        if more > 0 && ui.link(format!("+{more} more\u{2026}")).on_hover_text(tr!("Show them all")).clicked() {
             self.notify_box.expanded.insert(g.key.clone());
         }
         let names = self.mention_names();
@@ -407,7 +407,7 @@ impl SpaiApp {
     /// one the tab keeps for the conversation.
     fn notify_reply(&mut self, ui: &mut egui::Ui, key: &str, is_room: bool) {
         let draft = self.jabber_drafts.entry(key.to_owned()).or_default();
-        let resp = ui.add(egui::TextEdit::singleline(draft).hint_text("Reply").desired_width(ui.available_width()));
+        let resp = ui.add(egui::TextEdit::singleline(draft).hint_text(tr!("Reply")).desired_width(ui.available_width()));
         if self.notify_box.focus_reply.as_deref() == Some(key) {
             resp.request_focus();
             self.notify_box.focus_reply = None;

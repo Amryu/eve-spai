@@ -1,5 +1,7 @@
 //! Battles: the battle list, filters, edits, review panels, report import and export, and sharing.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 impl SpaiApp {
@@ -11,7 +13,7 @@ impl SpaiApp {
         }
         let mut changed = false;
         let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai - Battle rules", [580.0, 620.0], |ui| {
-            ui.label(egui::RichText::new("The first rule that matches a battle decides. Without one, battles near your intel are tracked.").weak());
+            ui.label(egui::RichText::new(tr!("The first rule that matches a battle decides. Without one, battles near your intel are tracked.")).weak());
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let rules = &mut self.settings.battles.rules;
@@ -27,8 +29,8 @@ impl SpaiApp {
                                 .selected_text(if act == RuleAction::Include { "Include" } else { "Exclude" })
                                 .width(84.0)
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.menu_value(&mut act, RuleAction::Include, "Include").changed();
-                                    changed |= ui.menu_value(&mut act, RuleAction::Exclude, "Exclude").changed();
+                                    changed |= ui.menu_value(&mut act, RuleAction::Include, tr!("Include")).changed();
+                                    changed |= ui.menu_value(&mut act, RuleAction::Exclude, tr!("Exclude")).changed();
                                 });
                             rule.action = act;
                             let mut all = rule.match_all;
@@ -36,13 +38,13 @@ impl SpaiApp {
                                 .selected_text(if all { "All of" } else { "Any of" })
                                 .width(72.0)
                                 .show_ui(ui, |ui| {
-                                    changed |= ui.menu_value(&mut all, true, "All of").changed();
-                                    changed |= ui.menu_value(&mut all, false, "Any of").changed();
+                                    changed |= ui.menu_value(&mut all, true, tr!("All of")).changed();
+                                    changed |= ui.menu_value(&mut all, false, tr!("Any of")).changed();
                                 });
                             rule.match_all = all;
                             if rule.is_broad() {
                                 ui.label(egui::RichText::new(icon::WARNING).color(egui::Color32::from_rgb(0xE0, 0xB0, 0x4C)))
-                                    .on_hover_text("Matches anywhere in EVE and can store a lot of battle history. Add a region/constellation/system/jumps or participant condition to bound it.");
+                                    .on_hover_text(tr!("Matches anywhere in EVE and can store a lot of battle history. Add a region/constellation/system/jumps or participant condition to bound it."));
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(icon::TRASH).clicked() {
@@ -78,7 +80,7 @@ impl SpaiApp {
                                 );
                                 match cond {
                                     BattleCond::IntelArea => {
-                                        ui.label(egui::RichText::new("(default tracked area)").weak());
+                                        ui.label(egui::RichText::new(tr!("(default tracked area)")).weak());
                                     }
                                     BattleCond::Coalition(s)
                                     | BattleCond::Alliance(s)
@@ -88,9 +90,9 @@ impl SpaiApp {
                                     | BattleCond::Constellation(s)
                                     | BattleCond::System(s)
                                     | BattleCond::ShipType(s) => {
-                                        let field = ui.add(egui::TextEdit::singleline(s).desired_width(200.0).hint_text("name"));
+                                        let field = ui.add(egui::TextEdit::singleline(s).desired_width(200.0).hint_text(tr!("name")));
                                         let field = if pairs {
-                                            field.on_hover_text("Add a region, coalition or hull condition to this rule to pull in new battles")
+                                            field.on_hover_text(tr!("Add a region, coalition or hull condition to this rule to pull in new battles"))
                                         } else {
                                             field
                                         };
@@ -101,10 +103,10 @@ impl SpaiApp {
                                     }
                                     BattleCond::HullSizeAtLeast(sz) => {
                                         egui::ComboBox::from_id_salt(("br_sz", i, j))
-                                            .selected_text(sz.label())
+                                            .selected_text(sz.label().tr())
                                             .show_ui(ui, |ui| {
                                                 for opt in ShipSize::CHOICES {
-                                                    changed |= ui.menu_value(sz, opt, opt.label()).changed();
+                                                    changed |= ui.menu_value(sz, opt, opt.label().tr()).changed();
                                                 }
                                             });
                                     }
@@ -120,7 +122,7 @@ impl SpaiApp {
                                     }
                                 }
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button(icon::X).on_hover_text("Remove condition").clicked() {
+                                    if ui.button(icon::X).on_hover_text(tr!("Remove condition")).clicked() {
                                         del_cond = Some(j);
                                     }
                                 });
@@ -130,7 +132,7 @@ impl SpaiApp {
                             rule.conditions.remove(j);
                             changed = true;
                         }
-                        if ui.button(format!("{}  condition", icon::PLUS)).clicked() {
+                        if ui.button(trf!("{icon}  condition", icon = icon::PLUS)).clicked() {
                             rule.conditions.push(BattleCond::Region(String::new()));
                             changed = true;
                         }
@@ -145,7 +147,7 @@ impl SpaiApp {
                     rules.remove(i);
                     changed = true;
                 }
-                if ui.button(format!("{}  Add rule", icon::PLUS)).clicked() {
+                if ui.button(trf!("{icon}  Add rule", icon = icon::PLUS)).clicked() {
                     rules.push(crate::settings::BattleRule::default());
                     changed = true;
                 }
@@ -153,17 +155,17 @@ impl SpaiApp {
                 ui.separator();
                 if self.battle_filter_confirm_reset {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Replace all rules with the default?").strong());
-                        if ui.button("Restore").clicked() {
+                        ui.label(egui::RichText::new(tr!("Replace all rules with the default?")).strong());
+                        if ui.button(tr!("Restore")).clicked() {
                             *rules = crate::settings::BattleFilter::default_rules();
                             changed = true;
                             self.battle_filter_confirm_reset = false;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(tr!("Cancel")).clicked() {
                             self.battle_filter_confirm_reset = false;
                         }
                     });
-                } else if ui.button("Restore defaults").clicked() {
+                } else if ui.button(tr!("Restore defaults")).clicked() {
                     self.battle_filter_confirm_reset = true;
                 }
             });
@@ -271,7 +273,7 @@ impl SpaiApp {
         let engs = &data.engs;
         let splits = &cache.battle.suggested_splits;
         if engs.is_empty() {
-            ui.label(egui::RichText::new("No kills to edit.").weak());
+            ui.label(egui::RichText::new(tr!("No kills to edit.")).weak());
             return;
         }
         let ship_ids = &data.ship_ids;
@@ -288,7 +290,7 @@ impl SpaiApp {
             }
             crate::intel::structure_name_by_type(id)
                 .map(|s| s.to_owned())
-                .or_else(|| names.get(&id).cloned())
+                .or_else(|| names.get(&id).map(|n| crate::shipnames::shown(n)))
                 .unwrap_or_else(|| format!("Type {id}"))
         };
         let break_gap = self.settings.battle_break_secs;
@@ -300,18 +302,16 @@ impl SpaiApp {
 
         if !splits.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Suggested splits:").strong());
+                ui.label(egui::RichText::new(tr!("Suggested splits:")).strong());
                 for (sug, &(off, split_before)) in splits.iter().zip(&data.splits) {
                     let boundary = sug.time;
                     let hhmm = chrono::DateTime::from_timestamp(boundary, 0)
                         .map(|t| t.format("%H:%M").to_string())
                         .unwrap_or_default();
-                    let reason = sug.reason.label();
+                    let reason = sug.reason.label().tr();
                     if ui
-                        .button(format!("{} Split off {off} ships: {reason} ({hhmm})", icon::SCISSORS))
-                        .on_hover_text(format!(
-                            "Suggested because of a {reason} at {hhmm}. Selects the smaller group ({off} ships) to split off."
-                        ))
+                        .button(trf!("{icon} Split off {off} ships: {reason} ({hhmm})", icon = icon::SCISSORS, off = off, reason = reason, hhmm = hhmm))
+                        .on_hover_text(trf!("Suggested because of a {reason} at {hhmm}. Selects the smaller group ({off} ships) to split off.", reason = reason, hhmm = hhmm, off = off))
                         .clicked()
                     {
                         self.battle_kill_sel = engs
@@ -353,27 +353,27 @@ impl SpaiApp {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new(format!("Split preview: {} kills selected", sel_ids.len())).strong(),
+                    egui::RichText::new(trf!("Split preview: {sel_ids} kills selected", sel_ids = sel_ids.len())).strong(),
                 );
                 ui.horizontal_wrapped(|ui| {
-                    battle_preview_summary(ui, "Split off", pa);
+                    battle_preview_summary(ui, tr!("Split off"), pa);
                     ui.separator();
-                    battle_preview_summary(ui, "Remaining", pb);
+                    battle_preview_summary(ui, tr!("Remaining"), pb);
                 });
                 ui.horizontal(|ui| {
                     if rest_empty {
                         ui.label(
-                            egui::RichText::new("Leave at least one kill behind.")
+                            egui::RichText::new(tr!("Leave at least one kill behind."))
                                 .color(crate::theme::standing::WARNING),
                         );
                     } else if ui
-                        .button(format!("{} Split off {} kills", icon::SCISSORS, sel_ids.len()))
-                        .on_hover_text("Tag both halves so they cluster as two separate battles")
+                        .button(trf!("{icon} Split off {sel_ids} kills", icon = icon::SCISSORS, sel_ids = sel_ids.len()))
+                        .on_hover_text(tr!("Tag both halves so they cluster as two separate battles"))
                         .clicked()
                     {
                         do_split = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr!("Cancel")).clicked() {
                         self.battle_kill_sel.clear();
                     }
                 });
@@ -418,7 +418,7 @@ impl SpaiApp {
                             ui.label(&e.victim_pilot);
                             if ui
                                 .link(egui::RichText::new(&e.system_name).weak())
-                                .on_hover_text("Open system info")
+                                .on_hover_text(tr!("Open system info"))
                                 .clicked()
                             {
                                 open_sys = Some(e.system_id);
@@ -426,7 +426,7 @@ impl SpaiApp {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui
                                     .button(egui_phosphor::regular::TRASH)
-                                    .on_hover_text("Remove this kill from battle reports")
+                                    .on_hover_text(tr!("Remove this kill from battle reports"))
                                     .clicked()
                                 {
                                     do_exclude = Some(e.kill_id);
@@ -441,7 +441,7 @@ impl SpaiApp {
 
             ui.add_space(6.0);
             egui::CollapsingHeader::new(
-                egui::RichText::new(format!("{} Pilots", egui_phosphor::regular::USERS)).strong(),
+                egui::RichText::new(trf!("{icon} Pilots", icon = egui_phosphor::regular::USERS)).strong(),
             )
             .id_salt("battle_edit_pilots")
             .show(ui, |ui| {
@@ -454,8 +454,8 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(pilot).strong());
                         if ui
-                            .button(format!("{} Remove pilot", egui_phosphor::regular::USER_MINUS))
-                            .on_hover_text("Exclude their losses and scrub their attacker entries here")
+                            .button(trf!("{icon} Remove pilot", icon = egui_phosphor::regular::USER_MINUS))
+                            .on_hover_text(tr!("Exclude their losses and scrub their attacker entries here"))
                             .clicked()
                         {
                             purge_pilot = Some(*char_id);
@@ -464,7 +464,7 @@ impl SpaiApp {
                     heights[1] = ui.cursor().top() - top;
                 }
                 if pilots.is_empty() {
-                    ui.label(egui::RichText::new("No identified pilots.").weak());
+                    ui.label(egui::RichText::new(tr!("No identified pilots.")).weak());
                 }
             });
         });
@@ -528,7 +528,7 @@ impl SpaiApp {
             let hull = |id: i64| -> String {
                 crate::intel::structure_name_by_type(id)
                     .map(|s| s.to_owned())
-                    .or_else(|| names.get(&id).cloned())
+                    .or_else(|| names.get(&id).map(|n| crate::shipnames::shown(n)))
                     .unwrap_or_else(|| "?".to_owned())
             };
             let mut open = true;
@@ -539,7 +539,7 @@ impl SpaiApp {
                 .default_width(460.0)
                 .show(ctx, |ui| {
                     if list.is_empty() {
-                        ui.label(egui::RichText::new("No excluded kills.").weak());
+                        ui.label(egui::RichText::new(tr!("No excluded kills.")).weak());
                     }
                     egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                         for e in &list {
@@ -555,7 +555,7 @@ impl SpaiApp {
                                 ui.label(egui::RichText::new(&e.system_name).weak());
                                 ui.label(egui::RichText::new(fmt_isk(e.isk)).weak());
                                 if ui
-                                    .button(format!("{} Restore", icon::ARROW_COUNTER_CLOCKWISE))
+                                    .button(trf!("{icon} Restore", icon = icon::ARROW_COUNTER_CLOCKWISE))
                                     .clicked()
                                 {
                                     restore = Some(e.kill_id);
@@ -580,15 +580,15 @@ impl SpaiApp {
                 .default_width(360.0)
                 .show(ctx, |ui| {
                     if list.is_empty() {
-                        ui.label(egui::RichText::new("No scrubbed pilots.").weak());
+                        ui.label(egui::RichText::new(tr!("No scrubbed pilots.")).weak());
                     }
                     egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                         for (kill_id, char_id) in &list {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(format!("kill {kill_id}")).monospace().weak());
-                                ui.label(format!("char {char_id}"));
+                                ui.label(egui::RichText::new(trf!("kill {kill_id}", kill_id = kill_id)).monospace().weak());
+                                ui.label(trf!("char {char_id}", char_id = char_id));
                                 if ui
-                                    .button(format!("{} Restore", icon::ARROW_COUNTER_CLOCKWISE))
+                                    .button(trf!("{icon} Restore", icon = icon::ARROW_COUNTER_CLOCKWISE))
                                     .clicked()
                                 {
                                     restore = Some((*kill_id, *char_id));
@@ -647,7 +647,7 @@ impl SpaiApp {
             let hull = |id: i64| -> String {
                 crate::intel::structure_name_by_type(id)
                     .map(|s| s.to_owned())
-                    .or_else(|| names.get(&id).cloned())
+                    .or_else(|| names.get(&id).map(|n| crate::shipnames::shown(n)))
                     .unwrap_or_else(|| "?".to_owned())
             };
 
@@ -660,13 +660,13 @@ impl SpaiApp {
                 .default_width(520.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("zKill link");
+                        ui.label(tr!("zKill link"));
                         ui.add(
                             egui::TextEdit::singleline(&mut link_input)
                                 .hint_text("https://zkillboard.com/kill/…")
                                 .desired_width(300.0),
                         );
-                        if ui.button("Add").clicked() {
+                        if ui.button(tr!("Add")).clicked() {
                             if let Some(k) =
                                 crate::intel::extract_links(&link_input).into_iter().find_map(|l| l.kill_id)
                             {
@@ -676,12 +676,12 @@ impl SpaiApp {
                     });
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Recent kills (last 24h). Pick one to attach to this battle.")
+                        egui::RichText::new(tr!("Recent kills (last 24h). Pick one to attach to this battle."))
                             .weak(),
                     );
                     ui.label(
                         egui::RichText::new(
-                            "A kill not yet in a battle is tagged now and will appear when fetched.",
+                            tr!("A kill not yet in a battle is tagged now and will appear when fetched."),
                         )
                         .weak(),
                     );
@@ -699,15 +699,15 @@ impl SpaiApp {
                                 ui.label(egui::RichText::new(fmt_isk(*value)).weak());
                                 if known.contains(kill_id) {
                                     ui.label(
-                                        egui::RichText::new("in a BR")
+                                        egui::RichText::new(tr!("in a BR"))
                                             .color(crate::theme::standing::WARNING),
                                     )
-                                    .on_hover_text("Already part of a clustered battle");
+                                    .on_hover_text(tr!("Already part of a clustered battle"));
                                 }
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.button(format!("{} Add", icon::PLUS)).clicked() {
+                                        if ui.button(trf!("{icon} Add", icon = icon::PLUS)).clicked() {
                                             add_kid = Some(*kill_id);
                                         }
                                     },
@@ -954,18 +954,18 @@ impl SpaiApp {
         ui.set_width(300.0);
         let mut rules = false;
         egui::Grid::new("br_filters").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Minimum ISK");
+            ui.label(tr!("Minimum ISK"));
             let mut bn = self.settings.min_battle_isk / 1e9;
             if ui
                 .add(egui::DragValue::new(&mut bn).range(0.0..=100_000.0).speed(0.5).custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n:.0}B") }))
-                .on_hover_text("ISK destroyed in the whole battle")
+                .on_hover_text(tr!("ISK destroyed in the whole battle"))
                 .changed()
             {
                 self.settings.min_battle_isk = (bn * 1e9).max(0.0);
                 self.needs_save = true;
             }
             ui.end_row();
-            ui.label("Minimum pilots");
+            ui.label(tr!("Minimum pilots"));
             let mut n = self.settings.battle_min_pilots;
             if ui
                 .add(egui::DragValue::new(&mut n).range(0..=10_000).speed(1.0).custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n:.0}") }))
@@ -977,12 +977,12 @@ impl SpaiApp {
             ui.end_row();
         });
         ui.add_space(4.0);
-        ui.label("With any of");
+        ui.label(tr!("With any of"));
         let mut remove = None;
         for (i, p) in self.settings.battle_parties.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(icon::X).on_hover_text("Remove").clicked() {
+                    if ui.button(icon::X).on_hover_text(tr!("Remove")).clicked() {
                         remove = Some(i);
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -996,7 +996,7 @@ impl SpaiApp {
             self.needs_save = true;
         }
         let typed = self.battle_party_input.trim().to_lowercase();
-        let resp = ui.add(egui::TextEdit::singleline(&mut self.battle_party_input).hint_text("Alliance, corporation or coalition").desired_width(f32::INFINITY));
+        let resp = ui.add(egui::TextEdit::singleline(&mut self.battle_party_input).hint_text(tr!("Alliance, corporation or coalition")).desired_width(f32::INFINITY));
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         // The names in the listed battles that match what is typed, most battles first.
         let picks: Vec<String> = self
@@ -1009,7 +1009,7 @@ impl SpaiApp {
             .collect();
         let mut add = None;
         for n in &picks {
-            if ui.add(egui::Button::new(format!("{}  {n}", icon::PLUS)).truncate().frame(false)).on_hover_text(format!("Add {n}")).clicked() {
+            if ui.add(egui::Button::new(format!("{}  {n}", icon::PLUS)).truncate().frame(false)).on_hover_text(trf!("Add {n}", n = n)).clicked() {
                 add = Some(n.clone());
             }
         }
@@ -1023,10 +1023,10 @@ impl SpaiApp {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button(format!("{}  Tracking rules\u{2026}", icon::LIST_CHECKS)).on_hover_text("Which battles are tracked at all").clicked() {
+            if ui.button(trf!("{icon}  Tracking rules\u{2026}", icon = icon::LIST_CHECKS)).on_hover_text(tr!("Which battles are tracked at all")).clicked() {
                 rules = true;
             }
-            if self.battle_filters_active() > 0 && ui.button("Clear filters").clicked() {
+            if self.battle_filters_active() > 0 && ui.button(tr!("Clear filters")).clicked() {
                 self.settings.min_battle_isk = 0.0;
                 self.settings.battle_min_pilots = 0;
                 self.settings.battle_parties.clear();
@@ -1103,7 +1103,7 @@ impl SpaiApp {
             .default_width(560.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button(format!("{}  Refresh", icon::ARROWS_CLOCKWISE)).clicked() {
+                    if ui.button(trf!("{icon}  Refresh", icon = icon::ARROWS_CLOCKWISE)).clicked() {
                         reload = true;
                     }
                 });
@@ -1118,14 +1118,14 @@ impl SpaiApp {
                     crate::brshare::MineStatus::Loading => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Loading your shared reports…");
+                            ui.label(tr!("Loading your shared reports…"));
                         });
                     }
                     crate::brshare::MineStatus::Error(e) => {
                         ui.colored_label(crate::theme::standing::WARNING, e);
                     }
                     crate::brshare::MineStatus::Loaded(rows) if rows.is_empty() => {
-                        ui.label(egui::RichText::new("You haven't shared any battle reports yet.").weak());
+                        ui.label(egui::RichText::new(tr!("You haven't shared any battle reports yet.")).weak());
                     }
                     crate::brshare::MineStatus::Loaded(rows) => {
                         egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -1142,7 +1142,7 @@ impl SpaiApp {
                                             ui.label(egui::RichText::new(title).strong());
                                             if r.unlisted == Some(true) {
                                                 ui.label(
-                                                    egui::RichText::new("unlisted")
+                                                    egui::RichText::new(tr!("unlisted"))
                                                         .color(crate::theme::standing::WARNING),
                                                 );
                                             }
@@ -1150,13 +1150,13 @@ impl SpaiApp {
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
-                                                        .button(format!("{} Delete", icon::TRASH))
+                                                        .button(trf!("{icon} Delete", icon = icon::TRASH))
                                                         .clicked()
                                                     {
                                                         delete_id = Some(r.id.clone());
                                                     }
                                                     if ui
-                                                        .button(format!("{} Open", icon::GLOBE))
+                                                        .button(trf!("{icon} Open", icon = icon::GLOBE))
                                                         .clicked()
                                                     {
                                                         let _ = open::that(r.url(&base));
@@ -1187,13 +1187,7 @@ impl SpaiApp {
                                                 ui.label(egui::RichText::new("·").weak());
                                             }
                                             ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} kills · {:.1}B ISK · {} {} views",
-                                                    r.kills,
-                                                    r.total_isk / 1e9,
-                                                    icon::EYE,
-                                                    r.views
-                                                ))
+                                                egui::RichText::new(trf!("{v} kills · {v2}B ISK · {icon} {v3} views", v = r.kills, v2 = format!("{:.1}", r.total_isk / 1e9), icon = icon::EYE, v3 = r.views))
                                                 .weak(),
                                             );
                                         });
@@ -1239,7 +1233,7 @@ impl SpaiApp {
                 });
                 self.show_imported_report(b, title, ctx);
             }
-            Err(e) => self.toast_error(format!("Could not open report: {e}")),
+            Err(e) => self.toast_error(trf!("Could not open report: {e}", e = e)),
         }
     }
 
@@ -1308,11 +1302,11 @@ impl SpaiApp {
         let mut go_back = false;
         let mut open_system = None;
         report_header(ui, |_| {}, |ui| {
-            if ui.button(icon::ARROW_LEFT).on_hover_text("Back to battles").clicked() {
+            if ui.button(icon::ARROW_LEFT).on_hover_text(tr!("Back to battles")).clicked() {
                 go_back = true;
             }
             ui.add(egui::Label::new(egui::RichText::new(&lr.title).strong()).truncate()).on_hover_text(&lr.title);
-            ui.label(egui::RichText::new(format!("{}  Imported", icon::DOWNLOAD_SIMPLE)).color(crate::theme::standing::WARNING));
+            ui.label(egui::RichText::new(trf!("{icon}  Imported", icon = icon::DOWNLOAD_SIMPLE)).color(crate::theme::standing::WARNING));
             open_system = battle_summary(ui, lr.shown.as_ref().unwrap_or(&lr.battle));
         }, |ui| side_chips(ui, lr.shown.as_ref().unwrap_or(&lr.battle)));
         if go_back {
@@ -1401,9 +1395,9 @@ impl SpaiApp {
             if ambiguous {
                 toolbar_sep(ui);
                 let warn = crate::theme::standing::WARNING;
-                ui.label(egui::RichText::new(format!("{}  Possible separate engagements", icon::WARNING)).color(warn))
-                    .on_hover_text("Kills here look like more than one fight. Review / split shows where it could be cut.");
-                if ui.button(format!("{}  Review / split", icon::SCISSORS)).clicked() {
+                ui.label(egui::RichText::new(trf!("{icon}  Possible separate engagements", icon = icon::WARNING)).color(warn))
+                    .on_hover_text(tr!("Kills here look like more than one fight. Review / split shows where it could be cut."));
+                if ui.button(trf!("{icon}  Review / split", icon = icon::SCISSORS)).clicked() {
                     self.battle_edit_mode = true;
                 }
             }
@@ -1411,22 +1405,22 @@ impl SpaiApp {
                 return;
             }
             toolbar_sep(ui);
-            ui.checkbox(&mut self.battle_condensed, "Condensed")
-                .on_hover_text("Stack each side's ships by hull (count + losses)");
-            ui.label("Sort");
+            ui.checkbox(&mut self.battle_condensed, tr!("Condensed"))
+                .on_hover_text(tr!("Stack each side's ships by hull (count + losses)"));
+            ui.label(tr!("Sort"));
             let sort_label = match self.battle_roster_sort {
                 RosterSort::Value => "ISK loss",
                 RosterSort::Hull => "Hull size",
             };
             toolbar_combo(ui, "battle_roster_sort", sort_label.to_owned(), |ui| {
-                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Value, "ISK loss");
-                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Hull, "Hull size");
+                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Value, tr!("ISK loss"));
+                ui.menu_value(&mut self.battle_roster_sort, RosterSort::Hull, tr!("Hull size"));
             });
             if let Some(ship) = self.battle_ship_filter.filter(|_| !self.battle_condensed) {
                 let name = self.type_names.lock().unwrap().get(&ship).cloned().unwrap_or_else(|| format!("Type {ship}"));
                 if ui
                     .button(format!("{name}  {}", icon::X_CIRCLE))
-                    .on_hover_text("Only pilots in this hull are listed. Click to list everyone.")
+                    .on_hover_text(tr!("Only pilots in this hull are listed. Click to list everyone."))
                     .clicked()
                 {
                     self.battle_ship_filter = None;
@@ -1480,7 +1474,7 @@ impl SpaiApp {
                 }
             });
         });
-        resp.on_hover_text("Show only the killmails in some of this fight's systems. Saving and sharing keep every system.");
+        resp.on_hover_text(tr!("Show only the killmails in some of this fight's systems. Saving and sharing keep every system."));
         // Every system picked is the same as none.
         if self.battle_systems.len() == systems.len() {
             self.battle_systems.clear();
@@ -1555,8 +1549,8 @@ impl SpaiApp {
             .collapsible(false)
             .default_width(420.0)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("Kept for this battle, and sent along when it is shared.").weak());
-                if ui.button(format!("{}  Reset to the sides found", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                ui.label(egui::RichText::new(tr!("Kept for this battle, and sent along when it is shared.")).weak());
+                if ui.button(trf!("{icon}  Reset to the sides found", icon = icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
                     reset = true;
                 }
                 ui.separator();
@@ -1570,7 +1564,7 @@ impl SpaiApp {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     egui::ComboBox::from_id_salt(("side_move", p.id))
                                         .width(150.0)
-                                        .selected_text(format!("Side {}", i + 1))
+                                        .selected_text(trf!("Side {v}", v = i + 1))
                                         .show_ui(ui, |ui| {
                                             for (j, other) in b.sides.iter().enumerate() {
                                                 if j == i {
@@ -1627,7 +1621,7 @@ impl SpaiApp {
         }
         if !self.settings.battles_enabled {
             ui.label(
-                egui::RichText::new("Battle reports are off. Turn them on in the \u{22ef} menu.").weak(),
+                egui::RichText::new(tr!("Battle reports are off. Turn them on in the \u{22ef} menu.")).weak(),
             );
             return;
         }
@@ -1641,15 +1635,15 @@ impl SpaiApp {
                 SdeStatus::Failed(err) => {
                     ui.colored_label(
                         crate::theme::standing::WARNING,
-                        format!("Battle reports need the static data, which failed: {err}"),
+                        trf!("Battle reports need the static data, which failed: {err}", err = err),
                     );
                     self.sde_retry_row(ui);
                 }
                 _ => {
                     ui.label(
                         egui::RichText::new(
-                            "Battle reports have not started. They begin once the static data is \
-                             downloaded.",
+                            tr!("Battle reports have not started. They begin once the static data is \
+                             downloaded."),
                         )
                         .weak(),
                     );
@@ -1660,10 +1654,7 @@ impl SpaiApp {
         if waited >= BATTLE_STALL {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                format!(
-                    "No battle report after {}s. The background worker is not responding.",
-                    waited.as_secs()
-                ),
+                trf!("No battle report after {waited}s. The background worker is not responding.", waited = waited.as_secs()),
             );
             return;
         }
@@ -1687,10 +1678,10 @@ impl SpaiApp {
         if !self.settings.battles_enabled {
             ui.add_space(10.0);
             if ui
-                .checkbox(&mut self.settings.battles_enabled, "Enable battle reports")
+                .checkbox(&mut self.settings.battles_enabled, tr!("Enable battle reports"))
                 .on_hover_text(
-                    "Generate and compute battle reports from the zKill feed. \
-                     While off, no battles are clustered or computed.",
+                    tr!("Generate and compute battle reports from the zKill feed. \
+                     While off, no battles are clustered or computed."),
                 )
                 .changed()
             {
@@ -1702,7 +1693,7 @@ impl SpaiApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "Battle reports are off. Gate-camp warnings and the kill feed keep working.",
+                    tr!("Battle reports are off. Gate-camp warnings and the kill feed keep working."),
                 )
                 .weak(),
             );
@@ -1797,27 +1788,27 @@ impl SpaiApp {
                             |ui| {
                                 if ui
                                     .menu_label(self.battle_edit_mode, format!("{}  Edit", icon::PENCIL_SIMPLE))
-                                    .on_hover_text("Split off kills, remove kills/pilots, add a kill")
+                                    .on_hover_text(tr!("Split off kills, remove kills/pilots, add a kill"))
                                     .clicked()
                                 {
                                     self.battle_edit_mode = !self.battle_edit_mode;
                                 }
                                 ui.menu_button(icon::DOTS_THREE, |ui| {
-                                    if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
+                                    if ui.button(trf!("{icon}  Add kill", icon = icon::PLUS)).clicked() {
                                         self.battle_add_open = true;
                                         ui.close();
                                     }
-                                    if ui.button(format!("{}  Excluded ({excl_n})", icon::TRASH)).clicked() {
+                                    if ui.button(trf!("{icon}  Excluded ({excl_n})", icon = icon::TRASH, excl_n = excl_n)).clicked() {
                                         self.battle_excluded_open = true;
                                         ui.close();
                                     }
-                                    if ui.button(format!("{}  Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
+                                    if ui.button(trf!("{icon}  Scrubbed ({scrub_n})", icon = icon::BROOM, scrub_n = scrub_n)).clicked() {
                                         self.battle_scrubs_open = true;
                                         ui.close();
                                     }
                                     if ui
-                                        .button(format!("{}  Rearrange sides\u{2026}", icon::ARROWS_LEFT_RIGHT))
-                                        .on_hover_text("Move an alliance or corporation to another side. Kept, and sent along when the report is shared.")
+                                        .button(trf!("{icon}  Rearrange sides\u{2026}", icon = icon::ARROWS_LEFT_RIGHT))
+                                        .on_hover_text(tr!("Move an alliance or corporation to another side. Kept, and sent along when the report is shared."))
                                         .clicked()
                                     {
                                         self.battle_sides_open = true;
@@ -1825,8 +1816,8 @@ impl SpaiApp {
                                     }
                                     ui.separator();
                                     if ui
-                                        .button(format!("{}  Save JSON", icon::FLOPPY_DISK))
-                                        .on_hover_text("Save this battle report as a JSON file you can re-open or share")
+                                        .button(trf!("{icon}  Save JSON", icon = icon::FLOPPY_DISK))
+                                        .on_hover_text(tr!("Save this battle report as a JSON file you can re-open or share"))
                                         .clicked()
                                     {
                                         save_clicked = true;
@@ -1847,38 +1838,38 @@ impl SpaiApp {
                                             }
                                         })
                                         .response
-                                        .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
+                                        .on_hover_text(tr!("Battle reports are owned per character; pick which one to upload + manage under"));
                                     }
                                     if ui
-                                        .add_enabled(!sharing, egui::Button::new(format!("{}  Share to eve-spai.com", icon::SHARE_NETWORK)))
-                                        .on_hover_text("Upload this battle report to eve-spai.com and get a shareable link")
+                                        .add_enabled(!sharing, egui::Button::new(trf!("{icon}  Share to eve-spai.com", icon = icon::SHARE_NETWORK)))
+                                        .on_hover_text(tr!("Upload this battle report to eve-spai.com and get a shareable link"))
                                         .clicked()
                                     {
                                         share_clicked = true;
                                         ui.close();
                                     }
-                                    ui.checkbox(&mut self.br_unlisted, "Unlisted")
-                                        .on_hover_text("Don't list it in the public directory (reachable only by link)");
+                                    ui.checkbox(&mut self.br_unlisted, tr!("Unlisted"))
+                                        .on_hover_text(tr!("Don't list it in the public directory (reachable only by link)"));
                                     if let Some((_, id, url)) = &shared {
-                                        if ui.button(format!("{}  Open shared report", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}, and copy the link")).clicked() {
+                                        if ui.button(trf!("{icon}  Open shared report", icon = icon::ARROW_SQUARE_OUT)).on_hover_text(trf!("Open {url}, and copy the link", url = url)).clicked() {
                                             let _ = open::that(url);
                                             ui.ctx().copy_text(url.clone());
                                             shared_copied = true;
                                             ui.close();
                                         }
-                                        if ui.button(format!("{}  Copy shared link", icon::COPY)).clicked() {
+                                        if ui.button(trf!("{icon}  Copy shared link", icon = icon::COPY)).clicked() {
                                             ui.ctx().copy_text(url.clone());
                                             shared_copied = true;
                                             ui.close();
                                         }
-                                        if ui.button(format!("{}  Delete shared report", icon::TRASH)).clicked() {
+                                        if ui.button(trf!("{icon}  Delete shared report", icon = icon::TRASH)).clicked() {
                                             shared_delete = Some(id.clone());
                                             ui.close();
                                         }
                                     }
                                     if ui
-                                        .button(format!("{}  My shared BRs", icon::GLOBE))
-                                        .on_hover_text("List and manage the reports you've shared")
+                                        .button(trf!("{icon}  My shared BRs", icon = icon::GLOBE))
+                                        .on_hover_text(tr!("List and manage the reports you've shared"))
                                         .clicked()
                                     {
                                         mine_clicked = true;
@@ -1894,7 +1885,7 @@ impl SpaiApp {
                                             };
                                             if ui
                                                 .add_enabled(!evetools_busy, egui::Button::new(label))
-                                                .on_hover_text("Make a report on br.evetools.org from this battle's systems and times. The link is kept for this battle.")
+                                                .on_hover_text(tr!("Make a report on br.evetools.org from this battle's systems and times. The link is kept for this battle."))
                                                 .clicked()
                                             {
                                                 evetools_click = Some(None);
@@ -1903,23 +1894,23 @@ impl SpaiApp {
                                         }
                                         Some((anchor, saved, changed)) => {
                                             let url = saved.url();
-                                            if ui.button(format!("{}  Open br.evetools", icon::ARROW_SQUARE_OUT)).on_hover_text(format!("Open {url}, and copy the link")).clicked() {
+                                            if ui.button(trf!("{icon}  Open br.evetools", icon = icon::ARROW_SQUARE_OUT)).on_hover_text(trf!("Open {url}, and copy the link", url = url)).clicked() {
                                                 let _ = open::that(&url);
                                                 ui.ctx().copy_text(url.clone());
                                                 evetools_copied = true;
                                                 ui.close();
                                             }
-                                            if ui.button(format!("{}  Copy br.evetools link", icon::COPY)).clicked() {
+                                            if ui.button(trf!("{icon}  Copy br.evetools link", icon = icon::COPY)).clicked() {
                                                 ui.ctx().copy_text(url.clone());
                                                 evetools_copied = true;
                                                 ui.close();
                                             }
                                             if *changed {
-                                                let label = egui::RichText::new(format!("{}  Update br.evetools", icon::ARROWS_CLOCKWISE))
+                                                let label = egui::RichText::new(trf!("{icon}  Update br.evetools", icon = icon::ARROWS_CLOCKWISE))
                                                     .color(crate::theme::standing::WARNING);
                                                 if ui
                                                     .add_enabled(!evetools_busy, egui::Button::new(label))
-                                                    .on_hover_text("The battle's systems or times changed since the br.evetools report was made: send them again")
+                                                    .on_hover_text(tr!("The battle's systems or times changed since the br.evetools report was made: send them again"))
                                                     .clicked()
                                                 {
                                                     evetools_click = Some(Some((*anchor, saved.clone())));
@@ -1930,10 +1921,10 @@ impl SpaiApp {
                                     }
                                 })
                                 .response
-                                .on_hover_text("Add, review, save and share");
+                                .on_hover_text(tr!("Add, review, save and share"));
                             },
                             |ui| {
-                                if ui.button(icon::ARROW_LEFT).on_hover_text("Back to battles").clicked() {
+                                if ui.button(icon::ARROW_LEFT).on_hover_text(tr!("Back to battles")).clicked() {
                                     go_back = true;
                                 }
                                 if let Some(c) = &summary {
@@ -1985,9 +1976,9 @@ impl SpaiApp {
                         if save_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 match self.save_battle_report(&b) {
-                                    Ok(Some(path)) => self.toast(format!("Saved report to {}", path.display())),
+                                    Ok(Some(path)) => self.toast(trf!("Saved report to {path}", path = path.display())),
                                     Ok(None) => {}
-                                    Err(e) => self.toast_error(format!("Could not save report: {e}")),
+                                    Err(e) => self.toast_error(trf!("Could not save report: {e}", e = e)),
                                 }
                             }
                         }
@@ -2075,7 +2066,7 @@ impl SpaiApp {
         if self.chat_dir.is_none() && self.settings.intel_channels.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Battles are found near systems seen in intel: set up intel channels in Settings.",
+                    tr!("Battles are found near systems seen in intel: set up intel channels in Settings."),
                 )
                 .weak(),
             );
@@ -2095,34 +2086,34 @@ impl SpaiApp {
                 let more = egui::containers::menu::MenuButton::new(icon::DOTS_THREE)
                     .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside));
                 let (more_resp, _) = more.ui(ui, |ui| {
-                    if ui.button(format!("{}  Open JSON\u{2026}", icon::FOLDER_OPEN)).on_hover_text("Open a saved battle report").clicked() {
+                    if ui.button(trf!("{icon}  Open JSON\u{2026}", icon = icon::FOLDER_OPEN)).on_hover_text(tr!("Open a saved battle report")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("EVE Spai battle report", &["json"]).pick_file() {
                             to_load = Some(path);
                         }
                         ui.close();
                     }
-                    if ui.button(format!("{}  My shared BRs", icon::GLOBE)).on_hover_text("The reports you shared to eve-spai.com").clicked() {
+                    if ui.button(trf!("{icon}  My shared BRs", icon = icon::GLOBE)).on_hover_text(tr!("The reports you shared to eve-spai.com")).clicked() {
                         open_my_shared = true;
                         ui.close();
                     }
                     ui.separator();
-                    ui.label(egui::RichText::new("Build from a kill").weak());
+                    ui.label(egui::RichText::new(tr!("Build from a kill")).weak());
                     ui.horizontal(|ui| {
                         let input = ui.add_enabled(
                             !building,
-                            egui::TextEdit::singleline(&mut self.build_kill_input).hint_text("zKill link or id").desired_width(180.0),
+                            egui::TextEdit::singleline(&mut self.build_kill_input).hint_text(tr!("zKill link or id")).desired_width(180.0),
                         );
                         let submit = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         if building {
                             ui.add(egui::Spinner::new());
-                        } else if ui.button(icon::HAMMER).on_hover_text("Build a battle report around this kill").clicked() || submit {
+                        } else if ui.button(icon::HAMMER).on_hover_text(tr!("Build a battle report around this kill")).clicked() || submit {
                             do_build = true;
                             ui.close();
                         }
                     });
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label("Split after a lull of");
+                        ui.label(tr!("Split after a lull of"));
                         let mut mins = (self.settings.battle_break_secs / 60).clamp(1, 30);
                         if ui.add(egui::DragValue::new(&mut mins).range(1..=30).speed(0.2).suffix(" min")).changed() {
                             let secs = mins.clamp(1, 30) * 60;
@@ -2132,24 +2123,24 @@ impl SpaiApp {
                         }
                     });
                     let mut th = self.settings.work_throttle;
-                    ui.menu_button(format!("{}  CPU: {}", icon::GAUGE, th.label()), |ui| {
+                    ui.menu_button(format!("{}  CPU: {}", icon::GAUGE, th.label().tr()), |ui| {
                         for opt in crate::settings::WorkThrottle::CHOICES {
-                            ui.menu_value(&mut th, opt, opt.label());
+                            ui.menu_value(&mut th, opt, opt.label().tr());
                         }
                     })
                     .response
-                    .on_hover_text("How hard the kill feed and clustering may work");
+                    .on_hover_text(tr!("How hard the kill feed and clustering may work"));
                     if th != self.settings.work_throttle {
                         self.settings.work_throttle = th;
                         self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
                         self.needs_save = true;
                     }
-                    if ui.checkbox(&mut self.settings.battles_enabled, "Battle reports on").changed() {
+                    if ui.checkbox(&mut self.settings.battles_enabled, tr!("Battle reports on")).changed() {
                         self.battles_enabled_shared.store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
                         self.needs_save = true;
                     }
                 });
-                more_resp.on_hover_text("Open, share, build and settings");
+                more_resp.on_hover_text(tr!("Open, share, build and settings"));
                 let active = self.battle_filters_active();
                 let label = if active > 0 { format!("{}  Filters ({active})", icon::FUNNEL) } else { format!("{}  Filters", icon::FUNNEL) };
                 let menu = egui::containers::menu::MenuButton::new(label)
@@ -2163,8 +2154,8 @@ impl SpaiApp {
                 let scope = if self.show_history { "Last 30 days" } else { "Active" };
                 let mut history = self.show_history;
                 toolbar_combo(ui, "br_scope", scope.to_owned(), |ui| {
-                    ui.menu_value(&mut history, false, "Active").on_hover_text("Battles going on or just over");
-                    ui.menu_value(&mut history, true, "Last 30 days").on_hover_text("Kept on disk for 30 days; save a report as JSON to keep it longer");
+                    ui.menu_value(&mut history, false, tr!("Active")).on_hover_text(tr!("Battles going on or just over"));
+                    ui.menu_value(&mut history, true, tr!("Last 30 days")).on_hover_text(tr!("Kept on disk for 30 days; save a report as JSON to keep it longer"));
                 });
                 if history != self.show_history {
                     self.show_history = history;
@@ -2176,8 +2167,8 @@ impl SpaiApp {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.label(icon::MAGNIFYING_GLASS);
                     let w = (ui.available_width() - if self.battle_search.is_empty() { 0.0 } else { 30.0 }).max(80.0);
-                    ui.add(egui::TextEdit::singleline(&mut self.battle_search).hint_text("System, alliance or pilot").desired_width(w));
-                    if !self.battle_search.is_empty() && ui.button(icon::X).on_hover_text("Clear").clicked() {
+                    ui.add(egui::TextEdit::singleline(&mut self.battle_search).hint_text(tr!("System, alliance or pilot")).desired_width(w));
+                    if !self.battle_search.is_empty() && ui.button(icon::X).on_hover_text(tr!("Clear")).clicked() {
                         self.battle_search.clear();
                     }
                 });
@@ -2191,12 +2182,12 @@ impl SpaiApp {
         }
         if do_build {
             match crate::zkill::parse_kill_id(&self.build_kill_input) {
-                None => self.toast_error("Not a zKillboard kill link or id"),
+                None => self.toast_error(tr!("Not a zKillboard kill link or id")),
                 Some(id) => {
                     if let (Some(systems), Some(ship_ids)) = (self.systems.clone(), self.battle_ship_ids.clone()) {
                         crate::zkill::spawn_build_from_kill(id, systems, ship_ids, self.build_from_kill.clone(), ui.ctx().clone());
                     } else {
-                        self.toast_error("Ship data is still loading, try again in a moment");
+                        self.toast_error(tr!("Ship data is still loading, try again in a moment"));
                     }
                 }
             }
@@ -2267,21 +2258,21 @@ impl SpaiApp {
             use egui_phosphor::regular as icon;
             if self.battle_edit_mode {
                 let n = self.battle_merge_sel.len();
-                ui.label(egui::RichText::new("Pick the battles to merge").strong());
+                ui.label(egui::RichText::new(tr!("Pick the battles to merge")).strong());
                 if ui
-                    .add_enabled(n >= 2, egui::Button::new(format!("{}  Merge {n}", icon::ARROWS_MERGE)))
-                    .on_disabled_hover_text("Pick two or more")
+                    .add_enabled(n >= 2, egui::Button::new(trf!("{icon}  Merge {n}", icon = icon::ARROWS_MERGE, n = n)))
+                    .on_disabled_hover_text(tr!("Pick two or more"))
                     .clicked()
                 {
                     do_merge = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr!("Cancel")).clicked() {
                     self.battle_edit_mode = false;
                     self.battle_merge_sel.clear();
                 }
             } else {
                 ui.label(egui::RichText::new(count_txt).weak());
-                if ui.button(format!("{}  Merge\u{2026}", icon::ARROWS_MERGE)).on_hover_text("Make one battle out of several").clicked() {
+                if ui.button(trf!("{icon}  Merge\u{2026}", icon = icon::ARROWS_MERGE)).on_hover_text(tr!("Make one battle out of several")).clicked() {
                     self.battle_edit_mode = true;
                 }
             }
@@ -2316,10 +2307,7 @@ impl SpaiApp {
             }
             if total > shown_n {
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Showing the newest {shown_n}. Narrow with search or rules to see the other {}.",
-                        total - shown_n
-                    ))
+                    egui::RichText::new(trf!("Showing the newest {shown_n}. Narrow with search or rules to see the other {v}.", shown_n = shown_n, v = total - shown_n))
                     .weak(),
                 );
             }

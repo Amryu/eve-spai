@@ -1,5 +1,7 @@
 //! The star map: view navigation, drawing, the threat layout, layers and tooltips.
 
+use spai_ui::i18n::Tr;
+
 use super::*;
 
 /// A dot's radius against the usual gap between systems on screen.
@@ -122,8 +124,8 @@ impl SpaiApp {
             SdeStatus::Ready => {
                 if self.map_popped {
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Map is in its own window.").weak());
-                    if ui.button("Dock map").clicked() {
+                    ui.label(egui::RichText::new(tr!("Map is in its own window.")).weak());
+                    if ui.button(tr!("Dock map")).clicked() {
                         self.map_popped = false;
                     }
                 } else {
@@ -140,14 +142,14 @@ impl SpaiApp {
             }
             SdeStatus::NotReady => {
                 ui.add_space(10.0);
-                ui.label("Static data has not been downloaded yet.");
-                if ui.button("Download static data").clicked() {
+                ui.label(tr!("Static data has not been downloaded yet."));
+                if ui.button(tr!("Download static data")).clicked() {
                     self.start_sde(&ui.ctx().clone(), None);
                 }
             }
             SdeStatus::Failed(err) => {
                 ui.add_space(10.0);
-                ui.colored_label(crate::theme::standing::WARNING, format!("SDE download failed: {err}"));
+                ui.colored_label(crate::theme::standing::WARNING, trf!("SDE download failed: {err}", err = err));
                 self.sde_retry_row(ui);
             }
         }
@@ -373,7 +375,7 @@ impl SpaiApp {
 
         let Some(bounds) = crate::map::Bounds::of(&self.map_draw) else {
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("No systems to show.").weak());
+            ui.label(egui::RichText::new(tr!("No systems to show.")).weak());
             return;
         };
 
@@ -478,8 +480,8 @@ impl SpaiApp {
             let has_char = self.active_character != "No character";
             if self.plain_destination_offered()
                 && ui
-                .add_enabled(has_char, egui::Button::new("Set Destination"))
-                .on_disabled_hover_text("Log a character in to route in the game")
+                .add_enabled(has_char, egui::Button::new(tr!("Set Destination")))
+                .on_disabled_hover_text(tr!("Log a character in to route in the game"))
                 .clicked()
             {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
@@ -500,8 +502,8 @@ impl SpaiApp {
             }
             if (self.route_destination.is_some() || self.ingame_route) && self.map_route_anchors.is_empty() {
                 if ui
-                    .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))
-                    .on_hover_text("Forget the route here and in the game")
+                    .button(egui::RichText::new(tr!("Clear Route")).color(crate::theme::standing::HOSTILE))
+                    .on_hover_text(tr!("Forget the route here and in the game"))
                     .clicked()
                 {
                     self.clear_route();
@@ -524,14 +526,14 @@ impl SpaiApp {
                 match at {
                     None => {
                         for (leg, tag) in ways {
-                            if ui.button(format!("Set as Destination{tag}")).clicked() {
+                            if ui.button(trf!("Set as Destination{tag}", tag = tag)).clicked() {
                                 self.map_route_set_dest(sid, *leg);
                                 ui.close();
                             }
                         }
                         if anchors.len() > 1 {
                             for (leg, tag) in ways {
-                                if ui.button(format!("Add Waypoint{tag}")).clicked() {
+                                if ui.button(trf!("Add Waypoint{tag}", tag = tag)).clicked() {
                                     self.map_route_add_waypoint(sid, *leg);
                                     ui.close();
                                 }
@@ -546,7 +548,7 @@ impl SpaiApp {
                             ui.close();
                         }
                         let (other, label) = if self.map_leg_kind(i - 1) == "jump" { ("gate", "Reach by Gate") } else { ("jump", "Reach by Jump") };
-                        if ui.button(label).on_hover_text("Fly the leg into here the other way; the route becomes a mixed one").clicked() {
+                        if ui.button(label).on_hover_text(tr!("Fly the leg into here the other way; the route becomes a mixed one")).clicked() {
                             self.map_set_leg_kind(i - 1, other);
                             ui.close();
                         }
@@ -554,7 +556,7 @@ impl SpaiApp {
                     _ => {}
                 }
                 if ui
-                    .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))
+                    .button(egui::RichText::new(tr!("Clear Route")).color(crate::theme::standing::HOSTILE))
                     .clicked()
                 {
                     self.clear_route();
@@ -597,7 +599,7 @@ impl SpaiApp {
                 }
             }
             ui.separator();
-            if ui.button("Show info").clicked() {
+            if ui.button(tr!("Show info")).clicked() {
                 self.map_selected = Some(sid);
                 self.right_dock_open = true;
                 self.right_dock_tab = RightDockTab::System;
@@ -613,7 +615,7 @@ impl SpaiApp {
             ui.menu_button(format!("{}  Tags", egui_phosphor::regular::TAG), |ui| {
                 picked = notes_tag_toggles(ui, &view, &label, &subject);
             });
-            if ui.button(format!("{}  Edit note and tags…", egui_phosphor::regular::NOTE_PENCIL)).clicked() {
+            if ui.button(trf!("{icon}  Edit note and tags…", icon = egui_phosphor::regular::NOTE_PENCIL)).clicked() {
                 picked = Some(IntelClick::Annotate(subject.clone()));
                 ui.close();
             }
@@ -1638,7 +1640,7 @@ impl SpaiApp {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         if ui
                             .button(egui_phosphor::regular::EYE)
-                            .on_hover_text("Show controls")
+                            .on_hover_text(tr!("Show controls"))
                             .clicked()
                         {
                             self.map_controls_hidden = false;
@@ -1652,7 +1654,7 @@ impl SpaiApp {
                     .order(egui::Order::Foreground)
                     .show(ui.ctx(), |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            if ui.button("\u{00BB}").on_hover_text("Show map panel").clicked() {
+                            if ui.button("\u{00BB}").on_hover_text(tr!("Show map panel")).clicked() {
                                 self.left_dock_open = true;
                             }
                         });
@@ -1666,7 +1668,7 @@ impl SpaiApp {
                     .order(egui::Order::Foreground)
                     .show(ui.ctx(), |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            if ui.button("\u{00AB}").on_hover_text("Show mode panel").clicked() {
+                            if ui.button("\u{00AB}").on_hover_text(tr!("Show mode panel")).clicked() {
                                 self.right_dock_open = true;
                             }
                         });
@@ -1708,28 +1710,28 @@ impl SpaiApp {
         let mut via_wh_changed = false;
         let mut highlight_changed = false;
 
-        group(ui, "Sovereignty");
+        group(ui, tr!("Sovereignty"));
         {
             let ov = &mut self.map_overlays;
             row(
                 ui,
-                &mut |ui| open_coalitions |= gear_button(ui, "Edit coalitions"),
+                &mut |ui| open_coalitions |= gear_button(ui, tr!("Edit coalitions")),
                 &mut |ui| {
-                    ui.label(format!("{}  Holder", icon::FLAG));
+                    ui.label(trf!("{icon}  Holder", icon = icon::FLAG));
                     let text = match ov.sov {
                         SovMode::Off => "Off",
                         SovMode::Alliance => "Alliance",
                         SovMode::Coalition => "Coalition",
                     };
                     egui::ComboBox::from_id_salt("map_sov_mode").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-                        ui.menu_value(&mut ov.sov, SovMode::Off, "Off");
-                        ui.menu_value(&mut ov.sov, SovMode::Alliance, "Alliance");
-                        ui.menu_value(&mut ov.sov, SovMode::Coalition, "Coalition");
+                        ui.menu_value(&mut ov.sov, SovMode::Off, tr!("Off"));
+                        ui.menu_value(&mut ov.sov, SovMode::Alliance, tr!("Alliance"));
+                        ui.menu_value(&mut ov.sov, SovMode::Coalition, tr!("Coalition"));
                     });
                 },
             );
             row(ui, &mut |_| {}, &mut |ui| {
-                ui.checkbox(&mut ov.adm, format!("{}  ADM", icon::SHIELD_CHECK));
+                ui.checkbox(&mut ov.adm, trf!("{icon}  ADM", icon = icon::SHIELD_CHECK));
             });
         }
         {
@@ -1738,47 +1740,47 @@ impl SpaiApp {
             row(
                 ui,
                 &mut |ui| {
-                    gear_menu(ui, "Which upgrades, and what the icons mean", &mut |ui| {
-                        ui.checkbox(&mut kinds[0], format!("{}  Ratting", icon::SKULL));
-                        ui.checkbox(&mut kinds[1], format!("{}  Exploration", icon::BROADCAST));
-                        ui.checkbox(&mut kinds[2], "Mining (ore icon)");
-                        ui.checkbox(&mut kinds[3], format!("{}  Other", icon::GEAR));
+                    gear_menu(ui, tr!("Which upgrades, and what the icons mean"), &mut |ui| {
+                        ui.checkbox(&mut kinds[0], trf!("{icon}  Ratting", icon = icon::SKULL));
+                        ui.checkbox(&mut kinds[1], trf!("{icon}  Exploration", icon = icon::BROADCAST));
+                        ui.checkbox(&mut kinds[2], tr!("Mining (ore icon)"));
+                        ui.checkbox(&mut kinds[3], trf!("{icon}  Other", icon = icon::GEAR));
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}  Cyno", icon::RADIOACTIVE));
+                            ui.label(trf!("{icon}  Cyno", icon = icon::RADIOACTIVE));
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Level");
+                            ui.label(tr!("Level"));
                             ui.colored_label(level_color(1), "1");
                             ui.colored_label(level_color(2), "2");
                             ui.colored_label(level_color(3), "3\u{2013}5");
                         });
                         ui.separator();
-                        if ui.button(format!("{}  Edit sov upgrades\u{2026}", icon::PENCIL_SIMPLE)).clicked() {
+                        if ui.button(trf!("{icon}  Edit sov upgrades\u{2026}", icon = icon::PENCIL_SIMPLE)).clicked() {
                             open_upgrades = true;
                             ui.close();
                         }
                     })
                 },
                 &mut |ui| {
-                    ui.checkbox(&mut ov.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
+                    ui.checkbox(&mut ov.upgrades, trf!("{icon}  Sov upgrades", icon = icon::MAP_PIN_LINE));
                 },
             );
         }
 
-        group(ui, "Navigation");
+        group(ui, tr!("Navigation"));
         {
             let ov = &mut self.map_overlays;
             row(
                 ui,
-                &mut |ui| open_bridges |= gear_button(ui, "Edit jump bridges"),
+                &mut |ui| open_bridges |= gear_button(ui, tr!("Edit jump bridges")),
                 &mut |ui| {
-                    ui.checkbox(&mut ov.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
+                    ui.checkbox(&mut ov.bridges, trf!("{icon}  Jump bridges", icon = icon::ARROWS_LEFT_RIGHT));
                 },
             );
             row(ui, &mut |_| {}, &mut |ui| {
                 if ui
-                    .checkbox(&mut ov.ansiblex_zones, format!("{}  Ansiblex zones", icon::CIRCLES_THREE))
-                    .on_hover_text("Distance bands from the alliance capital set with the jump bridges")
+                    .checkbox(&mut ov.ansiblex_zones, trf!("{icon}  Ansiblex zones", icon = icon::CIRCLES_THREE))
+                    .on_hover_text(tr!("Distance bands from the alliance capital set with the jump bridges"))
                     .changed()
                     && ov.ansiblex_zones
                 {
@@ -1787,8 +1789,8 @@ impl SpaiApp {
             });
             row(ui, &mut |_| {}, &mut |ui| {
                 if ui
-                    .checkbox(&mut ov.jump_range, format!("{}  Jump range", icon::CROSSHAIR_SIMPLE))
-                    .on_hover_text("Jump range around the system under the pointer")
+                    .checkbox(&mut ov.jump_range, trf!("{icon}  Jump range", icon = icon::CROSSHAIR_SIMPLE))
+                    .on_hover_text(tr!("Jump range around the system under the pointer"))
                     .changed()
                     && ov.jump_range
                 {
@@ -1797,9 +1799,9 @@ impl SpaiApp {
             });
             row(
                 ui,
-                &mut |ui| open_cynos |= gear_button(ui, "Edit cyno generators"),
+                &mut |ui| open_cynos |= gear_button(ui, tr!("Edit cyno generators")),
                 &mut |ui| {
-                    ui.checkbox(&mut ov.cyno_gen, format!("{}  Cyno generators", icon::CROSSHAIR_SIMPLE));
+                    ui.checkbox(&mut ov.cyno_gen, trf!("{icon}  Cyno generators", icon = icon::CROSSHAIR_SIMPLE));
                 },
             );
         }
@@ -1812,26 +1814,26 @@ impl SpaiApp {
             row(
                 ui,
                 &mut |ui| {
-                    gear_menu(ui, "Wormholes on the map and in routes", &mut |ui| {
-                        ui.checkbox(&mut thera, format!("{}  Thera", icon::PLANET));
-                        ui.checkbox(&mut turnur, format!("{}  Turnur", icon::PLANET));
+                    gear_menu(ui, tr!("Wormholes on the map and in routes"), &mut |ui| {
+                        ui.checkbox(&mut thera, trf!("{icon}  Thera", icon = icon::PLANET));
+                        ui.checkbox(&mut turnur, trf!("{icon}  Turnur", icon = icon::PLANET));
                         ui.separator();
                         via_wh_changed |= ui
-                            .checkbox(&mut via, "Route through them")
-                            .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each entrance")
+                            .checkbox(&mut via, tr!("Route through them"))
+                            .on_hover_text(tr!("Routes and Set Destination use scanned holes, with a waypoint at each entrance"))
                             .changed();
                         if via {
                             wh_route_changed |= self.wh_route_options_ui(ui);
                         }
                         ui.separator();
-                        if ui.button(format!("{}  Open the wormhole tab", icon::SPIRAL)).clicked() {
+                        if ui.button(trf!("{icon}  Open the wormhole tab", icon = icon::SPIRAL)).clicked() {
                             open_wh = true;
                             ui.close();
                         }
                     })
                 },
                 &mut |ui| {
-                    ui.checkbox(&mut on, format!("{}  Wormholes", icon::SPIRAL));
+                    ui.checkbox(&mut on, trf!("{icon}  Wormholes", icon = icon::SPIRAL));
                 },
             );
             self.map_overlays.thera = thera;
@@ -1842,11 +1844,11 @@ impl SpaiApp {
             }
         }
 
-        group(ui, "Activity");
+        group(ui, tr!("Activity"));
         {
             let ov = &mut self.map_overlays;
             row(ui, &mut |_| {}, &mut |ui| {
-                ui.label(format!("{}  Last hour", icon::FIRE));
+                ui.label(trf!("{icon}  Last hour", icon = icon::FIRE));
                 let text = match ov.activity {
                     ActivityMode::Off => "Off",
                     ActivityMode::ShipKills => "Ship kills",
@@ -1855,15 +1857,15 @@ impl SpaiApp {
                     ActivityMode::Jumps => "Jumps",
                 };
                 egui::ComboBox::from_id_salt("map_activity").selected_text(text).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-                    ui.menu_value(&mut ov.activity, ActivityMode::Off, "Off");
-                    ui.menu_value(&mut ov.activity, ActivityMode::ShipKills, "Ship kills");
-                    ui.menu_value(&mut ov.activity, ActivityMode::PodKills, "Pod kills");
-                    ui.menu_value(&mut ov.activity, ActivityMode::NpcKills, "NPC kills");
-                    ui.menu_value(&mut ov.activity, ActivityMode::Jumps, "Jumps");
+                    ui.menu_value(&mut ov.activity, ActivityMode::Off, tr!("Off"));
+                    ui.menu_value(&mut ov.activity, ActivityMode::ShipKills, tr!("Ship kills"));
+                    ui.menu_value(&mut ov.activity, ActivityMode::PodKills, tr!("Pod kills"));
+                    ui.menu_value(&mut ov.activity, ActivityMode::NpcKills, tr!("NPC kills"));
+                    ui.menu_value(&mut ov.activity, ActivityMode::Jumps, tr!("Jumps"));
                 });
             });
             row(ui, &mut |_| {}, &mut |ui| {
-                ui.checkbox(&mut ov.camps, format!("{}  Gate camps", icon::CAMPFIRE));
+                ui.checkbox(&mut ov.camps, trf!("{icon}  Gate camps", icon = icon::CAMPFIRE));
             });
         }
         {
@@ -1871,14 +1873,14 @@ impl SpaiApp {
             row(
                 ui,
                 &mut |ui| {
-                    gear_menu(ui, "How long a report keeps its system lit", &mut |ui| {
+                    gear_menu(ui, tr!("How long a report keeps its system lit"), &mut |ui| {
                         egui::Grid::new("map_highlight_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                            ui.label("Normal");
+                            ui.label(tr!("Normal"));
                             highlight_changed |= ui
                                 .add(egui::DragValue::new(&mut st.map_highlight_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "off".into() } else { format!("{n}s") }))
                                 .changed();
                             ui.end_row();
-                            ui.label("Critical");
+                            ui.label(tr!("Critical"));
                             highlight_changed |= ui
                                 .add(egui::DragValue::new(&mut st.map_highlight_critical_secs).range(0..=3600).custom_formatter(|n, _| if n == 0.0 { "off".into() } else { format!("{n}s") }))
                                 .changed();
@@ -1887,22 +1889,22 @@ impl SpaiApp {
                     })
                 },
                 &mut |ui| {
-                    ui.label(format!("{}  Intel highlight", icon::CLOCK_COUNTDOWN)).on_hover_text("Systems light up when intel names them");
+                    ui.label(trf!("{icon}  Intel highlight", icon = icon::CLOCK_COUNTDOWN)).on_hover_text(tr!("Systems light up when intel names them"));
                 },
             );
         }
 
-        group(ui, "Markers");
+        group(ui, tr!("Markers"));
         {
             let ov = &mut self.map_overlays;
             row(ui, &mut |_| {}, &mut |ui| {
-                ui.checkbox(&mut ov.jove, format!("{}  Jove observatories", icon::CELL_TOWER));
+                ui.checkbox(&mut ov.jove, trf!("{icon}  Jove observatories", icon = icon::CELL_TOWER));
             });
             row(
                 ui,
-                &mut |ui| open_notes |= gear_button(ui, "Manage system notes and tags"),
+                &mut |ui| open_notes |= gear_button(ui, tr!("Manage system notes and tags")),
                 &mut |ui| {
-                    ui.checkbox(&mut ov.notes, format!("{}  Notes and tags", icon::TAG)).on_hover_text("Systems you tagged or wrote a note on");
+                    ui.checkbox(&mut ov.notes, trf!("{icon}  Notes and tags", icon = icon::TAG)).on_hover_text(tr!("Systems you tagged or wrote a note on"));
                 },
             );
         }
@@ -1937,17 +1939,14 @@ impl SpaiApp {
 
         if self.rescue_on() {
             ui.separator();
-            ui.label(egui::RichText::new("delve911 rescue").strong());
-            if ui.button(format!("{}  Open delve911 feed", icon::CHAT_CENTERED_DOTS)).clicked() {
+            ui.label(egui::RichText::new(tr!("delve911 rescue")).strong());
+            if ui.button(trf!("{icon}  Open delve911 feed", icon = icon::CHAT_CENTERED_DOTS)).clicked() {
                 self.view = nav::View::Jabber;
                 self.jabber_chat = None;
             }
             // Opens the window only. The feature being on is the mode, so a toggle here would be a
             // second switch for one decision.
-            let btn = egui::Button::new(format!(
-                "{}  Open rescue window",
-                icon::WARNING_OCTAGON
-            ));
+            let btn = egui::Button::new(trf!("{icon}  Open rescue window", icon = icon::WARNING_OCTAGON));
             let btn = if self.rescue_armed {
                 btn.fill(egui::Color32::from_rgb(0x80, 0x30, 0x30))
             } else {
@@ -1971,7 +1970,7 @@ impl SpaiApp {
         }
         ui.separator();
         ui.label(
-            egui::RichText::new(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL)).strong(),
+            egui::RichText::new(trf!("{icon}  Wormholes", icon = egui_phosphor::regular::SPIRAL)).strong(),
         );
         for w in holes {
             let here_is_near = w.system_id == id;
@@ -1980,7 +1979,7 @@ impl SpaiApp {
                 .and_then(|sid| {
                     self.systems.as_ref().and_then(|g| g.info_of(sid)).map(|i| i.name.clone())
                 })
-                .unwrap_or_else(|| w.dest.label().to_owned());
+                .unwrap_or_else(|| w.dest.label().tr().to_owned());
             let sig = if here_is_near { w.signature.as_deref() } else { w.dest_signature.as_deref() }
                 .unwrap_or("?");
             let mut parts: Vec<String> = Vec::new();
@@ -1989,7 +1988,7 @@ impl SpaiApp {
                 parts.push(t.clone());
             }
             if let Some(s) = w.effective_size() {
-                parts.push(s.label().to_owned());
+                parts.push(s.label().tr().to_owned());
             }
             parts.push(match w.hours_left(now) {
                 Some(h) => format!("< {h}h"),
@@ -2022,11 +2021,7 @@ impl SpaiApp {
             };
             let over = (c.span / 60).max(0);
             ui.label(
-                egui::RichText::new(format!(
-                    "{}  {label}: {} kills over {over}m, last {mins}m ago",
-                    egui_phosphor::regular::CAMPFIRE,
-                    c.kills,
-                ))
+                egui::RichText::new(trf!("{icon}  {label}: {v} kills over {over}m, last {mins}m ago", icon = egui_phosphor::regular::CAMPFIRE, label = label, v = c.kills, over = over, mins = mins))
                 .strong()
                 .color(col),
             );
@@ -2062,10 +2057,7 @@ impl SpaiApp {
         if let Some(f) = status.get(&id) {
             if f.jumps + f.ship_kills + f.pod_kills + f.npc_kills > 0 {
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Last hour — {} jumps · {} ship · {} pod · {} NPC kills",
-                        f.jumps, f.ship_kills, f.pod_kills, f.npc_kills
-                    ))
+                    egui::RichText::new(trf!("Last hour — {v} jumps · {v2} ship · {v3} pod · {v4} NPC kills", v = f.jumps, v2 = f.ship_kills, v3 = f.pod_kills, v4 = f.npc_kills))
                     .weak(),
                 );
             }
@@ -2094,7 +2086,7 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(format!("{n}x")).strong());
                 }
                 if r.clear {
-                    ui.label(egui::RichText::new("CLEAR").color(green));
+                    ui.label(egui::RichText::new(tr!("CLEAR")).color(green));
                 }
                 for sh in &r.ships {
                     ui.label(egui::RichText::new(&sh.name).weak());
@@ -2108,7 +2100,7 @@ impl SpaiApp {
             }
         }
         if shown == 0 {
-            ui.label(egui::RichText::new("Click for details.").weak());
+            ui.label(egui::RichText::new(tr!("Click for details.")).weak());
         }
         drop(state);
         self.wormhole_section(ui, id);
@@ -2129,13 +2121,13 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         let grip = ui
                             .add(egui::Button::new(icon::ARROWS_OUT_CARDINAL).sense(egui::Sense::click_and_drag()))
-                            .on_hover_text("Drag to move the overlay");
+                            .on_hover_text(tr!("Drag to move the overlay"));
                         if grip.drag_started() {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                         if ui
                             .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
-                            .on_hover_text("Follow your character")
+                            .on_hover_text(tr!("Follow your character"))
                             .clicked()
                         {
                             self.map_follow = !self.map_follow;
@@ -2143,21 +2135,21 @@ impl SpaiApp {
                         ui.spacing_mut().slider_width = 80.0;
                         if ui
                             .add(egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.2..=1.0).show_value(false))
-                            .on_hover_text("Opacity")
+                            .on_hover_text(tr!("Opacity"))
                             .changed()
                         {
                             self.needs_save = true;
                         }
                         ui.menu_button(icon::DOTS_THREE, |ui| {
                             if ui
-                                .checkbox(&mut self.settings.map_overlay_smart, "Above EVE only while it is active")
-                                .on_hover_text("Otherwise above every window")
+                                .checkbox(&mut self.settings.map_overlay_smart, tr!("Above EVE only while it is active"))
+                                .on_hover_text(tr!("Otherwise above every window"))
                                 .changed()
                             {
                                 self.needs_save = true;
                             }
                         });
-                        if ui.button(icon::SIGN_OUT).on_hover_text("Close the overlay").clicked() {
+                        if ui.button(icon::SIGN_OUT).on_hover_text(tr!("Close the overlay")).clicked() {
                             self.map_overlay_mode = false;
                             self.map_popped = false;
                         }
@@ -2212,7 +2204,7 @@ fn wh_tip_line(id: i64, info: &crate::geo::SystemInfo) -> Option<String> {
         return (!zone.is_empty()).then(|| format!("C729 opens in: {}", zone.join(", ")));
     }
     let j = whdata::jsystem(id)?;
-    let mut parts = vec![class.label()];
+    let mut parts = vec![class.label().tr()];
     if let Some(e) = &j.effect {
         parts.push(e.clone());
     }
