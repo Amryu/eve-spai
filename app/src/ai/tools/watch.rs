@@ -87,7 +87,7 @@ static STOP: ToolSpec = ToolSpec {
     run: |ctx, v| {
         let mut ws = ctx.deps.watches.lock().unwrap_or_else(|e| e.into_inner());
         let w = by_id(&mut ws, v)?;
-        w.stop("stopped by you");
+        w.stop(spai_ui::tr_noop!("stopped by you"));
         Ok(json!({"stopped": w.id}))
     },
 };

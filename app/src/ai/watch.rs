@@ -94,7 +94,7 @@ impl Watch {
         match self.state {
             WatchState::Stopped(_) => None,
             _ if self.until.is_some_and(|u| now >= u) => {
-                self.state = WatchState::Stopped("its time was up".into());
+                self.state = WatchState::Stopped(spai_ui::tr_noop!("its time was up").into());
                 Some(Due::Ended(self.id))
             }
             WatchState::Active if self.until.is_none() && now - self.active_since >= IDLE_ASK_AFTER => {
@@ -102,7 +102,7 @@ impl Watch {
                 Some(Due::Ask(self.id))
             }
             WatchState::Asking(at) if now - at >= ANSWER_WAIT => {
-                self.state = WatchState::Stopped("no answer after a quiet spell".into());
+                self.state = WatchState::Stopped(spai_ui::tr_noop!("no answer after a quiet spell").into());
                 Some(Due::GaveUp(self.id))
             }
             _ => None,

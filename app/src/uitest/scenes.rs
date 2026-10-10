@@ -2431,7 +2431,9 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(assistant_scene("assistant", [1280.0, 800.0], false, false));
     v.push(assistant_scene("assistant_narrow", [720.0, 800.0], false, false));
     v.push(assistant_listening_scene());
-    v.push(assistant_scene("assistant_popout", [560.0, 820.0], false, true));
+    // Tall enough that the whole conversation fits in every language: a row cut by the scroll
+    // edge under the watch strip reads to the checks as text crossing the strip.
+    v.push(assistant_scene("assistant_popout", [560.0, 1100.0], false, true));
     v.push(assistant_scene("assistant_empty", [1280.0, 800.0], true, false));
     v.push(view_scene("assistant_off", View::Assistant, [1024.0, 600.0]));
     v.push({
