@@ -687,6 +687,16 @@ impl SpaiApp {
                 }
             }
         }
+        let storms: Vec<(i64, crate::systemstatus::StormKind)> = if ov.storms {
+            self.system_status.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(|(id, f)| Some((*id, f.storm.as_ref()?.kind))).collect()
+        } else {
+            Vec::new()
+        };
+        if show_sys_labels {
+            for (id, kind) in &storms {
+                lead_icons.entry(*id).or_default().push((egui_phosphor::regular::CLOUD_LIGHTNING, storm_color(*kind)));
+            }
+        }
         if ov.notes {
             let weak = ui.visuals().weak_text_color();
             for (id, m) in &self.notes_view.systems {
@@ -992,6 +1002,14 @@ impl SpaiApp {
             self.route_destination = None;
         }
 
+        // Eight storms in all, so each keeps a ring at any zoom.
+        for (id, kind) in &storms {
+            if let Some(p) = pos.get(id).filter(|p| cull.contains(**p)) {
+                let c = storm_color(*kind);
+                painter.circle_filled(*p, dot + 7.0, c.gamma_multiply(0.18));
+                painter.circle_stroke(*p, dot + 5.0, egui::Stroke::new(1.5, c));
+            }
+        }
         if ov.jove && !show_sys_labels {
             for s in &self.map_draw {
                 if let Some(p) = pos.get(&s.id).filter(|p| cull.contains(**p) && crate::jove::has(s.id)) {
@@ -1882,7 +1900,7 @@ impl SpaiApp {
                 });
             });
             row(ui, &mut |_| {}, &mut |ui| {
-                ui.checkbox(&mut ov.camps, trf!("{icon}  Gate camps", icon = icon::CAMPFIRE));
+                ui.checkbox(&mut ov.camps, trf!("{icon}  Gate kills", icon = icon::CAMPFIRE));
             });
         }
         {
@@ -1916,6 +1934,9 @@ impl SpaiApp {
             let ov = &mut self.map_overlays;
             row(ui, &mut |_| {}, &mut |ui| {
                 ui.checkbox(&mut ov.jove, trf!("{icon}  Jove observatories", icon = icon::CELL_TOWER));
+            });
+            row(ui, &mut |_| {}, &mut |ui| {
+                ui.checkbox(&mut ov.storms, trf!("{icon}  Metaliminal storms", icon = icon::CLOUD_LIGHTNING)).on_hover_text(tr!("Where the storms are, as reported to EVE-Scout"));
             });
             row(
                 ui,
@@ -2027,10 +2048,10 @@ impl SpaiApp {
             let mins = (c.age / 60).max(0);
             let (label, col) = match c.level {
                 crate::camp::CampLevel::Likely => {
-                    (tr!("Likely gate camp"), egui::Color32::from_rgb(0xEF, 0x44, 0x44))
+                    (tr!("Sustained gate kills"), egui::Color32::from_rgb(0xEF, 0x44, 0x44))
                 }
                 crate::camp::CampLevel::Possible => {
-                    (tr!("Possible camp"), egui::Color32::from_rgb(0xFF, 0xA7, 0x26))
+                    (tr!("Repeated gate kills"), egui::Color32::from_rgb(0xFF, 0xA7, 0x26))
                 }
                 crate::camp::CampLevel::Flag => {
                     (tr!("Recent gate kills"), egui::Color32::from_rgb(0xFF, 0xD5, 0x4F))

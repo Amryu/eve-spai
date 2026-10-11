@@ -112,6 +112,12 @@ pub struct Settings {
     /// Route planner: keep off systems with a likely gate camp.
     #[serde(default)]
     pub route_avoid_camps: bool,
+    /// Route planner: keep off systems in an incursion.
+    #[serde(default)]
+    pub route_avoid_incursions: bool,
+    /// Route planner: keep off EDENCOM fortress and minor victory systems.
+    #[serde(default)]
+    pub route_avoid_edencom: bool,
     /// Route planner: the security bands a route may pass through, high, low and null.
     #[serde(default = "all_sec")]
     pub route_sec: [bool; 3],
@@ -1537,6 +1543,8 @@ impl Default for Settings {
             comms_mumble_cache: std::collections::HashMap::new(),
             saved_routes: Vec::new(),
             route_avoid_camps: false,
+            route_avoid_incursions: false,
+            route_avoid_edencom: false,
             route_sec: [true; 3],
             route_max_kills: 0,
             route_avoid_sov: Vec::new(),

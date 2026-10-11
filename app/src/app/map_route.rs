@@ -367,8 +367,8 @@ impl SpaiApp {
         Some(g)
     }
 
-    /// The systems the route rules keep a route out of: gate camps, security bands, busy systems
-    /// and sov held by the alliances named. The route's own anchors are never in it.
+    /// The systems the route rules keep a route out of: gate camps, incursions, EDENCOM systems,
+    /// security bands, busy systems and sov held by the alliances named. The route's own anchors are never in it.
     pub(crate) fn route_rule_avoid(&self) -> std::collections::HashSet<i64> {
         let st = &self.settings;
         let mut out = std::collections::HashSet::new();
@@ -380,8 +380,14 @@ impl SpaiApp {
             );
         }
         let sov: std::collections::HashSet<String> = st.route_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
-        if st.route_max_kills > 0 || !sov.is_empty() {
+        if st.route_avoid_edencom {
+            out.extend(spai_core::edencom::FORTRESS_IDS.iter().chain(spai_core::edencom::MINOR_VICTORY_IDS));
+        }
+        if st.route_max_kills > 0 || !sov.is_empty() || st.route_avoid_incursions {
             for (id, f) in self.system_status.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                if st.route_avoid_incursions && f.incursion {
+                    out.insert(*id);
+                }
                 if st.route_max_kills > 0 && f.ship_kills > st.route_max_kills {
                     out.insert(*id);
                 }

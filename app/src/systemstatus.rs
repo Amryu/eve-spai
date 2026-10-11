@@ -10,6 +10,7 @@ const SOV_URL: &str = "https://esi.evetech.net/latest/sovereignty/map/";
 const SOV_STRUCT_URL: &str = "https://esi.evetech.net/latest/sovereignty/structures/";
 const KILLS_URL: &str = "https://esi.evetech.net/latest/universe/system_kills/";
 const JUMPS_URL: &str = "https://esi.evetech.net/latest/universe/system_jumps/";
+const STORMS_URL: &str = "https://api.eve-scout.com/v2/public/observations";
 const POLL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -25,6 +26,46 @@ pub struct SysFlags {
     pub pod_kills: u32,
     pub npc_kills: u32,
     pub jumps: u32,
+    /// The metaliminal storm centred here, as EVE-Scout last reported it.
+    #[serde(default)]
+    pub storm: Option<Storm>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Storm {
+    pub kind: StormKind,
+    /// When EVE-Scout's report was made, unix seconds.
+    pub reported: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StormKind {
+    Electric,
+    Exotic,
+    Gamma,
+    Plasma,
+}
+
+impl StormKind {
+    /// From EVE-Scout's `observation_type`, "electric_a" and the like: two storms of each kind roam.
+    fn parse(t: &str) -> Option<Self> {
+        Some(match t.split('_').next()? {
+            "electric" => Self::Electric,
+            "exotic" => Self::Exotic,
+            "gamma" => Self::Gamma,
+            "plasma" => Self::Plasma,
+            _ => return None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Electric => spai_ui::tr_noop!("Electric storm"),
+            Self::Exotic => spai_ui::tr_noop!("Exotic storm"),
+            Self::Gamma => spai_ui::tr_noop!("Gamma storm"),
+            Self::Plasma => spai_ui::tr_noop!("Plasma storm"),
+        }
+    }
 }
 
 pub type SharedStatus = Arc<Mutex<HashMap<i64, SysFlags>>>;
@@ -38,8 +79,16 @@ pub fn spawn(status: SharedStatus, ctx: egui::Context) {
         let mut alliance_names: HashMap<i64, String> = HashMap::new();
         let store = crate::store::Store::open().ok();
         let mut sov_known = store.as_ref().map(|s| s.sov_latest()).unwrap_or_default();
+        let mut storms = Vec::new();
         loop {
-            if let Some(map) = fetch(&client, &mut alliance_names) {
+            // EVE-Scout down is not every storm gone: keep the last answer.
+            if let Some(s) = fetch_storms(&client) {
+                storms = s;
+            }
+            if let Some(mut map) = fetch(&client, &mut alliance_names) {
+                for (sys, storm) in &storms {
+                    map.entry(*sys).or_default().storm = Some(storm.clone());
+                }
                 if let Some(store) = &store {
                     keep_history(store, &map, &mut sov_known, crate::clock::utc().timestamp());
                 }
@@ -55,6 +104,31 @@ pub fn spawn(status: SharedStatus, ctx: egui::Context) {
 struct Incursion {
     #[serde(default)]
     infested_solar_systems: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct Observation {
+    observation_category: String,
+    observation_type: String,
+    system_id: i64,
+    #[serde(default)]
+    created_at: String,
+}
+
+fn fetch_storms(client: &reqwest::blocking::Client) -> Option<Vec<(i64, Storm)>> {
+    let obs: Vec<Observation> = client.get(STORMS_URL).send().ok()?.error_for_status().ok()?.json().ok()?;
+    Some(storms_of(obs))
+}
+
+fn storms_of(obs: Vec<Observation>) -> Vec<(i64, Storm)> {
+    obs.into_iter()
+        .filter(|o| o.observation_category == "storm")
+        .filter_map(|o| {
+            let kind = StormKind::parse(&o.observation_type)?;
+            let reported = chrono::DateTime::parse_from_rfc3339(&o.created_at).map(|t| t.timestamp()).unwrap_or(0);
+            Some((o.system_id, Storm { kind, reported }))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -211,5 +285,25 @@ fn keep_history(store: &crate::store::Store, map: &HashMap<i64, SysFlags>, sov_k
             store.log_sov(now, *id, holder);
             sov_known.insert(*id, holder);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storms_come_from_storm_observations_only() {
+        let obs: Vec<Observation> = serde_json::from_str(
+            r#"[{"observation_category":"storm","observation_type":"electric_a","system_id":30002170,"created_at":"2026-10-10T11:32:18.000Z","display_name":"Electric Storm"},
+                {"observation_category":"storm","observation_type":"plasma_b","system_id":30003206,"created_at":"2026-10-10T13:08:40.000Z"},
+                {"observation_category":"storm","observation_type":"unknown_a","system_id":30000001,"created_at":"2026-10-10T13:08:40.000Z"},
+                {"observation_category":"space_oddity","observation_type":"toms_shuttle","system_id":30000142,"created_at":"2026-10-10T13:08:40.000Z"}]"#,
+        )
+        .unwrap();
+        let storms = storms_of(obs);
+        assert_eq!(storms.len(), 2);
+        assert_eq!(storms[0], (30002170, Storm { kind: StormKind::Electric, reported: 1_791_631_938 }));
+        assert_eq!(storms[1].1.kind, StormKind::Plasma);
     }
 }

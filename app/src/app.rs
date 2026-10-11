@@ -74,6 +74,8 @@ struct MapOverlays {
     cyno_gen: bool,
     #[serde(default)]
     jove: bool,
+    #[serde(default)]
+    storms: bool,
     #[serde(default = "overlay_on")]
     notes: bool,
     /// Ansiblex zones around the capital. Exclusive with `jump_range`: both colour the dots.
@@ -154,6 +156,7 @@ impl Default for MapOverlays {
             camps: true,
             cyno_gen: false,
             jove: false,
+            storms: false,
             notes: true,
             ansiblex_zones: false,
         }
@@ -3257,6 +3260,14 @@ impl SpaiApp {
         self.system_status.lock().unwrap().insert(id, f);
     }
 
+    /// A storm on the map, with the storm layer on.
+    #[cfg(test)]
+    pub(crate) fn seed_storm(&mut self, id: i64, kind: crate::systemstatus::StormKind) {
+        let storm = crate::systemstatus::Storm { kind, reported: crate::clock::utc().timestamp() - 5 * 3600 };
+        self.system_status.lock().unwrap().entry(id).or_default().storm = Some(storm);
+        self.map_overlays.storms = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn set_share_done(&self, id: &str, url: &str) {
         *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Done { id: id.into(), url: url.into() };
@@ -5504,6 +5515,16 @@ fn battle_file_name(battle: &br_core::battle::Battle) -> String {
 
 use spai_ui::widgets::human_ago;
 
+fn storm_color(kind: crate::systemstatus::StormKind) -> egui::Color32 {
+    use crate::systemstatus::StormKind;
+    match kind {
+        StormKind::Electric => egui::Color32::from_rgb(0x7F, 0xB8, 0xFF),
+        StormKind::Exotic => egui::Color32::from_rgb(0xE0, 0xC0, 0x50),
+        StormKind::Gamma => egui::Color32::from_rgb(0x6F, 0xD0, 0x6F),
+        StormKind::Plasma => egui::Color32::from_rgb(0xF0, 0x6A, 0x40),
+    }
+}
+
 fn system_chips(
     ui: &mut egui::Ui,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
@@ -5542,7 +5563,23 @@ fn system_chips_ex(
                 .color(JOVE_COLOR),
         );
     }
+    if let Some(k) = spai_core::edencom::kind(system_id) {
+        let text = match k {
+            spai_core::edencom::Kind::Fortress => tr!("EDENCOM fortress"),
+            spai_core::edencom::Kind::MinorVictory => tr!("EDENCOM minor victory"),
+        };
+        ui.label(egui::RichText::new(text).color(standing::WARNING));
+    }
     if let Some(f) = status.get(&system_id) {
+        if let Some(storm) = &f.storm {
+            let r = ui.label(
+                egui::RichText::new(format!("{}  {}", egui_phosphor::regular::CLOUD_LIGHTNING, spai_ui::i18n::t(storm.kind.label())))
+                    .color(storm_color(storm.kind)),
+            );
+            if storm.reported > 0 {
+                r.on_hover_text(trf!("Reported to EVE-Scout {ago} ago", ago = human_ago(crate::clock::utc().timestamp() - storm.reported)));
+            }
+        }
         if f.incursion {
             ui.label(egui::RichText::new(tr!("INCURSION")).color(standing::ALLIANCE));
         }

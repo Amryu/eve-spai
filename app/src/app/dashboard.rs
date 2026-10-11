@@ -704,7 +704,7 @@ impl SpaiApp {
                 });
             }
             if let Some(camp) = self.camps.lock().unwrap().camp(*sys, now).filter(|c| c.level >= crate::camp::CampLevel::Possible) {
-                ui.label(egui::RichText::new(trf!("Possible gate camp here ({kills} kills)", kills = camp.kills)).color(ui.visuals().warn_fg_color));
+                ui.label(egui::RichText::new(trf!("Repeated gate kills here ({kills} kills)", kills = camp.kills)).color(ui.visuals().warn_fg_color));
             }
             let holes = self.wh_cache.iter().filter(|w| w.system_id == *sys || w.dest_system_id == Some(*sys)).count();
             if holes > 0 {

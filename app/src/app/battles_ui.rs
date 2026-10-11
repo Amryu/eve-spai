@@ -1695,7 +1695,7 @@ impl SpaiApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    tr!("Battle reports are off. Gate-camp warnings and the kill feed keep working."),
+                    tr!("Battle reports are off. Gate kill warnings and the kill feed keep working."),
                 )
                 .weak(),
             );

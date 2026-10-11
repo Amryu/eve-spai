@@ -253,7 +253,7 @@ fn jove_near(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
 
 static CAMPS: ToolSpec = ToolSpec {
     name: "gate_camps",
-    description: "Gate camps the kill feed suggests right now, optionally only within some jumps of a system.",
+    description: "Systems where the kill feed shows ships dying on a gate right now: hostiles active around gates, a camp or any other fight there. Optionally only within some jumps of a system.",
     need: Need::All(&["map.camps"]),
     kind: Kind::Read,
     schema: || schema(json!({"near": {"type": "string"}, "jumps": {"type": "integer", "minimum": 1, "maximum": 20}}), &[]),

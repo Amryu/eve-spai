@@ -47,12 +47,17 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let mut changed = false;
         let st = &self.settings;
-        let mut n = st.route_avoid_camps as usize + (st.route_sec != [true; 3]) as usize + (st.route_max_kills > 0) as usize;
+        let mut n = st.route_avoid_camps as usize + st.route_avoid_incursions as usize + st.route_avoid_edencom as usize + (st.route_sec != [true; 3]) as usize + (st.route_max_kills > 0) as usize;
         n += (!st.route_avoid_sov.is_empty()) as usize + (!st.route_region_gates) as usize;
         let head = if n > 0 { trf!("{icon}  Avoid ({n})", icon = icon::PROHIBIT, n = n) } else { trf!("{icon}  Avoid", icon = icon::PROHIBIT) };
         egui::CollapsingHeader::new(head).id_salt("route_rules").show(ui, |ui| {
             let st = &mut self.settings;
-            changed |= ui.checkbox(&mut st.route_avoid_camps, tr!("Gate camps")).on_hover_text(tr!("Systems with a likely or possible camp")).changed();
+            changed |= ui.checkbox(&mut st.route_avoid_camps, tr!("Gate kills")).on_hover_text(tr!("Systems where ships keep dying on a gate")).changed();
+            changed |= ui.checkbox(&mut st.route_avoid_incursions, tr!("Incursions")).on_hover_text(tr!("Systems with an active incursion")).changed();
+            changed |= ui
+                .checkbox(&mut st.route_avoid_edencom, tr!("EDENCOM systems"))
+                .on_hover_text(tr!("Fortress and minor victory systems, whose EDENCOM fleets and gunstars attack pilots with low EDENCOM standing"))
+                .changed();
             ui.horizontal(|ui| {
                 ui.label(tr!("Allow"));
                 changed |= ui.checkbox(&mut st.route_sec[0], tr!("High")).changed();

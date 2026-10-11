@@ -2755,6 +2755,22 @@ mod route_extension_tests {
         a.map_route_set_dest(DQ, None);
         assert_eq!(a.map_route_anchors, vec![DQ, K5, DQ], "only the far end is replaced");
     }
+
+    #[test]
+    fn route_rules_keep_off_incursions_and_edencom_systems_when_asked() {
+        let (_ctx, mut a) = app();
+        let miakie = spai_core::edencom::FORTRESS_IDS[0];
+        a.system_status.lock().unwrap().insert(THREE, crate::systemstatus::SysFlags { incursion: true, ..Default::default() });
+        let avoid = a.route_rule_avoid();
+        assert!(!avoid.contains(&THREE) && !avoid.contains(&miakie));
+        a.settings.route_avoid_incursions = true;
+        a.settings.route_avoid_edencom = true;
+        let avoid = a.route_rule_avoid();
+        assert!(avoid.contains(&THREE), "the incursion");
+        assert!(avoid.contains(&miakie), "the fortress");
+        assert!(avoid.contains(&spai_core::edencom::MINOR_VICTORY_IDS[0]), "the minor victory");
+        assert!(!avoid.contains(&DQ));
+    }
 }
 
 /// The bind address field: typing one used to rebind the socket per keystroke, on the UI thread,

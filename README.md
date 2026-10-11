@@ -21,9 +21,10 @@ Website and screenshots: https://eve-spai.com
 - Get alerts you design, by what was said, how close it is, how big the gang is, or which
   tagged pilots and systems are involved, with sound, desktop notifications, an alert
   window over the game and phone push.
-- See hostiles on an interactive star map with sovereignty, activity, jump bridge, camp and
-  wormhole layers, plan gate, capital jump and titan bridge routes, and send them to the
-  game as waypoints. A see-through copy of the map can sit over EVE.
+- See hostiles on an interactive star map with sovereignty, activity, jump bridge, gate
+  kill, metaliminal storm and wormhole layers, plan gate, capital jump and titan bridge
+  routes around incursions, EDENCOM systems or anything else, and send them to the game as
+  waypoints. A see-through copy of the map can sit over EVE.
 - Keep your wormhole chains on one map, logged as your characters jump, with probe scan
   signatures per system, scan routes for your scouts, Thera and Turnur from EVE-Scout,
   and end-to-end encrypted sharing with your group, also as a web map in the browser.

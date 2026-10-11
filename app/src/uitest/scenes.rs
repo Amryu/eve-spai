@@ -141,6 +141,29 @@ fn map_hole_icons_scene(name: &'static str) -> Scene {
     })
 }
 
+/// Two storms in Insmother: their marks beside the names, and the system panel naming one.
+fn map_storms_scene(name: &'static str) -> Scene {
+    use crate::systemstatus::StormKind;
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1280.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let region = fixtures::insmother();
+            let mut ids: Vec<i64> = region.drawn.iter().map(|s| s.id).collect();
+            ids.sort_unstable();
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Map;
+            a.seed_map(region.systems, region.regions, fixtures::INSMOTHER, region.drawn);
+            a.seed_storm(ids[ids.len() / 3], StormKind::Electric);
+            a.seed_storm(ids[2 * ids.len() / 3], StormKind::Plasma);
+            a
+        });
+        app.apply_language();
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// The Lookup view with a pasted local loaded: finished rows, one still loading, one unknown name.
 fn lookup_tab_scene(name: &'static str) -> Scene {
     harness::scratch_profile();
@@ -2224,6 +2247,7 @@ pub(crate) fn all() -> Vec<Scene> {
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         docked_system_scene("map_dock_system_notes"),
         map_hole_icons_scene("map_hole_icons"),
+        map_storms_scene("map_storms"),
         notes_dialog_scene("dialog_system_window_notes", [470.0, 620.0], |a| {
             a.open_system(30_004_759);
         }),
@@ -8635,6 +8659,7 @@ fn route_tab_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.route_avoid_camps = true;
+            a.settings.route_avoid_edencom = true;
             a.settings.route_sec = [false, true, true];
             a.settings.route_avoid_sov = vec!["The Exceptionally Long-Named Alliance of Assorted Spaceship Enthusiasts".into()];
             a.seed_route(fixtures::systems(), vec![30_004_759, 30_003_704]);

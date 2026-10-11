@@ -3,6 +3,7 @@
 
 pub mod ansiblex;
 pub mod clock;
+pub mod edencom;
 pub mod factions;
 pub mod geo;
 pub mod jove;

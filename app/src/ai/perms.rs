@@ -48,7 +48,7 @@ pub const TREE: &[Node] = &[
         gate: Gate::None,
         children: &[
             leaf("map.status", tr_noop!("Sov, ADM, kills and jumps"), tr_noop!("Per-system status from ESI")),
-            leaf("map.camps", tr_noop!("Gate camps"), ""),
+            leaf("map.camps", tr_noop!("Gate kills"), ""),
             leaf("map.jove", tr_noop!("Jove observatories"), ""),
             leaf("map.cyno", tr_noop!("Cyno generators"), ""),
             leaf("map.bridges", tr_noop!("Jump bridges and sov upgrades"), tr_noop!("The ones you entered")),

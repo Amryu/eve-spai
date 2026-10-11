@@ -237,8 +237,8 @@ function heat(v, avg) {
 }
 
 const CAMP_TEXT = {
-  likely: ["Likely gate camp", "#ef4444"],
-  possible: ["Possible camp", "#ffa726"],
+  likely: ["Sustained gate kills", "#ef4444"],
+  possible: ["Repeated gate kills", "#ffa726"],
   flag: ["Recent gate kills", "#ffd54f"],
 };
 

@@ -952,7 +952,7 @@ const TOGGLES = [
   ["adm", "ADM"],
   ["bridges", "Bridges"],
   ["holes", "Wormholes"],
-  ["camps", "Camps"],
+  ["camps", "Gate kills"],
   ["cyno", "Cyno"],
   ["upgrades", "Upgrades"],
   ["jove", "Jove"],
