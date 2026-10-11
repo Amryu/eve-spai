@@ -13,7 +13,7 @@ pub(crate) struct AlertConfig {
     pub(crate) ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     pub(crate) active_character: String,
     /// Name and id per authenticated character. The engine thread has no store handle, and the
-    /// overlay needs the ids to draw portraits.
+    /// alert window needs the ids to draw portraits.
     pub(crate) chars: Vec<(String, i64)>,
     pub(crate) kill_intel: bool,
     pub(crate) kill_intel_jumps: u32,
@@ -38,11 +38,8 @@ pub(crate) struct AlertEngine {
     pub(crate) recent: AlertLog,
     pub(crate) alert_shared: SharedAlertWindow,
     pub(crate) ctx: egui::Context,
-    pub(crate) overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
-    pub(crate) alert_sent_hash: std::sync::Mutex<Option<u64>>,
-    /// Fingerprint of what the overlay message is built from, and when it was last built.
-    overlay_inputs: std::sync::Mutex<Option<(u64, std::time::Instant)>>,
-    pub(crate) ping_sent_hash: std::sync::Mutex<Option<u64>>,
+    /// Fingerprint of what the alert window's feed is built from, and when it was last built.
+    window_inputs: std::sync::Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl AlertEngine {
@@ -51,7 +48,6 @@ impl AlertEngine {
         last_alert_time: i64,
         alert_shared: SharedAlertWindow,
         ctx: egui::Context,
-        overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
     ) -> Self {
         Self {
             config: std::sync::Mutex::new(AlertConfig::default()),
@@ -59,15 +55,12 @@ impl AlertEngine {
             recent,
             alert_shared,
             ctx,
-            overlay_stdin,
-            alert_sent_hash: std::sync::Mutex::new(None),
-            overlay_inputs: std::sync::Mutex::new(None),
-            ping_sent_hash: std::sync::Mutex::new(None),
+            window_inputs: std::sync::Mutex::new(None),
         }
     }
 
-    /// Whether intel alerts are on at all. The overlay wants the feed only when a rule opens its
-    /// window; the web view wants it whenever alerts are enabled.
+    /// Whether intel alerts are on at all. The alert window wants the feed only when a rule opens
+    /// it; the web view wants it whenever alerts are enabled.
     pub(crate) fn alerts_enabled(&self) -> bool {
         self.config.lock().unwrap().enabled
     }
@@ -76,10 +69,10 @@ impl AlertEngine {
     /// rings, kill info and affiliations. Built off the UI thread, so it keeps updating while the
     /// main window is minimized and its UI loop is parked.
     ///
-    /// Shared by the overlay push and the web publisher, so the two cannot disagree about what a
-    /// card says. `want_feed` is the caller's own reason to want the feed at all: the overlay wants
-    /// it only when a rule opens its window, the web view whenever alerts are on. `secs` and
-    /// `focus` are overlay timing and are left at zero for the caller to fill in.
+    /// Shared by the alert window and the web publisher, so the two cannot disagree about what a
+    /// card says. `want_feed` is the caller's own reason to want the feed at all: the alert window
+    /// wants it only when a rule opens it, the web view whenever alerts are on. `secs` and `focus`
+    /// are left at zero, since only the window's own countdown uses them.
     pub(crate) fn build_alert_msg(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
@@ -223,13 +216,14 @@ impl AlertEngine {
             kills: kills_send,
             affil: affil_send,
             notes,
-            secs: 0.0,
-            focus: false,
         }
     }
 
-    /// Send the enriched feed to the overlay subprocess, unchanged payloads skipped.
-    pub(crate) fn push_overlay_update(
+    /// Refresh the alert window's cards: live report bodies, distances, attribution, names and
+    /// ship details. Here rather than on the UI thread, which would walk and clone all of it every
+    /// frame. The countdown and focus are the window's and are left alone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn refresh_alert_window(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
         pilots: &crate::pilot::SharedPilots,
@@ -237,16 +231,30 @@ impl AlertEngine {
         system_status: &crate::systemstatus::SharedStatus,
         affiliations: &crate::affiliation::SharedAffil,
         kill_cache: &crate::kills::KillCache,
+        ships: Option<&ShipLookup>,
     ) {
         use std::hash::{Hash, Hasher};
-        if self.overlay_stdin.lock().unwrap().is_none() {
-            return;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        {
+            let cfg = self.config.lock().unwrap();
+            if !(cfg.enabled && cfg.alerts.rules.iter().any(|r| r.enabled && r.custom_window)) {
+                *self.window_inputs.lock().unwrap() = None;
+                return;
+            }
+            // What the cards are worked out with: a note added on a card, another active character
+            // or the bridge setting shows at once rather than with the next periodic rebuild.
+            (std::sync::Arc::as_ptr(&cfg.notes) as usize).hash(&mut h);
+            cfg.systems.as_ref().map(|g| std::sync::Arc::as_ptr(g) as usize).hash(&mut h);
+            cfg.active_character.hash(&mut h);
+            cfg.intel_count_bridges.hash(&mut h);
+            cfg.only_undocked.hash(&mut h);
+            cfg.disabled.hash(&mut h);
+            cfg.staging.hash(&mut h);
         }
-        // Building the message walks every report and serialises it, four times a second. This
-        // runs first and only touches counters, so a quiet feed costs almost nothing.
+        // Building the feed walks every report, two and a half times a second. This runs first and
+        // only touches counters, so a quiet feed costs almost nothing.
         let inputs = {
             let st = intel_state.lock().unwrap();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
             st.reports.len().hash(&mut h);
             for r in &st.reports {
                 r.id.hash(&mut h);
@@ -254,14 +262,20 @@ impl AlertEngine {
                 r.pilots.len().hash(&mut h);
                 r.ships.len().hash(&mut h);
             }
-            player.lock().unwrap().system_id.hash(&mut h);
+            {
+                let p = player.lock().unwrap();
+                p.system_id.hash(&mut h);
+                let mut locs: Vec<(&String, &(i64, bool))> = p.locations.iter().collect();
+                locs.sort();
+                locs.hash(&mut h);
+            }
             let sh = self.alert_shared.lock().unwrap();
-            sh.focus_pending.hash(&mut h);
             sh.feed.len().hash(&mut h);
+            sh.feed.last().map(|(r, _)| r.id).hash(&mut h);
             h.finish()
         };
         {
-            let mut prev = self.overlay_inputs.lock().unwrap();
+            let mut prev = self.window_inputs.lock().unwrap();
             // Rebuilt every few seconds anyway: resolved names, affiliations and kills arrive on
             // their own threads and are not in the fingerprint.
             let unchanged =
@@ -271,92 +285,24 @@ impl AlertEngine {
             }
             *prev = Some((inputs, std::time::Instant::now()));
         }
-        let feature = {
-            let cfg = self.config.lock().unwrap();
-            cfg.enabled && cfg.alerts.rules.iter().any(|r| r.enabled && r.custom_window)
+        let msg = self.build_alert_msg(intel_state, pilots, player, system_status, affiliations, kill_cache, true);
+        let ship_ids: std::collections::HashSet<i64> = msg.feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
+        let (details, roles): (std::collections::HashMap<_, _>, std::collections::HashMap<_, _>) = match ships {
+            Some(sl) => (
+                ship_ids.iter().filter_map(|&i| sl.details(i).map(|d| (i, d))).collect(),
+                ship_ids.iter().map(|&i| (i, sl.roles(i))).collect(),
+            ),
+            None => Default::default(),
         };
-        let mut msg = self.build_alert_msg(
-            intel_state,
-            pilots,
-            player,
-            system_status,
-            affiliations,
-            kill_cache,
-            feature,
-        );
-
-        let (fresh, daemon_secs) = {
+        {
             let mut st = self.alert_shared.lock().unwrap();
-            (std::mem::take(&mut st.focus_pending), st.secs)
-        };
-        msg.secs = if !feature || msg.feed.is_empty() {
-            0.0
-        } else if fresh {
-            if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
-        } else {
-            ALERT_SECS_REFRESH
-        };
-        msg.focus = fresh;
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&msg.feed).unwrap_or_default().hash(&mut hasher);
-        msg.from_you.hash(&mut hasher);
-        msg.via.hash(&mut hasher);
-        msg.chars.hash(&mut hasher);
-        hash_sorted_map(&mut hasher, &msg.status);
-        hash_sorted_map(&mut hasher, &msg.resolved_pilots);
-        hash_sorted_map(&mut hasher, &msg.last_ship);
-        hash_sorted_map(&mut hasher, &msg.kills);
-        hash_sorted_map(&mut hasher, &msg.affil);
-        serde_json::to_string(&msg.notes).unwrap_or_default().hash(&mut hasher);
-        let hash = hasher.finish();
-
-        {
-            let mut prev = self.alert_sent_hash.lock().unwrap();
-            if *prev == Some(hash) && !fresh {
-                return;
-            }
-            *prev = Some(hash);
+            apply_alert(&mut st, msg);
+            st.ship_details = details;
+            st.ship_roles = roles;
+            st.kills = Some(kill_cache.clone());
+            st.affil = Some(affiliations.clone());
         }
-        crate::ipc::send_shared(&self.overlay_stdin, &crate::ipc::MainToOverlay::Alert(msg));
-    }
-
-    /// Forward fleet pings to the overlay from the engine thread, so a ping raises the overlay
-    /// window even while the main window is minimized. Config (geometry/on-top) stays on the UI
-    /// thread; it doesn't change while minimized.
-    pub(crate) fn push_ping_update(&self, ping_shared: &SharedPingWindow) {
-        use std::hash::{Hash, Hasher};
-        if self.overlay_stdin.lock().unwrap().is_none() {
-            return;
-        }
-        let msg = {
-            let mut st = ping_shared.lock().unwrap();
-            let raise = std::mem::take(&mut st.raise);
-            let pings: Vec<crate::pings::Ping> = st.windows.iter().map(|w| w.ping.clone()).collect();
-            crate::ipc::PingMsg {
-                pings,
-                raise,
-                doctrine_url: st.doctrine_url.clone(),
-                op_links: st.op_links.clone(),
-            }
-        };
-        let hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            serde_json::to_string(&msg.pings).unwrap_or_default().hash(&mut h);
-            msg.doctrine_url.hash(&mut h);
-            let mut ops: Vec<(&String, &String)> = msg.op_links.iter().collect();
-            ops.sort();
-            ops.hash(&mut h);
-            h.finish()
-        };
-        {
-            let mut prev = self.ping_sent_hash.lock().unwrap();
-            if Some(hash) == *prev && !msg.raise {
-                return;
-            }
-            *prev = Some(hash);
-        }
-        crate::ipc::send_shared(&self.overlay_stdin, &crate::ipc::MainToOverlay::Ping(msg));
+        self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
     }
 
     pub(crate) fn evaluate(
@@ -545,26 +491,13 @@ impl AlertEngine {
             let pushed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
                 fired.iter().filter(|f| f.win).map(|f| (f.report.clone(), f.sev)).collect();
             let mut st = self.alert_shared.lock().unwrap();
-            for rs in &pushed {
-                st.feed.push(rs.clone());
-            }
-            let n = st.feed.len();
-            if n > 100 {
-                st.feed.drain(0..n - 100);
-            }
-            // Snooze suppresses the popup window only; feed, overlay, sound and push still run.
+            push_reports(&mut st, pushed);
+            // Snooze suppresses the popup window only; feed, sound and push still run.
             if !st.snooze {
                 st.secs = secs;
                 st.focus_pending = true;
             }
             drop(st);
-            crate::ipc::send_shared(
-                &self.overlay_stdin,
-                &crate::ipc::MainToOverlay::AlertPush(crate::ipc::AlertPush {
-                    reports: pushed,
-                    secs: if secs.is_finite() { secs } else { ALERT_SECS_INFINITE },
-                }),
-            );
             self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
             self.ctx.request_repaint();
         }
@@ -926,11 +859,11 @@ pub(crate) fn spawn_alert_daemon(
     kill_cache: crate::kills::KillCache,
     system_status: crate::systemstatus::SharedStatus,
     affiliations: crate::affiliation::SharedAffil,
-    ping_shared: SharedPingWindow,
     ctx: egui::Context,
 ) {
     let _ = std::thread::Builder::new().name("alert-daemon".into()).spawn(move || {
         let store = crate::store::Store::open().ok();
+        let ships = crate::store::Store::open().ok().map(ShipLookup::new);
         let mut ship_by_id: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(400));
@@ -951,18 +884,98 @@ pub(crate) fn spawn_alert_daemon(
             );
             dirty |= engine.reconcile(&intel_state, &pilots);
             dirty |= engine.evaluate(&intel_state, &player);
-            engine.push_overlay_update(
+            engine.refresh_alert_window(
                 &intel_state,
                 &pilots,
                 &player,
                 &system_status,
                 &affiliations,
                 &kill_cache,
+                ships.as_ref(),
             );
-            engine.push_ping_update(&ping_shared);
             if dirty {
                 ctx.request_repaint();
             }
         }
     });
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    const DQ: i64 = 30_004_759;
+    const THREE: i64 = 30_004_608;
+
+    /// What the alert window shows comes from the engine thread alone: a rule that opens the window
+    /// fires, and the refresh after it fills in the distance without the UI thread doing anything.
+    #[test]
+    fn a_fired_alert_reaches_the_window_with_its_distance() {
+        let shared: SharedAlertWindow = Arc::new(Mutex::new(AlertWindowState::default()));
+        let engine = AlertEngine::new(Arc::new(Mutex::new(Vec::new())), 0, shared.clone(), egui::Context::default());
+        let systems = crate::uitest::fixtures::systems();
+        {
+            let mut cfg = engine.config.lock().unwrap();
+            cfg.enabled = true;
+            cfg.alerts.rules = vec![crate::settings::AlertRule {
+                min_severity: crate::settings::Severity::Info,
+                custom_window: true,
+                system_notification: false,
+                push: false,
+                sound: "off".into(),
+                ..Default::default()
+            }];
+            cfg.systems = Some(systems.clone());
+            cfg.active_character = "Amryu".into();
+        }
+        let intel = Mutex::new(crate::intel::IntelState::default());
+        let info = systems.info_of(DQ).unwrap();
+        let id = intel.lock().unwrap().push(crate::intel::IntelReport {
+            text: "5 hostiles 1DQ1-A".into(),
+            received: crate::clock::utc().timestamp(),
+            systems: vec![crate::intel::DetectedSystem { id: DQ, name: info.name.clone(), security: info.security }],
+            count: Some(5),
+            ..Default::default()
+        });
+        let player: crate::esi::SharedPlayer = Arc::new(Mutex::new(crate::esi::Player {
+            system_id: Some(THREE),
+            locations: std::collections::HashMap::from([("Amryu".to_owned(), (THREE, false))]),
+            ..Default::default()
+        }));
+
+        assert!(engine.evaluate(&intel, &player), "the rule fires");
+        {
+            let st = shared.lock().unwrap();
+            assert_eq!(st.feed.iter().map(|(r, _)| r.id).collect::<Vec<_>>(), [id]);
+            assert!(st.secs > 0.0 && st.focus_pending, "the window is told to open");
+            assert_eq!(st.from_you, [None], "aligned with the feed before the refresh");
+        }
+
+        let kills: crate::kills::KillCache = Default::default();
+        let affil: crate::affiliation::SharedAffil = Default::default();
+        engine.refresh_alert_window(&intel, &Default::default(), &player, &Default::default(), &affil, &kills, None);
+        let st = shared.lock().unwrap();
+        assert_eq!(st.from_you, [systems.jumps(THREE, DQ, 50)], "the distance from the active character");
+        assert_eq!(st.via.len(), 1);
+        assert_eq!(st.chars.len(), 1);
+        assert!(st.kills.is_some() && st.affil.is_some());
+        assert!(st.secs > 0.0 && st.focus_pending, "a refresh leaves the opening alone");
+    }
+
+    /// With no rule opening the window, nothing is built for it.
+    #[test]
+    fn no_window_rule_no_refresh() {
+        let shared: SharedAlertWindow = Arc::new(Mutex::new(AlertWindowState::default()));
+        let engine = AlertEngine::new(Arc::new(Mutex::new(Vec::new())), 0, shared.clone(), egui::Context::default());
+        {
+            let mut cfg = engine.config.lock().unwrap();
+            cfg.enabled = true;
+            cfg.alerts.rules.iter_mut().for_each(|r| r.custom_window = false);
+        }
+        shared.lock().unwrap().feed.push((crate::intel::IntelReport { id: 1, ..Default::default() }, crate::settings::Severity::Danger));
+        let intel = Mutex::new(crate::intel::IntelState::default());
+        engine.refresh_alert_window(&intel, &Default::default(), &Default::default(), &Default::default(), &Default::default(), &Default::default(), None);
+        assert_eq!(shared.lock().unwrap().feed.len(), 1, "left as the engine pushed it");
+    }
 }

@@ -678,8 +678,6 @@ pub struct SpaiApp {
     /// minimized or covered: the main window's own panels are left out.
     main_hidden: bool,
     raise_main: bool,
-    overlay: Option<crate::ipc::OverlayLink>,
-    config_sent_hash: Option<u64>,
     dscan_clip: Option<arboard::Clipboard>,
     dscan_checked: Option<std::time::Instant>,
     dscan_seen_hash: u64,
@@ -836,11 +834,11 @@ pub struct SpaiApp {
     constellation_window: Option<i64>,
     region_window: Option<i64>,
     focus_window: Option<egui::ViewportId>,
-    /// Overlay→main clicks that OPEN a dialog window, deferred to the next frame. Opening an
-    /// immediate viewport in the same frame the IPC message was drained (the frame the overlay's
-    /// reader thread woke via `request_repaint`) panics egui with "the user callback was never
-    /// called"; processing them at the top of a normally-scheduled frame avoids that.
-    pending_overlay_clicks: Vec<IntelClick>,
+    /// Clicks from the web page and the notes manager that open a dialog window, deferred to the
+    /// next frame. Opening an immediate viewport in the frame that drained a message woken by
+    /// another thread's `request_repaint` panics egui with "the user callback was never called";
+    /// the top of a normally scheduled frame avoids that.
+    pending_clicks: Vec<IntelClick>,
     /// System name fields' suggestions, by field: the text they were for, the matches, the
     /// highlighted one.
     sys_sugg: std::collections::HashMap<&'static str, (String, Vec<SysHit>, usize)>,
@@ -1052,8 +1050,8 @@ impl SpaiApp {
 
     /// `headless` skips every side effect this constructor normally performs: the image loaders,
     /// the single-instance control socket, opening the store, and all background threads
-    /// (including the tray and the overlay subprocess). Everything that only shapes in-memory
-    /// state still runs, so the resulting app renders the same as a live one.
+    /// (including the tray). Everything that only shapes in-memory state still runs, so the
+    /// resulting app renders the same as a live one.
     pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
         crate::theme::install_fonts(ctx);
         let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
@@ -1258,14 +1256,11 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let alert_shared: SharedAlertWindow =
             std::sync::Arc::new(std::sync::Mutex::new(AlertWindowState::default()));
-        let overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
             recent_alerts.clone(),
             crate::clock::utc().timestamp(),
             alert_shared.clone(),
             ctx.clone(),
-            overlay_stdin.clone(),
         ));
         let system_status: crate::systemstatus::SharedStatus =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1291,7 +1286,6 @@ impl SpaiApp {
                 kill_cache.clone(),
                 system_status.clone(),
                 affiliations.clone(),
-                ping_shared.clone(),
                 ctx.clone(),
             );
         }
@@ -1338,7 +1332,7 @@ impl SpaiApp {
             let ctx = ctx.clone();
             let ping_shared = ping_shared.clone();
             let alert_shared = alert_shared.clone();
-            let _ = std::thread::Builder::new().name("overlay-ticker".into()).spawn(move || loop {
+            let _ = std::thread::Builder::new().name("alert-window-ticker".into()).spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 let ping_active = !ping_shared.lock().unwrap().windows.is_empty();
                 if ping_active {
@@ -1611,18 +1605,6 @@ impl SpaiApp {
             raise_reset_top: false,
             main_hidden: false,
             raise_main: false,
-            overlay: if headless {
-                None
-            } else {
-                match crate::ipc::OverlayLink::start(ctx.clone(), overlay_stdin) {
-                    Ok(link) => Some(link),
-                    Err(e) => {
-                        eprintln!("[main] overlay failed to start (in-process fallback): {e}");
-                        None
-                    }
-                }
-            },
-            config_sent_hash: None,
             dscan_clip: None,
             dscan_checked: None,
             dscan_seen_hash: 0,
@@ -1742,7 +1724,7 @@ impl SpaiApp {
             region_window: None,
             focus_window: None,
             ship_window: None,
-            pending_overlay_clicks: Vec::new(),
+            pending_clicks: Vec::new(),
             sys_sugg: Default::default(),
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
@@ -2351,13 +2333,7 @@ impl SpaiApp {
             st.win_size = self.settings.fleet_ping_window_size;
             (st.moved.take(), st.moved_size.take())
         };
-        // In-process only: the subprocess overlay reports its own move over IPC (PingMoved).
         self.persist_ping_geometry(moved, moved_size);
-
-        if self.overlay.is_some() {
-            self.send_ping_to_overlay();
-            return;
-        }
 
         let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
             && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
@@ -2379,57 +2355,6 @@ impl SpaiApp {
     fn alert_window_feature(&self) -> bool {
         self.settings.alert_enabled
             && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window)
-    }
-
-    fn overlay_config(&self) -> crate::ipc::OverlayConfig {
-        let (ping_enabled, ping_on_top) = {
-            let st = self.ping_shared.lock().unwrap();
-            (st.enabled, st.on_top)
-        };
-        crate::ipc::OverlayConfig {
-            ping_enabled,
-            ping_on_top,
-            alert_enabled: self.alert_window_feature(),
-            alert_on_top: self.settings.alerts.on_top,
-            window_timeout: self.settings.alerts.window_timeout,
-            win_pos: self.settings.alerts.window_pos,
-            win_size: self.settings.alerts.window_size,
-            ping_win_pos: self.settings.fleet_ping_window_pos,
-            ping_win_size: self.settings.fleet_ping_window_size,
-            compact: self.settings.alerts.compact_mode,
-        }
-    }
-
-    fn send_ping_to_overlay(&mut self) {
-        use std::hash::{Hash, Hasher};
-        let Some(link) = self.overlay.as_ref() else { return };
-        if link.take_reconnected() {
-            self.config_sent_hash = None;
-            *self.alerts_engine.alert_sent_hash.lock().unwrap() = None;
-            *self.alerts_engine.ping_sent_hash.lock().unwrap() = None;
-        }
-
-        // The engine thread forwards the ping list (so pings raise the overlay while minimized);
-        // the UI only owns the overlay Config, which doesn't change while minimized.
-        let cfg = self.overlay_config();
-        let config_hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            cfg.ping_enabled.hash(&mut h);
-            (cfg.ping_on_top as u8).hash(&mut h);
-            cfg.alert_enabled.hash(&mut h);
-            (cfg.alert_on_top as u8).hash(&mut h);
-            cfg.window_timeout.to_bits().hash(&mut h);
-            cfg.win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
-            cfg.win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
-            cfg.ping_win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
-            cfg.ping_win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
-            cfg.compact.hash(&mut h);
-            h.finish()
-        };
-        if Some(config_hash) != self.config_sent_hash {
-            link.send(&crate::ipc::MainToOverlay::Config(cfg));
-            self.config_sent_hash = Some(config_hash);
-        }
     }
 
     fn start_sde(&self, ctx: &egui::Context, zip: Option<std::path::PathBuf>) {
@@ -2502,6 +2427,8 @@ impl SpaiApp {
         self.sde_file_dialog = open;
     }
 
+    /// The alert window's settings, and what it sent back. Its cards are the alert engine's,
+    /// refreshed on that thread (`AlertEngine::refresh_alert_window`).
     fn alert_window(&mut self, ctx: &egui::Context) {
         let feature = self.alert_window_feature();
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
@@ -2514,138 +2441,74 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
+        let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
+            && (self.settings.alerts.on_top == crate::settings::OnTop::Always
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
+        let player_sys = self.player_system();
 
-        // Overlay subprocess: the engine thread pushes the enriched update (works while minimized);
-        // only the in-process fallback renders here.
-        if self.overlay.is_some() {
-            return;
-        }
-
-        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
-            if !feature || self.alert_feed.is_empty() {
-                Vec::new()
-            } else {
-                let live = self.intel_state.lock().unwrap();
-                let start = self.alert_feed.len().saturating_sub(50);
-                self.alert_feed[start..]
-                    .iter()
-                    .filter_map(|(r, sev)| {
-                        let id = r.id;
-                        live.reports.iter().find(|lr| lr.id == id).cloned().map(|lr| (lr, *sev))
-                    })
-                    .collect()
-            };
-        let resolved_pilots: std::collections::HashMap<String, i64> = if feed.is_empty() {
-            Default::default()
-        } else {
-            let mut cache = self.pilots.lock().unwrap();
-            cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
-        };
-        let uncertain = if feed.is_empty() {
-            Default::default()
-        } else {
-            uncertain_set(&self.pilots.lock().unwrap(), &resolved_pilots)
-        };
-        let status = if feed.is_empty() {
-            Default::default()
-        } else {
-            self.system_status.lock().unwrap().clone()
-        };
-        let last_ship = if feed.is_empty() {
-            Default::default()
-        } else {
-            build_last_ship(&self.intel_state.lock().unwrap().reports)
-        };
-
-        {
-            let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
-                && (self.settings.alerts.on_top == crate::settings::OnTop::Always
-                    || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
-            let ship_ids: std::collections::HashSet<i64> =
-                feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
-            let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
-                ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
-            let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
-                ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
-            let systems = self.systems.clone();
-            let player_sys = self.player_system();
-            let rings = self.char_rings();
-            let card_chars: Vec<CardChars> = feed
-                .iter()
-                .map(|(r, _)| rings.card_for(r))
-                .collect();
-
-            let (_active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle) = {
-                let mut st = self.alert_shared.lock().unwrap();
-                st.enabled = feature;
-                if st.verdict_explained && !self.settings.verdict_explained {
-                    self.settings.verdict_explained = true;
-                    self.needs_save = true;
-                }
-                st.verdict_explained = self.settings.verdict_explained;
-                st.on_top_level = on_top;
-                st.compact = self.settings.alerts.compact_mode;
-                st.count_bridges = self.settings.intel_count_bridges;
-                st.win_pos = self.settings.alerts.window_pos;
-                st.win_size = self.settings.alerts.window_size;
-                st.feed = feed;
-                st.chars = card_chars;
-                st.notes = self.notes_view.clone();
-                st.status = status;
-                st.ship_details = ship_details;
-                st.ship_roles = ship_roles;
-                st.resolved_pilots = resolved_pilots;
-                st.uncertain = uncertain;
-                st.last_ship = last_ship;
-                st.systems = systems;
-                st.player_sys = player_sys;
-                st.kills = Some(self.kill_cache.clone());
-                st.affil = Some(self.affiliations.clone());
-                if !feature {
-                    st.secs = 0.0;
-                    st.pinned = false;
-                    st.feed.clear();
-                }
-                let active = st.enabled && (st.secs > 0.0 || st.pinned);
-                let just_opened = active && !st.open;
-                let clicks = std::mem::take(&mut st.clicks);
-                let verdicts = std::mem::take(&mut st.verdict_out);
-                let moved = st.moved.take();
-                let moved_size = st.moved_size.take();
-                let compact_toggle = st.compact_toggle.take();
-                (active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle)
-            };
-
-            if let Some(v) = compact_toggle {
-                self.settings.alerts.compact_mode = v;
+        let (just_opened, clicks, verdicts, moved, moved_size, compact_toggle) = {
+            let mut st = self.alert_shared.lock().unwrap();
+            st.enabled = feature;
+            if st.verdict_explained && !self.settings.verdict_explained {
+                self.settings.verdict_explained = true;
                 self.needs_save = true;
             }
+            st.verdict_explained = self.settings.verdict_explained;
+            st.on_top_level = on_top;
+            st.compact = self.settings.alerts.compact_mode;
+            st.count_bridges = self.settings.intel_count_bridges;
+            st.win_pos = self.settings.alerts.window_pos;
+            st.win_size = self.settings.alerts.window_size;
+            st.systems = self.systems.clone();
+            st.player_sys = player_sys;
+            if !feature {
+                st.secs = 0.0;
+                st.pinned = false;
+            }
+            let active = st.enabled && (st.secs > 0.0 || st.pinned);
+            // Windows: the window starts hidden, and a hidden deferred viewport's own callback
+            // cannot be relied on to un-hide it, so this pass does. Sent only on change, since each
+            // command pins egui at vsync.
+            #[cfg(target_os = "windows")]
+            if st.applied_visible != Some(active) {
+                ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of("alert_window"), egui::ViewportCommand::Visible(active));
+                st.applied_visible = Some(active);
+            }
+            let just_opened = active && !st.open;
+            (
+                just_opened,
+                std::mem::take(&mut st.clicks),
+                std::mem::take(&mut st.verdict_out),
+                st.moved.take(),
+                st.moved_size.take(),
+                st.compact_toggle.take(),
+            )
+        };
 
-            for click in clicks {
-                self.act_on_intel_click(click, ctx);
-            }
-            for (name, hidden) in verdicts {
-                self.apply_pilot_verdict(&name, hidden);
-            }
-            // Not on the open frame, where the window briefly reports its builder default before
-            // the saved geometry is re-applied.
-            if !just_opened {
-                self.persist_alert_geometry(moved, moved_size);
-            }
-
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("alert_window"),
-                alert_viewport_builder(
-                    on_top,
-                    self.settings.alerts.window_pos,
-                    self.settings.alerts.window_size,
-                ),
-                {
-                    let cb = self.alert_viewport_cb.clone();
-                    move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
-                },
-            );
+        if let Some(v) = compact_toggle {
+            self.settings.alerts.compact_mode = v;
+            self.needs_save = true;
         }
+        for click in clicks {
+            self.act_on_intel_click(click, ctx);
+        }
+        for (name, hidden) in verdicts {
+            self.apply_pilot_verdict(&name, hidden);
+        }
+        // Not on the open frame, where the window briefly reports its builder default before
+        // the saved geometry is re-applied.
+        if !just_opened {
+            self.persist_alert_geometry(moved, moved_size);
+        }
+
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("alert_window"),
+            alert_viewport_builder(on_top, self.settings.alerts.window_pos, self.settings.alerts.window_size),
+            {
+                let cb = self.alert_viewport_cb.clone();
+                move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
+            },
+        );
     }
 
     /// The single place a note edit is applied, whichever window or device it came from.
@@ -2738,44 +2601,34 @@ impl SpaiApp {
         self.notes_view = std::sync::Arc::new(self.notes.view_with(&self.settings.notes_folder, &self.settings.tag_colors));
     }
 
-    /// One handler for everything that arrives from outside the UI thread.
+    /// One handler for the web page's actions and the app's own that take the same path.
     ///
-    /// The overlay subprocess and the web page send the same enum into the same arms, so there is a
-    /// single answer to what a verdict or an acknowledgement does, rather than two that can drift.
-    fn apply_overlay_message(&mut self, m: crate::ipc::OverlayToMain, ctx: &egui::Context) {
+    /// The page and the app send the same enum into the same arms, so there is a single answer to
+    /// what a verdict or an acknowledgement does, rather than two that can drift.
+    fn apply_action(&mut self, m: crate::ipc::UiAction, ctx: &egui::Context) {
         match m {
-            crate::ipc::OverlayToMain::Click(c) => {
-                self.pending_overlay_clicks.push(c);
+            crate::ipc::UiAction::Click(c) => {
+                self.pending_clicks.push(c);
                 ctx.request_repaint();
             }
-            crate::ipc::OverlayToMain::Verdict { name, hidden } => {
+            crate::ipc::UiAction::Verdict { name, hidden } => {
                 self.apply_pilot_verdict(&name, hidden)
             }
-            crate::ipc::OverlayToMain::Notes(op) => {
+            crate::ipc::UiAction::Notes(op) => {
                 let _ = self.apply_notes_op(op);
             }
-            crate::ipc::OverlayToMain::NotesTarget { folder } => self.set_notes_target(folder),
-            crate::ipc::OverlayToMain::DefaultTagColor { id, color } => self.set_default_tag_color(id, color),
-            crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
-                self.persist_alert_geometry(pos, size)
-            }
-            crate::ipc::OverlayToMain::PingMoved { pos, size } => {
-                self.persist_ping_geometry(pos, size)
-            }
-            crate::ipc::OverlayToMain::CompactToggle(v) => {
-                self.settings.alerts.compact_mode = v;
-                self.needs_save = true;
-            }
-            crate::ipc::OverlayToMain::AlertAck { id } => self.ack_alert(id),
-            crate::ipc::OverlayToMain::JoinComms { ts, fleet } => self.join_comms(ts, fleet),
-            crate::ipc::OverlayToMain::SelectSystem { id } => {
+            crate::ipc::UiAction::NotesTarget { folder } => self.set_notes_target(folder),
+            crate::ipc::UiAction::DefaultTagColor { id, color } => self.set_default_tag_color(id, color),
+            crate::ipc::UiAction::AlertAck { id } => self.ack_alert(id),
+            crate::ipc::UiAction::JoinComms { ts, fleet } => self.join_comms(ts, fleet),
+            crate::ipc::UiAction::SelectSystem { id } => {
                 self.map_selected = Some(id);
                 self.map_focus = Some(id);
             }
-            crate::ipc::OverlayToMain::SetDestination { id } => self.web_set_destination(id),
-            crate::ipc::OverlayToMain::SetIngameRoute { waypoints } => self.set_ingame_route(waypoints),
-            crate::ipc::OverlayToMain::ClearIngameRoute => self.clear_route(),
-            crate::ipc::OverlayToMain::AvoidSystem { id, jump, on } => {
+            crate::ipc::UiAction::SetDestination { id } => self.web_set_destination(id),
+            crate::ipc::UiAction::SetIngameRoute { waypoints } => self.set_ingame_route(waypoints),
+            crate::ipc::UiAction::ClearIngameRoute => self.clear_route(),
+            crate::ipc::UiAction::AvoidSystem { id, jump, on } => {
                 let list = if jump {
                     &mut self.settings.route_avoid_jump
                 } else {
@@ -2787,8 +2640,8 @@ impl SpaiApp {
                 }
                 self.needs_save = true;
             }
-            crate::ipc::OverlayToMain::JabberRead { jid } => self.jabber_mark_read(&jid),
-            crate::ipc::OverlayToMain::JabberClose { jid } => {
+            crate::ipc::UiAction::JabberRead { jid } => self.jabber_mark_read(&jid),
+            crate::ipc::UiAction::JabberClose { jid } => {
                 // Which list it belongs in is the app's to decide: the page knows a conversation is
                 // a room, but the rescue-room guard and the closed lists live here.
                 let is_room = {
@@ -2797,30 +2650,29 @@ impl SpaiApp {
                 };
                 self.close_jabber_tab(&jid, is_room);
             }
-            crate::ipc::OverlayToMain::Bookmark { id, on } => {
+            crate::ipc::UiAction::Bookmark { id, on } => {
                 self.settings.bookmarks.retain(|&b| b != id);
                 if on {
                     self.settings.bookmarks.push(id);
                 }
                 self.needs_save = true;
             }
-            crate::ipc::OverlayToMain::SaveRoute { mut route } => {
+            crate::ipc::UiAction::SaveRoute { mut route } => {
                 route.saved_at = crate::clock::utc().timestamp();
                 self.settings.saved_map_routes.retain(|r| r.name != route.name);
                 self.settings.saved_map_routes.push(route);
                 self.needs_save = true;
             }
-            crate::ipc::OverlayToMain::DeleteRoute { name } => {
+            crate::ipc::UiAction::DeleteRoute { name } => {
                 self.settings.saved_map_routes.retain(|r| r.name != name);
                 self.needs_save = true;
             }
-            crate::ipc::OverlayToMain::RouteViaWormholes { on } => {
+            crate::ipc::UiAction::RouteViaWormholes { on } => {
                 self.settings.route_via_wormholes = on;
                 self.needs_save = true;
             }
-            crate::ipc::OverlayToMain::JabberOpen { name, room } => self.web_open_convo(&name, room),
-            crate::ipc::OverlayToMain::JabberSend { jid, body } => self.web_send_convo(&jid, &body),
-            crate::ipc::OverlayToMain::Hello => {}
+            crate::ipc::UiAction::JabberOpen { name, room } => self.web_open_convo(&name, room),
+            crate::ipc::UiAction::JabberSend { jid, body } => self.web_send_convo(&jid, &body),
         }
     }
 
@@ -2976,8 +2828,7 @@ impl SpaiApp {
         for feed in self.rule_feeds.values_mut() {
             feed.retain(|(r, _, _)| r.id != id);
         }
-        let mut st = self.alert_shared.lock().unwrap_or_else(|e| e.into_inner());
-        st.feed.retain(|(r, _)| r.id != id);
+        remove_card(&mut self.alert_shared.lock().unwrap_or_else(|e| e.into_inner()), id);
     }
 
     /// The pilot window, looking the name up.
@@ -3996,12 +3847,12 @@ impl eframe::App for SpaiApp {
             }
         }
 
-        for c in std::mem::take(&mut self.pending_overlay_clicks) {
+        for c in std::mem::take(&mut self.pending_clicks) {
             self.act_on_intel_click(c, &ctx);
         }
 
-        // The page's actions are the overlay's actions: same enum, same handlers. Drained here so
-        // there is one place that decides what a verdict or an acknowledgement does.
+        // The page's actions take the app's own handlers. Drained here so there is one place that
+        // decides what a verdict or an acknowledgement does.
         if self.settings.web.enabled {
             let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
             if d.wake.is_none() {
@@ -4011,7 +3862,7 @@ impl eframe::App for SpaiApp {
         let from_web =
             std::mem::take(&mut *self.web_inbox.lock().unwrap_or_else(|e| e.into_inner()));
         for m in from_web {
-            self.apply_overlay_message(m, &ctx);
+            self.apply_action(m, &ctx);
         }
 
         // A clicked invite link: the sharing window with it filled in, for the user to pick the
@@ -4034,16 +3885,6 @@ impl eframe::App for SpaiApp {
         } else if self.raise_reset_top {
             self.raise_reset_top = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-        }
-
-        if let Some(link) = self.overlay.as_mut() {
-            link.poll();
-        }
-        {
-            let msgs = self.overlay.as_ref().map(|l| l.drain_inbox()).unwrap_or_default();
-            for m in msgs {
-                self.apply_overlay_message(m, &ctx);
-            }
         }
 
         if self.settings.fc_rescue_enabled {
@@ -4228,9 +4069,6 @@ impl eframe::App for SpaiApp {
     }
 
     fn on_exit(&mut self) {
-        if let Some(link) = self.overlay.as_mut() {
-            link.shutdown();
-        }
         self.persist();
     }
 
@@ -4280,7 +4118,8 @@ fn active_window() -> Option<(String, String)> {
     Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
 }
 
-/// Whether the game is the active window, or one of this app's own (the overlay being used counts).
+/// Whether the game is the active window, or one of this app's own (an alert window or the map
+/// overlay being used counts).
 pub(crate) fn eve_is_focused() -> bool {
     match active_window() {
         Some((_, name)) if !name.is_empty() => is_eve_or_ours(&name),

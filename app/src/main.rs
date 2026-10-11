@@ -60,7 +60,6 @@ mod pilot;
 mod fleets;
 mod nav;
 mod notes;
-mod overlay;
 mod pings;
 mod procstat;
 mod push;
@@ -214,26 +213,14 @@ fn main() -> eframe::Result<()> {
     }
     // Installed per role, because both processes run this function and would otherwise append to
     // one crash.log, racing each other's rotation.
-    let overlay_child = std::env::args().any(|a| a == "--overlay");
     let fleet_login_child =
         std::env::args().any(|a| a == crate::fleets::login::FLAG);
-    crashlog::install(match (overlay_child, fleet_login_child) {
-        (true, _) => crashlog::Role::Overlay,
-        (_, true) => crashlog::Role::FleetLogin,
-        _ => crashlog::Role::Main,
-    });
+    crashlog::install(if fleet_login_child { crashlog::Role::FleetLogin } else { crashlog::Role::Main });
     memtrim::spawn_periodic();
 
-    // Re-exec into the overlay child when launched with the hidden flag, before any main-window
-    // setup runs. The child must always start (it is spawned by the main), so the single-instance
-    // guard below is skipped for it.
-    if overlay_child {
-        return overlay::run_overlay();
-    }
-
-    // Same shape, same reason: the sign-in webview needs a GTK main loop, which cannot share a
-    // process with eframe's winit one. Before the single-instance guard, or the child would block
-    // behind the parent that spawned it.
+    // The sign-in webview needs a GTK main loop, which cannot share a process with eframe's winit
+    // one. Before the single-instance guard, or the child would block behind the parent that
+    // spawned it.
     if fleet_login_child {
         return crate::fleets::login::run_child();
     }

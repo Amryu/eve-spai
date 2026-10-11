@@ -2604,8 +2604,9 @@ mod notes_behaviour_tests {
         assert!(back.pilot_tags.is_empty() && back.system_tags.is_empty());
     }
 
+    /// The page gets the feed's notes as JSON and posts tag clicks back.
     #[test]
-    fn an_alert_frame_without_notes_still_parses() {
+    fn alert_notes_and_tag_clicks_survive_json() {
         let msg = crate::ipc::AlertMsg {
             feed: Vec::new(),
             from_you: Vec::new(),
@@ -2618,21 +2619,18 @@ mod notes_behaviour_tests {
             kills: Default::default(),
             affil: Default::default(),
             notes: view(),
-            secs: 1.0,
-            focus: false,
         };
-        let mut json = serde_json::to_value(&msg).unwrap();
-        json.as_object_mut().unwrap().remove("notes");
-        let back: crate::ipc::AlertMsg = serde_json::from_value(json).unwrap();
-        assert!(back.notes.systems.is_empty());
-        let op = crate::ipc::OverlayToMain::Click(super::IntelClick::Notes(crate::notes::NotesOp::SetTag {
+        let back: crate::ipc::AlertMsg = serde_json::from_value(serde_json::to_value(&msg).unwrap()).unwrap();
+        assert_eq!(back.notes.systems.len(), msg.notes.systems.len());
+        assert_eq!(back.notes.pilots.len(), msg.notes.pilots.len());
+        let op = crate::ipc::UiAction::Click(super::IntelClick::Notes(crate::notes::NotesOp::SetTag {
             folder: String::new(),
             subject: crate::notes::Subject::Pilot { id: 5, name: "Bob".into() },
             tag: "d:pilot:cyno".into(),
             on: true,
         }));
         let text = serde_json::to_string(&op).unwrap();
-        assert!(serde_json::from_str::<crate::ipc::OverlayToMain>(&text).is_ok());
+        assert!(serde_json::from_str::<crate::ipc::UiAction>(&text).is_ok());
     }
 }
 

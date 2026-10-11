@@ -144,7 +144,7 @@ scene, because it reads as coverage: screenshots have been taken that did not co
 all, a chip that never rendered in the scene and a footer 350px below the frame.
 
 `SpaiApp::build(ctx, headless: true)` skips the image loaders, the control socket, all
-background threads, the tray and the overlay subprocess, and refuses to open a store unless
+background threads and the tray, and refuses to open a store unless
 `EVE_SPAI_DATA_DIR` is set. Headless also disables the workers that populate views, so
 async-populated views show permanent loading states.
 

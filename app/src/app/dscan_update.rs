@@ -125,7 +125,7 @@ impl SpaiApp {
             // Without this the minimize-to-tray interceptor cancels the close and hides the window,
             // stranding the app in the tray with the relaunch never reached.
             self.really_exit = true;
-            // Closing runs `on_exit` (settings persisted, overlay child shut down) and only then is
+            // Closing runs `on_exit` (settings persisted) and only then is
             // the single-instance lock free, so main.rs does the relaunch after the loop returns.
             crate::update::request_restart();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

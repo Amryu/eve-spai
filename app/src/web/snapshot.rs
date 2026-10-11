@@ -80,7 +80,7 @@ pub struct IntelPane {
 #[derive(Clone, Debug, Serialize)]
 pub struct AlertPane {
     pub rev: u64,
-    /// The overlay's own DTO, reused so the page and the overlay window cannot diverge.
+    /// The alert window's own feed, reused so the page and the window cannot diverge.
     pub msg: crate::ipc::AlertMsg,
 }
 

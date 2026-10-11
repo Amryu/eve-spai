@@ -2,7 +2,7 @@
 //! map to a browser on the same network.
 //!
 //! Web-facing code lives under this module. The app hands it state through `UiFacts` and
-//! `DetailState`, and takes the page's writes back through the shared `OverlayToMain` drain.
+//! `DetailState`, and takes the page's writes back through the shared `UiAction` drain.
 
 pub mod assets;
 pub mod auth;
@@ -66,9 +66,9 @@ pub struct DetailState {
 
 pub type Detail = Arc<Mutex<DetailState>>;
 
-/// Actions posted by the page, drained on the UI thread through the same `OverlayToMain` match arms
-/// as the overlay subprocess, so the two cannot disagree.
-pub type Inbox = Arc<Mutex<Vec<crate::ipc::OverlayToMain>>>;
+/// Actions posted by the page, drained on the UI thread through the `UiAction` match arms the app's
+/// own actions take, so the two cannot disagree.
+pub type Inbox = Arc<Mutex<Vec<crate::ipc::UiAction>>>;
 
 pub fn detail() -> Detail {
     Arc::new(Mutex::new(DetailState::default()))

@@ -30,11 +30,6 @@ impl AffilCache {
         self.map.get(&id).cloned()
     }
 
-    pub fn insert_resolved(&mut self, id: i64, affil: Affil) {
-        self.fetched_at.insert(id, crate::clock::utc().timestamp());
-        self.map.insert(id, affil);
-    }
-
     pub fn want(&mut self, id: i64) {
         if id <= 0 {
             return;

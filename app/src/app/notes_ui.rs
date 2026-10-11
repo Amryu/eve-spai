@@ -224,7 +224,7 @@ impl SpaiApp {
             }
             ManagerAction::Go(subject) => match subject {
                 Subject::System(id) => self.open_system(id),
-                Subject::Pilot { name, .. } => self.pending_overlay_clicks.push(IntelClick::Pilot(name)),
+                Subject::Pilot { name, .. } => self.pending_clicks.push(IntelClick::Pilot(name)),
             },
             ManagerAction::ExportFile(id) => {
                 let Some(export) = self.notes.export(&id) else { return };

@@ -7,7 +7,7 @@
 //!
 //! [`NoteBook`] is the tree, edited only through [`NoteBook::apply`]. [`NotesView`] is what the tree
 //! means right now: the active tags and, per system and pilot, the merged tags and notes of every
-//! online folder. Cards, the map, the alert engine, the overlay and the web page all read the view.
+//! online folder. Cards, the map, the alert engine, the alert window and the web page all read the view.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -837,7 +837,7 @@ impl Merged {
     }
 }
 
-/// BTreeMap and Vec only: the web publisher and the overlay hash the serialized view to decide
+/// BTreeMap and Vec only: the web publisher hashes the serialized view to decide
 /// whether to push it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotesView {
@@ -896,7 +896,7 @@ impl NotesView {
             || self.tags_of(m).any(|t| t.name.to_lowercase().contains(needle_lc))
     }
 
-    /// The tags and only the listed entries, for the alert overlay, which shows a handful of cards.
+    /// The tags and only the listed entries, for the alert window, which shows a handful of cards.
     pub fn subset(&self, systems: impl IntoIterator<Item = i64>, pilots: impl IntoIterator<Item = i64>) -> NotesView {
         let mut out = NotesView {
             rev: self.rev,

@@ -1,4 +1,4 @@
-//! The alert and fleet ping windows: their shared state, viewport builders and the callbacks the overlay subprocess renders them with.
+//! The alert and fleet ping windows: their shared state, viewport builders and the callbacks that render them.
 
 use super::*;
 
@@ -168,29 +168,61 @@ pub(crate) fn ping_viewport_builder(
     b
 }
 
-/// `AlertMsg::secs` sentinels (overlay IPC). A non-negative value resets the overlay's
-/// countdown to that number of seconds; these negative sentinels mean "leave the overlay's own
-/// countdown running" (content-only refresh) and "reset to an infinite (never auto-hide) timeout"
-/// respectively. Negatives avoid serializing a non-finite f32 (serde_json emits JSON `null`).
-pub(crate) const ALERT_SECS_REFRESH: f32 = -1.0;
-pub(crate) const ALERT_SECS_INFINITE: f32 = -2.0;
-
-/// Hash a `HashMap` into `h` in a key-sorted (order-independent) way, so a re-cloned map with the
-/// same contents but different iteration order doesn't trigger a spurious overlay resend.
-pub(crate) fn hash_sorted_map<K, V, H>(h: &mut H, m: &std::collections::HashMap<K, V>)
-where
-    K: Ord + std::hash::Hash,
-    V: serde::Serialize,
-    H: std::hash::Hasher,
-{
-    use std::hash::Hash;
-    let mut entries: Vec<(&K, String)> =
-        m.iter().map(|(k, v)| (k, serde_json::to_string(v).unwrap_or_default())).collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    for (k, v) in entries {
-        k.hash(h);
-        v.hash(h);
+/// Append reports the engine just fired to the feed and keep every per-card vector the same
+/// length as it.
+///
+/// A fired report carries no distances or attribution yet, so `from_you` grows with `None` and the
+/// verdict and attribution vectors are resized: the window reads them by index, and a short vector
+/// shifts every value onto the wrong card until the next refresh lines them up again.
+pub(crate) fn push_reports(st: &mut AlertWindowState, reports: Vec<(crate::intel::IntelReport, crate::settings::Severity)>) {
+    const KEEP: usize = 100;
+    for rs in reports {
+        st.feed.push(rs);
+        st.from_you.push(None);
     }
+    let n = st.feed.len();
+    st.via.resize(n, JumpVia::default());
+    st.chars.resize(n, CardChars::default());
+    if n > KEEP {
+        let cut = n - KEEP;
+        st.feed.drain(0..cut);
+        st.from_you.drain(0..cut.min(st.from_you.len()));
+        st.via.drain(0..cut.min(st.via.len()));
+        st.chars.drain(0..cut.min(st.chars.len()));
+    }
+}
+
+/// Drop one card, and its distance, verdict and attribution with it, so the cards after it keep
+/// their own.
+pub(crate) fn remove_card(st: &mut AlertWindowState, id: u64) {
+    while let Some(i) = st.feed.iter().position(|(r, _)| r.id == id) {
+        st.feed.remove(i);
+        if i < st.from_you.len() {
+            st.from_you.remove(i);
+        }
+        if i < st.via.len() {
+            st.via.remove(i);
+        }
+        if i < st.chars.len() {
+            st.chars.remove(i);
+        }
+    }
+}
+
+/// Copy one enriched feed into the window's state. The countdown, pin and focus stay as the engine
+/// and the window left them: a refresh changes what the cards say, not whether the window is up.
+pub(crate) fn apply_alert(st: &mut AlertWindowState, m: crate::ipc::AlertMsg) {
+    st.feed = m.feed;
+    st.from_you = m.from_you;
+    st.via = m.via;
+    st.chars = m.chars;
+    st.status = m.status;
+    st.resolved_pilots = m.resolved_pilots;
+    st.uncertain = m.uncertain;
+    st.last_ship = m.last_ship;
+    let mut notes = m.notes;
+    notes.reindex();
+    st.notes = std::sync::Arc::new(notes);
 }
 
 pub(crate) fn alert_viewport_builder(
@@ -217,9 +249,8 @@ pub(crate) fn alert_viewport_builder(
         // Floor so the title-bar controls and resize grip always fit, even in compact mode.
         .with_min_inner_size([200.0, 90.0])
         .with_taskbar(false)
-        // A normal managed top-level (kept above, off the taskbar). On KWin/Wayland the reliable
-        // lever to keep it visible while the main window is minimized is a KWin window rule forcing
-        // this window (title "EVE Spai \u{2014} alerts") to Minimized=No.
+        // A normal managed top-level, kept above and off the taskbar, with no parent: the window
+        // manager has nothing tying it to the main window, so it stays up when that is minimized.
         //
         // Opaque on Windows: transparency is only for the Linux transparent-when-idle behaviour;
         // Windows hides the window when idle instead, so a transparent (composite-alpha DX12)
@@ -379,7 +410,7 @@ pub(crate) fn build_alert_viewport_cb(
             level_applied = Some(on_top);
             level_at = Some(std::time::Instant::now());
         }
-        // Windows only: the overlay window starts hidden and races the map, so re-assert
+        // Windows only: the alert window starts hidden and races the map, so re-assert
         // visibility/level periodically until it sticks. Off Windows this periodic re-raise of the
         // always-on-top window makes KWin/X11 replay a focus/raise-denied "invalid action" sound
         // whenever another app (not EVE) is focused; the on-change asserts above already cover Linux.
@@ -707,8 +738,7 @@ pub(crate) fn build_alert_viewport_cb(
         st.snooze = snooze;
         // Edge event, not state: only write on an actual toggle. A blind write every render frame
         // would clobber a pending Some with None before the (independently paced) drainer sees it.
-        // Apply the new value to st.compact HERE so the overlay flips immediately; the round-trip to
-        // main is only for persistence, and its echo through Config comes a pass or more later.
+        // Applied to st.compact here so the window flips at once; the main pass only persists it.
         if let Some(v) = compact_toggle {
             st.compact = v;
             st.compact_toggle = compact_toggle;
@@ -866,11 +896,9 @@ pub(crate) enum PendingTip {
 pub(crate) struct AlertWindowState {
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) from_you: Vec<Option<u32>>,
-    /// Per-card bridge verdict, sent over IPC because the overlay subprocess knows neither the
-    /// player's system nor the bridge setting. Empty in the main process, which recomputes.
+    /// Per-card bridge verdict and character attribution, worked out on the engine thread with the
+    /// distances. A card past the end of either is drawn with its own, recomputed or plain.
     pub(crate) via: Vec<JumpVia>,
-    /// Per-card character attribution, sent over IPC for the same reason as `via`: the overlay
-    /// holds neither the roster nor anyone's location.
     pub(crate) chars: Vec<CardChars>,
     pub(crate) notes: std::sync::Arc<crate::notes::NotesView>,
     pub(crate) count_bridges: bool,
@@ -954,5 +982,98 @@ mod pos_fix_tests {
         right.step(None);
         assert_eq!(right.step(Some(egui::pos2(100.4, 200.0))), (None, true), "already there: nothing to do");
         assert!(PosFix::new(None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod feed_tests {
+    use super::*;
+
+    fn report(id: u64, text: &str) -> (crate::intel::IntelReport, crate::settings::Severity) {
+        (crate::intel::IntelReport { id, text: text.to_owned(), ..Default::default() }, crate::settings::Severity::Danger)
+    }
+
+    fn chars(name: &str) -> CardChars {
+        CardChars { hops: vec![CharHop { name: name.to_owned(), id: 1, jumps: Some(1), via: JumpVia::Gates }], selected: Some(0), ..Default::default() }
+    }
+
+    /// A fired report carries no attribution, so the vector has to grow with the feed. Left short,
+    /// every later card reads the character of the card two places back.
+    #[test]
+    fn a_push_keeps_the_per_card_vectors_aligned() {
+        let mut st = AlertWindowState {
+            feed: vec![report(1, "first"), report(2, "second")],
+            from_you: vec![Some(1), Some(2)],
+            via: vec![JumpVia::Gates, JumpVia::BridgeOnly],
+            chars: vec![chars("Amryu"), chars("Scout")],
+            ..Default::default()
+        };
+        push_reports(&mut st, vec![report(3, "third"), report(4, "fourth"), report(5, "fifth")]);
+        assert_eq!((st.feed.len(), st.from_you.len(), st.via.len(), st.chars.len()), (5, 5, 5, 5));
+        assert_eq!(st.chars[0].hops[0].name, "Amryu", "the cards that had one keep it");
+        assert_eq!(st.chars[1].hops[0].name, "Scout");
+        assert!(st.chars[4].hops.is_empty(), "a pushed card has no attribution yet");
+    }
+
+    /// The trim has to cut the same prefix off every vector, or the survivors are re-paired.
+    #[test]
+    fn the_hundred_card_trim_cuts_every_vector_by_the_same_amount() {
+        let mut st = AlertWindowState::default();
+        for i in 0..100 {
+            st.feed.push(report(i, &format!("card {i}")));
+            st.from_you.push(Some(i as u32));
+            st.via.push(JumpVia::Gates);
+            st.chars.push(chars(&format!("char {i}")));
+        }
+        push_reports(&mut st, vec![report(100, "card 100"), report(101, "card 101")]);
+        assert_eq!((st.feed.len(), st.from_you.len(), st.via.len(), st.chars.len()), (100, 100, 100, 100));
+        assert_eq!(st.feed[0].0.text, "card 2", "the oldest two fell off");
+        assert_eq!(st.chars[0].hops[0].name, "char 2", "attribution falls off with its card");
+        assert_eq!(st.from_you[0], Some(2));
+    }
+
+    /// An acknowledged card takes its distance, verdict and attribution with it.
+    #[test]
+    fn removing_a_card_keeps_the_others_paired() {
+        let mut st = AlertWindowState {
+            feed: vec![report(1, "a"), report(2, "b"), report(3, "c")],
+            from_you: vec![Some(1), Some(2), Some(3)],
+            via: vec![JumpVia::Gates, JumpVia::BridgeOnly, JumpVia::BridgeShorter(4)],
+            chars: vec![chars("A"), chars("B"), chars("C")],
+            ..Default::default()
+        };
+        remove_card(&mut st, 2);
+        assert_eq!(st.feed.iter().map(|(r, _)| r.id).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(st.from_you, [Some(1), Some(3)]);
+        assert_eq!(st.via, [JumpVia::Gates, JumpVia::BridgeShorter(4)]);
+        assert_eq!(st.chars[1].hops[0].name, "C");
+        // Short vectors, as right after a push: nothing panics and the feed still loses the card.
+        let mut short = AlertWindowState { feed: vec![report(1, "a"), report(2, "b")], from_you: vec![Some(1)], ..Default::default() };
+        remove_card(&mut short, 2);
+        assert_eq!(short.feed.len(), 1);
+        assert_eq!(short.from_you, [Some(1)]);
+    }
+
+    /// A refresh changes the cards, never whether the window is up or counting down.
+    #[test]
+    fn a_refresh_leaves_the_countdown_pin_and_focus_alone() {
+        let mut st = AlertWindowState { secs: 7.5, pinned: true, focus_pending: true, ..Default::default() };
+        let msg = crate::ipc::AlertMsg {
+            feed: vec![report(9, "new")],
+            from_you: vec![Some(2)],
+            via: vec![JumpVia::Gates],
+            chars: vec![chars("A")],
+            status: Default::default(),
+            resolved_pilots: Default::default(),
+            uncertain: Default::default(),
+            last_ship: Default::default(),
+            kills: Default::default(),
+            affil: Default::default(),
+            notes: Default::default(),
+        };
+        apply_alert(&mut st, msg);
+        assert_eq!(st.feed[0].0.id, 9);
+        assert_eq!(st.from_you, [Some(2)]);
+        assert_eq!((st.secs, st.pinned, st.focus_pending), (7.5, true, true));
     }
 }

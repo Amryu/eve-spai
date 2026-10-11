@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// The argument that turns this binary into the login child.
 pub const FLAG: &str = "--fleet-login";
 
-/// The child speaks, the parent listens. Deliberately not `OverlayToMain`: that enum crosses the
+/// The child speaks, the parent listens. Deliberately not `UiAction`: that enum crosses the
 /// web-page relay, and a session cookie has no business on it.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum LoginToMain {

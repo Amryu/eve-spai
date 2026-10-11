@@ -594,7 +594,7 @@ fn act(ctx: &Ctx, mut req: tiny_http::Request, origin: Option<&str>) {
     if std::io::Read::read_to_string(&mut req.as_reader(), &mut body).is_err() {
         return respond(req, 400, "text/plain; charset=utf-8", b"unreadable\n", &[]);
     }
-    match serde_json::from_str::<crate::ipc::OverlayToMain>(&body) {
+    match serde_json::from_str::<crate::ipc::UiAction>(&body) {
         Ok(msg) => {
             ctx.inbox.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
             if let Some(ui) = ctx.detail.lock().unwrap_or_else(|e| e.into_inner()).wake.clone() {
@@ -1052,7 +1052,7 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert!(matches!(
             &queued[0],
-            crate::ipc::OverlayToMain::Verdict { name, hidden: true } if name == "Hostile Pilot"
+            crate::ipc::UiAction::Verdict { name, hidden: true } if name == "Hostile Pilot"
         ));
     }
 
@@ -1067,7 +1067,7 @@ mod tests {
         assert_eq!(post(&c, &s.base, origin, r#"{"JoinComms":{"ts":1789173781}}"#).status(), 204);
         assert!(matches!(
             &s.inbox.lock().unwrap()[0],
-            crate::ipc::OverlayToMain::JoinComms { ts: 1789173781, fleet: 0 }
+            crate::ipc::UiAction::JoinComms { ts: 1789173781, fleet: 0 }
         ));
 
         // Nothing in the protocol accepts a link.
@@ -1091,7 +1091,7 @@ mod tests {
         assert_eq!(post(&c, &s.base, origin, r#"{"SelectSystem":{"id":30004759}}"#).status(), 204);
         assert!(matches!(
             &s.inbox.lock().unwrap()[0],
-            crate::ipc::OverlayToMain::SelectSystem { id: 30_004_759 }
+            crate::ipc::UiAction::SelectSystem { id: 30_004_759 }
         ));
     }
 
@@ -1126,11 +1126,11 @@ mod tests {
         assert_eq!(q.len(), bodies.len());
         assert!(matches!(
             &q[0],
-            crate::ipc::OverlayToMain::Notes(NotesOp::SetEntry { subject: Subject::Pilot { id: 5, .. }, .. })
+            crate::ipc::UiAction::Notes(NotesOp::SetEntry { subject: Subject::Pilot { id: 5, .. }, .. })
         ));
         assert!(matches!(
             &q[6],
-            crate::ipc::OverlayToMain::Notes(NotesOp::Import { mode: ImportMode::Merge, .. })
+            crate::ipc::UiAction::Notes(NotesOp::Import { mode: ImportMode::Merge, .. })
         ));
     }
 

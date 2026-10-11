@@ -500,9 +500,7 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
         st.raise = true;
     }
     ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
-    // When the overlay child owns the ping window, it lives in the child process, not this viewport.
-    // Wake the root so `fleet_ping_window_ui` runs and forwards the new ping over IPC. (Harmless
-    // when running the in-process fallback.)
+    // The main pass keeps the window's settings current and declares it.
     ctx.request_repaint();
 }
 

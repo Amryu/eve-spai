@@ -152,8 +152,6 @@ fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
         kills: Default::default(),
         affil: Default::default(),
         notes: Default::default(),
-        secs: 0.0,
-        focus: false,
     }
 }
 

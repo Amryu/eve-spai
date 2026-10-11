@@ -1,14 +1,12 @@
+//! Wire types: the length-prefixed JSON frames the fleet sign-in helper speaks over its pipes, the
+//! actions the web page posts, and the alert feed the alert window and the page show.
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::io::{self, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::io::{self, Read, Write};
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
-pub enum OverlayToMain {
-    Hello,
+pub enum UiAction {
     Click(crate::app::IntelClick),
     /// Select a system on the app's map and bring it into view.
     ///
@@ -29,9 +27,7 @@ pub enum OverlayToMain {
         #[serde(default)]
         fleet: usize,
     },
-    /// Acknowledge one alert, by `IntelReport::id`. Safe to add: this enum only flows child to
-    /// parent, and the parent always spawns the child from its own `current_exe`, so the parent is
-    /// never the older binary.
+    /// Acknowledge one alert, by `IntelReport::id`.
     AlertAck {
         id: u64,
     },
@@ -69,10 +65,7 @@ pub enum OverlayToMain {
     RouteViaWormholes { on: bool },
     /// Send one message to a conversation that is already open.
     JabberSend { jid: String, body: String },
-    AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
-    PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
-    CompactToggle(bool),
-    /// Any edit to notes, tags or their folders. One path for the app, the overlay and the page.
+    /// Any edit to notes, tags or their folders. One path for the app and the page.
     Notes(crate::notes::NotesOp),
     /// Where quick note and tag edits go from now on.
     NotesTarget { folder: String },
@@ -81,71 +74,24 @@ pub enum OverlayToMain {
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
-pub struct PingMsg {
-    pub pings: Vec<crate::pings::Ping>,
-    pub raise: bool,
-    pub doctrine_url: String,
-    pub op_links: std::collections::HashMap<String, String>,
-}
-
-#[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub struct AlertMsg {
     pub feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub from_you: Vec<Option<u32>>,
-    /// Bridge verdict per feed entry. The overlay cannot derive it: it holds neither the player's
-    /// system nor the bridge setting. Defaulted so frames from an older main process still parse.
-    #[serde(default)]
+    /// Bridge verdict per feed entry, worked out with the distances.
     pub via: Vec<crate::app::JumpVia>,
-    /// Which characters each card's numbers belong to, same reason as `via`: the overlay holds
-    /// neither the roster nor anyone's location. Defaulted so older frames still parse.
-    #[serde(default)]
+    /// Which characters each card's numbers belong to.
     pub chars: Vec<crate::app::CardChars>,
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
-    #[serde(default)]
     pub uncertain: crate::pilot::UncertainPilots,
     pub last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub kills: std::collections::HashMap<i64, crate::kills::KillInfo>,
     pub affil: std::collections::HashMap<i64, crate::affiliation::Affil>,
-    /// Notes and tags for this feed's systems and pilots only. Defaulted so older frames still parse.
-    #[serde(default)]
+    /// Notes and tags for this feed's systems and pilots only.
     pub notes: crate::notes::NotesView,
-    pub secs: f32,
-    pub focus: bool,
 }
 
-#[derive(Serialize, serde::Deserialize, Clone, Debug)]
-pub struct OverlayConfig {
-    pub ping_enabled: bool,
-    pub ping_on_top: crate::settings::OnTop,
-    pub alert_enabled: bool,
-    pub alert_on_top: crate::settings::OnTop,
-    pub window_timeout: f32,
-    pub win_pos: Option<(f32, f32)>,
-    pub win_size: Option<(f32, f32)>,
-    #[serde(default)]
-    pub ping_win_pos: Option<(f32, f32)>,
-    #[serde(default)]
-    pub ping_win_size: Option<(f32, f32)>,
-    #[serde(default)]
-    pub compact: bool,
-}
-
-#[derive(Serialize, serde::Deserialize, Clone, Debug)]
-pub struct AlertPush {
-    pub reports: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-    pub secs: f32,
-}
-
-#[derive(Serialize, serde::Deserialize, Clone, Debug)]
-pub enum MainToOverlay {
-    Ping(PingMsg),
-    Alert(AlertMsg),
-    AlertPush(AlertPush),
-    Config(OverlayConfig),
-    Shutdown,
-}
-
+#[cfg_attr(not(any(test, feature = "fleet-auth")), allow(dead_code, reason = "only the sign-in helper sends, and it is built with fleet-auth"))]
 pub fn send<T: Serialize, W: Write>(w: &mut W, msg: &T) -> io::Result<()> {
     let body = serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let len = u32::try_from(body.len())
@@ -153,15 +99,6 @@ pub fn send<T: Serialize, W: Write>(w: &mut W, msg: &T) -> io::Result<()> {
     w.write_all(&len.to_be_bytes())?;
     w.write_all(&body)?;
     w.flush()
-}
-
-pub fn send_shared(stdin: &Arc<Mutex<Option<ChildStdin>>>, msg: &MainToOverlay) {
-    let mut guard = stdin.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(w) = guard.as_mut() {
-        if send(w, msg).is_err() {
-            *guard = None;
-        }
-    }
 }
 
 pub fn recv<T: DeserializeOwned, R: Read>(r: &mut R) -> io::Result<T> {
@@ -173,152 +110,6 @@ pub fn recv<T: DeserializeOwned, R: Read>(r: &mut R) -> io::Result<T> {
     serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-pub struct OverlayLink {
-    child: Child,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
-    inbox: Arc<Mutex<Vec<OverlayToMain>>>,
-    reconnected: Arc<AtomicBool>,
-    ctx: egui::Context,
-    last_spawn: Instant,
-    restarts: u32,
-    gave_up: bool,
-}
-
-impl OverlayLink {
-    const MAX_RESTARTS: u32 = 5;
-    const RESPAWN_DEBOUNCE: Duration = Duration::from_secs(2);
-
-    pub fn start(ctx: egui::Context, stdin: Arc<Mutex<Option<ChildStdin>>>) -> io::Result<Self> {
-        let inbox = Arc::new(Mutex::new(Vec::new()));
-        let reconnected = Arc::new(AtomicBool::new(false));
-        let mut child = Self::spawn_child()?;
-        Self::wire(&mut child, &stdin, &inbox, &reconnected, &ctx);
-        Ok(Self {
-            child,
-            stdin,
-            inbox,
-            reconnected,
-            ctx,
-            last_spawn: Instant::now(),
-            restarts: 0,
-            gave_up: false,
-        })
-    }
-
-    pub fn take_reconnected(&self) -> bool {
-        self.reconnected.swap(false, Ordering::Relaxed)
-    }
-
-    pub fn drain_inbox(&self) -> Vec<OverlayToMain> {
-        std::mem::take(&mut *self.inbox.lock().unwrap())
-    }
-
-    fn spawn_child() -> io::Result<Child> {
-        let exe = std::env::current_exe()?;
-        Command::new(exe)
-            .arg("--overlay")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-    }
-
-    fn wire(
-        child: &mut Child,
-        stdin: &Arc<Mutex<Option<ChildStdin>>>,
-        inbox: &Arc<Mutex<Vec<OverlayToMain>>>,
-        reconnected: &Arc<AtomicBool>,
-        ctx: &egui::Context,
-    ) {
-        *stdin.lock().unwrap() = child.stdin.take();
-        match child.stdout.take() {
-            Some(out) => Self::spawn_reader(out, inbox.clone(), reconnected.clone(), ctx.clone()),
-            None => eprintln!("[main] overlay child has no stdout pipe"),
-        }
-    }
-
-    fn spawn_reader(
-        stdout: ChildStdout,
-        inbox: Arc<Mutex<Vec<OverlayToMain>>>,
-        reconnected: Arc<AtomicBool>,
-        ctx: egui::Context,
-    ) {
-        std::thread::spawn(move || {
-            let mut rd = BufReader::new(stdout);
-            loop {
-                match recv::<OverlayToMain, _>(&mut rd) {
-                    Ok(OverlayToMain::Hello) => {
-                        reconnected.store(true, Ordering::Relaxed);
-                        ctx.request_repaint();
-                    }
-                    Ok(m) => {
-                        inbox.lock().unwrap().push(m);
-                        ctx.request_repaint();
-                    }
-                    Err(_) => return,
-                }
-            }
-        });
-    }
-
-    pub fn send(&self, msg: &MainToOverlay) {
-        let mut guard = self.stdin.lock().unwrap();
-        if let Some(stdin) = guard.as_mut() {
-            if let Err(e) = send(stdin, msg) {
-                eprintln!("[main] overlay send failed, dropping pipe: {e}");
-                *guard = None;
-            }
-        }
-    }
-
-    pub fn poll(&mut self) {
-        if self.gave_up {
-            return;
-        }
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                if self.last_spawn.elapsed() < Self::RESPAWN_DEBOUNCE {
-                    return;
-                }
-                if self.restarts >= Self::MAX_RESTARTS {
-                    eprintln!("[main] overlay died (status {status}); giving up after {} restarts", self.restarts);
-                    self.gave_up = true;
-                    return;
-                }
-                self.restarts += 1;
-                eprintln!("[main] overlay died (status {status}); respawning (#{})", self.restarts);
-                *self.stdin.lock().unwrap() = None;
-                match Self::spawn_child() {
-                    Ok(mut child) => {
-                        Self::wire(&mut child, &self.stdin, &self.inbox, &self.reconnected, &self.ctx);
-                        self.child = child;
-                        self.last_spawn = Instant::now();
-                    }
-                    Err(e) => eprintln!("[main] overlay respawn failed: {e}"),
-                }
-            }
-            Ok(None) => {}
-            Err(e) => eprintln!("[main] overlay try_wait failed: {e}"),
-        }
-    }
-
-    pub fn shutdown(&mut self) {
-        self.gave_up = true;
-        self.send(&MainToOverlay::Shutdown);
-        *self.stdin.lock().unwrap() = None;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for OverlayLink {
-    fn drop(&mut self) {
-        *self.stdin.lock().unwrap() = None;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,247 +118,10 @@ mod tests {
     #[test]
     fn frame_roundtrip() {
         let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &OverlayToMain::Hello).unwrap();
+        send(&mut buf, &UiAction::Click(crate::app::IntelClick::System(30000142))).unwrap();
         assert!(buf.len() > 4);
-        let mut cur = Cursor::new(buf);
-        let got: OverlayToMain = recv(&mut cur).unwrap();
-        matches!(got, OverlayToMain::Hello);
-    }
-
-    #[test]
-    fn frame_roundtrip_ping_payload() {
-        let msg = MainToOverlay::Ping(PingMsg {
-            pings: Vec::new(),
-            raise: true,
-            doctrine_url: "https://example/doctrine".to_owned(),
-            op_links: std::collections::HashMap::from([("ops".to_owned(), "https://x".to_owned())]),
-        });
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &msg).unwrap();
-        let mut cur = Cursor::new(buf);
-        let got: MainToOverlay = recv(&mut cur).unwrap();
-        match got {
-            MainToOverlay::Ping(m) => {
-                assert!(m.raise);
-                assert_eq!(m.doctrine_url, "https://example/doctrine");
-                assert_eq!(m.op_links.get("ops").map(String::as_str), Some("https://x"));
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn frame_roundtrip_config_payload() {
-        let msg = MainToOverlay::Config(OverlayConfig {
-            ping_enabled: true,
-            ping_on_top: crate::settings::OnTop::Smart,
-            alert_enabled: true,
-            alert_on_top: crate::settings::OnTop::Always,
-            window_timeout: 12.0,
-            win_pos: Some((10.0, 20.0)),
-            win_size: Some((360.0, 240.0)),
-            ping_win_pos: Some((30.0, 40.0)),
-            ping_win_size: Some((520.0, 320.0)),
-            compact: true,
-        });
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &msg).unwrap();
-        let mut cur = Cursor::new(buf);
-        let got: MainToOverlay = recv(&mut cur).unwrap();
-        match got {
-            MainToOverlay::Config(c) => {
-                assert!(c.ping_enabled);
-                assert_eq!(c.ping_on_top, crate::settings::OnTop::Smart);
-                assert!(c.alert_enabled);
-                assert_eq!(c.alert_on_top, crate::settings::OnTop::Always);
-                assert_eq!(c.window_timeout, 12.0);
-                assert_eq!(c.win_pos, Some((10.0, 20.0)));
-                assert_eq!(c.win_size, Some((360.0, 240.0)));
-                assert!(c.compact);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn frame_roundtrip_alert_payload() {
-        let mut report = crate::intel::IntelReport::default();
-        report.probes = Some(crate::intel::Probes::Combat);
-        let msg = MainToOverlay::Alert(AlertMsg {
-            feed: vec![(report, crate::settings::Severity::Danger)],
-            from_you: vec![Some(7)],
-            via: vec![crate::app::JumpVia::BridgeShorter(9)],
-            chars: Vec::new(),
-            status: std::collections::HashMap::new(),
-            resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
-            uncertain: Default::default(),
-            last_ship: std::collections::HashMap::new(),
-            kills: std::collections::HashMap::new(),
-            affil: std::collections::HashMap::new(),
-            notes: Default::default(),
-            secs: 10.0,
-            focus: true,
-        });
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &msg).unwrap();
-        let mut cur = Cursor::new(buf);
-        let got: MainToOverlay = recv(&mut cur).unwrap();
-        match got {
-            MainToOverlay::Alert(m) => {
-                assert_eq!(m.feed.len(), 1);
-                assert_eq!(m.from_you, vec![Some(7)]);
-                assert_eq!(m.via, vec![crate::app::JumpVia::BridgeShorter(9)]);
-                assert_eq!(m.feed[0].0.probes, Some(crate::intel::Probes::Combat));
-                assert_eq!(m.feed[0].1, crate::settings::Severity::Danger);
-                assert_eq!(m.resolved_pilots.get("X"), Some(&42));
-                assert!(m.focus);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    fn alert_msg(via: Vec<crate::app::JumpVia>) -> AlertMsg {
-        AlertMsg {
-            feed: Vec::new(),
-            from_you: vec![Some(1), Some(2), None],
-            via,
-            chars: Vec::new(),
-            status: Default::default(),
-            resolved_pilots: Default::default(),
-            uncertain: Default::default(),
-            last_ship: Default::default(),
-            kills: Default::default(),
-            affil: Default::default(),
-            notes: Default::default(),
-            secs: 5.0,
-            focus: false,
-        }
-    }
-
-    /// Every `JumpVia` shape has to survive the wire, including the gate count `BridgeShorter`
-    /// carries for the tooltip.
-    #[test]
-    fn frame_roundtrip_alert_via_verdicts() {
-        let sent = vec![
-            crate::app::JumpVia::Gates,
-            crate::app::JumpVia::BridgeShorter(4),
-            crate::app::JumpVia::BridgeOnly,
-        ];
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &MainToOverlay::Alert(alert_msg(sent.clone()))).unwrap();
-        let mut cur = Cursor::new(buf);
-        match recv::<MainToOverlay, _>(&mut cur).unwrap() {
-            MainToOverlay::Alert(m) => assert_eq!(m.via, sent),
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    /// A main process older than the field sends frames without it, and the overlay has to keep
-    /// showing alerts rather than dropping the frame.
-    #[test]
-    fn alert_without_via_still_parses() {
-        let mut json = serde_json::to_value(alert_msg(vec![crate::app::JumpVia::BridgeOnly]))
-            .expect("serialize");
-        json.as_object_mut().expect("object").remove("via").expect("via was present");
-        let m: AlertMsg = serde_json::from_value(json).expect("missing via must default");
-        assert!(m.via.is_empty());
-        assert_eq!(m.from_you, vec![Some(1), Some(2), None]);
-        assert_eq!(m.secs, 5.0);
-    }
-
-    /// The reverse upgrade order: an overlay older than the field must not choke on it. Nothing
-    /// on `AlertMsg` denies unknown fields, so a frame carrying `via` still reads as the old shape.
-    #[test]
-    fn alert_with_via_parses_where_the_field_is_unknown() {
-        #[derive(serde::Deserialize)]
-        struct OldAlertMsg {
-            from_you: Vec<Option<u32>>,
-            secs: f32,
-        }
-        let json = serde_json::to_string(&alert_msg(vec![crate::app::JumpVia::BridgeShorter(2)]))
-            .expect("serialize");
-        assert!(json.contains("\"via\""));
-        let old: OldAlertMsg = serde_json::from_str(&json).expect("old overlay must still parse");
-        assert_eq!(old.from_you, vec![Some(1), Some(2), None]);
-        assert_eq!(old.secs, 5.0);
-    }
-
-    fn hop(name: &str, id: i64, jumps: Option<u32>) -> crate::app::CharHop {
-        crate::app::CharHop {
-            name: name.to_owned(),
-            id,
-            jumps,
-            via: crate::app::JumpVia::Gates,
-        }
-    }
-
-    fn card_chars() -> Vec<crate::app::CardChars> {
-        vec![
-            crate::app::CardChars {
-                hops: vec![hop("Scout", 90_000_002, Some(1)), hop("Amryu", 90_000_001, Some(4))],
-                selected: Some(1),
-                ..Default::default()
-            },
-            crate::app::CardChars::default(),
-        ]
-    }
-
-    /// The attribution has to survive framing index-aligned with the feed. A vector that arrives
-    /// shifted puts one character's distance under another character's portrait.
-    #[test]
-    fn frame_roundtrip_alert_chars() {
-        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
-        msg.chars = card_chars();
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &MainToOverlay::Alert(msg)).unwrap();
-        let got: MainToOverlay = recv(&mut Cursor::new(buf)).unwrap();
-        match got {
-            MainToOverlay::Alert(m) => {
-                assert_eq!(m.chars, card_chars());
-                assert_eq!(m.chars[0].hops[0].name, "Scout");
-                assert_eq!(m.chars[0].hops[0].jumps, Some(1));
-                assert_eq!(m.chars[0].selected, Some(1), "the badge order survives the wire");
-                assert!(m.chars[1].hops.is_empty());
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn alert_without_chars_still_parses() {
-        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
-        msg.chars = card_chars();
-        let mut json = serde_json::to_value(msg).expect("serialize");
-        json.as_object_mut().expect("object").remove("chars").expect("chars was present");
-        let m: AlertMsg = serde_json::from_value(json).expect("missing chars must default");
-        assert!(m.chars.is_empty(), "an older main process draws plain, unattributed numbers");
-        assert_eq!(m.from_you, vec![Some(1), Some(2), None]);
-    }
-
-    /// The reverse upgrade order: an overlay older than the field must not choke on it.
-    #[test]
-    fn alert_with_chars_parses_where_the_field_is_unknown() {
-        #[derive(serde::Deserialize)]
-        struct OldAlertMsg {
-            from_you: Vec<Option<u32>>,
-            secs: f32,
-        }
-        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
-        msg.chars = card_chars();
-        let json = serde_json::to_string(&msg).expect("serialize");
-        assert!(json.contains("\"chars\""));
-        let old: OldAlertMsg = serde_json::from_str(&json).expect("old overlay must still parse");
-        assert_eq!(old.from_you, vec![Some(1), Some(2), None]);
-        assert_eq!(old.secs, 5.0);
-    }
-
-    #[test]
-    fn frame_roundtrip_overlay_to_main_click() {
-        let mut buf: Vec<u8> = Vec::new();
-        send(&mut buf, &OverlayToMain::Click(crate::app::IntelClick::System(30000142))).unwrap();
-        let mut cur = Cursor::new(buf);
-        match recv::<OverlayToMain, _>(&mut cur).unwrap() {
-            OverlayToMain::Click(crate::app::IntelClick::System(id)) => assert_eq!(id, 30000142),
+        match recv::<UiAction, _>(&mut Cursor::new(buf)).unwrap() {
+            UiAction::Click(crate::app::IntelClick::System(id)) => assert_eq!(id, 30000142),
             other => panic!("wrong variant: {other:?}"),
         }
     }
@@ -575,8 +129,41 @@ mod tests {
     #[test]
     fn recv_truncated_is_err() {
         let buf = vec![0u8, 0, 0, 10, b'x'];
-        let mut cur = Cursor::new(buf);
-        let r: io::Result<OverlayToMain> = recv(&mut cur);
+        let r: io::Result<UiAction> = recv(&mut Cursor::new(buf));
         assert!(r.is_err());
+    }
+
+    /// The page reads the feed as JSON, and a vector that arrives shifted puts one character's
+    /// distance under another character's portrait.
+    #[test]
+    fn the_alert_feed_survives_json_index_aligned() {
+        let hop = |name: &str, id: i64, jumps: Option<u32>| crate::app::CharHop { name: name.to_owned(), id, jumps, via: crate::app::JumpVia::Gates };
+        let chars = vec![
+            crate::app::CardChars { hops: vec![hop("Scout", 90_000_002, Some(1)), hop("Amryu", 90_000_001, Some(4))], selected: Some(1), ..Default::default() },
+            crate::app::CardChars::default(),
+        ];
+        let via = vec![crate::app::JumpVia::Gates, crate::app::JumpVia::BridgeShorter(4), crate::app::JumpVia::BridgeOnly];
+        let mut report = crate::intel::IntelReport::default();
+        report.probes = Some(crate::intel::Probes::Combat);
+        let msg = AlertMsg {
+            feed: vec![(report, crate::settings::Severity::Danger)],
+            from_you: vec![Some(7)],
+            via: via.clone(),
+            chars: chars.clone(),
+            status: Default::default(),
+            resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
+            uncertain: Default::default(),
+            last_ship: Default::default(),
+            kills: Default::default(),
+            affil: Default::default(),
+            notes: Default::default(),
+        };
+        let back: AlertMsg = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(back.via, via);
+        assert_eq!(back.chars, chars);
+        assert_eq!(back.chars[0].selected, Some(1), "the badge order survives");
+        assert_eq!(back.from_you, vec![Some(7)]);
+        assert_eq!(back.feed[0].0.probes, Some(crate::intel::Probes::Combat));
+        assert_eq!(back.resolved_pilots.get("X"), Some(&42));
     }
 }

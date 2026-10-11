@@ -337,21 +337,19 @@ fn alert_bridge_cards() -> Vec<(crate::intel::IntelReport, Option<u32>, crate::a
     ]
 }
 
-/// The alert window fed the way the overlay subprocess is fed: one `AlertMsg` through the frame
-/// codec and into the state the real reader fills. Nothing here knows the player's system or the
-/// bridge setting, so a mark can only have come from the verdict on the wire. The subprocess itself
-/// cannot run in the harness; this is the same callback reached the same way.
-fn alert_window_ipc_scene(
+/// The alert window fed the way the alert engine feeds it: one `AlertMsg` applied to the window's
+/// state. Nothing here knows the player's system, so a mark can only have come from the verdict the
+/// engine worked out.
+fn alert_window_fed_scene(
     name: &'static str,
     cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
     send_via: bool,
 ) -> Scene {
-    alert_window_ipc_chars_scene(name, cards, send_via, Vec::new())
+    alert_window_fed_chars_scene(name, cards, send_via, Vec::new())
 }
 
-/// The same frame with per-card character attribution on the wire, which is the only way to see
-/// what the overlay subprocess makes of it: the subprocess itself cannot be rendered by kittest.
-fn alert_window_ipc_chars_scene(
+/// The same feed with per-card character attribution.
+fn alert_window_fed_chars_scene(
     name: &'static str,
     cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
     send_via: bool,
@@ -372,13 +370,7 @@ fn alert_window_ipc_chars_scene(
         kills: Default::default(),
         affil: Default::default(),
         notes: Default::default(),
-        secs: 5.0,
-        focus: false,
     };
-    let mut buf: Vec<u8> = Vec::new();
-    crate::ipc::send(&mut buf, &msg).expect("frame the alert");
-    let msg: crate::ipc::AlertMsg =
-        crate::ipc::recv(&mut std::io::Cursor::new(buf)).expect("read the alert back");
     let mut st = crate::app::AlertWindowState {
         enabled: true,
         pinned: true,
@@ -387,7 +379,7 @@ fn alert_window_ipc_chars_scene(
         affil: Some(fixtures::affil()),
         ..Default::default()
     };
-    crate::overlay::apply_alert(&mut st, msg);
+    crate::app::apply_alert(&mut st, msg);
     let shared: crate::app::SharedAlertWindow = std::sync::Arc::new(std::sync::Mutex::new(st));
     let cb = crate::app::build_alert_viewport_cb(shared);
     Scene::ctx(name, [560.0, 720.0], move |ctx| {
@@ -1356,7 +1348,7 @@ fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) 
 /// stub `egui::Window` while the body's `CentralPanel` still paints full-screen on the root: an
 /// empty title bar floating over the dialog it is supposed to contain. Rendering the body straight
 /// onto the root drops the stub. Turning embedding off then keeps the two always-on deferred
-/// viewports (the alert and fleet-ping overlays) out, which would each open a second `CentralPanel`
+/// viewports (the alert and fleet-ping windows) out, which would each open a second `CentralPanel`
 /// on the same context and paint egui's "double use of widget ID" error over the dialog.
 /// The Assistant tab with a conversation: a finished answer with its lookups and an action card,
 /// an error, and a turn still being written. Empty shows the first-use page instead.
@@ -2276,10 +2268,9 @@ pub(crate) fn all() -> Vec<Scene> {
             "alert_window_torture",
             vec![fixtures::intel_torture(), fixtures::intel_typical(), fixtures::intel_clear()],
         ),
-        alert_window_ipc_scene("alert_window_bridged", alert_bridge_cards(), true),
-        // The attribution has to survive the wire, since the overlay subprocess holds
-        // neither the roster nor anyone's location and cannot derive it.
-        alert_window_ipc_chars_scene(
+        alert_window_fed_scene("alert_window_bridged", alert_bridge_cards(), true),
+        // The attribution the engine works out, drawn per card.
+        alert_window_fed_chars_scene(
             "alert_window_chars",
             alert_bridge_cards(),
             true,
@@ -3328,7 +3319,7 @@ fn uitest_intel_row_resolving_chip_explains_itself_on_hover() {
 }
 
 /// Compact mode routes tooltips through the `tip` out-param instead of egui, because the alert
-/// overlay draws them itself. Hovering a pilot chip has to fill it in.
+/// window draws them itself. Hovering a pilot chip has to fill it in.
 #[test]
 fn uitest_intel_row_hover_sets_tip_when_compact() {
     use egui_kittest::kittest::Queryable as _;
@@ -4007,10 +3998,9 @@ fn uitest_intel_card_badge_opens_the_character_roster() {
     );
 }
 
-/// The attribution has to survive the IPC frame, because the overlay subprocess holds neither the
-/// roster nor anyone's location and cannot derive it.
+/// The attribution the engine hands the window is drawn on the right cards.
 #[test]
-fn uitest_alert_window_shows_attribution_sent_over_ipc() {
+fn uitest_alert_window_shows_the_engines_attribution() {
     let mut scene = all().into_iter().find(|s| s.name == "alert_window_chars").expect("scene");
     let harness = harness::build(&mut scene, false);
     let badges = char_badges(&harness);
@@ -4151,23 +4141,23 @@ fn uitest_intel_card_marks_a_bridge_dependent_range() {
     assert!(marks.is_empty(), "gate-only distances were marked as bridged: {marks:?}");
 }
 
-/// The overlay is handed a jump number over IPC and has no graph to work out what it rests on, so
-/// the verdict has to travel with it. The same feed without `via` draws no mark at all.
+/// The window is handed a jump number with the verdict the engine worked out, and draws the mark
+/// from it. The same feed without `via`, and no player system to recompute from, draws no mark.
 #[test]
 fn uitest_alert_window_marks_a_bridge_dependent_range() {
     let read = |send_via: bool| {
         let mut scene =
-            alert_window_ipc_scene("alert_bridge_probe", alert_bridge_cards(), send_via);
+            alert_window_fed_scene("alert_bridge_probe", alert_bridge_cards(), send_via);
         let harness = harness::build(&mut scene, false);
         (jump_chips(&harness), bridge_marks(&harness))
     };
 
     let (chips, marks) = read(true);
-    assert_eq!(chips, ["1j", "1j", "1j"], "the overlay lost the jump numbers");
+    assert_eq!(chips, ["1j", "1j", "1j"], "the window lost the jump numbers");
     assert_eq!(
         marks,
         ["bridge only"],
-        "the overlay lost the one route gates cannot reach, or marked a card that has one"
+        "the window lost the one route gates cannot reach, or marked a card that has one"
     );
 
     let (chips, marks) = read(false);

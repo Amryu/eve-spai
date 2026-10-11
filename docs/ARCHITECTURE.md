@@ -8,15 +8,18 @@ A single Rust binary built on egui/eframe, plus two workspace crates:
 
 | Crate | What it is |
 |---|---|
-| `app` | The desktop app, its alert overlay subprocess and the embedded web view. |
+| `app` | The desktop app and the embedded web view. |
 | `crates/br-core` | The battle-report model and clustering, shared by the app and the server. |
 | `crates/server` | The battle-report sharing server (axum), its own workspace with its own lock file. |
 
-The app runs as two processes. The main process owns the window, all state and every network
-worker. It starts itself a second time with `--overlay` to draw the alert and fleet ping windows,
-which have to stay on top of the game and must never take focus from it. The two talk over
-length-prefixed JSON on the child's stdin and stdout (`ipc.rs`): the main process pushes a finished
-alert frame (`AlertMsg`), the overlay sends clicks and verdicts back (`OverlayToMain`).
+One process owns the windows, all state and every network worker. The alert and fleet ping windows
+are deferred viewports of it, kept on top of the game without taking focus from it. The alert
+engine thread works out their cards (`AlertMsg`) and writes them into the window's shared state;
+clicks and verdicts come back through the same state and are handled on the UI thread.
+
+eframe skips `App::ui` while the main window is minimized or covered, and a pass that does not show
+a pop-out closes it, so `App::logic` runs the same pass then, minus the main window's own panels.
+Pop-outs, alerts, the assistant's voice and the timed checks keep running that way.
 
 A lock file keeps one main instance per profile (`instance.rs`). A second launch asks the running
 one to raise its window instead.
@@ -36,7 +39,7 @@ own thread and shares results through `Arc<Mutex<..>>` state that the UI reads e
 | System status | `systemstatus.rs` | Sovereignty, incursions, faction warfare and last-hour activity per system. |
 | Kill feed | `zkill.rs`, `kills.rs` | zKillboard kills near the player and the battle history built from them. |
 | Wormholes | `wormholes.rs` | EVE-Scout connections merged with scanned ones. |
-| Alert engine | `app/alert_engine.rs` | Matches fresh reports against alert rules, fires sounds and notifications, and feeds the overlay. |
+| Alert engine | `app/alert_engine.rs` | Matches fresh reports against alert rules, fires sounds and notifications, and fills the alert window. |
 | Jabber | `jabber.rs` | The XMPP connection: rooms, direct messages and fleet pings. |
 | Web publisher | `web/publish.rs` | Builds the web view's snapshot panes from shared state. |
 | Web server | `web/server.rs`, `web/sse.rs` | Serves the page, dialogs and actions, and streams snapshot changes. |
@@ -77,8 +80,8 @@ cache, because egui has no variable-height virtualization of its own.
 
 `notes.rs` holds the folder tree (`NoteBook`), edited only through `NoteBook::apply`, and derives a
 `NotesView`: the active tags and the merged tags and notes per system and pilot from online folders.
-Cards, the map, the alert engine, the overlay and the web page all read the view. Edits from the app,
-the overlay and the web page arrive as the same `NotesOp`.
+Cards, the map, the alert engine, the alert window and the web page all read the view. Edits from the
+app and the web page arrive as the same `NotesOp`.
 
 ## The web view
 
@@ -86,8 +89,8 @@ An opt-in local server (`web/`) mirrors the intel feed, alerts, fleet pings, jab
 and rescue mode to a browser on the same network, paired with a token. The page is plain ES modules
 compiled into the binary (`web/assets.rs`), with no build step. The publisher keeps one snapshot per
 pane and only republishes a pane whose content hash changed; the page merges pane updates from a
-server-sent event stream. Page actions are posted as the same `OverlayToMain` messages the overlay
-sends, and are applied by the same handler.
+server-sent event stream. Page actions are posted as `UiAction` messages (`ipc.rs`) and applied by
+the handler the app's own actions use.
 
 ## Battle reports
 

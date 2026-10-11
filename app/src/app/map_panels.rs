@@ -740,7 +740,7 @@ impl SpaiApp {
                     saved_at: 0,
                     via_wormholes: wh,
                 };
-                self.apply_overlay_message(crate::ipc::OverlayToMain::SaveRoute { route }, ctx);
+                self.apply_action(crate::ipc::UiAction::SaveRoute { route }, ctx);
                 self.map_save_open = false;
             }
             if !open {
@@ -797,7 +797,7 @@ impl SpaiApp {
                     }
                 });
             if let Some(name) = forget {
-                self.apply_overlay_message(crate::ipc::OverlayToMain::DeleteRoute { name }, ctx);
+                self.apply_action(crate::ipc::UiAction::DeleteRoute { name }, ctx);
             }
             if let Some(r) = load {
                 // A saved titan route comes back as the gate route it was built on.

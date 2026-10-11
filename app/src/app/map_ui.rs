@@ -589,8 +589,8 @@ impl SpaiApp {
                 });
                 if ui.button(if always { tr!("Stop avoiding always") } else { tr!("Avoid always") }).clicked() {
                     for jump in lists {
-                        self.apply_overlay_message(
-                            crate::ipc::OverlayToMain::AvoidSystem { id: sid, jump, on: !always },
+                        self.apply_action(
+                            crate::ipc::UiAction::AvoidSystem { id: sid, jump, on: !always },
                             ui.ctx(),
                         );
                     }

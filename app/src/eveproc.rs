@@ -341,7 +341,7 @@ mod tests {
         assert!(client_from_args(1, crashmon).is_none());
         // exefile with no server/launcher args is not a live game client.
         assert!(client_from_args(2, "Z:\\path\\exefile.exe /help").is_none());
-        assert!(client_from_args(3, "/usr/bin/eve-spai --overlay").is_none());
+        assert!(client_from_args(3, "/usr/bin/eve-spai").is_none());
     }
 
     #[test]

@@ -200,7 +200,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         st.put_intel(IntelPane { rev, cards, lookups });
     }
     if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
-        // The page reads the status and notes panes, so drop the overlay's copies.
+        // The page reads the status and notes panes, so drop the alert feed's copies.
         let mut msg = alerts.clone();
         msg.status = Default::default();
         msg.notes = Default::default();
@@ -421,8 +421,6 @@ mod tests {
             kills: Default::default(),
             affil: Default::default(),
             notes: Default::default(),
-            secs: 0.0,
-            focus: false,
         }
     }
 

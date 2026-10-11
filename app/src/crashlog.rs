@@ -25,7 +25,6 @@ std::thread_local! {
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     Main,
-    Overlay,
     FleetLogin,
 }
 
@@ -35,7 +34,6 @@ impl Role {
             // Both processes run `main` and install the same hook, so one shared file would race
             // each other's rotation.
             Role::Main => "crash.log",
-            Role::Overlay => "crash-overlay.log",
             Role::FleetLogin => "crash-fleet-login.log",
         }
     }

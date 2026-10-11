@@ -179,7 +179,7 @@ pub(crate) fn detached_ui(ctx: &egui::Context) -> egui::Ui {
 
 /// Points egui's immediate-viewport hook at the calling context and switches embedding off, so a
 /// dialog opened through `dialog_viewport_ext` paints onto the root instead of into a stub
-/// `egui::Window`, and the deferred overlay viewports do not paint at all. The hook is a
+/// `egui::Window`, and the deferred alert and ping viewports do not paint at all. The hook is a
 /// thread-local, so every scene sets it on the thread that runs it.
 pub(crate) fn render_dialogs_on_the_root(ctx: &egui::Context) {
     ctx.set_embed_viewports(false);
@@ -246,7 +246,7 @@ pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
             }
             f(ui);
         }),
-        // `build` over `build_ui`: the overlay callbacks open their own `CentralPanel` on the
+        // `build` over `build_ui`: the alert and ping callbacks open their own `CentralPanel` on the
         // context, so they must not already be inside kittest's central-panel frame.
         #[allow(deprecated)]
         Draw::Ctx(f) => builder.build(move |ctx| {
