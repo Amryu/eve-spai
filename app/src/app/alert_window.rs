@@ -708,8 +708,7 @@ pub(crate) fn build_alert_viewport_cb(
         // Edge event, not state: only write on an actual toggle. A blind write every render frame
         // would clobber a pending Some with None before the (independently paced) drainer sees it.
         // Apply the new value to st.compact HERE so the overlay flips immediately; the round-trip to
-        // main is only for persistence. On Windows the main loop is paused while minimized, so
-        // waiting for main to echo the setting back via Config never happens.
+        // main is only for persistence, and its echo through Config comes a pass or more later.
         if let Some(v) = compact_toggle {
             st.compact = v;
             st.compact_toggle = compact_toggle;

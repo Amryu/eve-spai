@@ -286,10 +286,12 @@ struct IpcArgs {
 }
 
 impl eframe::App for Overlay {
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Everything runs here, not in `ui`: eframe skips `ui` while the root counts as hidden (on
+    /// macOS a window the game covers is occluded), and a pass that does not show the alert and ping
+    /// windows closes them.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let ping_smart = self.ping_shared.lock().unwrap().on_top == crate::settings::OnTop::Smart;
         let alert_smart = *self.alert_on_top.lock().unwrap() == crate::settings::OnTop::Smart;
         if ping_smart || alert_smart {

@@ -674,6 +674,9 @@ pub struct SpaiApp {
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
     raise_reset_top: bool,
+    /// This pass runs from `App::logic` because eframe skips `App::ui` while the main window is
+    /// minimized or covered: the main window's own panels are left out.
+    main_hidden: bool,
     raise_main: bool,
     overlay: Option<crate::ipc::OverlayLink>,
     config_sent_hash: Option<u64>,
@@ -1606,6 +1609,7 @@ impl SpaiApp {
             tray: if headless { None } else { crate::tray::spawn(ctx.clone()) },
             really_exit: false,
             raise_reset_top: false,
+            main_hidden: false,
             raise_main: false,
             overlay: if headless {
                 None
@@ -3946,6 +3950,24 @@ impl SpaiApp {
 }
 
 impl eframe::App for SpaiApp {
+    /// eframe calls `ui` only while the main window is visible, and a pass that does not show a
+    /// pop-out closes it. Alerts, the assistant's voice and every pop-out run from `ui`, so a hidden
+    /// main window gets the same pass from here.
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.main_hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
+        if self.main_hidden {
+            let mut ui = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("hidden_main_pass"),
+                egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.content_rect()),
+            );
+            self.ui(&mut ui, frame);
+            // Nothing on screen asks for the next pass then, and the clipboard d-scan watch and the
+            // timed checks want one now and then.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut ft = crate::frametime::FrameTimer::start();
         let ctx = ui.ctx().clone();
@@ -4148,7 +4170,9 @@ impl eframe::App for SpaiApp {
         ft.mark("discover_sov_alliances");
         self.drain_alerts();
         ft.mark("drain_alerts");
-        self.root_chrome(ui);
+        if !self.main_hidden {
+            self.root_chrome(ui);
+        }
         ft.mark("root_chrome");
 
         // Reconciliation runs once per frame, before any chat window renders: per-window it would
@@ -4161,7 +4185,9 @@ impl eframe::App for SpaiApp {
         self.sync_popout_settings();
         ft.mark("sync_popout_settings");
 
-        self.root_central(ui, jframe.as_ref());
+        if !self.main_hidden {
+            self.root_central(ui, jframe.as_ref());
+        }
         ft.mark("root_central");
 
         self.root_dialogs(&ctx, jframe.as_ref());

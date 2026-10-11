@@ -3427,3 +3427,40 @@ mod rescue_route_tests {
         assert!(!a.ingame_route, "the same ping and capital again: already done");
     }
 }
+
+/// eframe skips `App::ui` while the main window is minimized, and a pass that does not show a
+/// pop-out closes it. The pass has to come from `App::logic` then.
+#[cfg(test)]
+mod hidden_main_window_tests {
+    use super::*;
+
+    fn pass(ctx: &egui::Context, a: &mut SpaiApp, minimized: bool) -> egui::FullOutput {
+        let mut input = egui::RawInput::default();
+        let info = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        info.minimized = Some(minimized);
+        info.occluded = Some(false);
+        let mut frame = eframe::Frame::_new_kittest();
+        // What eframe does: `logic` always, `ui` only while the window is visible.
+        ctx.run_ui(input, |ui| {
+            eframe::App::logic(a, ui.ctx(), &mut frame);
+            if !minimized {
+                eframe::App::ui(a, ui, &mut frame);
+            }
+        })
+    }
+
+    #[test]
+    fn the_frame_runs_while_the_main_window_is_minimized() {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        let _ = pass(&ctx, &mut a, false);
+        let n = a.frame_worst.len();
+        let _ = pass(&ctx, &mut a, true);
+        assert_eq!(a.frame_worst.len(), n + 1, "the pass ran from logic");
+        assert!(a.main_hidden);
+        let _ = pass(&ctx, &mut a, false);
+        assert_eq!(a.frame_worst.len(), n + 2, "once per pass, not twice");
+        assert!(!a.main_hidden);
+    }
+}
