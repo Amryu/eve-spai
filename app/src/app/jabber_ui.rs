@@ -73,7 +73,8 @@ impl SpaiApp {
     /// enabled: delve911, which `ingest_delve911_jabber` parses into rescue events, and
     /// skirmish_commanders, which the rescue window reads and posts `!bping` requests to. A left
     /// room's messages are dropped before they are stored, so losing either one breaks capital
-    /// rescue with no error anywhere. Both are pinned: always joined, never removable.
+    /// rescue with no error anywhere. Both are pinned: always joined, never removable, though their
+    /// tabs can be closed.
     pub(crate) fn jabber_rescue_rooms(&self) -> Vec<String> {
         if self.rescue_on() {
             return [
@@ -882,10 +883,6 @@ impl SpaiApp {
     /// The X hides. Closing a tab is not destructive and does not ask: leaving a room is the
     /// sidebar's remove button and nothing else.
     pub(crate) fn close_jabber_tab(&mut self, jid: &str, is_room: bool) {
-        // Rescue Mode holds its rooms open, so closing one would reopen on the next frame.
-        if self.jabber_rescue_rooms().iter().any(|r| r == jid) {
-            return;
-        }
         if is_room {
             if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
                 self.settings.jabber_closed_rooms.push(jid.to_owned());
@@ -1918,14 +1915,10 @@ impl SpaiApp {
         // its tab is left alone: that is safe and keeps the room joined.
         for p in self.jabber_rescue_rooms() {
             let was = (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
-            let was_closed = self.settings.jabber_closed_rooms.len();
             self.settings.jabber_left_rooms.retain(|r| r != &p);
             self.settings.jabber_forgotten.retain(|j| j != &p);
-            // Held open, so a hidden flag on one is state nothing can act on.
-            self.settings.jabber_closed_rooms.retain(|r| r != &p);
             let mut changed =
-                was != (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len())
-                    || was_closed != self.settings.jabber_closed_rooms.len();
+                was != (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
             if !self.settings.jabber_rooms.contains(&p) {
                 self.settings.jabber_rooms.push(p.clone());
                 changed = true;
@@ -2030,10 +2023,9 @@ impl SpaiApp {
                 want.push(r);
             }
         }
-        // Rescue Mode's rooms are held open, not just joined. The FC has to be able to see
-        // delve911 and skirmish_commanders without going looking for them.
+        // Rescue Mode's rooms get a tab until the FC closes it; closing only hides, they stay joined.
         for p in self.jabber_rescue_rooms() {
-            if !want.contains(&p) {
+            if !closed_rooms.contains(&p) && !want.contains(&p) {
                 want.push(p);
             }
         }

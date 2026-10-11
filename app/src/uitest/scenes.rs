@@ -7859,7 +7859,7 @@ fn uitest_room_rows_offer_a_leave_button() {
     // The scene's sidebar lists five rooms, none of them pinned by Rescue Mode.
     assert_eq!(leaves, 5, "expected one leave button per room row");
 
-    // With Rescue Mode on, delve911 and skirmish_commanders are held open and offer no way out.
+    // With Rescue Mode on, delve911 and skirmish_commanders stay joined and offer no way out.
     {
     let mut pinned = all().into_iter().find(|s| s.name == "jabber_sidebar_rescue_pinned").expect("scene");
     let harness = harness::build(&mut pinned, false);

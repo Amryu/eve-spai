@@ -2053,25 +2053,29 @@ mod jabber_rescue_room_tests {
         }
     }
 
-    /// The tab X stays usable on it. Hiding keeps the room joined, so the parser keeps reading.
-    /// Held open, not merely joined: the FC must not have to go looking for these.
+    /// Closing a rescue room's tab only hides it: the room stays joined and keeps feeding the
+    /// parser, and the tab stays closed across reconciles until a mention reopens it.
     #[test]
-    fn the_pinned_rooms_cannot_be_closed() {
+    fn the_pinned_rooms_tabs_close_but_stay_joined() {
         let (_ctx, mut a) = app(true);
         a.settings.jabber_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
-        {
-            let mut st = a.jabber.lock().unwrap();
-            st.rooms.insert(RESCUE.to_owned());
-            st.rooms.insert(SKIRMISH.to_owned());
-        }
-        a.jabber_tabs = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        crate::jabber::note_room_joined(&a.jabber, RESCUE);
+        crate::jabber::note_room_joined(&a.jabber, SKIRMISH);
+        a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
+        assert!(a.jabber_tabs.contains(&RESCUE.to_owned()) && a.jabber_tabs.contains(&SKIRMISH.to_owned()));
+
         a.close_jabber_tab(RESCUE, true);
         a.close_jabber_tab(SKIRMISH, true);
-        assert!(a.settings.jabber_closed_rooms.is_empty());
-        assert_eq!(a.jabber_tabs, vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+        a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
+        assert!(a.jabber_tabs.is_empty(), "a closed rescue tab came back: {:?}", a.jabber_tabs);
+        assert_eq!(a.settings.jabber_closed_rooms, vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+        assert_eq!(a.jabber_rooms_to_join(), vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+        assert!(a.settings.jabber_left_rooms.is_empty());
+        assert!(crate::jabber::note_room_seen(&a.jabber, RESCUE), "delve911 stopped receiving");
+        assert!(crate::jabber::note_room_seen(&a.jabber, SKIRMISH), "skirmish stopped receiving");
     }
 
-    /// The whole guarantee in one walk: joined, held open, un-leavable, un-forgettable, and
+    /// The whole guarantee in one walk: joined, opened, un-leavable, un-forgettable, and
     /// receiving. Every link in the chain the rescue parser depends on.
     #[test]
     fn the_rescue_rooms_are_open_and_working_end_to_end() {
@@ -2079,7 +2083,6 @@ mod jabber_rescue_room_tests {
         // A profile that had left and forgotten both, with no tabs and nothing in jabber_rooms.
         a.settings.jabber_left_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
         a.settings.jabber_forgotten = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
-        a.settings.jabber_closed_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
         a.jabber.lock().unwrap().rooms_left.insert(RESCUE.to_owned());
 
         // Offline reconcile: the join list is repaired before we ever connect.
@@ -2103,7 +2106,6 @@ mod jabber_rescue_room_tests {
         // Every removal path refuses, and the tabs survive another reconcile.
         for room in [RESCUE, SKIRMISH] {
             a.jabber_forget(room, true);
-            a.close_jabber_tab(room, true);
         }
         a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
         assert!(a.settings.jabber_left_rooms.is_empty());
