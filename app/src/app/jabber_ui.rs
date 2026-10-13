@@ -2948,8 +2948,7 @@ impl SpaiApp {
                     ui.add(
                         egui::Label::new(egui::RichText::new(motd_one_line(m)).weak())
                             .truncate()
-                            .show_tooltip_when_elided(false)
-                            .selectable(false),
+                            .show_tooltip_when_elided(false),
                     )
                     .on_hover_text(motd_preview(m, 6));
                 });

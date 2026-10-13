@@ -3,6 +3,7 @@
 
 pub mod colors;
 pub mod i18n;
+pub mod selection;
 pub mod side_lists;
 pub mod sig_browser;
 pub mod star_map;

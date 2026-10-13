@@ -3464,3 +3464,13 @@ mod hidden_main_window_tests {
         assert!(!a.main_hidden);
     }
 }
+
+/// Text selection only survives the pop-outs, alert window and dialogs repainting when the app
+/// installs the plugin that keeps it (see `spai_ui::selection`).
+#[test]
+fn the_app_keeps_text_selection_across_its_windows() {
+    crate::uitest::harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let _a = SpaiApp::build(&ctx, true);
+    assert!(ctx.with_plugin(|_: &mut spai_ui::selection::KeepAcrossViewports| ()).is_some());
+}

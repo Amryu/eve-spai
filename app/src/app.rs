@@ -1054,6 +1054,7 @@ impl SpaiApp {
     /// resulting app renders the same as a live one.
     pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
         crate::theme::install_fonts(ctx);
+        spai_ui::selection::install(ctx);
         let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
         let fleet_mumble = std::sync::mpsc::channel();
 

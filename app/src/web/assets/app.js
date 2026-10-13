@@ -116,6 +116,25 @@ function renderTabs() {
   }
 }
 
+/// Panes left alone because the reader had text selected in them, redrawn once the selection ends.
+const held = new Set();
+
+/// A pane is rebuilt from scratch on every push, which would drop a selection the moment the next
+/// snapshot arrived, so nothing could be copied out of a busy chat.
+function selecting(el) {
+  const s = window.getSelection?.();
+  return !!s && !s.isCollapsed && s.rangeCount > 0 && el.contains(s.getRangeAt(0).commonAncestorContainer);
+}
+
+document.addEventListener("selectionchange", () => {
+  if (!held.size) return;
+  const s = window.getSelection?.();
+  if (s && !s.isCollapsed) return;
+  const panes = new Set(held);
+  held.clear();
+  render(panes);
+});
+
 /// `dirty` is the set of panes worth redrawing, or `null` for all of them.
 export function render(dirty = null) {
   renderTabs();
@@ -124,6 +143,10 @@ export function render(dirty = null) {
     if (dirty && !dirty.has(pane)) continue;
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);
     if (!el || !renderers[pane]) continue;
+    if (selecting(el)) {
+      held.add(pane);
+      continue;
+    }
     // Re-rendering replaces the scrolled element, which would jump the reader back to the top.
     const keep = el.querySelector(".feed");
     const at = keep ? keep.scrollTop : 0;
