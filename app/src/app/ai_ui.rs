@@ -48,6 +48,7 @@ impl SpaiApp {
                 memories: self.ai_memories.clone(),
                 watches: self.ai_watches.clone(),
                 feeds: self.ai_feeds.clone(),
+                sealed_items: self.dl_items.clone(),
                 opsec: self.ai_opsec.clone(),
                 last_question: Default::default(),
                 alerts: self.recent_alerts.clone(),

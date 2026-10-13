@@ -1,6 +1,6 @@
 //! A signed request and its sealed answer, built and read by the feed's `Protocol`.
 
-use super::proto::{Body, Fields, KeyId, Protocol};
+use super::proto::{Body, KeyId, Protocol};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
@@ -70,7 +70,7 @@ pub fn sign_events_request(p: &Protocol, base: &str, cursor: Option<&str>, keys:
     }
 }
 
-/// One item of an answer, read through the configured field names, then the usual ones.
+/// One item of an answer, read by the names such items usually have.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Event {
     pub id: String,
@@ -99,7 +99,8 @@ pub struct Payload {
     pub more: bool,
     /// The feed says events were missed: the cursor was older than what it keeps.
     pub gap: bool,
-    pub echoed_nonce: Option<String>,
+    /// The answer's top-level text values, where a feed echoes the request's nonce.
+    pub top_strings: Vec<String>,
     pub events: Vec<Event>,
 }
 
@@ -132,15 +133,12 @@ fn time(v: &Value) -> Option<i64> {
 }
 
 fn get<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
-    if name.is_empty() {
-        return None;
-    }
     v.get(name).filter(|x| !x.is_null())
 }
 
-/// The configured name, else the first usual name the item has.
-fn pick<'a>(v: &'a Value, name: &str, usual: &[&str]) -> Option<&'a Value> {
-    get(v, name).or_else(|| usual.iter().find_map(|n| get(v, n)))
+/// The first of the usual names the item has.
+fn pick<'a>(v: &'a Value, usual: &[&str]) -> Option<&'a Value> {
+    usual.iter().find_map(|n| get(v, n))
 }
 
 /// A list, or one value standing for a list of one.
@@ -155,23 +153,23 @@ fn many(v: Option<&Value>) -> Vec<Value> {
 const SYSTEM: &[&str] = &["system", "system_name", "solar_system", "solar_system_name", "solarSystemName", "name"];
 const SYSTEM_ID: &[&str] = &["system_id", "solar_system_id", "solarSystemID", "systemId", "id"];
 
-fn location(v: &Value, f: &Fields) -> Option<Location> {
+fn location(v: &Value) -> Option<Location> {
     let l = match v {
         Value::String(s) => Location { system: s.clone(), system_id: None },
         Value::Number(_) => Location { system: String::new(), system_id: int(v) },
-        Value::Object(_) => match pick(v, &f.system, SYSTEM) {
-            Some(inner @ Value::Object(_)) => return location(inner, f),
-            s => Location { system: s.and_then(text).unwrap_or_default(), system_id: pick(v, &f.system_id, SYSTEM_ID).and_then(int) },
+        Value::Object(_) => match pick(v, SYSTEM) {
+            Some(inner @ Value::Object(_)) => return location(inner),
+            s => Location { system: s.and_then(text).unwrap_or_default(), system_id: pick(v, SYSTEM_ID).and_then(int) },
         },
         _ => return None,
     };
     (!l.system.trim().is_empty() || l.system_id.is_some()).then_some(l)
 }
 
-fn named(v: &Value, name: &str, id: &str, usual_name: &[&str], usual_id: &[&str]) -> (String, Option<i64>) {
+fn named(v: &Value, usual_name: &[&str], usual_id: &[&str]) -> (String, Option<i64>) {
     match v {
         Value::String(s) => (s.clone(), None),
-        _ => (pick(v, name, usual_name).and_then(text).unwrap_or_default(), pick(v, id, usual_id).and_then(int).filter(|&i| i != 0)),
+        _ => (pick(v, usual_name).and_then(text).unwrap_or_default(), pick(v, usual_id).and_then(int).filter(|&i| i != 0)),
     }
 }
 
@@ -180,8 +178,8 @@ fn kills(v: &Value) -> Option<String> {
     let k: Vec<String> = many(get(v, "kills"))
         .iter()
         .filter_map(|k| {
-            let victim = pick(k, "", &["victim", "name", "character"]).and_then(text).unwrap_or_default();
-            let ship = pick(k, "", &["ship", "ship_name", "type"]).and_then(text).unwrap_or_default();
+            let victim = pick(k, &["victim", "name", "character"]).and_then(text).unwrap_or_default();
+            let ship = pick(k, &["ship", "ship_name", "type"]).and_then(text).unwrap_or_default();
             match (victim.is_empty(), ship.is_empty()) {
                 (true, true) => None,
                 (false, false) => Some(format!("{victim} ({ship})")),
@@ -197,55 +195,55 @@ fn digest(v: &Value) -> String {
     Sha256::digest(v.to_string().as_bytes()).iter().take(12).map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn read_event(v: &Value, f: &Fields) -> Event {
-    let mut locations: Vec<Location> = many(pick(v, &f.location, &["location", "where", "solar_system", "system"])).iter().filter_map(|l| location(l, f)).collect();
+pub fn read_event(v: &Value) -> Event {
+    let mut locations: Vec<Location> = many(pick(v, &["location", "where", "solar_system", "system"])).iter().filter_map(|l| location(l)).collect();
     if locations.is_empty() {
-        if let Some(id) = pick(v, &f.system_id, &SYSTEM_ID[..4]).and_then(int) {
+        if let Some(id) = pick(v, &SYSTEM_ID[..4]).and_then(int) {
             locations.push(Location { system: String::new(), system_id: Some(id) });
         }
     }
-    locations.extend(many(pick(v, &f.additional_systems, &["additional_systems", "systems"])).iter().filter_map(|l| location(l, f)));
+    locations.extend(many(pick(v, &["systems"])).iter().filter_map(|l| location(l)));
     let id = match v {
-        Value::Object(_) => pick(v, &f.id, &["id", "_id", "uuid", "guid", "event_id", "key"]).and_then(text),
+        Value::Object(_) => pick(v, &["id", "_id", "uuid", "guid", "event_id", "key"]).and_then(text),
         _ => None,
     };
     Event {
         id: id.filter(|i| !i.is_empty()).unwrap_or_else(|| digest(v)),
-        timestamp: pick(v, &f.timestamp, &["timestamp", "time", "ts", "at", "created_at", "created", "date", "reported_at"]).and_then(time),
-        kind: pick(v, &f.kind, &["kind", "type", "event", "category"]).and_then(text).unwrap_or_default(),
+        timestamp: pick(v, &["timestamp", "time", "ts", "at", "created_at", "created", "date", "reported_at"]).and_then(time),
+        kind: pick(v, &["kind", "type", "event", "category"]).and_then(text).unwrap_or_default(),
         locations,
-        hostiles: many(pick(v, &f.hostiles, &["hostiles", "pilots", "characters", "attackers"]))
+        hostiles: many(pick(v, &["hostiles", "pilots", "characters", "attackers"]))
             .iter()
-            .map(|h| named(h, &f.hostile_name, &f.hostile_id, &["name", "character", "pilot", "character_name"], &["id", "character_id", "characterID"]))
+            .map(|h| named(h, &["name", "character", "pilot", "character_name"], &["id", "character_id", "characterID"]))
             .collect(),
-        count: pick(v, &f.count, &["count", "number", "size"]).and_then(int).and_then(|c| u32::try_from(c).ok()).filter(|&c| c > 0),
-        ships: many(pick(v, &f.ships, &["ships", "hulls"]))
+        count: pick(v, &["count", "number", "size"]).and_then(int).and_then(|c| u32::try_from(c).ok()).filter(|&c| c > 0),
+        ships: many(pick(v, &["ships", "hulls"]))
             .iter()
-            .map(|s| named(s, &f.ship_name, &f.ship_type_id, &["name", "ship", "ship_name", "type"], &["type_id", "ship_type_id", "shipTypeID", "id"]))
+            .map(|s| named(s, &["name", "ship", "ship_name", "type"], &["type_id", "ship_type_id", "shipTypeID", "id"]))
             .collect(),
-        keywords: many(pick(v, &f.keywords, &["keywords", "tags", "flags"])).iter().filter_map(text).collect(),
-        gate: pick(v, &f.gate, &["gate", "stargate"]).and_then(|g| text(g).or_else(|| location(g, f).map(|l| l.system)).filter(|s| !s.is_empty())),
+        keywords: many(pick(v, &["keywords", "tags", "flags"])).iter().filter_map(text).collect(),
+        gate: pick(v, &["gate", "stargate"]).and_then(|g| text(g).or_else(|| location(g).map(|l| l.system)).filter(|s| !s.is_empty())),
         text: match v {
             Value::String(s) => Some(s.clone()),
-            _ => pick(v, "", &["text", "message", "msg", "body", "description", "summary", "note", "content"]).and_then(text).or_else(|| kills(v)),
+            _ => pick(v, &["text", "message", "msg", "body", "description", "summary", "note", "content"]).and_then(text).or_else(|| kills(v)),
         },
         raw: v.clone(),
     }
 }
 
-/// Where the items are: the configured list, the answer itself when it is one, a usual name, or
+/// Where the items are: the answer itself when it is one, a usual name, or
 /// the first list of objects. Anything else is one item.
-fn items<'a>(v: &'a Value, f: &Fields) -> Vec<&'a Value> {
+fn items(v: &Value) -> Vec<&Value> {
     if let Value::Array(a) = v {
         return a.iter().collect();
     }
-    let list = pick(v, &f.events, &["events", "items", "data", "results", "reports", "entries"])
+    let list = pick(v, &["events", "items", "data", "results", "reports", "entries"])
         .filter(|l| l.is_array())
         .or_else(|| v.as_object()?.values().find(|x| x.as_array().is_some_and(|a| a.first().is_some_and(Value::is_object))));
     match list {
         Some(Value::Array(a)) => a.iter().collect(),
         _ if v.as_object().is_some_and(|o| o.is_empty()) => Vec::new(),
-        _ if pick(v, &f.cursor, &["cursor", "next_cursor"]).is_some() => Vec::new(),
+        _ if pick(v, &["cursor", "next_cursor"]).is_some() => Vec::new(),
         _ => vec![v],
     }
 }
@@ -267,16 +265,16 @@ pub fn open_payload(p: &Protocol, keys: &crate::feedkeys::FeedKeys, body: &[u8])
     };
     let s = String::from_utf8_lossy(&plain);
     let v: Value = serde_json::from_str(&s).unwrap_or_else(|_| Value::String(s.trim().to_owned()));
+    let top_strings = v.as_object().map(|o| o.values().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
     if v.as_str().is_some_and(str::is_empty) {
-        return Ok(Payload { cursor: None, more: false, gap: false, echoed_nonce: None, events: Vec::new() });
+        return Ok(Payload { cursor: None, more: false, gap: false, top_strings, events: Vec::new() });
     }
-    let f = &p.fields;
     Ok(Payload {
-        cursor: pick(&v, &f.cursor, &["cursor", "next_cursor", "next", "after"]).and_then(text),
-        more: pick(&v, &f.more, &["more", "has_more"]).and_then(Value::as_bool).unwrap_or(false),
-        gap: pick(&v, &f.gap, &[]).and_then(Value::as_bool).unwrap_or(false),
-        echoed_nonce: get(&v, &f.request_nonce).and_then(text),
-        events: items(&v, f).into_iter().map(|e| read_event(e, f)).collect(),
+        cursor: pick(&v, &["cursor", "next_cursor", "next", "after"]).and_then(text),
+        more: pick(&v, &["more", "has_more"]).and_then(Value::as_bool).unwrap_or(false),
+        gap: pick(&v, &["gap", "missed"]).and_then(Value::as_bool).unwrap_or(false),
+        events: items(&v).into_iter().map(read_event).collect(),
+        top_strings,
     })
 }
 
@@ -412,14 +410,10 @@ mod tests {
     }
 
     #[test]
-    fn renamed_fields_and_a_base64_body_are_read() {
+    fn other_names_and_a_base64_body_are_read() {
         let keys = crate::feedkeys::FeedKeys::for_test(3, 4);
-        let mut p = Protocol { body: Body::Base64, ..Default::default() };
-        p.fields.events = "items".into();
-        p.fields.location = "where".into();
-        p.fields.system_id = "sid".into();
-        p.fields.hostiles = "who".into();
-        let body = br#"{"items":[{"id":7,"where":{"sid":30004759},"who":["Some Pilot",{"name":"Other","id":91}]}]}"#;
+        let p = Protocol { body: Body::Base64, ..Default::default() };
+        let body = br#"{"items":[{"id":7,"where":{"solar_system_id":30004759},"pilots":["Some Pilot",{"name":"Other","id":91}]}]}"#;
         let wire = super::super::proto::Encoding::Base64.encode(&seal(&keys, body));
         let pl = open_payload(&p, &keys, wire.as_bytes()).unwrap();
         let e = &pl.events[0];

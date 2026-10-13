@@ -38,9 +38,13 @@ impl SpaiApp {
         let mut reports = Vec::new();
         let mut ids = std::collections::HashMap::new();
         for ev in events {
-            let mapped = crate::sealed_feed::mapping::to_report(ev, &cfg.protocol.fields, &name, systems, now);
-            self.dl_items.push_front((ev.clone(), mapped.as_ref().map(|(r, _)| r.systems.iter().map(|s| s.name.clone()).collect()).unwrap_or_default()));
-            self.dl_items.truncate(ITEMS_KEPT);
+            let mapped = crate::sealed_feed::mapping::to_report(ev, &name, systems, now);
+            {
+                let mut items = self.dl_items.lock().unwrap_or_else(|e| e.into_inner());
+                let systems = mapped.as_ref().map(|(r, _)| r.systems.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
+                items.push_front(crate::sealed_feed::Item { event: ev.clone(), systems, seen: now });
+                items.truncate(ITEMS_KEPT);
+            }
             match mapped {
                 // A day of backlog after a restart: what is already past the intel lifetime would
                 // be pruned on the next tick anyway.
@@ -147,25 +151,7 @@ impl SpaiApp {
                 changed |= p.body != was;
                 ui.end_row();
             });
-            egui::CollapsingHeader::new(tr!("Payload field names, tried before the usual ones")).id_salt("sealed_feed_fields").show(ui, |ui| {
-                let f = &mut p.fields;
-                egui::Grid::new("sealed_feed_fields_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (label, v) in [
-                        ("cursor", &mut f.cursor), ("more", &mut f.more), ("events", &mut f.events),
-                        ("id", &mut f.id), ("timestamp", &mut f.timestamp), ("kind", &mut f.kind), ("location", &mut f.location),
-                        ("additional systems", &mut f.additional_systems), ("system", &mut f.system), ("system id", &mut f.system_id),
-                        ("region", &mut f.region), ("hostiles", &mut f.hostiles), ("hostile name", &mut f.hostile_name),
-                        ("hostile id", &mut f.hostile_id), ("count", &mut f.count), ("ships", &mut f.ships), ("ship name", &mut f.ship_name),
-                        ("ship type id", &mut f.ship_type_id), ("keywords", &mut f.keywords), ("gate", &mut f.gate),
-                        ("kind: all clear", &mut f.kind_clear), ("kind: kill", &mut f.kind_kill), ("gap", &mut f.gap),
-                        ("request nonce echo", &mut f.request_nonce),
-                    ] {
-                        ui.label(egui::RichText::new(label).monospace());
-                        changed |= text(ui, v, 180.0);
-                        ui.end_row();
-                    }
-                });
-            });
+            changed |= ui.checkbox(&mut p.nonce_echo, tr!("The answer repeats the request's nonce")).changed();
         });
         if !cfg.base_url.trim().is_empty() && !cfg.base_url.trim().starts_with("https://") {
             ui.colored_label(crate::theme::standing::WARNING, tr!("The address must start with https://"));
@@ -190,9 +176,10 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(trf!("Trying again in {v}", v = super::fmt_age((next - now).max(0)))).weak());
             }
         }
-        if !self.dl_items.is_empty() {
-            egui::CollapsingHeader::new(trf!("Latest items as received ({n})", n = self.dl_items.len())).id_salt("sealed_feed_items").show(ui, |ui| {
-                for (ev, mapped) in &self.dl_items {
+        let items = self.dl_items.lock().unwrap_or_else(|e| e.into_inner());
+        if !items.is_empty() {
+            egui::CollapsingHeader::new(trf!("Latest items as received ({n})", n = items.len())).id_salt("sealed_feed_items").show(ui, |ui| {
+                for crate::sealed_feed::Item { event: ev, systems: mapped, .. } in items.iter() {
                     ui.horizontal_wrapped(|ui| {
                         if let Some(t) = ev.timestamp {
                             ui.label(egui::RichText::new(trf!("{ago} ago", ago = super::fmt_age((now - t).max(0)))).weak());

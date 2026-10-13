@@ -123,7 +123,7 @@ impl Poller {
             Ok(p) => p,
             Err(e) => return self.fail(status, e.to_string(), interval, None),
         };
-        if !p.fields.request_nonce.is_empty() && payload.echoed_nonce.as_deref() != Some(req.nonce.as_str()) {
+        if p.nonce_echo && !payload.top_strings.iter().any(|s| *s == req.nonce) {
             return self.fail(status, "the answer does not echo this request's nonce, so it was not taken".into(), interval, None);
         }
         self.failures = 0;
@@ -304,7 +304,7 @@ mod tests {
         fn get(&self, _url: &str, headers: &[(String, String)]) -> Result<Response> {
             let nonce = headers.iter().find(|(k, _)| k == "X-Nonce").map(|(_, v)| v.clone()).unwrap();
             let n = if self.echo { nonce } else { "old".into() };
-            let mut r = sealed(&self.keys, &format!(r#"{{"request_nonce":"{n}","next":"c1","gap":true,"events":[{{"id":"a"}}]}}"#));
+            let mut r = sealed(&self.keys, &format!(r#"{{"echo":"{n}","next":"c1","gap":true,"events":[{{"id":"a"}}]}}"#));
             r.content_type = Some(self.content_type.into());
             Ok(r)
         }
@@ -316,7 +316,7 @@ mod tests {
     fn content_type_and_nonce_echo_are_checked_when_set() {
         let mut c = cfg();
         c.protocol.content_type = "application/octet-stream".into();
-        c.protocol.fields.request_nonce = "request_nonce".into();
+        c.protocol.nonce_echo = true;
         let st = Mutex::new(Status::default());
         let keys = || crate::feedkeys::FeedKeys::for_test(1, 2);
         let html = Echo { keys: keys(), echo: true, content_type: "text/html; charset=utf-8" };
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(p.cursor.as_deref(), Some("c1"));
         assert_eq!(st.lock().unwrap().gap_at, Some(1000));
         c.protocol.content_type.clear();
-        c.protocol.fields.request_nonce.clear();
+        c.protocol.nonce_echo = false;
         assert_eq!(Poller::new(None).step(&c, &keys(), &stale, 1000, &st).events.len(), 1, "unset, any answer is taken");
     }
 

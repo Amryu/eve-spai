@@ -46,7 +46,7 @@ fn scan(v: &serde_json::Value, systems: &crate::geo::Systems, out: &mut Vec<Dete
 
 /// The report, and the pilot ids the event named. `None` when no system it names is known.
 /// `origin` is the feed's name, shown as the report's channel and reporter.
-pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, systems: &crate::geo::Systems, now: i64) -> Option<(IntelReport, Vec<(String, i64)>)> {
+pub fn to_report(ev: &Event, origin: &str, systems: &crate::geo::Systems, now: i64) -> Option<(IntelReport, Vec<(String, i64)>)> {
     let mut found: Vec<DetectedSystem> = Vec::new();
     for loc in &ev.locations {
         if let Some(s) = system(loc, systems) {
@@ -70,7 +70,7 @@ pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, system
     let said_words: Vec<&str> = said_lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
     let has = |w: &[&str]| kw.iter().any(|k| w.contains(&k.as_str())) || w.iter().any(|x| if x.contains(' ') { said_lower.contains(x) } else { said_words.contains(x) });
     let is_kind = |k: &str| !k.is_empty() && ev.kind.eq_ignore_ascii_case(k);
-    let clear = is_kind(&fields.kind_clear) || kw.iter().any(|k| k == "clr");
+    let clear = ["clear", "clr", "all_clear"].iter().any(|k| is_kind(k)) || kw.iter().any(|k| k == "clr");
     let count = ev.count.filter(|&c| c > 0).or_else(|| (!pilots.is_empty()).then_some(pilots.len() as u32));
     let gate = ev.gate.as_deref().map(str::trim).filter(|g| !g.is_empty());
 
@@ -89,7 +89,7 @@ pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, system
     if let Some(g) = gate {
         text.push(format!("{g} gate"));
     }
-    if is_kind(&fields.kind_kill) {
+    if is_kind("kill") || is_kind("killmail") {
         text.push("kill".into());
     }
     text.extend(kw.iter().cloned());
@@ -125,7 +125,6 @@ pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, system
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_feed::proto::Fields;
 
     fn geo() -> crate::geo::Systems {
         let sys = |id: i64, name: &str| (name.to_lowercase(), crate::geo::SystemInfo { id, name: name.into(), security: -0.4, constellation: String::new(), region: "Delve".into(), faction: String::new() });
@@ -133,15 +132,15 @@ mod tests {
     }
 
     fn event(json: &str) -> Event {
-        crate::sealed_feed::wire::read_event(&serde_json::from_str(json).unwrap(), &Fields::default())
+        crate::sealed_feed::wire::read_event(&serde_json::from_str(json).unwrap())
     }
 
     #[test]
     fn a_report_maps_with_its_ids_and_is_marked_with_its_feed() {
         let ev = event(r#"{"id":"e1","timestamp":"2026-10-12T19:00:00Z","kind":"report","location":{"system":"1DQ1-A","system_id":30004759},
-            "additional_systems":[{"system":"8QT-H4"}],"hostiles":[{"name":"Some Pilot","id":91000001}],
+            "systems":[{"system":"8QT-H4"}],"hostiles":[{"name":"Some Pilot","id":91000001}],
             "count":5,"ships":[{"name":"Sabre","type_id":22456}],"keywords":["Bubble","camp"],"gate":"8QT-H4"}"#);
-        let (r, ids) = to_report(&ev, &Fields::default(), "Test feed", &geo(), 1_791_900_000).unwrap();
+        let (r, ids) = to_report(&ev, "Test feed", &geo(), 1_791_900_000).unwrap();
         assert_eq!(r.received, 1_791_831_600);
         assert_eq!(r.systems.iter().map(|s| s.id).collect::<Vec<_>>(), vec![30004759, 30004758]);
         assert_eq!((r.pilots.clone(), r.count, r.ships[0].id), (vec!["Some Pilot".to_owned()], Some(5), 22456));
@@ -153,10 +152,10 @@ mod tests {
 
     #[test]
     fn a_clear_maps_to_a_clear_and_an_unknown_system_to_nothing() {
-        let (r, _) = to_report(&event(r#"{"id":"e2","timestamp":1791831600,"kind":"clear","location":{"system":"x","system_id":30004758}}"#), &Fields::default(), "f", &geo(), 1_791_900_000).unwrap();
+        let (r, _) = to_report(&event(r#"{"id":"e2","timestamp":1791831600,"kind":"clear","location":{"system":"x","system_id":30004758}}"#), "f", &geo(), 1_791_900_000).unwrap();
         assert!(r.clear);
         assert_eq!(r.systems[0].name, "8QT-H4");
-        assert!(to_report(&event(r#"{"id":"e3","kind":"report","location":{"system":"Nowhere"}}"#), &Fields::default(), "f", &geo(), 5).is_none());
+        assert!(to_report(&event(r#"{"id":"e3","kind":"report","location":{"system":"Nowhere"}}"#), "f", &geo(), 5).is_none());
     }
 
     /// The nested shapes a feed spec used: ids beside names, gate and pilots as objects, ids of 0
@@ -168,32 +167,32 @@ mod tests {
             "hostiles":[{"name":"Some Pilot","id":0,"corp":{"id":98000001,"name":"Corp","ticker":"C"},"alliance":null}],
             "count":0,"ships":[{"name":"Sabre","type_id":22456,"class":"Interdictor","count":0}],"keywords":["gatecamp","nv"],
             "gate":{"system":"8QT-H4","ansiblex":false},"kills":[]}"#);
-        let (r, ids) = to_report(&ev, &Fields::default(), "f", &geo(), 1_791_900_000).unwrap();
+        let (r, ids) = to_report(&ev, "f", &geo(), 1_791_900_000).unwrap();
         assert_eq!(r.received, 1_791_831_600);
         assert_eq!(r.systems.iter().map(|s| s.id).collect::<Vec<_>>(), vec![30004759, 30004758]);
         assert_eq!((r.pilots.clone(), r.ships[0].id, r.gates.clone()), (vec!["Some Pilot".to_owned()], 22456, vec!["8QT-H4".to_owned()]));
         assert_eq!(r.count, Some(1), "count 0 is not stated, so the pilots named count");
         assert!(ids.is_empty(), "id 0 is unresolved");
         assert!(r.camp && r.no_visual && !r.clear);
-        let (c, _) = to_report(&event(r#"{"id":"c","kind":"report","location":{"system":"8QT-H4","id":30004758},"keywords":["clr"]}"#), &Fields::default(), "f", &geo(), 5).unwrap();
+        let (c, _) = to_report(&event(r#"{"id":"c","kind":"report","location":{"system":"8QT-H4","id":30004758},"keywords":["clr"]}"#), "f", &geo(), 5).unwrap();
         assert!(c.clear);
     }
 
     #[test]
     fn a_system_is_found_anywhere_in_an_item_and_its_message_is_the_text() {
-        let (r, _) = to_report(&event(r#"{"msg":"bubble camp on the 8QT-H4 gate","meta":{"near":[30004759]}}"#), &Fields::default(), "f", &geo(), 5).unwrap();
+        let (r, _) = to_report(&event(r#"{"msg":"bubble camp on the 8QT-H4 gate","meta":{"near":[30004759]}}"#), "f", &geo(), 5).unwrap();
         let mut names: Vec<&str> = r.systems.iter().map(|s| s.name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["1DQ1-A", "8QT-H4"]);
         assert_eq!(r.text, "bubble camp on the 8QT-H4 gate");
         assert!(r.bubble && r.camp);
-        let plain = crate::sealed_feed::wire::read_event(&serde_json::Value::String("1dq1-a clr".into()), &Fields::default());
-        assert_eq!(to_report(&plain, &Fields::default(), "f", &geo(), 5).unwrap().0.systems[0].id, 30004759);
+        let plain = crate::sealed_feed::wire::read_event(&serde_json::Value::String("1dq1-a clr".into()));
+        assert_eq!(to_report(&plain, "f", &geo(), 5).unwrap().0.systems[0].id, 30004759);
     }
 
     #[test]
     fn a_future_timestamp_is_held_to_now() {
-        let (r, _) = to_report(&event(r#"{"id":"e4","timestamp":1891831600,"location":{"system_id":30004759}}"#), &Fields::default(), "f", &geo(), 1_791_900_000).unwrap();
+        let (r, _) = to_report(&event(r#"{"id":"e4","timestamp":1891831600,"location":{"system_id":30004759}}"#), "f", &geo(), 1_791_900_000).unwrap();
         assert_eq!(r.received, 1_791_900_000);
     }
 }

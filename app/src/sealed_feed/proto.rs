@@ -1,5 +1,5 @@
-//! What a sealed feed's wire format is, as settings: every path, header name, the signed string,
-//! encodings and the payload's field names. Nothing here names a service; the defaults are neutral
+//! What a sealed feed's wire format is, as settings: every path, header name, the signed string
+//! and encodings. Nothing here names a service; the defaults are neutral
 //! placeholders, and the user's settings carry the values a given feed's spec fixes.
 
 use serde::{Deserialize, Serialize};
@@ -77,70 +77,6 @@ pub enum Body {
     Base64,
 }
 
-/// The payload's field names, outer and per event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Fields {
-    pub cursor: String,
-    pub more: String,
-    pub events: String,
-    pub id: String,
-    pub timestamp: String,
-    pub kind: String,
-    pub location: String,
-    pub additional_systems: String,
-    pub system: String,
-    pub system_id: String,
-    pub region: String,
-    pub hostiles: String,
-    pub hostile_name: String,
-    pub hostile_id: String,
-    pub count: String,
-    pub ships: String,
-    pub ship_name: String,
-    pub ship_type_id: String,
-    pub keywords: String,
-    pub gate: String,
-    pub gap: String,
-    /// Where the answer echoes the request's nonce; checked when set.
-    pub request_nonce: String,
-    /// The `kind` values that mean an all-clear and a kill.
-    pub kind_clear: String,
-    pub kind_kill: String,
-}
-
-impl Default for Fields {
-    fn default() -> Self {
-        let s = |v: &str| v.to_owned();
-        Self {
-            cursor: s("cursor"),
-            more: s("more"),
-            events: s("events"),
-            id: s("id"),
-            timestamp: s("timestamp"),
-            kind: s("kind"),
-            location: s("location"),
-            additional_systems: s("additional_systems"),
-            system: s("system"),
-            system_id: s("system_id"),
-            region: s("region"),
-            hostiles: s("hostiles"),
-            hostile_name: s("name"),
-            hostile_id: s("id"),
-            count: s("count"),
-            ships: s("ships"),
-            ship_name: s("name"),
-            ship_type_id: s("type_id"),
-            keywords: s("keywords"),
-            gate: s("gate"),
-            gap: s("gap"),
-            request_nonce: String::new(),
-            kind_clear: s("clear"),
-            kind_kill: s("kill"),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Protocol {
@@ -163,9 +99,10 @@ pub struct Protocol {
     pub body: Body,
     /// The answer's required content type; anything else is a refusal. Empty takes any answer.
     pub content_type: String,
+    /// The answer must repeat the request's nonce, which binds it to that request.
+    pub nonce_echo: bool,
     /// How far either way the server accepts a timestamp, for the clock hint on a refusal.
     pub clock_tolerance_secs: i64,
-    pub fields: Fields,
 }
 
 impl Default for Protocol {
@@ -187,8 +124,8 @@ impl Default for Protocol {
             key_id: KeyId::Fingerprint,
             body: Body::Raw,
             content_type: String::new(),
+            nonce_echo: false,
             clock_tolerance_secs: 60,
-            fields: Fields::default(),
         }
     }
 }

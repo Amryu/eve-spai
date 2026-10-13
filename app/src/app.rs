@@ -989,7 +989,7 @@ pub struct SpaiApp {
     /// Events whose systems are not on the map.
     pub(crate) dl_unmapped: u64,
     /// The feed's latest items as they came, with the systems each was mapped to.
-    pub(crate) dl_items: std::collections::VecDeque<(crate::sealed_feed::wire::Event, Vec<String>)>,
+    pub(crate) dl_items: crate::sealed_feed::SharedItems,
     /// The feed whose items the feeds window lists.
     pub(crate) ai_feed_view: Option<u64>,
     /// Read from the keychain on request, not every frame: the first read can wait on a prompt.

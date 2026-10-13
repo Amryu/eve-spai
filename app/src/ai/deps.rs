@@ -22,6 +22,7 @@ pub struct AiDeps {
     pub memories: crate::ai::memory::SharedMemories,
     pub watches: crate::ai::watch::SharedWatches,
     pub feeds: crate::ai::feeds::SharedFeeds,
+    pub sealed_items: crate::sealed_feed::SharedItems,
     /// Set once the conversation has read Jabber, rescue or feed messages, which must not leave
     /// the app: from then on nothing may reach the web. A new chat clears it.
     pub opsec: Arc<std::sync::atomic::AtomicBool>,
@@ -139,6 +140,7 @@ impl AiDeps {
             memories: Default::default(),
             watches: Default::default(),
             feeds: Default::default(),
+            sealed_items: Default::default(),
             opsec: Default::default(),
             last_question: Default::default(),
             alerts: Default::default(),

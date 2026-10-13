@@ -2571,9 +2571,12 @@ pub(crate) fn all() -> Vec<Scene> {
             gap_at: None,
         };
         a.dl_unmapped = 3;
-        let raw = |j: &str| crate::sealed_feed::wire::read_event(&serde_json::from_str(j).unwrap(), &Default::default());
-        a.dl_items.push_back((raw(r#"{"id":"e1","timestamp":"2026-10-12T19:00:00Z","kind":"report","location":{"system":"1DQ1-A"},"count":5}"#), vec!["1DQ1-A".into()]));
-        a.dl_items.push_back((raw(r#""free text the feed sent, read as it came""#), vec![]));
+        let raw = |j: &str| crate::sealed_feed::wire::read_event(&serde_json::from_str(j).unwrap());
+        let item = |j: &str, systems: Vec<String>| crate::sealed_feed::Item { event: raw(j), systems, seen: now };
+        a.dl_items.lock().unwrap().extend([
+            item(r#"{"id":"e1","timestamp":"2026-10-12T19:00:00Z","kind":"report","location":{"system":"1DQ1-A"},"count":5}"#, vec!["1DQ1-A".into()]),
+            item(r#""free text the feed sent, read as it came""#, vec![]),
+        ]);
         a.ai_feed_keys = Some(Ok("intel-feed-keys v1\ned25519_pub: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\nx25519_pub:  ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=\nfingerprint: 0123 4567 89ab cdef 0123 4567 89ab cdef".into()));
         a.ai_feeds_open = true;
     }));
@@ -8839,4 +8842,37 @@ fn uitest_auto_tidy_lays_the_wormhole_map_out_once_at_the_start() {
     }
     h.run_steps(3);
     assert!(!app.borrow().as_ref().unwrap().wh_graph.tidied_this_run, "not with auto-tidy off");
+}
+
+/// Dragging across an assistant answer selects it and Copy hands the words over, docked and
+/// popped out.
+#[test]
+fn uitest_assistant_answers_select_and_copy() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    for popped in [false, true] {
+        let mut scene = assistant_scene("probe", [1280.0, 900.0], false, popped);
+        let mut h = harness::build(&mut scene, false);
+        let rect = {
+            let b = h
+                .query_all_by(|n| n.value().or(n.label()).is_some_and(|l| l.contains("The Jove observatory")))
+                .find_map(|n| n.accesskit_node().bounding_box())
+                .expect("bounds");
+            egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))
+        };
+        let first = h
+            .query_all_by(|n| n.value().or(n.label()).is_some_and(|l| l.contains("gang went south")))
+            .find_map(|n| n.accesskit_node().bounding_box())
+            .expect("bounds");
+        let (a, b) = (egui::pos2(first.x0 as f32 + 2.0, ((first.y0 + first.y1) / 2.0) as f32), rect.right_center() - egui::vec2(2.0, 0.0));
+        let btn = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        for e in [egui::Event::PointerMoved(a), btn(a, true), egui::Event::PointerMoved((a + b.to_vec2()) / 2.0), egui::Event::PointerMoved(b), btn(b, false)] {
+            h.event(e);
+            h.step();
+        }
+        h.run_steps(3);
+        h.event(egui::Event::Copy);
+        h.step();
+        let copied: Vec<String> = h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None }).collect();
+        assert!(copied.iter().any(|t| t.contains("gang went south") && t.contains("killed a Hound") && t.contains("Jove observatory in Y-OMTZ")), "popped {popped}: {copied:?}");
+    }
 }

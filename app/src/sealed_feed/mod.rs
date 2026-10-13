@@ -10,6 +10,17 @@ pub mod poller;
 pub mod proto;
 pub mod wire;
 
+/// One item as received, the systems it was mapped to, and when it arrived.
+#[derive(Clone, Debug)]
+pub struct Item {
+    pub event: wire::Event,
+    pub systems: Vec<String>,
+    pub seen: i64,
+}
+
+/// The latest items, newest first: the feeds window lists them and the assistant reads them.
+pub type SharedItems = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Item>>>;
+
 /// The assistant's permission for outside feed reports, under Intel.
 pub const AI_PERM: &str = "intel.external";
 

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{schema, str_arg, u64_arg, Ctx, Kind, Need, ToolSpec};
 use crate::ai::watch::{Watch, MAX_WATCHES};
 
-pub static TOOLS: &[&ToolSpec] = &[&START, &STOP, &RESUME, &LIST, &FEED_ITEMS];
+pub static TOOLS: &[&ToolSpec] = &[&START, &STOP, &RESUME, &LIST, &FEED_ITEMS, &INTEL_FEED_ITEMS];
 
 const NEED: Need = Need::Any(&["intel.reports", "kills.feed"]);
 
@@ -163,6 +163,35 @@ static FEED_ITEMS: ToolSpec = ToolSpec {
     },
 };
 
+static INTEL_FEED_ITEMS: ToolSpec = ToolSpec {
+    name: "intel_feed_items",
+    description: "Items from the user's sealed intel feed exactly as received, newest first, with the systems each was \
+                  mapped to (empty: it named no known system). Items that named a system are also in the intel reports. \
+                  Narrow by words and age.",
+    need: Need::All(&[crate::sealed_feed::AI_PERM]),
+    kind: Kind::Read,
+    schema: || schema(json!({"query": {"type": "string"}, "since_minutes": {"type": "integer", "minimum": 1, "maximum": 100_000}, "limit": {"type": "integer", "minimum": 1, "maximum": 40}}), &[]),
+    run: |ctx, v| {
+        let since = ctx.now - 60 * u64_arg(v, "since_minutes", 1440, 100_000) as i64;
+        let words: Vec<String> = str_arg(v, "query").unwrap_or_default().to_lowercase().split_whitespace().map(str::to_owned).collect();
+        let items = ctx.deps.sealed_items.lock().unwrap_or_else(|e| e.into_inner());
+        let out: Vec<Value> = items
+            .iter()
+            .filter(|i| i.event.timestamp.unwrap_or(i.seen) >= since)
+            .filter(|i| {
+                let hay = i.event.raw.to_string().to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .take(u64_arg(v, "limit", 15, 40) as usize)
+            .map(|i| {
+                let t = i.event.timestamp.unwrap_or(i.seen);
+                json!({"when": super::eve_time(t), "age": super::fmt_age(ctx.now, t), "systems": i.systems, "item": i.event.raw})
+            })
+            .collect();
+        Ok(json!({"items": out}))
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::*;
@@ -207,5 +236,29 @@ mod tests {
         assert!(!out.to_string().contains("hidden"));
         let (_, err) = run(&deps, "feed_items", json!({"feed": "secret"}));
         assert!(err);
+    }
+
+    /// The sealed feed's raw items, under its own permission; reading them closes the web.
+    #[test]
+    fn intel_feed_items_are_read_as_received_under_their_permission() {
+        let ev = |j: &str| crate::sealed_feed::wire::read_event(&serde_json::from_str(j).unwrap());
+        let now = crate::clock::utc().timestamp();
+        let fill = |deps: &AiDeps| {
+            deps.sealed_items.lock().unwrap().extend([
+                crate::sealed_feed::Item { event: ev(r#"{"id":"a","msg":"cyno lit in 1DQ1-A"}"#), systems: vec!["1DQ1-A".into()], seen: now },
+                crate::sealed_feed::Item { event: ev(r#"{"id":"b","msg":"quiet"}"#), systems: vec![], seen: now },
+            ])
+        };
+        let deps = AiDeps::for_tests(facts(&["intel"]));
+        fill(&deps);
+        let (out, err) = run(&deps, "intel_feed_items", json!({"query": "cyno"}));
+        assert!(!err, "{out}");
+        let items = out["items"].as_array().unwrap();
+        assert_eq!((items.len(), items[0]["item"]["msg"].as_str(), items[0]["systems"][0].as_str()), (1, Some("cyno lit in 1DQ1-A"), Some("1DQ1-A")));
+        assert!(deps.opsec.load(std::sync::atomic::Ordering::Relaxed));
+        let off = AiDeps::for_tests(facts(&["intel.reports"]));
+        fill(&off);
+        let (_, err) = run(&off, "intel_feed_items", json!({}));
+        assert!(err, "not allowed without the feed's permission");
     }
 }
