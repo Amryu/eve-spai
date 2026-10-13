@@ -79,7 +79,12 @@ impl FeedKeys {
 
     #[cfg(test)]
     pub fn for_test(sign_seed: u8, enc_seed: u8) -> Self {
-        Self { sign: ed25519_dalek::SigningKey::from_bytes(&[sign_seed; 32]), enc: x25519_dalek::StaticSecret::from([enc_seed; 32]) }
+        Self::from_secrets([sign_seed; 32], [enc_seed; 32])
+    }
+
+    #[cfg(test)]
+    pub fn from_secrets(sign_seed: [u8; 32], enc_secret: [u8; 32]) -> Self {
+        Self { sign: ed25519_dalek::SigningKey::from_bytes(&sign_seed), enc: x25519_dalek::StaticSecret::from(enc_secret) }
     }
 
     /// SHA-256 over both public keys, first 32 hex digits in groups of 4.

@@ -111,6 +111,7 @@ impl SpaiApp {
                     (tr!("Signature header"), &mut p.header_signature),
                     (tr!("Signed string prefix"), &mut p.sign_prefix),
                     (tr!("Signed string separator"), &mut p.sign_separator),
+                    (tr!("Required answer type"), &mut p.content_type),
                 ] {
                     ui.label(label);
                     changed |= text(ui, v, 240.0);
@@ -156,7 +157,8 @@ impl SpaiApp {
                         ("region", &mut f.region), ("hostiles", &mut f.hostiles), ("hostile name", &mut f.hostile_name),
                         ("hostile id", &mut f.hostile_id), ("count", &mut f.count), ("ships", &mut f.ships), ("ship name", &mut f.ship_name),
                         ("ship type id", &mut f.ship_type_id), ("keywords", &mut f.keywords), ("gate", &mut f.gate),
-                        ("kind: all clear", &mut f.kind_clear), ("kind: kill", &mut f.kind_kill),
+                        ("kind: all clear", &mut f.kind_clear), ("kind: kill", &mut f.kind_kill), ("gap", &mut f.gap),
+                        ("request nonce echo", &mut f.request_nonce),
                     ] {
                         ui.label(egui::RichText::new(label).monospace());
                         changed |= text(ui, v, 180.0);
@@ -173,6 +175,9 @@ impl SpaiApp {
             Some(t) => ui.label(trf!("Last pull {ago} ago, {n} events received", ago = super::fmt_age((now - t).max(0)), n = st.events_total)),
             None => ui.label(egui::RichText::new(tr!("No successful pull yet.")).weak()),
         };
+        if let Some(t) = st.gap_at {
+            ui.colored_label(crate::theme::standing::WARNING, trf!("{ago} ago the feed said events were missed: the stored position was older than what it keeps", ago = super::fmt_age((now - t).max(0))));
+        }
         if self.dl_unmapped > 0 {
             ui.label(egui::RichText::new(trf!("{n} items named no system on the map; they are listed below", n = self.dl_unmapped)).weak());
         }

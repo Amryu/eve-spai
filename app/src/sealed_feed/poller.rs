@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Mutex};
 
 const CURSOR_KEY: &str = "sealed_feed_cursor";
-pub const MIN_INTERVAL: u32 = 30;
+pub const MIN_INTERVAL: u32 = 5;
 pub const MAX_INTERVAL: u32 = 60;
 /// Between the pages of one catch-up, so a long backlog stays under 30 requests a minute.
 const PAGE_GAP_SECS: i64 = 2;
@@ -24,6 +24,8 @@ pub struct Status {
     pub next_poll: Option<i64>,
     /// This machine's clock minus the server's, from its Date header.
     pub clock_skew: Option<i64>,
+    /// When the feed last said events were missed.
+    pub gap_at: Option<i64>,
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
@@ -33,6 +35,7 @@ pub struct Response {
     pub body: Vec<u8>,
     pub retry_after: Option<i64>,
     pub date: Option<i64>,
+    pub content_type: Option<String>,
 }
 
 pub trait Transport {
@@ -51,12 +54,13 @@ impl Transport for Http {
         let header = |n: &str| resp.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_owned);
         let retry_after = header("retry-after").and_then(|v| v.trim().parse::<i64>().ok());
         let date = header("date").and_then(|d| chrono::DateTime::parse_from_rfc2822(&d).ok()).map(|t| t.timestamp());
+        let content_type = header("content-type");
         let status = resp.status().as_u16();
         let body = resp.bytes()?;
         if body.len() > 8 * 1024 * 1024 {
             anyhow::bail!("the answer is over 8 MB");
         }
-        Ok(Response { status, body: body.to_vec(), retry_after, date })
+        Ok(Response { status, body: body.to_vec(), retry_after, date, content_type })
     }
 }
 
@@ -98,16 +102,19 @@ impl Poller {
         };
         let skew = resp.date.map(|d| now - d);
         status.lock().unwrap_or_else(|e| e.into_inner()).clock_skew = skew;
+        let want = p.content_type.trim();
+        let wrong_type = !want.is_empty()
+            && !resp.content_type.as_deref().is_some_and(|c| c.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case(want));
+        let clock = || match skew {
+            Some(s) if s.abs() > p.clock_tolerance_secs / 2 => format!(" This machine's clock is {s:+} s off the server's; sync it (NTP)."),
+            _ => " Check that the system clock is synced and that the feed has your public keys.".to_owned(),
+        };
         match resp.status {
+            // Such feeds answer a refused request like a missing page: a 404, or a 200 that is
+            // not the expected content type. Either says nothing about the path.
+            200 if wrong_type => return self.fail(status, format!("The feed refused the request (not {want}).{}", clock()), interval, None),
             200 => {}
-            // Such feeds answer a bad signature with a bare 404, so it says nothing about the path.
-            404 => {
-                let clock = match skew {
-                    Some(s) if s.abs() > p.clock_tolerance_secs / 2 => format!(" This machine's clock is {s:+} s off the server's; sync it (NTP)."),
-                    _ => " Check that the system clock is synced and that the feed has your public keys.".to_owned(),
-                };
-                return self.fail(status, format!("The feed did not accept the request signature (404).{clock}"), interval, None);
-            }
+            404 => return self.fail(status, format!("The feed did not accept the request signature (404).{}", clock()), interval, None),
             429 => return self.fail(status, "rate limited by the feed (429)".into(), interval, resp.retry_after),
             s if s >= 500 => return self.fail(status, format!("the feed answered {s}"), interval, resp.retry_after),
             s => return self.fail(status, format!("the feed answered {s}"), interval, None),
@@ -116,6 +123,9 @@ impl Poller {
             Ok(p) => p,
             Err(e) => return self.fail(status, e.to_string(), interval, None),
         };
+        if !p.fields.request_nonce.is_empty() && payload.echoed_nonce.as_deref() != Some(req.nonce.as_str()) {
+            return self.fail(status, "the answer does not echo this request's nonce, so it was not taken".into(), interval, None);
+        }
         self.failures = 0;
         self.seen.retain(|_, t| now - *t < SEEN_KEEP_SECS);
         let events: Vec<wire::Event> = payload
@@ -131,6 +141,9 @@ impl Poller {
         let mut st = status.lock().unwrap_or_else(|e| e.into_inner());
         st.last_ok = Some(now);
         st.last_error = None;
+        if payload.gap {
+            st.gap_at = Some(now);
+        }
         st.events_total += events.len() as u64;
         st.next_poll = Some(now + wait);
         Step { events, wait, cursor_changed }
@@ -184,13 +197,14 @@ pub fn spawn(cfg: Arc<Mutex<SealedFeedSettings>>, status: SharedStatus, out: mps
                 }
             };
             let step = poller.step(&c, keys, &client, crate::clock::utc().timestamp(), &status);
+            if !step.events.is_empty() && out.send(step.events).is_err() {
+                return;
+            }
+            // Stored only once its events are handed over, so a crash repeats a page, never skips one.
             if step.cursor_changed {
                 if let (Some(s), Some(cur)) = (store.as_ref(), poller.cursor.as_deref()) {
                     s.kv_set(CURSOR_KEY, &format!("{base}\n{cur}"));
                 }
-            }
-            if !step.events.is_empty() && out.send(step.events).is_err() {
-                return;
             }
             ctx.request_repaint();
             // In short sleeps, so switching the feed off takes effect within seconds.
@@ -224,7 +238,7 @@ mod tests {
 
     fn sealed(keys: &crate::feedkeys::FeedKeys, json: &str) -> Response {
         let body = crypto_box::PublicKey::from(keys.x25519_pub()).seal(&mut crypto_box::aead::OsRng, json.as_bytes()).unwrap();
-        Response { status: 200, body, retry_after: None, date: None }
+        Response { status: 200, body, retry_after: None, date: None, content_type: Some("application/octet-stream".into()) }
     }
 
     fn cfg() -> SealedFeedSettings {
@@ -258,7 +272,7 @@ mod tests {
     #[test]
     fn rate_limits_and_server_errors_back_off_and_404_points_at_clock_and_keys() {
         let keys = crate::feedkeys::FeedKeys::for_test(1, 2);
-        let r = |status, retry_after, date| Response { status, body: Vec::new(), retry_after, date };
+        let r = |status, retry_after, date| Response { status, body: Vec::new(), retry_after, date, content_type: None };
         let fake = Fake {
             answers: RefCell::new(vec![r(429, Some(120), None), r(503, None, None), r(404, None, Some(1000 - 95)), sealed(&keys, r#"{"version":1,"cursor":"c1","events":[]}"#)]),
             urls: RefCell::new(Vec::new()),
@@ -277,6 +291,47 @@ mod tests {
         let d = p.step(&cfg(), &keys, &fake, 1000, &st);
         assert_eq!(d.wait, 45, "success resets the backoff");
         assert!(st.lock().unwrap().last_error.is_none());
+    }
+
+    /// Answers built from the request: `echo` puts its nonce in the payload, else a stale one.
+    struct Echo {
+        keys: crate::feedkeys::FeedKeys,
+        echo: bool,
+        content_type: &'static str,
+    }
+
+    impl Transport for Echo {
+        fn get(&self, _url: &str, headers: &[(String, String)]) -> Result<Response> {
+            let nonce = headers.iter().find(|(k, _)| k == "X-Nonce").map(|(_, v)| v.clone()).unwrap();
+            let n = if self.echo { nonce } else { "old".into() };
+            let mut r = sealed(&self.keys, &format!(r#"{{"request_nonce":"{n}","next":"c1","gap":true,"events":[{{"id":"a"}}]}}"#));
+            r.content_type = Some(self.content_type.into());
+            Ok(r)
+        }
+    }
+
+    /// A feed that answers refusals like a missing page: a 200 of another type is refused, and an
+    /// answer echoing another request's nonce is not taken.
+    #[test]
+    fn content_type_and_nonce_echo_are_checked_when_set() {
+        let mut c = cfg();
+        c.protocol.content_type = "application/octet-stream".into();
+        c.protocol.fields.request_nonce = "request_nonce".into();
+        let st = Mutex::new(Status::default());
+        let keys = || crate::feedkeys::FeedKeys::for_test(1, 2);
+        let html = Echo { keys: keys(), echo: true, content_type: "text/html; charset=utf-8" };
+        let step = Poller::new(None).step(&c, &keys(), &html, 1000, &st);
+        assert!(step.events.is_empty() && st.lock().unwrap().last_error.as_deref().unwrap().contains("refused"));
+        let stale = Echo { keys: keys(), echo: false, content_type: "application/octet-stream" };
+        assert!(Poller::new(None).step(&c, &keys(), &stale, 1000, &st).events.is_empty());
+        let good = Echo { keys: keys(), echo: true, content_type: "application/octet-stream" };
+        let mut p = Poller::new(None);
+        assert_eq!(p.step(&c, &keys(), &good, 1000, &st).events.len(), 1);
+        assert_eq!(p.cursor.as_deref(), Some("c1"));
+        assert_eq!(st.lock().unwrap().gap_at, Some(1000));
+        c.protocol.content_type.clear();
+        c.protocol.fields.request_nonce.clear();
+        assert_eq!(Poller::new(None).step(&c, &keys(), &stale, 1000, &st).events.len(), 1, "unset, any answer is taken");
     }
 
     #[test]

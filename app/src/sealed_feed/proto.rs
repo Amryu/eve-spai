@@ -101,6 +101,9 @@ pub struct Fields {
     pub ship_type_id: String,
     pub keywords: String,
     pub gate: String,
+    pub gap: String,
+    /// Where the answer echoes the request's nonce; checked when set.
+    pub request_nonce: String,
     /// The `kind` values that mean an all-clear and a kill.
     pub kind_clear: String,
     pub kind_kill: String,
@@ -130,6 +133,8 @@ impl Default for Fields {
             ship_type_id: s("type_id"),
             keywords: s("keywords"),
             gate: s("gate"),
+            gap: s("gap"),
+            request_nonce: String::new(),
             kind_clear: s("clear"),
             kind_kill: s("kill"),
         }
@@ -156,6 +161,8 @@ pub struct Protocol {
     pub signature_encoding: Encoding,
     pub key_id: KeyId,
     pub body: Body,
+    /// The answer's required content type; anything else is a refusal. Empty takes any answer.
+    pub content_type: String,
     /// How far either way the server accepts a timestamp, for the clock hint on a refusal.
     pub clock_tolerance_secs: i64,
     pub fields: Fields,
@@ -179,6 +186,7 @@ impl Default for Protocol {
             signature_encoding: Encoding::Base64,
             key_id: KeyId::Fingerprint,
             body: Body::Raw,
+            content_type: String::new(),
             clock_tolerance_secs: 60,
             fields: Fields::default(),
         }

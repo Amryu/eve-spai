@@ -32,6 +32,7 @@ pub fn canonical_string(p: &Protocol, method: &str, path: &str, query: &[(String
 
 pub struct Signed {
     pub url: String,
+    pub nonce: String,
     pub headers: Vec<(String, String)>,
 }
 
@@ -59,6 +60,7 @@ pub fn sign_events_request(p: &Protocol, base: &str, cursor: Option<&str>, keys:
     let q = canonical_query(&query);
     Signed {
         url: format!("{}{}{}{}", base.trim().trim_end_matches('/'), path, if q.is_empty() { "" } else { "?" }, q),
+        nonce: nonce.clone(),
         headers: vec![
             (p.header_key_id.clone(), key_id(p, keys)),
             (p.header_timestamp.clone(), timestamp.to_string()),
@@ -95,6 +97,9 @@ pub struct Location {
 pub struct Payload {
     pub cursor: Option<String>,
     pub more: bool,
+    /// The feed says events were missed: the cursor was older than what it keeps.
+    pub gap: bool,
+    pub echoed_nonce: Option<String>,
     pub events: Vec<Event>,
 }
 
@@ -166,8 +171,25 @@ fn location(v: &Value, f: &Fields) -> Option<Location> {
 fn named(v: &Value, name: &str, id: &str, usual_name: &[&str], usual_id: &[&str]) -> (String, Option<i64>) {
     match v {
         Value::String(s) => (s.clone(), None),
-        _ => (pick(v, name, usual_name).and_then(text).unwrap_or_default(), pick(v, id, usual_id).and_then(int)),
+        _ => (pick(v, name, usual_name).and_then(text).unwrap_or_default(), pick(v, id, usual_id).and_then(int).filter(|&i| i != 0)),
     }
+}
+
+/// Killmails named in an item, as "victim (ship)".
+fn kills(v: &Value) -> Option<String> {
+    let k: Vec<String> = many(get(v, "kills"))
+        .iter()
+        .filter_map(|k| {
+            let victim = pick(k, "", &["victim", "name", "character"]).and_then(text).unwrap_or_default();
+            let ship = pick(k, "", &["ship", "ship_name", "type"]).and_then(text).unwrap_or_default();
+            match (victim.is_empty(), ship.is_empty()) {
+                (true, true) => None,
+                (false, false) => Some(format!("{victim} ({ship})")),
+                _ => Some(format!("{victim}{ship}")),
+            }
+        })
+        .collect();
+    (!k.is_empty()).then(|| k.join(", "))
 }
 
 fn digest(v: &Value) -> String {
@@ -196,16 +218,16 @@ pub fn read_event(v: &Value, f: &Fields) -> Event {
             .iter()
             .map(|h| named(h, &f.hostile_name, &f.hostile_id, &["name", "character", "pilot", "character_name"], &["id", "character_id", "characterID"]))
             .collect(),
-        count: pick(v, &f.count, &["count", "number", "size"]).and_then(int).and_then(|c| u32::try_from(c).ok()),
+        count: pick(v, &f.count, &["count", "number", "size"]).and_then(int).and_then(|c| u32::try_from(c).ok()).filter(|&c| c > 0),
         ships: many(pick(v, &f.ships, &["ships", "hulls"]))
             .iter()
             .map(|s| named(s, &f.ship_name, &f.ship_type_id, &["name", "ship", "ship_name", "type"], &["type_id", "ship_type_id", "shipTypeID", "id"]))
             .collect(),
         keywords: many(pick(v, &f.keywords, &["keywords", "tags", "flags"])).iter().filter_map(text).collect(),
-        gate: pick(v, &f.gate, &["gate", "stargate"]).and_then(text),
+        gate: pick(v, &f.gate, &["gate", "stargate"]).and_then(|g| text(g).or_else(|| location(g, f).map(|l| l.system)).filter(|s| !s.is_empty())),
         text: match v {
             Value::String(s) => Some(s.clone()),
-            _ => pick(v, "", &["text", "message", "msg", "body", "description", "summary", "note", "content"]).and_then(text),
+            _ => pick(v, "", &["text", "message", "msg", "body", "description", "summary", "note", "content"]).and_then(text).or_else(|| kills(v)),
         },
         raw: v.clone(),
     }
@@ -246,12 +268,14 @@ pub fn open_payload(p: &Protocol, keys: &crate::feedkeys::FeedKeys, body: &[u8])
     let s = String::from_utf8_lossy(&plain);
     let v: Value = serde_json::from_str(&s).unwrap_or_else(|_| Value::String(s.trim().to_owned()));
     if v.as_str().is_some_and(str::is_empty) {
-        return Ok(Payload { cursor: None, more: false, events: Vec::new() });
+        return Ok(Payload { cursor: None, more: false, gap: false, echoed_nonce: None, events: Vec::new() });
     }
     let f = &p.fields;
     Ok(Payload {
         cursor: pick(&v, &f.cursor, &["cursor", "next_cursor", "next", "after"]).and_then(text),
         more: pick(&v, &f.more, &["more", "has_more"]).and_then(Value::as_bool).unwrap_or(false),
+        gap: pick(&v, &f.gap, &[]).and_then(Value::as_bool).unwrap_or(false),
+        echoed_nonce: get(&v, &f.request_nonce).and_then(text),
         events: items(&v, f).into_iter().map(|e| read_event(e, f)).collect(),
     })
 }
@@ -287,6 +311,41 @@ mod tests {
         assert_eq!(s, "example-feed-v9\nGET\n/p\nn=1\n1791000000\n00ff");
         let bare = canonical_string(&Protocol::default(), "GET", "/p", &[], 5, "ab");
         assert_eq!(bare, "GET\n/p\n\n5\nab", "no prefix, no empty first line");
+    }
+
+    /// A feed spec's published example: its test keys, request and signature, set up through the
+    /// settings alone. Ed25519 is deterministic, so the signature must match byte for byte.
+    #[test]
+    fn a_spec_example_signs_exactly() {
+        let hex = |s: &str| -> [u8; 32] { super::super::proto::Encoding::Hex.decode(s).unwrap().try_into().unwrap() };
+        let keys = crate::feedkeys::FeedKeys::from_secrets(
+            hex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+            hex("2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"),
+        );
+        let b64 = super::super::proto::Encoding::Base64;
+        assert_eq!(b64.encode(&keys.ed25519_pub()), "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=");
+        assert_eq!(b64.encode(&keys.x25519_pub()), "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns=");
+        let p = Protocol {
+            events_path: "/intel-feed/v1/events".into(),
+            page_limit: 100,
+            header_key_id: "X-Feed-Key".into(),
+            header_timestamp: "X-Feed-Timestamp".into(),
+            header_nonce: "X-Feed-Nonce".into(),
+            header_signature: "X-Feed-Signature".into(),
+            sign_prefix: "DLFEED1".into(),
+            nonce_encoding: super::super::proto::Encoding::Base64Url,
+            ..Default::default()
+        };
+        assert_eq!(key_id(&p, &keys), "3d12d88257c8d4d66f3ec1cb754c98e2");
+        let nonce = "n0nce-Example_0123456789";
+        let msg = canonical_string(&p, "GET", &p.events_path, &q(&[("after", "AAAA-bbbb_CCCC"), ("limit", "100")]), 1_760_356_800, nonce);
+        assert_eq!(msg, "DLFEED1\nGET\n/intel-feed/v1/events\nafter=AAAA-bbbb_CCCC&limit=100\n1760356800\nn0nce-Example_0123456789");
+        assert_eq!(b64.encode(&keys.sign(msg.as_bytes())), "VftNK04Nl6Wp5hs2Ak+ng8NNX80KFjyoRaoyNR7QFCwL+x4WQEXIiowZpER+l17xwFDLEoSlyMJXf5iuxCvpBw==");
+        // The nonce bytes the poller draws, base64url without padding: 18 bytes give the 24 characters.
+        let r = sign_events_request(&p, "https://feed.example.invalid", Some("AAAA-bbbb_CCCC"), &keys, 1_760_356_800, &super::super::proto::Encoding::Base64Url.decode(nonce).unwrap());
+        assert_eq!(r.nonce, nonce);
+        assert_eq!(r.url, "https://feed.example.invalid/intel-feed/v1/events?after=AAAA-bbbb_CCCC&limit=100");
+        assert!(r.headers.contains(&("X-Feed-Signature".into(), "VftNK04Nl6Wp5hs2Ak+ng8NNX80KFjyoRaoyNR7QFCwL+x4WQEXIiowZpER+l17xwFDLEoSlyMJXf5iuxCvpBw==".into())));
     }
 
     #[test]

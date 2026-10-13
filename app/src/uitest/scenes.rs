@@ -2568,6 +2568,7 @@ pub(crate) fn all() -> Vec<Scene> {
             events_total: 1284,
             next_poll: Some(now + 180),
             clock_skew: Some(95),
+            gap_at: None,
         };
         a.dl_unmapped = 3;
         let raw = |j: &str| crate::sealed_feed::wire::read_event(&serde_json::from_str(j).unwrap(), &Default::default());
