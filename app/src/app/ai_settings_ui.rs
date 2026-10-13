@@ -711,6 +711,7 @@ impl SpaiApp {
     /// Outside feeds: the list with their state, and one at a time being added or edited.
     pub(crate) fn ai_feeds_window(&mut self, ctx: &egui::Context) {
         use crate::ai::feeds::{FeedDef, FeedKind, MIN_INTERVAL};
+        use crate::app::SteadySelect as _;
         use egui_phosphor::regular as icon;
         if !self.ai_feeds_open {
             return;
@@ -720,14 +721,21 @@ impl SpaiApp {
         let mut edit = self.ai_feed_edit.take();
         let mut secret = std::mem::take(&mut self.ai_feed_secret);
         let secrets = self.ai_secrets.clone();
-        let (errors, counts) = {
+        let mut view = self.ai_feed_view;
+        let (errors, counts, shown) = {
             let st = self.ai_feeds.lock().unwrap_or_else(|e| e.into_inner());
             let mut counts: std::collections::HashMap<u64, usize> = Default::default();
             for i in &st.items {
                 *counts.entry(i.feed).or_default() += 1;
             }
-            (st.errors.clone(), counts)
+            let shown: Vec<crate::ai::feeds::FeedItem> =
+                view.map(|id| st.items.iter().rev().filter(|i| i.feed == id).take(100).cloned().collect()).unwrap_or_default();
+            (st.errors.clone(), counts, shown)
         };
+        let mut want_keys = false;
+        let mut dl_changed = false;
+        let keys = self.ai_feed_keys.clone();
+        let now = crate::clock::utc().timestamp();
         let mut note: Option<String> = None;
         let keep = Self::dialog_viewport(ctx, "ai_feeds", tr!("EVE Spai - Assistant feeds"), [560.0, 600.0], |ui| {
             ui.label(egui::RichText::new(tr!("News, timers, broadcasts: anything with a feed. The assistant reads the ones allowed under Data access and watches them for you.")).weak());
@@ -805,11 +813,40 @@ impl SpaiApp {
                     None => {}
                 }
                 ui.separator();
-            } else if ui.button(trf!("{icon}  Add a feed", icon = icon::PLUS)).clicked() {
-                let id = feeds.iter().map(|f| f.id).max().unwrap_or(0) + 1;
-                edit = Some(FeedDef { id, ..Default::default() });
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.button(trf!("{icon}  Add a feed", icon = icon::PLUS)).clicked() {
+                        let id = feeds.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+                        edit = Some(FeedDef { id, ..Default::default() });
+                    }
+                    if keys.is_none()
+                        && ui.button(trf!("{icon}  My feed keys", icon = icon::KEY)).on_hover_text(tr!("The public keys to give a feed that signs and encrypts")).clicked()
+                    {
+                        want_keys = true;
+                    }
+                });
             }
+            match &keys {
+                Some(Ok(block)) => {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(tr!("Your public feed keys")).strong());
+                        if ui.button(trf!("{icon}  Copy", icon = icon::COPY)).clicked() {
+                            ui.ctx().copy_text(block.clone());
+                        }
+                    });
+                    ui.add(egui::Label::new(egui::RichText::new(block).monospace()).wrap());
+                    ui.label(egui::RichText::new(tr!("Public halves only. The private keys never leave this machine.")).weak());
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(crate::theme::standing::WARNING, trf!("Could not read the feed keys: {err}", err = e));
+                }
+                None => {}
+            }
+            ui.separator();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                dl_changed |= self.sealed_feed_section(ui, now);
+                ui.separator();
                 if feeds.is_empty() {
                     ui.label(egui::RichText::new(tr!("No feeds yet.")).weak());
                 }
@@ -823,6 +860,10 @@ impl SpaiApp {
                             }
                             if ui.button(icon::PENCIL_SIMPLE).on_hover_text(tr!("Edit")).clicked() {
                                 edit = Some(f.clone());
+                            }
+                            let open = view == Some(f.id);
+                            if ui.menu_label(open, icon::LIST_BULLETS).on_hover_text(tr!("Show its items")).clicked() {
+                                view = if open { None } else { Some(f.id) };
                             }
                             match errors.get(&f.id) {
                                 Some(e) => {
@@ -838,7 +879,33 @@ impl SpaiApp {
                         });
                     });
                 }
+                if let Some(f) = view.and_then(|id| feeds.iter().find(|f| f.id == id)) {
+                    ui.separator();
+                    ui.label(egui::RichText::new(trf!("Latest from {name}", name = f.name)).strong());
+                    if shown.is_empty() {
+                        ui.label(egui::RichText::new(tr!("Nothing received yet.")).weak());
+                    }
+                    for it in &shown {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(super::fmt_age((now - it.time).max(0))).weak())
+                                .on_hover_text(super::eve_time_label(it.time, now));
+                            if !it.title.is_empty() {
+                                ui.label(egui::RichText::new(&it.title).strong());
+                            }
+                            if it.link.starts_with("https://") || it.link.starts_with("http://") {
+                                ui.hyperlink_to(icon::ARROW_SQUARE_OUT, &it.link).on_hover_text(&it.link);
+                            }
+                        });
+                        if !it.text.is_empty() && it.text != it.title {
+                            ui.add(egui::Label::new(&it.text).wrap());
+                        }
+                    }
+                }
                 if let Some(id) = remove {
+                    if view == Some(id) {
+                        view = None;
+                    }
                     if let Some(f) = feeds.iter().find(|f| f.id == id) {
                         secrets.delete(&f.secret_account());
                     }
@@ -850,6 +917,11 @@ impl SpaiApp {
         self.settings.ai.feeds = feeds;
         self.ai_feed_edit = edit;
         self.ai_feed_secret = secret;
+        self.ai_feed_view = view;
+        if want_keys {
+            let label = self.settings.sealed_feed.key_block_label.clone();
+            self.ai_feed_keys = Some(crate::feedkeys::identity().map(|k| k.public_block(&label)).map_err(|e| format!("{e:#}")));
+        }
         if let Some(n) = note {
             self.toast_error(n);
         }
@@ -857,6 +929,7 @@ impl SpaiApp {
             self.needs_save = true;
             self.ai_push_facts(true);
         }
+        self.needs_save |= dl_changed;
         if !keep {
             self.ai_feeds_open = false;
         }

@@ -68,6 +68,9 @@ keyring = "4"
 # from a reviewed implementation rather than anything hand-rolled.
 ring = "0.17"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2"
+# libsodium crypto_box_seal_open for the sealed intel feed.
+crypto_box = { version = "0.9", features = ["seal"] }
 notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # gzip the battle-report JSON before uploading to the sharing server (Content-Encoding: gzip).

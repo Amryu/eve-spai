@@ -474,6 +474,7 @@ pub(crate) fn intel_since(ctx: &Ctx, since: i64, words: Option<&str>, systems: &
             out.extend(store.intel_history(since, live_from - 1, systems, None, words, 3000));
         }
     }
+    out.retain(|r| ctx.sees_report(r));
     out
 }
 
@@ -529,6 +530,42 @@ mod gang_chain_tests {
         assert!(!trail.contains("Sabre"), "a different gang far away is not them: {trail}");
         assert!(!trail.contains("much earlier"), "a report before the first sighting is not followed: {trail}");
         assert_eq!(out["last_seen"]["system"], "7-K5EL");
+    }
+}
+
+#[cfg(test)]
+mod feed_isolation_tests {
+    use super::super::testkit::*;
+    use crate::ai::deps::AiDeps;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    fn seeded(perms: &[&str]) -> AiDeps {
+        let deps = AiDeps::for_tests(facts(perms));
+        let now = crate::clock::utc().timestamp();
+        let sys = vec![crate::intel::DetectedSystem { id: 30_004_759, name: "1DQ1-A".into(), security: -0.4 }];
+        let mut st = deps.intel_state.lock().unwrap();
+        st.reports.push(crate::intel::IntelReport { received: now - 60, channel: "Delve.Imperium".into(), text: "chat sighting 1DQ1-A".into(), systems: sys.clone(), ..Default::default() });
+        st.reports.push(crate::intel::IntelReport { received: now - 30, channel: "Test feed".into(), text: "feed sighting 1DQ1-A".into(), systems: sys, origin: Some("Test feed".into()), ..Default::default() });
+        drop(st);
+        deps
+    }
+
+    /// Feed reports need their own tick, and a chat that read one may no longer reach the web.
+    #[test]
+    fn feed_reports_need_their_own_permission_and_close_the_web() {
+        let deps = seeded(&["intel.reports", "internet"]);
+        let (out, err) = run(&deps, "search_intel", json!({"since_minutes": 60}));
+        assert!(!err, "{out}");
+        assert!(out.to_string().contains("chat sighting") && !out.to_string().contains("feed sighting"), "{out}");
+        assert!(!deps.opsec.load(Ordering::Relaxed), "nothing from the feed was read");
+
+        let deps = seeded(&["intel.reports", "intel.external", "internet"]);
+        let (out, _) = run(&deps, "search_intel", json!({"since_minutes": 60}));
+        assert!(out.to_string().contains("feed sighting"), "{out}");
+        assert!(deps.opsec.load(Ordering::Relaxed));
+        let (msg, err) = run(&deps, "web_search", json!({"query": "1DQ1-A"}));
+        assert!(err && msg.to_string().contains("Web lookups are off"), "{msg}");
     }
 }
 

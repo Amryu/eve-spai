@@ -506,6 +506,7 @@ static PILOT_INFO: ToolSpec = ToolSpec {
             if let Some(store) = ctx.store {
                 seen.extend(store.intel_history(since, ctx.now, &[], Some(&low), None, 20));
             }
+            seen.retain(|r| ctx.sees_report(r));
             seen.sort_by_key(|r| std::cmp::Reverse(r.received));
             seen.dedup_by_key(|r| (r.received, r.text.clone()));
             out["intel"] = json!(seen.iter().take(10).map(|r| json!({"when": eve_time(r.received), "age": fmt_age(ctx.now, r.received), "systems": r.systems.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), "text": r.text})).collect::<Vec<_>>());

@@ -228,6 +228,7 @@ mod br_timeline;
 pub(crate) mod ai_ui;
 pub(crate) mod ai_voice_in;
 mod ai_settings_ui;
+mod sealed_feed_ui;
 mod toasts;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
@@ -980,6 +981,17 @@ pub struct SpaiApp {
     pub(crate) ai_feeds_open: bool,
     pub(crate) ai_feed_edit: Option<crate::ai::feeds::FeedDef>,
     ai_feed_secret: String,
+    dl_cfg: std::sync::Arc<std::sync::Mutex<crate::settings::SealedFeedSettings>>,
+    pub(crate) dl_status: crate::sealed_feed::poller::SharedStatus,
+    dl_rx: Option<std::sync::mpsc::Receiver<Vec<crate::sealed_feed::wire::Event>>>,
+    /// Events that arrived before the map loaded.
+    dl_pending: Vec<crate::sealed_feed::wire::Event>,
+    /// Events whose systems are not on the map.
+    pub(crate) dl_unmapped: u64,
+    /// The feed whose items the feeds window lists.
+    pub(crate) ai_feed_view: Option<u64>,
+    /// Read from the keychain on request, not every frame: the first read can wait on a prompt.
+    pub(crate) ai_feed_keys: Option<Result<String, String>>,
     ai_stt_key_input: String,
     /// The Claude program's model is being typed rather than picked.
     ai_cli_other_model: bool,
@@ -1817,6 +1829,13 @@ impl SpaiApp {
             ai_feeds_open: false,
             ai_feed_edit: None,
             ai_feed_secret: String::new(),
+            ai_feed_view: None,
+            dl_cfg: Default::default(),
+            dl_status: Default::default(),
+            dl_rx: None,
+            dl_pending: Vec::new(),
+            dl_unmapped: 0,
+            ai_feed_keys: None,
             ai_stt_key_input: String::new(),
             ai_cli_other_model: false,
             settings_scroll_to_ai: false,
@@ -3888,6 +3907,7 @@ impl eframe::App for SpaiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
         }
 
+        self.sealed_feed_tick();
         if self.settings.fc_rescue_enabled {
             self.ingest_delve911_jabber();
             self.drain_rescue_feed(&ctx);

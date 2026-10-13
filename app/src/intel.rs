@@ -128,6 +128,9 @@ pub struct IntelReport {
     pub alliances: Vec<(String, i64)>,
     pub movement: Option<Movement>,
     pub links: Vec<IntelLink>,
+    /// The outside feed this came from, `None` for the user's own chat logs. See `crate::sealed_feed`.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -269,6 +272,17 @@ impl IntelState {
             }
         }
         self.reports.push(report);
+        id
+    }
+
+    /// A report that arrives late (an outside feed) goes where its time puts it, so the list stays
+    /// in time order.
+    pub fn insert_in_order(&mut self, report: IntelReport) -> u64 {
+        let id = self.push(report);
+        if let Some(r) = self.reports.pop() {
+            let at = self.reports.partition_point(|x| x.received <= r.received);
+            self.reports.insert(at, r);
+        }
         id
     }
 
@@ -2899,6 +2913,7 @@ pub fn analyze_ctx(
         alliances,
         movement: None,
         links,
+        origin: None,
     };
     // "Clear" loses to any sign of a threat: a contradictory message (a pilot named "clear …",
     // or "clear" next to real hostiles) must never downgrade severity. Prefer a false positive

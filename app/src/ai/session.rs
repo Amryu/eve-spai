@@ -484,7 +484,8 @@ impl Session {
         let oldest_kill = running.iter().map(|&i| ws[i].seen_kills).min().unwrap_or(now);
         let reports: Vec<crate::intel::IntelReport> = if intel_ok {
             let st = self.deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
-            st.reports.iter().filter(|r| r.received > oldest_intel).cloned().collect()
+            let feed_ok = facts.allowed(crate::sealed_feed::AI_PERM);
+            st.reports.iter().filter(|r| r.received > oldest_intel && crate::sealed_feed::ai_sees(r, feed_ok, &self.deps.opsec)).cloned().collect()
         } else {
             Vec::new()
         };

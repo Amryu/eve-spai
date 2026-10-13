@@ -2543,6 +2543,36 @@ pub(crate) fn all() -> Vec<Scene> {
             a.ai_feeds_open = true;
         }));
     }
+    // A feed's items listed, and the public key block, with made-up keys.
+    v.push(dialog_scene("dialog_ai_feeds_items", [560.0, 900.0], |a| {
+        use crate::ai::feeds::{FeedDef, FeedItem};
+        a.settings.ai.enabled = true;
+        a.settings.ai.feeds = vec![
+            FeedDef { id: 1, name: "Alliance timers board".into(), url: "https://example.invalid/timers.rss".into(), ..Default::default() },
+            FeedDef { id: 2, name: "Status page".into(), url: "https://example.invalid/status.txt".into(), ..Default::default() },
+        ];
+        let now = crate::clock::utc().timestamp();
+        let it = |k: &str, ago: i64, title: &str, text: &str, link: &str| FeedItem { feed: 1, key: k.into(), time: now - ago, seen: now, title: title.into(), text: text.into(), link: link.into() };
+        a.ai_feeds.lock().unwrap().add(vec![
+            it("a", 7200, "Keepstar armor timer", "1DQ1-A, Keepstar armor timer comes out at 19:00. Form up in staging an hour before.", "https://example.invalid/t/1"),
+            it("b", 900, "", "QX-LIJ: Fortizar hull reinforced, timer in two days. An exceptionally long line that has to wrap rather than widen the dialog past its frame on a narrow screen.", ""),
+            it("c", 60, "Ihub timer", "Ihub timer", ""),
+        ]);
+        a.ai_feed_view = Some(1);
+        a.settings.sealed_feed.enabled = true;
+        a.settings.sealed_feed.name = "Coalition intel feed".into();
+        a.settings.sealed_feed.base_url = "https://feed.example.invalid".into();
+        *a.dl_status.lock().unwrap() = crate::sealed_feed::poller::Status {
+            last_ok: Some(now - 420),
+            last_error: Some("The feed did not accept the request signature (404). This machine's clock is +95 s off the server's; sync it (NTP).".into()),
+            events_total: 1284,
+            next_poll: Some(now + 180),
+            clock_skew: Some(95),
+        };
+        a.dl_unmapped = 3;
+        a.ai_feed_keys = Some(Ok("intel-feed-keys v1\ned25519_pub: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\nx25519_pub:  ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=\nfingerprint: 0123 4567 89ab cdef 0123 4567 89ab cdef".into()));
+        a.ai_feeds_open = true;
+    }));
     v.push(dialog_scene("dialog_ai_perms", [460.0, 900.0], |a| {
         a.settings.ai.enabled = true;
         a.settings.intel_channels = vec!["Delve.Imperium".into(), "Querious.Imperium".into()];

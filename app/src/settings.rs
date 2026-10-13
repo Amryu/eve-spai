@@ -156,6 +156,8 @@ pub struct Settings {
     pub alerts: AlertSettings,
     #[serde(default = "default_web")]
     pub web: WebSettings,
+    #[serde(default)]
+    pub sealed_feed: SealedFeedSettings,
     /// The assistant, all of it in one sub-struct: see `ai::config`.
     #[serde(default)]
     pub ai: crate::ai::config::AiSettings,
@@ -1562,6 +1564,7 @@ impl Default for Settings {
             alerts: AlertSettings::default(),
             web: WebSettings::default(),
             ai: Default::default(),
+            sealed_feed: Default::default(),
             language: String::new(),
             translate_ship_names: false,
             language_asked: false,
@@ -2763,5 +2766,35 @@ mod doctrine_default_tests {
         assert_eq!(mine.fleet_doctrine_tanks.iter().filter(|x| x.0 == 140).collect::<Vec<_>>(), vec![&(140, "shield".to_owned())], "the user's own choice stays");
         assert!(!mine.fleet_hulls.iter().any(|h| h.setup_id == 140), "nothing added to a doctrine the user set up");
         assert!(mine.fleet_hulls.iter().any(|h| h.setup_id == 65), "other doctrines still come");
+    }
+}
+
+/// A personal sealed intel feed (see `crate::sealed_feed`). Off and unconfigured until the user sets
+/// it up; every protocol detail is part of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SealedFeedSettings {
+    pub enabled: bool,
+    /// Shown as its reports' channel and in the feeds window.
+    pub name: String,
+    /// The feed's https address, without the events path.
+    pub base_url: String,
+    /// Seconds between polls, 30 to 60.
+    pub interval: u32,
+    /// The first line of the key block handed to the feed's operator.
+    pub key_block_label: String,
+    pub protocol: crate::sealed_feed::proto::Protocol,
+}
+
+impl Default for SealedFeedSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: "Intel feed".into(),
+            base_url: String::new(),
+            interval: 45,
+            key_block_label: "intel-feed-keys v1".into(),
+            protocol: Default::default(),
+        }
     }
 }

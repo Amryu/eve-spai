@@ -82,6 +82,10 @@ impl Ctx<'_> {
     pub fn allowed(&self, key: &str) -> bool {
         self.facts.allowed(key)
     }
+
+    pub fn sees_report(&self, r: &crate::intel::IntelReport) -> bool {
+        crate::sealed_feed::ai_sees(r, self.allowed(crate::sealed_feed::AI_PERM), &self.deps.opsec)
+    }
 }
 
 fn registry() -> Vec<&'static ToolSpec> {

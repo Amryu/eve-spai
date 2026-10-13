@@ -37,6 +37,7 @@ mod esilog;
 mod eveproc;
 mod kills;
 mod factions;
+mod feedkeys;
 mod geo;
 mod http;
 mod image_cache;
@@ -69,6 +70,7 @@ mod routeforce;
 mod scanroute;
 mod sde;
 mod sealed;
+mod sealed_feed;
 mod share;
 mod settings;
 mod shipnames;
@@ -199,6 +201,20 @@ fn main() -> eframe::Result<()> {
         if !instance::signal_ptt() {
             eprintln!("EVE Spai is not running");
             std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if args.iter().any(|a| a == feedkeys::CLI_FLAG) {
+        match feedkeys::identity() {
+            Ok(k) => {
+                let label = store::Store::open().ok().and_then(|s| s.load_settings()).map(|s| s.sealed_feed.key_block_label).unwrap_or_else(|| settings::SealedFeedSettings::default().key_block_label);
+                println!("{}", k.public_block(&label));
+                eprintln!("private keys: {}", feedkeys::location());
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

@@ -3465,6 +3465,36 @@ mod hidden_main_window_tests {
     }
 }
 
+mod sealed_feed_ingest_tests {
+    use super::*;
+
+    /// Events reach intel in time order with their pilot ids known; a backlog past the intel
+    /// lifetime and events naming no known system are left out.
+    #[test]
+    fn feed_events_join_intel_with_their_ids() {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.settings.sealed_feed.name = "Test feed".into();
+        let systems = crate::uitest::fixtures::systems();
+        let now = crate::clock::utc().timestamp();
+        let ev = |id: &str, ago: i64, sys: i64| crate::sealed_feed::wire::Event {
+            id: id.into(),
+            timestamp: Some(now - ago),
+            kind: "report".into(),
+            locations: vec![crate::sealed_feed::wire::Location { system_id: Some(sys), ..Default::default() }],
+            hostiles: vec![(format!("Pilot {id}"), Some(91_000_000))],
+            ..Default::default()
+        };
+        a.sealed_feed_ingest(&[ev("new", 30, 30_004_759), ev("old", 2 * 3600, 30_004_759), ev("nowhere", 30, 1)], &systems);
+        let st = a.intel_state.lock().unwrap();
+        assert_eq!(st.reports.len(), 1);
+        assert_eq!(st.reports[0].origin.as_deref(), Some("Test feed"));
+        assert_eq!(a.dl_unmapped, 1);
+        assert_eq!(a.pilots.lock().unwrap().get("Pilot new"), Some(Some(91_000_000)));
+    }
+}
+
 /// Text selection only survives the pop-outs, alert window and dialogs repainting when the app
 /// installs the plugin that keeps it (see `spai_ui::selection`).
 #[test]

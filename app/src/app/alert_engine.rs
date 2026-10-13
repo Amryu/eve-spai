@@ -377,7 +377,10 @@ impl AlertEngine {
                 if r.primary_system().is_none() && r.gates.is_empty() {
                     continue;
                 }
-                let fresh = if r.killmail {
+                // An outside feed's report lands up to a poll late, behind chat lines that moved
+                // `last_alert_time` on, so it is judged by its own id like a killmail.
+                let late = r.killmail || r.origin.is_some();
+                let fresh = if late {
                     now - r.received < KILLMAIL_ALERT_WINDOW && !rt.alerted.contains_key(&r.id)
                 } else {
                     r.received > rt.last_alert_time
@@ -385,7 +388,7 @@ impl AlertEngine {
                 if !fresh {
                     continue;
                 }
-                if !r.killmail {
+                if !late {
                     newest = newest.max(r.received);
                 }
                 let sev = severity_of(r, sev_rules);
@@ -418,6 +421,11 @@ impl AlertEngine {
                     (ru.system_notification, ru.custom_window, ru.push, ru.cooldown_secs);
                 let sys_id = r.primary_system().map_or(0, |s| s.id);
                 if now - rt.cooldown.get(&sys_id).copied().unwrap_or(0) < cd {
+                    // Judged by id, it would be looked at again every tick and fire once the
+                    // cooldown ran out, minutes after the fact.
+                    if late {
+                        rt.alerted.insert(r.id, now);
+                    }
                     continue;
                 }
                 if rt.alerted.contains_key(&r.id) {
@@ -519,7 +527,7 @@ impl AlertEngine {
             if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
                 crate::sound::play_prio(&f.sound, f.sev as u8, f.volume);
             }
-            if f.push {
+            if f.push && crate::sealed_feed::may_push(&f.report) {
                 push.send(&f.title, &f.text, f.sev as u8);
             }
         }
@@ -961,6 +969,43 @@ mod window_tests {
         assert_eq!(st.chars.len(), 1);
         assert!(st.kills.is_some() && st.affil.is_some());
         assert!(st.secs > 0.0 && st.focus_pending, "a refresh leaves the opening alone");
+    }
+
+    /// A feed report lands a poll late, behind chat that already moved the alert clock on. It still
+    /// fires once, in the app, and is never handed to a push service.
+    #[test]
+    fn a_late_feed_report_fires_once_and_is_not_pushed() {
+        let shared: SharedAlertWindow = Arc::new(Mutex::new(AlertWindowState::default()));
+        let engine = AlertEngine::new(Arc::new(Mutex::new(Vec::new())), 0, shared.clone(), egui::Context::default());
+        let systems = crate::uitest::fixtures::systems();
+        {
+            let mut cfg = engine.config.lock().unwrap();
+            cfg.enabled = true;
+            cfg.alerts.rules = vec![crate::settings::AlertRule { min_severity: crate::settings::Severity::Info, custom_window: true, push: true, sound: "off".into(), ..Default::default() }];
+            cfg.systems = Some(systems.clone());
+        }
+        let info = systems.info_of(DQ).unwrap();
+        let sys = vec![crate::intel::DetectedSystem { id: DQ, name: info.name.clone(), security: info.security }];
+        let now = crate::clock::utc().timestamp();
+        let intel = Mutex::new(crate::intel::IntelState::default());
+        intel.lock().unwrap().push(crate::intel::IntelReport { text: "chat".into(), received: now, systems: sys.clone(), ..Default::default() });
+        let player: crate::esi::SharedPlayer = Default::default();
+        assert!(engine.evaluate(&intel, &player));
+        let feed = |text: &str, sys: Vec<crate::intel::DetectedSystem>| crate::intel::IntelReport { text: text.into(), received: now - 40, systems: sys, origin: Some("Test feed".into()), ..Default::default() };
+        // Same system inside the cooldown: dropped for good, not fired once the cooldown is over.
+        let held = intel.lock().unwrap().insert_in_order(feed("feed, same system", sys.clone()));
+        assert_eq!(intel.lock().unwrap().reports[0].id, held, "kept in time order");
+        assert!(!engine.evaluate(&intel, &player));
+        engine.runtime.lock().unwrap().cooldown.clear();
+        assert!(!engine.evaluate(&intel, &player), "not fired after the cooldown either");
+
+        let three = systems.info_of(THREE).unwrap();
+        let other = feed("feed, next system", vec![crate::intel::DetectedSystem { id: THREE, name: three.name.clone(), security: three.security }]);
+        assert!(!crate::sealed_feed::may_push(&other));
+        let id = intel.lock().unwrap().insert_in_order(other);
+        assert!(engine.evaluate(&intel, &player), "the late feed report fires");
+        assert!(shared.lock().unwrap().feed.iter().any(|(r, _)| r.id == id));
+        assert!(!engine.evaluate(&intel, &player), "and only once");
     }
 
     /// With no rule opening the window, nothing is built for it.

@@ -7,7 +7,7 @@ use crate::geo::Systems;
 use crate::intel::{self, IntelState, Movement};
 
 /// How long reports stay live; older ones are only in the history.
-const INTEL_TTL: i64 = 3600;
+pub(crate) const INTEL_TTL: i64 = 3600;
 /// How often the live window is written to the history.
 const HISTORY_EVERY: i64 = 60;
 const POLL: Duration = Duration::from_millis(1500);

@@ -38,6 +38,7 @@ pub const TREE: &[Node] = &[
         children: &[
             leaf("intel.reports", tr_noop!("Intel reports"), tr_noop!("Parsed reports from your intel channels")),
             leaf("intel.chatlogs", tr_noop!("Raw chat logs"), tr_noop!("The channel logs themselves, line by line")),
+            leaf("intel.external", tr_noop!("Outside intel feed"), tr_noop!("Reports from your sealed intel feed. Reading one turns off web lookups for that chat")),
         ],
     },
     leaf("wormholes", tr_noop!("Wormholes"), tr_noop!("Known holes and signatures")),

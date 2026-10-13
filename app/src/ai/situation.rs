@@ -48,7 +48,8 @@ pub fn summary(deps: &AiDeps, facts: &AiFacts, store: Option<&crate::store::Stor
     if facts.allowed("intel.reports") {
         let st = deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
         let mut lines: Vec<(i64, String)> = Vec::new();
-        for r in st.reports.iter().rev().filter(|r| now - r.received <= 900 && !r.clear) {
+        let feed_ok = facts.allowed(crate::sealed_feed::AI_PERM);
+        for r in st.reports.iter().rev().filter(|r| now - r.received <= 900 && !r.clear && crate::sealed_feed::ai_sees(r, feed_ok, &deps.opsec)) {
             if let Some((sys, j)) = r.systems.iter().find_map(|x| near(x.id).map(|j| (x.name.clone(), j))) {
                 lines.push((r.received, format!("{} ({j}j, {}): {}", sys, super::tools::fmt_age(now, r.received), r.text.chars().take(120).collect::<String>())));
             }
