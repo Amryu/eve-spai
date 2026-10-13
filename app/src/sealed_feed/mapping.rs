@@ -9,6 +9,41 @@ fn system(loc: &Location, systems: &crate::geo::Systems) -> Option<DetectedSyste
     Some(DetectedSystem { id: info.id, name: info.name.clone(), security: info.security })
 }
 
+/// Systems named anywhere in an item: a string that is a system's name, a run of up to three
+/// words in one, or a number that is a system id.
+fn scan(v: &serde_json::Value, systems: &crate::geo::Systems, out: &mut Vec<DetectedSystem>, budget: &mut usize) {
+    use serde_json::Value;
+    if *budget == 0 || out.len() >= 5 {
+        return;
+    }
+    *budget -= 1;
+    let mut add = |info: &crate::geo::SystemInfo| {
+        if !out.iter().any(|x| x.id == info.id) {
+            out.push(DetectedSystem { id: info.id, name: info.name.clone(), security: info.security });
+        }
+    };
+    match v {
+        Value::Number(n) => {
+            if let Some(info) = n.as_i64().filter(|id| (30_000_000..33_000_000).contains(id)).and_then(|id| systems.info_of(id)) {
+                add(info);
+            }
+        }
+        Value::String(s) => {
+            let words: Vec<&str> = s.split(|c: char| c.is_whitespace() || ",;:()[]!?\"'".contains(c)).filter(|w| !w.is_empty()).take(200).collect();
+            for n in (1..=3).rev() {
+                for w in words.windows(n) {
+                    if let Some(info) = systems.lookup(&w.join(" ")) {
+                        add(info);
+                    }
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| scan(x, systems, out, budget)),
+        Value::Object(o) => o.values().for_each(|x| scan(x, systems, out, budget)),
+        _ => {}
+    }
+}
+
 /// The report, and the pilot ids the event named. `None` when no system it names is known.
 /// `origin` is the feed's name, shown as the report's channel and reporter.
 pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, systems: &crate::geo::Systems, now: i64) -> Option<(IntelReport, Vec<(String, i64)>)> {
@@ -21,19 +56,28 @@ pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, system
         }
     }
     if found.is_empty() {
+        scan(&ev.raw, systems, &mut found, &mut 500);
+    }
+    if found.is_empty() {
         return None;
     }
+    let said = ev.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let said_lower = said.map(str::to_lowercase).unwrap_or_default();
     let pilots: Vec<String> = ev.hostiles.iter().map(|(n, _)| n.trim().to_owned()).filter(|n| !n.is_empty()).collect();
     let ids: Vec<(String, i64)> = ev.hostiles.iter().filter_map(|(n, id)| Some((n.trim().to_lowercase(), (*id)?))).filter(|(n, _)| !n.is_empty()).collect();
     let ships: Vec<DetectedShip> = ev.ships.iter().filter(|(n, _)| !n.trim().is_empty()).map(|(n, id)| DetectedShip { id: id.unwrap_or(0), name: n.trim().to_owned() }).collect();
     let kw: Vec<String> = ev.keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect();
-    let has = |w: &[&str]| kw.iter().any(|k| w.contains(&k.as_str()));
+    let said_words: Vec<&str> = said_lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let has = |w: &[&str]| kw.iter().any(|k| w.contains(&k.as_str())) || w.iter().any(|x| if x.contains(' ') { said_lower.contains(x) } else { said_words.contains(x) });
     let is_kind = |k: &str| !k.is_empty() && ev.kind.eq_ignore_ascii_case(k);
     let clear = is_kind(&fields.kind_clear);
     let count = ev.count.filter(|&c| c > 0).or_else(|| (!pilots.is_empty()).then_some(pilots.len() as u32));
     let gate = ev.gate.as_deref().map(str::trim).filter(|g| !g.is_empty());
 
-    let mut text: Vec<String> = vec![found[0].name.clone()];
+    let mut text: Vec<String> = Vec::new();
+    if !(said.is_some() && found.iter().any(|f| said_lower.contains(&f.name.to_lowercase()))) {
+        text.push(found[0].name.clone());
+    }
     if clear {
         text.push("clr".into());
     }
@@ -49,6 +93,7 @@ pub fn to_report(ev: &Event, fields: &super::proto::Fields, origin: &str, system
         text.push("kill".into());
     }
     text.extend(kw.iter().cloned());
+    text.extend(said.map(str::to_owned));
 
     let report = IntelReport {
         received: ev.timestamp.unwrap_or(now).min(now),
@@ -112,6 +157,18 @@ mod tests {
         assert!(r.clear);
         assert_eq!(r.systems[0].name, "8QT-H4");
         assert!(to_report(&event(r#"{"id":"e3","kind":"report","location":{"system":"Nowhere"}}"#), &Fields::default(), "f", &geo(), 5).is_none());
+    }
+
+    #[test]
+    fn a_system_is_found_anywhere_in_an_item_and_its_message_is_the_text() {
+        let (r, _) = to_report(&event(r#"{"msg":"bubble camp on the 8QT-H4 gate","meta":{"near":[30004759]}}"#), &Fields::default(), "f", &geo(), 5).unwrap();
+        let mut names: Vec<&str> = r.systems.iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["1DQ1-A", "8QT-H4"]);
+        assert_eq!(r.text, "bubble camp on the 8QT-H4 gate");
+        assert!(r.bubble && r.camp);
+        let plain = crate::sealed_feed::wire::read_event(&serde_json::Value::String("1dq1-a clr".into()), &Fields::default());
+        assert_eq!(to_report(&plain, &Fields::default(), "f", &geo(), 5).unwrap().0.systems[0].id, 30004759);
     }
 
     #[test]

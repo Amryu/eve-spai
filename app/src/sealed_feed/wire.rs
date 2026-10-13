@@ -68,7 +68,7 @@ pub fn sign_events_request(p: &Protocol, base: &str, cursor: Option<&str>, keys:
     }
 }
 
-/// One event, read through the configured field names.
+/// One item of an answer, read through the configured field names, then the usual ones.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Event {
     pub id: String,
@@ -80,6 +80,9 @@ pub struct Event {
     pub ships: Vec<(String, Option<i64>)>,
     pub keywords: Vec<String>,
     pub gate: Option<String>,
+    pub text: Option<String>,
+    /// The item as the feed sent it.
+    pub raw: Value,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -110,7 +113,15 @@ fn int(v: &Value) -> Option<i64> {
 fn time(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64().map(|t| if t > 100_000_000_000 { t / 1000 } else { t }),
-        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s.trim()).ok().map(|t| t.timestamp()).or_else(|| s.trim().parse().ok()),
+        Value::String(s) => {
+            let s = s.trim();
+            chrono::DateTime::parse_from_rfc3339(s)
+                .or_else(|_| chrono::DateTime::parse_from_rfc2822(s))
+                .map(|t| t.timestamp())
+                .ok()
+                .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|t| t.and_utc().timestamp()))
+                .or_else(|| s.parse::<i64>().ok().map(|t| if t > 100_000_000_000 { t / 1000 } else { t }))
+        }
         _ => None,
     }
 }
@@ -122,60 +133,126 @@ fn get<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
     v.get(name).filter(|x| !x.is_null())
 }
 
-fn location(v: &Value, f: &Fields) -> Location {
+/// The configured name, else the first usual name the item has.
+fn pick<'a>(v: &'a Value, name: &str, usual: &[&str]) -> Option<&'a Value> {
+    get(v, name).or_else(|| usual.iter().find_map(|n| get(v, n)))
+}
+
+/// A list, or one value standing for a list of one.
+fn many(v: Option<&Value>) -> Vec<Value> {
     match v {
-        Value::String(s) => Location { system: s.clone(), system_id: None },
-        _ => Location { system: get(v, &f.system).and_then(text).unwrap_or_default(), system_id: get(v, &f.system_id).and_then(int) },
+        Some(Value::Array(a)) => a.clone(),
+        Some(x) => vec![x.clone()],
+        None => Vec::new(),
     }
 }
 
-fn named(v: &Value, name: &str, id: &str) -> (String, Option<i64>) {
+const SYSTEM: &[&str] = &["system", "system_name", "solar_system", "solar_system_name", "solarSystemName", "name"];
+const SYSTEM_ID: &[&str] = &["system_id", "solar_system_id", "solarSystemID", "systemId", "id"];
+
+fn location(v: &Value, f: &Fields) -> Option<Location> {
+    let l = match v {
+        Value::String(s) => Location { system: s.clone(), system_id: None },
+        Value::Number(_) => Location { system: String::new(), system_id: int(v) },
+        Value::Object(_) => match pick(v, &f.system, SYSTEM) {
+            Some(inner @ Value::Object(_)) => return location(inner, f),
+            s => Location { system: s.and_then(text).unwrap_or_default(), system_id: pick(v, &f.system_id, SYSTEM_ID).and_then(int) },
+        },
+        _ => return None,
+    };
+    (!l.system.trim().is_empty() || l.system_id.is_some()).then_some(l)
+}
+
+fn named(v: &Value, name: &str, id: &str, usual_name: &[&str], usual_id: &[&str]) -> (String, Option<i64>) {
     match v {
         Value::String(s) => (s.clone(), None),
-        _ => (get(v, name).and_then(text).unwrap_or_default(), get(v, id).and_then(int)),
+        _ => (pick(v, name, usual_name).and_then(text).unwrap_or_default(), pick(v, id, usual_id).and_then(int)),
     }
+}
+
+fn digest(v: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(v.to_string().as_bytes()).iter().take(12).map(|b| format!("{b:02x}")).collect()
 }
 
 pub fn read_event(v: &Value, f: &Fields) -> Event {
-    let list = |name: &str| get(v, name).and_then(Value::as_array).cloned().unwrap_or_default();
-    let mut locations = Vec::new();
-    if let Some(l) = get(v, &f.location) {
-        locations.push(location(l, f));
+    let mut locations: Vec<Location> = many(pick(v, &f.location, &["location", "where", "solar_system", "system"])).iter().filter_map(|l| location(l, f)).collect();
+    if locations.is_empty() {
+        if let Some(id) = pick(v, &f.system_id, &SYSTEM_ID[..4]).and_then(int) {
+            locations.push(Location { system: String::new(), system_id: Some(id) });
+        }
     }
-    locations.extend(list(&f.additional_systems).iter().map(|l| location(l, f)));
+    locations.extend(many(pick(v, &f.additional_systems, &["additional_systems", "systems"])).iter().filter_map(|l| location(l, f)));
+    let id = match v {
+        Value::Object(_) => pick(v, &f.id, &["id", "_id", "uuid", "guid", "event_id", "key"]).and_then(text),
+        _ => None,
+    };
     Event {
-        id: get(v, &f.id).and_then(text).unwrap_or_default(),
-        timestamp: get(v, &f.timestamp).and_then(time),
-        kind: get(v, &f.kind).and_then(text).unwrap_or_default(),
+        id: id.filter(|i| !i.is_empty()).unwrap_or_else(|| digest(v)),
+        timestamp: pick(v, &f.timestamp, &["timestamp", "time", "ts", "at", "created_at", "created", "date", "reported_at"]).and_then(time),
+        kind: pick(v, &f.kind, &["kind", "type", "event", "category"]).and_then(text).unwrap_or_default(),
         locations,
-        hostiles: list(&f.hostiles).iter().map(|h| named(h, &f.hostile_name, &f.hostile_id)).collect(),
-        count: get(v, &f.count).and_then(int).and_then(|c| u32::try_from(c).ok()),
-        ships: list(&f.ships).iter().map(|s| named(s, &f.ship_name, &f.ship_type_id)).collect(),
-        keywords: list(&f.keywords).iter().filter_map(text).collect(),
-        gate: get(v, &f.gate).and_then(text),
+        hostiles: many(pick(v, &f.hostiles, &["hostiles", "pilots", "characters", "attackers"]))
+            .iter()
+            .map(|h| named(h, &f.hostile_name, &f.hostile_id, &["name", "character", "pilot", "character_name"], &["id", "character_id", "characterID"]))
+            .collect(),
+        count: pick(v, &f.count, &["count", "number", "size"]).and_then(int).and_then(|c| u32::try_from(c).ok()),
+        ships: many(pick(v, &f.ships, &["ships", "hulls"]))
+            .iter()
+            .map(|s| named(s, &f.ship_name, &f.ship_type_id, &["name", "ship", "ship_name", "type"], &["type_id", "ship_type_id", "shipTypeID", "id"]))
+            .collect(),
+        keywords: many(pick(v, &f.keywords, &["keywords", "tags", "flags"])).iter().filter_map(text).collect(),
+        gate: pick(v, &f.gate, &["gate", "stargate"]).and_then(text),
+        text: match v {
+            Value::String(s) => Some(s.clone()),
+            _ => pick(v, "", &["text", "message", "msg", "body", "description", "summary", "note", "content"]).and_then(text),
+        },
+        raw: v.clone(),
     }
 }
 
-/// The decrypted, parsed payload of one answer.
-pub fn open_payload(p: &Protocol, keys: &crate::feedkeys::FeedKeys, body: &[u8]) -> Result<Payload> {
-    let sealed = match p.body {
-        Body::Raw => body.to_vec(),
-        Body::Base64 => super::proto::Encoding::Base64
-            .decode(std::str::from_utf8(body).unwrap_or_default())
-            .ok_or_else(|| anyhow!("the answer is not base64"))?,
-    };
-    let plain = keys.open_sealed(&sealed)?;
-    let v: Value = serde_json::from_slice(&plain).map_err(|e| anyhow!("the decrypted answer is not JSON: {e}"))?;
-    let f = &p.fields;
-    if let Some(ver) = get(&v, &f.version).and_then(int) {
-        if ver != i64::from(p.payload_version) {
-            return Err(anyhow!("the feed sent payload version {ver}, this client is set to read {}", p.payload_version));
-        }
+/// Where the items are: the configured list, the answer itself when it is one, a usual name, or
+/// the first list of objects. Anything else is one item.
+fn items<'a>(v: &'a Value, f: &Fields) -> Vec<&'a Value> {
+    if let Value::Array(a) = v {
+        return a.iter().collect();
     }
+    let list = pick(v, &f.events, &["events", "items", "data", "results", "reports", "entries"])
+        .filter(|l| l.is_array())
+        .or_else(|| v.as_object()?.values().find(|x| x.as_array().is_some_and(|a| a.first().is_some_and(Value::is_object))));
+    match list {
+        Some(Value::Array(a)) => a.iter().collect(),
+        _ if v.as_object().is_some_and(|o| o.is_empty()) => Vec::new(),
+        _ if pick(v, &f.cursor, &["cursor", "next_cursor"]).is_some() => Vec::new(),
+        _ => vec![v],
+    }
+}
+
+/// The answer opened and read, whatever shape it has. A sealed box is opened first; an answer
+/// that is not one is read as it came.
+pub fn open_payload(p: &Protocol, keys: &crate::feedkeys::FeedKeys, body: &[u8]) -> Result<Payload> {
+    let b64 = || super::proto::Encoding::Base64.decode(std::str::from_utf8(body).ok()?.trim());
+    let opened = match p.body {
+        Body::Raw => keys.open_sealed(body).ok().or_else(|| keys.open_sealed(&b64()?).ok()),
+        Body::Base64 => b64().and_then(|s| keys.open_sealed(&s).ok()).or_else(|| keys.open_sealed(body).ok()),
+    };
+    let plain = match opened {
+        Some(p) => p,
+        None => match std::str::from_utf8(body) {
+            Ok(_) => body.to_vec(),
+            Err(_) => return Err(anyhow!("the answer could not be opened with your feed keys")),
+        },
+    };
+    let s = String::from_utf8_lossy(&plain);
+    let v: Value = serde_json::from_str(&s).unwrap_or_else(|_| Value::String(s.trim().to_owned()));
+    if v.as_str().is_some_and(str::is_empty) {
+        return Ok(Payload { cursor: None, more: false, events: Vec::new() });
+    }
+    let f = &p.fields;
     Ok(Payload {
-        cursor: get(&v, &f.cursor).and_then(text),
-        more: get(&v, &f.more).and_then(Value::as_bool).unwrap_or(false),
-        events: get(&v, &f.events).and_then(Value::as_array).map(|a| a.iter().map(|e| read_event(e, f)).collect()).unwrap_or_default(),
+        cursor: pick(&v, &f.cursor, &["cursor", "next_cursor", "next", "after"]).and_then(text),
+        more: pick(&v, &f.more, &["more", "has_more"]).and_then(Value::as_bool).unwrap_or(false),
+        events: items(&v, f).into_iter().map(|e| read_event(e, f)).collect(),
     })
 }
 
@@ -248,7 +325,31 @@ mod tests {
         let mut tampered = sealed.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert!(open_payload(&Protocol::default(), &keys, &tampered).is_err());
-        assert!(open_payload(&Protocol::default(), &keys, &seal(&keys, br#"{"version":2}"#)).is_err());
+
+        let plain = open_payload(&Protocol::default(), &keys, br#"{"version":2,"note":"plain"}"#).unwrap();
+        assert_eq!(plain.events[0].text.as_deref(), Some("plain"), "an answer that is no sealed box is read as it came");
+    }
+
+    /// No fixed shape: a bare list, usual names, nested systems, plain text, each item kept whole.
+    #[test]
+    fn any_answer_shape_is_read() {
+        let keys = crate::feedkeys::FeedKeys::for_test(3, 4);
+        let read = |body: &str| open_payload(&Protocol::default(), &keys, &seal(&keys, body.as_bytes())).unwrap();
+        let pl = read(r#"[{"type":"report","solar_system":{"name":"1DQ1-A","id":30004759},"pilots":"Some Pilot","message":"cyno up","time":"2026-10-12 19:00:00"}]"#);
+        let e = &pl.events[0];
+        assert_eq!((e.kind.as_str(), e.locations[0].system_id, e.text.as_deref()), ("report", Some(30004759), Some("cyno up")));
+        assert_eq!((e.hostiles[0].0.as_str(), e.timestamp), ("Some Pilot", Some(1_791_831_600)));
+        assert_eq!(e.raw["message"], "cyno up");
+        assert!(!e.id.is_empty(), "an item without an id gets one from its content");
+
+        let pl = read(r#"{"next_cursor":"c2","has_more":true,"data":[{"system_id":30004758},{"x":1}]}"#);
+        assert_eq!((pl.cursor.as_deref(), pl.more, pl.events.len()), (Some("c2"), true, 2));
+        assert_eq!(pl.events[0].locations[0].system_id, Some(30004758));
+        assert_ne!(pl.events[0].id, pl.events[1].id);
+
+        let pl = read("hostiles in 1DQ1-A");
+        assert_eq!((pl.events.len(), pl.events[0].text.as_deref()), (1, Some("hostiles in 1DQ1-A")));
+        assert!(read(r#"{"cursor":"c3","events":[]}"#).events.is_empty());
     }
 
     #[test]

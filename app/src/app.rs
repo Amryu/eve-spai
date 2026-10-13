@@ -988,6 +988,8 @@ pub struct SpaiApp {
     dl_pending: Vec<crate::sealed_feed::wire::Event>,
     /// Events whose systems are not on the map.
     pub(crate) dl_unmapped: u64,
+    /// The feed's latest items as they came, with the systems each was mapped to.
+    pub(crate) dl_items: std::collections::VecDeque<(crate::sealed_feed::wire::Event, Vec<String>)>,
     /// The feed whose items the feeds window lists.
     pub(crate) ai_feed_view: Option<u64>,
     /// Read from the keychain on request, not every frame: the first read can wait on a prompt.
@@ -1835,6 +1837,7 @@ impl SpaiApp {
             dl_rx: None,
             dl_pending: Vec::new(),
             dl_unmapped: 0,
+            dl_items: Default::default(),
             ai_feed_keys: None,
             ai_stt_key_input: String::new(),
             ai_cli_other_model: false,

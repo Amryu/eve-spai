@@ -3,6 +3,8 @@
 
 use super::*;
 
+const ITEMS_KEPT: usize = 200;
+
 impl SpaiApp {
     pub(crate) fn sealed_feed_tick(&mut self) {
         {
@@ -36,7 +38,10 @@ impl SpaiApp {
         let mut reports = Vec::new();
         let mut ids = std::collections::HashMap::new();
         for ev in events {
-            match crate::sealed_feed::mapping::to_report(ev, &cfg.protocol.fields, &name, systems, now) {
+            let mapped = crate::sealed_feed::mapping::to_report(ev, &cfg.protocol.fields, &name, systems, now);
+            self.dl_items.push_front((ev.clone(), mapped.as_ref().map(|(r, _)| r.systems.iter().map(|s| s.name.clone()).collect()).unwrap_or_default()));
+            self.dl_items.truncate(ITEMS_KEPT);
+            match mapped {
                 // A day of backlog after a restart: what is already past the intel lifetime would
                 // be pruned on the next tick anyway.
                 Some((r, _)) if now - r.received > crate::watcher::INTEL_TTL => {}
@@ -140,15 +145,12 @@ impl SpaiApp {
                 });
                 changed |= p.body != was;
                 ui.end_row();
-                ui.label(tr!("Payload version"));
-                changed |= ui.add(egui::DragValue::new(&mut p.payload_version).range(0..=1000)).changed();
-                ui.end_row();
             });
-            egui::CollapsingHeader::new(tr!("Payload field names")).id_salt("sealed_feed_fields").show(ui, |ui| {
+            egui::CollapsingHeader::new(tr!("Payload field names, tried before the usual ones")).id_salt("sealed_feed_fields").show(ui, |ui| {
                 let f = &mut p.fields;
                 egui::Grid::new("sealed_feed_fields_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                     for (label, v) in [
-                        ("version", &mut f.version), ("cursor", &mut f.cursor), ("more", &mut f.more), ("events", &mut f.events),
+                        ("cursor", &mut f.cursor), ("more", &mut f.more), ("events", &mut f.events),
                         ("id", &mut f.id), ("timestamp", &mut f.timestamp), ("kind", &mut f.kind), ("location", &mut f.location),
                         ("additional systems", &mut f.additional_systems), ("system", &mut f.system), ("system id", &mut f.system_id),
                         ("region", &mut f.region), ("hostiles", &mut f.hostiles), ("hostile name", &mut f.hostile_name),
@@ -172,7 +174,7 @@ impl SpaiApp {
             None => ui.label(egui::RichText::new(tr!("No successful pull yet.")).weak()),
         };
         if self.dl_unmapped > 0 {
-            ui.label(egui::RichText::new(trf!("{n} events named no system on the map", n = self.dl_unmapped)).weak());
+            ui.label(egui::RichText::new(trf!("{n} items named no system on the map; they are listed below", n = self.dl_unmapped)).weak());
         }
         if let Some(e) = &st.last_error {
             ui.horizontal_wrapped(|ui| {
@@ -182,6 +184,28 @@ impl SpaiApp {
             if let Some(next) = st.next_poll {
                 ui.label(egui::RichText::new(trf!("Trying again in {v}", v = super::fmt_age((next - now).max(0)))).weak());
             }
+        }
+        if !self.dl_items.is_empty() {
+            egui::CollapsingHeader::new(trf!("Latest items as received ({n})", n = self.dl_items.len())).id_salt("sealed_feed_items").show(ui, |ui| {
+                for (ev, mapped) in &self.dl_items {
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(t) = ev.timestamp {
+                            ui.label(egui::RichText::new(trf!("{ago} ago", ago = super::fmt_age((now - t).max(0)))).weak());
+                        }
+                        if mapped.is_empty() {
+                            ui.label(egui::RichText::new(tr!("not on the map")).weak());
+                        } else {
+                            ui.label(format!("{} {}", icon::MAP_PIN, mapped.join(", ")));
+                        }
+                    });
+                    let raw = match &ev.raw {
+                        serde_json::Value::String(s) => s.clone(),
+                        v => serde_json::to_string_pretty(v).unwrap_or_default(),
+                    };
+                    ui.add(egui::Label::new(egui::RichText::new(raw).monospace()).wrap());
+                    ui.separator();
+                }
+            });
         }
         changed
     }

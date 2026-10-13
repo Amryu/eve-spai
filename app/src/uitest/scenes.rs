@@ -2570,6 +2570,9 @@ pub(crate) fn all() -> Vec<Scene> {
             clock_skew: Some(95),
         };
         a.dl_unmapped = 3;
+        let raw = |j: &str| crate::sealed_feed::wire::read_event(&serde_json::from_str(j).unwrap(), &Default::default());
+        a.dl_items.push_back((raw(r#"{"id":"e1","timestamp":"2026-10-12T19:00:00Z","kind":"report","location":{"system":"1DQ1-A"},"count":5}"#), vec!["1DQ1-A".into()]));
+        a.dl_items.push_back((raw(r#""free text the feed sent, read as it came""#), vec![]));
         a.ai_feed_keys = Some(Ok("intel-feed-keys v1\ned25519_pub: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\nx25519_pub:  ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=\nfingerprint: 0123 4567 89ab cdef 0123 4567 89ab cdef".into()));
         a.ai_feeds_open = true;
     }));

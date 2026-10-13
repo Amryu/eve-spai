@@ -81,7 +81,6 @@ pub enum Body {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Fields {
-    pub version: String,
     pub cursor: String,
     pub more: String,
     pub events: String,
@@ -111,7 +110,6 @@ impl Default for Fields {
     fn default() -> Self {
         let s = |v: &str| v.to_owned();
         Self {
-            version: s("version"),
             cursor: s("cursor"),
             more: s("more"),
             events: s("events"),
@@ -158,7 +156,6 @@ pub struct Protocol {
     pub signature_encoding: Encoding,
     pub key_id: KeyId,
     pub body: Body,
-    pub payload_version: u32,
     /// How far either way the server accepts a timestamp, for the clock hint on a refusal.
     pub clock_tolerance_secs: i64,
     pub fields: Fields,
@@ -182,7 +179,6 @@ impl Default for Protocol {
             signature_encoding: Encoding::Base64,
             key_id: KeyId::Fingerprint,
             body: Body::Raw,
-            payload_version: 1,
             clock_tolerance_secs: 60,
             fields: Fields::default(),
         }
