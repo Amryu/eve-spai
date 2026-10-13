@@ -9,14 +9,22 @@ use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct KeepAcrossViewports {
-    /// The viewport whose labels last held the selection.
+    ctx: Option<egui::Context>,
+    /// The viewport a selection is made in: where the pointer last went down.
     owner: Option<egui::ViewportId>,
-    /// Per viewport, because an immediate viewport's pass runs inside its parent's.
-    before: HashMap<egui::ViewportId, Option<LabelSelectionState>>,
+    /// The whole state as each pass found it, per viewport, because an immediate viewport's pass
+    /// runs inside its parent's. Taken in the input hook: by `on_begin_pass` egui has already
+    /// reset the flags that say both ends were drawn, and a nested pass that put back that reset
+    /// state cleared the selection at the end of its parent's pass, every frame.
+    before: HashMap<egui::ViewportId, LabelSelectionState>,
 }
 
-fn selection(ctx: &egui::Context) -> Option<LabelSelectionState> {
-    ctx.with_plugin(|p: &mut LabelSelectionState| p.has_selection().then(|| p.clone())).flatten()
+fn state(ctx: &egui::Context) -> Option<LabelSelectionState> {
+    ctx.with_plugin(|p: &mut LabelSelectionState| p.clone())
+}
+
+fn has_selection(ctx: &egui::Context) -> bool {
+    ctx.with_plugin(|p: &mut LabelSelectionState| p.has_selection()).unwrap_or(false)
 }
 
 impl egui::Plugin for KeepAcrossViewports {
@@ -24,25 +32,27 @@ impl egui::Plugin for KeepAcrossViewports {
         "KeepSelectionAcrossViewports"
     }
 
-    fn on_begin_pass(&mut self, ui: &mut egui::Ui) {
-        self.before.insert(ui.ctx().viewport_id(), selection(ui.ctx()));
+    fn setup(&mut self, ctx: &egui::Context) {
+        self.ctx = Some(ctx.clone());
+    }
+
+    fn input_hook(&mut self, input: &mut egui::RawInput) {
+        if input.events.iter().any(|e| matches!(e, egui::Event::PointerButton { pressed: true, .. })) {
+            self.owner = Some(input.viewport_id);
+        }
+        if let Some(st) = self.ctx.as_ref().and_then(state) {
+            self.before.insert(input.viewport_id, st);
+        }
     }
 
     fn on_end_pass(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let vp = ctx.viewport_id();
-        let before = self.before.remove(&vp).flatten();
-        if selection(&ctx).is_some() {
-            self.owner = Some(vp);
-            return;
-        }
+        let Some(before) = self.before.remove(&vp) else { return };
         let foreign = self.owner.is_some_and(|o| o != vp);
         let clicked = ui.input(|i| i.pointer.any_pressed());
-        match before {
-            Some(state) if foreign && !clicked => {
-                ctx.with_plugin(|p: &mut LabelSelectionState| *p = state);
-            }
-            _ => self.owner = None,
+        if foreign && !clicked && before.has_selection() && !has_selection(&ctx) {
+            ctx.with_plugin(|p: &mut LabelSelectionState| *p = before);
         }
     }
 }
@@ -72,7 +82,7 @@ mod tests {
     }
 
     fn has(ctx: &egui::Context) -> bool {
-        selection(ctx).is_some()
+        has_selection(ctx)
     }
 
     /// Select in the main window, then let another window paint: the selection stays and copies.
@@ -108,5 +118,44 @@ mod tests {
         pass(other, vec![btn(egui::pos2(5.0, 5.0), true)]);
         pass(other, vec![btn(egui::pos2(5.0, 5.0), false)]);
         assert!(!has(&ctx), "a click elsewhere deselects");
+    }
+
+    /// A pop-out drawn as an immediate viewport runs its pass inside the main window's, after the
+    /// main window drew the selected label: the selection must outlive both, frame after frame.
+    #[test]
+    fn a_selection_survives_a_window_nested_in_its_pass() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        ctx.set_embed_viewports(false);
+        let root = egui::ViewportId::ROOT;
+        let inner = egui::ViewportId::from_hash_of("popout");
+        egui::Context::set_immediate_viewport_renderer(move |ctx, mut vp| {
+            let _ = ctx.run_ui(raw(vp.ids.this, vec![]), |ui| (vp.viewport_ui_cb)(ui));
+        });
+        let copied = std::cell::RefCell::new(String::new());
+        let pass = |events| {
+            let out = ctx.run_ui(raw(root, events), |ui| {
+                ui.label("pilot: form up now please");
+                ui.ctx().show_viewport_immediate(inner, egui::ViewportBuilder::default(), |ui, _| {
+                    ui.label("elsewhere");
+                });
+            });
+            for c in out.platform_output.commands {
+                if let egui::OutputCommand::CopyText(t) = c {
+                    *copied.borrow_mut() = t;
+                }
+            }
+        };
+        let (a, b) = (egui::pos2(12.0, 10.0), egui::pos2(300.0, 10.0));
+        pass(vec![egui::Event::PointerMoved(a)]);
+        pass(vec![btn(a, true)]);
+        pass(vec![egui::Event::PointerMoved(b)]);
+        pass(vec![btn(b, false)]);
+        for _ in 0..3 {
+            pass(vec![]);
+            assert!(has(&ctx), "the nested window's pass must not clear it");
+        }
+        pass(vec![egui::Event::Copy]);
+        assert!(copied.borrow().contains("form up"), "{:?}", copied.borrow());
     }
 }
