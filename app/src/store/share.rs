@@ -275,8 +275,9 @@ impl Store {
                     if r.uid == remote.uid {
                         let _ = self.conn.execute("UPDATE wormholes SET group_id = ?2 WHERE id = ?1", params![r.id, group]);
                     }
+                    // A row recorded from the far end keeps its uid: one uid names one way round.
                     if r.uid != remote.uid {
-                        if remote.uid < r.uid {
+                        if remote.uid < r.uid && r.system_id == remote.system_id {
                             self.rename_uid(&r.uid.clone(), &remote.uid);
                         } else {
                             let _ = self.conn.execute(
@@ -290,6 +291,15 @@ impl Store {
                         None => return false,
                     }
                 }
+            };
+            let facing;
+            let remote = if row.system_id == remote.system_id {
+                remote
+            } else if row.dest_system_id == Some(remote.system_id) {
+                facing = hole::turned(remote, row.system_id);
+                &facing
+            } else {
+                return false;
             };
             let mut clocks = self.clocks(&row.uid);
             let taken = hole::merge(&mut row, &mut clocks, remote);
@@ -927,7 +937,38 @@ mod tests {
         assert_eq!(p("other"), SharePrefs::default(), "a choice once made is kept");
     }
 
-        #[test]
+    /// Another install recorded the hole from its far end: its fields land on the matching side
+    /// here, and each install keeps its own uid for its own way round.
+    #[test]
+    fn a_hole_recorded_from_the_far_end_merges_side_for_side() {
+        let now = crate::clock::utc().timestamp();
+        let hole = || Wormhole { reported_at: now, updated_at: now, ..hole() };
+        let a = Store::mem();
+        joined(&a);
+        let id = a.upsert_wormhole(&Wormhole { uid: "mmmm".into(), signature: Some("ABC-123".into()), ..hole() });
+        let b = Store::mem();
+        joined(&b);
+        b.upsert_wormhole(&Wormhole {
+            uid: "0000".into(),
+            system_id: 30_000_142,
+            signature: Some("XYZ-987".into()),
+            dest: DestClass::Wspace,
+            dest_system_id: Some(31_000_200),
+            mass: Some(Mass::Critical),
+            ..hole()
+        });
+        assert!(a.share_apply_hole(&b.share_hole_state("0000", 2).unwrap(), "g", "Pilot 2"));
+        let w = a.wormhole_by_id(id).unwrap();
+        assert_eq!(w.uid, "mmmm", "not renamed to a uid that names the other way round");
+        assert_eq!((w.system_id, w.dest_system_id), (31_000_200, Some(30_000_142)));
+        assert_eq!((w.signature.as_deref(), w.dest_signature.as_deref()), (Some("ABC-123"), Some("XYZ-987")));
+        assert_eq!(w.mass, Some(Mass::Critical));
+        assert_eq!(a.wormholes().len(), 1);
+        a.share_apply_dead("0000");
+        assert!(a.wormholes().is_empty(), "closing it under the far end's uid closes it here");
+    }
+
+    #[test]
     fn one_hole_under_two_uids_settles_on_the_smaller() {
         let a = Store::mem();
         joined(&a);

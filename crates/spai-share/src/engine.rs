@@ -571,17 +571,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
             Op::Sigs { system_id, rows, drop_missing, at } => self.store.share_apply_sigs(*system_id, rows, *drop_missing, *at, &who, &g.id),
             Op::SigDelete { system_id, sig } => self.store.share_apply_sig_delete(*system_id, sig),
             Op::Snapshot { holes, dead, sigs, members } => {
-                if !roster.role(env.author).is_some_and(Role::can_manage) {
-                    bail!("a snapshot from someone who is not an admin");
-                }
-                for m in members {
-                    let known = roster.members.entry(m.char_id).or_insert_with(|| m.clone());
-                    for d in &m.devices {
-                        if known.device(&d.id).is_none() && d.keys.device_id() == d.id && known.devices.len() < ops::MAX_DEVICES {
-                            known.devices.push(d.clone());
-                        }
-                    }
-                }
+                roster.snapshot(env.author, members)?;
                 if holes_in {
                     for h in holes {
                         self.store.share_apply_hole(h, &g.id, &who);

@@ -276,6 +276,27 @@ impl Roster {
         self.role(author).is_some_and(Role::can_write)
     }
 
+    /// Takes a snapshot's members from `author`. Its data is anyone's who may write: a member
+    /// letting in a viewer sends one too. Its members count only from an admin, since nothing else
+    /// checks them.
+    pub fn snapshot(&mut self, author: i64, members: &[Member]) -> Result<()> {
+        if !self.can_write(author) {
+            bail!("a snapshot from someone who shares nothing");
+        }
+        if !self.role(author).is_some_and(Role::can_manage) {
+            return Ok(());
+        }
+        for m in members {
+            let known = self.members.entry(m.char_id).or_insert_with(|| m.clone());
+            for d in &m.devices {
+                if known.device(&d.id).is_none() && d.keys.device_id() == d.id && known.devices.len() < MAX_DEVICES {
+                    known.devices.push(d.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Applies a membership entry by `author`. Data entries are none of its business.
     pub fn apply(&mut self, author: i64, op: &Op) -> Result<()> {
         let manager = self.role(author).is_some_and(Role::can_manage);
@@ -455,6 +476,22 @@ mod tests {
         r.apply(1, &Op::DeviceRemoved { char_id: 2, device_id: v2.public().device_id() }).unwrap();
         assert_eq!(r.role(2), None, "no devices left, no member");
         assert!(r.apply(1, &Op::DeviceRemoved { char_id: 1, device_id: o.public().device_id() }).is_err(), "the owner's last device");
+    }
+
+    /// A member who let a viewer in sends a snapshot: its data is taken, its members are not.
+    #[test]
+    fn a_snapshot_brings_members_only_from_an_admin() {
+        let (o, m, v, x) = (DeviceKeys::generate(), DeviceKeys::generate(), DeviceKeys::generate(), DeviceKeys::generate());
+        let mut r = Roster::default();
+        r.apply(1, &Op::Genesis { name: "Chain".into(), owner: member(1, &o, Role::Owner) }).unwrap();
+        r.apply(1, &Op::MemberAdded { member: member(2, &m, Role::Member) }).unwrap();
+        r.apply(2, &Op::MemberAdded { member: member(3, &v, Role::Viewer) }).unwrap();
+        let stranger = [member(9, &x, Role::Admin)];
+        r.snapshot(2, &stranger).unwrap();
+        assert_eq!(r.role(9), None, "a member's snapshot adds nobody");
+        assert!(r.snapshot(3, &[]).is_err(), "a viewer shares nothing");
+        r.snapshot(1, &[member(4, &x, Role::Member)]).unwrap();
+        assert_eq!(r.role(4), Some(Role::Member));
     }
 
     /// A member stored or logged before devices had one set of keys: it reads as one device.

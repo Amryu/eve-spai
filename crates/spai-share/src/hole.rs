@@ -140,6 +140,28 @@ pub fn merge(local: &mut Wormhole, clocks: &mut HashMap<String, Clock>, remote: 
     taken
 }
 
+/// `remote` as recorded from its far end, `near`: each side's signature and type trade places.
+/// `dest` names the far side's kind of space, which the near side's record does not carry.
+pub fn turned(remote: &HoleState, near: i64) -> HoleState {
+    let mut fields = HashMap::new();
+    for (name, f) in &remote.fields {
+        let to = match name.as_str() {
+            "signature" => "dest_signature",
+            "dest_signature" => "signature",
+            "wh_type" => "dest_wh_type",
+            "dest_wh_type" => "wh_type",
+            "dest" => continue,
+            "dest_system_id" => {
+                fields.insert(name.clone(), Field { v: Value::from(remote.system_id), ..f.clone() });
+                continue;
+            }
+            other => other,
+        };
+        fields.insert(to.to_owned(), f.clone());
+    }
+    HoleState { system_id: near, fields, ..remote.clone() }
+}
+
 /// A new local row for a hole first heard of from the group.
 pub fn fresh(remote: &HoleState) -> Wormhole {
     let mut w = Wormhole {
@@ -205,6 +227,30 @@ mod tests {
         merge(&mut w, &mut HashMap::new(), &bad);
         assert_eq!((w.note, w.dest_system_id, w.signature.as_deref()), (None, None, Some("ABC-123")));
         assert_eq!(fresh(&bad).note, None);
+    }
+
+    #[test]
+    fn a_hole_turned_to_its_far_end_names_each_side_from_there() {
+        let mut h = hole(&[
+            ("signature", "ABC-123".into(), 10, 1),
+            ("dest_signature", "XYZ".into(), 11, 1),
+            ("wh_type", "K162".into(), 12, 1),
+            ("dest_wh_type", "C247".into(), 13, 1),
+            ("dest", "wspace".into(), 14, 1),
+            ("dest_system_id", Value::from(31_000_002), 15, 1),
+            ("mass", "reduced".into(), 16, 1),
+        ]);
+        h.system_id = 31_000_001;
+        let t = turned(&h, 31_000_002);
+        let v = |n: &str| t.fields.get(n).map(|f| (f.v.clone(), f.at));
+        assert_eq!(t.system_id, 31_000_002);
+        assert_eq!(v("signature"), Some(("XYZ".into(), 11)));
+        assert_eq!(v("dest_signature"), Some(("ABC-123".into(), 10)));
+        assert_eq!(v("wh_type"), Some(("C247".into(), 13)));
+        assert_eq!(v("dest_wh_type"), Some(("K162".into(), 12)));
+        assert_eq!(v("dest_system_id"), Some((Value::from(31_000_001), 15)));
+        assert_eq!(v("dest"), None, "the far side's kind of space is not known from here");
+        assert_eq!(v("mass"), Some(("reduced".into(), 16)));
     }
 
     #[test]
