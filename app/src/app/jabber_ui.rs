@@ -1472,6 +1472,8 @@ impl SpaiApp {
                 );
                 let row = if shared { row } else { row.on_hover_text(NOT_SHARED_TIP) };
                 row.context_menu(|ui| {
+                    spai_ui::widgets::copy_item(ui, &c.name);
+                    ui.separator();
                     if !crate::jabber::is_room_private(&c.jid) {
                         ui.menu_button(trf!("{icon}  Contact", icon = egui_phosphor::regular::STAR), |ui| self.jabber_contact_menu(ui, &c.jid));
                     }
@@ -2453,7 +2455,11 @@ impl SpaiApp {
                             };
                             let r = resp.response.on_hover_text(tip);
                             if !f.channels.iter().any(|ch| ch.jid == c.jid) {
-                                r.context_menu(|ui| self.jabber_contact_menu(ui, &c.jid));
+                                r.context_menu(|ui| {
+                                    spai_ui::widgets::copy_item(ui, &c.name);
+                                    ui.separator();
+                                    self.jabber_contact_menu(ui, &c.jid);
+                                });
                             }
                             if resp.inner {
                                 self.settings.jabber_closed_dms.retain(|j| j != &c.jid);
@@ -3114,6 +3120,7 @@ impl SpaiApp {
                                         } else {
                                             ui.add(lbl)
                                         };
+                                        spai_ui::widgets::copy_menu(&resp, n);
                                         if resp.clicked() {
                                             dm_click = Some(n.to_owned());
                                         }

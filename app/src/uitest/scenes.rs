@@ -3561,6 +3561,50 @@ fn uitest_pilot_chip_menu_toggles_a_tag_in_the_target_folder() {
     );
 }
 
+/// Right-clicking a pilot, a ship or a system on a card offers its name to copy.
+#[test]
+fn uitest_card_names_copy_from_their_menus() {
+    use egui_kittest::kittest::Queryable as _;
+
+    for (chip, name) in [("Hostile Pilot", "Hostile Pilot"), ("Muninn", "Muninn"), ("1DQ1-A", "1DQ1-A")] {
+        let args = IntelArgs { notes: fixtures::notebook().view(""), ..IntelArgs::default() };
+        let report = fixtures::intel_typical();
+        let mut scene = Scene::ui("copy_menu_probe", [620.0, 700.0], move |ui| {
+            let mut t = None;
+            crate::app::intel_row(
+                ui,
+                &report,
+                fixtures::now(),
+                false,
+                None,
+                crate::app::JumpVia::Gates,
+                &args.chars,
+                &args.systems,
+                &args.status,
+                &args.ship_details,
+                &args.ship_roles,
+                &args.resolved_pilots,
+                &args.uncertain,
+                &args.last_ship,
+                &args.kills,
+                crate::settings::Severity::Danger,
+                true,
+                &args.affil,
+                &args.notes,
+                false,
+                &mut t,
+            );
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.get_by_label_contains(chip).click_secondary();
+        h.run_steps(3);
+        h.get_by_label_contains("Copy name").click();
+        h.step();
+        let copied: Vec<String> = h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None }).collect();
+        assert_eq!(copied, [name.to_owned()], "right-clicking {chip}");
+    }
+}
+
 /// Draws one card and reports its height, so two `show_reporter` settings can be compared.
 fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
     let args = IntelArgs::default();

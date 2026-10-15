@@ -5308,14 +5308,14 @@ pub(crate) fn dscan_view_dialog_ui(
                         for (id, name, n) in ships {
                             ui.horizontal(|ui| {
                                 hull_badge(ui, *id, 24.0);
-                                if ui
+                                let link = ui
                                     .add(egui::Label::new(
                                         egui::RichText::new(name).color(ui.visuals().hyperlink_color),
                                     )
                                     .sense(egui::Sense::click()))
-                                    .on_hover_text(tr!("Ship info"))
-                                    .clicked()
-                                {
+                                    .on_hover_text(tr!("Ship info"));
+                                spai_ui::widgets::copy_menu(&link, name);
+                                if link.clicked() {
                                     open_ship = Some(*id);
                                 }
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -5955,7 +5955,8 @@ pub(crate) fn ship_row(
             ui.set_width(width);
             ui.horizontal_wrapped(|ui| {
                 hull_badge(ui, ship, 28.0);
-                ui.label(egui::RichText::new(name_of(ship)).strong());
+                let hull = name_of(ship);
+                spai_ui::widgets::copy_menu(&ui.label(egui::RichText::new(&hull).strong()), &hull);
                 if let Some(l) = lost {
                     ui.label(egui::RichText::new(fmt_isk(l.value)).color(red).strong());
                     if l.pod_value > 0.0 {
@@ -5972,7 +5973,7 @@ pub(crate) fn ship_row(
             });
             ui.horizontal_wrapped(|ui| {
                 party_badge(ui, party, 14.0, true);
-                ui.label(egui::RichText::new(pilot).weak());
+                spai_ui::widgets::copy_menu(&ui.label(egui::RichText::new(pilot).weak()), pilot);
                 if let Some(damage) = damage {
                     let text = egui::RichText::new(trf!("{v} dmg", v = fmt_count(damage)));
                     let text = if damage > 0 { text.color(egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)) } else { text.weak() };
@@ -6120,7 +6121,9 @@ pub(crate) fn battle_summary(ui: &mut egui::Ui, b: &br_core::battle::Battle) -> 
     let mut open_system = None;
     for (id, name, sec) in &b.systems {
         ui.label(security_badge(*sec));
-        if ui.link(egui::RichText::new(name).strong()).on_hover_text(tr!("Open system info")).clicked() {
+        let link = ui.link(egui::RichText::new(name).strong()).on_hover_text(tr!("Open system info"));
+        spai_ui::widgets::copy_menu(&link, name);
+        if link.clicked() {
             open_system = Some(*id);
         }
     }
@@ -6346,6 +6349,7 @@ fn ship_tile(ui: &mut egui::Ui, t: &crate::brview::ShipTile, name: &str, width: 
     if ui.clip_rect().contains_rect(rect) {
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     }
+    spai_ui::widgets::copy_menu(&resp, name);
     if resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }

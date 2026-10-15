@@ -126,3 +126,17 @@ pub fn age_color(visuals: &egui::Visuals, now: i64, seen: i64) -> Option<egui::C
         _ => None,
     }
 }
+
+/// "Copy name" for a menu that is already open: names are pasted into the game, chat and other tools.
+pub fn copy_item(ui: &mut egui::Ui, text: &str) {
+    if ui.button(crate::trf!("{icon}  Copy name", icon = egui_phosphor::regular::COPY)).on_hover_text(text).clicked() {
+        ui.ctx().copy_text(text.to_owned());
+        ui.close();
+    }
+}
+
+/// A right-click menu holding only [`copy_item`], for names that have no menu of their own. egui allows one
+/// menu per response, so a widget with a menu calls `copy_item` inside it instead.
+pub fn copy_menu(resp: &egui::Response, text: &str) {
+    resp.context_menu(|ui| copy_item(ui, text));
+}

@@ -742,7 +742,7 @@ impl SpaiApp {
             ui.add(egui::Image::new(eve_portrait_url(id, 64.0)).fit_to_exact_size(egui::Vec2::splat(64.0)));
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&report.name).strong().size(18.0));
+                    spai_ui::widgets::copy_menu(&ui.label(egui::RichText::new(&report.name).strong().size(18.0)), &report.name);
                     if report.loading {
                         ui.spinner();
                     }
@@ -997,7 +997,7 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 let url = eve_type_icon_url(ship_id, 28.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
-                ui.heading(&ship_name);
+                spai_ui::widgets::copy_menu(&ui.heading(&ship_name), &ship_name);
             });
             if has_mode {
                 ui.horizontal(|ui| {

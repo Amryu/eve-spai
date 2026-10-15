@@ -618,6 +618,9 @@ impl SpaiApp {
                 self.right_dock_tab = RightDockTab::System;
                 ui.close();
             }
+            if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
+                spai_ui::widgets::copy_item(ui, &info.name);
+            }
             self.wh_disable_menu(ui, sid);
             ui.separator();
             let view = self.notes_view.clone();

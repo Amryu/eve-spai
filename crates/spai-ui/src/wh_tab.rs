@@ -776,6 +776,7 @@ pub fn show(view: &mut WhGraphView, host: &mut impl WhHost, ui: &mut egui::Ui) {
                 pin = Some(info.name.clone());
                 ui.close();
             }
+            crate::widgets::copy_item(ui, &info.name);
             host.system_menu(ui, id);
         });
 
@@ -1743,7 +1744,9 @@ pub fn holes_table(
                             if crate::wh_graph::wh_route_toggle(ui, r.off) {
                                 act.toggle = Some(r.uid.clone());
                             }
-                            if ui.link(&r.sys).clicked() {
+                            let link = ui.link(&r.sys);
+                            crate::widgets::copy_menu(&link, &r.sys);
+                            if link.clicked() {
                                 act.open = Some(r.sys_id);
                             }
                         });
@@ -1759,7 +1762,9 @@ pub fn holes_table(
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
                             if let Some(id) = r.dest_click {
-                                if ui.link(&r.dest).clicked() {
+                                let link = ui.link(&r.dest);
+                                crate::widgets::copy_menu(&link, &r.dest);
+                                if link.clicked() {
                                     act.open = Some(id);
                                 }
                             } else {

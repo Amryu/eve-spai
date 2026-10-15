@@ -374,6 +374,8 @@ pub(crate) fn intel_row(
                     }
                     let subject = crate::notes::Subject::System(s.id);
                     panel.context_menu(|ui| {
+                        spai_ui::widgets::copy_item(ui, &s.name);
+                        ui.separator();
                         if let Some(c) = notes_quick_menu(ui, notes, &folder_label, &subject) {
                             clicked = Some(c);
                         }
@@ -570,6 +572,7 @@ pub(crate) fn intel_row(
                             panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
                         }
                     }
+                    spai_ui::widgets::copy_menu(&panel, &sh.name);
                     panel.clicked().then_some(IntelClick::Ship(sh.id))
                 };
                 if !is_zkill {
@@ -717,14 +720,16 @@ pub(crate) fn intel_row(
                             ui.label(egui::RichText::new(hint).weak());
                         })
                     };
-                    if let Some(id) = char_id {
-                        let subject = crate::notes::Subject::Pilot { id, name: name.clone() };
-                        resp.context_menu(|ui| {
+                    resp.context_menu(|ui| {
+                        spai_ui::widgets::copy_item(ui, name);
+                        if let Some(id) = char_id {
+                            ui.separator();
+                            let subject = crate::notes::Subject::Pilot { id, name: name.clone() };
                             if let Some(c) = notes_quick_menu(ui, notes, &folder_label, &subject) {
                                 clicked = Some(c);
                             }
-                        });
-                    }
+                        }
+                    });
                     if resp.clicked() {
                         clicked = Some(if is_uncertain {
                             IntelClick::PilotVerdict(name.clone())
@@ -809,6 +814,7 @@ pub(crate) fn intel_row(
                                     panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
                                 }
                             }
+                            spai_ui::widgets::copy_menu(&panel, &crate::shipnames::shown(&ship));
                             if panel.clicked() {
                                 clicked = Some(IntelClick::Ship(id));
                             }

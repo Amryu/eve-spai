@@ -324,6 +324,7 @@ impl StarMap {
             };
             if let Some(i) = geo.info_of(sid) {
                 ui.label(egui::RichText::new(format!("{} \u{b7} {:.1}", i.name, i.security)).strong());
+                spai_ui::widgets::copy_item(ui, &i.name);
                 ui.separator();
             }
             plan.system_menu(ui, sid, geo, &d.hole_list);

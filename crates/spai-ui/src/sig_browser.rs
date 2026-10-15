@@ -450,7 +450,10 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                                 }
                             });
                             row.col(|ui| {
-                                if ui.add(egui::Link::new(egui::RichText::new(name_of(*id)).strong())).on_hover_text(crate::tr!("Show it on the wormhole map")).clicked() {
+                                let n = name_of(*id);
+                                let link = ui.add(egui::Link::new(egui::RichText::new(&n).strong())).on_hover_text(crate::tr!("Show it on the wormhole map"));
+                                crate::widgets::copy_menu(&link, &n);
+                                if link.clicked() {
                                     act.open = Some(*id);
                                 }
                             });
@@ -503,14 +506,15 @@ pub fn view(ui: &mut egui::Ui, b: &mut SigBrowser, geo: Option<&Systems>, holes:
                     row.col(|ui| {
                         // Under its system in the tree, the name would only repeat it.
                         let link = egui::RichText::new(sys_name).color(ui.visuals().hyperlink_color);
-                        if !b.tree
-                            && ui
+                        if !b.tree {
+                            let resp = ui
                                 .add(egui::Label::new(link).truncate().show_tooltip_when_elided(false).sense(egui::Sense::click()))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(crate::trf!("{sys_name}: show it on the wormhole map", sys_name = sys_name))
-                                .clicked()
-                        {
-                            act.open = Some(*sys);
+                                .on_hover_text(crate::trf!("{sys_name}: show it on the wormhole map", sys_name = sys_name));
+                            crate::widgets::copy_menu(&resp, &sys_name);
+                            if resp.clicked() {
+                                act.open = Some(*sys);
+                            }
                         }
                     });
                     row.col(|ui| {

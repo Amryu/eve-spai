@@ -782,6 +782,7 @@ impl SpaiApp {
         let top = ui.cursor().min;
         let row_rect = egui::Rect::from_min_size(top, egui::vec2(width, ROW_H));
         let resp = ui.interact(row_rect, ui.id().with(("lookup_row", s.id)), egui::Sense::click());
+        spai_ui::widgets::copy_menu(&resp, &s.name);
         // The whole row, not just its background: over a label or an icon the row is still the
         // thing a click opens.
         if ui.rect_contains_pointer(row_rect) {

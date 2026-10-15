@@ -655,11 +655,13 @@ impl SpaiApp {
             }
             let jumps = |target: i64| dist.get(&target).copied().filter(|j| *j <= radius);
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(name).strong());
+                spai_ui::widgets::copy_menu(&ui.label(egui::RichText::new(name).strong()), name);
                 match self.systems.as_ref().and_then(|g| g.info_of(*sys)) {
                     Some(info) => {
                         ui.label(security_badge(info.security));
-                        if ui.link(&info.name).on_hover_text(tr!("Open the system")).clicked() {
+                        let link = ui.link(&info.name).on_hover_text(tr!("Open the system"));
+                        spai_ui::widgets::copy_menu(&link, &info.name);
+                        if link.clicked() {
                             open = Some(*sys);
                         }
                         ui.label(egui::RichText::new(&info.region).weak());
@@ -1063,7 +1065,9 @@ impl SpaiApp {
             match best {
                 Some((j, w)) => {
                     let via = name(w.system_id);
-                    if ui.link(trf!("{hub}: {j} jumps, through {sys}", hub = label, j = j, sys = via)).clicked() {
+                    let link = ui.link(trf!("{hub}: {j} jumps, through {sys}", hub = label, j = j, sys = via));
+                    spai_ui::widgets::copy_menu(&link, &via);
+                    if link.clicked() {
                         self.dash.snap = Some(snap);
                         self.open_system(w.system_id);
                         return;
@@ -1326,7 +1330,7 @@ const AWAY_SYSTEM: &str = "You brief an EVE Online pilot who just came back to t
 fn dash_fleet_row(ui: &mut egui::Ui, f: &crate::pings::FleetInfo, at: i64, now: i64, systems: &Option<std::sync::Arc<crate::geo::Systems>>) {
     use crate::pings::{Comms, Formup};
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(&f.fc).strong());
+        spai_ui::widgets::copy_menu(&ui.label(egui::RichText::new(&f.fc).strong()), &f.fc);
         if let Some(n) = &f.fleet {
             ui.add(egui::Label::new(egui::RichText::new(n).weak()).truncate());
         }

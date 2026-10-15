@@ -719,6 +719,18 @@ impl SpaiApp {
                 self.open_system(id);
             }
         }
+        // Kept from the right-click: the pointer leaves the system for the menu.
+        let menu_id = resp.id.with("system_menu");
+        if resp.secondary_clicked() {
+            ui.data_mut(|d| d.insert_temp(menu_id, hovered));
+        }
+        if let Some(id) = ui.data(|d| d.get_temp::<Option<i64>>(menu_id)).flatten() {
+            let n = name(id);
+            resp.context_menu(|ui| {
+                ui.label(egui::RichText::new(&n).strong());
+                spai_ui::widgets::copy_item(ui, &n);
+            });
+        }
     }
 
     /// Live, step back, play, step forward, speed, the moment, and the slider over the record.

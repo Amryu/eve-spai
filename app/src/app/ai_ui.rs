@@ -1171,12 +1171,40 @@ fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Opti
         let under = resp
             .hover_pos()
             .map(|p| galley.cursor_from_pos(p - pos).index)
-            .and_then(|i| ranges.iter().find(|(r, _)| r.contains(&i)).map(|(_, l)| l.clone()));
+            .and_then(|i| ranges.iter().find(|(r, _)| r.contains(&i)).cloned());
         // Only what is in view: a line scrolled away has nothing to paint or select.
         if ui.is_rect_visible(resp.rect) {
-            egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, pos, galley, normal, egui::Stroke::NONE);
+            egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, pos, galley.clone(), normal, egui::Stroke::NONE);
         }
-        if let Some(l) = under {
+        // Kept from the right-click: the pointer leaves the link for the menu, and a menu not shown
+        // every pass closes.
+        let menu_id = resp.id.with("link_menu");
+        if resp.secondary_clicked() {
+            let copy = under.as_ref().and_then(|(r, l)| match l {
+                Link::Url(u) => Some((true, u.clone())),
+                Link::System(_) | Link::Ship(_) | Link::Pilot(_) => {
+                    Some((false, galley.text().chars().skip(r.start).take(r.len()).collect::<String>()))
+                }
+                _ => None,
+            });
+            ui.data_mut(|d| match copy {
+                Some(c) => {
+                    d.insert_temp(menu_id, c);
+                }
+                None => d.remove::<(bool, String)>(menu_id),
+            });
+        }
+        if let Some((url, text)) = ui.data(|d| d.get_temp::<(bool, String)>(menu_id)) {
+            resp.context_menu(|ui| {
+                if !url {
+                    spai_ui::widgets::copy_item(ui, &text);
+                } else if ui.button(tr!("Copy link")).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                    ui.close();
+                }
+            });
+        }
+        if let Some((_, l)) = under {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             let hint = match &l {
                 Link::Url(u) => format!("{}\n{u}", link_hint(&l)),
@@ -1185,14 +1213,6 @@ fn render_text(ui: &mut egui::Ui, text: &str, w: f32, names: &dyn Names) -> Opti
             // At the pointer: the label is the whole line, and a tooltip under it would sit at its
             // left end, away from the link.
             let resp = resp.on_hover_text_at_pointer(hint);
-            if let Link::Url(u) = &l {
-                resp.context_menu(|ui| {
-                    if ui.button(tr!("Copy link")).clicked() {
-                        ui.ctx().copy_text(u.clone());
-                        ui.close();
-                    }
-                });
-            }
             if resp.clicked() {
                 clicked = Some(l);
             }

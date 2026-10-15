@@ -108,7 +108,7 @@ impl SpaiApp {
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.label(security_badge(info.security));
-                        ui.add(egui::Label::new(egui::RichText::new(&info.name).heading()).truncate()).on_hover_text(&info.name);
+                        spai_ui::widgets::copy_menu(&ui.add(egui::Label::new(egui::RichText::new(&info.name).heading()).truncate()).on_hover_text(&info.name), &info.name);
                     });
                 });
             });
@@ -573,7 +573,7 @@ impl SpaiApp {
             tr!("EVE Spai - Constellation"),
             [420.0, 560.0],
             |ui| {
-                ui.heading(&name);
+                spai_ui::widgets::copy_menu(&ui.heading(&name), &name);
                 if let Some(r) = region {
                     if ui.link(egui::RichText::new(format!("◤ {region_name}")).weak()).clicked() {
                         open_region = Some(r);
@@ -603,7 +603,9 @@ impl SpaiApp {
                         for s in &systems {
                             ui.horizontal(|ui| {
                                 ui.label(security_badge(s.security));
-                                if ui.link(&s.name).clicked() {
+                                let link = ui.link(&s.name);
+                                spai_ui::widgets::copy_menu(&link, &s.name);
+                                if link.clicked() {
                                     open_system = Some(s.id);
                                 }
                             });
@@ -643,7 +645,7 @@ impl SpaiApp {
             tr!("EVE Spai - Region"),
             [420.0, 580.0],
             |ui| {
-                ui.heading(&name);
+                spai_ui::widgets::copy_menu(&ui.heading(&name), &name);
                 self.dominant_logos(ui, &sys_ids, "region_dom");
                 Self::rat_line(ui, &name);
                 ui.separator();
@@ -715,7 +717,7 @@ impl SpaiApp {
                 ui.vertical(|ui| {
                     match &details {
                         Some(d) => {
-                            ui.heading(&d.name);
+                            spai_ui::widgets::copy_menu(&ui.heading(&d.name), &d.name);
                             let size = hull_size(&d.group);
                             let type_line = if size.is_empty() || d.group.contains(size) {
                                 d.group.clone()
