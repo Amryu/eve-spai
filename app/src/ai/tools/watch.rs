@@ -14,7 +14,7 @@ static START: ToolSpec = ToolSpec {
     name: "start_watch",
     description: "Starts watching new intel and kills for what the user wants to know about, when they ask you to keep an \
                   eye on, monitor or tell them about something. Matches are reported in the chat as they come in. Narrow it \
-                  by where (a system and a radius) and by what (group, pilot, ship or keywords, any one of which must \
+                  by where (a system, constellation or region, and a radius) and by what (group, pilot, ship or keywords, any one of which must \
                   appear); give at least one. Set minutes only when the user said how long; without it the watch asks \
                   after a quiet half hour whether to carry on, and stops if nobody answers.",
     need: NEED,
@@ -23,7 +23,7 @@ static START: ToolSpec = ToolSpec {
         schema(
             json!({
                 "goal": {"type": "string", "description": "What the user is after, in a short sentence"},
-                "system": {"type": "string"},
+                "system": {"type": "string", "description": "A system, or a constellation or region: those cover every system in them"},
                 "within_jumps": {"type": "integer", "minimum": 0, "maximum": 15},
                 "words": {"type": "array", "items": {"type": "string"}, "maxItems": 12, "description": "Group or alliance names and shorthands, pilots, ships, keywords"},
                 "minutes": {"type": "integer", "minimum": 5, "maximum": 1440}
@@ -36,14 +36,32 @@ static START: ToolSpec = ToolSpec {
 
 fn start(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let goal = str_arg(v, "goal").ok_or("what should be watched for?")?.trim().to_owned();
-    let systems: std::collections::HashSet<i64> = match str_arg(v, "system") {
-        Some(n) => {
-            let id = ctx.system(n)?;
-            ctx.geo()?.distances_from(id, u64_arg(v, "within_jumps", 0, 15) as u32).into_keys().collect()
+    let within = u64_arg(v, "within_jumps", 0, 15) as u32;
+    let mut centres: Vec<i64> = Vec::new();
+    if let Some(n) = str_arg(v, "system") {
+        match ctx.geo()?.lookup(n.trim()) {
+            Some(i) => centres.push(i.id),
+            None => match area(ctx.geo()?, n) {
+                Some(ids) => centres.extend(ids),
+                None => centres.push(ctx.system(n).map_err(|e| format!("{e}, constellation or region"))?),
+            },
         }
-        None => Default::default(),
+    }
+    let mut words: Vec<String> = Vec::new();
+    for w in v.get("words").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        // Reports name systems, not the region they are in, so an area given as a word would only
+        // match the rare report that spells it out.
+        match area(ctx.geo()?, w) {
+            Some(ids) => centres.extend(ids),
+            None => words.push(w.to_owned()),
+        }
+    }
+    let systems: std::collections::HashSet<i64> = if within == 0 {
+        centres.into_iter().collect()
+    } else {
+        let geo = ctx.geo()?;
+        centres.iter().flat_map(|&c| geo.distances_from(c, within).into_keys()).collect()
     };
-    let mut words: Vec<String> = v.get("words").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
     // A shorthand also matches the full alliance name it stands for.
     for w in words.clone() {
         if let Some((name, _)) = crate::alliances::lookup(&w) {
@@ -71,6 +89,19 @@ fn start(ctx: &mut Ctx, v: &Value) -> Result<Value, String> {
     let n_systems = systems.len();
     ws.push(Watch::new(id, goal.clone(), systems, words, ctx.now, until));
     Ok(json!({"watch": id, "goal": goal, "systems_covered": n_systems, "runs_for_minutes": until.map(|u| (u - ctx.now) / 60), "status": "watching"}))
+}
+
+/// The systems of the constellation or region called `name`.
+fn area(geo: &crate::geo::Systems, name: &str) -> Option<Vec<i64>> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+    let ids: Vec<i64> = geo
+        .all_ids()
+        .filter(|&id| geo.info_of(id).is_some_and(|i| i.region.eq_ignore_ascii_case(n) || i.constellation.eq_ignore_ascii_case(n)))
+        .collect();
+    (!ids.is_empty()).then_some(ids)
 }
 
 fn by_id<'a>(ws: &'a mut [Watch], v: &Value) -> Result<&'a mut Watch, String> {
@@ -219,6 +250,30 @@ mod tests {
         assert!(deps.watches.lock().unwrap()[0].running());
         let (none, err) = run(&AiDeps::for_tests(facts(&[])), "start_watch", json!({"goal": "x", "words": ["y"]}));
         assert!(err, "{none}");
+    }
+
+    /// A region or constellation covers its systems, whether it comes as the where or as a word.
+    #[test]
+    fn a_region_or_constellation_watch_covers_its_systems() {
+        let deps = AiDeps::for_tests(facts(&["intel.reports"]));
+        let delve: std::collections::HashSet<i64> = [30_004_759, 30_004_608].into();
+        let (r, err) = run(&deps, "start_watch", json!({"goal": "Delve", "system": "delve"}));
+        assert!(!err, "{r}");
+        let (r, err) = run(&deps, "start_watch", json!({"goal": "Delve hostiles", "words": ["Delve", "frat"]}));
+        assert!(!err, "{r}");
+        let (r, err) = run(&deps, "start_watch", json!({"goal": "the constellation", "system": "O-EImg"}));
+        assert!(!err, "{r}");
+        let ws = deps.watches.lock().unwrap();
+        assert_eq!(ws[0].systems, delve);
+        assert!(ws[0].candidate(&[30_004_608], "hostile in 319-3d"), "a report in a Delve system that does not say Delve");
+        assert!(!ws[0].candidate(&[30_003_704], "hostile in 7-k5el"));
+        assert_eq!(ws[1].systems, delve);
+        assert!(!ws[1].words.iter().any(|w| w.eq_ignore_ascii_case("delve")), "the region is a where, not a word: {:?}", ws[1].words);
+        assert!(ws[1].candidate(&[30_004_759], "frat gang in 1dq1-a"));
+        assert!(ws[2].systems.contains(&30_003_704) && ws[2].systems.contains(&30_000_142));
+        drop(ws);
+        let (_, err) = run(&deps, "start_watch", json!({"goal": "x", "system": "Nowhere Land"}));
+        assert!(err);
     }
 
     #[test]
