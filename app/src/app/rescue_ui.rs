@@ -783,7 +783,7 @@ impl SpaiApp {
 
         // Gathered before the rescue lock below, which the route's own lookups would need.
         let map = if compact { None } else { self.rescue_map_data() };
-        let jumps = self.rescue_jumps().map(|j| j.text());
+        let jumps = self.rescue_jumps().map(|j| j.lines());
         let mut map_view = std::mem::take(&mut self.rescue_map_view);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut r = self.rescue.lock().unwrap();
@@ -967,15 +967,24 @@ impl SpaiApp {
                     });
                 });
             });
-            if let Some((head, detail)) = &jumps {
-                ui.horizontal_wrapped(|ui| {
-                    let t = egui::RichText::new(head).strong().color(ui.visuals().strong_text_color());
-                    ui.label(if compact { t } else { t.size(16.0) });
-                    if !detail.is_empty() {
-                        ui.label(egui::RichText::new(detail).weak());
+            // One row, held even with no route, so the window does not shift when a ping lands.
+            let row_h = ui.text_style_height(&egui::TextStyle::Body);
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_height(row_h);
+                let Some(j) = &jumps else { return };
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let mut job = egui::text::LayoutJob::default();
+                if let Some(head) = &j.titan_head {
+                    job.append(head, 0.0, egui::TextFormat::simple(font.clone(), ui.visuals().strong_text_color()));
+                }
+                if let Some(head) = &j.plain_head {
+                    if !job.text.is_empty() {
+                        job.append("   \u{b7}   ", 0.0, egui::TextFormat::simple(font.clone(), ui.visuals().weak_text_color()));
                     }
-                });
-            }
+                    job.append(head, 0.0, egui::TextFormat::simple(font, ui.visuals().text_color()));
+                }
+                ui.add(egui::Label::new(job).truncate()).on_hover_text(&j.tip);
+            });
             if compact {
                 let cyno = [r.cyno_pilot.as_ref().map(|c| format!("cyno: {c}")), r.anomaly.as_ref().map(|a| format!("@ {a}"))]
                     .into_iter()
@@ -1801,14 +1810,24 @@ impl SpaiApp {
         let coords = self.map_coords.clone()?;
         let target = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).capital_system?;
         let staging = self.rescue_staging_id(&graph)?;
-        let route = self.fleet_map_route(&graph, &coords, staging, target)?;
-        let bridge = route.hops.iter().position(|h| h.kind == 2)?;
-        let after = &route.hops[bridge + 1..];
-        Some(RescueJumps {
-            landing: route.hops[bridge].name.clone(),
-            gates: after.iter().filter(|h| h.kind == 0).count(),
-            ansiblex: after.iter().filter(|h| h.kind == 1).count(),
-        })
+        let titan = self.fleet_map_route(&graph, &coords, staging, target).and_then(|route| {
+            let bridge = route.hops.iter().position(|h| h.kind == 2)?;
+            let after = &route.hops[bridge + 1..];
+            Some((route.hops[bridge].name.clone(), kinds(after)))
+        });
+        let key = (staging, target, crate::ansiblex::key_of(&self.settings));
+        let plain = match &self.rescue_gate_route {
+            Some((k, r)) if *k == key => *r,
+            _ => {
+                let zone1 = crate::ansiblex::with_max_zone(&graph, &self.settings, 1);
+                let r = crate::web::route::gate(&zone1, staging, target, true, &Default::default(), &Default::default())
+                    .map(|o| kinds(o.hops.get(1..).unwrap_or_default()));
+                self.rescue_gate_route = Some((key, r));
+                r
+            }
+        };
+        let staging = graph.info_of(staging).map(|i| i.name.clone()).unwrap_or_default();
+        (titan.is_some() || plain.is_some()).then_some(RescueJumps { titan, plain, staging })
     }
 
     pub(crate) fn rescue_map_data(&mut self) -> Option<RescueMap> {
@@ -1842,33 +1861,68 @@ impl SpaiApp {
     }
 }
 
+/// Stargates and Ansiblex jumps among `hops`.
+fn kinds(hops: &[crate::web::route::Hop]) -> (usize, usize) {
+    (hops.iter().filter(|h| h.kind == 0).count(), hops.iter().filter(|h| h.kind == 1).count())
+}
+
 pub(crate) struct RescueJumps {
-    pub(crate) landing: String,
-    pub(crate) gates: usize,
-    pub(crate) ansiblex: usize,
+    /// The titan's landing system and the stargates and Ansiblex jumps after it.
+    pub(crate) titan: Option<(String, (usize, usize))>,
+    /// Stargates and zone 1 Ansiblex jumps from staging with no titan.
+    pub(crate) plain: Option<(usize, usize)>,
+    pub(crate) staging: String,
 }
 
 impl RescueJumps {
-    /// The headline and its breakdown.
-    pub(crate) fn text(&self) -> (String, String) {
-        let icon = egui_phosphor::regular::PATH;
-        let head = match self.gates + self.ansiblex {
-            0 => trf!("{icon}  Bridged straight in, 0 jumps", icon = icon),
-            1 => trf!("{icon}  1 jump after the bridge to {sys}", icon = icon, sys = self.landing),
-            n => trf!("{icon}  {n} jumps after the bridge to {sys}", icon = icon, n = n, sys = self.landing),
-        };
-        let gates = match self.gates {
-            0 => None,
-            1 => Some(tr!("1 stargate").to_owned()),
-            n => Some(trf!("{n} stargates", n = n)),
-        };
-        let ansi = match self.ansiblex {
-            0 => None,
-            1 => Some(tr!("1 Ansiblex").to_owned()),
-            n => Some(trf!("{n} Ansiblex", n = n)),
-        };
-        (head, [gates, ansi].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} "))
+    /// Both routes for one row, and the tooltip with their breakdowns.
+    pub(crate) fn lines(&self) -> JumpsLine {
+        let titan = self.titan.as_ref().map(|(landing, (g, a))| {
+            let icon = egui_phosphor::regular::PATH;
+            let head = match g + a {
+                0 => trf!("{icon}  Bridged straight in, 0 jumps", icon = icon),
+                1 => trf!("{icon}  1 jump after the bridge to {sys}", icon = icon, sys = landing),
+                n => trf!("{icon}  {n} jumps after the bridge to {sys}", icon = icon, n = n, sys = landing),
+            };
+            (head, breakdown(*g, *a))
+        });
+        let plain = self.plain.map(|(g, a)| {
+            let icon = egui_phosphor::regular::SIGN_IN;
+            let (head, full) = match g + a {
+                1 => (trf!("{icon}  1 jump by gates", icon = icon), trf!("{icon}  Gate route from {sys}: 1 jump", icon = icon, sys = self.staging)),
+                n => (trf!("{icon}  {n} jumps by gates", icon = icon, n = n), trf!("{icon}  Gate route from {sys}: {n} jumps", icon = icon, sys = self.staging, n = n)),
+            };
+            (head, full, breakdown(g, a))
+        });
+        let mut tip = Vec::new();
+        if let Some((head, detail)) = &titan {
+            tip.push(if detail.is_empty() { head.clone() } else { format!("{head}\n    {detail}") });
+        }
+        if let Some((_, full, detail)) = &plain {
+            tip.push(if detail.is_empty() { full.clone() } else { format!("{full}\n    {detail}") });
+        }
+        JumpsLine { titan_head: titan.map(|(h, _)| h), plain_head: plain.map(|(h, _, _)| h), tip: tip.join("\n") }
     }
+}
+
+pub(crate) struct JumpsLine {
+    pub(crate) titan_head: Option<String>,
+    pub(crate) plain_head: Option<String>,
+    pub(crate) tip: String,
+}
+
+fn breakdown(gates: usize, ansiblex: usize) -> String {
+    let gates = match gates {
+        0 => None,
+        1 => Some(tr!("1 stargate").to_owned()),
+        n => Some(trf!("{n} stargates", n = n)),
+    };
+    let ansi = match ansiblex {
+        0 => None,
+        1 => Some(tr!("1 Ansiblex").to_owned()),
+        n => Some(trf!("{n} Ansiblex", n = n)),
+    };
+    [gates, ansi].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ")
 }
 
 /// The titan route to the tackled capital over the regions it crosses, with staging and the capital

@@ -3605,7 +3605,8 @@ fn uitest_card_names_copy_from_their_menus() {
     }
 }
 
-/// The jumps left after the titan bridge are the headline's next line, docked and popped out.
+/// The jumps left after the titan bridge, and the plain gate route, follow the headline, docked and
+/// popped out.
 #[test]
 fn uitest_the_rescue_shows_the_jumps_after_the_bridge() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -3614,8 +3615,22 @@ fn uitest_the_rescue_shows_the_jumps_after_the_bridge() {
         let line = h.query_all_by_label_contains("after the bridge to").next().expect("no jumps line");
         let label = line.accesskit_node().value().or(line.accesskit_node().label()).unwrap_or_default();
         assert!(label.contains("jumps after the bridge to Fixture Gate A"), "{label}");
-        assert!(h.query_all_by_label_contains("stargates").next().is_some());
+        assert!(label.contains("jumps by gates"), "the gate route shares the row: {label}");
     }
+}
+
+/// The jumps row is held with no route at all, so nothing below it moves when one appears.
+#[test]
+fn uitest_the_rescue_jumps_row_is_reserved() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let copy_top = |map: bool| {
+        let mut scene = rescue_panel_scene_with("rescue_reserved_probe", [507.0, 600.0], None, true, map);
+        let h = harness::build(&mut scene, false);
+        assert_eq!(h.query_all_by_label_contains("after the bridge").next().is_some(), map);
+        let b = h.get_by_label_contains("Copy").accesskit_node().bounding_box().expect("bounds");
+        b.y0
+    };
+    assert_eq!(copy_top(true), copy_top(false));
 }
 
 /// The capital pilot and the cyno each get a Show Info button, docked and popped out. With no

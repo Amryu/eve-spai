@@ -766,6 +766,8 @@ pub struct SpaiApp {
     /// How far the tackled capital is from staging, once worked out.
     rescue_ly: Option<f64>,
     rescue_map_view: rescue_ui::RescueMapView,
+    /// The plain gate route's stargates and Ansiblex jumps, by staging, capital and bridge list.
+    rescue_gate_route: Option<((i64, i64, spai_core::ansiblex::BridgeKey), Option<(usize, usize)>)>,
     /// This route's Ansiblex zone limit in place of the setting, until the app closes.
     map_route_zone: Option<u8>,
     /// The scan route planner's current plan and what it is working on.
@@ -1684,6 +1686,7 @@ impl SpaiApp {
             rescue_pos_fix: None,
             rescue_ly: None,
             rescue_map_view: Default::default(),
+            rescue_gate_route: None,
             map_route_zone: None,
             scan_route: Default::default(),
             br_authed: Default::default(),
