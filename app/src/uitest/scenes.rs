@@ -1907,7 +1907,7 @@ fn rescue_map_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// The rescue tab popped out: the ping and its buttons in a band over the chat.
 fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    rescue_panel_scene_with(name, size, None, true, false)
+    rescue_panel_scene_with(name, size, None, true, true)
 }
 
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
@@ -3602,6 +3602,19 @@ fn uitest_card_names_copy_from_their_menus() {
         h.step();
         let copied: Vec<String> = h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None }).collect();
         assert_eq!(copied, [name.to_owned()], "right-clicking {chip}");
+    }
+}
+
+/// The jumps left after the titan bridge are the headline's next line, docked and popped out.
+#[test]
+fn uitest_the_rescue_shows_the_jumps_after_the_bridge() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    for mut scene in [rescue_popout_scene("rescue_jumps_probe", [460.0, 480.0]), rescue_map_scene("rescue_jumps_probe", [1100.0, 700.0])] {
+        let h = harness::build(&mut scene, false);
+        let line = h.query_all_by_label_contains("after the bridge to").next().expect("no jumps line");
+        let label = line.accesskit_node().value().or(line.accesskit_node().label()).unwrap_or_default();
+        assert!(label.contains("jumps after the bridge to Fixture Gate A"), "{label}");
+        assert!(h.query_all_by_label_contains("stargates").next().is_some());
     }
 }
 

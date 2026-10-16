@@ -781,6 +781,7 @@ impl SpaiApp {
 
         // Gathered before the rescue lock below, which the route's own lookups would need.
         let map = if compact { None } else { self.rescue_map_data() };
+        let jumps = self.rescue_jumps().map(|j| j.text());
         let mut map_view = std::mem::take(&mut self.rescue_map_view);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut r = self.rescue.lock().unwrap();
@@ -959,6 +960,15 @@ impl SpaiApp {
                     });
                 });
             });
+            if let Some((head, detail)) = &jumps {
+                ui.horizontal_wrapped(|ui| {
+                    let t = egui::RichText::new(head).strong().color(ui.visuals().strong_text_color());
+                    ui.label(if compact { t } else { t.size(16.0) });
+                    if !detail.is_empty() {
+                        ui.label(egui::RichText::new(detail).weak());
+                    }
+                });
+            }
             if compact {
                 let cyno = [r.cyno_pilot.as_ref().map(|c| format!("cyno: {c}")), r.anomaly.as_ref().map(|a| format!("@ {a}"))]
                     .into_iter()
@@ -1731,6 +1741,22 @@ impl SpaiApp {
         }
     }
 
+    /// What the fleet flies after the titan bridge, from the route the map draws.
+    pub(crate) fn rescue_jumps(&mut self) -> Option<RescueJumps> {
+        let graph = self.systems.clone()?;
+        let coords = self.map_coords.clone()?;
+        let target = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).capital_system?;
+        let staging = self.rescue_staging_id(&graph)?;
+        let route = self.fleet_map_route(&graph, &coords, staging, target)?;
+        let bridge = route.hops.iter().position(|h| h.kind == 2)?;
+        let after = &route.hops[bridge + 1..];
+        Some(RescueJumps {
+            landing: route.hops[bridge].name.clone(),
+            gates: after.iter().filter(|h| h.kind == 0).count(),
+            ansiblex: after.iter().filter(|h| h.kind == 1).count(),
+        })
+    }
+
     pub(crate) fn rescue_map_data(&mut self) -> Option<RescueMap> {
         let graph = self.systems.clone()?;
         let coords = self.map_coords.clone()?;
@@ -1759,6 +1785,35 @@ impl SpaiApp {
             .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
             .collect();
         Some(RescueMap { graph, subset, hops, staging, target, note, ids })
+    }
+}
+
+pub(crate) struct RescueJumps {
+    pub(crate) landing: String,
+    pub(crate) gates: usize,
+    pub(crate) ansiblex: usize,
+}
+
+impl RescueJumps {
+    /// The headline and its breakdown.
+    pub(crate) fn text(&self) -> (String, String) {
+        let icon = egui_phosphor::regular::PATH;
+        let head = match self.gates + self.ansiblex {
+            0 => trf!("{icon}  Bridged straight in, 0 jumps", icon = icon),
+            1 => trf!("{icon}  1 jump after the bridge to {sys}", icon = icon, sys = self.landing),
+            n => trf!("{icon}  {n} jumps after the bridge to {sys}", icon = icon, n = n, sys = self.landing),
+        };
+        let gates = match self.gates {
+            0 => None,
+            1 => Some(tr!("1 stargate").to_owned()),
+            n => Some(trf!("{n} stargates", n = n)),
+        };
+        let ansi = match self.ansiblex {
+            0 => None,
+            1 => Some(tr!("1 Ansiblex").to_owned()),
+            n => Some(trf!("{n} Ansiblex", n = n)),
+        };
+        (head, [gates, ansi].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} "))
     }
 }
 
