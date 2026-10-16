@@ -2908,6 +2908,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
+    v.push(rescue_panel_scene_with("rescue_popout_op_auto", [525.0, 600.0], Some(3), true, false));
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
         [560.0, 340.0],
@@ -7218,9 +7219,10 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
     enum Case {
         Free,
         InUse,
+        AllBusy,
         Ours,
     }
-    for case in [Case::Free, Case::InUse, Case::Ours] {
+    for case in [Case::Free, Case::InUse, Case::AllBusy, Case::Ours] {
         harness::scratch_profile();
         let mut app: Option<crate::app::SpaiApp> = None;
         let mut scene = Scene::ui("rescue_op_in_use", [1100.0, 700.0], move |ui| {
@@ -7243,7 +7245,11 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
                         .map(|n| crate::fleets::model::ChannelItem {
                             id: crate::fleets::model::ChannelId(n),
                             name: format!("Op {n}"),
-                            is_in_use: n == 3 && !matches!(case, Case::Free),
+                            is_in_use: match case {
+                                Case::Free => false,
+                                Case::AllBusy => true,
+                                _ => n == 3,
+                            },
                         })
                         .collect();
                     if matches!(case, Case::Ours) {
@@ -7270,15 +7276,84 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
             h.query_by_label_contains("no such channel").is_none(),
             "{case:?}: op 3 did not resolve to a channel"
         );
-        assert!(h.query_all_by_label("Op 3").count() > 0, "{case:?}: the channel is not named");
-        let alert = h.query_by_label_contains("in use").is_some();
+        // The skirmish commander's pool is 9 to 12, so a taken Op 3 moves to Op 9.
+        let named = if matches!(case, Case::InUse) { "Op 9" } else { "Op 3" };
+        assert!(h.query_all_by_label(named).count() > 0, "{case:?}: {named} is not named");
+        let alert = h
+            .query_by_label(&format!("{}  in use", egui_phosphor::regular::WARNING))
+            .is_some();
+        let auto = h.query_by_label_contains("auto, Op 3 in use").is_some();
         let ours = h.query_by_label_contains("your fleet").is_some();
         match case {
-            Case::Free => assert!(!alert && !ours, "a free op raised something"),
-            Case::InUse => assert!(alert && !ours, "a taken op did not alert"),
-            Case::Ours => assert!(ours && !alert, "the FC's own fleet read as someone else's"),
+            Case::Free => assert!(!alert && !ours && !auto, "a free op raised something"),
+            Case::InUse => assert!(auto && !alert && !ours, "a taken op did not move, or did not say so"),
+            Case::AllBusy => assert!(alert && !auto && !ours, "with nothing free the taken op did not alert"),
+            Case::Ours => assert!(ours && !alert && !auto, "the FC's own fleet read as someone else's"),
         }
     }
+}
+
+/// A taken op moves to the next free one in the commander's pool and comes back once it frees,
+/// unless people have already been sent to the op it moved to. The setting keeps the FC's choice.
+#[test]
+fn uitest_the_rescue_op_swaps_off_a_taken_channel_and_back() {
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    a.settings.fc_rescue_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "FC".into() });
+    fixtures::seed_fleet_state(&a);
+    // Ids that are not the op numbers, as on the dashboard: only the names say which op is which.
+    let busy = |a: &crate::app::SpaiApp, taken: &[i32]| {
+        a.fleet_state_for_test().lock().unwrap().seed.mumble_channels = (1..=12)
+            .map(|n| crate::fleets::model::ChannelItem {
+                id: crate::fleets::model::ChannelId(40 - n),
+                name: format!("Op {n}"),
+                is_in_use: taken.contains(&n),
+            })
+            .collect();
+    };
+    let op = |a: &crate::app::SpaiApp| {
+        let r = a.rescue_state_for_test().lock().unwrap();
+        (r.op_channel, r.op_auto)
+    };
+    a.rescue_state_for_test().lock().unwrap().op_channel = 5;
+
+    busy(&a, &[5, 6]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (1, Some((5, 1))), "wraps to the start of the FC pool");
+
+    busy(&a, &[5, 6, 1]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (2, Some((5, 2))), "the pick was taken in turn");
+
+    busy(&a, &[]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (5, None), "did not go back to the chosen op");
+
+    // People were sent to the op it moved to: it stays there even once the choice frees.
+    busy(&a, &[5]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (6, Some((5, 6))));
+    {
+        let mut r = a.rescue_state_for_test().lock().unwrap();
+        r.selected_ping = Some(7);
+        r.actions_mut(7).invited_op = Some(6);
+    }
+    busy(&a, &[]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (6, Some((5, 6))), "moved a rescue people were already sent to");
+
+    // A pick by hand is the new choice.
+    {
+        let mut r = a.rescue_state_for_test().lock().unwrap();
+        r.selected_ping = None;
+        r.op_channel = 4;
+    }
+    busy(&a, &[4]);
+    a.rescue_op_autoswap();
+    assert_eq!(op(&a), (5, Some((4, 5))));
 }
 
 /// Presets are identified by folder and name together, through the same actions the buttons use.

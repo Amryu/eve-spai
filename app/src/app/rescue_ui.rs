@@ -16,6 +16,33 @@ pub(crate) enum OpUsage {
     NoChannel,
 }
 
+/// The ops a rescue moves through when its own is taken: skirmish commanders run 9 to 12.
+pub(crate) fn op_pool(command_group: Option<&str>) -> &'static [u8] {
+    if command_group.is_some_and(|g| g.trim().eq_ignore_ascii_case("SC")) {
+        &[9, 10, 11, 12]
+    } else {
+        &[1, 2, 3, 4, 5, 6]
+    }
+}
+
+/// The op a rescue belongs on: the chosen one while it is not in use, else the next free op in the
+/// pool after it, wrapping. An earlier pick that is still free stays, so the rescue does not hop.
+pub(crate) fn auto_op(wanted: u8, current: u8, pool: &[u8], usage: impl Fn(u8) -> OpUsage) -> u8 {
+    if usage(wanted) != OpUsage::InUse {
+        return wanted;
+    }
+    if current != wanted && matches!(usage(current), OpUsage::Free | OpUsage::Ours) {
+        return current;
+    }
+    let start = pool.iter().position(|&n| n > wanted).unwrap_or(0);
+    pool[start..]
+        .iter()
+        .chain(&pool[..start])
+        .copied()
+        .find(|&n| n != wanted && usage(n) == OpUsage::Free)
+        .unwrap_or(wanted)
+}
+
 /// How long a failed dashboard ping render is left alone before asking again.
 const PREVIEW_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -506,6 +533,26 @@ impl SpaiApp {
         st.seed.channel_name(&st.seed.mumble_channels, Some(id)).map(|s| s.to_owned())
     }
 
+    /// Moves the rescue off a taken op and back onto the chosen one once it frees up.
+    pub(crate) fn rescue_op_autoswap(&mut self) {
+        let pool = op_pool(self.settings.fleet_unlock.as_ref().map(|u| u.command_group.as_str()));
+        let usage: Vec<OpUsage> = (1u8..=12).map(|n| self.fleet_op_usage(n)).collect();
+        let usage = |n: u8| usage.get(usize::from(n).wrapping_sub(1)).copied().unwrap_or(OpUsage::NoChannel);
+        let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+        let cur = r.op_channel;
+        let wanted = match r.op_auto {
+            Some((w, p)) if p == cur => w,
+            _ => cur,
+        };
+        // Once a ping has named this op to people, moving it strands them.
+        let told = r.selected_ping.map(|s| r.actions(s)).is_some_and(|a| {
+            a.command_comms_op == Some(cur) || a.invited_op == Some(cur)
+        });
+        let next = if told || usage(cur) == OpUsage::Ours { cur } else { auto_op(wanted, cur, pool, usage) };
+        r.op_channel = next;
+        r.op_auto = (next != wanted).then_some((wanted, next));
+    }
+
     /// Whether an op's comms channel is free, per the dashboard's channel list.
     pub(crate) fn fleet_op_usage(&self, op: u8) -> OpUsage {
         let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -684,6 +731,7 @@ impl SpaiApp {
         self.fleet_boss_poll(ui.ctx());
         // The rescue picks an op channel too, so it wants the same fresh `isInUse`.
         self.fleet_channel_poll(ui.ctx());
+        self.rescue_op_autoswap();
         // Clone what the columns need so the render closure never borrows `self` (it holds the
         // rescue lock). Deferred self-mutations go through flags applied after the lock drops.
         let ping = self.build_rescue_ping();
@@ -1122,9 +1170,21 @@ impl SpaiApp {
                                         }
                                         _ => egui::RichText::new(n.to_string()),
                                     };
-                                    ui.menu_value(&mut r.op_channel, *n, text);
+                                    if ui.menu_value(&mut r.op_channel, *n, text).clicked() {
+                                        r.op_auto = None;
+                                    }
                                 }
                             });
+                        if let Some((w, _)) = r.op_auto {
+                            ui.label(
+                                egui::RichText::new(trf!("{icon}  auto, Op {w} in use", icon = egui_phosphor::regular::SHUFFLE, w = w))
+                                    .color(crate::theme::standing::WARNING),
+                            )
+                            .on_hover_text(trf!(
+                                "Op {w} is in use, so the rescue moved to the next free op. It goes back to Op {w} once that is free.",
+                                w = w
+                            ));
+                        }
                         // What the dashboard will actually be told. The op number is not the
                         // channel id, so the FC sees the name before anything goes out.
                         let usage = op_usage
@@ -1641,7 +1701,7 @@ impl SpaiApp {
         // Persist op and preset so the next rescue starts where we left off.
         let (op, preset) = {
             let r = self.rescue.lock().unwrap();
-            (r.op_channel, r.doctrine.clone())
+            (r.op_auto.map_or(r.op_channel, |(w, _)| w), r.doctrine.clone())
         };
         if op != self.settings.rescue_op_channel || preset != self.settings.rescue_preset {
             self.settings.rescue_op_channel = op;
@@ -2047,5 +2107,40 @@ mod tests {
         assert_eq!(since_ping(599), "9:59");
         assert_eq!(since_ping(3600), "1:00:00", "an hour old ping is a forgotten one, but it reads");
         assert_eq!(since_ping(-5), "0:00", "a clock that ran backwards is a bug, not a negative time");
+    }
+}
+
+#[cfg(test)]
+mod op_tests {
+    use super::{auto_op, op_pool, OpUsage};
+
+    fn busy(taken: &'static [u8]) -> impl Fn(u8) -> OpUsage {
+        move |n| if taken.contains(&n) { OpUsage::InUse } else { OpUsage::Free }
+    }
+
+    #[test]
+    fn a_taken_op_moves_to_the_next_free_one_in_the_pool_wrapping() {
+        let sc = op_pool(Some("SC"));
+        let fc = op_pool(Some("FC"));
+        assert_eq!(sc, &[9, 10, 11, 12]);
+        assert_eq!(fc, &[1, 2, 3, 4, 5, 6]);
+        assert_eq!(op_pool(None), fc);
+        assert_eq!(auto_op(3, 3, fc, busy(&[])), 3);
+        assert_eq!(auto_op(3, 3, fc, busy(&[3, 4])), 5);
+        assert_eq!(auto_op(5, 5, fc, busy(&[5, 6])), 1, "wraps to the start of the pool");
+        assert_eq!(auto_op(10, 10, sc, busy(&[10, 11, 12])), 9);
+        // An op outside the pool still lands in it.
+        assert_eq!(auto_op(7, 7, fc, busy(&[7])), 1);
+        assert_eq!(auto_op(7, 7, sc, busy(&[7])), 9);
+        // Nothing free: stay on the chosen one, which the window flags as taken.
+        assert_eq!(auto_op(9, 9, sc, busy(&[9, 10, 11, 12])), 9);
+    }
+
+    #[test]
+    fn an_auto_pick_holds_while_free_and_returns_once_the_choice_frees() {
+        let fc = op_pool(None);
+        assert_eq!(auto_op(1, 4, fc, busy(&[1])), 4, "a free earlier pick stays");
+        assert_eq!(auto_op(1, 2, fc, busy(&[1, 2])), 3, "a pick taken since moves on");
+        assert_eq!(auto_op(1, 4, fc, busy(&[])), 1, "back to the chosen op once it is free");
     }
 }

@@ -198,6 +198,8 @@ pub struct RescueState {
     pub actions: HashMap<u64, PingActions>,
     pub dscan: Option<Vec<(String, u32)>>,
     pub op_channel: u8,
+    /// (the op the FC chose, the one `op_channel` moved to) while the chosen op is in use.
+    pub op_auto: Option<(u8, u8)>,
     pub doctrine: String,
     /// The editable outgoing ping. Empty until first shown, then filled from the template and
     /// freely edited by the FC before sending.
