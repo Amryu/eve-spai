@@ -1267,50 +1267,47 @@ impl SpaiApp {
                     // their delve911 nick so it reads as a direct call-out in the channel.
                     let ping_author = r.ping_author.clone();
                     let op_for_invite = r.op_channel;
+                    // Shown with no ping too, disabled, so the row does not shift when one lands.
                     let mut invite_ui = |ui: &mut egui::Ui| {
-                        match rescue_comms_invite(ping_author.as_deref(), op_for_invite) {
-                            None => {
-                                if !compact {
-                                    ui.label(egui::RichText::new(tr!("No ping author to invite")).weak());
-                                }
-                            }
-                            Some(msg) => {
-                                // Compact, the message is the button's tooltip rather than a box.
-                                if !compact {
-                                    egui::Frame::group(ui.style())
-                                        .inner_margin(egui::Margin::symmetric(6, 4))
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.label(egui::RichText::new(&msg).monospace());
-                                        });
-                                }
-                                let can_invite =
-                                    !test_mode && jab_connected && !delve911_jid.is_empty();
-                                let btn = egui::Button::new(if compact {
-                                    trf!("{icon}  Invite", icon = egui_phosphor::regular::USER_PLUS)
-                                } else {
-                                    format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET)
+                        let msg = rescue_comms_invite(ping_author.as_deref(), op_for_invite);
+                        // Compact, the message is the button's tooltip rather than a box.
+                        if !compact {
+                            egui::Frame::group(ui.style())
+                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    match &msg {
+                                        Some(m) => ui.label(egui::RichText::new(m).monospace()),
+                                        None => ui.label(egui::RichText::new(tr!("No ping author to invite")).weak()),
+                                    };
                                 });
-                                let btn = match pulse_fill(ui, invite_pending) {
-                                    Some(c) => btn.fill(c),
-                                    None => btn,
-                                };
-                                let hover = if compact { trf!("Invite to Op {op_now} comms, in delve911:\n{msg}", op_now = op_now, msg = msg) } else { tr!("Post this in delve911").to_owned() };
-                                let hover = format!("{hover}\n{}", tr!("Also joins Command comms for this op"));
-                                if ui
-                                    .add_enabled(can_invite, btn)
-                                    .on_hover_text(hover)
-                                    .clicked()
-                                {
-                                    if let Some(tx) = &tx {
-                                        let _ = tx.send(crate::jabber::Cmd::SendRoom {
-                                            room: delve911_jid.clone(),
-                                            body: msg,
-                                        });
-                                    }
-                                    mark_invite = true;
-                                }
+                        }
+                        let can_invite =
+                            msg.is_some() && !test_mode && jab_connected && !delve911_jid.is_empty();
+                        let btn = egui::Button::new(if compact {
+                            trf!("{icon}  Invite", icon = egui_phosphor::regular::USER_PLUS)
+                        } else {
+                            format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET)
+                        });
+                        let btn = match pulse_fill(ui, invite_pending && msg.is_some()) {
+                            Some(c) => btn.fill(c),
+                            None => btn,
+                        };
+                        let hover = match &msg {
+                            Some(m) if compact => trf!("Invite to Op {op_now} comms, in delve911:\n{msg}", op_now = op_now, msg = m),
+                            Some(_) => tr!("Post this in delve911").to_owned(),
+                            None => tr!("No ping author to invite").to_owned(),
+                        };
+                        let hover = format!("{hover}\n{}", tr!("Also joins Command comms for this op"));
+                        let clicked = ui.add_enabled(can_invite, btn).on_hover_text(&hover).on_disabled_hover_text(&hover).clicked();
+                        if let (true, Some(msg)) = (clicked, msg) {
+                            if let Some(tx) = &tx {
+                                let _ = tx.send(crate::jabber::Cmd::SendRoom {
+                                    room: delve911_jid.clone(),
+                                    body: msg,
+                                });
                             }
+                            mark_invite = true;
                         }
                     };
                     // Whether the FC is actually boss of a fleet in game, on the same clock the
