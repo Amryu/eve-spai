@@ -176,6 +176,7 @@
   "Already forming up at staging.": "已在集结点集结。",
   "Already has three characters, which is an EVE account's limit. Pick it only if one of those is wrong.": "已有三个角色，这是一个 EVE 账号的上限。仅在其中某个有误时选择。",
   "Already part of a clustered battle": "已属于一场聚合的战斗",
+  "Also joins Command comms for this op": "同时加入此行动的指挥语音",
   "Also set in {v}": "也在 {v} 中设置",
   "Always": "总是",
   "Always allowed": "始终允许",

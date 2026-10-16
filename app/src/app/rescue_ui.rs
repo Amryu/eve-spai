@@ -1270,6 +1270,7 @@ impl SpaiApp {
                                     None => btn,
                                 };
                                 let hover = if compact { trf!("Invite to Op {op_now} comms, in delve911:\n{msg}", op_now = op_now, msg = msg) } else { tr!("Post this in delve911").to_owned() };
+                                let hover = format!("{hover}\n{}", tr!("Also joins Command comms for this op"));
                                 if ui
                                     .add_enabled(can_invite, btn)
                                     .on_hover_text(hover)
@@ -1412,6 +1413,12 @@ impl SpaiApp {
                         invite_ui(ui);
                     }
 
+                    // Inviting the pilot means the FC is taking the op: join its command channel too,
+                    // unless already there.
+                    if mark_invite && !mark_cmd && acts.command_comms_op != Some(op_now) {
+                        let _ = open::that(command_mumble_url(op_now));
+                        mark_cmd = true;
+                    }
                     if let Some(seq) = sel_seq {
                         if mark_cmd {
                             r.actions_mut(seq).command_comms_op = Some(op_now);

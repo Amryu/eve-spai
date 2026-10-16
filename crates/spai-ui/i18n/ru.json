@@ -176,6 +176,7 @@
   "Already forming up at staging.": "Уже собираются на стейджинге.",
   "Already has three characters, which is an EVE account's limit. Pick it only if one of those is wrong.": "Уже три персонажа — предел аккаунта EVE. Выбирайте, только если один из них указан неверно.",
   "Already part of a clustered battle": "Уже входит в объединённый бой",
+  "Also joins Command comms for this op": "Также подключает к командной связи этой операции",
   "Also set in {v}": "Также задано в {v}",
   "Always": "Всегда",
   "Always allowed": "Всегда разрешено",
