@@ -387,6 +387,32 @@ pub fn set_waypoint(
     });
 }
 
+/// Opens `pilot`'s Show Info window in `char_name`'s client.
+pub fn show_info(client_id: String, char_name: String, pilot: String) {
+    let _ = std::thread::Builder::new().name("esi-show-info".into()).spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else { return };
+        let Ok(client) = crate::http::client(20) else { return };
+        let Some(id) = crate::universe::character_ids(&client, std::slice::from_ref(&pilot))
+            .and_then(|m| m.get(&pilot.to_lowercase()).map(|(id, _)| *id))
+        else {
+            crate::esilog::record("ui/openwindow/information", &format!("no character named {pilot}"));
+            return;
+        };
+        match client.post(format!("{INFO_API}?target_id={id}")).bearer_auth(token).send() {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                let status = r.status();
+                crate::esilog::record(&format!("ui/openwindow/information {status}"), &format!("{pilot}\n{}", r.text().unwrap_or_default()));
+            }
+            Err(e) => crate::esilog::record("ui/openwindow/information failed", &format!("{pilot}\n{e}")),
+        }
+    });
+}
+
+const INFO_API: &str = "https://esi.evetech.net/latest/ui/openwindow/information/";
+
 /// The autopilot endpoint. A constant so the tests can point the same code at a local server.
 const WAYPOINT_API: &str = "https://esi.evetech.net/latest/ui/autopilot/waypoint/";
 /// How long to wait before pushing the next waypoint, and before retrying a refused one.

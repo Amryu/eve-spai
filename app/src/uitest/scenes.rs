@@ -3618,6 +3618,19 @@ fn uitest_the_rescue_shows_the_jumps_after_the_bridge() {
     }
 }
 
+/// The capital pilot and the cyno each get a Show Info button, docked and popped out. With no
+/// character allowed to open windows they are there but disabled.
+#[test]
+fn uitest_the_rescue_offers_show_info_for_both_pilots() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    for mut scene in [rescue_popout_scene("rescue_info_probe", [460.0, 480.0]), rescue_map_scene("rescue_info_probe", [1100.0, 700.0])] {
+        let h = harness::build(&mut scene, false);
+        let buttons: Vec<_> = h.query_all_by_label(egui_phosphor::regular::IDENTIFICATION_CARD).collect();
+        assert_eq!(buttons.len(), 2, "one for the capital pilot, one for the cyno");
+        assert!(buttons.iter().all(|b| b.accesskit_node().is_disabled()));
+    }
+}
+
 /// Draws one card and reports its height, so two `show_reporter` settings can be compared.
 fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
     let args = IntelArgs::default();

@@ -751,6 +751,8 @@ impl SpaiApp {
         // hold the rescue lock and so cannot ask.
         let mut set_dest: Option<(i64, Vec<String>)> = None;
         let fc_char = self.rescue_fc_character();
+        let info_char = self.rescue_info_character();
+        let mut show_info: Option<String> = None;
         let route_choices = self.destination_choices();
         let mut start_tracking = false;
         let mut chat_dm: Option<String> = None;
@@ -956,6 +958,11 @@ impl SpaiApp {
                         chips(ui);
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if let Some(p) = &r.capital_pilot {
+                            if show_info_button(ui, p, info_char.as_deref()) {
+                                show_info = Some(p.clone());
+                            }
+                        }
                         ui.add(egui::Label::new(head).truncate()).on_hover_text(&whole);
                     });
                 });
@@ -979,7 +986,14 @@ impl SpaiApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         chips(ui);
                         if !cyno.is_empty() {
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(egui::RichText::new(cyno).weak()));
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                if let Some(c) = &r.cyno_pilot {
+                                    if show_info_button(ui, c, info_char.as_deref()) {
+                                        show_info = Some(c.clone());
+                                    }
+                                }
+                                ui.label(egui::RichText::new(cyno).weak());
+                            });
                         }
                     })
                 });
@@ -1024,6 +1038,9 @@ impl SpaiApp {
             if !compact && (r.cyno_pilot.is_some() || r.anomaly.is_some()) {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(cyno) = &r.cyno_pilot {
+                        if show_info_button(ui, cyno, info_char.as_deref()) {
+                            show_info = Some(cyno.clone());
+                        }
                         ui.label(trf!("cyno: {cyno}", cyno = cyno));
                     }
                     if let Some(anom) = &r.anomaly {
@@ -1586,6 +1603,10 @@ impl SpaiApp {
         if let Some((sid, names)) = set_dest {
             self.rescue_send_route(&names, sid);
         }
+        if let (Some(pilot), Some(by)) = (show_info, info_char) {
+            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            crate::esi::show_info(cid, by, pilot);
+        }
         if let Some(nick) = chat_dm {
             let dm = self.full_user_jid(&nick);
             self.jabber_mark_read(&dm);
@@ -1674,6 +1695,17 @@ fn rescue_route_button(
     picked
 }
 
+/// "Show Info" for `pilot` in the game, on `by`'s client. Disabled while no character may open
+/// windows.
+fn show_info_button(ui: &mut egui::Ui, pilot: &str, by: Option<&str>) -> bool {
+    let resp = ui.add_enabled_ui(by.is_some(), |ui| spai_ui::widgets::icon_button(ui, egui_phosphor::regular::IDENTIFICATION_CARD)).inner;
+    let resp = match by {
+        Some(by) => resp.on_hover_text(trf!("Show Info for {pilot} in the game, on {by}", pilot = pilot, by = by)),
+        None => resp.on_disabled_hover_text(tr!("No signed-in character may open windows in the game. Log the character in again to allow it.")),
+    };
+    resp.clicked()
+}
+
 /// How recent a ping must be for its route to go in the game by itself: an old one selected at
 /// start-up is history, not a rescue to fly to.
 const AUTO_ROUTE_FRESH_SECS: i64 = 600;
@@ -1681,6 +1713,21 @@ const AUTO_ROUTE_FRESH_SECS: i64 = 600;
 impl SpaiApp {
     /// The FC's character among those signed in here that may set waypoints: the dashboard's FC by
     /// name, else the active character.
+    /// The character Show Info opens on: the FC's, else the active one, among those allowed to
+    /// open windows.
+    pub(crate) fn rescue_info_character(&self) -> Option<String> {
+        let chars: Vec<&str> = self
+            .characters
+            .iter()
+            .filter(|c| c.scopes.split_whitespace().any(|s| s == "esi-ui.open_window.v1"))
+            .map(|c| c.name.as_str())
+            .collect();
+        let fc = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc().map(|(_, name)| name);
+        fc.and_then(|n| chars.iter().find(|c| c.eq_ignore_ascii_case(&n)))
+            .or_else(|| chars.iter().find(|c| **c == self.active_character))
+            .map(|c| (*c).to_owned())
+    }
+
     pub(crate) fn rescue_fc_character(&self) -> Option<String> {
         let chars = self.waypoint_characters();
         let fc = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc().map(|(_, name)| name);
