@@ -249,17 +249,16 @@ impl Seed {
         list.iter().find(|c| c.id == id).map(|c| c.name.trim())
     }
 
-    /// The comms channel called "Op N", for an op number the FC typed.
+    /// The comms channel called "Op N" (Op 7 is spelled "o7"), for an op number the FC typed.
     ///
     /// The id is NOT the op number. They agree up to Op 6 and then diverge: id 7 is "o7", id 8 is
     /// "Op 9", id 11 is "Capital Comms" and "Op 11" is id 12. Sending the number as an id put a
     /// rescue ping on Capital Comms while every screen still said Op 11, so this matches on the
     /// name and answers None rather than guessing.
     pub fn mumble_channel_for_op(&self, op: u8) -> Option<ChannelId> {
-        let want = format!("op {op}");
         self.mumble_channels
             .iter()
-            .find(|c| c.name.trim().eq_ignore_ascii_case(&want))
+            .find(|c| super::comms::op_number(&c.name) == Some(op))
             .map(|c| c.id)
     }
 
@@ -395,6 +394,7 @@ mod op_channel_tests {
         let s = seed();
         assert_eq!(s.mumble_channel_for_op(1), Some(ChannelId(1)));
         assert_eq!(s.mumble_channel_for_op(6), Some(ChannelId(6)));
+        assert_eq!(s.mumble_channel_for_op(7), Some(ChannelId(7)), "o7 is Op 7");
         // The ones that used to be silently wrong.
         assert_eq!(s.mumble_channel_for_op(9), Some(ChannelId(8)));
         assert_eq!(s.mumble_channel_for_op(10), Some(ChannelId(9)));
@@ -409,7 +409,6 @@ mod op_channel_tests {
     #[test]
     fn an_op_with_no_channel_is_not_guessed() {
         let s = seed();
-        assert_eq!(s.mumble_channel_for_op(7), None);
         assert_eq!(s.mumble_channel_for_op(8), None);
         assert_eq!(s.mumble_channel_for_op(99), None);
     }
