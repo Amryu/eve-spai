@@ -636,6 +636,8 @@ pub struct SpaiApp {
     /// What the assistant remembers; read on first use.
     pub(crate) ai_memories: crate::ai::memory::SharedMemories,
     ai_memories_loaded: bool,
+    /// Whether the saved watches were looked at once after the start.
+    ai_resumed: bool,
     ai_facts_at: Option<std::time::Instant>,
     pub(crate) ai_secrets: std::sync::Arc<dyn crate::ai::secrets::SecretStore>,
     pub(crate) ai_input: String,
@@ -1584,6 +1586,7 @@ impl SpaiApp {
             ai_facts: Default::default(),
             ai_memories: Default::default(),
             ai_memories_loaded: false,
+            ai_resumed: false,
             ai_facts_at: None,
             // Tests and renders never touch the real keychain.
             ai_secrets: if headless {
@@ -3720,6 +3723,7 @@ impl SpaiApp {
         self.ai_glossary_window(ctx);
         self.ai_feeds_window(ctx);
         self.start_intel_watcher(ctx);
+        self.ai_resume_watches(ctx);
         self.ai_push_facts(false);
         self.ai_watch_news();
         self.ai_voice_tick();

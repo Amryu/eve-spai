@@ -153,11 +153,44 @@ pub struct Session {
     watch_checked: i64,
     /// Started the first time a backend that runs its own tools asks for one.
     mcp: Option<super::mcp::McpServer>,
+    /// What was last written to the store, so an unchanged chat is not written again.
+    saved: (String, String),
 }
 
 impl Session {
     pub fn new(deps: AiDeps, view: SharedView, cancel: Arc<AtomicBool>, make: ProviderFactory, repaint: Option<egui::Context>) -> Self {
-        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0), conv: super::mcp::new_token(), watch_checked: 0, mcp: None }
+        Self { deps, view, cancel, make, repaint, history: Vec::new(), notes: Vec::new(), calls: VecDeque::new(), tokens_today: (0, 0), conv: super::mcp::new_token(), watch_checked: 0, mcp: None, saved: Default::default() }
+    }
+
+    /// Picks up the saved chat's conversation, as the model sees it.
+    pub fn restore(&mut self, chat: &super::saved::Chat) {
+        self.history = chat.history();
+        self.notes = chat.notes.clone();
+        if !chat.conv.is_empty() {
+            self.conv = chat.conv.clone();
+        }
+    }
+
+    /// Writes the chat and the watches to the store when they changed.
+    pub fn persist(&mut self, store: Option<&crate::store::Store>) {
+        let Some(store) = store else { return };
+        let chat = {
+            let v = self.view.lock().unwrap_or_else(|e| e.into_inner());
+            if v.busy {
+                return;
+            }
+            super::saved::Chat::of(&v.turns, &self.history, self.deps.opsec.load(Ordering::Relaxed), &self.notes, &self.conv)
+        };
+        let chat = serde_json::to_string(&chat).unwrap_or_default();
+        let watches = super::saved::save_watches(&self.deps.watches.lock().unwrap_or_else(|e| e.into_inner()));
+        if chat != self.saved.0 {
+            store.kv_set(super::saved::CHAT_KEY, &chat);
+            self.saved.0 = chat;
+        }
+        if watches != self.saved.1 {
+            store.kv_set(super::saved::WATCHES_KEY, &watches);
+            self.saved.1 = watches;
+        }
     }
 
     fn update(&self, f: impl FnOnce(&mut AiView)) {
@@ -698,6 +731,7 @@ pub fn spawn(mut session: Session, rx: Receiver<Command>) {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
             session.tick_watches(store.as_ref(), crate::clock::utc().timestamp());
+            session.persist(store.as_ref());
         }
     });
 }
@@ -737,6 +771,31 @@ mod tests {
             p.ok_or_else(|| "used up".to_owned())
         });
         (Session::new(deps, Default::default(), Default::default(), make, None), seen)
+    }
+
+    /// A restart picks up the chat, what the model knew of it, its opsec, and the watches; a new
+    /// chat clears what was saved.
+    #[test]
+    fn the_chat_and_watches_survive_a_restart() {
+        let store = crate::store::Store::mem();
+        let (mut s, _) = session(vec![vec![Delta::Text("In 1DQ1-A.".into()), Delta::Done(Stop::End)]], &["intel.reports"]);
+        s.handle(Command::Send { text: "where is the frat gang".into(), voice: false }, None);
+        s.deps.opsec.store(true, Ordering::Relaxed);
+        s.deps.watches.lock().unwrap().push(crate::ai::watch::Watch::new(1, "frat".into(), [30_004_759].into(), vec!["frat".into()], 100, None));
+        s.persist(Some(&store));
+        let chat = crate::ai::saved::Chat::load(Some(&store));
+        assert_eq!(chat.turns().iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["where is the frat gang", "In 1DQ1-A."]);
+        assert!(chat.opsec);
+        let (mut again, sent) = session(vec![vec![Delta::Text("Still there.".into()), Delta::Done(Stop::End)]], &["intel.reports"]);
+        again.restore(&chat);
+        again.handle(Command::Send { text: "and now?".into(), voice: false }, None);
+        let asked = &sent.lock().unwrap()[0];
+        assert_eq!(asked.len(), 3, "the earlier question and answer go with the next one: {asked:?}");
+        let ws = crate::ai::saved::load_watches(Some(&store), 200);
+        assert!(ws[0].running() && ws[0].candidate(&[30_004_759], "frat gang"));
+        s.handle(Command::NewChat, None);
+        s.persist(Some(&store));
+        assert!(crate::ai::saved::Chat::load(Some(&store)).turns.is_empty());
     }
 
     #[test]

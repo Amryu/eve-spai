@@ -62,11 +62,39 @@ impl SpaiApp {
             };
             let secrets = self.ai_secrets.clone();
             let make: crate::ai::session::ProviderFactory = Box::new(move |f| crate::ai::session::provider_for(f, secrets.as_ref()));
-            let session = crate::ai::session::Session::new(deps, view, cancel, make, Some(ctx.clone()));
+            let chat = crate::ai::saved::Chat::load(self.store.as_ref());
+            {
+                let mut v = view.lock().unwrap_or_else(|e| e.into_inner());
+                if v.turns.is_empty() {
+                    v.turns = chat.turns();
+                }
+            }
+            if chat.opsec {
+                self.ai_opsec.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            {
+                let mut ws = self.ai_watches.lock().unwrap_or_else(|e| e.into_inner());
+                if ws.is_empty() {
+                    *ws = crate::ai::saved::load_watches(self.store.as_ref(), crate::clock::utc().timestamp());
+                }
+            }
+            let mut session = crate::ai::session::Session::new(deps, view, cancel, make, Some(ctx.clone()));
+            session.restore(&chat);
             crate::ai::session::spawn(session, rx);
         }
         self.ai = Some(handle.clone());
         handle
+    }
+
+    /// Starts the session at launch when a saved watch is still running, so it keeps watching
+    /// without the Assistant tab being opened first.
+    pub(crate) fn ai_resume_watches(&mut self, ctx: &egui::Context) {
+        if self.headless || self.ai.is_some() || !self.ai_on() || std::mem::replace(&mut self.ai_resumed, true) {
+            return;
+        }
+        if crate::ai::saved::load_watches(self.store.as_ref(), 0).iter().any(|w| w.running()) {
+            self.ai_handle(ctx);
+        }
     }
 
     /// Copies what the tools need from the UI thread, every couple of seconds or when `now`.
