@@ -139,7 +139,7 @@ const ROUTE_HOLE = "#b07ce8";
 const PICK_GATE = "#f2b134";
 const PICK_JUMP = "#e07be0";
 /// The titan's jump is a different ship's move, so it does not share the capital-jump colour.
-const TITAN_COL = "#a6e22e";
+const TITAN_COL = "#2ed3c4";
 /// Dash and gap, matching `dashed_flow` in the app.
 const DASH = [6, 6];
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
@@ -745,6 +745,30 @@ function paint() {
         const n = geo.nodes[geo.byId.get(id)];
         return n ? [sx(n.x), sy(n.z)] : null;
       };
+      // Where the capital gates the same way as the fleet, its dots sit in the gaps of the fleet's
+      // dashes, so the two read as one dash-dot line. The dash at distance t along a segment is on
+      // while (t - off) mod period is below DASH[0], so a gap's middle is at off + DASH[0] + DASH[1]/2.
+      const fleetGates = new Set();
+      for (let i = 1; i < picked.path.length; i++) {
+        const h = picked.hops?.[i];
+        if ((h?.kind ?? 0) === 0 && !h?.hole) fleetGates.add(`${picked.path[i - 1]},${picked.path[i]}`);
+      }
+      const period = DASH[0] + DASH[1];
+      const off = (performance.now() / 45) % period;
+      ctx.fillStyle = TITAN_COL;
+      for (let i = 1; i < capPath.length; i++) {
+        if (!fleetGates.has(`${capPath[i - 1].id},${capPath[i].id}`)) continue;
+        const a = at(capPath[i - 1].id);
+        const b = at(capPath[i].id);
+        if (!a || !b) continue;
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (len < 0.5) continue;
+        for (let t = (off + DASH[0] + DASH[1] / 2) % period; t <= len; t += period) {
+          ctx.beginPath();
+          ctx.arc(a[0] + ((b[0] - a[0]) * t) / len, a[1] + ((b[1] - a[1]) * t) / len, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
       ctx.strokeStyle = TITAN_COL;
       ctx.lineWidth = 4.4;
       ctx.lineCap = "round";
@@ -752,6 +776,7 @@ function paint() {
       ctx.lineDashOffset = -((performance.now() / 45) % 9);
       ctx.beginPath();
       for (let i = 1; i < capPath.length; i++) {
+        if (fleetGates.has(`${capPath[i - 1].id},${capPath[i].id}`)) continue;
         const a = at(capPath[i - 1].id);
         const b = at(capPath[i].id);
         if (!a || !b) continue;

@@ -583,7 +583,25 @@ pub fn paint_wormholes(
 }
 
 /// The capital's own moves on a jump-ahead route, apart from the fleet's.
-pub const CAPITAL_MOVE: egui::Color32 = egui::Color32::from_rgb(0xA6, 0xE2, 0x2E);
+pub const CAPITAL_MOVE: egui::Color32 = egui::Color32::from_rgb(0x2E, 0xD3, 0xC4);
+
+/// Dots in the gaps of [`dashed_flow`]'s dashes for the same segment and phase.
+fn gap_dots(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: egui::Color32, phase: f32) {
+    let dir = p2 - p1;
+    let len = dir.length();
+    if len < 1.0 {
+        return;
+    }
+    let unit = dir / len;
+    let (dash, period) = (6.0f32, 12.0f32);
+    let mut d = (phase % period) - period + dash + (period - dash) / 2.0;
+    while d < len {
+        if d > 0.0 {
+            painter.circle_filled(p1 + unit * d, 2.2, color);
+        }
+        d += period;
+    }
+}
 
 /// A line of dots crawling along `pts`.
 pub fn dotted_flow(painter: &egui::Painter, pts: &[egui::Pos2], color: egui::Color32, phase: f32) {
@@ -600,12 +618,19 @@ pub fn dotted_flow(painter: &egui::Painter, pts: &[egui::Pos2], color: egui::Col
     }
 }
 
-/// What the capital does on its own before the fleet rides with it: its gates, dotted over the
-/// fleet's way where they share it, and its jump alone as a dotted arc.
+/// What the capital does on its own before the fleet rides with it: its gates as crawling dots,
+/// its jump alone as a dotted arc. A gate the fleet takes too gets the dots in the gaps of the
+/// fleet's dashes, one dash-dot line moving as one.
 pub fn paint_capital_moves(painter: &egui::Painter, pos: &HashMap<i64, egui::Pos2>, o: &spai_core::route::RouteOption, phase: f32) {
-    let gates: Vec<egui::Pos2> = o.capital_path.iter().filter_map(|b| pos.get(&b.id).copied()).collect();
-    if gates.len() > 1 {
-        dotted_flow(painter, &gates, CAPITAL_MOVE, phase);
+    let fleet_gates: std::collections::HashSet<(i64, i64)> =
+        o.hops.windows(2).filter(|w| w[1].kind == 0 && !w[1].hole).map(|w| (w[0].id, w[1].id)).collect();
+    for w in o.capital_path.windows(2) {
+        let (Some(&a), Some(&b)) = (pos.get(&w[0].id), pos.get(&w[1].id)) else { continue };
+        if fleet_gates.contains(&(w[0].id, w[1].id)) {
+            gap_dots(painter, a, b, CAPITAL_MOVE, phase);
+        } else {
+            dotted_flow(painter, &[a, b], CAPITAL_MOVE, phase);
+        }
     }
     if let Some(tj) = &o.titan_jump {
         if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {

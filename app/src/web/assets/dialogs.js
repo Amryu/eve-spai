@@ -761,11 +761,11 @@ function paintRoute(kind, onPick) {
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
       (capGates(o) > 0
-        ? `<p class="mgroup" style="color:#a6e22e">Capital gates ${capGates(o)} first: ` +
+        ? `<p class="mgroup" style="color:#2ed3c4">Capital gates ${capGates(o)} first: ` +
           `${o.capital_path.map((s) => esc(s.name)).join(" → ")}</p>`
         : "") +
       (o.titan_jump
-        ? `<p class="mgroup" style="color:#a6e22e">Capital jumps alone ${esc(o.titan_jump.from_name)} → ` +
+        ? `<p class="mgroup" style="color:#2ed3c4">Capital jumps alone ${esc(o.titan_jump.from_name)} → ` +
           `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
         : "") +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
