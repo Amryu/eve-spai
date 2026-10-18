@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The Black Ops entry of [`crate::jumproute::SHIP_CLASSES`].
+const BLACK_OPS: usize = 2;
+
+/// Hulls the fleet can ride along with. The titan shares its class with supercarriers, which cannot.
+pub(crate) const AHEAD_HULLS: [(usize, &str); 2] = [(1, "Titan"), (BLACK_OPS, "Black Ops")];
+
 /// Whether planning a destination should also set it in the game.
 ///
 /// Only while the plan is a plain start and destination: a bare destination carries
@@ -13,12 +19,17 @@ pub(crate) fn plain_gate_plan(kind: &str, anchors: usize) -> bool {
 
 /// The kind of route a mode starts new legs as: a mixed route asks, and until it has, gates.
 pub(crate) fn default_leg(mode: &str) -> &'static str {
-    if mode == "jump" { "jump" } else { "gate" }
+    match mode {
+        "jump" => "jump",
+        "ahead" => "ahead",
+        _ => "gate",
+    }
 }
 
 fn mode_of(kind: &str) -> &'static str {
     match kind {
         "jump" => "jump",
+        "ahead" => "ahead",
         "mixed" => "mixed",
         "scan" => "scan",
         _ => "gate",
@@ -46,19 +57,21 @@ impl SpaiApp {
             return;
         }
         use egui_phosphor::regular as i;
-        const R: f32 = 58.0;
-        const BTN: egui::Vec2 = egui::vec2(104.0, 28.0);
+        const BTN: egui::Vec2 = egui::vec2(128.0, 28.0);
         let opts: Vec<(&str, &str, &str)> = if leg_only {
             vec![("gate", i::SIGN_IN, tr!("Gate")), ("jump", i::SPIRAL, tr!("Jump")), ("cancel", i::X, tr!("Cancel"))]
         } else {
             vec![
                 ("gate", i::SIGN_IN, tr!("Gate route")),
                 ("jump", i::SPIRAL, tr!("Jump route")),
+                ("ahead", i::FAST_FORWARD, tr!("Jump-ahead route")),
                 ("mixed", i::SHUFFLE, tr!("Mixed route")),
                 ("cancel", i::X, tr!("Cancel")),
             ]
         };
-        let half = egui::vec2(R + BTN.x / 2.0 + 8.0, R + BTN.y / 2.0 + 8.0);
+        // Neighbours on the ring sit 2R·sin(π/n) apart and must clear a button's width.
+        let r = if opts.len() > 4 { (BTN.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
+        let half = egui::vec2(r + BTN.x / 2.0 + 8.0, r + BTN.y / 2.0 + 8.0);
         let mut chose: Option<&str> = None;
         let area = egui::Area::new(egui::Id::new("map_link_menu").with(leg_only))
             .order(egui::Order::Foreground)
@@ -68,13 +81,13 @@ impl SpaiApp {
                 let c = rect.center();
                 let v = ui.visuals().clone();
                 let p = ui.painter();
-                p.circle_filled(c, R + 16.0, v.window_fill.gamma_multiply(0.94));
-                p.circle_stroke(c, R + 16.0, egui::Stroke::new(1.0, v.window_stroke.color));
+                p.circle_filled(c, r + 16.0, v.window_fill.gamma_multiply(0.94));
+                p.circle_stroke(c, r + 16.0, egui::Stroke::new(1.0, v.window_stroke.color));
                 p.circle_filled(c, 3.5, v.hyperlink_color);
                 for (idx, (kind, glyph, label)) in opts.iter().enumerate() {
                     let a = (idx as f32 / opts.len() as f32) * std::f32::consts::TAU
                         - std::f32::consts::FRAC_PI_2;
-                    let bc = c + egui::vec2(a.cos() * R, a.sin() * R);
+                    let bc = c + egui::vec2(a.cos() * r, a.sin() * r);
                     let br = egui::Rect::from_center_size(bc, BTN);
                     let text = if *kind == "cancel" {
                         egui::RichText::new(format!("{glyph}  {label}")).color(v.weak_text_color())
@@ -189,10 +202,11 @@ impl SpaiApp {
         self.map_replan_route();
     }
 
-    /// A route mode for the whole route: gate or jump sets every leg, mixed keeps them as they are.
+    /// A route mode for the whole route: gate, jump or jump-ahead sets every leg, mixed keeps them
+    /// as they are.
     pub(crate) fn map_set_route_mode(&mut self, kind: &str) {
         self.map_route_kind = mode_of(kind);
-        if matches!(self.map_route_kind, "gate" | "jump") {
+        if matches!(self.map_route_kind, "gate" | "jump" | "ahead") {
             let k = self.map_route_kind;
             self.map_leg_kinds.iter_mut().for_each(|l| *l = k);
         }
@@ -213,6 +227,8 @@ impl SpaiApp {
     /// Start a route here: this system, nowhere to go yet.
     pub(crate) fn map_route_start(&mut self, kind: &str, sid: i64) {
         self.map_route_kind = mode_of(kind);
+        self.map_ahead_gates = 0;
+        self.map_ahead_jumps = 1;
         self.map_route_anchors = vec![sid];
         self.map_leg_kinds.clear();
         self.map_avoid_once.clear();
@@ -296,6 +312,9 @@ impl SpaiApp {
             return;
         }
         self.ensure_jump_systems();
+        if self.map_route_has("ahead") && !AHEAD_HULLS.iter().any(|h| h.0 == self.jump_ship) {
+            self.jump_ship = AHEAD_HULLS[0].0;
+        }
         let Some(graph) = self.route_graph() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
         let bridges = self.settings.intel_count_bridges;
@@ -321,6 +340,7 @@ impl SpaiApp {
             &holes,
             &self.map_leg_pick,
             &self.map_forks,
+            &self.route_ahead(),
         );
         self.map_route_legs = legs;
         self.map_route_opts = opts;
@@ -333,9 +353,25 @@ impl SpaiApp {
     }
 
     /// The avoid lists this route is planned against: the gate list for gate legs, the jump list for
-    /// jump legs.
+    /// jump legs, both for jump-ahead legs.
     pub(crate) fn map_route_avoid_lists(&self) -> Vec<bool> {
-        [(false, "gate"), (true, "jump")].into_iter().filter(|(_, k)| self.map_route_has(k)).map(|(j, _)| j).collect()
+        let ahead = self.map_route_has("ahead");
+        [(false, "gate"), (true, "jump")].into_iter().filter(|(_, k)| ahead || self.map_route_has(k)).map(|(j, _)| j).collect()
+    }
+
+    pub(crate) fn map_route_jumps(&self) -> bool {
+        self.map_route_has("jump") || self.map_route_has("ahead")
+    }
+
+    pub(crate) fn route_ahead(&self) -> crate::web::route::Ahead {
+        let blops = self.jump_ship == BLACK_OPS;
+        crate::web::route::Ahead {
+            pre_gates: self.map_ahead_gates,
+            max_jumps: self.map_ahead_jumps,
+            beacons: self.settings.route_ahead_beacons.then(|| self.settings.cyno_generators.iter().copied().collect()),
+            prefer: if blops { Default::default() } else { self.jump_dockable_ids() },
+            highsec: blops,
+        }
     }
 
     /// The graph the route planner walks: the shared one, or one re-laid for the route's own

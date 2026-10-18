@@ -603,6 +603,7 @@ impl SpaiApp {
             for (kind, start_label, restart_label) in [
                 ("gate", tr!("Start Gate Route"), tr!("Restart as Gate Route")),
                 ("jump", tr!("Start Jump Route"), tr!("Restart as Jump Route")),
+                ("ahead", tr!("Start Jump-Ahead Route"), tr!("Restart as Jump-Ahead Route")),
                 ("mixed", tr!("Start Mixed Route"), tr!("Restart as Mixed Route")),
                 ("scan", tr!("Start Scan Route"), tr!("Restart as Scan Route")),
             ] {
@@ -1044,7 +1045,7 @@ impl SpaiApp {
 
 
         // Where a capital can sit, while a capital route is being planned.
-        if !self.map_route_anchors.is_empty() && self.map_route_kind != "scan" && self.map_route_has("jump") {
+        if !self.map_route_anchors.is_empty() && self.map_route_kind != "scan" && self.map_route_jumps() {
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
             for d in self.jump_dockable_ids() {
                 if let Some(p) = pos.get(&d) {

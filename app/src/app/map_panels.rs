@@ -187,6 +187,42 @@ impl SpaiApp {
         }
     }
 
+    /// Returns whether a control changed.
+    pub(crate) fn route_ahead_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::app::SteadySelect as _;
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label(tr!("Gates before jumping"));
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.map_ahead_gates).range(0..=10))
+                .on_hover_text(tr!("The capital may gate up to this many systems, the fleet with it, to a better place to jump from"))
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr!("Jumps at most"));
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.map_ahead_jumps).range(1..=5))
+                .on_hover_text(tr!("Each jump the fleet rides needs a cyno and adds fatigue; one is a single bridge"))
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr!("Cyno"));
+            let mut beacons = self.settings.route_ahead_beacons;
+            ui.menu_value(&mut beacons, true, tr!("Beacons"))
+                .on_hover_text(tr!("Land only on the cyno beacons, set under Settings"));
+            ui.menu_value(&mut beacons, false, tr!("Hard cyno")).on_hover_text(tr!("Land anywhere a cyno can be lit"));
+            if beacons != self.settings.route_ahead_beacons {
+                self.settings.route_ahead_beacons = beacons;
+                self.needs_save = true;
+                changed = true;
+            }
+        });
+        if self.settings.route_ahead_beacons && self.settings.cyno_generators.is_empty() {
+            ui.label(egui::RichText::new(tr!("No cyno beacons are set.")).color(crate::theme::standing::WARNING));
+        }
+        changed
+    }
+
     pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
@@ -202,9 +238,10 @@ impl SpaiApp {
 
         ui.add_space(4.0);
         let mut replan = false;
-        const KINDS: [(&str, &str, &str); 4] = [
+        const KINDS: [(&str, &str, &str); 5] = [
             ("gate", tr_noop!("By gate"), tr_noop!("Gates, bridges and holes")),
             ("jump", tr_noop!("By jump drive"), tr_noop!("Capital jumps between cyno systems")),
+            ("ahead", tr_noop!("Jump-ahead"), tr_noop!("A capital jumps ahead and the fleet bridges or conduits with it, then gates what range leaves")),
             ("mixed", tr_noop!("Mixed"), tr_noop!("Each leg flown by gate or jumped, switched per leg")),
             ("scan", tr_noop!("Scan sweep"), tr_noop!("A sweep through the systems around a centre, for scouts")),
         ];
@@ -256,11 +293,10 @@ impl SpaiApp {
             for (i, &id) in anchors.iter().enumerate() {
                 if i > 0 {
                     // How the leg into this anchor is flown, switched in place.
-                    let jump = self.map_leg_kind(i - 1) == "jump";
-                    let (glyph, tip, other) = if jump {
-                        (icon::SPIRAL, tr!("Jumped; click to gate it"), "gate")
-                    } else {
-                        (icon::SIGN_IN, tr!("Gated; click to jump it"), "jump")
+                    let (glyph, tip, other) = match self.map_leg_kind(i - 1) {
+                        "jump" => (icon::SPIRAL, tr!("Jumped; click to gate it"), "gate"),
+                        "ahead" => (icon::FAST_FORWARD, tr!("Jumped ahead; click to gate it"), "gate"),
+                        _ => (icon::SIGN_IN, tr!("Gated; click to jump it"), "jump"),
                     };
                     if spai_ui::widgets::icon_button(ui, glyph).on_hover_text(tip).clicked() {
                         flip = Some((i - 1, other));
@@ -286,7 +322,8 @@ impl SpaiApp {
             return;
         }
 
-        let gating = self.map_route_has("gate");
+        // A jump-ahead leg gates whatever range leaves, so it takes the gate settings too.
+        let gating = self.map_route_has("gate") || self.map_route_has("ahead");
         if gating && self.route_zone_combo(ui) {
             replan = true;
         }
@@ -307,16 +344,27 @@ impl SpaiApp {
             replan = true;
         }
 
-        if self.map_route_has("jump") {
-            egui::CollapsingHeader::new(trf!("{icon}  {v} · {v2} ly", icon = icon::SPIRAL, v = SHIP_CLASSES[self.jump_ship].name, v2 = format!("{:.1}", max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc))))
+        if self.map_route_has("ahead") {
+            replan |= self.route_ahead_ui(ui);
+        }
+
+        if self.map_route_jumps() {
+            // The fleet rides a jump-ahead leg, so only a hull that takes it along is offered.
+            let hulls: Vec<(usize, &str)> = if self.map_route_has("ahead") {
+                super::map_route::AHEAD_HULLS.to_vec()
+            } else {
+                SHIP_CLASSES.iter().enumerate().map(|(i, c)| (i, c.name)).collect()
+            };
+            let hull = hulls.iter().find(|h| h.0 == self.jump_ship).map_or(SHIP_CLASSES[self.jump_ship].name, |h| h.1);
+            egui::CollapsingHeader::new(trf!("{icon}  {v} · {v2} ly", icon = icon::SPIRAL, v = hull, v2 = format!("{:.1}", max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc))))
             .id_salt("route_ship")
             .show(ui, |ui| {
                 egui::ComboBox::from_id_salt(ui.id().with("jump_ship"))
-                    .selected_text(SHIP_CLASSES[self.jump_ship].name)
+                    .selected_text(hull)
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
-                        for (i, c) in SHIP_CLASSES.iter().enumerate() {
-                            if ui.menu_value(&mut self.jump_ship, i, c.name).changed() {
+                        for (i, name) in &hulls {
+                            if ui.menu_value(&mut self.jump_ship, *i, *name).changed() {
                                 replan = true;
                             }
                         }
@@ -416,6 +464,20 @@ impl SpaiApp {
             head.push_str(&format!(" · {:.1} ly", o.total_ly));
         }
         ui.label(egui::RichText::new(head).strong());
+        if self.map_route_opts.len() > 1 {
+            use crate::app::SteadySelect as _;
+            let labels: Vec<String> = self.map_route_opts.iter().map(|o| o.label.clone()).collect();
+            let mut at = self.map_route_at;
+            ui.horizontal_wrapped(|ui| {
+                for (i, l) in labels.iter().enumerate() {
+                    ui.menu_value(&mut at, i, l);
+                }
+            });
+            if at != self.map_route_at {
+                self.map_route_at = at;
+                return;
+            }
+        }
         if let Some(saved) = o.saved {
             let thin = saved <= 2;
             let mut line = if saved == 1 { trf!("saves {n} gate", n = saved) } else { trf!("saves {n} gates", n = saved) };
@@ -734,6 +796,8 @@ impl SpaiApp {
                     titan_at_start: true,
                     titan_self_jump: false,
                     legs: self.map_leg_kinds.iter().map(|k| k.to_string()).collect(),
+                    ahead_gates: self.map_ahead_gates,
+                    ahead_jumps: self.map_ahead_jumps,
                     hull: self.jump_ship,
                     jdc: self.jump_jdc,
                     jfc: self.jump_jfc,
@@ -803,13 +867,17 @@ impl SpaiApp {
                 // A saved titan route comes back as the gate route it was built on.
                 self.map_route_kind = match r.kind.as_str() {
                     "jump" => "jump",
+                    "ahead" => "ahead",
                     "mixed" => "mixed",
                     _ => "gate",
                 };
+                self.map_ahead_gates = r.ahead_gates;
+                self.map_ahead_jumps = r.ahead_jumps.max(1);
                 let legs = r.anchors.len().saturating_sub(1);
                 self.map_leg_kinds = (0..legs)
                     .map(|i| match r.legs.get(i).map(String::as_str) {
                         Some("jump") => "jump",
+                        Some("ahead") => "ahead",
                         Some(_) => "gate",
                         None => super::map_route::default_leg(self.map_route_kind),
                     })

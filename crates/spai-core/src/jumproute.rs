@@ -116,7 +116,7 @@ pub fn shortest_path_pref(
     let mut best: HashMap<usize, Key> = HashMap::new();
     let mut prev: HashMap<usize, usize> = HashMap::new();
     let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
-    let start = Key { jumps: 0, off_pref: 0, ly: 0.0 };
+    let start = Key { pre: 0, jumps: 0, off_pref: 0, ly: 0.0 };
     best.insert(fi, start);
     heap.push(std::cmp::Reverse((start, fi)));
     while let Some(std::cmp::Reverse((k, cur))) = heap.pop() {
@@ -147,6 +147,7 @@ pub fn shortest_path_pref(
                 continue;
             }
             let next = Key {
+                pre: 0,
                 jumps: k.jumps + 1,
                 off_pref: k.off_pref + u32::from(!prefer.is_empty() && !prefer.contains(&t.id)),
                 ly: k.ly + d2.sqrt() / LY_METERS,
@@ -162,9 +163,97 @@ pub fn shortest_path_pref(
     None
 }
 
+/// The cheapest way a jump chain lands in one system; `chain` runs from launch point to landing.
+#[derive(Clone)]
+pub struct Reached {
+    pub pre: u32,
+    pub jumps: u32,
+    pub off_pref: u32,
+    pub ly: f64,
+    pub chain: Vec<i64>,
+}
+
+/// Every landing a chain of at most `max_jumps` jumps reaches from `sources` (launch point, cost to
+/// get there). Searched per jump count: under a jump limit, the best way to a system is not always
+/// the one a further jump can continue from.
+pub fn reach(
+    systems: &[MapSystem],
+    max_ly: f64,
+    max_jumps: u32,
+    sources: &[(i64, u32)],
+    land: impl Fn(&MapSystem) -> bool,
+    prefer: &HashSet<i64>,
+) -> HashMap<i64, Reached> {
+    let idx: HashMap<i64, usize> = systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+    let grid = Grid::new(systems, (max_ly * LY_METERS).max(1.0));
+    let max_m2 = (max_ly * LY_METERS).powi(2);
+    // State: (system, jumps so far). Jumps 0 is a launch point, never a landing.
+    let mut best: HashMap<(usize, u32), Key> = HashMap::new();
+    let mut prev: HashMap<(usize, u32), usize> = HashMap::new();
+    let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
+    for &(id, pre) in sources {
+        let Some(&i) = idx.get(&id) else { continue };
+        let k = Key { pre, jumps: 0, off_pref: 0, ly: 0.0 };
+        if !jumpable(&systems[i]) || best.get(&(i, 0)).is_some_and(|b| *b <= k) {
+            continue;
+        }
+        best.insert((i, 0), k);
+        heap.push(std::cmp::Reverse((k, i)));
+    }
+    while let Some(std::cmp::Reverse((k, cur))) = heap.pop() {
+        if best.get(&(cur, k.jumps)).is_some_and(|b| *b < k) || k.jumps >= max_jumps {
+            continue;
+        }
+        let s = &systems[cur];
+        for n in grid.near(s) {
+            let t = &systems[n];
+            if n == cur || !jumpable(t) || !land(t) {
+                continue;
+            }
+            let d2 = (s.x - t.x).powi(2) + (s.y - t.y).powi(2) + (s.z - t.z).powi(2);
+            if d2 > max_m2 {
+                continue;
+            }
+            let next = Key {
+                pre: k.pre,
+                jumps: k.jumps + 1,
+                off_pref: k.off_pref + u32::from(!prefer.is_empty() && !prefer.contains(&t.id)),
+                ly: k.ly + d2.sqrt() / LY_METERS,
+            };
+            if best.get(&(n, next.jumps)).is_some_and(|b| *b <= next) {
+                continue;
+            }
+            best.insert((n, next.jumps), next);
+            prev.insert((n, next.jumps), cur);
+            heap.push(std::cmp::Reverse((next, n)));
+        }
+    }
+    let mut out: HashMap<i64, Reached> = HashMap::new();
+    for (&(i, j), k) in &best {
+        let better = |r: &Reached| {
+            let o = Key { pre: r.pre, jumps: r.jumps, off_pref: r.off_pref, ly: r.ly };
+            o <= *k
+        };
+        if j == 0 || out.get(&systems[i].id).is_some_and(better) {
+            continue;
+        }
+        let mut chain = vec![systems[i].id];
+        let (mut c, mut jj) = (i, j);
+        while jj > 0 {
+            c = prev[&(c, jj)];
+            jj -= 1;
+            chain.push(systems[c].id);
+        }
+        chain.reverse();
+        out.insert(systems[i].id, Reached { pre: k.pre, jumps: k.jumps, off_pref: k.off_pref, ly: k.ly, chain });
+    }
+    out
+}
+
 /// What a path has cost so far, ordered the way a jump route is judged.
 #[derive(Clone, Copy, PartialEq)]
 struct Key {
+    pre: u32,
     jumps: u32,
     off_pref: u32,
     ly: f64,
@@ -174,8 +263,9 @@ impl Eq for Key {}
 
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.jumps
-            .cmp(&other.jumps)
+        self.pre
+            .cmp(&other.pre)
+            .then(self.jumps.cmp(&other.jumps))
             .then(self.off_pref.cmp(&other.off_pref))
             // Distances are sums of square roots and never NaN here, so an unordered pair can only
             // come from a corrupt coordinate; calling it equal keeps the heap well-formed.

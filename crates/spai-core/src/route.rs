@@ -451,6 +451,10 @@ pub fn gate_via(
     } else {
         take_picks(graph, path, to, bridges, avoid, holes, picks)
     };
+    Some(gate_option(graph, path))
+}
+
+fn gate_option(graph: &crate::geo::Systems, path: Vec<i64>) -> RouteOption {
     let hops: Vec<Hop> = path
         .iter()
         .enumerate()
@@ -464,7 +468,7 @@ pub fn gate_via(
     let gates = hops.iter().skip(1).filter(|h| h.kind == 0 && !h.hole).count();
     // A step that is not in the graph's own adjacency is one the hole map let through.
     let uses_wormhole = path.windows(2).any(|w| graph.is_hole_step(w[0], w[1]));
-    Some(RouteOption {
+    RouteOption {
         uses_wormhole,
         label: "Gates".to_owned(),
         gates,
@@ -476,7 +480,7 @@ pub fn gate_via(
         saved: None,
         path,
         hops,
-    })
+    }
 }
 
 fn pos<'a>(coords: &'a [MapSystem], id: i64) -> Option<&'a MapSystem> {
@@ -510,6 +514,16 @@ pub fn jump(
     };
     let path =
         crate::jumproute::shortest_path_pref(search, max_ly, from, to, &Default::default())?;
+    Some(jump_option(graph, coords, path, class, jfc))
+}
+
+fn jump_option(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    path: Vec<i64>,
+    class: &crate::jumproute::ShipClass,
+    jfc: u32,
+) -> RouteOption {
     // Costs come from the planner's own model so the page and the desktop agree on fatigue.
     let costs = crate::jumproute::hop_costs(coords, &path, class, jfc);
     let total_ly: f64 = costs.iter().map(|c| c.ly).sum();
@@ -525,7 +539,7 @@ pub fn jump(
         }
         hops.push(h);
     }
-    Some(RouteOption {
+    RouteOption {
         label: format!("{total_ly:.1} ly"),
         gates: 0,
         jumps: path.len().saturating_sub(1),
@@ -541,7 +555,7 @@ pub fn jump(
         )),
         path,
         hops,
-    })
+    }
 }
 
 /// The ring can hold a dozen systems equally far by gates; past a handful they stop being a choice.
@@ -680,6 +694,156 @@ fn titan_stationary(
         .collect()
 }
 
+#[derive(Default, Clone)]
+pub struct Ahead {
+    pub pre_gates: u32,
+    /// Zero is read as one.
+    pub max_jumps: u32,
+    /// Cyno beacons the landings are limited to, the destination aside. `None`: a hard cyno.
+    pub beacons: Option<std::collections::HashSet<i64>>,
+    /// Docking systems, preferred as landings. Empty for a hull that docks anywhere.
+    pub prefer: std::collections::HashSet<i64>,
+    /// Black ops may gate through high sec; capitals cannot.
+    pub highsec: bool,
+}
+
+pub const AHEAD_OPTIONS: usize = 5;
+
+/// A capital gates up to `pre_gates`, then jumps up to `max_jumps` times with the fleet riding
+/// each jump by bridge or conduit; the fleet gates the rest. Ranked by fleet gates, then jumps,
+/// then docking, then light years, one plan per landing.
+#[allow(clippy::too_many_arguments)]
+pub fn jump_ahead(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    from: i64,
+    to: i64,
+    class: &crate::jumproute::ShipClass,
+    jdc: u32,
+    jfc: u32,
+    bridges: bool,
+    avoid_gate: &Avoid,
+    avoid_jump: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    ahead: &Ahead,
+) -> Vec<RouteOption> {
+    let max_ly = crate::jumproute::max_range_ly(class, jdc);
+    let name = |id: i64| graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string());
+    let (Some(start), Some(end)) = (pos(coords, from), pos(coords, to)) else {
+        return Vec::new();
+    };
+    if from == to {
+        return Vec::new();
+    }
+    let plain = gate(graph, from, to, bridges, avoid_gate, holes).map(|o| o.gates);
+    if crate::jumproute::jumpable(start)
+        && crate::jumproute::jumpable(end)
+        && crate::map::ly_distance(start, end) <= max_ly
+    {
+        let mut o = jump_option(graph, coords, vec![from, to], class, jfc);
+        o.label = format!("direct to {}", name(to));
+        o.saved = plain;
+        return vec![o];
+    }
+
+    // Capitals cannot take Ansiblexes or holes.
+    let cap_ok = |id: i64| {
+        !avoid_gate.blocked(id)
+            && (ahead.highsec || graph.info_of(id).is_some_and(|i| crate::jumproute::cyno_able(i.security)))
+    };
+    let none = std::collections::HashMap::new();
+    let mut launches: std::collections::HashMap<i64, u32> = std::collections::HashMap::from([(from, 0)]);
+    let mut ring = vec![from];
+    for d in 1..=ahead.pre_gates {
+        let mut next = Vec::new();
+        for &sys in &ring {
+            for n in graph.steps_from(sys, from, true, false, &none, cap_ok) {
+                if let std::collections::hash_map::Entry::Vacant(e) = launches.entry(n) {
+                    e.insert(d);
+                    next.push(n);
+                }
+            }
+        }
+        ring = next;
+    }
+    let sources: Vec<(i64, u32)> = launches.iter().map(|(&id, &d)| (id, d)).collect();
+    let land = |s: &MapSystem| {
+        s.id == to || (!avoid_jump.blocked(s.id) && ahead.beacons.as_ref().is_none_or(|b| b.contains(&s.id)))
+    };
+    let mut prefer = ahead.prefer.clone();
+    if !prefer.is_empty() {
+        prefer.insert(to);
+    }
+    let reached = crate::jumproute::reach(coords, max_ly, ahead.max_jumps.max(1), &sources, land, &prefer);
+    let gate_ok = |id: i64| !avoid_gate.blocked(id);
+    let left = graph.distances_to(to, true, bridges, holes, gate_ok);
+    // A landing is exempt from the gate avoid list, like a gate route's start.
+    let tail_of = |id: i64| -> Option<u32> {
+        if id == to {
+            return Some(0);
+        }
+        graph.steps_from(id, to, true, bridges, holes, gate_ok).into_iter().filter_map(|n| left.get(&n)).min().map(|d| d + 1)
+    };
+
+    let mut ranked: Vec<(u32, u32, u32, f64, i64)> = reached
+        .iter()
+        // Gating there would have cost no more than the launch.
+        .filter(|(id, r)| launches.get(id).is_none_or(|&p| p > r.pre))
+        .filter_map(|(&id, r)| Some((r.pre + tail_of(id)?, r.jumps, r.off_pref, r.ly, id)))
+        .collect();
+    let order = |a: &(u32, u32, u32, f64, i64), b: &(u32, u32, u32, f64, i64)| {
+        (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)).then(a.3.total_cmp(&b.3)).then(a.4.cmp(&b.4))
+    };
+    ranked.sort_by(order);
+    // The search counts bridges and holes as steps, the built route only gates: spares for the re-rank.
+    ranked.truncate(AHEAD_OPTIONS * 3);
+
+    let mut out: Vec<(RouteOption, u32, f64)> = ranked
+        .into_iter()
+        .filter_map(|(_, _, off_pref, _, landing)| {
+            let chain = reached.get(&landing)?.chain.clone();
+            let launch = chain[0];
+            let head = graph.route_with(from, launch, true, false, &none, cap_ok).map(|p| gate_option(graph, p))?;
+            let jumps = jump_option(graph, coords, chain, class, jfc);
+            let tail = if landing == to { None } else { Some(gate(graph, landing, to, bridges, avoid_gate, holes)?) };
+            let (pre, jumped, ly) = (head.gates, jumps.jumps, jumps.total_ly);
+            let post = tail.as_ref().map_or(0, |t| t.gates);
+            let mut o = join(head, jumps);
+            if let Some(t) = tail {
+                o = join(o, t);
+            }
+            o.label = format!("via {}", name(landing));
+            let mut note = String::new();
+            if pre > 0 {
+                note.push_str(&format!("Gate {pre} to {}, then ", name(launch)));
+            }
+            note.push_str(&format!("{jumped} jumps ({ly:.1} ly) to {}", name(landing)));
+            if post > 0 {
+                note.push_str(&format!(", then {post} gates"));
+            }
+            note.push('.');
+            o.note = Some(note);
+            o.saved = plain.and_then(|p| p.checked_sub(pre + post));
+            if plain.is_some_and(|p| o.gates >= p) {
+                return None;
+            }
+            Some((o, off_pref, ly))
+        })
+        .collect();
+    let capital = |o: &RouteOption| o.hops.iter().filter(|h| h.kind == 2).count();
+    out.sort_by(|(a, ap, al), (b, bp, bl)| {
+        (a.gates, capital(a), ap).cmp(&(b.gates, capital(b), bp)).then(al.total_cmp(bl))
+    });
+    out.truncate(AHEAD_OPTIONS);
+    if out.is_empty() {
+        if let Some(mut g) = gate(graph, from, to, bridges, avoid_gate, holes) {
+            g.note = Some("No jump saves a gate. This is the gate route.".to_owned());
+            return vec![g];
+        }
+    }
+    out.into_iter().map(|(o, _, _)| o).collect()
+}
+
 /// Two legs end to end. The second's first hop is the first's last, so it is dropped.
 fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
     let mut hops = head.hops;
@@ -802,6 +966,7 @@ pub fn chain(
     holes: &std::collections::HashMap<i64, Vec<i64>>,
     pick: &[usize],
     picks: &Picks,
+    ahead: &Ahead,
 ) -> (Vec<LegChoice>, Vec<RouteOption>) {
     if anchors.len() < 2 {
         return (Vec::new(), Vec::new());
@@ -813,24 +978,40 @@ pub fn chain(
     for (i, w) in anchors.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
         let kind = leg_kind(kinds, i);
-        let avoid = if kind == "jump" { avoid_jump } else { avoid_gate };
-        let options = leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes, picks);
+        let options = if kind == "ahead" {
+            let first = !kinds.iter().take(i).any(|k| *k == "ahead");
+            let leg = Ahead { pre_gates: if first { ahead.pre_gates } else { 0 }, ..ahead.clone() };
+            jump_ahead(graph, coords, a, b, class, jdc, jfc, bridges, avoid_gate, avoid_jump, holes, &leg)
+        } else {
+            let avoid = if kind == "jump" { avoid_jump } else { avoid_gate };
+            leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes, picks)
+        };
         legs.push(LegChoice { from: a, to: b, from_name: name(a), to_name: name(b), options });
     }
     if legs.iter().any(|l| l.options.is_empty()) {
         return (legs, Vec::new());
     }
-    let mut chosen: Option<RouteOption> = None;
-    for (i, l) in legs.iter().enumerate() {
-        let o = clone_option(&l.options[pick.get(i).copied().unwrap_or(0).min(l.options.len() - 1)]);
-        chosen = Some(match chosen {
-            Some(h) => join(h, o),
-            None => o,
-        });
-    }
-    let mut chosen = chosen.expect("at least one leg");
-    recost_fatigue(&mut chosen, class);
-    (legs, vec![chosen])
+    let assemble = |choice: &dyn Fn(usize) -> usize| -> RouteOption {
+        let mut acc: Option<RouteOption> = None;
+        for (i, l) in legs.iter().enumerate() {
+            let o = clone_option(&l.options[choice(i).min(l.options.len() - 1)]);
+            acc = Some(match acc {
+                Some(h) => join(h, o),
+                None => o,
+            });
+        }
+        let mut o = acc.expect("at least one leg");
+        recost_fatigue(&mut o, class);
+        o
+    };
+    let picked = |i: usize| pick.get(i).copied().unwrap_or(0);
+    // Jump-ahead plans differ in cost, so they are the route's options, not forks.
+    let ahead_leg = (0..legs.len()).find(|&i| leg_kind(kinds, i) == "ahead" && legs[i].options.len() > 1);
+    let out = match ahead_leg {
+        Some(at) => (0..legs[at].options.len()).map(|k| assemble(&|i| if i == at { k } else { picked(i) })).collect(),
+        None => vec![assemble(&picked)],
+    };
+    (legs, out)
 }
 
 /// The titan jumps itself, the fleet gates out to it, and it bridges them from there.
@@ -1397,6 +1578,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             &Default::default(),
             &[],
             &Picks::new(),
+            &Ahead::default(),
         );
         mark_anchors(&mut options, &anchors);
         let o = options.first().expect("a route");
@@ -1519,6 +1701,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
                 &Default::default(),
                 &[],
                 &Picks::new(),
+                &Ahead::default(),
             );
             let o = out.into_iter().next().expect("a route");
             let fatigue: Vec<f64> = o.hops.iter().filter_map(|h| h.fatigue_min).collect();
@@ -1534,6 +1717,416 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             note.contains(&format!("{last:.0} min fatigue at the end")),
             "the note quotes a leg's fatigue, not the route's: {note}"
         );
+    }
+
+    /// Ten systems in a gate line, 1.4 ly apart: a titan without skills (3 ly) reaches two along.
+    /// S0 is high sec when `hisec_start`, where no jump drive lights.
+    fn ahead_line(hisec_start: bool) -> (crate::geo::Systems, Vec<crate::map::MapSystem>, Vec<i64>) {
+        use crate::map::MapSystem;
+        let ids: Vec<i64> = (0..10).map(|i| 30_200_000 + i).collect();
+        let mut by_name = std::collections::HashMap::new();
+        let mut adjacency = std::collections::HashMap::new();
+        let mut coords = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let security = if i == 0 && hisec_start { 0.9 } else { -0.4 };
+            let name = format!("A{i}");
+            by_name.insert(name.clone(), crate::geo::SystemInfo {
+                id,
+                name: name.clone(),
+                security,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            let near: Vec<i64> = [i.checked_sub(1), Some(i + 1).filter(|&n| n < ids.len())].into_iter().flatten().map(|n| ids[n]).collect();
+            adjacency.insert(id, near);
+            let x = i as f64 * 1.4 * crate::map::LY_METERS;
+            coords.push(MapSystem { id, name, security, region_id: 10_000_060, x, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 });
+        }
+        (crate::geo::Systems::new(by_name, adjacency), coords, ids)
+    }
+
+    fn ahead(g: &crate::geo::Systems, coords: &[crate::map::MapSystem], from: i64, to: i64, avoid_jump: &Avoid, a: &Ahead) -> Vec<RouteOption> {
+        let titan = &crate::jumproute::SHIP_CLASSES[1];
+        jump_ahead(g, coords, from, to, titan, 0, 5, false, &Avoid::default(), avoid_jump, &Default::default(), a)
+    }
+
+    fn jumped(o: &RouteOption) -> Vec<i64> {
+        o.hops.iter().filter(|h| h.kind == 2).map(|h| h.id).collect()
+    }
+
+    #[test]
+    fn jump_ahead_in_range_is_one_direct_jump() {
+        let (g, coords, ids) = ahead_line(false);
+        let out = ahead(&g, &coords, ids[0], ids[2], &Avoid::default(), &Ahead::default());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].hops.iter().map(|h| (h.id, h.kind)).collect::<Vec<_>>(), vec![(ids[0], 0), (ids[2], 2)]);
+    }
+
+    /// The fleet rides every jump to the end; the next plan lands a gate short.
+    #[test]
+    fn jump_ahead_chains_jumps_and_ranks_plans_by_fleet_gates() {
+        let (g, coords, ids) = ahead_line(false);
+        let out = ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), &Ahead { max_jumps: 5, ..Default::default() });
+        let shape: Vec<(usize, usize)> = out.iter().map(|o| (o.jumps - o.gates, o.gates)).collect();
+        assert_eq!(&shape[..2], &[(5, 0), (4, 1)], "fewest gates first");
+        assert_eq!(out.len(), AHEAD_OPTIONS);
+        assert!(out.windows(2).all(|w| w[0].gates <= w[1].gates), "ranked by gates");
+        assert_eq!(jumped(&out[0]).last(), Some(&ids[9]), "the last jump lands on the destination");
+        assert_eq!(out[1].hops.last().map(|h| (h.id, h.kind)), Some((ids[9], 0)), "gated in");
+        assert_eq!(out[0].saved, Some(9));
+    }
+
+    /// With beacons, the capital lands only on one, whatever a hard cyno would reach.
+    #[test]
+    fn jump_ahead_on_beacons_lands_only_on_beacons() {
+        let (g, coords, ids) = ahead_line(false);
+        let a = Ahead { beacons: Some([ids[2]].into()), max_jumps: 5, ..Default::default() };
+        let out = ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), &a);
+        assert_eq!(out.len(), 1);
+        assert_eq!(jumped(&out[0]), vec![ids[2]]);
+        assert_eq!(out[0].gates, 7);
+    }
+
+    #[test]
+    fn jump_ahead_never_lands_in_an_avoided_system() {
+        let (g, coords, ids) = ahead_line(false);
+        let avoid = Avoid { once: [ids[2], ids[6]].into(), ..Default::default() };
+        let out = ahead(&g, &coords, ids[0], ids[9], &avoid, &Ahead { max_jumps: 5, ..Default::default() });
+        assert!(!out.is_empty());
+        for o in &out {
+            assert!(!jumped(o).iter().any(|id| *id == ids[2] || *id == ids[6]), "{:?}", o.note);
+        }
+    }
+
+    /// Nothing jumps out of high sec, so the capital has to gate out first, and only when allowed to.
+    #[test]
+    fn jump_ahead_gates_out_first_when_allowed() {
+        let (g, coords, ids) = ahead_line(true);
+        let stuck = ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), &Ahead::default());
+        assert!(stuck.iter().all(|o| jumped(o).is_empty()), "no jump, only the gate route");
+        let a = Ahead { pre_gates: 1, max_jumps: 5, ..Default::default() };
+        let out = ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), &a);
+        let o = out.first().expect("a plan");
+        assert_eq!((o.hops[1].id, o.hops[1].kind), (ids[1], 0), "one gate to the jump-off point");
+        assert!(o.note.as_deref().is_some_and(|n| n.starts_with("Gate 1 to A1")), "{:?}", o.note);
+    }
+
+    /// Among equally long chains, the one that lands where the capital can dock.
+    #[test]
+    fn jump_ahead_prefers_systems_the_capital_can_dock_in() {
+        let (g, coords, ids) = ahead_line(false);
+        let odd = |a: &Ahead| ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), a).remove(0);
+        let a = Ahead { prefer: [ids[1], ids[3], ids[5], ids[7]].into(), max_jumps: 5, ..Default::default() };
+        assert_eq!(jumped(&odd(&a)), vec![ids[1], ids[3], ids[5], ids[7], ids[9]]);
+        let a = Ahead { prefer: [ids[2], ids[4], ids[6], ids[8]].into(), max_jumps: 5, ..Default::default() };
+        assert_eq!(jumped(&odd(&a)), vec![ids[2], ids[4], ids[6], ids[8], ids[9]]);
+    }
+
+    /// The jump limit holds: one jump lands two along and gates the rest, three jumps get further.
+    #[test]
+    fn jump_ahead_keeps_to_the_jump_limit() {
+        let (g, coords, ids) = ahead_line(false);
+        for (limit, gates) in [(1, 7), (3, 3)] {
+            let out = ahead(&g, &coords, ids[0], ids[9], &Avoid::default(), &Ahead { max_jumps: limit, ..Default::default() });
+            assert!(out.iter().all(|o| jumped(o).len() <= limit as usize), "limit {limit}");
+            assert_eq!(out[0].gates, gates, "limit {limit}");
+        }
+    }
+
+    /// The plans are the route's options; the gating before them belongs to the first leg only.
+    #[test]
+    fn a_jump_ahead_route_offers_its_plans_as_options() {
+        let (g, coords, ids) = ahead_line(true);
+        let a = Ahead { pre_gates: 1, max_jumps: 3, ..Default::default() };
+        let (legs, out) = chain(
+            &g,
+            &coords,
+            &[ids[0], ids[9]],
+            &["ahead"],
+            &crate::jumproute::SHIP_CLASSES[1],
+            0,
+            5,
+            false,
+            &Avoid::default(),
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+            &Picks::new(),
+            &a,
+        );
+        assert_eq!(legs.len(), 1);
+        assert!(out.len() > 1, "each plan is an option");
+        assert!(out[0].hops.iter().filter_map(|h| h.fatigue_min).last().is_some_and(|f| f > 0.0), "fatigue carried");
+    }
+
+    /// xorshift64*: deterministic, so a failing seed can be replayed.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn chance(&mut self, pct: u64) -> bool {
+            self.below(100) < pct
+        }
+    }
+
+    /// One random universe and one random question about it.
+    struct Case {
+        g: crate::geo::Systems,
+        coords: Vec<crate::map::MapSystem>,
+        adj: std::collections::HashMap<i64, Vec<i64>>,
+        from: i64,
+        to: i64,
+        jdc: u32,
+        avoid_gate: Avoid,
+        avoid_jump: Avoid,
+        ahead: Ahead,
+    }
+
+    /// Systems scattered over a box several titan ranges wide, a gate tree between near neighbours
+    /// plus extra gates, some high sec, and random beacons, avoid lists, docking and gating rules.
+    fn random_case(seed: u64) -> Case {
+        use crate::map::MapSystem;
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let n = 40 + rng.below(40) as usize;
+        let ly = crate::map::LY_METERS;
+        let ids: Vec<i64> = (0..n as i64).map(|i| 30_300_000 + i).collect();
+        let mut coords = Vec::new();
+        let mut by_name = std::collections::HashMap::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let security = if rng.chance(15) { 0.7 } else { -0.3 };
+            let (x, z) = (rng.below(2500) as f64 / 100.0 * ly, rng.below(2500) as f64 / 100.0 * ly);
+            let name = format!("R{i}");
+            by_name.insert(name.clone(), crate::geo::SystemInfo {
+                id,
+                name: name.clone(),
+                security,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            coords.push(MapSystem { id, name, security, region_id: 10_000_060, x, y: 0.0, z, x2d: 0.0, z2d: 0.0 });
+        }
+        let d = |a: usize, b: usize| crate::map::ly_distance(&coords[a], &coords[b]);
+        let mut adj: std::collections::HashMap<i64, Vec<i64>> = ids.iter().map(|&id| (id, Vec::new())).collect();
+        let mut link = |a: usize, b: usize, adj: &mut std::collections::HashMap<i64, Vec<i64>>| {
+            if a != b && !adj[&ids[a]].contains(&ids[b]) {
+                adj.get_mut(&ids[a]).expect("id").push(ids[b]);
+                adj.get_mut(&ids[b]).expect("id").push(ids[a]);
+            }
+        };
+        // Each system gates to its nearest earlier one, so the universe is one piece, as null is.
+        for i in 1..n {
+            let j = (0..i).min_by(|&a, &b| d(i, a).total_cmp(&d(i, b))).expect("an earlier system");
+            link(i, j, &mut adj);
+        }
+        for _ in 0..n / 3 {
+            let a = rng.below(n as u64) as usize;
+            let b = (0..n).filter(|&b| b != a).min_by(|&p, &q| (d(a, p) + rng.below(3) as f64).total_cmp(&(d(a, q) + rng.below(3) as f64))).expect("another system");
+            link(a, b, &mut adj);
+        }
+        let g = crate::geo::Systems::new(by_name, adj.clone());
+        let from = ids[rng.below(n as u64) as usize];
+        let to = ids[rng.below(n as u64) as usize];
+        let pick = |rng: &mut Rng, pct: u64| -> std::collections::HashSet<i64> {
+            ids.iter().copied().filter(|_| rng.chance(pct)).collect()
+        };
+        let mut avoid_gate = Avoid::default();
+        avoid_gate.once = pick(&mut rng, 6);
+        let mut avoid_jump = Avoid::default();
+        avoid_jump.once = pick(&mut rng, 10);
+        let ahead = Ahead {
+            pre_gates: rng.below(4) as u32,
+            max_jumps: 1 + rng.below(4) as u32,
+            beacons: rng.chance(40).then(|| pick(&mut rng, 45)),
+            prefer: if rng.chance(50) { pick(&mut rng, 30) } else { Default::default() },
+            highsec: rng.chance(25),
+        };
+        Case { g, coords, adj, from, to, jdc: rng.below(6) as u32, avoid_gate, avoid_jump, ahead }
+    }
+
+    impl Case {
+        fn plan(&self) -> Vec<RouteOption> {
+            let titan = &crate::jumproute::SHIP_CLASSES[1];
+            jump_ahead(&self.g, &self.coords, self.from, self.to, titan, self.jdc, 5, false, &self.avoid_gate, &self.avoid_jump, &Default::default(), &self.ahead)
+        }
+        fn max_ly(&self) -> f64 {
+            crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[1], self.jdc)
+        }
+        fn at(&self, id: i64) -> &crate::map::MapSystem {
+            self.coords.iter().find(|s| s.id == id).expect("a system of the case")
+        }
+        fn lowsec(&self, id: i64) -> bool {
+            crate::jumproute::cyno_able(self.at(id).security)
+        }
+        fn may_land(&self, id: i64) -> bool {
+            self.lowsec(id)
+                && (id == self.to
+                    || (!self.avoid_jump.blocked(id) && self.ahead.beacons.as_ref().is_none_or(|b| b.contains(&id))))
+        }
+        fn cap_gates(&self, id: i64) -> bool {
+            !self.avoid_gate.blocked(id) && (self.ahead.highsec || self.lowsec(id))
+        }
+        /// Plain breadth-first gate distances from `start` through systems `ok` lets through.
+        fn bfs(&self, start: i64, ok: impl Fn(i64) -> bool) -> std::collections::HashMap<i64, u32> {
+            let mut dist = std::collections::HashMap::from([(start, 0)]);
+            let mut queue = std::collections::VecDeque::from([start]);
+            while let Some(s) = queue.pop_front() {
+                for &n in &self.adj[&s] {
+                    if !dist.contains_key(&n) && ok(n) {
+                        dist.insert(n, dist[&s] + 1);
+                        queue.push_back(n);
+                    }
+                }
+            }
+            dist
+        }
+
+        /// Every landing's fewest fleet gates, found the slow way: each launch point, everything its
+        /// jumps reach, and the gates from there to the target.
+        fn oracle(&self) -> Vec<u32> {
+            let gated: std::collections::HashMap<i64, u32> =
+                self.bfs(self.from, |id| self.cap_gates(id)).into_iter().filter(|&(_, d)| d <= self.ahead.pre_gates).collect();
+            let launches: Vec<(i64, u32)> = gated.iter().map(|(&i, &d)| (i, d)).filter(|&(id, _)| self.lowsec(id)).collect();
+            let mut best: std::collections::HashMap<i64, u32> = Default::default();
+            for &(l, pre) in &launches {
+                // Breadth first by jumps, so a system is first seen at the fewest jumps to it.
+                let mut seen = std::collections::HashSet::from([l]);
+                let mut ring = vec![l];
+                for _ in 0..self.ahead.max_jumps {
+                    let mut next = Vec::new();
+                    for &s in &ring {
+                        for t in &self.coords {
+                            if !seen.contains(&t.id)
+                                && self.may_land(t.id)
+                                && crate::map::ly_distance(self.at(s), t) <= self.max_ly()
+                            {
+                                seen.insert(t.id);
+                                next.push(t.id);
+                                let e = best.entry(t.id).or_insert(u32::MAX);
+                                *e = (*e).min(pre);
+                            }
+                        }
+                    }
+                    ring = next;
+                }
+            }
+            let mut out: Vec<u32> = best
+                .into_iter()
+                .filter(|(f, pre)| gated.get(f).is_none_or(|d| d > pre))
+                .filter_map(|(f, pre)| {
+                    let tail = if f == self.to {
+                        0
+                    } else {
+                        *self.bfs(f, |id| id == self.to || !self.avoid_gate.blocked(id)).get(&self.to)?
+                    };
+                    Some(pre + tail)
+                })
+                .collect();
+            let plain = self.bfs(self.from, |id| id == self.to || !self.avoid_gate.blocked(id)).get(&self.to).copied();
+            out.retain(|&g| plain.is_none_or(|p| g < p));
+            out.sort_unstable();
+            out
+        }
+
+        /// Whether a plan is one a fleet can fly under the case's rules, step by step.
+        fn check(&self, o: &RouteOption) -> Result<(), String> {
+            let h = &o.hops;
+            if h.first().map(|x| x.id) != Some(self.from) || h.last().map(|x| x.id) != Some(self.to) {
+                return Err("does not run from start to target".into());
+            }
+            let first = h.iter().position(|x| x.kind == 2).ok_or("no capital jump")?;
+            let last = h.iter().rposition(|x| x.kind == 2).expect("one jump");
+            if h[first..=last].iter().any(|x| x.kind != 2) {
+                return Err("the jumps are not one chain".into());
+            }
+            for (i, w) in h.windows(2).enumerate() {
+                let (a, b) = (w[0].id, w[1].id);
+                match w[1].kind {
+                    0 if !self.adj[&a].contains(&b) => return Err(format!("{} to {} is no gate", w[0].name, w[1].name)),
+                    2 => {
+                        let ly = crate::map::ly_distance(self.at(a), self.at(b));
+                        if ly > self.max_ly() + 1e-9 {
+                            return Err(format!("{ly:.2} ly jump beyond {:.2}", self.max_ly()));
+                        }
+                        if !self.may_land(b) {
+                            return Err(format!("lands in {}, which it may not", w[1].name));
+                        }
+                    }
+                    0 if i + 1 < first && !self.cap_gates(b) => return Err(format!("capital gates through {}", w[1].name)),
+                    0 if i + 1 > last && b != self.to && self.avoid_gate.blocked(b) => {
+                        return Err(format!("fleet gates through avoided {}", w[1].name))
+                    }
+                    _ => {}
+                }
+            }
+            if last + 1 - first > self.ahead.max_jumps as usize {
+                return Err(format!("{} jumps, {} allowed", last + 1 - first, self.ahead.max_jumps));
+            }
+            if first > self.ahead.pre_gates as usize + 1 {
+                return Err(format!("{} gates before jumping, {} allowed", first - 1, self.ahead.pre_gates));
+            }
+            if !self.lowsec(h[first - 1].id) {
+                return Err("jumps out of high sec".into());
+            }
+            if o.gates != h.iter().filter(|x| x.kind == 0).count() - 1 {
+                return Err("gate count does not match the hops".into());
+            }
+            Ok(())
+        }
+    }
+
+    /// Hundreds of random universes, each answered both by the planner and by brute force: every plan
+    /// must be flyable, and the five offered must be the five fewest-gate landings there are.
+    #[test]
+    fn jump_ahead_finds_the_five_fewest_gate_plans_in_random_universes() {
+        let (mut planned, mut empty, mut gated_first, mut on_beacons) = (0, 0, 0, 0);
+        for seed in 0..400 {
+            let c = random_case(seed);
+            let out = c.plan();
+            if c.from == c.to {
+                assert!(out.is_empty(), "seed {seed}: nowhere to go");
+                continue;
+            }
+            let best = c.oracle();
+            let direct = c.lowsec(c.from)
+                && c.lowsec(c.to)
+                && c.from != c.to
+                && crate::map::ly_distance(c.at(c.from), c.at(c.to)) <= c.max_ly();
+            if direct {
+                assert_eq!(out.len(), 1, "seed {seed}: in range is one direct jump");
+                assert_eq!((out[0].gates, out[0].hops.len()), (0, 2), "seed {seed}");
+                continue;
+            }
+            if best.is_empty() {
+                empty += 1;
+                assert!(out.len() <= 1 && out.iter().all(|o| o.hops.iter().all(|h| h.kind == 0)), "seed {seed}: nothing beats gating, so the gate route");
+                continue;
+            }
+            let got: Vec<u32> = out.iter().map(|o| o.gates as u32).collect();
+            let want: Vec<u32> = best.iter().copied().take(AHEAD_OPTIONS).collect();
+            assert_eq!(got, want, "seed {seed}: fleet gates of the plans against brute force");
+            for o in &out {
+                if let Err(e) = c.check(o) {
+                    panic!("seed {seed}: {e}: {:?}", o.hops.iter().map(|h| (&h.name, h.kind)).collect::<Vec<_>>());
+                }
+                gated_first += usize::from(o.hops[1].kind == 0 && o.hops.iter().any(|h| h.kind == 2));
+            }
+            let landings: std::collections::HashSet<i64> =
+                out.iter().map(|o| o.hops.iter().rev().find(|h| h.kind == 2).expect("a jump").id).collect();
+            assert_eq!(landings.len(), out.len(), "seed {seed}: one plan per landing");
+            planned += usize::from(!out.is_empty());
+            on_beacons += usize::from(!out.is_empty() && c.ahead.beacons.is_some());
+        }
+        assert!(planned > 100 && empty > 5, "planned {planned}, empty {empty}");
+        assert!(gated_first > 20 && on_beacons > 30, "gated first {gated_first}, on beacons {on_beacons}");
     }
 
     /// A target in range is one jump, not a bridge to its neighbour and a gate.
@@ -1581,6 +2174,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             &Default::default(),
             &[],
             &Picks::new(),
+            &Ahead::default(),
         );
         assert_eq!(legs.len(), 2);
         let o = out.first().expect("a route");
@@ -1623,6 +2217,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             &Default::default(),
             &[],
             &Picks::new(),
+            &Ahead::default(),
         );
         let via = opts.first().expect("a chained route");
         assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");

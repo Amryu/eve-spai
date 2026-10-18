@@ -1515,6 +1515,21 @@ fn route_panel_scene_full(name: &'static str, detail: bool, fork: bool) -> Scene
     })
 }
 
+/// The route panel on a jump-ahead route: its gating and cyno controls, the titan-only hull and
+/// the row of plans.
+fn route_panel_ahead_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [380.0, 620.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.seed_ahead_route(30_004_759, 30_003_704);
+            a
+        });
+        app.jump_plan_ui(ui);
+    })
+}
+
 fn map_layers_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -2308,6 +2323,7 @@ pub(crate) fn all() -> Vec<Scene> {
         route_panel_scene("route_panel_gate"),
         route_panel_scene_cfg("route_panel_costs_and_warnings", true),
         route_panel_scene_full("route_panel_fork", false, true),
+        route_panel_ahead_scene("route_panel_jump_ahead"),
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         docked_system_scene("map_dock_system_notes"),

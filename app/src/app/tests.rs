@@ -2744,6 +2744,42 @@ mod route_extension_tests {
         assert_eq!(a.map_leg_kinds, vec!["gate", "gate"]);
     }
 
+    /// A jump-ahead route flies every leg ahead, plans against both avoid lists, and only with a
+    /// hull the fleet can ride: a supercarrier or dread becomes a titan.
+    #[test]
+    fn a_jump_ahead_route_rides_a_titan_or_black_ops() {
+        let (_ctx, mut a) = app();
+        a.jump_ship = 0;
+        a.map_take_route("ahead", "ahead", DQ, THREE);
+        a.map_take_route("ahead", "ahead", THREE, K5);
+        assert_eq!((a.map_route_kind, a.map_leg_kinds.clone()), ("ahead", vec!["ahead", "ahead"]));
+        assert_eq!(a.map_route_avoid_lists(), vec![false, true]);
+        assert!(a.map_route_jumps());
+        assert_eq!(a.jump_ship, 1, "a dread cannot bridge, so the titan is planned");
+        a.map_set_route_mode("gate");
+        assert_eq!(a.map_leg_kinds, vec!["gate", "gate"]);
+        a.map_route_start("ahead", DQ);
+        assert_eq!(a.map_ahead_gates, 0, "every new route gates nothing first");
+    }
+
+    /// Black ops dock anywhere and may gate through high sec; a titan wants super docking. Beacons
+    /// limit the landings only when chosen.
+    #[test]
+    fn jump_ahead_rules_follow_the_hull_and_the_cyno_choice() {
+        let (_ctx, mut a) = app();
+        a.settings.cyno_generators = vec![THREE];
+        a.jump_ship = 2;
+        let blops = a.route_ahead();
+        assert!(blops.highsec && blops.prefer.is_empty() && blops.beacons.is_none());
+        a.jump_ship = 1;
+        a.settings.route_ahead_beacons = true;
+        a.map_ahead_gates = 2;
+        let titan = a.route_ahead();
+        assert!(!titan.highsec);
+        assert_eq!(titan.pre_gates, 2);
+        assert_eq!(titan.beacons, Some([THREE].into()));
+    }
+
     /// The same by menu: set a destination, then name a further one.
     #[test]
     fn setting_a_further_destination_keeps_the_waypoints() {
@@ -3566,5 +3602,75 @@ mod rescue_preview_tests {
         a.fleet.lock().unwrap().rescue_preview = Some(crate::fleets::model::PingPreview { ping: "x".into(), motd: String::new() });
         a.rescue_preview_poll();
         assert_eq!(a.fleet_gen.rescue, 2);
+    }
+}
+
+/// Jump-ahead plans on the real universe. Needs a copy of a data directory with the SDE loaded:
+/// `SPAI_REAL_DATA_DIR=<copy> cargo test --bin eve-spai real_jump_ahead -- --ignored --nocapture`.
+/// Opens the copy, so the live database is never written.
+#[cfg(test)]
+mod real_jump_ahead_tests {
+    use crate::web::route::{jump_ahead, Ahead, Avoid, RouteOption};
+
+    #[test]
+    #[ignore]
+    fn real_jump_ahead_plans_are_flyable_and_ranked() {
+        let dir = std::env::var("SPAI_REAL_DATA_DIR").expect("SPAI_REAL_DATA_DIR");
+        std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
+        let store = crate::store::Store::open().expect("the copied store");
+        let g = store.load_systems();
+        let coords = store.all_map_systems();
+        let id = |n: &str| g.lookup(n).unwrap_or_else(|| panic!("{n} in the SDE")).id;
+        let beacons: std::collections::HashSet<i64> =
+            super::BAKED_BEACONS.lines().filter_map(|l| g.lookup(l.trim())).map(|i| i.id).collect();
+        let titan = &crate::jumproute::SHIP_CLASSES[1];
+        let max = crate::jumproute::max_range_ly(titan, 5);
+        let at = |i: i64| coords.iter().find(|s| s.id == i).expect("coords");
+        let cases: [(&str, &str, u32, u32, bool); 9] = [
+            ("1DQ1-A", "Y-2ANO", 0, 1, false),
+            ("1DQ1-A", "Y-2ANO", 0, 1, true),
+            ("1DQ1-A", "Y-2ANO", 0, 3, false),
+            ("A24L-V", "1DQ1-A", 0, 3, true),
+            ("A24L-V", "1DQ1-A", 2, 2, false),
+            ("Atioth", "D-W7F0", 0, 1, false),
+            ("Jita", "1DQ1-A", 3, 2, false),
+            ("Amamake", "Atioth", 0, 2, true),
+            ("1DQ1-A", "7-K5EL", 0, 1, false),
+        ];
+        for (from, to, pre, jumps, on_beacons) in cases {
+            let a = Ahead { pre_gates: pre, max_jumps: jumps, beacons: on_beacons.then(|| beacons.clone()), ..Default::default() };
+            let out: Vec<RouteOption> = jump_ahead(&g, &coords, id(from), id(to), titan, 5, 5, false, &Avoid::default(), &Avoid::default(), &Default::default(), &a);
+            let plain = crate::web::route::gate(&g, id(from), id(to), false, &Avoid::default(), &Default::default()).map(|o| o.gates);
+            println!("\n{from} -> {to}, {pre} gates first, {jumps} jumps at most, {}, gate route {plain:?}", if on_beacons { "beacons" } else { "hard cyno" });
+            if out.is_empty() {
+                println!("  no plan");
+                continue;
+            }
+            assert!(out.windows(2).all(|w| w[0].gates <= w[1].gates), "ranked by fleet gates");
+            for o in &out {
+                let steps: Vec<String> = o
+                    .hops
+                    .iter()
+                    .skip(1)
+                    .map(|h| match h.kind {
+                        2 => format!("~{}({:.1}ly)", h.name, h.ly.unwrap_or_default()),
+                        _ => h.name.clone(),
+                    })
+                    .collect();
+                println!("  {} gates: {}", o.gates, steps.join(" "));
+                for w in o.hops.windows(2) {
+                    match w[1].kind {
+                        2 => {
+                            let ly = crate::map::ly_distance(at(w[0].id), at(w[1].id));
+                            assert!(ly <= max + 1e-9, "{} -> {}: {ly} ly", w[0].name, w[1].name);
+                            assert!(crate::jumproute::jumpable(at(w[1].id)));
+                            assert!(!on_beacons || w[1].id == id(to) || beacons.contains(&w[1].id), "{} is no beacon", w[1].name);
+                        }
+                        _ => assert!(g.neighbors(w[0].id).contains(&w[1].id), "{} -> {} is no gate", w[0].name, w[1].name),
+                    }
+                }
+                assert!(o.hops.iter().filter(|h| h.kind == 2).count() <= jumps as usize, "jump limit");
+            }
+        }
     }
 }

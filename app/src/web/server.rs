@@ -407,6 +407,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         &d.holes,
                         &pick,
                         &forks,
+                        &super::route::Ahead::default(),
                     );
                     out.avoided = super::route::avoided(graph, &avoid);
                     out.legs = legs;

@@ -755,6 +755,8 @@ pub struct SpaiApp {
     map_route_anchors: Vec<i64>,
     /// How each leg between two anchors is flown, "gate" or "jump".
     map_leg_kinds: Vec<&'static str>,
+    map_ahead_gates: u32,
+    map_ahead_jumps: u32,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
     /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
@@ -1680,6 +1682,8 @@ impl SpaiApp {
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
             map_leg_kinds: Vec::new(),
+            map_ahead_gates: 0,
+            map_ahead_jumps: 1,
             main_pos_fix: main_pos_fix_at,
             main_maximize: main_maximize_at,
             rescue_geom_applied: false,
@@ -3331,6 +3335,29 @@ impl SpaiApp {
         self.map_leg_kinds = vec!["gate"];
         self.map_route_opts = vec![opt];
         self.map_route_at = 0;
+    }
+
+    /// A jump-ahead route with three plans to pick from, the titan bridging the first hop.
+    #[cfg(test)]
+    pub(crate) fn seed_ahead_route(&mut self, from: i64, to: i64) {
+        self.seed_map_route(from, to);
+        self.map_route_kind = "ahead";
+        self.map_leg_kinds = vec!["ahead"];
+        self.jump_ship = 1;
+        self.map_ahead_gates = 1;
+        let base = self.map_route_opts[0].clone();
+        self.map_route_opts = ["via 7-K5EL", "via 319-3D", "via 1DQ1-A"]
+            .into_iter()
+            .map(|label| {
+                let mut o = base.clone();
+                o.label = label.to_owned();
+                if let Some(h) = o.hops.get_mut(1) {
+                    h.kind = 2;
+                    h.ly = Some(5.8);
+                }
+                o
+            })
+            .collect();
     }
 
     /// Turns a seeded route into the busiest row shape there is: a jump hop with its costs and a

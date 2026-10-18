@@ -290,6 +290,9 @@ pub struct Settings {
     pub dscan_service: DscanService,
     #[serde(default)]
     pub route_via_wormholes: bool,
+    /// Whether a jump-ahead route lands only on the cyno beacons, or anywhere a hard cyno can go.
+    #[serde(default)]
+    pub route_ahead_beacons: bool,
     /// Record wormholes our own characters go through, from how their systems change.
     #[serde(default = "default_true")]
     pub wh_detect: bool,
@@ -833,6 +836,8 @@ mod saved_routes {
             titan_at_start: true,
             titan_self_jump: false,
             legs: Vec::new(),
+            ahead_gates: 0,
+            ahead_jumps: 0,
             hull: 0,
             jdc: 5,
             jfc: 5,
@@ -1016,6 +1021,11 @@ pub struct SavedMapRoute {
     #[serde(default)]
     pub legs: Vec<String>,
     #[serde(default)]
+    pub ahead_gates: u32,
+    /// Zero, from an older save, plans one.
+    #[serde(default)]
+    pub ahead_jumps: u32,
+    #[serde(default)]
     pub hull: usize,
     #[serde(default)]
     pub jdc: u32,
@@ -1132,6 +1142,8 @@ impl Settings {
                 titan_at_start: false,
                 titan_self_jump: false,
                 legs: Vec::new(),
+                ahead_gates: 0,
+                ahead_jumps: 0,
                 hull: 0,
                 jdc: 0,
                 jfc: 0,
@@ -1617,6 +1629,7 @@ impl Default for Settings {
             dscan_autoupload: false,
             dscan_service: DscanService::Auto,
             route_via_wormholes: false,
+            route_ahead_beacons: false,
             wh_detect: true,
             wh_ask: true,
             wh_route_kinds: default_wh_route_kinds(),
