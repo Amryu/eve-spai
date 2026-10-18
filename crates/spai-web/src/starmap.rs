@@ -20,6 +20,9 @@ pub struct Network {
     pub max_zone: u8,
     #[serde(default)]
     pub bridges: Vec<(String, String)>,
+    /// The group's cyno beacons, by system name.
+    #[serde(default)]
+    pub beacons: Vec<String>,
 }
 
 impl Network {
@@ -465,7 +468,7 @@ mod tests {
         let mut d = MapData::new(Vec::new(), Vec::new(), Vec::new());
         d.set_holes(&[Wormhole { system_id: 30_004_759, dest_system_id: Some(30_000_142), ..Default::default() }]);
         assert_eq!(find(&geo, &d, "1dq1-a", "jita").unwrap(), vec![30_004_759, 30_000_142]);
-        let network = Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())] };
+        let network = Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())], beacons: Vec::new() };
         spai_core::ansiblex::feed(spai_core::ansiblex::BridgeKey { bridges: network.list(), capital: network.capital.clone(), max_zone: 5 }, &mut geo);
         d.set_network(network, &geo);
         assert_eq!(find(&geo, &d, "1DQ1-A", "7-K5EL").unwrap().len(), 2, "one bridge");

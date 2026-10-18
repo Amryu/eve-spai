@@ -1,5 +1,5 @@
 //! Routes planned on the web map, the desktop's way: drag from a system to another and pick a gate,
-//! jump or mixed route, a mixed one asking gate or jump for every leg; right-click a system to start
+//! jump, jump-ahead or mixed route, a mixed one asking gate or jump for every leg; right-click a system to start
 //! a route there, set a destination, add a waypoint or avoid it; pick alternatives per leg and
 //! branches at forks. The planning is the shared `spai_core::route`, so both maps answer alike.
 
@@ -33,7 +33,15 @@ pub struct PlanPrefs {
     /// Holes, by uid, and systems whose holes routes never use.
     pub wh_off_holes: Vec<String>,
     pub wh_off_systems: Vec<i64>,
+    /// Index into [`AHEAD_HULLS`].
+    pub ahead_hull: usize,
+    /// Jump-ahead landings only on the group's cyno beacons, else anywhere.
+    pub ahead_beacons: bool,
 }
+
+/// Hulls the fleet rides along with on a jump-ahead route, by bridge or conduit, and their range
+/// class, as the desktop offers them.
+pub const AHEAD_HULLS: [(usize, &str); 4] = [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (2, "Black Ops")];
 
 impl Default for PlanPrefs {
     fn default() -> Self {
@@ -50,6 +58,8 @@ impl Default for PlanPrefs {
             wh_min_size: String::new(),
             wh_off_holes: Vec::new(),
             wh_off_systems: Vec::new(),
+            ahead_hull: 0,
+            ahead_beacons: false,
         }
     }
 }
@@ -164,6 +174,11 @@ impl PlanPrefs {
     /// The holes routes may take, both ways: far side known, a kind allowed, within the limits and
     /// not switched off.
     pub fn hole_graph(&self, geo: &Systems, holes: &[Wormhole], now: i64) -> HashMap<i64, Vec<i64>> {
+        self.hole_graph_fitting(geo, holes, now, |_| true)
+    }
+
+    /// [`Self::hole_graph`] limited to holes a hull fits through, by the hole's known size.
+    pub fn hole_graph_fitting(&self, geo: &Systems, holes: &[Wormhole], now: i64, fits: impl Fn(Option<ShipSize>) -> bool) -> HashMap<i64, Vec<i64>> {
         let limits = self.limits();
         let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
         if !self.via_holes {
@@ -172,7 +187,7 @@ impl PlanPrefs {
         for w in holes {
             let Some(b) = w.dest_system_id else { continue };
             let kind = HoleKind::of(geo, w.system_id, b, w.is_drifter);
-            if self.wh_kinds.iter().any(|k| k == kind.code()) && limits.allows(w, now) && !self.hole_off(w) {
+            if fits(w.known_size()) && self.wh_kinds.iter().any(|k| k == kind.code()) && limits.allows(w, now) && !self.hole_off(w) {
                 adj.entry(w.system_id).or_default().push(b);
                 adj.entry(b).or_default().push(w.system_id);
             }
@@ -183,14 +198,19 @@ impl PlanPrefs {
 
 #[derive(Default)]
 pub struct RoutePlan {
-    /// "gate", "jump" or "mixed": how new legs are flown, a mixed route asking each time.
+    /// "gate", "jump", "ahead" or "mixed": how new legs are flown, a mixed route asking each time.
     pub kind: &'static str,
     /// Start, waypoints, destination.
     pub anchors: Vec<i64>,
     /// How each leg between two anchors is flown, "gate" or "jump".
     pub leg_kinds: Vec<&'static str>,
     pub opts: Vec<RouteOption>,
+    /// The option shown: a jump-ahead route has one per plan.
+    pub at: usize,
     pub legs: Vec<LegChoice>,
+    /// A jump-ahead route's gates before the jump and jumps at most, per route like the desktop's.
+    pub ahead_gates: u32,
+    pub ahead_jumps: u32,
     leg_pick: Vec<usize>,
     forks: Picks,
     avoid_once: HashSet<i64>,
@@ -252,12 +272,17 @@ pub struct PlanInput<'a> {
 
 /// The way a mode flies a leg nobody asked about: a mixed route's default is gates.
 fn default_leg(mode: &str) -> &'static str {
-    if mode == "jump" { "jump" } else { "gate" }
+    match mode {
+        "jump" => "jump",
+        "ahead" => "ahead",
+        _ => "gate",
+    }
 }
 
 fn mode_of(kind: &str) -> &'static str {
     match kind {
         "jump" => "jump",
+        "ahead" => "ahead",
         "mixed" => "mixed",
         _ => "gate",
     }
@@ -269,7 +294,7 @@ impl RoutePlan {
     }
 
     pub fn route(&self) -> Option<&RouteOption> {
-        self.opts.first()
+        self.opts.get(self.at).or(self.opts.first())
     }
 
     /// How leg `i` is flown.
@@ -289,7 +314,12 @@ impl RoutePlan {
     /// The persistent avoid lists this route is planned against: gate legs the gate list, jump legs
     /// the jump list.
     fn lists(&self) -> Vec<bool> {
-        [(false, "gate"), (true, "jump")].into_iter().filter(|(_, k)| self.has(k)).map(|(j, _)| j).collect()
+        let ahead = self.has("ahead");
+        [(false, "gate"), (true, "jump")].into_iter().filter(|(_, k)| ahead || self.has(k)).map(|(j, _)| j).collect()
+    }
+
+    fn ahead_hull(&self) -> (usize, &'static str) {
+        AHEAD_HULLS[self.prefs.ahead_hull.min(AHEAD_HULLS.len() - 1)]
     }
 
     fn avoid(&self, jump: bool) -> Avoid {
@@ -452,7 +482,10 @@ impl RoutePlan {
         let input = &PlanInput { geo, ..*input };
         let (avoid_gate, avoid_jump) = (self.avoid(false), self.avoid(true));
         let holes = self.prefs.hole_graph(input.geo, input.holes, spai_core::clock::utc().timestamp());
-        let class = &SHIP_CLASSES[self.prefs.ship.min(SHIP_CLASSES.len() - 1)];
+        let ahead = self.has("ahead");
+        let ship = if ahead { self.ahead_hull().0 } else { self.prefs.ship };
+        let class = &SHIP_CLASSES[ship.min(SHIP_CLASSES.len() - 1)];
+        let rules = if ahead { self.ahead_rules(input) } else { route::Ahead::default() };
         let kinds: Vec<&str> = (0..self.anchors.len().saturating_sub(1)).map(|i| self.leg_kind(i)).collect();
         let (legs, mut opts) = route::chain(
             input.geo,
@@ -468,13 +501,38 @@ impl RoutePlan {
             &holes,
             &self.leg_pick,
             &self.forks,
-            &route::Ahead::default(),
+            &rules,
         );
         route::annotate(&mut opts, &HashMap::new());
         route::mark_anchors(&mut opts, &self.anchors);
         route::mark_forks(&mut opts, input.geo, true, &avoid_gate, &holes);
+        // A fork switched or a system avoided keeps the plan picked, found again by its landing.
+        let picked = self.route().map(|o| o.label.clone());
+        self.at = picked.and_then(|l| opts.iter().position(|o| o.label == l)).unwrap_or(0);
         self.legs = legs;
         self.opts = opts;
+    }
+
+    /// The jump-ahead hull's rules. Docking tags are the desktop's own notes, so the browser has
+    /// none to prefer.
+    fn ahead_rules(&self, input: &PlanInput) -> route::Ahead {
+        let (class, _) = self.ahead_hull();
+        let now = spai_core::clock::utc().timestamp();
+        let pre_holes = match class {
+            2 => self.prefs.hole_graph_fitting(input.geo, input.holes, now, |s| s.is_none_or(|s| matches!(s, ShipSize::Large | ShipSize::XLarge))),
+            0 => self.prefs.hole_graph_fitting(input.geo, input.holes, now, |s| s == Some(ShipSize::XLarge)),
+            _ => HashMap::new(),
+        };
+        let beacons = self.prefs.ahead_beacons.then(|| input.network.beacons.iter().filter_map(|n| input.geo.lookup(n)).map(|i| i.id).collect());
+        route::Ahead {
+            pre_gates: self.ahead_gates,
+            max_jumps: self.ahead_jumps.max(1),
+            beacons,
+            prefer: HashSet::new(),
+            highsec: class == 2,
+            pre_bridges: class == 2,
+            pre_holes,
+        }
     }
 
     fn always_avoided(&self, sid: i64) -> bool {
@@ -564,7 +622,7 @@ impl RoutePlan {
             ui.separator();
         }
         let verb = if self.active() { "Restart as" } else { "Start" };
-        for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("mixed", "Mixed Route")] {
+        for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("ahead", "Jump-Ahead Route"), ("mixed", "Mixed Route")] {
             if ui.button(format!("{verb} {name}")).clicked() {
                 self.start(kind, sid);
                 ui.close();
@@ -592,26 +650,33 @@ impl RoutePlan {
             }
             return;
         }
-        const R: f32 = 58.0;
-        const BTN: egui::Vec2 = egui::vec2(124.0, 28.0);
+        const BTN: egui::Vec2 = egui::vec2(140.0, 28.0);
         let opts: Vec<(&'static str, &str, &str)> = if leg_only {
             vec![("gate", icon::SIGN_IN, "Gate"), ("jump", icon::SPIRAL, "Jump"), ("cancel", icon::X, "Cancel")]
         } else {
-            vec![("gate", icon::SIGN_IN, "Gate route"), ("jump", icon::SPIRAL, "Jump route"), ("mixed", icon::SHUFFLE, "Mixed route"), ("cancel", icon::X, "Cancel")]
+            vec![
+                ("gate", icon::SIGN_IN, "Gate route"),
+                ("jump", icon::SPIRAL, "Jump route"),
+                ("ahead", icon::FAST_FORWARD, "Jump-ahead route"),
+                ("mixed", icon::SHUFFLE, "Mixed route"),
+                ("cancel", icon::X, "Cancel"),
+            ]
         };
-        let half = egui::vec2(R + BTN.x / 2.0 + 8.0, R + BTN.y / 2.0 + 8.0);
+        // Neighbours on the ring sit 2R·sin(π/n) apart and must clear a button's width.
+        let r: f32 = if opts.len() > 4 { (BTN.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
+        let half = egui::vec2(r + BTN.x / 2.0 + 8.0, r + BTN.y / 2.0 + 8.0);
         let mut chose: Option<&'static str> = None;
         let area = egui::Area::new(egui::Id::new("web_link_menu").with(leg_only)).order(egui::Order::Foreground).fixed_pos(at - half).show(ui.ctx(), |ui| {
             let (rect, _) = ui.allocate_exact_size(half * 2.0, egui::Sense::hover());
             let c = rect.center();
             let v = ui.visuals().clone();
             let p = ui.painter();
-            p.circle_filled(c, R + 16.0, v.window_fill.gamma_multiply(0.94));
-            p.circle_stroke(c, R + 16.0, egui::Stroke::new(1.0, v.window_stroke.color));
+            p.circle_filled(c, r + 16.0, v.window_fill.gamma_multiply(0.94));
+            p.circle_stroke(c, r + 16.0, egui::Stroke::new(1.0, v.window_stroke.color));
             p.circle_filled(c, 3.5, v.hyperlink_color);
             for (idx, (kind, glyph, label)) in opts.iter().enumerate() {
                 let a = (idx as f32 / opts.len() as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                let br = egui::Rect::from_center_size(c + egui::vec2(a.cos() * R, a.sin() * R), BTN);
+                let br = egui::Rect::from_center_size(c + egui::vec2(a.cos() * r, a.sin() * r), BTN);
                 let text = egui::RichText::new(format!("{glyph}  {label}"));
                 let text = if *kind == "cancel" { text.color(v.weak_text_color()) } else { text };
                 if ui.put(br, egui::Button::new(text)).clicked() {
@@ -688,7 +753,7 @@ impl RoutePlan {
         }
         ui.horizontal(|ui| {
             let mut mode: Option<&str> = None;
-            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("mixed", "Mixed")] {
+            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("ahead", "Ahead"), ("mixed", "Mixed")] {
                 if ui.menu_label(self.kind == kind, label).clicked() && self.kind != kind {
                     mode = Some(kind);
                 }
@@ -709,7 +774,11 @@ impl RoutePlan {
             for (i, &id) in self.anchors.iter().enumerate() {
                 if i > 0 {
                     // How the leg into this anchor is flown, switched in place.
-                    let (glyph, tip, other) = if self.leg_kind(i - 1) == "jump" { (icon::SPIRAL, "Jumped; click to gate it", "gate") } else { (icon::SIGN_IN, "Gated; click to jump it", "jump") };
+                    let (glyph, tip, other) = match self.leg_kind(i - 1) {
+                        "jump" => (icon::SPIRAL, "Jumped; click to gate it", "gate"),
+                        "ahead" => (icon::FAST_FORWARD, "Jumped ahead; click to gate it", "gate"),
+                        _ => (icon::SIGN_IN, "Gated; click to jump it", "jump"),
+                    };
                     if spai_ui::widgets::icon_button(ui, glyph).on_hover_text(tip).clicked() {
                         flip = Some((i - 1, other));
                     }
@@ -731,19 +800,31 @@ impl RoutePlan {
             ui.label(egui::RichText::new("Drag from the start to where you are going, or right-click a system: Set as Destination.").weak());
             return;
         }
-        if self.has("gate") {
+        let ahead = self.has("ahead");
+        if self.has("gate") || ahead {
             self.zone_combo(ui);
             self.hole_options(ui);
         }
-        if self.has("jump") {
-            let class = &SHIP_CLASSES[self.prefs.ship.min(SHIP_CLASSES.len() - 1)];
-            egui::CollapsingHeader::new(format!("{}  {} \u{b7} {:.1} ly", icon::SPIRAL, class.name, max_range_ly(class, self.prefs.jdc))).id_salt("web_route_ship").show(ui, |ui| {
-                egui::ComboBox::from_id_salt("web_jump_ship").selected_text(class.name).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
-                    for (i, c) in SHIP_CLASSES.iter().enumerate() {
-                        if ui.selectable_value(&mut self.prefs.ship, i, c.name).changed() {
-                            self.dirty = true;
-                            self.replan();
-                        }
+        if ahead {
+            self.ahead_options(ui);
+        }
+        if self.has("jump") || ahead {
+            let (class, hull) = if ahead { (&SHIP_CLASSES[self.ahead_hull().0], self.ahead_hull().1) } else {
+                let c = &SHIP_CLASSES[self.prefs.ship.min(SHIP_CLASSES.len() - 1)];
+                (c, c.name)
+            };
+            egui::CollapsingHeader::new(format!("{}  {} \u{b7} {:.1} ly", icon::SPIRAL, hull, max_range_ly(class, self.prefs.jdc))).id_salt("web_route_ship").show(ui, |ui| {
+                egui::ComboBox::from_id_salt("web_jump_ship").selected_text(hull).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+                    // The fleet rides a jump-ahead leg, so only a hull that takes it along is offered.
+                    let names: Vec<&str> = if ahead { AHEAD_HULLS.iter().map(|h| h.1).collect() } else { SHIP_CLASSES.iter().map(|c| c.name).collect() };
+                    let pick = if ahead { &mut self.prefs.ahead_hull } else { &mut self.prefs.ship };
+                    let mut changed = false;
+                    for (i, n) in names.into_iter().enumerate() {
+                        changed |= ui.menu_value(pick, i, n).changed();
+                    }
+                    if changed {
+                        self.dirty = true;
+                        self.replan();
                     }
                 });
                 ui.horizontal(|ui| {
@@ -799,7 +880,7 @@ impl RoutePlan {
                 }
             }
         }
-        let Some(o) = self.opts.first().cloned() else {
+        let Some(o) = self.route().cloned() else {
             ui.separator();
             ui.label(egui::RichText::new("No route with these settings.").color(spai_ui::theme::standing::WARNING));
             return;
@@ -813,6 +894,17 @@ impl RoutePlan {
             head.push_str(&format!(" \u{b7} {:.1} ly", o.total_ly));
         }
         ui.label(egui::RichText::new(head).strong());
+        if self.opts.len() > 1 {
+            let labels: Vec<String> = self.opts.iter().map(|o| o.label.clone()).collect();
+            ui.horizontal_wrapped(|ui| {
+                for (i, l) in labels.iter().enumerate() {
+                    ui.menu_value(&mut self.at, i, l);
+                }
+            });
+        }
+        if let Some(saved) = o.saved {
+            ui.label(egui::RichText::new(if saved == 1 { "saves 1 gate".to_owned() } else { format!("saves {saved} gates") }).color(spai_ui::theme::standing::FRIENDLY));
+        }
         if let Some(d) = &o.detour {
             ui.label(egui::RichText::new(format!("{}  {d}", icon::EYE_SLASH)).color(spai_ui::theme::standing::WARNING));
         }
@@ -894,6 +986,41 @@ impl RoutePlan {
             }
             Some((id, leg)) => self.add_waypoint(id, Some(leg)),
             None => {}
+        }
+    }
+
+    /// A jump-ahead route's own controls: how far the capital gates first, how often it jumps, and
+    /// what it lands on.
+    fn ahead_options(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Gates before jumping");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.ahead_gates).range(0..=10))
+                .on_hover_text("The capital may gate up to this many systems, the fleet with it, to a better place to jump from")
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Jumps at most");
+            self.ahead_jumps = self.ahead_jumps.max(1);
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.ahead_jumps).range(1..=5))
+                .on_hover_text("Each jump the fleet rides needs a cyno and adds fatigue; one is a single bridge")
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Cyno");
+            let mut b = self.prefs.ahead_beacons;
+            ui.menu_value(&mut b, true, "Beacons only").on_hover_text("Land only on the group's cyno beacons");
+            ui.menu_value(&mut b, false, "Any").on_hover_text("Land anywhere a cyno can be lit");
+            if b != self.prefs.ahead_beacons {
+                self.prefs.ahead_beacons = b;
+                self.dirty = true;
+                changed = true;
+            }
+        });
+        if changed {
+            self.replan();
         }
     }
 
@@ -1060,10 +1187,62 @@ mod tests {
         assert_eq!(alone.anchors, vec![30002187]);
     }
 
+    /// Ten systems in a gate line, 1.4 ly apart, so a titan without skills reaches two along.
+    fn line() -> (Systems, Vec<MapSystem>, Vec<i64>) {
+        let ids: Vec<i64> = (0..10).map(|i| 30_200_000 + i).collect();
+        let mut by_name = HashMap::new();
+        let mut adjacency = HashMap::new();
+        let mut coords = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let name = format!("A{i}");
+            by_name.insert(name.to_lowercase(), spai_core::geo::SystemInfo { id, name: name.clone(), security: -0.4, constellation: "C".into(), region: "R".into(), faction: String::new() });
+            adjacency.insert(id, [i.checked_sub(1), Some(i + 1).filter(|&n| n < 10)].into_iter().flatten().map(|n| ids[n]).collect::<Vec<_>>());
+            let x = i as f64 * 1.4 * spai_core::map::LY_METERS;
+            coords.push(MapSystem { id, name, security: -0.4, region_id: 10_000_060, x, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 });
+        }
+        (Systems::new(by_name, adjacency), coords, ids)
+    }
+
+    /// The plans are options to pick from, and a replan, as a fork switch makes, keeps the one picked.
+    #[test]
+    fn a_jump_ahead_route_keeps_the_plan_picked_through_a_replan() {
+        let (geo, coords, ids) = line();
+        let network = crate::starmap::Network::default();
+        let input = PlanInput { geo: &geo, coords: &coords, holes: &[], network: &network };
+        let mut p = RoutePlan::default();
+        p.prefs.jdc = 0;
+        p.take("ahead", "ahead", ids[0], ids[9]);
+        p.update(&input);
+        let labels: Vec<&str> = p.opts.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(&labels[..2], &["via A2", "via A1"], "fewest fleet gates first");
+        p.at = 1;
+        p.replan();
+        p.update(&input);
+        assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A1"));
+    }
+
+    /// Black ops gate through high sec and take Ansiblexes before the jump; supercapitals neither.
+    /// Beacons come from the group's network by name.
+    #[test]
+    fn jump_ahead_rules_follow_the_hull() {
+        let (geo, coords, _) = line();
+        let network = crate::starmap::Network { beacons: vec!["A3".into(), "Nowhere".into()], ..Default::default() };
+        let input = PlanInput { geo: &geo, coords: &coords, holes: &[], network: &network };
+        let mut p = RoutePlan::default();
+        p.prefs.ahead_hull = 3;
+        p.prefs.ahead_beacons = true;
+        let r = p.ahead_rules(&input);
+        assert!(r.highsec && r.pre_bridges);
+        assert_eq!(r.beacons, Some([30_200_003].into()));
+        p.prefs.ahead_hull = 1;
+        let r = p.ahead_rules(&input);
+        assert!(!r.highsec && !r.pre_bridges && r.pre_holes.is_empty());
+    }
+
     #[test]
     fn a_route_can_skip_the_groups_ansiblexes() {
         let mut geo = spai_core::test_support::small_universe(&[]);
-        let network = crate::starmap::Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())] };
+        let network = crate::starmap::Network { capital: "1DQ1-A".into(), max_zone: 5, bridges: vec![("1DQ1-A".into(), "7-K5EL".into())], beacons: Vec::new() };
         spai_core::ansiblex::feed(spai_core::ansiblex::BridgeKey { bridges: network.list(), capital: network.capital.clone(), max_zone: 5 }, &mut geo);
         let (from, to) = (geo.lookup("1DQ1-A").unwrap().id, geo.lookup("7-K5EL").unwrap().id);
         let coords: Vec<MapSystem> = Vec::new();
