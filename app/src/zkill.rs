@@ -1173,6 +1173,34 @@ pub fn spawn_build_from_kill(
 mod tests {
     use super::*;
 
+    /// Reclustering a real 24 h buffer. Needs a copy of a data directory:
+    /// `SPAI_REAL_DATA_DIR=<copy> cargo test --release --bin eve-spai recluster_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn recluster_timing() {
+        let dir = std::env::var("SPAI_REAL_DATA_DIR").expect("SPAI_REAL_DATA_DIR");
+        std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
+        let store = crate::store::Store::open().expect("the copied store");
+        let g = store.load_systems();
+        let newest = store.load_engagements(0).iter().map(|e| e.time).max().unwrap_or_default();
+        let buffer = store.load_engagements(newest - ENGAGEMENT_TTL);
+        let ov = battle::Overrides::default();
+        let t = std::time::Instant::now();
+        let battles = battle::cluster_cached(&buffer, battle::BATTLE_WINDOW_SECS, battle::BATTLE_MAX_JUMPS, 0, &ov, |a, b| g.jumps(a, b, battle::BATTLE_MAX_JUMPS), &mut HashMap::new());
+        let took = t.elapsed();
+        // A fingerprint of which kills went together, to compare a change against the code before it.
+        let mut groups: Vec<Vec<i64>> = battles.iter().map(|b| {
+            let mut k: Vec<i64> = b.engagements.iter().map(|e| e.kill_id).collect();
+            k.sort_unstable();
+            k
+        }).collect();
+        groups.sort();
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        groups.hash(&mut h);
+        println!("{} kills, {} battles in {took:?}, grouping {:016x}", buffer.len(), battles.len(), h.finish());
+    }
+
     /// The run's edges come from a handful of reads, not a read of every mail.
     #[test]
     fn the_run_is_found_by_bisection() {

@@ -802,57 +802,67 @@ fn merge_chases(
     segments: Vec<Vec<usize>>,
     dist: &impl Fn(i64, i64) -> Option<u32>,
 ) -> Vec<Vec<usize>> {
-    let mut segs = segments;
-    segs.sort_by_key(|s| time_bounds(engs, s).0);
-    let mut acc: Vec<Vec<usize>> = Vec::new();
+    let mut segs: Vec<Segment> = segments.into_iter().map(|s| Segment::new(engs, s)).collect();
+    segs.sort_by_key(|s| s.lo);
+    // Each group's characters, bounds and systems are kept as it grows: rebuilt for every pair
+    // they made a 24 h buffer take half a minute.
+    let mut acc: Vec<Segment> = Vec::new();
     for seg in segs {
-        let mut merged = false;
-        for a in acc.iter_mut() {
-            if chases(engs, a, &seg, dist) {
-                a.extend(seg.iter().copied());
-                merged = true;
-                break;
-            }
-        }
-        if !merged {
-            acc.push(seg);
+        match acc.iter_mut().find(|a| chases(a, &seg, dist)) {
+            Some(a) => a.absorb(seg),
+            None => acc.push(seg),
         }
     }
-    acc
+    acc.into_iter().map(|s| s.idxs).collect()
 }
 
-fn chases(
-    engs: &[Engagement],
-    a: &[usize],
-    b: &[usize],
-    dist: &impl Fn(i64, i64) -> Option<u32>,
-) -> bool {
-    let ca = segment_chars(engs, a);
-    let cb = segment_chars(engs, b);
-    let shared = ca.intersection(&cb).count();
-    let min_len = ca.len().min(cb.len());
-    if shared < 3 || min_len == 0 || (shared as f64) / (min_len as f64) < CHASE_OVERLAP {
-        return false;
+struct Segment {
+    idxs: Vec<usize>,
+    chars: HashSet<i64>,
+    systems: HashSet<i64>,
+    lo: i64,
+    hi: i64,
+}
+
+impl Segment {
+    fn new(engs: &[Engagement], idxs: Vec<usize>) -> Self {
+        let (lo, hi) = time_bounds(engs, &idxs);
+        Segment {
+            chars: segment_chars(engs, &idxs),
+            systems: idxs.iter().map(|&i| engs[i].system_id).collect(),
+            lo,
+            hi,
+            idxs,
+        }
     }
-    let (amin, amax) = time_bounds(engs, a);
-    let (bmin, bmax) = time_bounds(engs, b);
-    let gap = if amax < bmin {
-        bmin - amax
-    } else if bmax < amin {
-        amin - bmax
+
+    fn absorb(&mut self, o: Segment) {
+        self.idxs.extend(o.idxs);
+        self.chars.extend(o.chars);
+        self.systems.extend(o.systems);
+        self.lo = self.lo.min(o.lo);
+        self.hi = self.hi.max(o.hi);
+    }
+}
+
+fn chases(a: &Segment, b: &Segment, dist: &impl Fn(i64, i64) -> Option<u32>) -> bool {
+    let gap = if a.hi < b.lo {
+        b.lo - a.hi
+    } else if b.hi < a.lo {
+        a.lo - b.hi
     } else {
         0
     };
-    if gap >= MERGE_MAX_GAP {
+    if gap >= MERGE_MAX_GAP || a.hi.max(b.hi) - a.lo.min(b.lo) > MERGE_MAX_SPAN {
         return false;
     }
-    if amax.max(bmax) - amin.min(bmin) > MERGE_MAX_SPAN {
+    let shared = a.chars.intersection(&b.chars).count();
+    let min_len = a.chars.len().min(b.chars.len());
+    if shared < 3 || min_len == 0 || (shared as f64) / (min_len as f64) < CHASE_OVERLAP {
         return false;
     }
-    let sa: HashSet<i64> = a.iter().map(|&i| engs[i].system_id).collect();
-    let sb: HashSet<i64> = b.iter().map(|&i| engs[i].system_id).collect();
-    sa.iter().any(|&x| {
-        sb.iter().any(|&y| x == y || dist(x, y).is_some_and(|d| d <= MERGE_MAX_JUMPS))
+    a.systems.iter().any(|&x| {
+        b.systems.iter().any(|&y| x == y || dist(x, y).is_some_and(|d| d <= MERGE_MAX_JUMPS))
     })
 }
 
