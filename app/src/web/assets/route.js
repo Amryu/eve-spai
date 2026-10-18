@@ -59,8 +59,8 @@ export function lightYears(geo, a, b) {
 
 /// Radial menu options around the drop point, each the same distance from the pointer.
 const OPTIONS = [
-  ["gate", "Gate route", "sign-in", "Route by gates, and set it as the destination"],
-  ["jump", "Jump route", "spiral", "Plan it as capital jumps"],
+  ["gate", "Gate", "sign-in", "Route by gates, and set it as the destination"],
+  ["jump", "Jump", "spiral", "Plan it as capital jumps"],
   ["ahead", "Jump-ahead", "fast-forward", "A capital jumps ahead and the fleet bridges or conduits with it, then gates what range leaves"],
   ["cancel", "Cancel", "x", ""],
 ];

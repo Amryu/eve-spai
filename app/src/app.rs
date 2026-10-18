@@ -3340,6 +3340,11 @@ impl SpaiApp {
         self.map_route_at = 0;
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_link_menu(&mut self, from: i64, to: i64, at: egui::Pos2) {
+        self.map_link_menu = Some((from, to, at, false));
+    }
+
     /// A jump-ahead route with three plans to pick from, the titan bridging the first hop.
     #[cfg(test)]
     pub(crate) fn seed_ahead_route(&mut self, from: i64, to: i64) {
@@ -3355,6 +3360,9 @@ impl SpaiApp {
                 let mut o = base.clone();
                 o.label = label.to_owned();
                 o.gated = label.contains(" from ");
+                if o.gated {
+                    o.capital_path = [30_004_759, 30_003_704].map(|id| crate::web::route::Branch { id, name: if id == 30_004_759 { "1DQ1-A" } else { "7-K5EL" }.into() }).to_vec();
+                }
                 if let Some(h) = o.hops.get_mut(1) {
                     h.kind = 2;
                     h.ly = Some(5.8);
@@ -3362,6 +3370,8 @@ impl SpaiApp {
                 o
             })
             .collect();
+        // The gated plan, so the capital's own line shows.
+        self.map_route_at = 3;
     }
 
     /// Turns a seeded route into the busiest row shape there is: a jump hop with its costs and a

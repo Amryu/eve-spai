@@ -207,6 +207,8 @@ pub struct RoutePlan {
     pub opts: Vec<RouteOption>,
     /// The option shown: a jump-ahead route has one per plan.
     pub at: usize,
+    /// A setting changed since the last plan, so the best plan is shown rather than the one picked.
+    fresh: bool,
     pub legs: Vec<LegChoice>,
     /// A jump-ahead route's gates before the jump and jumps at most, per route like the desktop's.
     pub ahead_gates: u32,
@@ -444,6 +446,7 @@ impl RoutePlan {
     }
 
     fn replan(&mut self) {
+        self.fresh = true;
         self.note = None;
         self.leg_pick.truncate(self.anchors.len().saturating_sub(1));
         self.stale = true;
@@ -507,7 +510,8 @@ impl RoutePlan {
         route::mark_anchors(&mut opts, &self.anchors);
         route::mark_forks(&mut opts, input.geo, true, &avoid_gate, &holes);
         // A fork switched or a system avoided keeps the plan picked, found again by its landing.
-        let picked = self.route().map(|o| o.label.clone());
+        let fresh = std::mem::take(&mut self.fresh);
+        let picked = self.route().map(|o| o.label.clone()).filter(|_| !fresh);
         self.at = picked.and_then(|l| opts.iter().position(|o| o.label == l)).unwrap_or(0);
         self.legs = legs;
         self.opts = opts;
@@ -650,21 +654,26 @@ impl RoutePlan {
             }
             return;
         }
-        const BTN: egui::Vec2 = egui::vec2(140.0, 28.0);
         let opts: Vec<(&'static str, &str, &str)> = if leg_only {
             vec![("gate", icon::SIGN_IN, "Gate"), ("jump", icon::SPIRAL, "Jump"), ("cancel", icon::X, "Cancel")]
         } else {
             vec![
-                ("gate", icon::SIGN_IN, "Gate route"),
-                ("jump", icon::SPIRAL, "Jump route"),
-                ("ahead", icon::FAST_FORWARD, "Jump-ahead route"),
-                ("mixed", icon::SHUFFLE, "Mixed route"),
+                ("gate", icon::SIGN_IN, "Gate"),
+                ("jump", icon::SPIRAL, "Jump"),
+                ("ahead", icon::FAST_FORWARD, "Jump-ahead"),
+                ("mixed", icon::SHUFFLE, "Mixed"),
                 ("cancel", icon::X, "Cancel"),
             ]
         };
+        // As wide as the widest label, translated ones included, so none is clipped.
+        let text_w = opts
+            .iter()
+            .map(|(_, g, l)| egui::WidgetText::from(format!("{g}  {l}")).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x)
+            .fold(0.0, f32::max);
+        let btn = egui::vec2((text_w + 2.0 * ui.spacing().button_padding.x + 8.0).max(96.0), 28.0);
         // Neighbours on the ring sit 2R·sin(π/n) apart and must clear a button's width.
-        let r: f32 = if opts.len() > 4 { (BTN.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
-        let half = egui::vec2(r + BTN.x / 2.0 + 8.0, r + BTN.y / 2.0 + 8.0);
+        let r: f32 = if opts.len() > 4 { (btn.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
+        let half = egui::vec2(r + btn.x / 2.0 + 8.0, r + btn.y / 2.0 + 8.0);
         let mut chose: Option<&'static str> = None;
         let area = egui::Area::new(egui::Id::new("web_link_menu").with(leg_only)).order(egui::Order::Foreground).fixed_pos(at - half).show(ui.ctx(), |ui| {
             let (rect, _) = ui.allocate_exact_size(half * 2.0, egui::Sense::hover());
@@ -676,7 +685,7 @@ impl RoutePlan {
             p.circle_filled(c, 3.5, v.hyperlink_color);
             for (idx, (kind, glyph, label)) in opts.iter().enumerate() {
                 let a = (idx as f32 / opts.len() as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                let br = egui::Rect::from_center_size(c + egui::vec2(a.cos() * r, a.sin() * r), BTN);
+                let br = egui::Rect::from_center_size(c + egui::vec2(a.cos() * r, a.sin() * r), btn);
                 let text = egui::RichText::new(format!("{glyph}  {label}"));
                 let text = if *kind == "cancel" { text.color(v.weak_text_color()) } else { text };
                 if ui.put(br, egui::Button::new(text)).clicked() {
@@ -901,26 +910,49 @@ impl RoutePlan {
                 .iter()
                 .map(|o| {
                     let n = steps(o);
-                    (o.gated, format!("{} \u{b7} {n} gate jump{}", o.label, if n == 1 { "" } else { "s" }))
+                    let mut t = format!("{} \u{b7} {n} gate jump{}", o.label, if n == 1 { "" } else { "s" });
+                    match o.capital_path.len().saturating_sub(1) {
+                        0 => {}
+                        m => t.push_str(&format!(" \u{b7} capital {m} gate{}", if m == 1 { "" } else { "s" })),
+                    }
+                    (o.gated, t)
                 })
                 .collect();
             let at = &mut self.at;
-            egui::Grid::new("web_route_plans").num_columns(2).show(ui, |ui| {
-                for (gated, head) in [(false, "Plan"), (true, "Gate first")] {
-                    let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
-                    if mine.is_empty() {
-                        continue;
-                    }
-                    let current = if items.get(*at).is_some_and(|it| it.0 == gated) { items[*at].1.clone() } else { "Pick a plan".to_owned() };
-                    ui.label(head);
-                    egui::ComboBox::from_id_salt(("web_route_plan", gated)).selected_text(current).width(ui.available_width() - 8.0).truncate().show_ui(ui, |ui| {
-                        for &i in &mine {
-                            ui.menu_value(at, i, items[i].1.as_str());
-                        }
-                    });
-                    ui.end_row();
+            let heads = [(false, "Plan"), (true, "Gate first")];
+            let label_w = heads
+                .iter()
+                .map(|(_, h)| egui::WidgetText::from(*h).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x)
+                .fold(0.0, f32::max);
+            for (gated, head) in heads {
+                let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
+                if mine.is_empty() {
+                    continue;
                 }
-            });
+                let current = if items.get(*at).is_some_and(|it| it.0 == gated) { items[*at].1.clone() } else { "Pick a plan".to_owned() };
+                ui.horizontal(|ui| {
+                    let h = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(egui::vec2(label_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(label_w);
+                        ui.label(head);
+                    });
+                    let w = ui.available_width() - 8.0;
+                    // The combo grows past its width for a long label unless the room is capped.
+                    ui.scope(|ui| {
+                        ui.set_max_width(w);
+                        egui::ComboBox::from_id_salt(("web_route_plan", gated)).selected_text(current).width(w).truncate().show_ui(ui, |ui| {
+                            for &i in &mine {
+                                ui.menu_value(&mut *at, i, items[i].1.as_str());
+                            }
+                        });
+                    });
+                });
+            }
+        }
+        if o.capital_path.len() > 1 {
+            let m = o.capital_path.len() - 1;
+            let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
+            ui.label(egui::RichText::new(format!("Capital gates {m} first: {path}")).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)));
         }
         if let Some(saved) = o.saved {
             ui.label(egui::RichText::new(if saved == 1 { "saves 1 gate".to_owned() } else { format!("saves {saved} gates") }).color(spai_ui::theme::standing::FRIENDLY));
@@ -1223,9 +1255,10 @@ mod tests {
         (Systems::new(by_name, adjacency), coords, ids)
     }
 
-    /// The plans are options to pick from, and a replan, as a fork switch makes, keeps the one picked.
+    /// The plans are options to pick from: a fork switch keeps the one picked, a setting changed
+    /// shows the best one again.
     #[test]
-    fn a_jump_ahead_route_keeps_the_plan_picked_through_a_replan() {
+    fn a_jump_ahead_route_keeps_the_plan_picked_through_a_fork_switch() {
         let (geo, coords, ids) = line();
         let network = crate::starmap::Network::default();
         let input = PlanInput { geo: &geo, coords: &coords, holes: &[], network: &network };
@@ -1236,9 +1269,12 @@ mod tests {
         let labels: Vec<&str> = p.opts.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(&labels[..2], &["via A2", "via A1"], "fewest fleet gates first");
         p.at = 1;
+        p.stale = true;
+        p.update(&input);
+        assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A1"), "a fork switch replans this way");
         p.replan();
         p.update(&input);
-        assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A1"));
+        assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A2"), "a setting changed");
     }
 
     /// Black ops gate through high sec and take Ansiblexes before the jump; supercapitals neither.

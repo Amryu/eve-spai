@@ -443,6 +443,8 @@ impl SpaiApp {
         }
 
         if replan {
+            // A setting changed: the best plan for it, not the one picked before.
+            self.map_route_opts.clear();
             self.map_replan_route();
         }
 
@@ -471,30 +473,55 @@ impl SpaiApp {
                 .iter()
                 .map(|o| {
                     let n = steps(o);
-                    (o.gated, if n == 1 { trf!("{label} · 1 gate jump", label = o.label) } else { trf!("{label} · {n} gate jumps", label = o.label, n = n) })
+                    let mut t = if n == 1 { trf!("{label} · 1 gate jump", label = o.label) } else { trf!("{label} · {n} gate jumps", label = o.label, n = n) };
+                    match o.capital_path.len().saturating_sub(1) {
+                        0 => {}
+                        1 => t.push_str(tr!(" · capital 1 gate")),
+                        m => t.push_str(&trf!(" · capital {m} gates", m = m)),
+                    }
+                    (o.gated, t)
                 })
                 .collect();
             let mut at = self.map_route_at;
-            egui::Grid::new("route_plans").num_columns(2).show(ui, |ui| {
-                for (gated, head) in [(false, tr!("Plan")), (true, tr!("Gate first"))] {
-                    let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
-                    if mine.is_empty() {
-                        continue;
-                    }
-                    let current = if items[at].0 == gated { items[at].1.clone() } else { tr!("Pick a plan").to_owned() };
-                    ui.label(head);
-                    egui::ComboBox::from_id_salt(("route_plan", gated)).selected_text(current).width(ui.available_width() - 8.0).truncate().show_ui(ui, |ui| {
-                        for &i in &mine {
-                            ui.menu_value(&mut at, i, items[i].1.as_str());
-                        }
-                    });
-                    ui.end_row();
+            let heads = [(false, tr!("Plan")), (true, tr!("Gate first"))];
+            let label_w = heads
+                .iter()
+                .map(|(_, h)| egui::WidgetText::from(*h).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x)
+                .fold(0.0, f32::max);
+            for (gated, head) in heads {
+                let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
+                if mine.is_empty() {
+                    continue;
                 }
-            });
+                let current = if items[at].0 == gated { items[at].1.clone() } else { tr!("Pick a plan").to_owned() };
+                ui.horizontal(|ui| {
+                    let h = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(egui::vec2(label_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(label_w);
+                        ui.label(head);
+                    });
+                    let w = ui.available_width() - 8.0;
+                    // The combo grows past its width for a long label unless the room is capped.
+                    ui.scope(|ui| {
+                        ui.set_max_width(w);
+                        egui::ComboBox::from_id_salt(("route_plan", gated)).selected_text(current).width(w).truncate().show_ui(ui, |ui| {
+                            for &i in &mine {
+                                ui.menu_value(&mut at, i, items[i].1.as_str());
+                            }
+                        });
+                    });
+                });
+            }
             if at != self.map_route_at {
                 self.map_route_at = at;
                 return;
             }
+        }
+        if o.capital_path.len() > 1 {
+            let m = o.capital_path.len() - 1;
+            let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
+            let line = if m == 1 { trf!("Capital gates 1 first: {path}", path = path) } else { trf!("Capital gates {m} first: {path}", m = m, path = path) };
+            ui.label(egui::RichText::new(line).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)));
         }
         if let Some(saved) = o.saved {
             let thin = saved <= 2;

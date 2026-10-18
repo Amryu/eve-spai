@@ -506,8 +506,7 @@ export let currentRoute = null;
 let legPick = [];
 /// Which way to leave each system the route forks at, by system id.
 let forkPick = new Map();
-/// The plan picked among a jump-ahead route's, by label, so a refetch for a fork or an avoided
-/// system keeps it rather than jumping back to the first.
+/// The plan picked among a jump-ahead route's, by label, so a fork switch keeps it.
 let keepPlan = null;
 
 export async function showRoute(kind, anchors, onPick) {
@@ -522,7 +521,9 @@ export async function showRoute(kind, anchors, onPick) {
   await fetchRoute();
 }
 
-async function fetchRoute() {
+/// `keep` holds on to the picked plan, for a fork switch; any other change goes back to the best.
+async function fetchRoute(keep = false) {
+  if (!keep) keepPlan = null;
   const { kind, anchors, onPick } = routeReq;
   const from = anchors[0];
   const to = anchors[anchors.length - 1];
@@ -677,6 +678,7 @@ function paintRoute(kind, onPick) {
   // Jump-ahead plans in two dropdowns: the plain ones, and the ones where the capital gates first.
   // The one not holding the picked plan reads "Pick a plan".
   const steps = (x) => x.hops.slice(1).filter((h) => h.kind !== 2).length;
+  const capGates = (x) => Math.max(0, (x.capital_path?.length ?? 0) - 1);
   const planRow = (title, gated) => {
     const items = routeOpts.map((x, i) => [x, i]).filter(([x]) => !!x.gated === gated);
     if (!items.length) return "";
@@ -687,7 +689,9 @@ function paintRoute(kind, onPick) {
       items
         .map(([x, i]) => {
           const n = steps(x);
-          return `<option value="${i}"${i === routeAt ? " selected" : ""}>${esc(x.label)} · ${n} ${n === 1 ? "gate jump" : "gate jumps"}</option>`;
+          const m = capGates(x);
+          const cap = m > 0 ? ` · capital ${m} ${m === 1 ? "gate" : "gates"}` : "";
+          return `<option value="${i}"${i === routeAt ? " selected" : ""}>${esc(x.label)} · ${n} ${n === 1 ? "gate jump" : "gate jumps"}${cap}</option>`;
         })
         .join("") +
       `</select></div>`
@@ -756,6 +760,10 @@ function paintRoute(kind, onPick) {
       (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
+      (capGates(o) > 0
+        ? `<p class="mgroup" style="color:#ff7a3d">Capital gates ${capGates(o)} first: ` +
+          `${o.capital_path.map((s) => esc(s.name)).join(" → ")}</p>`
+        : "") +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
       (o.saved != null
@@ -790,7 +798,7 @@ function win_wire(kind, onPick) {
   win?.querySelectorAll("[data-fork]").forEach((b) =>
     b.addEventListener("click", () => {
       forkPick.set(Number(b.dataset.fork), Number(b.dataset.altSys));
-      fetchRoute();
+      fetchRoute(true);
     })
   );
   win?.querySelectorAll("[data-ropt]").forEach((b) =>

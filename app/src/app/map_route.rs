@@ -58,21 +58,26 @@ impl SpaiApp {
             return;
         }
         use egui_phosphor::regular as i;
-        const BTN: egui::Vec2 = egui::vec2(128.0, 28.0);
         let opts: Vec<(&str, &str, &str)> = if leg_only {
             vec![("gate", i::SIGN_IN, tr!("Gate")), ("jump", i::SPIRAL, tr!("Jump")), ("cancel", i::X, tr!("Cancel"))]
         } else {
             vec![
-                ("gate", i::SIGN_IN, tr!("Gate route")),
-                ("jump", i::SPIRAL, tr!("Jump route")),
-                ("ahead", i::FAST_FORWARD, tr!("Jump-ahead route")),
-                ("mixed", i::SHUFFLE, tr!("Mixed route")),
+                ("gate", i::SIGN_IN, tr!("Gate")),
+                ("jump", i::SPIRAL, tr!("Jump")),
+                ("ahead", i::FAST_FORWARD, tr!("Jump-ahead")),
+                ("mixed", i::SHUFFLE, tr!("Mixed")),
                 ("cancel", i::X, tr!("Cancel")),
             ]
         };
+        // As wide as the widest label, translated ones included, so none is clipped.
+        let text_w = opts
+            .iter()
+            .map(|(_, g, l)| egui::WidgetText::from(format!("{g}  {l}")).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x)
+            .fold(0.0, f32::max);
+        let btn = egui::vec2((text_w + 2.0 * ui.spacing().button_padding.x + 8.0).max(96.0), 28.0);
         // Neighbours on the ring sit 2R·sin(π/n) apart and must clear a button's width.
-        let r = if opts.len() > 4 { (BTN.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
-        let half = egui::vec2(r + BTN.x / 2.0 + 8.0, r + BTN.y / 2.0 + 8.0);
+        let r = if opts.len() > 4 { (btn.x / 2.0) / (std::f32::consts::PI / opts.len() as f32).sin() + 4.0 } else { 58.0 };
+        let half = egui::vec2(r + btn.x / 2.0 + 8.0, r + btn.y / 2.0 + 8.0);
         let mut chose: Option<&str> = None;
         let area = egui::Area::new(egui::Id::new("map_link_menu").with(leg_only))
             .order(egui::Order::Foreground)
@@ -89,7 +94,7 @@ impl SpaiApp {
                     let a = (idx as f32 / opts.len() as f32) * std::f32::consts::TAU
                         - std::f32::consts::FRAC_PI_2;
                     let bc = c + egui::vec2(a.cos() * r, a.sin() * r);
-                    let br = egui::Rect::from_center_size(bc, BTN);
+                    let br = egui::Rect::from_center_size(bc, btn);
                     let text = if *kind == "cancel" {
                         egui::RichText::new(format!("{glyph}  {label}")).color(v.weak_text_color())
                     } else {

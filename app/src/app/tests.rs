@@ -3678,7 +3678,10 @@ mod real_jump_ahead_tests {
                     }
                 }
                 assert!(o.hops.iter().filter(|h| h.kind == 2).count() <= jumps as usize, "jump limit");
-                assert!(pre_bridges || o.hops.iter().take_while(|h| h.kind != 2).all(|h| h.kind == 0) || o.hops.iter().all(|h| h.kind != 2), "no Ansiblex before a capital's jump");
+                assert!(pre_bridges || o.capital_path.windows(2).all(|w| !g.is_bridge(w[0].id, w[1].id)), "no Ansiblex for a capital");
+                if o.capital_path.len() > 1 {
+                    println!("    capital: {}", o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" "));
+                }
             }
         }
     }
