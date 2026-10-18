@@ -1754,6 +1754,43 @@ fn broken_fleet_state(a: &crate::app::SpaiApp) {
     }
 }
 
+/// Track waiting on ESI to catch up after a fleet change, with Track anyway beside it.
+fn fleet_start_waiting_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+            a.settings.fleet_presets = fixtures::fleet_presets();
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_fleet_start(&a);
+            {
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                st.active_strat.put(Vec::new());
+                st.active_pct.put(Vec::new());
+                st.begin_track_wait();
+                st.track_since -= 35;
+            }
+            a
+        });
+        // Held each frame: the spoof answers the polls the wait sends with its own verdict.
+        {
+            let mut st = app.fleet_state_for_test().lock().unwrap();
+            if let Some((fc, _)) = st.fc() {
+                st.boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: true, ..Default::default() }));
+                st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::InFleet { fleet_id: 1_000_000_001, boss_id: fc, exists: Some(false) }));
+                st.boss_seq = st.track_seq + 1;
+                st.track_waiting = true;
+            }
+        }
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// A tracked fleet, in either of its two halves: who is in it, and what they are flying.
 fn fleet_detail_scene(
     name: &'static str,
@@ -2909,6 +2946,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
     v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
     v.push(fleet_broken_scene("fleet_broken_open", [1100.0, 640.0]));
+    v.push(fleet_start_waiting_scene("fleet_start_waiting_esi", [1440.0, 820.0]));
     v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
     v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
     v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
@@ -8962,9 +9000,13 @@ fn docking_the_map_leaves_overlay_mode() {
     assert!(!a.map_overlay_mode && !a.map_popped);
 }
 
-/// Track before the FC is fleet boss waits, and starts the fleet once the boss check says yes.
+/// Track always waits for a boss check asked after the click: a passing answer from before it
+/// can be a minute old, and ESI names the last fleet for a while after a fleet change. An ESI
+/// that has not caught up, or answers 500, is retried until it passes.
 #[test]
-fn track_waits_for_the_fleet_boss_and_then_starts() {
+fn track_waits_for_a_fresh_check_and_for_esi_to_catch_up() {
+    use crate::fleets::model::{BossCheck, EsiFleet};
+    use crate::fleets::state::Outcome;
     harness::scratch_profile();
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
@@ -8973,23 +9015,45 @@ fn track_waits_for_the_fleet_boss_and_then_starts() {
     a.settings.fleet_presets = fixtures::fleet_presets();
     fixtures::seed_fleet_state(&a);
     fixtures::open_fleet_start(&a);
+    let boss = BossCheck { is_fleet_boss: true, ..BossCheck::default() };
     let fc = {
         let mut st = a.fleet_state_for_test().lock().unwrap();
         st.active_strat.put(Vec::new());
         st.active_pct.put(Vec::new());
         assert!(st.missing().is_empty(), "the fixture's form is complete: {:?}", st.missing());
         let fc = st.fc().unwrap().0;
-        st.boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: false, backup_available: false, error_message: None }));
+        // Passing, but from before the click.
+        st.apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi: EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) } });
         fc
     };
+    let answer = |a: &mut crate::app::SpaiApp, esi: EsiFleet| {
+        a.fleet_state_for_test().lock().unwrap().apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi });
+        a.fleet_track_tick(&ctx);
+    };
     a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { track_wait: true, ..Default::default() });
-    assert!(a.fleet_state_for_test().lock().unwrap().track_waiting);
     a.fleet_track_tick(&ctx);
-    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "not boss yet, so no start");
-    a.fleet_state_for_test().lock().unwrap().boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: true, backup_available: false, error_message: None }));
-    a.fleet_track_tick(&ctx);
+    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "started on an answer from before the click");
+
+    answer(&mut a, EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(false) });
+    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "ESI had not caught up");
+    answer(&mut a, EsiFleet::Failed("HTTP 500".into()));
+    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "ESI answered 500");
+    answer(&mut a, EsiFleet::InFleet { fleet_id: 2, boss_id: fc, exists: Some(true) });
     let st = a.fleet_state_for_test().lock().unwrap();
-    assert!(st.starting && !st.track_waiting, "boss now, so it starts and stops waiting");
+    assert!(st.starting && !st.track_waiting, "ESI caught up, so it starts and stops waiting");
+}
+
+/// A wait that has not passed after two minutes gives up and says so; Track anyway is still there.
+#[test]
+fn track_gives_up_after_two_minutes() {
+    let mut st = crate::fleets::FleetState::default();
+    st.begin_track_wait();
+    assert_eq!(st.track_wait_step(), crate::fleets::state::TrackStep::Ask);
+    st.track_since -= crate::fleets::state::TRACK_WAIT_MAX;
+    assert_eq!(st.track_wait_step(), crate::fleets::state::TrackStep::Idle);
+    assert!(!st.track_waiting && st.track_expired);
+    st.begin_track_wait();
+    assert!(!st.track_expired, "a new wait clears the old timeout");
 }
 
 /// Track anyway starts the fleet whatever the boss checks say and even with the FC already boss
@@ -9014,9 +9078,13 @@ fn track_anyway_skips_every_check() {
     }
     a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start: true, ..Default::default() });
     assert!(!a.fleet_state_for_test().lock().unwrap().starting, "a plain start still minds the guard");
+    // In the middle of a wait for the checks, too.
+    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { track_wait: true, ..Default::default() });
+    assert!(a.fleet_state_for_test().lock().unwrap().track_waiting);
     a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start_anyway: true, ..Default::default() });
     let st = a.fleet_state_for_test().lock().unwrap();
     assert!(st.starting, "track anyway did not start");
+    assert!(!st.track_waiting, "the wait kept running after track anyway");
     assert!(st.last_start.is_some(), "the request is kept for a re-track");
 }
 

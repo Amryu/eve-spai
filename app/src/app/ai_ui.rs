@@ -218,18 +218,10 @@ impl SpaiApp {
             // is resolved first and only opened in the browser when that fails.
             ActionKind::Fleet(op) => match op {
                 crate::ai::tools::FleetOp::Start => {
-                    let boss_ok = {
-                        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-                        st.fc().and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id)).is_some_and(|(_, c)| c.verdict().0)
-                    };
-                    if boss_ok {
-                        self.fleet_start_now();
-                    } else {
-                        // Not boss yet: the same wait Track starts, checked every few seconds.
-                        self.fleet.lock().unwrap_or_else(|e| e.into_inner()).track_waiting = true;
-                        self.fleet_boss_asked = None;
-                        return format!("{summary}: waiting for the FC to be fleet boss, checked every 5 seconds");
-                    }
+                    // The same wait Track starts: a fresh boss and ESI check, every 5 seconds.
+                    self.fleet.lock().unwrap_or_else(|e| e.into_inner()).begin_track_wait();
+                    self.fleet_boss_asked = None;
+                    return format!("{summary}: tracking once the FC is fleet boss and ESI has caught up, checked every 5 seconds for up to 2 minutes");
                 }
                 crate::ai::tools::FleetOp::Act(id, action) => self.fleet_dispatch(crate::fleets::state::Cmd::Act(id.clone(), action.clone())),
                 crate::ai::tools::FleetOp::RequestPing => self.fleet_send_ping(crate::fleets::ping::COORD),

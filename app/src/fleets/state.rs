@@ -272,6 +272,14 @@ pub struct FleetState {
     /// Track was pressed before the FC was fleet boss: the boss check repeats every few seconds
     /// and the fleet starts once it passes.
     pub track_waiting: bool,
+    /// When the wait began, and the boss answer count then: only an answer asked after the click
+    /// may start the fleet, never one from before it.
+    pub track_since: i64,
+    pub track_seq: u64,
+    /// The last wait ran out without the checks passing.
+    pub track_expired: bool,
+    /// Boss answers so far.
+    pub boss_seq: u64,
     /// When the start form last posted its ping request into skirmish_commanders.
     pub ping_requested_at: Option<i64>,
     /// Fleets this app started, by the character that is boss. The active list only knows a fleet
@@ -370,6 +378,7 @@ impl FleetState {
                 self.boosts_loading = false;
             }
             Outcome::Boss { character_id, check, esi } => {
+                self.boss_seq += 1;
                 self.boss = Some((character_id, check));
                 self.esi_fleet = Some((character_id, esi));
             }
@@ -456,6 +465,16 @@ impl FleetState {
             }
         }
     }
+}
+
+/// How long Track waits for the boss checks to pass before giving up, in seconds.
+pub const TRACK_WAIT_MAX: i64 = 120;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrackStep {
+    Idle,
+    Ask,
+    Start,
 }
 
 /// What a free-channel pick did, so the form can explain itself.
@@ -642,6 +661,38 @@ impl FleetState {
             .filter(|(who, _)| *who == id)
             .and_then(|(_, e)| e.verdict(id).0);
         dash && esi != Some(false)
+    }
+
+    /// Starts waiting for a fresh boss check to pass, or stops a wait already running.
+    pub fn toggle_track_wait(&mut self) {
+        if self.track_waiting {
+            self.track_waiting = false;
+        } else {
+            self.begin_track_wait();
+        }
+    }
+
+    pub fn begin_track_wait(&mut self) {
+        self.track_waiting = true;
+        self.track_since = crate::clock::utc().timestamp();
+        self.track_seq = self.boss_seq;
+        self.track_expired = false;
+    }
+
+    /// What a running wait should do now.
+    pub fn track_wait_step(&mut self) -> TrackStep {
+        if !self.track_waiting {
+            return TrackStep::Idle;
+        }
+        if self.boss_seq > self.track_seq && self.boss_ready() {
+            return TrackStep::Start;
+        }
+        if crate::clock::utc().timestamp() - self.track_since >= TRACK_WAIT_MAX {
+            self.track_waiting = false;
+            self.track_expired = true;
+            return TrackStep::Idle;
+        }
+        TrackStep::Ask
     }
 
     pub fn fc(&self) -> Option<(i64, String)> {

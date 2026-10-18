@@ -874,16 +874,16 @@ pub(crate) fn character_fleet(
         .send()
     {
         Ok(r) => r,
-        Err(e) => return EsiFleet::Unknown(format!("ESI check failed: {e}")),
+        Err(e) => return EsiFleet::Failed(e.to_string()),
     };
     if resp.status().as_u16() == 404 {
         return EsiFleet::NotInFleet;
     }
     if !resp.status().is_success() {
-        return EsiFleet::Unknown(format!("ESI check failed: HTTP {}", resp.status().as_u16()));
+        return EsiFleet::Failed(format!("HTTP {}", resp.status().as_u16()));
     }
     let Ok(mine) = resp.json::<Mine>() else {
-        return EsiFleet::Unknown("ESI check failed: unexpected answer.".to_owned());
+        return EsiFleet::Failed("unexpected answer".to_owned());
     };
     // Older answers carry no boss id; the role says the same for the boss.
     let boss_id = match mine.fleet_boss_id {

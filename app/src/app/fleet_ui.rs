@@ -1085,7 +1085,7 @@ impl SpaiApp {
         }
         if act.track_wait {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            st.track_waiting = !st.track_waiting;
+            st.toggle_track_wait();
             let waiting = st.track_waiting;
             drop(st);
             if waiting {
@@ -1177,17 +1177,15 @@ impl SpaiApp {
     /// A Track waiting for the FC to become fleet boss: asks every few seconds, on any tab, and
     /// starts the fleet the moment the answer is yes.
     pub(crate) fn fleet_track_tick(&mut self, ctx: &egui::Context) {
-        let (waiting, boss_ok) = {
-            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            (st.track_waiting, st.boss_ready())
-        };
-        if !waiting {
-            return;
-        }
-        if boss_ok {
-            self.fleet_start_now();
-        } else {
-            self.fleet_boss_poll(ctx);
+        let step = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).track_wait_step();
+        match step {
+            crate::fleets::state::TrackStep::Idle => {}
+            crate::fleets::state::TrackStep::Start => self.fleet_start_now(),
+            crate::fleets::state::TrackStep::Ask => {
+                self.fleet_boss_poll(ctx);
+                // The countdown on the form.
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
         }
     }
 
@@ -2858,6 +2856,7 @@ fn start_page(
                 }
             });
         }
+        track_status(ui, st);
         // Below this the two groups would sit on top of each other, so they stack instead.
         let roomy = ui.available_width() >= 560.0;
         ui.horizontal_wrapped(|ui| {
@@ -2916,12 +2915,13 @@ fn start_page(
                 // character who is not fleet boss produces a fleet with nothing in it.
                 let boss_ok = st.boss_ready();
                 let starting = st.starting;
+                let expired = st.track_expired;
                 let tracked = st.already_tracking();
                 let track = |ui: &mut egui::Ui, act: &mut FormAct| {
                     let label = if starting {
                         tr!("Starting\u{2026}")
                     } else if waiting {
-                        tr!("Waiting for fleet boss\u{2026}")
+                        tr!("Waiting for the checks\u{2026}")
                     } else {
                         tr!("Track fleet")
                     };
@@ -2937,11 +2937,9 @@ fn start_page(
                             tr!("Records the request this would send. Nothing leaves the app."),
                         );
                     let resp = if waiting {
-                        resp.on_hover_text(tr!("Checking every 5 seconds whether the FC is fleet boss; tracking starts as soon as they are. Click to stop waiting."))
-                    } else if ready && !boss_ok {
-                        resp.on_hover_text(tr!("The FC is not fleet boss yet. Click to start tracking as soon as they are, checked every 5 seconds."))
+                        resp.on_hover_text(tr!("Checking every 5 seconds, for up to 2 minutes, that the FC is fleet boss and ESI has caught up; tracking starts as soon as both pass. Click to stop waiting."))
                     } else {
-                        resp
+                        resp.on_hover_text(tr!("Checks the FC is fleet boss and ESI has caught up, every 5 seconds for up to 2 minutes, and tracks as soon as both pass."))
                     };
                     let resp = if starting {
                         resp.on_disabled_hover_text(tr!("Waiting for the dashboard to answer."))
@@ -2956,15 +2954,13 @@ fn start_page(
                         let what: Vec<&str> = missing.iter().map(|m| spai_ui::i18n::t(m)).collect();
                         resp.on_disabled_hover_text(trf!("Still missing: {what}", what = what.join(", ")))
                     };
+                    // Even with a passing answer on screen: it can be a minute old, and ESI names the
+                    // last fleet for a while after a fleet change. Only a check asked now counts.
                     if resp.clicked() {
-                        if boss_ok && !waiting {
-                            act.start = true;
-                        } else {
-                            act.track_wait = true;
-                        }
+                        act.track_wait = true;
                     }
                     // The checks can be wrong, and an FC who knows better must not be held up.
-                    if can_start && ready && !starting && (waiting || !boss_ok || tracked.is_some()) {
+                    if can_start && ready && !starting && (waiting || expired || !boss_ok || tracked.is_some()) {
                         if ui
                             .button(trf!("{icon}  Track anyway", icon = egui_phosphor::regular::FAST_FORWARD))
                             .on_hover_text(tr!("Start now, skipping the fleet boss checks and the already-tracked guard."))
@@ -3393,6 +3389,39 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
             act.force_channels = true;
         }
     });
+}
+
+/// What a Track wait is doing, or why the last one gave up.
+fn track_status(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
+    let fresh = st.boss_seq > st.track_seq;
+    let esi = st
+        .fc()
+        .and_then(|(id, _)| st.esi_fleet.as_ref().filter(|(who, _)| *who == id).map(|(_, e)| e.verdict(id)));
+    let esi_behind = fresh && esi.as_ref().is_some_and(|(ok, _)| *ok == Some(false));
+    let text = if st.track_waiting {
+        let left = (crate::fleets::state::TRACK_WAIT_MAX - (crate::clock::utc().timestamp() - st.track_since)).max(0);
+        let head = if !fresh {
+            tr!("Checking that the FC is fleet boss and ESI has caught up\u{2026}").to_owned()
+        } else if esi_behind {
+            trf!("ESI's fleet has not caught up yet. The fleet is tracked as soon as it is ready ({left}s left).", left = left)
+        } else {
+            trf!("Waiting for the dashboard to see the FC as fleet boss. The fleet is tracked as soon as it does ({left}s left).", left = left)
+        };
+        Some((egui_phosphor::regular::HOURGLASS_MEDIUM, head, crate::theme::standing::WARNING))
+    } else if st.track_expired {
+        Some((
+            egui_phosphor::regular::WARNING,
+            tr!("The checks had not passed after 2 minutes, so nothing was tracked. Track to try again, or Track anyway.").to_owned(),
+            crate::theme::standing::HOSTILE,
+        ))
+    } else {
+        None
+    };
+    let Some((icon, head, colour)) = text else { return };
+    ui.add(egui::Label::new(egui::RichText::new(format!("{icon}  {head}")).color(colour)).wrap());
+    if let Some((Some(false), why)) = esi.filter(|_| fresh) {
+        ui.add(egui::Label::new(egui::RichText::new(why).weak()).wrap());
+    }
 }
 
 /// What the tracking page can ask for when the dashboard broke the fleet.

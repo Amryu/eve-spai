@@ -536,6 +536,8 @@ impl BossCheck {
 pub enum EsiFleet {
     /// Not asked or not answerable: why, for the hover.
     Unknown(String),
+    /// ESI answered with an error, which it does for a moment around a fleet change.
+    Failed(String),
     NotInFleet,
     InFleet {
         fleet_id: i64,
@@ -553,6 +555,7 @@ impl EsiFleet {
     pub fn verdict(&self, character_id: i64) -> (Option<bool>, String) {
         match self {
             EsiFleet::Unknown(why) => (None, why.clone()),
+            EsiFleet::Failed(why) => (Some(false), format!("ESI check failed: {why}")),
             EsiFleet::NotInFleet => (Some(false), "ESI: not in a fleet.".to_owned()),
             EsiFleet::InFleet { boss_id, .. } if *boss_id != 0 && *boss_id != character_id => {
                 (Some(false), "ESI: in a fleet, but not its boss.".to_owned())
