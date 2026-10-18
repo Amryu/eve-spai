@@ -582,6 +582,38 @@ pub fn paint_wormholes(
         }
 }
 
+/// The capital's own moves on a jump-ahead route, apart from the fleet's.
+pub const CAPITAL_MOVE: egui::Color32 = egui::Color32::from_rgb(0xA6, 0xE2, 0x2E);
+
+/// A line of dots crawling along `pts`.
+pub fn dotted_flow(painter: &egui::Painter, pts: &[egui::Pos2], color: egui::Color32, phase: f32) {
+    const GAP: f32 = 9.0;
+    let mut d = phase.rem_euclid(GAP);
+    for w in pts.windows(2) {
+        let v = w[1] - w[0];
+        let len = v.length();
+        while d < len {
+            painter.circle_filled(w[0] + v * (d / len), 2.2, color);
+            d += GAP;
+        }
+        d -= len;
+    }
+}
+
+/// What the capital does on its own before the fleet rides with it: its gates, dotted over the
+/// fleet's way where they share it, and its jump alone as a dotted arc.
+pub fn paint_capital_moves(painter: &egui::Painter, pos: &HashMap<i64, egui::Pos2>, o: &spai_core::route::RouteOption, phase: f32) {
+    let gates: Vec<egui::Pos2> = o.capital_path.iter().filter_map(|b| pos.get(&b.id).copied()).collect();
+    if gates.len() > 1 {
+        dotted_flow(painter, &gates, CAPITAL_MOVE, phase);
+    }
+    if let Some(tj) = &o.titan_jump {
+        if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
+            dotted_flow(painter, &arc_polyline(a, b, BRIDGE_BOW), CAPITAL_MOVE, phase);
+        }
+    }
+}
+
 /// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes, holes in the
 /// hole colour. `by_hole` says whether a gate-kind hop is really a wormhole.
 #[allow(clippy::too_many_arguments)]

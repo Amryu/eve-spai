@@ -949,10 +949,13 @@ impl RoutePlan {
                 });
             }
         }
+        if let Some(tj) = &o.titan_jump {
+            ui.label(egui::RichText::new(format!("{}  Capital jumps alone {} \u{2192} {}, {:.1} ly", icon::FAST_FORWARD, tj.from_name, tj.to_name, tj.ly)).color(spai_ui::star_map::CAPITAL_MOVE));
+        }
         if o.capital_path.len() > 1 {
             let m = o.capital_path.len() - 1;
             let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
-            ui.label(egui::RichText::new(format!("Capital gates {m} first: {path}")).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)));
+            ui.label(egui::RichText::new(format!("Capital gates {m} first: {path}")).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {
             ui.label(egui::RichText::new(if saved == 1 { "saves 1 gate".to_owned() } else { format!("saves {saved} gates") }).color(spai_ui::theme::standing::FRIENDLY));
@@ -1266,12 +1269,12 @@ mod tests {
         p.prefs.jdc = 0;
         p.take("ahead", "ahead", ids[0], ids[9]);
         p.update(&input);
-        let labels: Vec<&str> = p.opts.iter().map(|o| o.label.as_str()).collect();
-        assert_eq!(&labels[..2], &["via A2", "via A1"], "fewest fleet gates first");
+        assert_eq!(p.opts[0].label, "via A2", "fewest fleet gates, and the capital moving least");
+        let second = p.opts[1].label.clone();
         p.at = 1;
         p.stale = true;
         p.update(&input);
-        assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A1"), "a fork switch replans this way");
+        assert_eq!(p.route().map(|o| o.label.as_str()), Some(second.as_str()), "a fork switch replans this way");
         p.replan();
         p.update(&input);
         assert_eq!(p.route().map(|o| o.label.as_str()), Some("via A2"), "a setting changed");

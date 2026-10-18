@@ -521,7 +521,7 @@ impl SpaiApp {
             let m = o.capital_path.len() - 1;
             let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
             let line = if m == 1 { trf!("Capital gates 1 first: {path}", path = path) } else { trf!("Capital gates {m} first: {path}", m = m, path = path) };
-            ui.label(egui::RichText::new(line).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)));
+            ui.label(egui::RichText::new(line).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {
             let thin = saved <= 2;
@@ -543,8 +543,8 @@ impl SpaiApp {
         }
         if let Some(tj) = &o.titan_jump {
             ui.label(
-                egui::RichText::new(trf!("{icon}  Titan jumps {v} → {v2}, {v3} ly", icon = egui_phosphor::regular::STAR_FOUR, v = tj.from_name, v2 = tj.to_name, v3 = format!("{:.1}", tj.ly)))
-                .color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)),
+                egui::RichText::new(trf!("{icon}  Capital jumps alone {v} → {v2}, {v3} ly", icon = egui_phosphor::regular::FAST_FORWARD, v = tj.from_name, v2 = tj.to_name, v3 = format!("{:.1}", tj.ly)))
+                .color(spai_ui::star_map::CAPITAL_MOVE),
             );
         }
         if let Some(n) = &o.note {

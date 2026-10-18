@@ -139,7 +139,7 @@ const ROUTE_HOLE = "#b07ce8";
 const PICK_GATE = "#f2b134";
 const PICK_JUMP = "#e07be0";
 /// The titan's jump is a different ship's move, so it does not share the capital-jump colour.
-const TITAN_COL = "#ff7a3d";
+const TITAN_COL = "#a6e22e";
 /// Dash and gap, matching `dashed_flow` in the app.
 const DASH = [6, 6];
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
@@ -736,22 +736,35 @@ function paint() {
       }
       ctx.stroke();
     }
-    // The titan's own jump, which the fleet does not fly: a long dash running the other way, so it
-    // reads as a second ship moving rather than as part of the route.
+    // The capital's own moves, which the fleet does not fly: its gates to the jump-off point and
+    // a jump ahead alone. Round dots in its own colour, crawling with the route.
+    const capPath = picked.capital_path ?? [];
     const tj = picked.titan_jump;
-    if (tj) {
-      const a = geo.nodes[geo.byId.get(tj.from)];
-      const b = geo.nodes[geo.byId.get(tj.to)];
-      if (a && b) {
-        ctx.strokeStyle = TITAN_COL;
-        ctx.lineWidth = 2.5;
-        ctx.setLineDash([12, 8]);
-        // Negative, like the route's: a positive offset runs the dashes backwards.
-        ctx.lineDashOffset = -((performance.now() / 35) % 20);
-        ctx.beginPath();
-        arc(ctx, sx(a.x), sy(a.z), sx(b.x), sy(b.z));
-        ctx.stroke();
+    if (capPath.length > 1 || tj) {
+      const at = (id) => {
+        const n = geo.nodes[geo.byId.get(id)];
+        return n ? [sx(n.x), sy(n.z)] : null;
+      };
+      ctx.strokeStyle = TITAN_COL;
+      ctx.lineWidth = 4.4;
+      ctx.lineCap = "round";
+      ctx.setLineDash([0, 9]);
+      ctx.lineDashOffset = -((performance.now() / 45) % 9);
+      ctx.beginPath();
+      for (let i = 1; i < capPath.length; i++) {
+        const a = at(capPath[i - 1].id);
+        const b = at(capPath[i].id);
+        if (!a || !b) continue;
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
       }
+      if (tj) {
+        const a = at(tj.from);
+        const b = at(tj.to);
+        if (a && b) arc(ctx, a[0], a[1], b[0], b[1]);
+      }
+      ctx.stroke();
+      ctx.lineCap = "butt";
     }
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;

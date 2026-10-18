@@ -2894,6 +2894,40 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_scene("view_wormholes_map_thera", [1280.0, 800.0], false, Some(31_000_005)));
     v.push(wormholes_focus_scene("view_wormholes_map_focus", [1280.0, 800.0], false, None, Some(30_000_142)));
     v.push(map_layers_scene("map_layers", [320.0, 800.0]));
+    // A jump-ahead plan: the capital gates two, then jumps alone (dotted, its own colour); the fleet
+    // gates the same way, Ansiblexes on, and rides the bridge on.
+    v.push(Scene::ui("map_capital_moves", [440.0, 260.0], |ui| {
+        use crate::web::route::{Branch, Hop, RouteOption, TitanJump};
+        let o0 = ui.min_rect().min;
+        let pos: std::collections::HashMap<i64, egui::Pos2> =
+            [(1, (40.0, 200.0)), (2, (110.0, 200.0)), (3, (180.0, 200.0)), (4, (260.0, 110.0)), (5, (400.0, 60.0)), (6, (400.0, 160.0))]
+                .into_iter()
+                .map(|(id, (x, y))| (id, o0 + egui::vec2(x, y)))
+                .collect();
+        let hop = |id: i64, kind: u8| Hop { id, name: format!("S{id}"), security: -0.3, kind, hole: false, ly: None, fuel: None, fatigue_min: None, reactivation_min: None, warn: None, anchor: false, fork: Vec::new() };
+        let o = RouteOption {
+            label: String::new(),
+            path: vec![1, 2, 3, 4, 5, 6],
+            hops: vec![hop(1, 0), hop(2, 0), hop(3, 0), hop(4, 0), hop(5, 2), hop(6, 0)],
+            gates: 4,
+            jumps: 5,
+            total_ly: 5.0,
+            note: None,
+            detour: None,
+            titan_jump: Some(TitanJump { from: 3, to: 4, from_name: "S3".into(), to_name: "S4".into(), ly: 4.0 }),
+            saved: None,
+            uses_wormhole: false,
+            gated: true,
+            capital_path: [1, 2, 3].map(|id| Branch { id, name: format!("S{id}") }).to_vec(),
+        };
+        let painter = ui.painter();
+        spai_ui::star_map::paint_route_legs(painter, &pos, &o.hops, 6.0, egui::Color32::LIGHT_BLUE, |_, _| false, |_, _, c| (c, c));
+        spai_ui::star_map::paint_capital_moves(painter, &pos, &o, 6.0);
+        for p in pos.values() {
+            painter.circle_filled(*p, 4.0, egui::Color32::LIGHT_GRAY);
+        }
+        ui.allocate_space(ui.available_size());
+    }));
     // One bridge per zone pair, drawn with the map's own helpers: both ways, one-way with its
     // arrow clear of the dot, excluded, and a crawling route hop.
     v.push(Scene::ui("map_bridge_zone_colors", [420.0, 300.0], |ui| {

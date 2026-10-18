@@ -3653,7 +3653,9 @@ mod real_jump_ahead_tests {
                 println!("  no plan");
                 continue;
             }
-            assert!(out.windows(2).all(|w| w[0].gates <= w[1].gates), "ranked by fleet gates");
+            let steps = |o: &RouteOption| o.hops.iter().skip(1).filter(|h| h.kind != 2).count();
+            let main: Vec<&RouteOption> = out.iter().filter(|o| !o.gated).collect();
+            assert!(main.windows(2).all(|w| steps(w[0]) <= steps(w[1])), "ranked by fleet steps");
             for o in &out {
                 let steps: Vec<String> = o
                     .hops
@@ -3665,7 +3667,8 @@ mod real_jump_ahead_tests {
                         _ => h.name.clone(),
                     })
                     .collect();
-                println!("  {} steps: {}", o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
+                let alone = o.titan_jump.as_ref().map(|t| format!(" [capital alone {} -> {}]", t.from_name, t.to_name)).unwrap_or_default();
+                println!("  {}{} steps: {}{alone}", if o.gated { "gated " } else { "" }, o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
                 for w in o.hops.windows(2) {
                     match w[1].kind {
                         2 => {

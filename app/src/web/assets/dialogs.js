@@ -761,8 +761,12 @@ function paintRoute(kind, onPick) {
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
       (capGates(o) > 0
-        ? `<p class="mgroup" style="color:#ff7a3d">Capital gates ${capGates(o)} first: ` +
+        ? `<p class="mgroup" style="color:#a6e22e">Capital gates ${capGates(o)} first: ` +
           `${o.capital_path.map((s) => esc(s.name)).join(" → ")}</p>`
+        : "") +
+      (o.titan_jump
+        ? `<p class="mgroup" style="color:#a6e22e">Capital jumps alone ${esc(o.titan_jump.from_name)} → ` +
+          `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
         : "") +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
@@ -771,10 +775,6 @@ function paintRoute(kind, onPick) {
           `${o.saved === 1 ? "gate" : "gates"}` +
           (o.saved <= 2 ? ` — barely worth the cyno, a direct route may be simpler` : "") +
           `</p>`
-        : "") +
-      (o.titan_jump
-        ? `<p class="rtitan">${ico("star-four")} Titan jumps ${esc(o.titan_jump.from_name)} → ` +
-          `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
         : "") +
       `<ol class="rhops">${o.hops.map(line).join("")}</ol>` +
       `<p class="rsave">` +

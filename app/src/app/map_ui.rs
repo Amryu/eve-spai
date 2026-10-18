@@ -1118,20 +1118,8 @@ impl SpaiApp {
                     painter.circle_stroke(p, r, egui::Stroke::new(1.6, FORK));
                 }
             }
-            // The titan's own jump, which the fleet does not fly: a long dash the other way round,
-            // so it reads as a second ship moving rather than as part of the route.
-            if let Some(tj) = &o.titan_jump {
-                if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
-                    // Its own colour, and running the other way: a different ship doing a different
-                    // thing, which the capital-jump colour would present as the same move.
-                    polyline_flow(
-                        &painter,
-                        &arc_polyline(a, b, BRIDGE_BOW),
-                        egui::Color32::from_rgb(0xFF, 0x7A, 0x3D),
-                        -phase,
-                    );
-                }
-            }
+            // The capital's own moves, which the fleet does not fly: dotted in its own colour.
+            spai_ui::star_map::paint_capital_moves(&painter, &pos, o, phase);
         }
 
         // The route drag: a line from where it started to the pointer, snapped to whatever it is
