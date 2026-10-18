@@ -840,6 +840,73 @@ pub(crate) fn fleet_tree(
     Some((members, wings))
 }
 
+/// The character's own fleet, and whether that fleet still exists.
+pub(crate) fn character_fleet(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    character_id: i64,
+) -> crate::fleets::model::EsiFleet {
+    use crate::fleets::model::EsiFleet;
+    let Some(ch) = store.list_characters().into_iter().find(|c| c.id == character_id) else {
+        return EsiFleet::Unknown("ESI check skipped: this character is not logged in here.".to_owned());
+    };
+    if !ch.scopes.split_whitespace().any(|s| s == FLEET_SCOPE) {
+        return EsiFleet::Unknown(format!(
+            "ESI check skipped: log {} in again to grant the fleet scope.",
+            ch.name
+        ));
+    }
+    let Some(token) = current_access_token(store, client_id, ch.id, ch.expires_at) else {
+        return EsiFleet::Unknown("ESI check skipped: no access token.".to_owned());
+    };
+    #[derive(serde::Deserialize)]
+    struct Mine {
+        fleet_id: i64,
+        #[serde(default)]
+        fleet_boss_id: i64,
+        #[serde(default)]
+        role: String,
+    }
+    let resp = match client
+        .get(format!("https://esi.evetech.net/latest/characters/{character_id}/fleet/"))
+        .bearer_auth(&token)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => return EsiFleet::Unknown(format!("ESI check failed: {e}")),
+    };
+    if resp.status().as_u16() == 404 {
+        return EsiFleet::NotInFleet;
+    }
+    if !resp.status().is_success() {
+        return EsiFleet::Unknown(format!("ESI check failed: HTTP {}", resp.status().as_u16()));
+    }
+    let Ok(mine) = resp.json::<Mine>() else {
+        return EsiFleet::Unknown("ESI check failed: unexpected answer.".to_owned());
+    };
+    // Older answers carry no boss id; the role says the same for the boss.
+    let boss_id = match mine.fleet_boss_id {
+        0 if mine.role == "fleet_commander" => character_id,
+        id => id,
+    };
+    // Only the boss may read the fleet, so this says nothing for anyone else.
+    let exists = (boss_id == character_id).then(|| {
+        client
+            .get(format!("https://esi.evetech.net/latest/fleets/{}/", mine.fleet_id))
+            .bearer_auth(&token)
+            .send()
+            .ok()
+            .map(|r| r.status().as_u16())
+    });
+    let exists = match exists.flatten() {
+        Some(404) => Some(false),
+        Some(s) if (200..300).contains(&s) => Some(true),
+        _ => None,
+    };
+    EsiFleet::InFleet { fleet_id: mine.fleet_id, boss_id, exists }
+}
+
 /// What `GET /fleets/{id}/` says about a fleet. `is_registered` is the Fleet Finder advert.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub(crate) struct FleetInfo {

@@ -84,6 +84,9 @@ impl SpaiApp {
                     Outcome::Failed { what, why } => {
                         crate::esilog::record(&format!("fleet {what}"), why);
                     }
+                    Outcome::OpenFailed { id, why } => {
+                        crate::esilog::record("fleet open", &format!("{}: {why}", id.0));
+                    }
                     Outcome::SearchFailed { query, why } => {
                         crate::esilog::record("fleet search", &format!("{query:?}: {why}"));
                     }
@@ -853,6 +856,7 @@ impl SpaiApp {
         let mut map_at: Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)> = None;
         let br_view = page.fleet().map(|id| self.fleet_br_view(&id.0));
         let mut br_click: Option<crate::app::fleet_map::BrClick> = None;
+        let mut glitch: Option<Glitch> = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(e) = st.error.clone() {
@@ -878,10 +882,10 @@ impl SpaiApp {
                     &mut chat,
                 ),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click, &mut glitch)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut edit_snowflakes, &mut open_migrate, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click, &mut glitch)
                 }
             }
             drop(st);
@@ -907,6 +911,11 @@ impl SpaiApp {
         }
         if let Some(c) = cmd {
             self.fleet_dispatch(c);
+        }
+        match (glitch, page.fleet().cloned()) {
+            (Some(Glitch::Retry), _) => self.fleet_refresh_fresh(&page),
+            (Some(Glitch::Retrack), Some(id)) => self.fleet_retrack(id),
+            _ => {}
         }
         if toggle_journal {
             self.fleet_journal_open = !self.fleet_journal_open;
@@ -1071,6 +1080,9 @@ impl SpaiApp {
         if act.start {
             self.fleet_start_now();
         }
+        if act.start_anyway {
+            self.fleet_start(true);
+        }
         if act.track_wait {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.track_waiting = !st.track_waiting;
@@ -1115,16 +1127,22 @@ impl SpaiApp {
 
     /// Sends the start the form describes, unless one is already on its way or the FC is tracked.
     pub(crate) fn fleet_start_now(&mut self) {
+        self.fleet_start(false);
+    }
+
+    /// `anyway` skips the already-tracking guard too: the FC asked to go ahead regardless.
+    pub(crate) fn fleet_start(&mut self, anyway: bool) {
         // Checked here as well as on the button: a click that lands in the frame the state
         // changed would otherwise get through.
         let req = {
             let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.track_waiting = false;
-            if st.starting || st.already_tracking().is_some() || !st.missing().is_empty() {
+            if st.starting || (!anyway && st.already_tracking().is_some()) || !st.missing().is_empty() {
                 None
             } else {
                 let req = st.start_request();
                 st.starting = req.is_some();
+                st.last_start = req.clone();
                 req
             }
         };
@@ -1133,12 +1151,35 @@ impl SpaiApp {
         }
     }
 
+    /// Closes a fleet the dashboard broke and starts a new one the same way. Without a request to
+    /// repeat, closes it and leaves the FC on the start form.
+    pub(crate) fn fleet_retrack(&mut self, id: crate::fleets::model::FleetId) {
+        let req = {
+            let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            if st.starting {
+                return;
+            }
+            let req = st.restart_request(&id);
+            st.starting = req.is_some();
+            st.last_start = req.clone();
+            req
+        };
+        match req {
+            Some(start) => self.fleet_dispatch(Cmd::Retrack { close: id, start }),
+            None => {
+                self.fleet_dispatch(Cmd::Act(id, crate::fleets::backend::Action::Close));
+                self.fleet_gen.page += 1;
+                self.fleet.lock().unwrap_or_else(|e| e.into_inner()).page = Page::Start;
+            }
+        }
+    }
+
     /// A Track waiting for the FC to become fleet boss: asks every few seconds, on any tab, and
     /// starts the fleet the moment the answer is yes.
     pub(crate) fn fleet_track_tick(&mut self, ctx: &egui::Context) {
         let (waiting, boss_ok) = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            (st.track_waiting, st.fc().and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id)).is_some_and(|(_, c)| c.verdict().0))
+            (st.track_waiting, st.boss_ready())
         };
         if !waiting {
             return;
@@ -2428,6 +2469,28 @@ fn fleets_page(
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let strat = st.active_strat.clone();
         let pct = st.active_pct.clone();
+        // A fleet the dashboard broke can fail the whole list, and then the list is no way to
+        // reach it. The fleets this app started are known without it.
+        let list_failed = [&strat, &pct].iter().any(|s| s.value.is_none() && s.stale && !s.loading);
+        if list_failed && !st.started_for.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(tr!("Fleets started here:"));
+                let mut started: Vec<_> = st.started_for.values().cloned().collect();
+                started.sort_by(|a, b| a.0.cmp(&b.0));
+                for id in started {
+                    let name = st
+                        .start_requests
+                        .get(&id)
+                        .map(|r| r.form.name.clone())
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or_else(|| tr!("fleet").to_owned());
+                    if ui.link(name).clicked() {
+                        *goto = Some(Page::Tracking(id));
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
         section(ui, tr!("Strategic"), &strat, goto);
         ui.add_space(8.0);
         section(ui, tr!("Peacetime"), &pct, goto);
@@ -2523,7 +2586,12 @@ fn rows<T>(
                 .on_hover_text(tr!("The last refresh failed, so this is the previous answer."));
         }
     });
-    let Some(items) = items else { return };
+    let Some(items) = items else {
+        if slot.stale && !slot.loading {
+            ui.label(egui::RichText::new(tr!("Could not be loaded. Refresh to try again.")).weak());
+        }
+        return;
+    };
     if items.is_empty() {
         ui.label(egui::RichText::new(tr!("Nothing here.")).weak());
         return;
@@ -2740,6 +2808,8 @@ pub(crate) struct FormAct {
     pub search_system: Option<String>,
     pub edited: bool,
     pub start: bool,
+    /// Start without waiting on the boss checks or the already-tracked guard.
+    pub start_anyway: bool,
     /// Track pressed before the FC is boss, or pressed again to stop waiting.
     pub track_wait: bool,
     /// Post the ping request to skirmish_commanders, as the rescue does. The directorbot group.
@@ -2844,10 +2914,7 @@ fn start_page(
                 let waiting = st.track_waiting;
                 // The dashboard reads the fleet through the FC's ESI token, so tracking a
                 // character who is not fleet boss produces a fleet with nothing in it.
-                let boss_ok = st
-                    .fc()
-                    .and_then(|(id, _)| st.boss.as_ref().filter(|(who, _)| *who == id))
-                    .is_some_and(|(_, c)| c.verdict().0);
+                let boss_ok = st.boss_ready();
                 let starting = st.starting;
                 let tracked = st.already_tracking();
                 let track = |ui: &mut egui::Ui, act: &mut FormAct| {
@@ -2894,6 +2961,16 @@ fn start_page(
                             act.start = true;
                         } else {
                             act.track_wait = true;
+                        }
+                    }
+                    // The checks can be wrong, and an FC who knows better must not be held up.
+                    if can_start && ready && !starting && (waiting || !boss_ok || tracked.is_some()) {
+                        if ui
+                            .button(trf!("{icon}  Track anyway", icon = egui_phosphor::regular::FAST_FORWARD))
+                            .on_hover_text(tr!("Start now, skipping the fleet boss checks and the already-tracked guard."))
+                            .clicked()
+                        {
+                            act.start_anyway = true;
                         }
                     }
                 };
@@ -3318,6 +3395,81 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
     });
 }
 
+/// What the tracking page can ask for when the dashboard broke the fleet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Glitch {
+    Retry,
+    Retrack,
+}
+
+/// A fleet the dashboard could not read (`why`), or read with nobody in it: says so and offers a
+/// retry, a fresh start with the same settings, and a close.
+fn broken_fleet(
+    ui: &mut egui::Ui,
+    st: &crate::fleets::FleetState,
+    why: Option<&str>,
+    live: bool,
+    act_on: &mut Vec<Action>,
+    glitch: &mut Option<Glitch>,
+) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let head = if why.is_some() {
+            tr!("The dashboard could not load this fleet.")
+        } else {
+            tr!("Nobody is in this fleet.")
+        };
+        ui.label(
+            egui::RichText::new(format!("{}  {head}", egui_phosphor::regular::WARNING))
+                .strong()
+                .color(crate::theme::standing::WARNING),
+        );
+        if let Some(why) = why {
+            ui.add(egui::Label::new(egui::RichText::new(why).weak()).wrap());
+        }
+        ui.add(
+            egui::Label::new(tr!(
+                "This happens when the dashboard tracks a fleet ESI no longer knows, often right \
+                 after changing fleets in game."
+            ))
+            .wrap(),
+        );
+        if let Some((id, _)) = st.fc() {
+            esi_line(ui, st, id);
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(format!("{}  {}", egui_phosphor::regular::ARROWS_CLOCKWISE, tr!("Retry")))
+                .clicked()
+            {
+                *glitch = Some(Glitch::Retry);
+            }
+            if live {
+                if ui
+                    .add_enabled(
+                        !st.starting,
+                        egui::Button::new(format!(
+                            "{}  {}",
+                            egui_phosphor::regular::ROCKET_LAUNCH,
+                            tr!("Close it and track again")
+                        )),
+                    )
+                    .on_hover_text(tr!("Closes this fleet on the dashboard and starts a new one with the same settings."))
+                    .clicked()
+                {
+                    *glitch = Some(Glitch::Retrack);
+                }
+                if ui
+                    .button(format!("{}  {}", egui_phosphor::regular::X_CIRCLE, tr!("Close fleet")))
+                    .clicked()
+                {
+                    act_on.push(Action::Close);
+                }
+            }
+        });
+    });
+}
+
 /// Whether the character the fleet would be started as is actually boss of a fleet.
 ///
 /// Only the account's own characters can be checked, which is the same set the picker offers, so
@@ -3362,6 +3514,22 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
         {
             act.check_boss = true;
         }
+    });
+    esi_line(ui, st, id);
+}
+
+/// ESI's own answer on the character's fleet, read through this machine's token.
+fn esi_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, id: i64) {
+    let Some((_, esi)) = st.esi_fleet.as_ref().filter(|(who, _)| *who == id) else { return };
+    let (ok, why) = esi.verdict(id);
+    let (glyph, colour) = match ok {
+        Some(true) => (egui_phosphor::regular::CHECK_CIRCLE, crate::theme::standing::FRIENDLY),
+        Some(false) => (egui_phosphor::regular::WARNING, crate::theme::standing::WARNING),
+        None => (egui_phosphor::regular::INFO, ui.visuals().weak_text_color()),
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(glyph).color(colour));
+        ui.add(egui::Label::new(egui::RichText::new(why).color(colour)).wrap());
     });
 }
 
@@ -4684,17 +4852,28 @@ fn tracking_page(
     map_at: &mut Option<(egui::Rect, crate::app::fleet_map::FleetMapInput)>,
     br: Option<&crate::app::fleet_map::BrView>,
     br_click: &mut Option<crate::app::fleet_map::BrClick>,
+    glitch: &mut Option<Glitch>,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(if st.open.loading {
-                "Loading the fleet."
-            } else {
-                "No fleet open."
-            })
-            .weak())
-        });
+        let failed = st
+            .open_failed
+            .as_ref()
+            .filter(|(id, _)| Some(id) == st.page.fleet())
+            .map(|(_, why)| why.clone());
+        match failed.filter(|_| !st.open.loading) {
+            Some(why) => broken_fleet(ui, st, Some(&why), !from_history, act_on, glitch),
+            None => {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(if st.open.loading {
+                        tr!("Loading the fleet.")
+                    } else {
+                        tr!("No fleet open.")
+                    })
+                    .weak())
+                });
+            }
+        }
         return;
     };
 
@@ -4702,6 +4881,17 @@ fn tracking_page(
     // dashboard's timer while this page was open is just as closed as one read back out of the
     // history, and the live view's buttons would act on nothing.
     let read_only = from_history || open.fleet.closed_at.is_some();
+    // Tracked against a fleet ESI no longer has: the dashboard reads nobody into it. Given a
+    // minute first, since a fresh fleet is empty until the first read lands.
+    let empty = !read_only
+        && open.composition.total() == 0
+        && open.report.total_characters == 0
+        && crate::fleets::model::parse_iso(&open.fleet.started_at)
+            .is_none_or(|t| crate::clock::utc().timestamp() - t >= 60);
+    if empty {
+        broken_fleet(ui, st, None, true, act_on, glitch);
+        ui.add_space(4.0);
+    }
 
     let seed = st.seed.clone();
     let boosts = st.boosts.clone();

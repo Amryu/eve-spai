@@ -283,6 +283,14 @@ pub struct FleetState {
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
     pub error: Option<String>,
+    /// ESI's own answer on the FC's fleet, from the same poll as `boss`.
+    pub esi_fleet: Option<(i64, EsiFleet)>,
+    /// The start on its way, then the request each fleet was started with, so a fleet the
+    /// dashboard broke can be started again the same way.
+    pub last_start: Option<StartRequest>,
+    pub start_requests: std::collections::HashMap<FleetId, StartRequest>,
+    /// A fleet that could not be opened, and why. Its page offers a retry and a way out.
+    pub open_failed: Option<(FleetId, String)>,
 }
 
 impl FleetState {
@@ -313,6 +321,9 @@ impl FleetState {
             }
             Outcome::History(page) => self.history.put(page),
             Outcome::Opened(open) => {
+                if self.open_failed.as_ref().is_some_and(|(id, _)| *id == open.fleet.id) {
+                    self.open_failed = None;
+                }
                 // A different fleet is a different set of boosters, so the hand-marked ones go.
                 if self.edit.of.as_ref() != Some(&open.fleet.id) {
                     self.boosts_forced.clear();
@@ -358,7 +369,29 @@ impl FleetState {
                 self.boost_lines = lines;
                 self.boosts_loading = false;
             }
-            Outcome::Boss { character_id, check } => self.boss = Some((character_id, check)),
+            Outcome::Boss { character_id, check, esi } => {
+                self.boss = Some((character_id, check));
+                self.esi_fleet = Some((character_id, esi));
+            }
+            // The fleet's page says this itself, with what to do about it, so no banner.
+            Outcome::OpenFailed { id, why } => {
+                eprintln!("[fleet] fleet failed: {why}");
+                self.open.failed();
+                self.open_failed = Some((id, why));
+            }
+            Outcome::Retracked { closed, record, id } => {
+                self.record(closed);
+                self.record(record);
+                self.starting = false;
+                self.open_failed = None;
+                if let Some(req) = self.last_start.take() {
+                    self.start_requests.insert(id.clone(), req);
+                }
+                if let Some((fc, _)) = self.fc() {
+                    self.started_for.insert(fc, id.clone());
+                }
+                self.page = Page::Tracking(id);
+            }
             Outcome::Advert { id, registered } => {
                 self.advert = registered.map(|r| (id, r));
             }
@@ -389,6 +422,10 @@ impl FleetState {
             Outcome::Started { record, id } => {
                 self.record(record);
                 self.starting = false;
+                self.open_failed = None;
+                if let Some(req) = self.last_start.take() {
+                    self.start_requests.insert(id.clone(), req);
+                }
                 if let Some((fc, _)) = self.fc() {
                     self.started_for.insert(fc, id.clone());
                 }
@@ -594,6 +631,19 @@ impl FleetState {
             .map(|r| (r.id.clone(), r.name.clone()))
     }
 
+    /// The dashboard says the FC is fleet boss and ESI does not say otherwise. ESI that cannot
+    /// tell never holds a start back.
+    pub fn boss_ready(&self) -> bool {
+        let Some((id, _)) = self.fc() else { return false };
+        let dash = self.boss.as_ref().filter(|(who, _)| *who == id).is_some_and(|(_, c)| c.verdict().0);
+        let esi = self
+            .esi_fleet
+            .as_ref()
+            .filter(|(who, _)| *who == id)
+            .and_then(|(_, e)| e.verdict(id).0);
+        dash && esi != Some(false)
+    }
+
     pub fn fc(&self) -> Option<(i64, String)> {
         let s = self.session.as_ref()?;
         match self.draft.fc_character {
@@ -680,6 +730,39 @@ impl FleetState {
         })
     }
 
+    /// How to start a fleet like this one again: the request it was started with, else what the
+    /// fleet's own record says, else the form.
+    pub fn restart_request(&self, id: &FleetId) -> Option<StartRequest> {
+        if let Some(req) = self.start_requests.get(id) {
+            return Some(req.clone());
+        }
+        if let Some(f) = self.open.value.as_ref().map(|o| &o.fleet).filter(|f| f.id == *id) {
+            let fc = f.commander.as_ref().filter(|c| c.id != 0)?;
+            return Some(StartRequest {
+                form: StartForm {
+                    name: f.name.clone(),
+                    description: f.description.clone(),
+                    setup_id: f.setup_id.0,
+                    boost_channel_id: f.boost_channel_id,
+                    logi_channel_id: f.logi_channel_id,
+                    mumble_channel_id: f.mumble_channel_id,
+                    auto_close_type: f.auto_close_type,
+                    auto_close_time: f.auto_close_time,
+                    ignore_participation_requirements: f.ignore_participation_requirements,
+                    ..StartForm::default()
+                },
+                tag_ids: f.tag_ids.clone(),
+                character_id: fc.id,
+                character_name: fc.label.clone(),
+                use_backup: false,
+                snowflakes: f.snowflakes.clone(),
+                operation_id: None,
+                formup_location_id: f.formup_location.as_ref().map(|l| l.id),
+            });
+        }
+        self.start_request()
+    }
+
     /// The ping the form describes. Always available: a preview of an empty form is still useful.
     pub fn ping_request(&self) -> PingRequest {
         PingRequest {
@@ -745,6 +828,7 @@ pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
         // The request was made. Dropping its record would be lying about what this app did.
         Outcome::Wrote { .. }
         | Outcome::Started { .. }
+        | Outcome::Retracked { .. }
         | Outcome::Closed { .. }
         | Outcome::Updated { .. } => true,
         // Only the newest preview is worth showing; an older one would flicker the pane backwards.
@@ -787,10 +871,28 @@ pub enum Cmd {
     /// The same call, kept apart so a rescue and the start form do not overwrite each other's.
     RescuePreview(PingRequest),
     Start(StartRequest),
+    /// Close a fleet the dashboard broke and start a new one with the same request.
+    Retrack { close: FleetId, start: StartRequest },
 }
 
 /// How a boss check that failed begins, as opposed to one the dashboard answered with a reason.
 pub const BOSS_CHECK_FAILED: &str = "The dashboard could not check";
+
+/// A failure in words. An HTTP error's body is the dashboard's error page, which is HTML.
+pub fn said(e: &FleetError) -> String {
+    match e {
+        FleetError::Http { status, body } => {
+            let text = strip_tags(body);
+            let text = text.trim();
+            if text.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {text}")
+            }
+        }
+        e => e.to_string(),
+    }
+}
 
 /// A failed boss check in words, rather than the dashboard's error body, which is a scrap of HTML.
 pub fn boss_check_failure(e: &FleetError) -> String {
@@ -824,7 +926,11 @@ pub enum Outcome {
     Active { strategic: bool, rows: Vec<FleetRow> },
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
-    Boss { character_id: i64, check: BossCheck },
+    Boss { character_id: i64, check: BossCheck, esi: EsiFleet },
+    /// A fleet that could not be read, kept apart so its page can offer a way out.
+    OpenFailed { id: FleetId, why: String },
+    /// The broken fleet closed and a new one started in its place.
+    Retracked { closed: CallRecord, record: CallRecord, id: FleetId },
     MigrateBoss { character_id: i64, check: BossCheck },
     /// `None` is "cannot tell", which clears any earlier answer rather than leaving it standing.
     Advert { id: FleetId, registered: Option<bool> },
@@ -868,11 +974,11 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
     match cmd {
         Cmd::Bootstrap => match boot(backend, seed) {
             Ok((session, seed)) => Outcome::Booted { session: Box::new(session), seed: Box::new(seed) },
-            Err(e) => Outcome::Failed { what: "sign in", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "sign in", why: said(&e) },
         },
         Cmd::LoadActive { strategic } => match backend.active(strategic) {
             Ok(rows) => Outcome::Active { strategic, rows },
-            Err(e) => Outcome::Failed { what: "active fleets", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "active fleets", why: said(&e) },
         },
         Cmd::RefreshChannels => match (
             backend.mumble_channels(),
@@ -885,26 +991,28 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
         },
         Cmd::LoadHistory { skip, search } => match backend.history(&search, skip) {
             Ok(page) => Outcome::History(page),
-            Err(e) => Outcome::Failed { what: "fleet history", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "fleet history", why: said(&e) },
         },
         Cmd::Open(id) => match open(backend, &id) {
             Ok(open) => Outcome::Opened(Box::new(open)),
-            Err(e) => Outcome::Failed { what: "fleet", why: e.to_string() },
+            Err(e) => Outcome::OpenFailed { id, why: said(&e) },
         },
         Cmd::CheckAdvert(fleet) => {
             Outcome::Advert { id: fleet.id.clone(), registered: backend.advert(&fleet) }
         }
         Cmd::CheckMigrateBoss { character_id } => match backend.boss_check(character_id, false) {
             Ok(check) => Outcome::MigrateBoss { character_id, check },
-            Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "fleet boss check", why: said(&e) },
         },
         Cmd::CheckBoss { character_id } => {
+            let esi = backend.esi_fleet(character_id);
             match backend.boss_check(character_id, false) {
-                Ok(check) => Outcome::Boss { character_id, check },
+                Ok(check) => Outcome::Boss { character_id, check, esi },
                 // On the boss line, where the answer is read, rather than as a banner: this runs
                 // once a minute, and the dashboard's error body is a scrap of HTML.
                 Err(e) => Outcome::Boss {
                     character_id,
+                    esi,
                     check: BossCheck {
                         is_fleet_boss: false,
                         backup_available: false,
@@ -915,7 +1023,7 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
         }
         Cmd::Search { kind, value } => match backend.search(kind, &value, false) {
             Ok(hits) => Outcome::Found { kind, query: value, hits },
-            Err(e) => Outcome::SearchFailed { query: value, why: e.to_string() },
+            Err(e) => Outcome::SearchFailed { query: value, why: said(&e) },
         },
         Cmd::ReadBoosts { dir, channel, from, to } => {
             {
@@ -933,11 +1041,11 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
                 Outcome::Updated { record: w.record, fleet }
             }
             Ok(w) => Outcome::Wrote { record: w.record },
-            Err(e) => Outcome::Failed { what: "action", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "action", why: said(&e) },
         },
         Cmd::Preview(req) => match backend.ping_preview(&req) {
             Ok(w) => Outcome::Preview { record: w.record, preview: w.value },
-            Err(e) => Outcome::Failed { what: "ping preview", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "ping preview", why: said(&e) },
         },
         Cmd::RescuePreview(req) => match backend.ping_preview(&req) {
             Ok(w) => Outcome::RescuePreview { preview: w.value },
@@ -947,7 +1055,14 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
         },
         Cmd::Start(req) => match backend.start(&req) {
             Ok(w) => Outcome::Started { record: w.record, id: w.value },
-            Err(e) => Outcome::Failed { what: "start fleet", why: e.to_string() },
+            Err(e) => Outcome::Failed { what: "start fleet", why: said(&e) },
+        },
+        Cmd::Retrack { close, start } => match backend.act(&close, &Action::Close) {
+            Ok(closed) => match backend.start(&start) {
+                Ok(w) => Outcome::Retracked { closed: closed.record, record: w.record, id: w.value },
+                Err(e) => Outcome::Failed { what: "start fleet", why: said(&e) },
+            },
+            Err(e) => Outcome::Failed { what: "close the broken fleet", why: said(&e) },
         },
     }
 }
@@ -1206,6 +1321,89 @@ mod tests {
         st.starting = true;
         st.apply(Outcome::Failed { what: "start", why: "HTTP 500".into() });
         assert!(!st.starting, "a start that failed blocks every retry for good");
+    }
+
+    /// ESI only ever holds a start back when it says something is wrong. A character it cannot
+    /// read, or a token without the fleet scope, leaves the dashboard's answer to decide.
+    #[test]
+    fn esi_holds_a_start_back_only_when_it_disagrees() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Bootstrap));
+        let (fc, _) = st.fc().expect("an fc");
+        let boss = BossCheck { is_fleet_boss: true, ..BossCheck::default() };
+        let mut with = |esi: EsiFleet| {
+            st.apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi });
+            st.boss_ready()
+        };
+        assert!(with(EsiFleet::Unknown("no scope".into())));
+        assert!(with(EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) }));
+        assert!(with(EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: None }));
+        assert!(!with(EsiFleet::NotInFleet));
+        assert!(!with(EsiFleet::InFleet { fleet_id: 1, boss_id: fc + 1, exists: None }));
+        assert!(!with(EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(false) }), "a fleet that is gone");
+        // The dashboard saying no is still no, whatever ESI says.
+        st.apply(Outcome::Boss {
+            character_id: fc,
+            check: BossCheck::default(),
+            esi: EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) },
+        });
+        assert!(!st.boss_ready());
+    }
+
+    /// A dashboard error page is said in words, not dumped as HTML.
+    #[test]
+    fn an_http_error_is_said_without_its_html() {
+        let e = FleetError::Http { status: 500, body: "<html><body><h1>Internal error</h1></body></html>".into() };
+        assert_eq!(said(&e), "HTTP 500: Internal error");
+        assert_eq!(said(&FleetError::Http { status: 500, body: "<html></html>".into() }), "HTTP 500");
+    }
+
+    /// A fleet that cannot be opened is remembered against its id, so its page can offer a way out,
+    /// and a later good read clears it.
+    #[test]
+    fn a_fleet_that_fails_to_open_says_so_until_it_opens() {
+        let mut st = state();
+        let id = FleetId("broken".into());
+        st.apply(Outcome::OpenFailed { id: id.clone(), why: "HTTP 500".into() });
+        assert_eq!(st.open_failed, Some((id.clone(), "HTTP 500".to_owned())));
+        st.apply(Outcome::Opened(Box::new(OpenFleet {
+            fleet: Fleet { id: id.clone(), ..Fleet::default() },
+            ..OpenFleet::default()
+        })));
+        assert_eq!(st.open_failed, None);
+    }
+
+    /// Re-tracking closes the broken fleet and starts one with the very request the first was
+    /// started with, and the page follows the new fleet.
+    #[test]
+    fn a_broken_fleet_is_closed_and_started_again_the_same_way() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+        st.apply(run(&b, &seed, Cmd::Bootstrap));
+        let (fc, name) = st.fc().expect("an fc");
+        let req = StartRequest {
+            form: StartForm { name: "Rescue".into(), setup_id: seed.setups[0].id.0, ..StartForm::default() },
+            character_id: fc,
+            character_name: name,
+            ..StartRequest::default()
+        };
+        st.last_start = Some(req.clone());
+        st.apply(run(&b, &seed, Cmd::Start(req.clone())));
+        let Page::Tracking(first) = st.page.clone() else { panic!("not tracking: {:?}", st.page) };
+        assert_eq!(st.restart_request(&first), Some(req.clone()));
+
+        st.last_start = st.restart_request(&first);
+        let out = run(&b, &seed, Cmd::Retrack { close: first.clone(), start: req.clone() });
+        assert!(matches!(out, Outcome::Retracked { .. }), "{out:?}");
+        st.apply(out);
+        let Page::Tracking(second) = st.page.clone() else { panic!("not tracking") };
+        assert_ne!(first, second);
+        assert_eq!(st.started_for.get(&fc), Some(&second));
+        assert_eq!(st.start_requests.get(&second), Some(&req));
+        assert!(b.fleet(&first).is_ok_and(|f| f.closed_at.is_some()), "the broken fleet is still open");
     }
 
     /// The same boss twice is the same in-game fleet twice.

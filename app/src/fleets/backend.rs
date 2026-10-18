@@ -394,6 +394,11 @@ pub trait FleetBackend: Send + Sync + 'static {
         None
     }
 
+    /// The character's own fleet per ESI, through this machine's token for them.
+    fn esi_fleet(&self, _character_id: i64) -> EsiFleet {
+        EsiFleet::Unknown("No ESI check on this backend.".to_owned())
+    }
+
     /// Opens the dashboard's push stream for one fleet, so a tracked fleet arrives instead of
     /// being polled for. A backend with nothing to push says so and the caller keeps polling.
     fn open_hub(&self, _id: &FleetId) -> Result<Box<dyn HubFeed>> {

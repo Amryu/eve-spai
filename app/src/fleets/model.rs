@@ -530,6 +530,43 @@ impl BossCheck {
     }
 }
 
+/// What ESI says about a character's own fleet, read through this machine's token. A second
+/// opinion on the dashboard's boss check, which reads the same ESI through its own token.
+#[derive(Clone, PartialEq, Debug)]
+pub enum EsiFleet {
+    /// Not asked or not answerable: why, for the hover.
+    Unknown(String),
+    NotInFleet,
+    InFleet {
+        fleet_id: i64,
+        boss_id: i64,
+        /// Whether `GET /fleets/{id}/` still finds the fleet. ESI caches the character's fleet for
+        /// a minute, so straight after a fleet change it names one that is gone, and a fleet
+        /// tracked on that id is created empty.
+        exists: Option<bool>,
+    },
+}
+
+impl EsiFleet {
+    /// `Some(false)` when ESI says tracking would fail; `None` when it cannot tell, which never
+    /// holds a start back.
+    pub fn verdict(&self, character_id: i64) -> (Option<bool>, String) {
+        match self {
+            EsiFleet::Unknown(why) => (None, why.clone()),
+            EsiFleet::NotInFleet => (Some(false), "ESI: not in a fleet.".to_owned()),
+            EsiFleet::InFleet { boss_id, .. } if *boss_id != 0 && *boss_id != character_id => {
+                (Some(false), "ESI: in a fleet, but not its boss.".to_owned())
+            }
+            EsiFleet::InFleet { exists: Some(false), .. } => (
+                Some(false),
+                "ESI still names a fleet that no longer exists. It catches up within a minute."
+                    .to_owned(),
+            ),
+            EsiFleet::InFleet { .. } => (Some(true), "ESI: fleet boss.".to_owned()),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BonusRequest {

@@ -553,6 +553,18 @@ impl FleetBackend for HttpBackend {
         crate::esi::fleet_advert(&side.client, &side.store, &side.client_id, &boss, esi_id)
     }
 
+    fn esi_fleet(&self, character_id: i64) -> EsiFleet {
+        let mut guard = self.esi.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let (Ok(store), Ok(client)) = (crate::store::Store::open(), crate::http::client(20)) else {
+                return EsiFleet::Unknown("ESI check unavailable: no local store.".to_owned());
+            };
+            *guard = Some(EsiSide { store, client, client_id: self.sso_client_id.clone() });
+        }
+        let Some(side) = guard.as_ref() else { return EsiFleet::Unknown(String::new()) };
+        crate::esi::character_fleet(&side.client, &side.store, &side.client_id, character_id)
+    }
+
     /// Negotiate, open the stream, shake hands, ask for the fleet.
     ///
     /// The stream has to be open before the handshake goes out, because the reply comes back down

@@ -1718,6 +1718,42 @@ fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> 
     })
 }
 
+/// A fleet the dashboard could not read: the page says so and offers a retry, a fresh start and a
+/// close, with ESI's word on the FC's fleet beside them.
+fn fleet_broken_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            broken_fleet_state(&a);
+            a
+        });
+        // The page re-asks for the fleet on its own; the scene is the moment after that failed.
+        broken_fleet_state(app);
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+fn broken_fleet_state(a: &crate::app::SpaiApp) {
+    let mut st = a.fleet_state_for_test().lock().unwrap();
+    let id = crate::fleets::model::FleetId("broken".into());
+    st.page = crate::fleets::state::Page::Tracking(id.clone());
+    st.open = Default::default();
+    st.open_failed = Some((id, "HTTP 500: An error occurred while processing your request.".into()));
+    if let Some((fc, _)) = st.fc() {
+        st.esi_fleet = Some((
+            fc,
+            crate::fleets::model::EsiFleet::InFleet { fleet_id: 1_000_000_001, boss_id: fc, exists: Some(false) },
+        ));
+    }
+}
+
 /// A tracked fleet, in either of its two halves: who is in it, and what they are flying.
 fn fleet_detail_scene(
     name: &'static str,
@@ -2872,6 +2908,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_start_scene("fleet_start_form", [1440.0, 820.0]));
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
     v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
+    v.push(fleet_broken_scene("fleet_broken_open", [1100.0, 640.0]));
     v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
     v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
     v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
@@ -8953,6 +8990,51 @@ fn track_waits_for_the_fleet_boss_and_then_starts() {
     a.fleet_track_tick(&ctx);
     let st = a.fleet_state_for_test().lock().unwrap();
     assert!(st.starting && !st.track_waiting, "boss now, so it starts and stops waiting");
+}
+
+/// Track anyway starts the fleet whatever the boss checks say and even with the FC already boss
+/// of a tracked fleet: the checks can be wrong, and the FC decides.
+#[test]
+fn track_anyway_skips_every_check() {
+    harness::scratch_profile();
+    let ctx = egui::Context::default();
+    let mut a = crate::app::SpaiApp::build(&ctx, true);
+    a.settings.fleet_enabled = true;
+    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+    a.settings.fleet_presets = fixtures::fleet_presets();
+    fixtures::seed_fleet_state(&a);
+    fixtures::open_fleet_start(&a);
+    {
+        let mut st = a.fleet_state_for_test().lock().unwrap();
+        let fc = st.fc().unwrap().0;
+        st.boss = Some((fc, crate::fleets::model::BossCheck::default()));
+        st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::NotInFleet));
+        assert!(!st.boss_ready());
+        assert!(st.already_tracking().is_some(), "the spoof's active fleets are led by this FC");
+    }
+    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start: true, ..Default::default() });
+    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "a plain start still minds the guard");
+    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start_anyway: true, ..Default::default() });
+    let st = a.fleet_state_for_test().lock().unwrap();
+    assert!(st.starting, "track anyway did not start");
+    assert!(st.last_start.is_some(), "the request is kept for a re-track");
+}
+
+/// A fleet that failed to load offers a way out rather than "No fleet open."
+#[test]
+fn uitest_a_fleet_that_failed_to_load_offers_a_way_out() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = fleet_broken_scene("fleet_broken_test", [1100.0, 640.0]);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    for want in ["The dashboard could not load this fleet.", "ESI still names a fleet that no longer exists"] {
+        assert!(h.query_by_label_contains(want).is_some(), "missing {want:?}");
+    }
+    for button in ["Retry", "Close it and track again", "Close fleet"] {
+        assert!(h.query_by_label_contains(button).is_some(), "missing the {button:?} button");
+    }
+    assert!(h.query_by_label_contains("No fleet open.").is_none());
+    assert!(h.query_by_label_contains("<").is_none(), "markup on screen");
 }
 
 #[test]
