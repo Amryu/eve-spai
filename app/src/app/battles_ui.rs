@@ -1159,7 +1159,7 @@ impl SpaiApp {
                                                         .button(trf!("{icon} Open", icon = icon::GLOBE))
                                                         .clicked()
                                                     {
-                                                        let _ = open::that(r.url(&base));
+                                                        let _ = crate::launch::that(r.url(&base));
                                                     }
                                                 },
                                             );
@@ -1854,7 +1854,7 @@ impl SpaiApp {
                                         .on_hover_text(tr!("Don't list it in the public directory (reachable only by link)"));
                                     if let Some((_, id, url)) = &shared {
                                         if ui.button(trf!("{icon}  Open shared report", icon = icon::ARROW_SQUARE_OUT)).on_hover_text(trf!("Open {url}, and copy the link", url = url)).clicked() {
-                                            let _ = open::that(url);
+                                            let _ = crate::launch::that(url);
                                             ui.ctx().copy_text(url.clone());
                                             shared_copied = true;
                                             ui.close();
@@ -1897,7 +1897,7 @@ impl SpaiApp {
                                         Some((anchor, saved, changed)) => {
                                             let url = saved.url();
                                             if ui.button(trf!("{icon}  Open br.evetools", icon = icon::ARROW_SQUARE_OUT)).on_hover_text(trf!("Open {url}, and copy the link", url = url)).clicked() {
-                                                let _ = open::that(&url);
+                                                let _ = crate::launch::that(&url);
                                                 ui.ctx().copy_text(url.clone());
                                                 evetools_copied = true;
                                                 ui.close();

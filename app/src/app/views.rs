@@ -790,7 +790,7 @@ impl SpaiApp {
                     Some(crate::notes::Subject::Pilot { id, name: report.name.clone() });
             }
             if ui.button(trf!("{icon}  zKillboard", icon = icon::ARROW_SQUARE_OUT)).clicked() {
-                let _ = open::that(format!("https://zkillboard.com/character/{id}/"));
+                let _ = crate::launch::that(format!("https://zkillboard.com/character/{id}/"));
             }
         });
         match NoteTip::of(&self.notes_view, self.notes_view.pilot(id)) {
@@ -1092,7 +1092,7 @@ impl SpaiApp {
                         }
                     }
                 } else if ui.button(trf!("Open in {v}", v = site_label(&site))).clicked() {
-                    let _ = open::that(fit_url(&site, loss));
+                    let _ = crate::launch::that(fit_url(&site, loss));
                 }
             });
         });

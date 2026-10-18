@@ -144,6 +144,9 @@ impl Drop for Player {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn spawn_pipe(rate: u32) -> Option<Child> {
+    if cfg!(test) {
+        return None;
+    }
     let pw = Command::new("pw-play")
         .args(["-a", "--rate", &rate.to_string(), "--channels", "1", "--format", "s16", "-"])
         .stdin(Stdio::piped())

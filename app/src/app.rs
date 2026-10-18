@@ -3636,7 +3636,7 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 if ui.button(tr!("Open data folder")).clicked() {
                     if let Ok(dir) = crate::store::data_dir() {
-                        let _ = open::that(dir);
+                        let _ = crate::launch::that(dir);
                     }
                 }
                 // Critical has no dismiss: it reports a live degradation, and it clears itself.
@@ -4196,6 +4196,9 @@ fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
 }
 
 fn notify(summary: String, body: String) {
+    if cfg!(test) {
+        return;
+    }
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new()
             .summary(&summary)
@@ -5249,7 +5252,7 @@ pub(crate) fn open_dscan_view(
     ctx: &egui::Context,
 ) -> Option<DscanView> {
     if !url.contains("dscan.info") {
-        let _ = open::that(&url);
+        let _ = crate::launch::that(&url);
         return None;
     }
     let fetch = std::sync::Arc::new(std::sync::Mutex::new(DscanFetch::Loading));
@@ -5289,7 +5292,7 @@ pub(crate) fn dscan_view_dialog_ui(
         |ui| {
             ui.horizontal(|ui| {
                 if ui.button(trf!("{icon}  Open on dscan.info", icon = icon::ARROW_SQUARE_OUT)).clicked() {
-                    let _ = open::that(&url);
+                    let _ = crate::launch::that(&url);
                 }
             });
             ui.separator();
@@ -5671,7 +5674,7 @@ pub(crate) fn party_badge(ui: &mut egui::Ui, p: &br_core::battle::Party, size: f
     let img = egui::Image::new(img_url).fit_to_exact_size(egui::Vec2::splat(size));
     if clickable {
         if ui.add(egui::Button::image(img)).on_hover_text(&p.name).clicked() {
-            let _ = open::that(zkill);
+            let _ = crate::launch::that(zkill);
         }
     } else {
         ui.add(img).on_hover_text(&p.name);
@@ -7044,13 +7047,13 @@ fn open_mumble(link: String) {
                 None
             });
         match &resolved {
-            Some(url) => match open::that(url) {
+            Some(url) => match crate::launch::that(url) {
                 Ok(_) => return,
                 Err(e) => eprintln!("[mumble] opening {url} failed ({e}); falling back to browser"),
             },
             None => eprintln!("[mumble] could not resolve {link} after 5 tries; opening in browser"),
         }
-        let _ = open::that(&link);
+        let _ = crate::launch::that(&link);
     });
 }
 
@@ -7174,7 +7177,7 @@ pub(crate) fn render_ping(
     let doctrine_label = |ui: &mut egui::Ui, d: &str| {
         if let Some(url) = crate::doctrines::link_for(d) {
             if ui.link(format!("Doctrine: {d} \u{2197}")).on_hover_text(url).clicked() {
-                let _ = open::that(url);
+                let _ = crate::launch::that(url);
             }
         } else {
             ui.label(trf!("Doctrine: {d}", d = d));
@@ -7238,7 +7241,7 @@ pub(crate) fn render_ping(
                     let to = target.as_deref().unwrap_or("?");
                     ui.label(egui::RichText::new(format!("{from} {} {to}", icon::ARROW_RIGHT)).weak());
                     if !doctrine_url.is_empty() && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked() {
-                        let _ = open::that(doctrine_url);
+                        let _ = crate::launch::that(doctrine_url);
                     }
                 });
             }
@@ -7280,7 +7283,7 @@ pub(crate) fn render_ping(
                         if !doctrine_url.is_empty()
                             && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()
                         {
-                            let _ = open::that(doctrine_url);
+                            let _ = crate::launch::that(doctrine_url);
                         }
                     });
                 }

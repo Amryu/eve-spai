@@ -6,6 +6,7 @@ extern crate spai_ui;
 #[cfg(test)]
 mod i18n_sync;
 mod activity;
+mod launch;
 mod ai;
 mod frametime;
 mod killmail;

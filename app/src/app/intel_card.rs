@@ -928,7 +928,7 @@ pub(crate) fn intel_row(
                                         }
                                         if resp.clicked() {
                                             if let Some(url) = zkill {
-                                                let _ = open::that(url);
+                                                let _ = crate::launch::that(url);
                                             }
                                         }
                                     };
@@ -987,7 +987,7 @@ pub(crate) fn intel_row(
                                     match crate::zkill::parse_kill_id(&link.url) {
                                         Some(id) => clicked = Some(IntelClick::Kill(id, info.as_ref().and_then(|i| i.hash.clone()))),
                                         None => {
-                                            let _ = open::that(&link.url);
+                                            let _ = crate::launch::that(&link.url);
                                         }
                                     }
                                     consumed = true;
@@ -1009,7 +1009,7 @@ pub(crate) fn intel_row(
                                 .on_hover_text(&link.url)
                                 .clicked()
                             {
-                                let _ = open::that(&link.url);
+                                let _ = crate::launch::that(&link.url);
                                 consumed = true;
                             }
                         }

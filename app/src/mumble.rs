@@ -28,6 +28,9 @@ pub fn current_url() -> Option<String> {
 /// since a `mumble://` URL opens the client either way.
 #[cfg(target_os = "linux")]
 pub fn open_url(url: &str) {
+    if cfg!(test) {
+        return;
+    }
     let sent = (|| {
         let conn = zbus::blocking::Connection::session().ok()?;
         let proxy = zbus::blocking::Proxy::new(
@@ -41,7 +44,7 @@ pub fn open_url(url: &str) {
     })()
     .is_some();
     if !sent {
-        let _ = open::that(url);
+        let _ = crate::launch::that(url);
     }
 }
 
@@ -120,7 +123,7 @@ pub fn current_url() -> Option<String> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn open_url(url: &str) {
-    let _ = open::that(url);
+    let _ = crate::launch::that(url);
 }
 
 /// Whether Mumble is sitting in the channel a link points at.

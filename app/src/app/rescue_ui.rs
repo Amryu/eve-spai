@@ -1286,7 +1286,7 @@ impl SpaiApp {
                             .clicked()
                     };
                     if !compact && command_comms(ui, true) {
-                        let _ = open::that(command_mumble_url(op_now));
+                        let _ = crate::launch::that(command_mumble_url(op_now));
                         mark_cmd = true;
                     }
                     // Rebuild from the template on first show and on an op/doctrine change, but not
@@ -1476,7 +1476,7 @@ impl SpaiApp {
                         // below it only when the window is too narrow.
                         if compact {
                             if command_comms(ui, false) {
-                                let _ = open::that(command_mumble_url(op_now));
+                                let _ = crate::launch::that(command_mumble_url(op_now));
                                 mark_cmd = true;
                             }
                             if track_button(ui, false) {
@@ -1510,7 +1510,7 @@ impl SpaiApp {
                     // Inviting the pilot means the FC is taking the op: join its command channel too,
                     // unless already there.
                     if mark_invite && !mark_cmd && acts.command_comms_op != Some(op_now) {
-                        let _ = open::that(command_mumble_url(op_now));
+                        let _ = crate::launch::that(command_mumble_url(op_now));
                         mark_cmd = true;
                     }
                     if let Some(seq) = sel_seq {

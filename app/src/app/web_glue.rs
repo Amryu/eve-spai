@@ -255,7 +255,7 @@ impl SpaiApp {
                 ui.ctx().copy_text(url.clone());
             }
             if ui.button(trf!("{icon}  Open in browser", icon = icon::ARROW_SQUARE_OUT)).clicked() {
-                let _ = open::that(&url);
+                let _ = crate::launch::that(&url);
             }
             if ui
                 .button(trf!("{icon}  Regenerate link", icon = icon::ARROWS_CLOCKWISE))

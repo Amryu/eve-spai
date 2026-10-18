@@ -101,7 +101,7 @@ fn run(
     let server = tiny_http::Server::http(("127.0.0.1", port))
         .map_err(|e| anyhow!("could not bind callback server on port {port}: {e}"))?;
 
-    let _ = open::that(auth_url.as_str());
+    let _ = crate::launch::that(auth_url.as_str());
     set(AuthStatus::Waiting(
         "Waiting for EVE login in your browser…".to_owned(),
     ));

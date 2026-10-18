@@ -357,7 +357,7 @@ impl SpaiApp {
                         .insert(short, (Some(m), std::time::Instant::now()));
                 }
                 None => {
-                    let _ = open::that(&short);
+                    let _ = crate::launch::that(&short);
                 }
             }
             ctx.request_repaint();
@@ -4843,7 +4843,7 @@ fn tracking_page(
                     .on_hover_text(tr!("Open this fleet on the fleet dashboard in the browser"))
                     .clicked()
                 {
-                    let _ = open::that(format!("{}/fleet/overview/{}", crate::fleets::http::BASE, open.fleet.id));
+                    let _ = crate::launch::that(format!("{}/fleet/overview/{}", crate::fleets::http::BASE, open.fleet.id));
                 }
                 if let Some(br) = br {
                     br_buttons(ui, br, br_click);
@@ -5239,7 +5239,7 @@ fn doctrine_link_row(ui: &mut egui::Ui, setup_id: i32, urls: &mut Vec<(i32, Stri
             .on_hover_text(tr!("Open it"))
             .clicked()
         {
-            let _ = open::that(url.trim());
+            let _ = crate::launch::that(url.trim());
         }
     });
     changed

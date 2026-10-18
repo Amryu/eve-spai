@@ -116,7 +116,7 @@ impl SpaiApp {
                     });
                 }
                 None => {
-                    let _ = open::that(&av.html_url);
+                    let _ = crate::launch::that(&av.html_url);
                     close = true;
                 }
             }
@@ -287,7 +287,7 @@ impl SpaiApp {
 
     pub(crate) fn open_adashboard_intel(&self, ctx: &egui::Context, text: String) {
         ctx.copy_text(text);
-        let _ = open::that("https://adashboard.info/intel");
+        let _ = crate::launch::that("https://adashboard.info/intel");
     }
 
     pub(crate) fn start_dscan_upload(&self, ctx: &egui::Context, text: String) {

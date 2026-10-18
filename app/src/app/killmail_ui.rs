@@ -80,7 +80,7 @@ impl SpaiApp {
                 KillState::Done(d) => link = kill_body(ui, d, &names, sys.as_ref()),
             });
             if let Some(url) = link {
-                let _ = open::that(url);
+                let _ = crate::launch::that(url);
             }
             if !keep {
                 closed.push(kill_id);
@@ -103,7 +103,7 @@ fn kill_actions(ui: &mut egui::Ui, kill_id: i64, esi: Option<String>) {
         ui.ctx().copy_text(url.clone());
     }
     if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text(trf!("Open on zKillboard: {url}", url = url)).clicked() {
-        let _ = open::that(&url);
+        let _ = crate::launch::that(&url);
     }
     if let Some(esi) = esi {
         if ui.button(icon::LINK).on_hover_text(tr!("Copy the ESI link")).clicked() {

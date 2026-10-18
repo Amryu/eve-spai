@@ -1064,7 +1064,7 @@ impl SpaiApp {
             }
             BrClick::Open => {
                 if let Some(url) = &b.url {
-                    let _ = open::that(url);
+                    let _ = crate::launch::that(url);
                 }
             }
             BrClick::Copy => {

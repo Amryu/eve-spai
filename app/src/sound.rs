@@ -161,6 +161,9 @@ pub(crate) fn master() -> f32 {
 }
 
 pub fn play(spec: &str, volume: f32) {
+    if cfg!(test) {
+        return;
+    }
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("off") {
         return;
