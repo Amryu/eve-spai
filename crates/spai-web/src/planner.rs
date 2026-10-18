@@ -468,6 +468,7 @@ impl RoutePlan {
             &holes,
             &self.leg_pick,
             &self.forks,
+            &route::Ahead::default(),
         );
         route::annotate(&mut opts, &HashMap::new());
         route::mark_anchors(&mut opts, &self.anchors);
