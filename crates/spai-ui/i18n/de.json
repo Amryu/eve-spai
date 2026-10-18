@@ -1894,6 +1894,7 @@
   "The invite lets you in as soon as the EVE Spai that made it next syncs.": "Die Einladung lässt dich rein, sobald das EVE Spai, das sie erstellt hat, das nächste Mal synchronisiert.",
   "The keys it carries are not the ones our invite link vouches for. Do not trust it.": "Die mitgebrachten Keys sind nicht die, für die unser Einladungslink bürgt. Nicht vertrauen.",
   "The language EVE Spai shows. It can be changed in Settings at any time.": "Die Sprache, die EVE Spai zeigt. Jederzeit in den Einstellungen änderbar.",
+  "The last ESI check failed ({why}). This is the answer from {ago}s ago; asking again shortly.": "Die letzte ESI-Prüfung ist fehlgeschlagen ({why}). Das ist die Antwort von vor {ago}s; es wird gleich erneut gefragt.",
   "The last refresh failed, so this is the previous answer.": "Die letzte Aktualisierung schlug fehl, das ist die vorige Antwort.",
   "The last two centre on you and list threats in range under Nearby": "Die letzten beiden zentrieren auf dich und listen Bedrohungen in Reichweite unter In der Nähe",
   "The least severe report that counts": "Der mildeste Report, der zählt",

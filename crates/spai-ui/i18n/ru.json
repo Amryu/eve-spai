@@ -1894,6 +1894,7 @@
   "The invite lets you in as soon as the EVE Spai that made it next syncs.": "Приглашение впустит вас, как только создавший его EVE Spai синхронизируется.",
   "The keys it carries are not the ones our invite link vouches for. Do not trust it.": "Его ключи не совпадают с теми, за которые ручается наша ссылка-приглашение. Не доверяйте.",
   "The language EVE Spai shows. It can be changed in Settings at any time.": "Язык интерфейса EVE Spai. Его можно сменить в настройках в любой момент.",
+  "The last ESI check failed ({why}). This is the answer from {ago}s ago; asking again shortly.": "Последняя проверка ESI не удалась ({why}). Показан ответ {ago} с назад; скоро будет новый запрос.",
   "The last refresh failed, so this is the previous answer.": "Последнее обновление не удалось, это предыдущий ответ.",
   "The last two centre on you and list threats in range under Nearby": "Последние два центрируются на вас и показывают угрозы в радиусе в разделе «Рядом»",
   "The least severe report that counts": "Наименее серьёзный учитываемый репорт",

@@ -868,21 +868,22 @@ pub(crate) fn character_fleet(
         #[serde(default)]
         role: String,
     }
-    let resp = match client
-        .get(format!("https://esi.evetech.net/latest/characters/{character_id}/fleet/"))
-        .bearer_auth(&token)
-        .send()
-    {
+    if let Some(left) = fleet_backoff_left(character_id) {
+        return EsiFleet::Failed(format!("rate limited, retrying in {left}s"));
+    }
+    let url = format!("https://esi.evetech.net/latest/characters/{character_id}/fleet/");
+    let (status, body) = match fleet_get(client, &token, &url, character_id) {
         Ok(r) => r,
-        Err(e) => return EsiFleet::Failed(e.to_string()),
+        Err(e) => return EsiFleet::Failed(e),
     };
-    if resp.status().as_u16() == 404 {
+    if status == 404 {
         return EsiFleet::NotInFleet;
     }
-    if !resp.status().is_success() {
-        return EsiFleet::Failed(format!("HTTP {}", resp.status().as_u16()));
+    if !(200..300).contains(&status) {
+        return EsiFleet::Failed(format!("HTTP {status}"));
     }
-    let Ok(mine) = resp.json::<Mine>() else {
+    let Ok(mine) = serde_json::from_slice::<Mine>(&body) else {
+        crate::esilog::record("fleet esi", &format!("{url}: unexpected answer: {}", String::from_utf8_lossy(&body)));
         return EsiFleet::Failed("unexpected answer".to_owned());
     };
     // Older answers carry no boss id; the role says the same for the boss.
@@ -892,12 +893,8 @@ pub(crate) fn character_fleet(
     };
     // Only the boss may read the fleet, so this says nothing for anyone else.
     let exists = (boss_id == character_id).then(|| {
-        client
-            .get(format!("https://esi.evetech.net/latest/fleets/{}/", mine.fleet_id))
-            .bearer_auth(&token)
-            .send()
-            .ok()
-            .map(|r| r.status().as_u16())
+        let url = format!("https://esi.evetech.net/latest/fleets/{}/", mine.fleet_id);
+        fleet_get(client, &token, &url, character_id).ok().map(|(s, _)| s)
     });
     let exists = match exists.flatten() {
         Some(404) => Some(false),
@@ -905,6 +902,98 @@ pub(crate) fn character_fleet(
         _ => None,
     };
     EsiFleet::InFleet { fleet_id: mine.fleet_id, boss_id, exists }
+}
+
+/// The last good answer per fleet-check URL with its ETag. A repeat inside ESI's cache window then
+/// comes back 304, which costs one rate-limit token instead of two.
+static FLEET_ETAGS: std::sync::Mutex<Option<std::collections::HashMap<String, (String, u16, Vec<u8>)>>> =
+    std::sync::Mutex::new(None);
+/// Per character, when a 429's Retry-After runs out.
+static FLEET_BACKOFF: std::sync::Mutex<Option<std::collections::HashMap<i64, std::time::Instant>>> =
+    std::sync::Mutex::new(None);
+
+fn fleet_backoff_left(character_id: i64) -> Option<u64> {
+    let g = FLEET_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    let until = *g.as_ref()?.get(&character_id)?;
+    let left = until.checked_duration_since(std::time::Instant::now())?;
+    Some(left.as_secs().max(1))
+}
+
+/// One fleet-group GET, conditional on the last ETag. Every answer other than a 2xx, a 304 and a
+/// "not in a fleet" goes to the ESI log with the rate-limit headers, so a failure can be told
+/// apart from a limit afterwards.
+fn fleet_get(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    url: &str,
+    character_id: i64,
+) -> Result<(u16, Vec<u8>), String> {
+    let etag = FLEET_ETAGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(url))
+        .map(|(tag, ..)| tag.clone());
+    let mut req = client.get(url).bearer_auth(token);
+    if let Some(tag) = &etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
+    let resp = match req.send() {
+        Ok(r) => r,
+        Err(e) => {
+            crate::esilog::record("fleet esi", &format!("{url}: {e}"));
+            return Err(e.to_string());
+        }
+    };
+    let status = resp.status().as_u16();
+    let header = |name: &str| {
+        resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+    };
+    let (remaining, retry_after, new_tag) =
+        (header("x-ratelimit-remaining"), header("retry-after"), header("etag"));
+    if status == 304 {
+        let cached = FLEET_ETAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|m| m.get(url))
+            .map(|(_, s, b)| (*s, b.clone()));
+        return cached.ok_or_else(|| "HTTP 304 without a cached answer".to_owned());
+    }
+    if status == 429 {
+        let wait = retry_after.as_deref().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(60);
+        FLEET_BACKOFF
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(Default::default)
+            .insert(character_id, std::time::Instant::now() + std::time::Duration::from_secs(wait));
+    }
+    let body = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
+    let expected_404 = status == 404 && url.contains("/characters/");
+    if !(200..300).contains(&status) && !expected_404 {
+        crate::esilog::record(
+            "fleet esi",
+            &format!(
+                "{url}: HTTP {status} | X-Ratelimit-Remaining: {} | Retry-After: {}\n{}",
+                remaining.as_deref().unwrap_or("-"),
+                retry_after.as_deref().unwrap_or("-"),
+                String::from_utf8_lossy(&body)
+            ),
+        );
+    }
+    let mut g = FLEET_ETAGS.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(Default::default);
+    match new_tag {
+        // Only good answers are worth a 304 later. A "not in a fleet" is one too: it is the
+        // answer most repeated while waiting for a fleet to form.
+        Some(tag) if (200..300).contains(&status) || expected_404 => {
+            m.insert(url.to_owned(), (tag, status, body.clone()));
+        }
+        _ => {
+            m.remove(url);
+        }
+    }
+    Ok((status, body))
 }
 
 /// What `GET /fleets/{id}/` says about a fleet. `is_registered` is the Fleet Finder advert.
@@ -1105,5 +1194,66 @@ mod waypoint_tests {
         assert!(calls[0].contains("clear_other_waypoints=true") && calls[0].contains("destination_id=30000142"));
         assert!(calls[1].contains("clear_other_waypoints=false"));
         assert!(calls.iter().all(|u| u.contains("add_to_beginning=false")), "waypoints go on the end");
+    }
+}
+
+#[cfg(test)]
+mod fleet_get_tests {
+    use std::io::{BufRead, BufReader, Write};
+
+    /// Serves the canned answers in order, one connection each, and hands back each request's
+    /// headers.
+    fn serve(answers: Vec<String>) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/characters/7/fleet/", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut head = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line.to_lowercase());
+                }
+                let _ = tx.send(head);
+                s.write_all(answer.as_bytes()).unwrap();
+            }
+        });
+        (url, rx)
+    }
+
+    fn answer(status: &str, headers: &str, body: &str) -> String {
+        format!("HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    }
+
+    /// A repeat sends the last ETag, and a 304 is answered from the cached body. A 429 backs the
+    /// character off for as long as Retry-After says.
+    #[test]
+    fn fleet_checks_are_conditional_and_honour_retry_after() {
+        crate::uitest::harness::scratch_profile();
+        let body = r#"{"fleet_id":1,"fleet_boss_id":7,"role":"fleet_commander"}"#;
+        let (url, seen) = serve(vec![
+            answer("200 OK", "ETag: \"v1\"\r\n", body),
+            answer("304 Not Modified", "ETag: \"v1\"\r\n", ""),
+            answer("429 Too Many Requests", "Retry-After: 30\r\nX-Ratelimit-Remaining: 0\r\n", ""),
+        ]);
+        let client = reqwest::blocking::Client::new();
+        let character = 9_000_000_007;
+
+        assert_eq!(super::fleet_get(&client, "t", &url, character).unwrap(), (200, body.as_bytes().to_vec()));
+        assert!(!seen.recv().unwrap().contains("if-none-match"));
+
+        let again = super::fleet_get(&client, "t", &url, character).unwrap();
+        assert!(seen.recv().unwrap().contains("if-none-match: \"v1\""), "no ETag sent");
+        assert_eq!(again, (200, body.as_bytes().to_vec()), "a 304 did not reuse the cached answer");
+
+        assert_eq!(super::fleet_get(&client, "t", &url, character).unwrap().0, 429);
+        let left = super::fleet_backoff_left(character).expect("no back-off after a 429");
+        assert!((25..=30).contains(&left), "{left}");
+        assert_eq!(super::fleet_backoff_left(character + 1), None, "another character was backed off");
     }
 }

@@ -1212,9 +1212,14 @@ impl SpaiApp {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.boss.as_ref().is_some_and(|(id, c)| *id == character_id && !c.verdict().0)
         };
-        let waiting = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).track_waiting;
+        let (waiting, blip) = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            (st.track_waiting, st.esi_blip.is_some())
+        };
         let every = if waiting {
             BOSS_TRACK_WAIT
+        } else if blip {
+            ESI_BLIP_RETRY
         } else if failed && self.rescue_on() && self.rescue_ping_recent() {
             BOSS_RETRY
         } else {
@@ -2767,6 +2772,8 @@ fn doctrine_line(ping: &str) -> Option<String> {
 
 const BOSS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 const BOSS_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+/// How soon a check is asked again after an ESI failure that the last good answer is covering.
+const ESI_BLIP_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
 const ADVERT_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 /// How long the typing has to pause before a character search goes out.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
@@ -3558,7 +3565,15 @@ fn esi_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, id: i64) {
     };
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(glyph).color(colour));
-        ui.add(egui::Label::new(egui::RichText::new(why).color(colour)).wrap());
+        let resp = ui.add(egui::Label::new(egui::RichText::new(why).color(colour)).wrap());
+        if let Some(blip) = &st.esi_blip {
+            let ago = (crate::clock::utc().timestamp() - st.esi_fleet_at).max(0);
+            resp.on_hover_text(trf!(
+                "The last ESI check failed ({why}). This is the answer from {ago}s ago; asking again shortly.",
+                why = blip,
+                ago = ago
+            ));
+        }
     });
 }
 

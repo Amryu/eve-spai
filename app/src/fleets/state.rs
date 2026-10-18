@@ -291,8 +291,11 @@ pub struct FleetState {
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
     pub error: Option<String>,
-    /// ESI's own answer on the FC's fleet, from the same poll as `boss`.
+    /// ESI's own answer on the FC's fleet, from the same poll as `boss`, and when it came.
     pub esi_fleet: Option<(i64, EsiFleet)>,
+    pub esi_fleet_at: i64,
+    /// A failed ESI check held back in favour of the last good answer, and why it failed.
+    pub esi_blip: Option<String>,
     /// The start on its way, then the request each fleet was started with, so a fleet the
     /// dashboard broke can be started again the same way.
     pub last_start: Option<StartRequest>,
@@ -380,7 +383,24 @@ impl FleetState {
             Outcome::Boss { character_id, check, esi } => {
                 self.boss_seq += 1;
                 self.boss = Some((character_id, check));
-                self.esi_fleet = Some((character_id, esi));
+                let now = crate::clock::utc().timestamp();
+                // ESI's fleet routes fail for a moment now and then. Outside a Track wait, which
+                // must only act on a fresh answer, one failure keeps the last good answer for a
+                // while instead of flashing a warning.
+                let hold = !self.track_waiting
+                    && now - self.esi_fleet_at < ESI_BLIP_HOLD
+                    && self
+                        .esi_fleet
+                        .as_ref()
+                        .is_some_and(|(who, prev)| *who == character_id && !matches!(prev, EsiFleet::Failed(_)));
+                match esi {
+                    EsiFleet::Failed(why) if hold => self.esi_blip = Some(why),
+                    esi => {
+                        self.esi_fleet = Some((character_id, esi));
+                        self.esi_fleet_at = now;
+                        self.esi_blip = None;
+                    }
+                }
             }
             // The fleet's page says this itself, with what to do about it, so no banner.
             Outcome::OpenFailed { id, why } => {
@@ -466,6 +486,9 @@ impl FleetState {
         }
     }
 }
+
+/// How long a good ESI answer stands in for failed checks after it, in seconds.
+pub const ESI_BLIP_HOLD: i64 = 120;
 
 /// How long Track waits for the boss checks to pass before giving up, in seconds.
 pub const TRACK_WAIT_MAX: i64 = 120;
@@ -1401,6 +1424,37 @@ mod tests {
             esi: EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) },
         });
         assert!(!st.boss_ready());
+    }
+
+    /// Outside a Track wait one failed ESI check keeps the last good answer for two minutes; inside
+    /// one, the failure counts, since a wait acts only on fresh answers.
+    #[test]
+    fn an_esi_blip_keeps_the_last_good_answer_outside_a_wait() {
+        let mut st = state();
+        let fc = 7;
+        let boss = BossCheck { is_fleet_boss: true, ..BossCheck::default() };
+        let good = EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) };
+        let mut answer = |st: &mut FleetState, esi: EsiFleet| {
+            st.apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi });
+        };
+        answer(&mut st, good.clone());
+        answer(&mut st, EsiFleet::Failed("HTTP 503".into()));
+        assert_eq!(st.esi_fleet, Some((fc, good.clone())), "a blip replaced the good answer");
+        assert_eq!(st.esi_blip.as_deref(), Some("HTTP 503"));
+
+        answer(&mut st, good.clone());
+        assert_eq!(st.esi_blip, None, "a good answer clears the blip");
+
+        // Two minutes on, the old answer no longer covers for a failure.
+        st.esi_fleet_at -= ESI_BLIP_HOLD;
+        answer(&mut st, EsiFleet::Failed("HTTP 503".into()));
+        assert!(matches!(st.esi_fleet, Some((_, EsiFleet::Failed(_)))));
+
+        // Inside a wait, a failure is a failure.
+        answer(&mut st, good.clone());
+        st.begin_track_wait();
+        answer(&mut st, EsiFleet::Failed("HTTP 500".into()));
+        assert!(matches!(st.esi_fleet, Some((_, EsiFleet::Failed(_)))), "a wait was fed a held answer");
     }
 
     /// A dashboard error page is said in words, not dumped as HTML.

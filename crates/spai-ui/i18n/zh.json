@@ -1894,6 +1894,7 @@
   "The invite lets you in as soon as the EVE Spai that made it next syncs.": "生成邀请的 EVE Spai 下次同步后，你即可通过邀请加入。",
   "The keys it carries are not the ones our invite link vouches for. Do not trust it.": "它携带的密钥并非我们邀请链接所担保的。不要信任它。",
   "The language EVE Spai shows. It can be changed in Settings at any time.": "EVE Spai 显示的语言。可随时在设置中更改。",
+  "The last ESI check failed ({why}). This is the answer from {ago}s ago; asking again shortly.": "上次 ESI 检查失败（{why}）。这是 {ago} 秒前的结果，稍后会再次查询。",
   "The last refresh failed, so this is the previous answer.": "上次刷新失败，因此这是之前的回答。",
   "The last two centre on you and list threats in range under Nearby": "最后两项以你为中心，并在“附近”下列出范围内的威胁",
   "The least severe report that counts": "计入的最低严重程度报告",
