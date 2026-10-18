@@ -895,10 +895,30 @@ impl RoutePlan {
         }
         ui.label(egui::RichText::new(head).strong());
         if self.opts.len() > 1 {
-            let labels: Vec<String> = self.opts.iter().map(|o| o.label.clone()).collect();
-            ui.horizontal_wrapped(|ui| {
-                for (i, l) in labels.iter().enumerate() {
-                    ui.menu_value(&mut self.at, i, l);
+            let steps = |o: &RouteOption| o.hops.iter().skip(1).filter(|h| h.kind != 2).count();
+            let items: Vec<(bool, String)> = self
+                .opts
+                .iter()
+                .map(|o| {
+                    let n = steps(o);
+                    (o.gated, format!("{} \u{b7} {n} gate jump{}", o.label, if n == 1 { "" } else { "s" }))
+                })
+                .collect();
+            let at = &mut self.at;
+            egui::Grid::new("web_route_plans").num_columns(2).show(ui, |ui| {
+                for (gated, head) in [(false, "Plan"), (true, "Gate first")] {
+                    let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    let current = if items.get(*at).is_some_and(|it| it.0 == gated) { items[*at].1.clone() } else { "Pick a plan".to_owned() };
+                    ui.label(head);
+                    egui::ComboBox::from_id_salt(("web_route_plan", gated)).selected_text(current).width(ui.available_width() - 8.0).truncate().show_ui(ui, |ui| {
+                        for &i in &mine {
+                            ui.menu_value(at, i, items[i].1.as_str());
+                        }
+                    });
+                    ui.end_row();
                 }
             });
         }

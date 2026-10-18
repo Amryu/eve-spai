@@ -465,11 +465,30 @@ impl SpaiApp {
         ui.label(egui::RichText::new(head).strong());
         if self.map_route_opts.len() > 1 {
             use crate::app::SteadySelect as _;
-            let labels: Vec<String> = self.map_route_opts.iter().map(|o| o.label.clone()).collect();
+            let steps = |o: &crate::web::route::RouteOption| o.hops.iter().skip(1).filter(|h| h.kind != 2).count();
+            let items: Vec<(bool, String)> = self
+                .map_route_opts
+                .iter()
+                .map(|o| {
+                    let n = steps(o);
+                    (o.gated, if n == 1 { trf!("{label} · 1 gate jump", label = o.label) } else { trf!("{label} · {n} gate jumps", label = o.label, n = n) })
+                })
+                .collect();
             let mut at = self.map_route_at;
-            ui.horizontal_wrapped(|ui| {
-                for (i, l) in labels.iter().enumerate() {
-                    ui.menu_value(&mut at, i, l);
+            egui::Grid::new("route_plans").num_columns(2).show(ui, |ui| {
+                for (gated, head) in [(false, tr!("Plan")), (true, tr!("Gate first"))] {
+                    let mine: Vec<usize> = (0..items.len()).filter(|&i| items[i].0 == gated).collect();
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    let current = if items[at].0 == gated { items[at].1.clone() } else { tr!("Pick a plan").to_owned() };
+                    ui.label(head);
+                    egui::ComboBox::from_id_salt(("route_plan", gated)).selected_text(current).width(ui.available_width() - 8.0).truncate().show_ui(ui, |ui| {
+                        for &i in &mine {
+                            ui.menu_value(&mut at, i, items[i].1.as_str());
+                        }
+                    });
+                    ui.end_row();
                 }
             });
             if at != self.map_route_at {

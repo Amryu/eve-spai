@@ -339,6 +339,9 @@ pub struct RouteOption {
     /// This is what makes a saved route expire.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub uses_wormhole: bool,
+    /// A jump-ahead plan whose capital gates before it jumps, offered beside the ones that do not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gated: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -482,6 +485,7 @@ fn gate_option(graph: &crate::geo::Systems, path: Vec<i64>) -> RouteOption {
     let uses_wormhole = path.windows(2).any(|w| graph.is_hole_step(w[0], w[1]));
     RouteOption {
         uses_wormhole,
+        gated: false,
         label: "Gates".to_owned(),
         gates,
         jumps: path.len().saturating_sub(1),
@@ -560,6 +564,7 @@ fn jump_option(
         titan_jump: None,
         saved: None,
         uses_wormhole: false,
+        gated: false,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
             (fuel.round() as i64).to_string(),
@@ -622,6 +627,7 @@ pub fn titan(
             note: Some(format!("{ly:.1} ly direct jump")),
             detour: None,
             uses_wormhole: false,
+            gated: false,
             titan_jump: None,
             saved: None,
             path: vec![from, to],
@@ -697,6 +703,7 @@ fn titan_stationary(
                 note: Some(format!("{ly:.1} ly jump, then {} gates", rest.gates)),
                 detour: rest.detour,
                 uses_wormhole: rest_uses_hole,
+                gated: false,
                 titan_jump: None,
                 saved: None,
                 path,
@@ -725,11 +732,58 @@ pub struct Ahead {
 
 pub const AHEAD_OPTIONS: usize = 5;
 
+/// How far a jump-ahead capital gates before jumping in the plans offered beside the ones it does
+/// not, when the user asked for no gating.
+pub const GATED_PLAN_GATES: u32 = 5;
+
+/// A gate, an Ansiblex and a hole are one step each for the fleet; the capital's jumps are not.
+fn fleet_steps(o: &RouteOption) -> usize {
+    o.hops.iter().skip(1).filter(|h| h.kind != 2).count()
+}
+
+/// [`jump_ahead_plans`], and with no gating asked for, also the plans that gate the capital up to
+/// [`GATED_PLAN_GATES`] first and save the fleet steps for it, marked `gated`.
+#[allow(clippy::too_many_arguments)]
+pub fn jump_ahead(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    from: i64,
+    to: i64,
+    class: &crate::jumproute::ShipClass,
+    jdc: u32,
+    jfc: u32,
+    bridges: bool,
+    avoid_gate: &Avoid,
+    avoid_jump: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    ahead: &Ahead,
+    picks: &Picks,
+) -> Vec<RouteOption> {
+    let plan = |a: &Ahead| jump_ahead_plans(graph, coords, from, to, class, jdc, jfc, bridges, avoid_gate, avoid_jump, holes, a, picks);
+    let mut out = plan(ahead);
+    if ahead.pre_gates > 0 {
+        return out;
+    }
+    let jumps = |o: &RouteOption| o.hops.iter().any(|h| h.kind == 2);
+    let best = out.iter().filter(|o| jumps(o)).map(fleet_steps).min();
+    let wider = Ahead { pre_gates: GATED_PLAN_GATES, ..ahead.clone() };
+    out.extend(
+        plan(&wider)
+            .into_iter()
+            .filter(|o| jumps(o) && o.hops.get(1).is_some_and(|h| h.kind != 2) && best.is_none_or(|b| fleet_steps(o) < b))
+            .map(|mut o| {
+                o.gated = true;
+                o
+            }),
+    );
+    out
+}
+
 /// A capital gates up to `pre_gates`, then jumps up to `max_jumps` times with the fleet riding
 /// each jump by bridge or conduit; the fleet gates the rest. Ranked by fleet gates, then jumps,
 /// then docking, then light years, one plan per landing.
 #[allow(clippy::too_many_arguments)]
-pub fn jump_ahead(
+fn jump_ahead_plans(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
     from: i64,
@@ -752,8 +806,6 @@ pub fn jump_ahead(
     if from == to {
         return Vec::new();
     }
-    // A gate, an Ansiblex and a hole are one step each for the fleet.
-    let fleet_steps = |o: &RouteOption| o.hops.iter().skip(1).filter(|h| h.kind != 2).count();
     let plain = gate(graph, from, to, bridges, avoid_gate, holes).map(|o| fleet_steps(&o));
     if crate::jumproute::jumpable(start)
         && crate::jumproute::jumpable(end)
@@ -832,7 +884,7 @@ pub fn jump_ahead(
             if let Some(t) = tail {
                 o = join(o, t);
             }
-            o.label = format!("via {}", name(landing));
+            o.label = if pre > 0 { format!("via {} from {}", name(landing), name(launch)) } else { format!("via {}", name(landing)) };
             let mut note = String::new();
             if pre > 0 {
                 note.push_str(&format!("Gate {pre} to {}, then ", name(launch)));
@@ -880,6 +932,7 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
         titan_jump: head.titan_jump.or(tail.titan_jump),
         saved: head.saved.or(tail.saved),
         uses_wormhole: head.uses_wormhole || tail.uses_wormhole,
+        gated: head.gated || tail.gated,
         path,
         hops,
     }
@@ -1131,6 +1184,7 @@ fn titan_self_jump(
                 detour: None,
                 saved: baseline.checked_sub(to_titan.gates + tail.gates),
                 uses_wormhole: to_titan.uses_wormhole || tail.uses_wormhole,
+                gated: false,
                 titan_jump: Some(TitanJump {
                     from,
                     to: land,
@@ -1217,6 +1271,7 @@ fn titan_via(
             titan_jump: None,
             saved: baseline.checked_sub(gates),
             uses_wormhole: head_hole || tail_hole,
+            gated: false,
             path,
             hops,
         });
@@ -1292,6 +1347,7 @@ fn reverse(o: RouteOption) -> RouteOption {
         titan_jump: o.titan_jump,
         saved: o.saved,
         uses_wormhole: o.uses_wormhole,
+        gated: o.gated,
     }
 }
 
@@ -1326,6 +1382,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
         titan_jump: o.titan_jump.clone(),
         saved: o.saved,
         uses_wormhole: o.uses_wormhole,
+        gated: o.gated,
     }
 }
 
@@ -1362,6 +1419,7 @@ mod tests {
             titan_jump: None,
             saved: None,
             uses_wormhole: false,
+            gated: false,
         }
     }
 
@@ -1769,6 +1827,26 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
     fn ahead(g: &crate::geo::Systems, coords: &[crate::map::MapSystem], from: i64, to: i64, avoid_jump: &Avoid, a: &Ahead) -> Vec<RouteOption> {
         let titan = &crate::jumproute::SHIP_CLASSES[1];
         jump_ahead(g, coords, from, to, titan, 0, 5, false, &Avoid::default(), avoid_jump, &Default::default(), a, &Picks::new())
+            .into_iter()
+            .filter(|o| !o.gated)
+            .collect()
+    }
+
+    /// With no gating asked for, the plans that gate the capital first come along when they save
+    /// the fleet steps, marked, and named by where the capital jumps from.
+    #[test]
+    fn plans_that_gate_first_are_offered_beside_when_they_save_steps() {
+        let (g, coords, ids) = ahead_line(true);
+        let titan = &crate::jumproute::SHIP_CLASSES[1];
+        let all = jump_ahead(&g, &coords, ids[0], ids[9], titan, 0, 5, false, &Avoid::default(), &Avoid::default(), &Default::default(), &Ahead::default(), &Picks::new());
+        let gated: Vec<&RouteOption> = all.iter().filter(|o| o.gated).collect();
+        assert!(all.iter().any(|o| !o.gated && jumped(o).is_empty()), "nothing jumps out of high sec, so the gate route");
+        assert!(!gated.is_empty(), "gating out of high sec first is offered");
+        assert!(gated.iter().all(|o| o.hops[1].kind == 0 && !jumped(o).is_empty()));
+        assert!(gated[0].label.contains(" from "), "{}", gated[0].label);
+        assert!(gated.iter().all(|o| o.gates < 9), "each saves on the 9 gates");
+        let asked = jump_ahead(&g, &coords, ids[0], ids[9], titan, 0, 5, false, &Avoid::default(), &Avoid::default(), &Default::default(), &Ahead { pre_gates: 1, ..Default::default() }, &Picks::new());
+        assert!(asked.iter().all(|o| !o.gated), "gating asked for: one list");
     }
 
     fn jumped(o: &RouteOption) -> Vec<i64> {
@@ -2005,6 +2083,9 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         fn plan(&self) -> Vec<RouteOption> {
             let titan = &crate::jumproute::SHIP_CLASSES[1];
             jump_ahead(&self.g, &self.coords, self.from, self.to, titan, self.jdc, 5, false, &self.avoid_gate, &self.avoid_jump, &Default::default(), &self.ahead, &Picks::new())
+                .into_iter()
+                .filter(|o| !o.gated)
+                .collect()
         }
         fn max_ly(&self) -> f64 {
             crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[1], self.jdc)
@@ -2087,6 +2168,10 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
 
         /// Whether a plan is one a fleet can fly under the case's rules, step by step.
         fn check(&self, o: &RouteOption) -> Result<(), String> {
+            self.check_within(o, self.ahead.pre_gates)
+        }
+
+        fn check_within(&self, o: &RouteOption, pre_gates: u32) -> Result<(), String> {
             let h = &o.hops;
             if h.first().map(|x| x.id) != Some(self.from) || h.last().map(|x| x.id) != Some(self.to) {
                 return Err("does not run from start to target".into());
@@ -2119,8 +2204,8 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             if last + 1 - first > self.ahead.max_jumps as usize {
                 return Err(format!("{} jumps, {} allowed", last + 1 - first, self.ahead.max_jumps));
             }
-            if first > self.ahead.pre_gates as usize + 1 {
-                return Err(format!("{} gates before jumping, {} allowed", first - 1, self.ahead.pre_gates));
+            if first > pre_gates as usize + 1 {
+                return Err(format!("{} gates before jumping, {} allowed", first - 1, pre_gates));
             }
             if !self.lowsec(h[first - 1].id) {
                 return Err("jumps out of high sec".into());
@@ -2136,7 +2221,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
     /// must be flyable, and the five offered must be the five fewest-gate landings there are.
     #[test]
     fn jump_ahead_finds_the_five_fewest_gate_plans_in_random_universes() {
-        let (mut planned, mut empty, mut gated_first, mut on_beacons) = (0, 0, 0, 0);
+        let (mut planned, mut empty, mut gated_first, mut on_beacons, mut gated_extra) = (0, 0, 0, 0, 0);
         for seed in 0..400 {
             let c = random_case(seed);
             let out = c.plan();
@@ -2168,6 +2253,18 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
                 }
                 gated_first += usize::from(o.hops[1].kind == 0 && o.hops.iter().any(|h| h.kind == 2));
             }
+            if c.ahead.pre_gates == 0 {
+                let titan = &crate::jumproute::SHIP_CLASSES[1];
+                let all = jump_ahead(&c.g, &c.coords, c.from, c.to, titan, c.jdc, 5, false, &c.avoid_gate, &c.avoid_jump, &Default::default(), &c.ahead, &Picks::new());
+                let best = out.iter().filter(|o| !jumped(o).is_empty()).map(|o| o.gates).min();
+                for o in all.iter().filter(|o| o.gated) {
+                    if let Err(e) = c.check_within(o, GATED_PLAN_GATES) {
+                        panic!("seed {seed}: gated plan: {e}");
+                    }
+                    assert!(best.is_none_or(|b| o.gates < b), "seed {seed}: a gated plan has to save steps");
+                    gated_extra += 1;
+                }
+            }
             let landings: std::collections::HashSet<i64> =
                 out.iter().map(|o| o.hops.iter().rev().find(|h| h.kind == 2).expect("a jump").id).collect();
             assert_eq!(landings.len(), out.len(), "seed {seed}: one plan per landing");
@@ -2175,7 +2272,7 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
             on_beacons += usize::from(!out.is_empty() && c.ahead.beacons.is_some());
         }
         assert!(planned > 100 && empty > 5, "planned {planned}, empty {empty}");
-        assert!(gated_first > 20 && on_beacons > 30, "gated first {gated_first}, on beacons {on_beacons}");
+        assert!(gated_first > 20 && on_beacons > 30 && gated_extra > 20, "gated first {gated_first}, on beacons {on_beacons}, gated extra {gated_extra}");
     }
 
     /// A target in range is one jump, not a bridge to its neighbour and a gate.

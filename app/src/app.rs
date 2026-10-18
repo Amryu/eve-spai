@@ -3349,11 +3349,12 @@ impl SpaiApp {
         self.jump_ship = 1;
         self.map_ahead_gates = 1;
         let base = self.map_route_opts[0].clone();
-        self.map_route_opts = ["via 7-K5EL", "via 319-3D", "via 1DQ1-A"]
+        self.map_route_opts = ["via 7-K5EL", "via 319-3D", "via 1DQ1-A", "via 7-K5EL from 319-3D"]
             .into_iter()
             .map(|label| {
                 let mut o = base.clone();
                 o.label = label.to_owned();
+                o.gated = label.contains(" from ");
                 if let Some(h) = o.hops.get_mut(1) {
                     h.kind = 2;
                     h.ly = Some(5.8);
