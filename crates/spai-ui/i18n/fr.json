@@ -2467,6 +2467,8 @@
   "{icon}  Intel channels": "{icon}  Canaux d'intel",
   "{icon}  Intel highlight": "{icon}  Surbrillance d'intel",
   "{icon}  Invite": "{icon}  Inviter",
+  "{icon}  Invite all": "{icon}  Inviter tous",
+  "{icon}  Invite all to Op {op_now} comms": "{icon}  Inviter tous sur les comms de l'Op {op_now}",
   "{icon}  Jabber (optional)": "{icon}  Jabber (facultatif)",
   "{icon}  Join": "{icon}  Rejoindre",
   "{icon}  Join Mumble": "{icon}  Rejoindre Mumble",

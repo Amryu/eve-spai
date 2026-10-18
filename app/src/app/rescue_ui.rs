@@ -545,7 +545,7 @@ impl SpaiApp {
             _ => cur,
         };
         // Once a ping has named this op to people, moving it strands them.
-        let told = r.selected_ping.map(|s| r.actions(s)).is_some_and(|a| {
+        let told = r.recent_pings(usize::MAX).iter().map(|e| r.actions(e.seq)).any(|a| {
             a.command_comms_op == Some(cur) || a.invited_op == Some(cur)
         });
         let next = if told || usage(cur) == OpUsage::Ours { cur } else { auto_op(wanted, cur, pool, usage) };
@@ -1124,7 +1124,9 @@ impl SpaiApp {
                     let acts = sel_seq.map(|s| r.actions(s)).unwrap_or_default();
                     let cmd_pending = sel_seq.is_some() && acts.command_comms_op != Some(op_now);
                     let coord_pending = sel_seq.is_some() && !acts.coord_pinged;
-                    let invite_pending = sel_seq.is_some() && acts.invited_op != Some(op_now);
+                    let invite_targets = r.invite_targets(op_now);
+                    let invite_pending =
+                        invite_targets.iter().any(|(seq, _)| r.actions(*seq).invited_op != Some(op_now));
                     let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
 
                     // The rule belongs to the timer: with no ping selected the timer draws
@@ -1325,7 +1327,15 @@ impl SpaiApp {
                     }
                     // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
                     // their delve911 nick so it reads as a direct call-out in the channel.
-                    let ping_author = r.ping_author.clone();
+                    // One author at a time until every open save has been called, then all of them.
+                    let invite_names: Vec<&str> = invite_targets.iter().fold(Vec::new(), |mut v, (_, a)| {
+                        if !v.contains(&a.as_str()) {
+                            v.push(a.as_str());
+                        }
+                        v
+                    });
+                    let invite_all = invite_targets.len() > 1;
+                    let ping_author = Some(invite_names.join(", ")).filter(|s| !s.is_empty());
                     let op_for_invite = r.op_channel;
                     // Shown with no ping too, disabled, so the row does not shift when one lands.
                     let mut invite_ui = |ui: &mut egui::Ui| {
@@ -1344,10 +1354,11 @@ impl SpaiApp {
                         }
                         let can_invite =
                             msg.is_some() && !test_mode && jab_connected && !delve911_jid.is_empty();
-                        let btn = egui::Button::new(if compact {
-                            trf!("{icon}  Invite", icon = egui_phosphor::regular::USER_PLUS)
-                        } else {
-                            format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET)
+                        let btn = egui::Button::new(match (compact, invite_all) {
+                            (true, false) => trf!("{icon}  Invite", icon = egui_phosphor::regular::USER_PLUS),
+                            (true, true) => trf!("{icon}  Invite all", icon = egui_phosphor::regular::USERS_THREE),
+                            (false, false) => format!("{}  Invite to Op {op_now} comms", egui_phosphor::regular::HEADSET),
+                            (false, true) => trf!("{icon}  Invite all to Op {op_now} comms", icon = egui_phosphor::regular::HEADSET, op_now = op_now),
                         });
                         let btn = match pulse_fill(ui, invite_pending && msg.is_some()) {
                             Some(c) => btn.fill(c),
@@ -1509,8 +1520,10 @@ impl SpaiApp {
                         if mark_coord {
                             r.actions_mut(seq).coord_pinged = true;
                         }
-                        if mark_invite {
-                            r.actions_mut(seq).invited_op = Some(op_now);
+                    }
+                    if mark_invite {
+                        for (seq, _) in &invite_targets {
+                            r.actions_mut(*seq).invited_op = Some(op_now);
                         }
                     }
                     };

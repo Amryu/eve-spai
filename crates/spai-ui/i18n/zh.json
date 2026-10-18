@@ -2467,6 +2467,8 @@
   "{icon}  Intel channels": "{icon}  情报频道",
   "{icon}  Intel highlight": "{icon}  情报高亮",
   "{icon}  Invite": "{icon}  邀请",
+  "{icon}  Invite all": "{icon}  全部邀请",
+  "{icon}  Invite all to Op {op_now} comms": "{icon}  全部邀请到 Op {op_now} 语音",
   "{icon}  Jabber (optional)": "{icon}  Jabber（可选）",
   "{icon}  Join": "{icon}  加入",
   "{icon}  Join Mumble": "{icon}  加入 Mumble",

@@ -276,6 +276,25 @@ impl RescueState {
             .collect()
     }
 
+    /// Who the next comms invite calls out, as (ping, author). Each open ping's author once per
+    /// op, the selected ping first and the rest oldest first; once all have been, every one again.
+    pub fn invite_targets(&self, op: u8) -> Vec<(u64, String)> {
+        let mut open: Vec<(u64, String)> = self
+            .events
+            .iter()
+            .filter(|e| e.is_ping && !self.resolved.contains(&e.seq) && !e.author.trim().is_empty())
+            .map(|e| (e.seq, e.author.trim().to_owned()))
+            .collect();
+        if let Some(i) = open.iter().position(|(seq, _)| Some(*seq) == self.selected_ping) {
+            let sel = open.remove(i);
+            open.insert(0, sel);
+        }
+        match open.iter().find(|(seq, _)| self.actions(*seq).invited_op != Some(op)) {
+            Some(next) => vec![next.clone()],
+            None => open,
+        }
+    }
+
     pub fn select_ping(&mut self, seq: u64) {
         self.selected_ping = Some(seq);
         self.apply_selection();
@@ -838,6 +857,37 @@ mod history_tests {
             anomaly: None,
             cap_class: Some(CapClass::Rorqual),
         }
+    }
+
+    /// A double save: the first invite calls the selected ping's author, the next one the other
+    /// save's, and every click after that calls all open saves. A dismissed save drops out.
+    #[test]
+    fn invites_advance_through_open_saves_then_call_them_all() {
+        let mut r = RescueState::default();
+        let mut a = ping(1, "rorq tackled 1DQ1-A");
+        a.author = "First Pilot".into();
+        let mut b = ping(2, "dread tackled 1DQ1-A");
+        b.author = "Second Pilot".into();
+        let mut c = ping(3, "fax tackled 1DQ1-A");
+        c.author = "Third Pilot".into();
+        r.push_event(a);
+        r.push_event(b);
+        r.push_event(c);
+        r.select_ping(1);
+        let invite = |r: &mut RescueState| {
+            let t = r.invite_targets(4);
+            for (seq, _) in &t {
+                r.actions_mut(*seq).invited_op = Some(4);
+            }
+            t.into_iter().map(|(_, a)| a).collect::<Vec<_>>()
+        };
+        assert_eq!(invite(&mut r), ["First Pilot"]);
+        assert_eq!(invite(&mut r), ["Second Pilot"]);
+        r.resolve_ping(3);
+        assert_eq!(invite(&mut r), ["First Pilot", "Second Pilot"], "a later click calls every open save");
+        assert_eq!(invite(&mut r), ["First Pilot", "Second Pilot"]);
+        // Another op is a fresh round of invites.
+        assert_eq!(r.invite_targets(5), [(1, "First Pilot".to_owned())]);
     }
 
     #[test]

@@ -7336,10 +7336,12 @@ fn uitest_the_rescue_op_swaps_off_a_taken_channel_and_back() {
     busy(&a, &[5]);
     a.rescue_op_autoswap();
     assert_eq!(op(&a), (6, Some((5, 6))));
+    fixtures::seed_rescue_ping(&a);
+    a.rescue_state_for_test().lock().unwrap().op_channel = 6;
     {
         let mut r = a.rescue_state_for_test().lock().unwrap();
-        r.selected_ping = Some(7);
-        r.actions_mut(7).invited_op = Some(6);
+        let seq = r.selected_ping.expect("the fixture ping is selected");
+        r.actions_mut(seq).invited_op = Some(6);
     }
     busy(&a, &[]);
     a.rescue_op_autoswap();
@@ -7348,7 +7350,8 @@ fn uitest_the_rescue_op_swaps_off_a_taken_channel_and_back() {
     // A pick by hand is the new choice.
     {
         let mut r = a.rescue_state_for_test().lock().unwrap();
-        r.selected_ping = None;
+        let seq = r.selected_ping.unwrap();
+        r.resolve_ping(seq);
         r.op_channel = 4;
     }
     busy(&a, &[4]);
