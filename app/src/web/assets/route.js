@@ -61,7 +61,7 @@ export function lightYears(geo, a, b) {
 const OPTIONS = [
   ["gate", "Gate route", "sign-in", "Route by gates, and set it as the destination"],
   ["jump", "Jump route", "spiral", "Plan it as capital jumps"],
-  ["titan", "Titan route", "crosshair-simple", "Fewest jumps, bridged from as close as possible"],
+  ["ahead", "Jump-ahead", "fast-forward", "A capital jumps ahead and the fleet bridges or conduits with it, then gates what range leaves"],
   ["cancel", "Cancel", "x", ""],
 ];
 

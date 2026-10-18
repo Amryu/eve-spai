@@ -490,7 +490,7 @@ let routeAt = 0;
 let routeReq = null;
 /// The jump setup, per device. Skills default to five, as for any capital pilot.
 const JUMP_KEY = "spai_jump";
-let jump = { hull: 0, jdc: 5, jfc: 5, tstart: true, tself: false };
+let jump = { hull: 0, jdc: 5, jfc: 5, ahull: 0, pre: 0, ajumps: 1, beacons: false };
 try {
   jump = { ...jump, ...JSON.parse(localStorage.getItem(JUMP_KEY) ?? "{}") };
 } catch {
@@ -499,8 +499,6 @@ try {
 
 /// Systems left out of this route only. The permanent avoid lists live in the app's settings.
 export const avoidOnce = new Set();
-/// Systems a titan is sitting in, for this route only, since that belongs to the operation.
-export const titansOnce = new Set();
 /// The route currently shown, as a live binding. Events do not replay, and a deep-linked route is
 /// announced before the map listens, so the map reads this once when it wires up.
 export let currentRoute = null;
@@ -508,6 +506,9 @@ export let currentRoute = null;
 let legPick = [];
 /// Which way to leave each system the route forks at, by system id.
 let forkPick = new Map();
+/// The plan picked among a jump-ahead route's, by label, so a refetch for a fork or an avoided
+/// system keeps it rather than jumping back to the first.
+let keepPlan = null;
 
 export async function showRoute(kind, anchors, onPick) {
   if (kind === "cancel") return;
@@ -515,6 +516,7 @@ export async function showRoute(kind, anchors, onPick) {
     legPick = [];
     forkPick = new Map();
   }
+  if (routeReq?.kind !== kind || routeReq?.anchors?.join() !== anchors.join()) keepPlan = null;
   routeReq = { kind, anchors, onPick };
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
   await fetchRoute();
@@ -529,8 +531,9 @@ async function fetchRoute() {
   try {
     const r = await fetch(
       `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
-        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}&tself=${jump.tself ? 1 : 0}` +
-        `&avoid=${[...avoidOnce].join(",")}&titans=${[...titansOnce].join(",")}` +
+        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}` +
+        `&ahull=${jump.ahull}&pre=${jump.pre}&jumps=${jump.ajumps}&beacons=${jump.beacons ? 1 : 0}` +
+        `&avoid=${[...avoidOnce].join(",")}` +
         `&pick=${legPick.join(",")}` +
         `&forks=${[...forkPick].map(([at, next]) => `${at}:${next}`).join(",")}`
     );
@@ -539,7 +542,7 @@ async function fetchRoute() {
     return open("route", `<h3>Route</h3><p class="placeholder">Could not reach the app.</p>`);
   }
   routeOpts = out.options ?? [];
-  routeAt = 0;
+  routeAt = Math.max(0, routeOpts.findIndex((o) => o.label === keepPlan));
   routeReq.out = out;
   if (!routeOpts.length) {
     return open(
@@ -567,18 +570,7 @@ const flagText = (long, short) =>
 /// The hull and the two skills, for routes where they change the answer. Hulls come from the app's
 /// `SHIP_CLASSES`, so the picker cannot disagree with the planner.
 function jumpControls(kind, out) {
-  // Which end the titan is at. On, the default, it is in the system the route starts from: one jump
-  // out and gates for the rest. Off, it is waiting at the far end and bridges you the last leg.
-  if (kind === "titan") {
-    return (
-      `<label class="jumpcfg tflag"><input data-jump="tstart" type="checkbox"${jump.tstart ? " checked" : ""}>` +
-      ` ${flagText("Titan is in the starting system", "Titan at start")}</label>` +
-      (jump.tstart
-        ? `<label class="jumpcfg tflag"><input data-jump="tself" type="checkbox"${jump.tself ? " checked" : ""}>` +
-          ` ${flagText("Titan may reposition first", "May reposition")}</label>`
-        : "")
-    );
-  }
+  if (kind === "ahead") return aheadControls(out);
   if (kind !== "jump" || !out?.hulls?.length) return "";
   return (
     `<div class="jumpcfg">` +
@@ -597,7 +589,39 @@ function jumpControls(kind, out) {
   );
 }
 
-const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
+/// Only hulls the fleet can ride along with, as `map_route::AHEAD_HULLS` has them.
+const AHEAD_HULLS = ["Titan", "Supercarrier", "Carrier", "Black Ops"];
+
+function aheadControls(out) {
+  const num = (k, min, max, label, tip) =>
+    `<label title="${tip}">${label} <input data-jump="${k}" type="number" min="${min}" max="${max}" value="${jump[k]}"></label>`;
+  return (
+    `<div class="jumpcfg">` +
+    `<select data-jump="ahull">` +
+    AHEAD_HULLS.map((h, i) => `<option value="${i}"${i === jump.ahull ? " selected" : ""}>${h}</option>`).join("") +
+    `</select>` +
+    `<label>JDC <input data-jump="jdc" type="number" min="0" max="5" value="${jump.jdc}"></label>` +
+    `<label>JFC <input data-jump="jfc" type="number" min="0" max="5" value="${jump.jfc}"></label>` +
+    (out?.max_ly ? `<span class="jumpmax">${out.max_ly.toFixed(1)} ly</span>` : "") +
+    `</div>` +
+    `<div class="jumpcfg">` +
+    num("pre", 0, 10, "Gates first", "The capital may gate up to this many systems, the fleet with it, to a better place to jump from") +
+    num("ajumps", 1, 5, "Jumps at most", "Each jump the fleet rides needs a cyno and adds fatigue; one is a single bridge") +
+    `<select data-jump="beacons" title="Where the capital may land">` +
+    `<option value="0"${jump.beacons ? "" : " selected"} title="Land anywhere a cyno can be lit">Any</option>` +
+    `<option value="1"${jump.beacons ? " selected" : ""} title="Land only on the cyno beacons">Beacons only</option>` +
+    `</select>` +
+    `</div>`
+  );
+}
+
+const KINDS = { gate: "Gate route", jump: "Jump route", ahead: "Jump-ahead route" };
+
+/// The avoid lists a route of this kind is planned against, as `AvoidSystem`'s `jump` flag: a
+/// jump-ahead route jumps and gates, so both.
+export function avoidLists(kind) {
+  return kind === "ahead" ? [false, true] : [kind === "jump"];
+}
 
 /// Whether the avoid list is expanded. Collapsed by default so it does not crowd the hops.
 let avoidOpen = false;
@@ -674,10 +698,13 @@ function paintRoute(kind, onPick) {
       bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""}`);
     }
     if (!bits.length) return "";
+    // The icon and the intel's age on the row, the rest on hover: a row has room for a system name,
+    // not a sentence.
+    const age = w.sev >= 2 ? ` ${esc(fmtAge(Math.max(0, Date.now() / 1000 - w.at)))}` : "";
     // Clickable when there is intel behind it, so the report itself can be read.
     const tag = w.sev >= 2 ? "button" : "span";
     const attr = w.sev >= 2 ? ` data-intel="${id}"` : "";
-    return `<${tag} class="rwarn${w.sev >= 3 ? " crit" : ""}"${attr}>${ico("warning")} ${esc(bits.join(" · "))}</${tag}>`;
+    return `<${tag} class="rwarn${w.sev >= 3 ? " crit" : ""}"${attr} title="${esc(bits.join(" · "))}">${ico("warning")}${age}</${tag}>`;
   };
   const line = (h, i) =>
     `<li class="rhop k${h.kind}"><span class="rmain">` +
@@ -760,6 +787,7 @@ function win_wire(kind, onPick) {
   win?.querySelectorAll("[data-ropt]").forEach((b) =>
     b.addEventListener("click", () => {
       routeAt = Number(b.dataset.ropt);
+      keepPlan = routeOpts[routeAt]?.label ?? null;
       paintRoute(kind, onPick);
     })
   );
@@ -783,9 +811,7 @@ function win_wire(kind, onPick) {
       const which = b.dataset.unavoid;
       if (which === "all") avoidOnce.clear();
       else if (b.dataset.always === "1") {
-        send({
-          AvoidSystem: { id: Number(which), jump: routeReq?.kind === "jump", on: false },
-        });
+        for (const j of avoidLists(routeReq?.kind)) send({ AvoidSystem: { id: Number(which), jump: j, on: false } });
         setTimeout(fetchRoute, 150);
         return;
       } else avoidOnce.delete(Number(which));
@@ -810,7 +836,15 @@ function win_wire(kind, onPick) {
         return;
       }
       jump[k] =
-        k === "tstart" || k === "tself" ? c.checked : k === "hull" ? v : Math.max(0, Math.min(5, v));
+        k === "beacons"
+          ? c.value === "1"
+          : k === "hull" || k === "ahull"
+            ? v
+            : k === "pre"
+              ? Math.max(0, Math.min(10, v))
+              : k === "ajumps"
+                ? Math.max(1, Math.min(5, v))
+                : Math.max(0, Math.min(5, v));
       try {
         localStorage.setItem(JUMP_KEY, JSON.stringify(jump));
       } catch {
@@ -841,7 +875,6 @@ function showIntel(id) {
 function hopMenu(id, at, kind) {
   const o = routeOpts[routeAt];
   const h = o?.hops?.[at];
-  const titans = titansOnce;
   const items = [];
   if (h?.warn?.sev >= 2) items.push(["intel", "Show intel"]);
   // Any anchor but the start can be removed from its own row.
@@ -858,9 +891,6 @@ function hopMenu(id, at, kind) {
   }
   if (kind === "jump" && at > 0 && at < (o?.hops?.length ?? 0) - 1) {
     items.push(["alts", "Other systems between…"]);
-  }
-  if (kind === "titan") {
-    items.push([titans.has(id) ? "untitan" : "titan", titans.has(id) ? "Not a titan system" : "Set as titan system"]);
   }
   items.push(null);
   items.push(["info", "Show info"]);
@@ -892,12 +922,6 @@ async function hopAction(pick, id, at, kind, onPick) {
       routeReq.anchors = before < 0 ? [...a.slice(0, -1), id, a[a.length - 1]] : [...a.slice(0, before), id, ...a.slice(before)];
       return fetchRoute();
     }
-    case "titan":
-      titansOnce.add(id);
-      return fetchRoute();
-    case "untitan":
-      titansOnce.delete(id);
-      return fetchRoute();
     case "alts":
       return showAlternatives(at, kind, onPick);
   }
@@ -944,7 +968,8 @@ async function showAlternatives(at, kind, onPick) {
   });
 }
 
-/// Save the whole route, avoids and titans included, into the app's settings so the desktop has it.
+/// Save the whole route, avoids and jump-ahead setup included, into the app's settings so the
+/// desktop has it.
 function saveRoute(kind) {
   const a = routeReq?.anchors ?? [];
   if (a.length < 2) return;
@@ -986,9 +1011,12 @@ async function commitSave(name, kind, a, wh) {
         kind,
         anchors: a,
         avoid: [...avoidOnce],
-        titans: [...titansOnce],
-        titan_at_start: jump.tstart,
-        titan_self_jump: jump.tself,
+        titans: [],
+        titan_at_start: true,
+        titan_self_jump: false,
+        ahead_gates: jump.pre,
+        ahead_jumps: jump.ajumps,
+        ahead_hull: jump.ahull,
         hull: jump.hull,
         jdc: jump.jdc,
         jfc: jump.jfc,
@@ -1036,9 +1064,15 @@ async function loadRoute(onPick) {
     close();
     avoidOnce.clear();
     for (const id of r.avoid ?? []) avoidOnce.add(id);
-    titansOnce.clear();
-    for (const id of r.titans ?? []) titansOnce.add(id);
-    jump = { ...jump, hull: r.hull ?? 0, jdc: r.jdc ?? 5, jfc: r.jfc ?? 5, tstart: !!r.titan_at_start, tself: !!r.titan_self_jump };
+    jump = {
+      ...jump,
+      hull: r.hull ?? 0,
+      jdc: r.jdc ?? 5,
+      jfc: r.jfc ?? 5,
+      ahull: Math.min(AHEAD_HULLS.length - 1, r.ahead_hull ?? 0),
+      pre: r.ahead_gates ?? 0,
+      ajumps: Math.max(1, r.ahead_jumps ?? 1),
+    };
     legPick = [];
     showRoute(r.kind, r.anchors, onPick);
   });

@@ -64,6 +64,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("gear", icon::GEAR),
     ("cell-tower", icon::CELL_TOWER),
     ("crosshair-simple", icon::CROSSHAIR_SIMPLE),
+    ("fast-forward", icon::FAST_FORWARD),
     // Notes, tags and their folders.
     ("tag", icon::TAG),
     ("note", icon::NOTE),

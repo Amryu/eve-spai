@@ -838,6 +838,7 @@ mod saved_routes {
             legs: Vec::new(),
             ahead_gates: 0,
             ahead_jumps: 0,
+            ahead_hull: 0,
             hull: 0,
             jdc: 5,
             jfc: 5,
@@ -1026,6 +1027,8 @@ pub struct SavedMapRoute {
     #[serde(default)]
     pub ahead_jumps: u32,
     #[serde(default)]
+    pub ahead_hull: usize,
+    #[serde(default)]
     pub hull: usize,
     #[serde(default)]
     pub jdc: u32,
@@ -1144,6 +1147,7 @@ impl Settings {
                 legs: Vec::new(),
                 ahead_gates: 0,
                 ahead_jumps: 0,
+                ahead_hull: 0,
                 hull: 0,
                 jdc: 0,
                 jfc: 0,

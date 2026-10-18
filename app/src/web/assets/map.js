@@ -3,7 +3,7 @@
 // keeps its size at any zoom. Hit testing is a nearest-node search, see `nearest`.
 
 import { ico, register, send, state } from "./app.js";
-import { avoidOnce, currentRoute, showRoute, titansOnce } from "./dialogs.js";
+import { avoidLists, avoidOnce, currentRoute, showRoute } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
 import { openEditor, quickMenu, rgb, tagById } from "./notes.js";
 
@@ -798,24 +798,6 @@ function paint() {
     schedule();
   }
 
-  // The titans. Drawn whether or not the route currently goes near them, because "where are the
-  // ships" is the question the titan route is asking and an unused one is still an answer.
-  if (routeKind === "titan" && titansOnce.size) {
-    for (const id of titansOnce) {
-      const n = geo.nodes[geo.byId.get(id)];
-      if (!n) continue;
-      const px = sx(n.x), py = sy(n.z);
-      if (!onScreen(px, py)) continue;
-      ctx.fillStyle = TITAN_COL;
-      ctx.globalAlpha = 0.22;
-      ctx.beginPath();
-      ctx.arc(px, py, r * 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      glyph(ctx, "star-four", px, py - r * 5 - 2, Math.round(14 * grow), TITAN_COL);
-    }
-  }
-
   // Avoided systems, only while a route is being planned: a long avoid list would otherwise mark
   // much of the map.
   if (routeKind) {
@@ -1412,11 +1394,10 @@ function hideLinkTip() {
   if (tip) tip.hidden = true;
 }
 
-/// The permanent avoid list for the kind of route being planned. Gate and titan routes both fly
-/// gates, so they read the same list.
+/// The permanent avoid lists the kind of route being planned reads: a jump-ahead route both.
 function alwaysAvoided() {
   const m = state.snapshot?.meta;
-  return new Set((routeKind === "jump" ? m?.avoid_jump : m?.avoid_gate) ?? []);
+  return new Set(avoidLists(routeKind).flatMap((j) => (j ? m?.avoid_jump : m?.avoid_gate) ?? []));
 }
 
 /// Whether planning a destination should also set it in the game. Only while the plan is a plain
@@ -1462,14 +1443,6 @@ function menuFor(id) {
     } else if (at > 0) {
       items.push(["drop", at === anchors.length - 1 ? "Remove Destination" : "Remove Waypoint"]);
     }
-    if (routeKind === "titan") {
-      // Any system, not only ones on the route: where the ships are is the question the titan route
-      // is asking, and the answer is often nowhere near the path it currently takes.
-      items.push([
-        titansOnce.has(id) ? "untitan" : "titan",
-        titansOnce.has(id) ? "Not a titan system" : "Set as titan system",
-      ]);
-    }
     items.push(["clear", "Clear Route", "warn"]);
     items.push(null);
     // Avoidance only means something while a route is being planned, and which list it lands in
@@ -1484,6 +1457,7 @@ function menuFor(id) {
   const verb = routeKind && anchors.length ? "Restart as" : "Start";
   items.push(["start:gate", `${verb} Gate Route`]);
   items.push(["start:jump", `${verb} Jump Route`]);
+  items.push(["start:ahead", `${verb} Jump-Ahead Route`]);
   items.push(null);
   if (state.snapshot?.meta?.allow_writeback) {
     items.push(["notes:tags", "Tags…"]);
@@ -1501,7 +1475,6 @@ function menuPick(id, kind) {
     anchors = [id];
     picked = null;
     avoidOnce.clear();
-    titansOnce.clear();
     schedule();
     return;
   }
@@ -1521,12 +1494,6 @@ function menuPick(id, kind) {
     case "drop":
       anchors = anchors.filter((_, i) => i !== at);
       break;
-    case "titan":
-      titansOnce.add(id);
-      break;
-    case "untitan":
-      titansOnce.delete(id);
-      break;
     case "avoid":
       avoidOnce.add(id);
       break;
@@ -1534,10 +1501,10 @@ function menuPick(id, kind) {
       avoidOnce.delete(id);
       break;
     case "avoid:always":
-      send({ AvoidSystem: { id, jump: routeKind === "jump", on: true } });
+      for (const jump of avoidLists(routeKind)) send({ AvoidSystem: { id, jump, on: true } });
       break;
     case "avoid:never":
-      send({ AvoidSystem: { id, jump: routeKind === "jump", on: false } });
+      for (const jump of avoidLists(routeKind)) send({ AvoidSystem: { id, jump, on: false } });
       break;
     case "clearingame":
       send("ClearIngameRoute");
@@ -1547,8 +1514,7 @@ function menuPick(id, kind) {
       routeKind = null;
       picked = null;
       avoidOnce.clear();
-      titansOnce.clear();
-      if ((state.snapshot?.map?.route?.length ?? 0) > 1) send("ClearIngameRoute");
+        if ((state.snapshot?.map?.route?.length ?? 0) > 1) send("ClearIngameRoute");
       schedule();
       return;
     case "info":

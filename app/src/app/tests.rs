@@ -2756,6 +2756,9 @@ mod route_extension_tests {
         assert_eq!(a.map_route_avoid_lists(), vec![false, true]);
         assert!(a.map_route_jumps());
         assert_eq!(a.jump_ship, 1, "a dread cannot bridge, so the titan is planned");
+        a.map_ahead_hull = 2;
+        a.map_recompute_route();
+        assert_eq!(a.jump_ship, 0, "a carrier conduits on the capital class's range");
         a.map_set_route_mode("gate");
         assert_eq!(a.map_leg_kinds, vec!["gate", "gate"]);
         a.map_route_start("ahead", DQ);
@@ -2768,14 +2771,15 @@ mod route_extension_tests {
     fn jump_ahead_rules_follow_the_hull_and_the_cyno_choice() {
         let (_ctx, mut a) = app();
         a.settings.cyno_generators = vec![THREE];
-        a.jump_ship = 2;
+        a.map_ahead_hull = 3;
         let blops = a.route_ahead();
-        assert!(blops.highsec && blops.prefer.is_empty() && blops.beacons.is_none());
+        assert!(blops.highsec && blops.pre_bridges && blops.prefer.is_empty() && blops.beacons.is_none());
+        a.map_ahead_hull = 0;
         a.jump_ship = 1;
         a.settings.route_ahead_beacons = true;
         a.map_ahead_gates = 2;
         let titan = a.route_ahead();
-        assert!(!titan.highsec);
+        assert!(!titan.highsec && !titan.pre_bridges);
         assert_eq!(titan.pre_gates, 2);
         assert_eq!(titan.beacons, Some([THREE].into()));
     }
@@ -3618,30 +3622,33 @@ mod real_jump_ahead_tests {
         let dir = std::env::var("SPAI_REAL_DATA_DIR").expect("SPAI_REAL_DATA_DIR");
         std::env::set_var("EVE_SPAI_DATA_DIR", &dir);
         let store = crate::store::Store::open().expect("the copied store");
-        let g = store.load_systems();
+        let mut g = store.load_systems();
+        crate::ansiblex::feed(&store.load_settings().unwrap_or_default(), &mut g);
         let coords = store.all_map_systems();
         let id = |n: &str| g.lookup(n).unwrap_or_else(|| panic!("{n} in the SDE")).id;
         let beacons: std::collections::HashSet<i64> =
             super::BAKED_BEACONS.lines().filter_map(|l| g.lookup(l.trim())).map(|i| i.id).collect();
-        let titan = &crate::jumproute::SHIP_CLASSES[1];
-        let max = crate::jumproute::max_range_ly(titan, 5);
+        // Hull class and whether it takes Ansiblexes before the jump.
+        let (titan, blops) = ((1, false), (2, true));
         let at = |i: i64| coords.iter().find(|s| s.id == i).expect("coords");
-        let cases: [(&str, &str, u32, u32, bool); 9] = [
-            ("1DQ1-A", "Y-2ANO", 0, 1, false),
-            ("1DQ1-A", "Y-2ANO", 0, 1, true),
-            ("1DQ1-A", "Y-2ANO", 0, 3, false),
-            ("A24L-V", "1DQ1-A", 0, 3, true),
-            ("A24L-V", "1DQ1-A", 2, 2, false),
-            ("Atioth", "D-W7F0", 0, 1, false),
-            ("Jita", "1DQ1-A", 3, 2, false),
-            ("Amamake", "Atioth", 0, 2, true),
-            ("1DQ1-A", "7-K5EL", 0, 1, false),
+        let cases = [
+            ("C-J6MT", "Atioth", 1, 2, false, blops),
+            ("C-J6MT", "Atioth", 1, 2, false, titan),
+            ("C-J6MT", "Atioth", 0, 1, true, titan),
+            ("C-J6MT", "Y-2ANO", 0, 1, false, titan),
+            ("C-J6MT", "1DQ1-A", 0, 3, true, titan),
+            ("A24L-V", "C-J6MT", 2, 2, false, titan),
+            ("Atioth", "C-J6MT", 0, 1, false, blops),
+            ("Jita", "C-J6MT", 3, 2, false, blops),
+            ("Amamake", "Atioth", 0, 2, true, titan),
         ];
-        for (from, to, pre, jumps, on_beacons) in cases {
-            let a = Ahead { pre_gates: pre, max_jumps: jumps, beacons: on_beacons.then(|| beacons.clone()), ..Default::default() };
-            let out: Vec<RouteOption> = jump_ahead(&g, &coords, id(from), id(to), titan, 5, 5, false, &Avoid::default(), &Avoid::default(), &Default::default(), &a);
-            let plain = crate::web::route::gate(&g, id(from), id(to), false, &Avoid::default(), &Default::default()).map(|o| o.gates);
-            println!("\n{from} -> {to}, {pre} gates first, {jumps} jumps at most, {}, gate route {plain:?}", if on_beacons { "beacons" } else { "hard cyno" });
+        for (from, to, pre, jumps, on_beacons, (class, pre_bridges)) in cases {
+            let hull = &crate::jumproute::SHIP_CLASSES[class];
+            let max = crate::jumproute::max_range_ly(hull, 5);
+            let a = Ahead { pre_gates: pre, max_jumps: jumps, beacons: on_beacons.then(|| beacons.clone()), pre_bridges, highsec: pre_bridges, ..Default::default() };
+            let out: Vec<RouteOption> = jump_ahead(&g, &coords, id(from), id(to), hull, 5, 5, true, &Avoid::default(), &Avoid::default(), &Default::default(), &a, &Default::default());
+            let plain = crate::web::route::gate(&g, id(from), id(to), true, &Avoid::default(), &Default::default()).map(|o| o.jumps);
+            println!("\n{from} -> {to}, {}, {pre} gates first, {jumps} jumps at most, {}, gate route {plain:?} steps", hull.name, if on_beacons { "beacons" } else { "hard cyno" });
             if out.is_empty() {
                 println!("  no plan");
                 continue;
@@ -3654,10 +3661,11 @@ mod real_jump_ahead_tests {
                     .skip(1)
                     .map(|h| match h.kind {
                         2 => format!("~{}({:.1}ly)", h.name, h.ly.unwrap_or_default()),
+                        1 => format!("={}", h.name),
                         _ => h.name.clone(),
                     })
                     .collect();
-                println!("  {} gates: {}", o.gates, steps.join(" "));
+                println!("  {} steps: {}", o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
                 for w in o.hops.windows(2) {
                     match w[1].kind {
                         2 => {
@@ -3666,10 +3674,11 @@ mod real_jump_ahead_tests {
                             assert!(crate::jumproute::jumpable(at(w[1].id)));
                             assert!(!on_beacons || w[1].id == id(to) || beacons.contains(&w[1].id), "{} is no beacon", w[1].name);
                         }
-                        _ => assert!(g.neighbors(w[0].id).contains(&w[1].id), "{} -> {} is no gate", w[0].name, w[1].name),
+                        _ => assert!(g.neighbors(w[0].id).contains(&w[1].id), "{} -> {} is no gate or bridge", w[0].name, w[1].name),
                     }
                 }
                 assert!(o.hops.iter().filter(|h| h.kind == 2).count() <= jumps as usize, "jump limit");
+                assert!(pre_bridges || o.hops.iter().take_while(|h| h.kind != 2).all(|h| h.kind == 0) || o.hops.iter().all(|h| h.kind != 2), "no Ansiblex before a capital's jump");
             }
         }
     }

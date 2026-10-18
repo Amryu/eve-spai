@@ -208,9 +208,9 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             ui.label(tr!("Cyno"));
             let mut beacons = self.settings.route_ahead_beacons;
-            ui.menu_value(&mut beacons, true, tr!("Beacons"))
+            ui.menu_value(&mut beacons, true, tr!("Beacons only"))
                 .on_hover_text(tr!("Land only on the cyno beacons, set under Settings"));
-            ui.menu_value(&mut beacons, false, tr!("Hard cyno")).on_hover_text(tr!("Land anywhere a cyno can be lit"));
+            ui.menu_value(&mut beacons, false, tr!("Any")).on_hover_text(tr!("Land anywhere a cyno can be lit"));
             if beacons != self.settings.route_ahead_beacons {
                 self.settings.route_ahead_beacons = beacons;
                 self.needs_save = true;
@@ -350,12 +350,10 @@ impl SpaiApp {
 
         if self.map_route_jumps() {
             // The fleet rides a jump-ahead leg, so only a hull that takes it along is offered.
-            let hulls: Vec<(usize, &str)> = if self.map_route_has("ahead") {
-                super::map_route::AHEAD_HULLS.to_vec()
-            } else {
-                SHIP_CLASSES.iter().enumerate().map(|(i, c)| (i, c.name)).collect()
-            };
-            let hull = hulls.iter().find(|h| h.0 == self.jump_ship).map_or(SHIP_CLASSES[self.jump_ship].name, |h| h.1);
+            let ahead = self.map_route_has("ahead");
+            let hulls: Vec<&str> =
+                if ahead { super::map_route::AHEAD_HULLS.iter().map(|h| h.1).collect() } else { SHIP_CLASSES.iter().map(|c| c.name).collect() };
+            let hull = if ahead { hulls[self.map_ahead_hull.min(hulls.len() - 1)] } else { SHIP_CLASSES[self.jump_ship].name };
             egui::CollapsingHeader::new(trf!("{icon}  {v} · {v2} ly", icon = icon::SPIRAL, v = hull, v2 = format!("{:.1}", max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc))))
             .id_salt("route_ship")
             .show(ui, |ui| {
@@ -363,8 +361,9 @@ impl SpaiApp {
                     .selected_text(hull)
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
-                        for (i, name) in &hulls {
-                            if ui.menu_value(&mut self.jump_ship, *i, *name).changed() {
+                        let pick = if ahead { &mut self.map_ahead_hull } else { &mut self.jump_ship };
+                        for (i, name) in hulls.iter().enumerate() {
+                            if ui.menu_value(pick, i, *name).changed() {
                                 replan = true;
                             }
                         }
@@ -798,6 +797,7 @@ impl SpaiApp {
                     legs: self.map_leg_kinds.iter().map(|k| k.to_string()).collect(),
                     ahead_gates: self.map_ahead_gates,
                     ahead_jumps: self.map_ahead_jumps,
+                    ahead_hull: self.map_ahead_hull,
                     hull: self.jump_ship,
                     jdc: self.jump_jdc,
                     jfc: self.jump_jfc,
@@ -873,6 +873,7 @@ impl SpaiApp {
                 };
                 self.map_ahead_gates = r.ahead_gates;
                 self.map_ahead_jumps = r.ahead_jumps.max(1);
+                self.map_ahead_hull = r.ahead_hull.min(super::map_route::AHEAD_HULLS.len() - 1);
                 let legs = r.anchors.len().saturating_sub(1);
                 self.map_leg_kinds = (0..legs)
                     .map(|i| match r.legs.get(i).map(String::as_str) {

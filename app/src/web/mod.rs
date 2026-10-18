@@ -49,6 +49,14 @@ pub struct DetailState {
     /// Scanned wormhole connections as extra edges.
     pub holes: HashMap<i64, Vec<i64>>,
     pub via_wormholes: bool,
+    /// What a jump-ahead route needs that the page cannot know: the beacons, where capitals dock,
+    /// and the holes a black ops or a carrier fits through before it jumps.
+    pub cyno_beacons: Vec<i64>,
+    pub ahead_beacons: bool,
+    pub dock_super: std::collections::HashSet<i64>,
+    pub dock_capital: std::collections::HashSet<i64>,
+    pub holes_large: HashMap<i64, Vec<i64>>,
+    pub holes_xl: HashMap<i64, Vec<i64>>,
     /// Saved routes, already pruned of expired wormhole ones.
     pub saved_routes: Vec<crate::settings::SavedMapRoute>,
     /// Real coordinates, for jump-route light-year maths.

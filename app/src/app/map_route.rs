@@ -5,8 +5,9 @@ use super::*;
 /// The Black Ops entry of [`crate::jumproute::SHIP_CLASSES`].
 const BLACK_OPS: usize = 2;
 
-/// Hulls the fleet can ride along with. The titan shares its class with supercarriers, which cannot.
-pub(crate) const AHEAD_HULLS: [(usize, &str); 2] = [(1, "Titan"), (BLACK_OPS, "Black Ops")];
+/// Hulls the fleet rides along with, by bridge or conduit, and their range class. Each shares its
+/// class with hulls that cannot, so the pick is kept apart from the jump planner's.
+pub(crate) const AHEAD_HULLS: [(usize, &str); 4] = [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (BLACK_OPS, "Black Ops")];
 
 /// Whether planning a destination should also set it in the game.
 ///
@@ -305,6 +306,8 @@ impl SpaiApp {
 
     /// [`Self::map_replan_route`] without bringing the dock up, for a change made elsewhere.
     pub(crate) fn map_recompute_route(&mut self) {
+        // A fork switched or a system avoided keeps the plan picked, found again by its landing.
+        let picked = self.map_route_opts.get(self.map_route_at).map(|o| o.label.clone());
         self.map_route_opts.clear();
         self.map_route_at = 0;
         if self.map_route_kind == "scan" {
@@ -312,8 +315,8 @@ impl SpaiApp {
             return;
         }
         self.ensure_jump_systems();
-        if self.map_route_has("ahead") && !AHEAD_HULLS.iter().any(|h| h.0 == self.jump_ship) {
-            self.jump_ship = AHEAD_HULLS[0].0;
+        if self.map_route_has("ahead") {
+            self.jump_ship = AHEAD_HULLS[self.map_ahead_hull.min(AHEAD_HULLS.len() - 1)].0;
         }
         let Some(graph) = self.route_graph() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
@@ -350,6 +353,9 @@ impl SpaiApp {
         // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
         // legs end.
         crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid_gate, &holes);
+        if let Some(at) = picked.and_then(|l| self.map_route_opts.iter().position(|o| o.label == l)) {
+            self.map_route_at = at;
+        }
     }
 
     /// The avoid lists this route is planned against: the gate list for gate legs, the jump list for
@@ -364,13 +370,27 @@ impl SpaiApp {
     }
 
     pub(crate) fn route_ahead(&self) -> crate::web::route::Ahead {
-        let blops = self.jump_ship == BLACK_OPS;
+        let blops = AHEAD_HULLS.get(self.map_ahead_hull).is_some_and(|h| h.0 == BLACK_OPS);
+        let carrier = AHEAD_HULLS.get(self.map_ahead_hull).is_some_and(|h| h.0 == 0);
+        use crate::wormholes::ShipSize;
+        let pre_holes = if !self.settings.route_via_wormholes {
+            Default::default()
+        } else if blops {
+            // Unknown sizes pass, as on the route's own hole filter.
+            self.wh_adjacency_fitting(|s| s.is_none_or(|s| s == ShipSize::Large || s == ShipSize::XLarge))
+        } else if carrier {
+            self.wh_adjacency_fitting(|s| s == Some(ShipSize::XLarge))
+        } else {
+            Default::default()
+        };
         crate::web::route::Ahead {
             pre_gates: self.map_ahead_gates,
             max_jumps: self.map_ahead_jumps,
             beacons: self.settings.route_ahead_beacons.then(|| self.settings.cyno_generators.iter().copied().collect()),
             prefer: if blops { Default::default() } else { self.jump_dockable_ids() },
             highsec: blops,
+            pre_bridges: blops,
+            pre_holes,
         }
     }
 

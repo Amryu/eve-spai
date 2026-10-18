@@ -199,7 +199,7 @@ mod info_windows;
 pub(crate) mod map_panels;
 mod travel_ui;
 mod map_ui;
-mod map_route;
+pub(crate) mod map_route;
 mod scan_ui;
 pub(crate) mod notify_box;
 mod sig_browser;
@@ -757,6 +757,8 @@ pub struct SpaiApp {
     map_leg_kinds: Vec<&'static str>,
     map_ahead_gates: u32,
     map_ahead_jumps: u32,
+    /// Index into `map_route::AHEAD_HULLS`.
+    map_ahead_hull: usize,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
     /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
@@ -1684,6 +1686,7 @@ impl SpaiApp {
             map_leg_kinds: Vec::new(),
             map_ahead_gates: 0,
             map_ahead_jumps: 1,
+            map_ahead_hull: 0,
             main_pos_fix: main_pos_fix_at,
             main_maximize: main_maximize_at,
             rescue_geom_applied: false,
@@ -7357,15 +7360,21 @@ pub(crate) fn render_ping(
 ///
 /// Returns whether it was clicked. Only clickable when there is intel: a line that only says "3 kills
 /// this hour" has nothing to open.
+/// The warning icon and the intel's age on the row; the rest is the tooltip.
 fn warn_button(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) -> bool {
     let Some((text, col)) = warn_text(w) else { return false };
-    if w.sev < crate::web::route::WARN_SEVERITY {
-        ui.label(egui::RichText::new(text).color(col).size(11.0));
+    let intel = w.sev >= crate::web::route::WARN_SEVERITY;
+    let short = if intel {
+        format!("{}  {}", egui_phosphor::regular::WARNING, fmt_age((crate::clock::utc().timestamp() - w.at).max(0)))
+    } else {
+        egui_phosphor::regular::WARNING.to_owned()
+    };
+    let r = ui.add(egui::Button::new(egui::RichText::new(short).color(col)).frame(false).sense(if intel { egui::Sense::click() } else { egui::Sense::hover() }));
+    if !intel {
+        r.on_hover_text(text);
         return false;
     }
-    ui.add(egui::Button::new(egui::RichText::new(text).color(col).size(11.0)).frame(false))
-        .on_hover_text(tr!("Show the intel for this system"))
-        .clicked()
+    r.on_hover_text(format!("{text}\n{}", tr!("Show the intel for this system"))).clicked()
 }
 
 /// One line of "why not to fly through here", under a hop, or nothing when there is nothing to warn

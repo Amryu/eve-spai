@@ -568,6 +568,19 @@ impl SpaiApp {
             .cloned()
             .collect();
         d.holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
+        {
+            use crate::wormholes::ShipSize;
+            let on = self.settings.route_via_wormholes;
+            d.holes_large = if on { self.wh_adjacency_fitting(|s| s.is_none_or(|s| s == ShipSize::Large || s == ShipSize::XLarge)) } else { Default::default() };
+            d.holes_xl = if on { self.wh_adjacency_fitting(|s| s == Some(ShipSize::XLarge)) } else { Default::default() };
+        }
+        d.cyno_beacons = self.settings.cyno_generators.clone();
+        d.ahead_beacons = self.settings.route_ahead_beacons;
+        let tagged = |wanted: &[&str]| -> std::collections::HashSet<i64> {
+            self.notes_view.systems.iter().filter(|(_, m)| m.tags.iter().any(|t| wanted.contains(&t.as_str()))).map(|(id, _)| *id).collect()
+        };
+        d.dock_super = tagged(&[crate::notes::SUPER_DOCKING]);
+        d.dock_capital = tagged(&[crate::notes::SUPER_DOCKING, crate::notes::CAPITAL_DOCKING]);
         d.type_names = Some(self.type_names.clone());
         d.wh_cache = self.wh_cache.clone();
         d.sov_upgrades = self.settings.sov_upgrades.clone();

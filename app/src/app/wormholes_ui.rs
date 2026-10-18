@@ -131,10 +131,18 @@ impl SpaiApp {
     /// hubs to keep the map readable, which is exactly what would remove Thera from a route.
     /// The holes routes may use: known far side, and a kind the routing settings allow.
     pub(crate) fn wh_adjacency(&self) -> std::collections::HashMap<i64, Vec<i64>> {
+        self.wh_adjacency_fitting(|_| true)
+    }
+
+    /// The route's holes that a hull fits through, by the hole's known size.
+    pub(crate) fn wh_adjacency_fitting(&self, fits: impl Fn(Option<crate::wormholes::ShipSize>) -> bool) -> std::collections::HashMap<i64, Vec<i64>> {
         let mut adj: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
         let now = crate::clock::utc().timestamp();
         let limits = self.wh_route_limits();
         let allowed = |w: &crate::wormholes::Wormhole, b: i64| {
+            if !fits(w.known_size()) {
+                return false;
+            }
             let kind_ok = self.systems.as_ref().is_none_or(|g| {
                 let kind = crate::wormholes::HoleKind::of(g, w.system_id, b, w.is_drifter);
                 self.settings.wh_route_kinds.iter().any(|k| k == kind.code())

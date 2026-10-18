@@ -343,7 +343,13 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         .and_then(|v| v.parse::<usize>().ok())
                         .filter(|i| *i < crate::jumproute::SHIP_CLASSES.len())
                         .unwrap_or(0);
-                    let class = &crate::jumproute::SHIP_CLASSES[hull];
+                    let ahead_kind = kind == "ahead";
+                    let ahead_hull = routes::query_param(query, "ahull")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|i| *i < crate::app::map_route::AHEAD_HULLS.len())
+                        .unwrap_or(0);
+                    let class_at = if ahead_kind { crate::app::map_route::AHEAD_HULLS[ahead_hull].0 } else { hull };
+                    let class = &crate::jumproute::SHIP_CLASSES[class_at];
                     let mut out = super::route::RouteOut {
                         kind: kind.clone(),
                         from,
@@ -371,12 +377,13 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                             .filter_map(|v| v.parse::<i64>().ok())
                             .collect()
                     };
-                    let avoid = super::route::Avoid {
-                        always: if kind == "jump" { &d.avoid_jump } else { &d.avoid_gate }
-                            .iter()
-                            .copied()
-                            .collect(),
-                        once: ids("avoid"),
+                    let avoid_of = |list: &Vec<i64>| super::route::Avoid { always: list.iter().copied().collect(), once: ids("avoid") };
+                    let avoid = avoid_of(if kind == "jump" { &d.avoid_jump } else { &d.avoid_gate });
+                    let avoid_jump = avoid_of(&d.avoid_jump);
+                    let ahead = if ahead_kind {
+                        ahead_from_query(&d, ahead_hull, |k| routes::query_param(query, k))
+                    } else {
+                        super::route::Ahead::default()
                     };
                     // "at:next,at:next": which way to leave a system the route forks at. Not "via",
                     // which is already this endpoint's waypoint list.
@@ -392,7 +399,11 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         .map(|v| v.parse::<usize>().unwrap_or(0))
                         .collect();
                     // Titan routes left the planner; a page still asking for one gets gates.
-                    let leg = if kind == "jump" { "jump" } else { "gate" };
+                    let leg = match kind.as_str() {
+                        "jump" => "jump",
+                        "ahead" => "ahead",
+                        _ => "gate",
+                    };
                     let (legs, options) = super::route::chain(
                         graph,
                         coords,
@@ -403,13 +414,18 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         jfc,
                         d.count_bridges,
                         &avoid,
-                        &avoid,
+                        if ahead_kind { &avoid_jump } else { &avoid },
                         &d.holes,
                         &pick,
                         &forks,
-                        &super::route::Ahead::default(),
+                        &ahead,
                     );
-                    out.avoided = super::route::avoided(graph, &avoid);
+                    // A jump-ahead route jumps and gates, so it is planned around both lists.
+                    let mut listed = avoid.clone();
+                    if ahead_kind {
+                        listed.always.extend(avoid_jump.always.iter().copied());
+                    }
+                    out.avoided = super::route::avoided(graph, &listed);
                     out.legs = legs;
                     out.options = options;
                     super::route::mark_anchors(&mut out.options, &anchors);
@@ -426,6 +442,8 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                     if out.options.is_empty() {
                         out.error = Some(match kind.as_str() {
                             "jump" => "No capital route: every path needs a cyno-able system in range."
+                                .to_owned(),
+                            "ahead" => "No jump-ahead route: nothing to jump from or to with these settings."
                                 .to_owned(),
                             _ => "No gate route.".to_owned(),
                         });
@@ -672,6 +690,87 @@ margin:0;align-items:center;justify-content:center;text-align:center}p{color:#7a
 carries the pairing token.</p></div>
 "#;
 
+/// A jump-ahead leg's rules from the page's `pre`, `jumps` and `beacons`, and the app's data for the
+/// hull at `hull` in `AHEAD_HULLS`, by the same rules the desktop planner uses.
+fn ahead_from_query<'a>(d: &super::DetailState, hull: usize, q: impl Fn(&str) -> Option<&'a str>) -> super::route::Ahead {
+    let n = |k: &str| q(k).and_then(|v| v.parse::<u32>().ok());
+    let class = crate::app::map_route::AHEAD_HULLS[hull].0;
+    let (blops, carrier) = (class == 2, class == 0);
+    let beacons = q("beacons").map_or(d.ahead_beacons, |v| v == "1");
+    super::route::Ahead {
+        pre_gates: n("pre").unwrap_or(0).min(10),
+        max_jumps: n("jumps").unwrap_or(1).clamp(1, 5),
+        beacons: beacons.then(|| d.cyno_beacons.iter().copied().collect()),
+        prefer: match class {
+            2 => Default::default(),
+            1 => d.dock_super.clone(),
+            _ => d.dock_capital.clone(),
+        },
+        highsec: blops,
+        pre_bridges: blops,
+        pre_holes: if blops {
+            d.holes_large.clone()
+        } else if carrier {
+            d.holes_xl.clone()
+        } else {
+            Default::default()
+        },
+    }
+}
+
+#[cfg(test)]
+mod ahead_query_tests {
+    use super::ahead_from_query;
+
+    fn detail() -> crate::web::DetailState {
+        crate::web::DetailState {
+            cyno_beacons: vec![7],
+            dock_super: [1].into(),
+            dock_capital: [1, 2].into(),
+            holes_large: [(10, vec![11])].into(),
+            holes_xl: [(20, vec![21])].into(),
+            ..Default::default()
+        }
+    }
+
+    /// Each hull gets the desktop's rules: black ops gate anywhere and over Ansiblexes and big holes,
+    /// a carrier through XL holes only, a titan or supercarrier by gates alone.
+    #[test]
+    fn each_hull_plans_by_its_own_rules() {
+        let d = detail();
+        let none = |_: &str| None;
+        let titan = ahead_from_query(&d, 0, none);
+        assert!(!titan.highsec && !titan.pre_bridges && titan.pre_holes.is_empty());
+        assert_eq!(titan.prefer, [1].into(), "super docking only");
+        let sup = ahead_from_query(&d, 1, none);
+        assert_eq!(sup.prefer, [1].into());
+        let carrier = ahead_from_query(&d, 2, none);
+        assert!(!carrier.pre_bridges && carrier.pre_holes.contains_key(&20) && !carrier.pre_holes.contains_key(&10));
+        assert_eq!(carrier.prefer, [1, 2].into());
+        let blops = ahead_from_query(&d, 3, none);
+        assert!(blops.highsec && blops.pre_bridges && blops.pre_holes.contains_key(&10) && blops.prefer.is_empty());
+    }
+
+    /// Defaults are no gating first, one jump and the app's cyno choice; the page's numbers are held
+    /// to the panel's ranges.
+    #[test]
+    fn the_page_numbers_are_clamped_and_default_sensibly() {
+        let mut d = detail();
+        let a = ahead_from_query(&d, 0, |_| None);
+        assert_eq!((a.pre_gates, a.max_jumps, a.beacons.is_some()), (0, 1, false));
+        d.ahead_beacons = true;
+        assert_eq!(ahead_from_query(&d, 0, |_| None).beacons, Some([7].into()), "the app's choice");
+        let q = |k: &str| match k {
+            "pre" => Some("99"),
+            "jumps" => Some("0"),
+            "beacons" => Some("0"),
+            _ => None,
+        };
+        let a = ahead_from_query(&d, 0, q);
+        assert_eq!((a.pre_gates, a.max_jumps, a.beacons.is_some()), (10, 1, false), "the page overrides");
+    }
+}
+
 #[cfg(test)]
 mod bind_addr_tests {
     use super::usable_bind_addr;
@@ -838,6 +937,50 @@ mod tests {
             assert_eq!(r.status(), 403, "{host} was allowed through");
             assert!(r.headers().get("set-cookie").is_none(), "{host} was paired");
         }
+    }
+
+    /// The phone asks for a jump-ahead route and gets the desktop's plans: several to pick from, the
+    /// first with the capital's jumps, and the jump limit it sent.
+    #[test]
+    fn the_route_endpoint_plans_jump_ahead_routes() {
+        let s = serve_test();
+        let ids: Vec<i64> = (0..10).map(|i| 30_200_000 + i).collect();
+        let mut by_name = std::collections::HashMap::new();
+        let mut adj = std::collections::HashMap::new();
+        let mut coords = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let name = format!("A{i}");
+            by_name.insert(name.clone(), crate::geo::SystemInfo {
+                id,
+                name: name.clone(),
+                security: -0.4,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            let near: Vec<i64> = [i.checked_sub(1), Some(i + 1).filter(|&n| n < ids.len())].into_iter().flatten().map(|n| ids[n]).collect();
+            adj.insert(id, near);
+            let x = i as f64 * 1.4 * crate::map::LY_METERS;
+            coords.push(crate::store::MapSystem { id, name, security: -0.4, region_id: 10_000_060, x, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 });
+        }
+        {
+            let mut d = s.detail.lock().unwrap();
+            d.graph = Some(Arc::new(crate::geo::Systems::new(by_name, adj)));
+            d.coords = Some(Arc::new(coords));
+        }
+        let route = |extra: &str| -> serde_json::Value {
+            let url = format!("{}/api/route?from={}&to={}&kind=ahead&ahull=0&jdc=0{extra}", s.base, ids[0], ids[9]);
+            client().get(url).header("Cookie", format!("spai={TOKEN}")).send().unwrap().json().unwrap()
+        };
+        let capital = |o: &serde_json::Value| o["hops"].as_array().unwrap().iter().filter(|h| h["kind"] == 2).count();
+        let one = route("");
+        let opts = one["options"].as_array().expect("options");
+        assert!(opts.len() > 1, "several plans: {one}");
+        assert!(opts.iter().all(|o| capital(o) == 1), "one jump by default");
+        let three = route("&jumps=3");
+        let first = &three["options"][0];
+        assert_eq!(capital(first), 3);
+        assert_eq!(three["kind"], "ahead");
     }
 
     /// An `ETag` without freshness information lets the browser keep a stale copy without asking.
