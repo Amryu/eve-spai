@@ -911,7 +911,7 @@ impl RoutePlan {
                 .map(|o| {
                     let n = steps(o);
                     let mut t = format!("{} \u{b7} {n} gate jump{}", o.label, if n == 1 { "" } else { "s" });
-                    match o.capital_path.len().saturating_sub(1) {
+                    match o.capital_gates.iter().map(|r| r.len().saturating_sub(1)).sum::<usize>() {
                         0 => {}
                         m => t.push_str(&format!(" \u{b7} capital {m} gate{}", if m == 1 { "" } else { "s" })),
                     }
@@ -919,7 +919,7 @@ impl RoutePlan {
                 })
                 .collect();
             let at = &mut self.at;
-            let heads = [(false, "Plan"), (true, "Gate first")];
+            let heads = [(false, "Plan"), (true, "With gating")];
             let label_w = heads
                 .iter()
                 .map(|(_, h)| egui::WidgetText::from(*h).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x)
@@ -952,10 +952,10 @@ impl RoutePlan {
         if let Some(tj) = &o.titan_jump {
             ui.label(egui::RichText::new(format!("{}  Capital jumps alone {} \u{2192} {}, {:.1} ly", icon::FAST_FORWARD, tj.from_name, tj.to_name, tj.ly)).color(spai_ui::star_map::CAPITAL_MOVE));
         }
-        if o.capital_path.len() > 1 {
-            let m = o.capital_path.len() - 1;
-            let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
-            ui.label(egui::RichText::new(format!("Capital gates {m} first: {path}")).color(spai_ui::star_map::CAPITAL_MOVE));
+        for run in o.capital_gates.iter().filter(|r| r.len() > 1) {
+            let m = run.len() - 1;
+            let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
+            ui.label(egui::RichText::new(format!("Capital gates {m}: {path}")).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {
             ui.label(egui::RichText::new(if saved == 1 { "saves 1 gate".to_owned() } else { format!("saves {saved} gates") }).color(spai_ui::theme::standing::FRIENDLY));
@@ -1049,10 +1049,10 @@ impl RoutePlan {
     fn ahead_options(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label("Gates before jumping");
+            ui.label("Gates inbetween jumps");
             changed |= ui
                 .add(egui::DragValue::new(&mut self.ahead_gates).range(0..=10))
-                .on_hover_text("The capital may gate up to this many systems, the fleet with it, to a better place to jump from")
+                .on_hover_text("Before each jump the capital may gate up to this many systems to a better place to jump from; the fleet gets there its own way")
                 .changed();
         });
         ui.horizontal(|ui| {

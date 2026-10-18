@@ -606,7 +606,7 @@ function aheadControls(out) {
     (out?.max_ly ? `<span class="jumpmax">${out.max_ly.toFixed(1)} ly</span>` : "") +
     `</div>` +
     `<div class="jumpcfg">` +
-    num("pre", 0, 10, "Gates first", "The capital may gate up to this many systems, the fleet with it, to a better place to jump from") +
+    num("pre", 0, 10, "Gates inbetween jumps", "Before each jump the capital may gate up to this many systems to a better place to jump from; the fleet gets there its own way") +
     num("ajumps", 1, 5, "Jumps at most", "Each jump the fleet rides needs a cyno and adds fatigue; one is a single bridge") +
     `<select data-jump="beacons" title="Where the capital may land">` +
     `<option value="0"${jump.beacons ? "" : " selected"} title="Land anywhere a cyno can be lit">Any</option>` +
@@ -678,7 +678,7 @@ function paintRoute(kind, onPick) {
   // Jump-ahead plans in two dropdowns: the plain ones, and the ones where the capital gates first.
   // The one not holding the picked plan reads "Pick a plan".
   const steps = (x) => x.hops.slice(1).filter((h) => h.kind !== 2).length;
-  const capGates = (x) => Math.max(0, (x.capital_path?.length ?? 0) - 1);
+  const capGates = (x) => (x.capital_gates ?? []).reduce((n, run) => n + Math.max(0, run.length - 1), 0);
   const planRow = (title, gated) => {
     const items = routeOpts.map((x, i) => [x, i]).filter(([x]) => !!x.gated === gated);
     if (!items.length) return "";
@@ -697,7 +697,7 @@ function paintRoute(kind, onPick) {
       `</select></div>`
     );
   };
-  const tabs = routeOpts.length > 1 ? planRow("Plan", false) + planRow("Gate first", true) : "";
+  const tabs = routeOpts.length > 1 ? planRow("Plan", false) + planRow("With gating", true) : "";
   const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`);
   const SEV = ["", "", "Danger", "Critical"];
   // Intel below Danger is left off: a nullsec route passes dozens of systems with some report, and
@@ -760,10 +760,14 @@ function paintRoute(kind, onPick) {
       (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
-      (capGates(o) > 0
-        ? `<p class="mgroup" style="color:#2ed3c4">Capital gates ${capGates(o)} first: ` +
-          `${o.capital_path.map((s) => esc(s.name)).join(" → ")}</p>`
-        : "") +
+      (o.capital_gates ?? [])
+        .filter((run) => run.length > 1)
+        .map(
+          (run) =>
+            `<p class="mgroup" style="color:#2ed3c4">Capital gates ${run.length - 1}: ` +
+            `${run.map((s) => esc(s.name)).join(" → ")}</p>`
+        )
+        .join("") +
       (o.titan_jump
         ? `<p class="mgroup" style="color:#2ed3c4">Capital jumps alone ${esc(o.titan_jump.from_name)} → ` +
           `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`

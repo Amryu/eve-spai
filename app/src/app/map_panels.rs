@@ -192,10 +192,10 @@ impl SpaiApp {
         use crate::app::SteadySelect as _;
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label(tr!("Gates before jumping"));
+            ui.label(tr!("Gates inbetween jumps"));
             changed |= ui
                 .add(egui::DragValue::new(&mut self.map_ahead_gates).range(0..=10))
-                .on_hover_text(tr!("The capital may gate up to this many systems, the fleet with it, to a better place to jump from"))
+                .on_hover_text(tr!("Before each jump the capital may gate up to this many systems to a better place to jump from; the fleet gets there its own way"))
                 .changed();
         });
         ui.horizontal(|ui| {
@@ -474,7 +474,7 @@ impl SpaiApp {
                 .map(|o| {
                     let n = steps(o);
                     let mut t = if n == 1 { trf!("{label} · 1 gate jump", label = o.label) } else { trf!("{label} · {n} gate jumps", label = o.label, n = n) };
-                    match o.capital_path.len().saturating_sub(1) {
+                    match o.capital_gates.iter().map(|r| r.len().saturating_sub(1)).sum::<usize>() {
                         0 => {}
                         1 => t.push_str(tr!(" · capital 1 gate")),
                         m => t.push_str(&trf!(" · capital {m} gates", m = m)),
@@ -483,7 +483,7 @@ impl SpaiApp {
                 })
                 .collect();
             let mut at = self.map_route_at;
-            let heads = [(false, tr!("Plan")), (true, tr!("Gate first"))];
+            let heads = [(false, tr!("Plan")), (true, tr!("With gating"))];
             let label_w = heads
                 .iter()
                 .map(|(_, h)| egui::WidgetText::from(*h).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x)
@@ -517,10 +517,10 @@ impl SpaiApp {
                 return;
             }
         }
-        if o.capital_path.len() > 1 {
-            let m = o.capital_path.len() - 1;
-            let path = o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
-            let line = if m == 1 { trf!("Capital gates 1 first: {path}", path = path) } else { trf!("Capital gates {m} first: {path}", m = m, path = path) };
+        for run in o.capital_gates.iter().filter(|r| r.len() > 1) {
+            let m = run.len() - 1;
+            let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
+            let line = if m == 1 { trf!("Capital gates 1: {path}", path = path) } else { trf!("Capital gates {m}: {path}", m = m, path = path) };
             ui.label(egui::RichText::new(line).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {

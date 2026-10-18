@@ -163,19 +163,22 @@ pub fn shortest_path_pref(
     None
 }
 
-/// The cheapest way a jump chain lands in one system; `chain` runs from launch point to landing.
+/// The cheapest way a jump chain lands in one system. `legs` are its jumps, each from where it
+/// was launched to where it landed; between a landing and the next launch the capital gated.
 #[derive(Clone)]
 pub struct Reached {
     pub pre: u32,
     pub jumps: u32,
     pub off_pref: u32,
     pub ly: f64,
-    pub chain: Vec<i64>,
+    pub legs: Vec<(i64, i64)>,
 }
 
 /// Every landing a chain of at most `max_jumps` jumps reaches from `sources` (launch point, cost to
-/// get there). Searched per jump count: under a jump limit, the best way to a system is not always
-/// the one a further jump can continue from.
+/// get there), landing only where `land` allows. After each landing `between` names where the next
+/// jump may launch from and what getting there costs; it should include the landing itself at no
+/// cost. Searched per jump count: under a jump limit, the best way to a system is not always the
+/// one a further jump can continue from.
 pub fn reach(
     systems: &[MapSystem],
     max_ly: f64,
@@ -183,14 +186,17 @@ pub fn reach(
     sources: &[(i64, u32)],
     land: impl Fn(&MapSystem) -> bool,
     prefer: &HashSet<i64>,
+    between: impl Fn(i64) -> Vec<(i64, u32)>,
 ) -> HashMap<i64, Reached> {
     let idx: HashMap<i64, usize> = systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
     let grid = Grid::new(systems, (max_ly * LY_METERS).max(1.0));
     let max_m2 = (max_ly * LY_METERS).powi(2);
     // State: (system, jumps so far). Jumps 0 is a launch point, never a landing.
     let mut best: HashMap<(usize, u32), Key> = HashMap::new();
-    let mut prev: HashMap<(usize, u32), usize> = HashMap::new();
+    // How a state was reached: the state before it and the launch point of the jump between.
+    let mut prev: HashMap<(usize, u32), (usize, usize)> = HashMap::new();
     let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
+    let mut launches_of: HashMap<usize, Vec<(usize, u32)>> = HashMap::new();
     for &(id, pre) in sources {
         let Some(&i) = idx.get(&id) else { continue };
         let k = Key { pre, jumps: 0, off_pref: 0, ly: 0.0 };
@@ -204,50 +210,65 @@ pub fn reach(
         if best.get(&(cur, k.jumps)).is_some_and(|b| *b < k) || k.jumps >= max_jumps {
             continue;
         }
-        let s = &systems[cur];
-        for n in grid.near(s) {
-            let t = &systems[n];
-            if n == cur || !jumpable(t) || !land(t) {
-                continue;
+        let launches: Vec<(usize, u32)> = if k.jumps == 0 {
+            vec![(cur, 0)]
+        } else {
+            launches_of
+                .entry(cur)
+                .or_insert_with(|| {
+                    between(systems[cur].id)
+                        .into_iter()
+                        .filter_map(|(id, c)| idx.get(&id).map(|&i| (i, c)))
+                        .filter(|&(i, _)| jumpable(&systems[i]))
+                        .collect()
+                })
+                .clone()
+        };
+        for (l, cost) in launches {
+            let s = &systems[l];
+            for n in grid.near(s) {
+                let t = &systems[n];
+                if n == l || !jumpable(t) || !land(t) {
+                    continue;
+                }
+                let d2 = (s.x - t.x).powi(2) + (s.y - t.y).powi(2) + (s.z - t.z).powi(2);
+                if d2 > max_m2 {
+                    continue;
+                }
+                let next = Key {
+                    pre: k.pre + cost,
+                    jumps: k.jumps + 1,
+                    off_pref: k.off_pref + u32::from(!prefer.is_empty() && !prefer.contains(&t.id)),
+                    ly: k.ly + d2.sqrt() / LY_METERS,
+                };
+                if best.get(&(n, next.jumps)).is_some_and(|b| *b <= next) {
+                    continue;
+                }
+                best.insert((n, next.jumps), next);
+                prev.insert((n, next.jumps), (cur, l));
+                heap.push(std::cmp::Reverse((next, n)));
             }
-            let d2 = (s.x - t.x).powi(2) + (s.y - t.y).powi(2) + (s.z - t.z).powi(2);
-            if d2 > max_m2 {
-                continue;
-            }
-            let next = Key {
-                pre: k.pre,
-                jumps: k.jumps + 1,
-                off_pref: k.off_pref + u32::from(!prefer.is_empty() && !prefer.contains(&t.id)),
-                ly: k.ly + d2.sqrt() / LY_METERS,
-            };
-            if best.get(&(n, next.jumps)).is_some_and(|b| *b <= next) {
-                continue;
-            }
-            best.insert((n, next.jumps), next);
-            prev.insert((n, next.jumps), cur);
-            heap.push(std::cmp::Reverse((next, n)));
         }
     }
-    let mut out: HashMap<i64, Reached> = HashMap::new();
+    let mut out: HashMap<i64, (Key, Vec<(i64, i64)>)> = HashMap::new();
     for (&(i, j), k) in &best {
-        let better = |r: &Reached| {
-            let o = Key { pre: r.pre, jumps: r.jumps, off_pref: r.off_pref, ly: r.ly };
-            o <= *k
-        };
-        if j == 0 || out.get(&systems[i].id).is_some_and(better) {
+        if j == 0 || out.get(&systems[i].id).is_some_and(|(o, _)| o <= k) {
             continue;
         }
-        let mut chain = vec![systems[i].id];
+        let mut legs = Vec::new();
         let (mut c, mut jj) = (i, j);
         while jj > 0 {
-            c = prev[&(c, jj)];
+            let (p, l) = prev[&(c, jj)];
+            legs.push((systems[l].id, systems[c].id));
+            c = p;
             jj -= 1;
-            chain.push(systems[c].id);
         }
-        chain.reverse();
-        out.insert(systems[i].id, Reached { pre: k.pre, jumps: k.jumps, off_pref: k.off_pref, ly: k.ly, chain });
+        legs.reverse();
+        out.insert(systems[i].id, (*k, legs));
     }
-    out
+    out.into_iter()
+        .map(|(id, (k, legs))| (id, Reached { pre: k.pre, jumps: k.jumps, off_pref: k.off_pref, ly: k.ly, legs }))
+        .collect()
 }
 
 /// What a path has cost so far, ordered the way a jump route is judged.

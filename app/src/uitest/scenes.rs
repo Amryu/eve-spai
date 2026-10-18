@@ -2918,7 +2918,7 @@ pub(crate) fn all() -> Vec<Scene> {
             saved: None,
             uses_wormhole: false,
             gated: true,
-            capital_path: [1, 2, 3].map(|id| Branch { id, name: format!("S{id}") }).to_vec(),
+            capital_gates: vec![[1, 2, 3].map(|id| Branch { id, name: format!("S{id}") }).to_vec()],
         };
         let painter = ui.painter();
         spai_ui::star_map::paint_route_legs(painter, &pos, &o.hops, 6.0, egui::Color32::LIGHT_BLUE, |_, _| false, |_, _, c| (c, c));

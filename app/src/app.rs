@@ -3364,7 +3364,7 @@ impl SpaiApp {
                     o.titan_jump = Some(crate::web::route::TitanJump { from: 30_004_759, to: 30_003_704, from_name: "1DQ1-A".into(), to_name: "7-K5EL".into(), ly: 4.4 });
                 }
                 if o.gated {
-                    o.capital_path = [30_004_759, 30_003_704].map(|id| crate::web::route::Branch { id, name: if id == 30_004_759 { "1DQ1-A" } else { "7-K5EL" }.into() }).to_vec();
+                    o.capital_gates = vec![[30_004_759, 30_003_704].map(|id| crate::web::route::Branch { id, name: if id == 30_004_759 { "1DQ1-A" } else { "7-K5EL" }.into() }).to_vec()];
                 }
                 if let Some(h) = o.hops.get_mut(1) {
                     h.kind = 2;

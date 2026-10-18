@@ -3668,7 +3668,7 @@ mod real_jump_ahead_tests {
                     })
                     .collect();
                 let alone = o.titan_jump.as_ref().map(|t| format!(" [capital alone {} -> {}]", t.from_name, t.to_name)).unwrap_or_default();
-                println!("  {}{} steps: {}{alone}", if o.gated { "gated " } else { "" }, o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
+                println!("  [{}] {}{} steps: {}{alone}", o.label, if o.gated { "gated " } else { "" }, o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
                 for w in o.hops.windows(2) {
                     match w[1].kind {
                         2 => {
@@ -3681,9 +3681,9 @@ mod real_jump_ahead_tests {
                     }
                 }
                 assert!(o.hops.iter().filter(|h| h.kind == 2).count() <= jumps as usize, "jump limit");
-                assert!(pre_bridges || o.capital_path.windows(2).all(|w| !g.is_bridge(w[0].id, w[1].id)), "no Ansiblex for a capital");
-                if o.capital_path.len() > 1 {
-                    println!("    capital: {}", o.capital_path.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" "));
+                assert!(pre_bridges || o.capital_gates.iter().all(|r| r.windows(2).all(|w| !g.is_bridge(w[0].id, w[1].id))), "no Ansiblex for a capital");
+                for r in &o.capital_gates {
+                    println!("    capital: {}", r.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" "));
                 }
             }
         }

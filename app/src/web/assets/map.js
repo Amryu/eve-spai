@@ -738,9 +738,10 @@ function paint() {
     }
     // The capital's own moves, which the fleet does not fly: its gates to the jump-off point and
     // a jump ahead alone. Round dots in its own colour, crawling with the route.
-    const capPath = picked.capital_path ?? [];
+    // Every step the capital gates on its own, before the first jump and between jumps.
+    const capSteps = (picked.capital_gates ?? []).flatMap((run) => run.slice(1).map((s, i) => [run[i].id, s.id]));
     const tj = picked.titan_jump;
-    if (capPath.length > 1 || tj) {
+    if (capSteps.length || tj) {
       const at = (id) => {
         const n = geo.nodes[geo.byId.get(id)];
         return n ? [sx(n.x), sy(n.z)] : null;
@@ -756,10 +757,10 @@ function paint() {
       const period = DASH[0] + DASH[1];
       const off = (performance.now() / 45) % period;
       ctx.fillStyle = TITAN_COL;
-      for (let i = 1; i < capPath.length; i++) {
-        if (!fleetGates.has(`${capPath[i - 1].id},${capPath[i].id}`)) continue;
-        const a = at(capPath[i - 1].id);
-        const b = at(capPath[i].id);
+      for (const [from, to] of capSteps) {
+        if (!fleetGates.has(`${from},${to}`)) continue;
+        const a = at(from);
+        const b = at(to);
         if (!a || !b) continue;
         const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
         if (len < 0.5) continue;
@@ -775,10 +776,10 @@ function paint() {
       ctx.setLineDash([0, 9]);
       ctx.lineDashOffset = -((performance.now() / 45) % 9);
       ctx.beginPath();
-      for (let i = 1; i < capPath.length; i++) {
-        if (fleetGates.has(`${capPath[i - 1].id},${capPath[i].id}`)) continue;
-        const a = at(capPath[i - 1].id);
-        const b = at(capPath[i].id);
+      for (const [from, to] of capSteps) {
+        if (fleetGates.has(`${from},${to}`)) continue;
+        const a = at(from);
+        const b = at(to);
         if (!a || !b) continue;
         ctx.moveTo(a[0], a[1]);
         ctx.lineTo(b[0], b[1]);

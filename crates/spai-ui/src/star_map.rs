@@ -624,7 +624,7 @@ pub fn dotted_flow(painter: &egui::Painter, pts: &[egui::Pos2], color: egui::Col
 pub fn paint_capital_moves(painter: &egui::Painter, pos: &HashMap<i64, egui::Pos2>, o: &spai_core::route::RouteOption, phase: f32) {
     let fleet_gates: std::collections::HashSet<(i64, i64)> =
         o.hops.windows(2).filter(|w| w[1].kind == 0 && !w[1].hole).map(|w| (w[0].id, w[1].id)).collect();
-    for w in o.capital_path.windows(2) {
+    for w in o.capital_gates.iter().flat_map(|r| r.windows(2)) {
         let (Some(&a), Some(&b)) = (pos.get(&w[0].id), pos.get(&w[1].id)) else { continue };
         if fleet_gates.contains(&(w[0].id, w[1].id)) {
             gap_dots(painter, a, b, CAPITAL_MOVE, phase);
