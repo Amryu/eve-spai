@@ -2870,7 +2870,7 @@ mod parse_bridges_tests {
     fn baked(s: &mut crate::settings::Settings) -> bool {
         let bridges = "1DQ1-A::7-K5EL\n319-3D::NOPE-1\n";
         let upgrades = "319-3D <- Cynosural Suppression\n";
-        super::apply_baked_defaults(s, &fixtures::systems(), "Delve", bridges, upgrades)
+        super::apply_baked_defaults(s, &fixtures::systems(), "Delve", bridges, upgrades, "Jita\nNOPE-1\n1DQ1-A\n")
     }
 
     fn mine() -> crate::settings::Settings {
@@ -2902,10 +2902,30 @@ mod parse_bridges_tests {
         assert_eq!(s.sov_upgrades.len(), 1);
     }
 
+    /// The beacon list is the alliance's, not the pilot's: everyone gets it once, whatever they had.
+    #[test]
+    fn the_beacon_list_replaces_everyones_once() {
+        let g = fixtures::systems();
+        let id = |n: &str| g.lookup(n).expect("fixture system").id;
+        let mut s = crate::settings::Settings { rescue_staging_system: "Jita".into(), cyno_generators: vec![id("319-3D")], ..mine() };
+        assert!(baked(&mut s));
+        assert_eq!(s.cyno_generators, vec![id("Jita"), id("1DQ1-A")], "the unknown system is dropped");
+        assert_eq!(s.jump_bridges[0].from, "Jita", "bridges keep their own rule");
+
+        // A client already on the bridge step only takes the beacons.
+        let mut s = crate::settings::Settings { baked_defaults: super::BAKED_BRIDGES_AT, rescue_staging_system: "1DQ1-A".into(), ..mine() };
+        assert!(baked(&mut s));
+        assert_eq!(s.jump_bridges[0].from, "Jita", "bridges are not reapplied");
+        assert_eq!(s.cyno_generators.len(), 2);
+        s.cyno_generators.clear();
+        assert!(!baked(&mut s), "applied once only");
+    }
+
     #[test]
     fn the_bundled_data_parses() {
         assert_eq!(super::BAKED_BRIDGES.lines().filter(|l| l.contains("::")).count(), 54);
         assert!(super::BAKED_UPGRADES.lines().all(|l| l.contains(" <- ")));
+        assert_eq!(super::BAKED_BEACONS.lines().filter(|l| !l.trim().is_empty()).count(), 296);
     }
 }
 

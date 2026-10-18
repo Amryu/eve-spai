@@ -2156,7 +2156,7 @@ impl SpaiApp {
         if self.settings.apply_doctrine_defaults() {
             self.needs_save = true;
         }
-        if apply_baked_defaults(&mut self.settings, &systems, BAKED_REGION, BAKED_BRIDGES, BAKED_UPGRADES) {
+        if apply_baked_defaults(&mut self.settings, &systems, BAKED_REGION, BAKED_BRIDGES, BAKED_UPGRADES, BAKED_BEACONS) {
             self.needs_save = true;
         }
         self.bridges_applied = crate::ansiblex::feed(&self.settings, &mut systems);
@@ -4229,26 +4229,33 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
         .collect()
 }
 
-const BAKED_DEFAULTS: u32 = 2;
+/// The newest of the steps below. Each step runs once, when a client's `baked_defaults` is behind it:
+/// bump a step's own constant and this one together.
+const BAKED_DEFAULTS: u32 = 3;
+const BAKED_BRIDGES_AT: u32 = 2;
+const BAKED_BEACONS_AT: u32 = 3;
 const BAKED_REGION: &str = "Insmother";
 const BAKED_BRIDGES: &str = include_str!("../assets/default_ansiblex.txt");
 const BAKED_UPGRADES: &str = include_str!("../assets/default_sov_upgrades.txt");
+const BAKED_BEACONS: &str = include_str!("../assets/default_cyno_beacons.txt");
 
-/// Applies the bundled bridge network and sov upgrades once per [`BAKED_DEFAULTS`] bump. Staging
-/// in `region` overwrites both lists; anyone else only gets them where their list is empty.
-/// Returns whether settings changed.
+/// Applies the bundled bridge network and sov upgrades once per [`BAKED_BRIDGES_AT`] bump. Staging
+/// in `region` overwrites both lists; anyone else only gets them where their list is empty. The cyno
+/// beacons replace everyone's list once per [`BAKED_BEACONS_AT`] bump. Returns whether settings changed.
 fn apply_baked_defaults(
     settings: &mut crate::settings::Settings,
     graph: &crate::geo::Systems,
     region: &str,
     bridges: &str,
     upgrades: &str,
+    beacons: &str,
 ) -> bool {
     if settings.baked_defaults >= BAKED_DEFAULTS {
         return false;
     }
     let home = graph.lookup(settings.rescue_staging_system.trim()).is_some_and(|i| i.region == region);
-    if home || settings.jump_bridges.is_empty() {
+    let bridges_due = settings.baked_defaults < BAKED_BRIDGES_AT;
+    if bridges_due && (home || settings.jump_bridges.is_empty()) {
         settings.jump_bridges = bridges
             .lines()
             .filter_map(|l| {
@@ -4258,8 +4265,13 @@ fn apply_baked_defaults(
             })
             .collect();
     }
-    if home || settings.sov_upgrades.is_empty() {
+    if bridges_due && (home || settings.sov_upgrades.is_empty()) {
         settings.sov_upgrades = parse_sov_upgrades(upgrades, graph);
+    }
+    if settings.baked_defaults < BAKED_BEACONS_AT {
+        let mut ids: Vec<i64> = beacons.lines().filter_map(|l| graph.lookup(l.trim()).map(|i| i.id)).collect();
+        ids.dedup();
+        settings.cyno_generators = ids;
     }
     settings.baked_defaults = BAKED_DEFAULTS;
     true
