@@ -674,17 +674,26 @@ function paintRoute(kind, onPick) {
         : ""
     )
     .join("");
-  const tabs =
-    routeOpts.length > 1
-      ? `<div class="ropts">` +
-        routeOpts
-          .map(
-            (x, i) =>
-              `<button class="ropt${i === routeAt ? " on" : ""}" data-ropt="${i}">${esc(x.label)}</button>`
-          )
-          .join("") +
-        `</div>`
-      : "";
+  // Jump-ahead plans in two dropdowns: the plain ones, and the ones where the capital gates first.
+  // The one not holding the picked plan reads "Pick a plan".
+  const steps = (x) => x.hops.slice(1).filter((h) => h.kind !== 2).length;
+  const planRow = (title, gated) => {
+    const items = routeOpts.map((x, i) => [x, i]).filter(([x]) => !!x.gated === gated);
+    if (!items.length) return "";
+    const here = !!routeOpts[routeAt]?.gated === gated;
+    return (
+      `<div class="jumpcfg"><label>${title}</label><select data-ropt>` +
+      (here ? "" : `<option value="" selected disabled>Pick a plan</option>`) +
+      items
+        .map(([x, i]) => {
+          const n = steps(x);
+          return `<option value="${i}"${i === routeAt ? " selected" : ""}>${esc(x.label)} · ${n} ${n === 1 ? "gate jump" : "gate jumps"}</option>`;
+        })
+        .join("") +
+      `</select></div>`
+    );
+  };
+  const tabs = routeOpts.length > 1 ? planRow("Plan", false) + planRow("Gate first", true) : "";
   const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`);
   const SEV = ["", "", "Danger", "Critical"];
   // Intel below Danger is left off: a nullsec route passes dozens of systems with some report, and
@@ -785,8 +794,9 @@ function win_wire(kind, onPick) {
     })
   );
   win?.querySelectorAll("[data-ropt]").forEach((b) =>
-    b.addEventListener("click", () => {
-      routeAt = Number(b.dataset.ropt);
+    b.addEventListener("change", () => {
+      if (b.value === "") return;
+      routeAt = Number(b.value);
       keepPlan = routeOpts[routeAt]?.label ?? null;
       paintRoute(kind, onPick);
     })
