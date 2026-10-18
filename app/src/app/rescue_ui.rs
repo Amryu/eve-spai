@@ -449,37 +449,44 @@ impl SpaiApp {
             let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
             (r.doctrine.clone(), r.op_channel)
         };
-        let key = format!("{want}/{op}");
-        if self.rescue_preview_key.as_deref() == Some(key.as_str()) {
-            // One that came back empty means the dashboard could not be reached, and the window
-            // has been showing the local template since. Ask again on a slow clock so the FC does
-            // not have to touch the preset to recover from a blip.
-            let held = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).rescue_preview.is_none();
-            let stale = self
-                .rescue_preview_at
-                .is_none_or(|t| std::time::Instant::now().duration_since(t) >= PREVIEW_RETRY);
-            if !held || !stale {
-                return;
-            }
-        }
         let all = self.rescue_presets();
         let Some(preset) = crate::settings::find_preset(&all, &want).or_else(|| all.first()) else {
             return;
         };
-        // A new op or preset makes the rendering already held wrong: it names the old comms. Drop
-        // it now, so the ping falls back to the local template for the new op until the
-        // dashboard answers, instead of showing the old channel until then.
-        if self.rescue_preview_key.as_deref() != Some(key.as_str()) {
+        let mut req = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            // Before the sign-in lands there is no FC to name, and the dashboard renders the ping
+            // without one.
+            if st.session.is_none() {
+                return;
+            }
+            st.ping_request_from(preset)
+        };
+        req.mumble_channel_id = self.fleet_mumble_for_op(op);
+        // Everything the request carries, not just the op and preset: the FC and the comms channel
+        // fill in once the dashboard's tables load, and an answer for the request without them
+        // named neither.
+        let key = format!("{want}/{op}/{req:?}");
+        if self.rescue_preview_key.as_deref() == Some(key.as_str()) {
+            // One that came back empty means the dashboard could not be reached, and the window
+            // has been showing the local template since. Ask again on a slow clock so the FC does
+            // not have to touch the preset to recover from a blip.
+            let held = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).rescue_preview.is_some();
+            let stale = self
+                .rescue_preview_at
+                .is_none_or(|t| std::time::Instant::now().duration_since(t) >= PREVIEW_RETRY);
+            if held || !stale {
+                return;
+            }
+        } else {
+            // The rendering already held was for a different request, and names the old comms or
+            // none. Drop it, so the ping falls back to the local template until the dashboard
+            // answers this one.
             self.fleet.lock().unwrap_or_else(|e| e.into_inner()).rescue_preview = None;
         }
         self.rescue_preview_key = Some(key);
         self.rescue_preview_at = Some(std::time::Instant::now());
         self.fleet_gen.rescue += 1;
-        let mut req = {
-            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            st.ping_request_from(preset)
-        };
-        req.mumble_channel_id = self.fleet_mumble_for_op(op);
         self.fleet_dispatch(crate::fleets::state::Cmd::RescuePreview(req));
     }
 
