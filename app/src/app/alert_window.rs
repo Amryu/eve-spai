@@ -21,6 +21,7 @@ pub(crate) struct PingWindowState {
     pub(crate) level_applied: Option<bool>,
     pub(crate) level_at: Option<std::time::Instant>,
     pub(crate) open: bool,
+    pub(crate) applied_visible: Option<bool>,
     /// When the window last (re)opened, for the brief post-show geometry re-assert (Windows race).
     pub(crate) geom_at: Option<std::time::Instant>,
     pub(crate) win_pos: Option<(f32, f32)>,
@@ -770,19 +771,25 @@ pub(crate) fn build_ping_viewport_cb(
     std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
         let ctx = ui.ctx().clone();
         let mut st = ping_shared.lock().unwrap();
-        if !st.enabled || st.windows.is_empty() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        let want_visible = st.enabled && !st.windows.is_empty();
+        // Showing a visible window activates it again on Windows, and every command repaints, so
+        // sending it each frame kept taking focus from the main window.
+        if st.applied_visible != Some(want_visible) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
+            st.applied_visible = Some(want_visible);
+        }
+        if !want_visible {
             st.level_applied = None;
             st.open = false;
             return;
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         if ctx.input(|i| i.viewport().close_requested()) {
             st.windows.clear();
             st.level_applied = None;
             st.open = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            st.applied_visible = Some(false);
             return;
         }
         let just_opened = !st.open;
@@ -1075,5 +1082,31 @@ mod feed_tests {
         assert_eq!(st.feed[0].0.id, 9);
         assert_eq!(st.from_you, [Some(2)]);
         assert_eq!((st.secs, st.pinned, st.focus_pending), (7.5, true, true));
+    }
+}
+
+#[cfg(test)]
+mod ping_window_tests {
+    use super::*;
+
+    #[test]
+    fn an_open_ping_window_is_shown_once() {
+        let st = PingWindowState {
+            enabled: true,
+            windows: vec![PingShown { ping: crate::uitest::fixtures::ping_fleet(), shown_at: std::time::Instant::now() }],
+            ..Default::default()
+        };
+        let cb = build_ping_viewport_cb(std::sync::Arc::new(std::sync::Mutex::new(st)));
+        let ctx = egui::Context::default();
+        let shows = |out: egui::FullOutput| {
+            out.viewport_output
+                .values()
+                .flat_map(|v| v.commands.iter())
+                .filter(|c| matches!(c, egui::ViewportCommand::Visible(true)))
+                .count()
+        };
+        let first = shows(ctx.run_ui(Default::default(), |ui| cb(ui, egui::ViewportClass::Root)));
+        let second = shows(ctx.run_ui(Default::default(), |ui| cb(ui, egui::ViewportClass::Root)));
+        assert_eq!((first, second), (1, 0));
     }
 }
