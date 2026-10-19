@@ -17,5 +17,11 @@
 <body>
   <canvas id="spai"></canvas>
   <div id="loading">Loading EVE Spai…</div>
+  <script>
+    // Ctrl+F finds a system on the map; the browser's own find has nothing to search here.
+    addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') e.preventDefault();
+    }, true);
+  </script>
 </body>
 </html>

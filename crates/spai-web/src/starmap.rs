@@ -96,6 +96,11 @@ pub struct StarMap {
     pub layers: Layers,
     /// Systems with added characters in them: how many, and whether any is online.
     pub here: HashMap<i64, (usize, bool)>,
+    /// The find field over the map's bottom left, and the hit the arrows rest on.
+    search: String,
+    search_sel: usize,
+    /// A system to centre on, once the view it is drawn in is laid out.
+    focus: Option<i64>,
     /// The stargate lines for the graph, region and network they were built from.
     gates: Option<((usize, Option<i64>, u64), Vec<layers::GateSeg>)>,
 }
@@ -149,10 +154,22 @@ impl StarMap {
         if self.plan.update_at(&PlanInput { geo, coords: &d.real, holes: &d.hole_list, network: &d.network }, ui.input(|i| i.time)) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
+        if let (Some(id), Some(_)) = (self.focus, self.region) {
+            if let Some(s) = d.real(id) {
+                self.region = Some(s.region_id);
+            }
+        }
         self.panel(ui, geo, d);
         let draw: Vec<MapSystem> = d.all.iter().filter(|s| self.region.is_none_or(|r| s.region_id == r)).cloned().collect();
         let Some(bounds) = Bounds::of(&draw) else { return };
         let rect = ui.available_rect_before_wrap();
+        if let Some(id) = self.focus.take() {
+            if let Some(s) = draw.iter().find(|s| s.id == id) {
+                self.zoom = if self.region.is_some() { 3.0 } else { 18.0 };
+                self.pan = rect.center() - spai_core::map::project(s.x, s.z, &bounds, rect, self.zoom, egui::Vec2::ZERO);
+                self.selected = Some(id);
+            }
+        }
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         let pos: HashMap<i64, egui::Pos2> =
             draw.iter().map(|s| (s.id, spai_core::map::project(s.x, s.z, &bounds, rect, self.zoom, self.pan))).collect();
@@ -365,6 +382,108 @@ impl StarMap {
             }
         }
         self.plan.link_menu(ui);
+        self.search_bar(ui, geo, d, rect);
+    }
+
+    /// The desktop map's find field, over the map's bottom left: systems and regions, the hits
+    /// listed upwards from the field, arrows and Enter or a click take one, Ctrl+F focuses it.
+    fn search_bar(&mut self, ui: &mut egui::Ui, geo: &Systems, d: &MapData, rect: egui::Rect) {
+        use egui::Key;
+        use egui_phosphor::regular as icon;
+        use spai_ui::widgets::SteadySelect as _;
+        const W: f32 = 320.0;
+        let input_id = egui::Id::new("web_map_search_input");
+        if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::F))) {
+            ui.ctx().memory_mut(|m| m.request_focus(input_id));
+        }
+        let hits = search_hits(geo, d, &self.search);
+        let has_query = !self.search.trim().is_empty();
+        let (down, up, enter, esc) = if has_query {
+            ui.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)))
+        } else {
+            (false, false, false, false)
+        };
+        let mut sel = self.search_sel;
+        if hits.is_empty() {
+            sel = 0;
+        } else {
+            // The list grows upwards from the field, the first hit nearest it: Up moves away.
+            if up {
+                sel = (sel + 1).min(hits.len() - 1);
+            }
+            if down {
+                sel = sel.saturating_sub(1);
+            }
+            sel = sel.min(hits.len() - 1);
+        }
+        let mut picked: Option<&Hit> = None;
+        if enter {
+            picked = hits.get(sel);
+        }
+        let mut clear = esc;
+        let bar = egui::Area::new(egui::Id::new("web_map_search"))
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(rect.left_bottom() + egui::vec2(8.0, -10.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(W);
+                    ui.set_max_width(W);
+                    ui.horizontal(|ui| {
+                        ui.label(icon::MAGNIFYING_GLASS).on_hover_text("Ctrl+F");
+                        let w = (ui.available_width() - if has_query { 30.0 } else { 0.0 }).max(60.0);
+                        if ui.add(egui::TextEdit::singleline(&mut self.search).id(input_id).hint_text("Find (Ctrl+F)").desired_width(w)).on_hover_text("A system or region").changed() {
+                            sel = 0;
+                        }
+                        if has_query && ui.button(icon::X).clicked() {
+                            clear = true;
+                        }
+                    });
+                });
+            });
+        if has_query {
+            egui::Area::new(egui::Id::new("web_map_search_results"))
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(bar.response.rect.left_top() - egui::vec2(0.0, 2.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(W);
+                        ui.set_max_width(W);
+                        if hits.is_empty() {
+                            ui.label(egui::RichText::new("No match").weak());
+                        }
+                        for (i, h) in hits.iter().enumerate().rev() {
+                            let label = match h {
+                                Hit::System { name, sec, .. } => egui::RichText::new(format!("{:.1}  {name}", (sec * 10.0).round() / 10.0)).color(spai_ui::colors::security_color(*sec)),
+                                Hit::Region { name, .. } => egui::RichText::new(format!("{}  {name}", icon::MAP_TRIFOLD)).weak(),
+                            };
+                            if ui.menu_label(i == sel, label).clicked() {
+                                picked = Some(h);
+                            }
+                        }
+                    });
+                });
+        }
+        match picked {
+            Some(Hit::System { id, .. }) => {
+                self.focus = Some(*id);
+                clear = true;
+                ui.ctx().request_repaint();
+            }
+            Some(Hit::Region { id, .. }) => {
+                self.region = Some(*id);
+                self.zoom = 1.0;
+                self.pan = egui::Vec2::ZERO;
+                clear = true;
+            }
+            None => {}
+        }
+        if clear {
+            self.search.clear();
+            sel = 0;
+        }
+        self.search_sel = sel;
     }
 
     fn panel(&mut self, ui: &mut egui::Ui, geo: &Systems, d: &MapData) {
@@ -482,9 +601,50 @@ pub fn find(geo: &Systems, d: &MapData, from: &str, to: &str) -> Result<Vec<i64>
     geo.route_with(a, b, true, true, &d.holes, |_| true).ok_or_else(|| "No way there over gates, bridges or known holes".to_owned())
 }
 
+/// What the find field offers for `q`.
+#[derive(Debug, PartialEq)]
+enum Hit {
+    System { id: i64, name: String, sec: f64 },
+    Region { id: i64, name: String },
+}
+
+/// Systems the flat map draws (k-space, as `geo` finds them) and then the regions the map's region
+/// list offers, by name.
+fn search_hits(geo: &Systems, d: &MapData, q: &str) -> Vec<Hit> {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<Hit> = geo
+        .search(&q, 24)
+        .into_iter()
+        .filter(|i| d.real(i.id).is_some_and(|s| !spai_core::geo::is_wormhole_system(s.id)))
+        .take(6)
+        .map(|i| Hit::System { id: i.id, name: i.name.clone(), sec: i.security })
+        .collect();
+    let mut regions: Vec<&(i64, String)> = d.regions.iter().filter(|(id, n)| *id < 11_000_000 && !n.chars().any(|c| c.is_ascii_digit()) && n.to_lowercase().contains(&q)).collect();
+    regions.sort_by(|a, b| a.1.cmp(&b.1));
+    hits.extend(regions.into_iter().take(4).map(|(id, n)| Hit::Region { id: *id, name: n.clone() }));
+    hits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_find_field_offers_drawn_systems_then_regions() {
+        let geo = spai_core::test_support::small_universe(&[]);
+        let sys = |id: i64, name: &str, sec: f64, region_id: i64| MapSystem { id, name: name.into(), security: sec, region_id, x: 0.0, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 };
+        let real = vec![sys(30_004_759, "1DQ1-A", -0.36, 10_000_060), sys(30_000_142, "Jita", 0.95, 10_000_002), sys(31_000_002, "J110145", -1.0, 11_000_001)];
+        let regions = vec![(10_000_060, "Delve".to_owned()), (10_000_002, "The Forge".to_owned()), (11_000_001, "A-R00001".to_owned())];
+        let d = MapData::new(Vec::new(), real, regions);
+        assert_eq!(search_hits(&geo, &d, "  "), Vec::<Hit>::new());
+        assert_eq!(search_hits(&geo, &d, "jit"), vec![Hit::System { id: 30_000_142, name: "Jita".into(), sec: 0.95 }]);
+        assert_eq!(search_hits(&geo, &d, "J1"), Vec::<Hit>::new(), "J-space is not on the flat map");
+        assert_eq!(search_hits(&geo, &d, "7-K5EL"), Vec::<Hit>::new(), "a system the flat map lacks");
+        assert_eq!(search_hits(&geo, &d, "e"), vec![Hit::Region { id: 10_000_060, name: "Delve".into() }, Hit::Region { id: 10_000_002, name: "The Forge".into() }], "the wormhole region is left out");
+    }
 
     #[test]
     fn a_route_takes_a_known_hole_when_it_is_shorter() {
