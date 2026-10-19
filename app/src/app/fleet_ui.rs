@@ -1423,9 +1423,10 @@ impl SpaiApp {
         let due = self
             .fleet_unlock_asked
             .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(unlock::RECHECK_SECS));
-        let has_session = crate::fleets::creds::has()
-            || std::env::var(crate::fleets::COOKIE_ENV).is_ok_and(|t| !t.trim().is_empty());
-        if due && has_session {
+        if due
+            && (crate::fleets::creds::has()
+                || std::env::var(crate::fleets::COOKIE_ENV).is_ok_and(|t| !t.trim().is_empty()))
+        {
             self.fleet_unlock_asked = Some(std::time::Instant::now());
             let (slot, ctx) = (self.fleet_unlock_check.clone(), ctx.clone());
             std::thread::spawn(move || {

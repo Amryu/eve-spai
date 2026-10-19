@@ -45,6 +45,7 @@ pub fn save_password(jid: &str, password: &str) -> anyhow::Result<()> {
         .context("opening keychain entry")?
         .set_password(password)
         .context("writing Jabber password")?;
+    HAS_PASSWORD.remember(jid, true);
     Ok(())
 }
 
@@ -52,9 +53,13 @@ pub fn load_password(jid: &str) -> Option<String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, jid).ok()?.get_password().ok()
 }
 
+/// Whether a password is stored for `jid`. Asked every frame, some of them under the jabber lock,
+/// and each keychain read is a D-Bus round trip, so the answer is kept a while.
 pub fn has_password(jid: &str) -> bool {
-    load_password(jid).is_some()
+    HAS_PASSWORD.get(jid, || load_password(jid).is_some())
 }
+
+static HAS_PASSWORD: crate::keycache::KeyCache = crate::keycache::KeyCache::new();
 
 /// Reject a malformed JID before we try to connect. `None` means it's a usable `user@domain`.
 pub fn jid_format_error(jid: &str) -> Option<String> {

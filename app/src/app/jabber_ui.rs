@@ -1772,11 +1772,11 @@ impl SpaiApp {
     /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
     /// out of it: each window borrows its own conversation under the lock while it draws.
     pub(crate) fn jabber_frame(&self, focused: bool) -> JabberFrame {
-        let mut st = self.jabber.lock().unwrap();
-        let configured = self.settings.jabber_enabled
+        let has_password = self.settings.jabber_enabled
             && !self.settings.jabber_jid.trim().is_empty()
-            && crate::jabber::has_password(self.settings.jabber_jid.trim())
-            && st.fatal.is_none();
+            && crate::jabber::has_password(self.settings.jabber_jid.trim());
+        let mut st = self.jabber.lock().unwrap();
+        let configured = has_password && st.fatal.is_none();
         let ever_online = st.ever_online;
         // The open conversation is being looked at, so its own incoming messages must not raise an
         // unread or mention marker. Clear it every focused frame, before reading the marker sets

@@ -47,6 +47,7 @@ mod launcher;
 mod linkscheme;
 mod jabber;
 mod jove;
+mod keycache;
 mod jumproute;
 mod intel;
 mod ipc;

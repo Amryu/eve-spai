@@ -18,6 +18,7 @@ pub fn save(cookies: &str) -> anyhow::Result<()> {
         .context("opening keychain entry")?
         .set_password(cookies)
         .context("writing the fleet dashboard session")?;
+    HAS.remember(ACCOUNT, !cookies.trim().is_empty());
     Ok(())
 }
 
@@ -26,9 +27,13 @@ pub fn load() -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Whether a session is stored. Asked every frame, and each keychain read is a D-Bus round trip on
+/// the UI thread, so the answer is kept a while; saving and forgetting update it at once.
 pub fn has() -> bool {
-    load().is_some()
+    HAS.get(ACCOUNT, || load().is_some())
 }
+
+static HAS: crate::keycache::KeyCache = crate::keycache::KeyCache::new();
 
 /// Best effort: a keychain that will not delete is the same problem as one that will not read, and
 /// the caller has already dropped the backend either way.
@@ -36,4 +41,5 @@ pub fn forget() {
     if let Ok(e) = keyring::Entry::new(KEYCHAIN_SERVICE, ACCOUNT) {
         let _ = e.delete_credential();
     }
+    HAS.remember(ACCOUNT, false);
 }
