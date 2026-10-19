@@ -711,7 +711,7 @@ mod tests {
         s.edit_hole(&w, 2_000);
         let out = s.share_outbox(10);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1.as_deref(), Some("g"), "back to the group it came from");
+        assert_eq!(out[0].1.as_deref(), Some("g"), "back to the folder it came from");
         let st = s.share_hole_state("u1", 42).unwrap();
         assert_eq!(st.fields["signature"].v, serde_json::json!("ABC-124"));
         assert_eq!((st.fields["signature"].at, st.fields["signature"].by), (2_000, 42));

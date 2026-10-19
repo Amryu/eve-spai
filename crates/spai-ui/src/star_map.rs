@@ -616,6 +616,9 @@ pub fn paint_wormholes(
         }
 }
 
+/// Cyno beacons on the map, as the desktop's cyno layer rings them.
+pub const BEACON_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xC8, 0xE0);
+
 /// The capital's own moves on a jump-ahead route, apart from the fleet's.
 pub const CAPITAL_MOVE: egui::Color32 = egui::Color32::from_rgb(0x2E, 0xD3, 0xC4);
 

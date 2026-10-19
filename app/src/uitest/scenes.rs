@@ -2900,7 +2900,7 @@ pub(crate) fn all() -> Vec<Scene> {
         use crate::web::route::{Branch, Hop, RouteOption, TitanJump};
         let o0 = ui.min_rect().min;
         let pos: std::collections::HashMap<i64, egui::Pos2> =
-            [(1, (40.0, 200.0)), (2, (110.0, 200.0)), (3, (180.0, 200.0)), (4, (260.0, 110.0)), (5, (400.0, 60.0)), (6, (400.0, 160.0))]
+            [(1, (30.0, 220.0)), (2, (90.0, 220.0)), (3, (330.0, 220.0)), (4, (370.0, 120.0)), (5, (420.0, 40.0)), (6, (420.0, 150.0))]
                 .into_iter()
                 .map(|(id, (x, y))| (id, o0 + egui::vec2(x, y)))
                 .collect();

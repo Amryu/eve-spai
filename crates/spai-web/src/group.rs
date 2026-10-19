@@ -52,7 +52,7 @@ impl GroupTab {
                     requests(ui, g, status, &members, &mut out);
                 }
                 self.members(ui, g, &members, me, &mut out);
-                if g.role != Role::Owner && ui.button("Leave the group").on_hover_text("This browser leaves; your other devices stay").clicked() {
+                if g.role != Role::Owner && ui.button("Leave the folder").on_hover_text("This browser leaves; your other devices stay").clicked() {
                     out.push(Cmd::Leave { group: g.id.clone() });
                 }
                 if g.role == Role::Owner {
@@ -70,11 +70,11 @@ impl GroupTab {
                 let frame = egui::Frame::group(ui.style()).stroke(egui::Stroke::new(1.0, spai_ui::theme::standing::HOSTILE));
                 let mut done = false;
                 frame.show(ui, |ui| {
-                    ui.label("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone.");
-                    ui.label(format!("Type the group's name, {}, to delete it:", g.name));
+                    ui.label("This deletes the folder for every member: its members, keys and log go, and nothing more syncs. It cannot be undone.");
+                    ui.label(format!("Type the folder's name, {}, to delete it:", g.name));
                     ui.add(egui::TextEdit::singleline(typed).hint_text(g.name.as_str()).desired_width(260.0));
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(*typed == g.name, egui::Button::new("Delete the group")).clicked() {
+                        if ui.add_enabled(*typed == g.name, egui::Button::new("Delete the folder")).clicked() {
                             out.push(Cmd::Delete { group: g.id.clone() });
                             done = true;
                         }
@@ -88,7 +88,7 @@ impl GroupTab {
                 }
             }
             _ => {
-                if ui.button("Delete group\u{2026}").on_hover_text("End the group for every member").clicked() {
+                if ui.button("Delete folder\u{2026}").on_hover_text("Delete the folder for every member").clicked() {
                     self.delete = Some((g.id.clone(), String::new()));
                 }
             }
@@ -114,7 +114,7 @@ impl GroupTab {
                 let v = &mut self.invite_viewer;
                 egui::ComboBox::from_id_salt(("web_invite_role", &g.id)).width(90.0).selected_text(if *v { "as Viewer" } else { "as Member" }).show_ui(ui, |ui| {
                     ui.selectable_value(v, false, "as Member").on_hover_text("Sees and shares");
-                    ui.selectable_value(v, true, "as Viewer").on_hover_text("Sees the group's wormholes, shares nothing");
+                    ui.selectable_value(v, true, "as Viewer").on_hover_text("Sees the folder's wormholes, shares nothing");
                 });
             } else {
                 ui.label(egui::RichText::new("as Viewer").weak());
@@ -212,7 +212,7 @@ fn requests(ui: &mut egui::Ui, g: &ShareGroup, status: &Status, members: &[Membe
             ui.horizontal(|ui| {
                 let approve = |role: Role| Cmd::Approve { group: g.id.clone(), char_id: r.row.char_id, device_id: r.row.device_id.clone(), role };
                 if !g.role.can_manage() {
-                    if existing.is_none() && ui.add_enabled(r.verified, egui::Button::new("Approve as viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked() {
+                    if existing.is_none() && ui.add_enabled(r.verified, egui::Button::new("Approve as viewer")).on_hover_text("Sees the folder's wormholes, shares nothing").clicked() {
                         out.push(approve(Role::Viewer));
                     }
                 } else if existing.is_some() {
@@ -223,7 +223,7 @@ fn requests(ui: &mut egui::Ui, g: &ShareGroup, status: &Status, members: &[Membe
                     if ui.add_enabled(r.verified, egui::Button::new("Approve")).clicked() {
                         out.push(approve(Role::Member));
                     }
-                    if ui.add_enabled(r.verified, egui::Button::new("As viewer")).on_hover_text("Sees the group's wormholes, shares nothing").clicked() {
+                    if ui.add_enabled(r.verified, egui::Button::new("As viewer")).on_hover_text("Sees the folder's wormholes, shares nothing").clicked() {
                         out.push(approve(Role::Viewer));
                     }
                 }

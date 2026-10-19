@@ -155,7 +155,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
     }
 
     pub fn group(&self, id: &str) -> Result<ShareGroup> {
-        self.store.share_groups().into_iter().find(|g| g.id == id).ok_or_else(|| anyhow!("not in that group"))
+        self.store.share_groups().into_iter().find(|g| g.id == id).ok_or_else(|| anyhow!("not in that folder"))
     }
 
     fn roster(&self, group: &str) -> Roster {
@@ -164,7 +164,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
     }
 
     async fn post(&self, c: &Client<E::T>, g: &ShareGroup, op: &Op) -> Result<()> {
-        let key = self.store.share_key(&g.id, g.epoch).ok_or_else(|| anyhow!("no key for the group yet"))?;
+        let key = self.store.share_key(&g.id, g.epoch).ok_or_else(|| anyhow!("no key for the folder yet"))?;
         let env = ops::seal_op(op, &g.id, g.epoch, &key, g.char_id, self.device);
         c.post_op(&g.id, &env.op_id, g.epoch, op.keep(), &serde_json::to_string(&env)?).await?;
         // Our own entry comes back from the server like anyone's; it is already applied here.
@@ -247,7 +247,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                     .context("the link does not open its invite")?;
                 let info: InviteInfo = serde_json::from_slice(&plain)?;
                 if info.group_id != group_id {
-                    bail!("the invite names another group than the server says");
+                    bail!("the invite names another folder than the server says");
                 }
                 if info.for_char != char_id {
                     bail!("this invite is for {}; join as that character", info.for_name);
@@ -288,7 +288,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                     .is_some_and(|m| m.devices.iter().any(|d| d.id != me));
                 // With other devices, only this one leaves and the character stays in the group.
                 if g.role == Role::Owner && !others {
-                    bail!("the owner cannot leave; remove the others or keep the group");
+                    bail!("the owner cannot leave; remove the others or keep the folder");
                 }
                 if self.store.share_key(&g.id, g.epoch).is_some() {
                     self.remove(&group, g.char_id, others.then_some(me.as_str())).await?;
@@ -298,7 +298,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
             Cmd::Delete { group } => {
                 let g = self.group(&group)?;
                 if g.role != Role::Owner {
-                    bail!("only the owner deletes the group");
+                    bail!("only the owner deletes the folder");
                 }
                 self.client(g.char_id)?.delete_group(&g.id).await?;
                 self.store.share_group_forget(&g.id);
@@ -408,7 +408,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
             .map(|(e, k)| Ok((e, serde_json::to_string(&crypto::wrap_key(&keys.enc, &k, &wrap_ctx(e)))?)))
             .collect::<Result<_>>()?;
         if !wrapped.iter().any(|(e, _)| *e == g.epoch) {
-            bail!("no key for the group");
+            bail!("no key for the folder");
         }
         let mut roster = self.roster(&g.id);
         let device = Device::of(keys, &req.row.label);
@@ -464,7 +464,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
         let mut first_err = None;
         for g in self.store.share_groups() {
             if let Err(e) = self.sync_group(&g).await {
-                first_err.get_or_insert(e.context(format!("group {}", g.name)));
+                first_err.get_or_insert(e.context(format!("folder {}", g.name)));
             }
         }
         if let Err(e) = self.send_outbox().await {
@@ -593,7 +593,7 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
     fn apply(&self, g: &ShareGroup, roster: &mut Roster, author: i64, blob: &str) -> Result<bool> {
         let env: Envelope = serde_json::from_str(blob)?;
         if env.group != g.id || env.author != author {
-            bail!("the entry claims another group or author than the server recorded");
+            bail!("the entry claims another folder or author than the server recorded");
         }
         if !self.store.share_mark_applied(&env.op_id, &g.id) {
             return Ok(false);

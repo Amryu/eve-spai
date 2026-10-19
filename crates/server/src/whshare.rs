@@ -53,7 +53,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
 }
 
 async fn gone() -> AppError {
-    AppError::Gone("Wormhole sharing was upgraded. Update EVE Spai (0.13 or later) to keep syncing; your groups are kept.".into())
+    AppError::Gone("Wormhole sharing was upgraded. Update EVE Spai (0.13 or later) to keep syncing; your folders are kept.".into())
 }
 
 /// Holds each character to its request budget. A request without a valid session goes through
@@ -138,7 +138,7 @@ async fn member(st: &AppState, group: &str, char_id: i64) -> Result<String, AppE
 }
 
 /// What a member's app hears about a group its owner deleted.
-pub const GROUP_DELETED: &str = "this group was deleted by its owner";
+pub const GROUP_DELETED: &str = "this folder was deleted by its owner";
 
 /// The owner ends the group: members, keys, the log and invites go with it.
 async fn delete_group(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(g): Path<String>) -> Result<StatusCode, AppError> {

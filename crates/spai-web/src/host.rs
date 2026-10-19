@@ -643,7 +643,7 @@ impl WhHost for WebHost {
                 ui.label("jumps");
             });
             ui.separator();
-            if ui.button(format!("{}  Sharing\u{2026}", icon::USERS_THREE)).on_hover_text("The group: members, invites and roles").clicked() {
+            if ui.button(format!("{}  Sharing\u{2026}", icon::USERS_THREE)).on_hover_text("The folder: members, invites and roles").clicked() {
                 self.open_group = true;
                 ui.close();
             }

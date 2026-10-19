@@ -39,6 +39,8 @@ pub struct MapData {
     pub real: Vec<MapSystem>,
     pub regions: Vec<(i64, String)>,
     pub network: Network,
+    /// The cyno beacons in `network`, by system id.
+    pub beacons: HashSet<i64>,
     pub bridges: HashMap<(i64, i64), (bool, bool)>,
     pub overlay: WhOverlay,
     /// Holes with both ends known, both ways, for routes.
@@ -54,7 +56,7 @@ pub struct MapData {
 impl MapData {
     pub fn new(all: Vec<MapSystem>, real: Vec<MapSystem>, regions: Vec<(i64, String)>) -> Self {
         let real_at = real.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
-        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new(), real_at, network_gen: 0 }
+        MapData { all, real, regions, network: Network::default(), beacons: HashSet::new(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new(), real_at, network_gen: 0 }
     }
 
     pub fn set_holes(&mut self, holes: &[Wormhole]) {
@@ -75,6 +77,7 @@ impl MapData {
 
     pub fn set_network(&mut self, network: Network, geo: &Systems) {
         self.bridges = layers::bridge_directions(&network.list(), geo, &network.capital, network.max_zone.max(1));
+        self.beacons = network.beacons.iter().filter_map(|n| geo.lookup(n)).map(|i| i.id).collect();
         self.network = network;
         self.network_gen += 1;
     }
@@ -113,11 +116,13 @@ pub struct Layers {
     /// Holes to Thera and to Turnur drawn, as the desktop's map toggles them.
     pub thera: bool,
     pub turnur: bool,
+    /// The Imperium's cyno beacons, ringed as the desktop's map rings them.
+    pub beacons: bool,
 }
 
 impl Default for Layers {
     fn default() -> Self {
-        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false, scout: true, thera: false, turnur: false }
+        Layers { wormholes: true, jove: true, bridges: true, jump_range: false, zones: false, scout: true, thera: false, turnur: false, beacons: true }
     }
 }
 
@@ -289,6 +294,10 @@ impl StarMap {
             if anchors.contains(&s.id) {
                 painter.circle_stroke(p, dot + 7.0, egui::Stroke::new(2.0, visuals.hyperlink_color));
             }
+            if self.layers.beacons && d.beacons.contains(&s.id) {
+                painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(2.0, layers::BEACON_COLOR));
+                painter.circle_filled(p, 2.0, layers::BEACON_COLOR);
+            }
             if self.selected == Some(s.id) {
                 painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             } else if hovered == Some(s.id) {
@@ -378,6 +387,8 @@ impl StarMap {
                 ui.checkbox(&mut self.layers.wormholes, "Wormholes");
                 ui.checkbox(&mut self.layers.bridges, "Ansiblex");
                 ui.checkbox(&mut self.layers.jove, "Jove Observatories").on_hover_text("Where drifter holes can lead to; shown once system names show");
+                ui.add_enabled(!d.beacons.is_empty(), egui::Checkbox::new(&mut self.layers.beacons, format!("{}  Cyno beacons", egui_phosphor::regular::CROSSHAIR_SIMPLE)))
+                    .on_hover_text("The Imperium's Pharolux cyno beacons");
             });
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.layers.scout, "EVE-Scout")

@@ -266,7 +266,7 @@ pub fn open_genesis(env: &Envelope, key: &Key) -> Result<Op> {
     let op: Op = serde_json::from_slice(&plain)?;
     match &op {
         Op::Genesis { owner, .. } if owner.char_id == env.author => open_op(env, key, owner),
-        _ => bail!("the group's first entry is not its genesis"),
+        _ => bail!("the folder's first entry is not its genesis"),
     }
 }
 

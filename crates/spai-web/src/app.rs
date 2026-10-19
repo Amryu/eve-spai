@@ -463,7 +463,7 @@ impl WebApp {
         }
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.25);
-            ui.heading("You were invited to a wormhole group");
+            ui.heading("You were invited to a wormhole folder");
             ui.label("Open the invite in EVE Spai if you use it, or use the wormhole map here in the browser.");
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -574,11 +574,11 @@ impl WebApp {
         ui.add_space(6.0);
         if !in_groups {
             ui.label(
-                egui::RichText::new("No wormhole group yet: the map shows EVE-Scout's Thera and Turnur holes. Make a group of your own, or join one with an invite link.")
+                egui::RichText::new("No wormhole folder yet: the map shows EVE-Scout's Thera and Turnur holes. Make a folder of your own, or join one with an invite link.")
                     .weak(),
             );
         }
-        egui::CollapsingHeader::new(format!("{}  New wormhole group", icon::PLUS)).id_salt("web_new_group").default_open(!in_groups).show(ui, |ui| {
+        egui::CollapsingHeader::new(format!("{}  New wormhole folder", icon::PLUS)).id_salt("web_new_group").default_open(!in_groups).show(ui, |ui| {
             let full = access.owned >= access.max_owned;
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.new_group).hint_text("Its name").desired_width(260.0));
@@ -591,7 +591,7 @@ impl WebApp {
                     self.open_phrase = Some(true);
                 }
             });
-            ui.label(egui::RichText::new(format!("You own {} of the {} groups one character may have, and are in {} of {}.", access.owned, access.max_owned, access.groups, access.max_groups)).weak());
+            ui.label(egui::RichText::new(format!("You own {} of the {} folders one character may have, and are in {} of {}.", access.owned, access.max_owned, access.groups, access.max_groups)).weak());
         });
         egui::CollapsingHeader::new(format!("{}  Join with an invite link", icon::LINK)).id_salt("web_join_group").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -606,7 +606,7 @@ impl WebApp {
         egui::CollapsingHeader::new(format!("{}  Recovery phrase", icon::KEY)).id_salt("web_recovery").open(self.open_phrase.take()).show(ui, |ui| {
             match keys.phrase() {
                 Some(words) => {
-                    ui.label("This browser's keys come from 24 words. Should the browser lose its data, typing them here brings this browser back into its groups, with no new invite. Anyone with them can act as this browser: keep them like a password.");
+                    ui.label("This browser's keys come from 24 words. Should the browser lose its data, typing them here brings this browser back into its folders, with no new invite. Anyone with them can act as this browser: keep them like a password.");
                     if self.show_phrase {
                         egui::Grid::new("web_phrase").num_columns(4).spacing([18.0, 4.0]).show(ui, |ui| {
                             for (i, w) in words.split(' ').enumerate() {
@@ -629,7 +629,7 @@ impl WebApp {
                     }
                 }
                 None => {
-                    ui.label("This browser's keys are from before recovery phrases, so they cannot be written down. Setting up a phrase moves this browser onto new keys in every group it is in, then shows the words.");
+                    ui.label("This browser's keys are from before recovery phrases, so they cannot be written down. Setting up a phrase moves this browser onto new keys in every folder it is in, then shows the words.");
                     if working {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -648,10 +648,10 @@ impl WebApp {
             if let Some(e) = &self.restore_error {
                 ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
             }
-            let warn = if in_groups { " This browser's current keys, and the groups only they are in, are left behind." } else { "" };
+            let warn = if in_groups { " This browser's current keys, and the folders only they are in, are left behind." } else { "" };
             if ui
                 .add_enabled(!working && !self.restore_text.trim().is_empty(), egui::Button::new("Restore"))
-                .on_hover_text(format!("Becomes the browser the words stand for, and takes up its groups.{warn}"))
+                .on_hover_text(format!("Becomes the browser the words stand for, and takes up its folders.{warn}"))
                 .clicked()
             {
                 match spai_share::recovery::seed_of(&self.restore_text) {
@@ -685,13 +685,13 @@ impl WebApp {
                 return false;
             }
             if page::load::<(String, String)>(auth::INVITE).is_some() {
-                say(ui, &["You were invited to a wormhole group".into(), "Sign in with EVE, as the character the invite is for, to ask to join.".into()]);
+                say(ui, &["You were invited to a wormhole folder".into(), "Sign in with EVE, as the character the invite is for, to ask to join.".into()]);
             } else {
                 say(
                     ui,
                     &[
                         "EVE Spai wormhole map".into(),
-                        "For pilots of The Imperium: the star map and route planner with the Ansiblexes and cyno beacons, EVE-Scout's Thera and Turnur holes, and wormhole groups shared with EVE Spai.".into(),
+                        "For pilots of The Imperium: the star map and route planner with the Ansiblexes and cyno beacons, EVE-Scout's Thera and Turnur holes, and wormhole folders shared with EVE Spai.".into(),
                         "Sign in with EVE to use it.".into(),
                     ],
                 );
@@ -770,7 +770,7 @@ impl eframe::App for WebApp {
                     ui.separator();
                     ui.menu_value(&mut self.tab, Tab::Wormholes, "Wormholes");
                     ui.menu_value(&mut self.tab, Tab::Map, "Map");
-                    ui.menu_value(&mut self.tab, Tab::Group, "Group");
+                    ui.menu_value(&mut self.tab, Tab::Group, "Folders");
                     ui.separator();
                     if self.tab == Tab::Wormholes {
                         use crate::host::WhView;
@@ -804,7 +804,7 @@ impl eframe::App for WebApp {
                     let groups = sync.store.share_groups();
                     let names: Vec<String> = groups.iter().map(|g| format!("{} ({})", g.name, g.role.label())).collect();
                     if !names.is_empty() {
-                        ui.label(egui::RichText::new(names.join(", ")).weak()).on_hover_text("Your groups, and your role in each: a viewer sees the map and shares nothing");
+                        ui.label(egui::RichText::new(names.join(", ")).weak()).on_hover_text("Your folders, and your role in each: a viewer sees the map and shares nothing");
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {

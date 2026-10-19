@@ -752,7 +752,7 @@ impl RoutePlan {
                     for z in 0..=spai_core::ansiblex::MAX_ZONE {
                         let mut label = text(z);
                         if z == group {
-                            label.push_str(" (group's)");
+                            label.push_str(" (default)");
                         }
                         if ui.menu_label(current == z, label).clicked() && current != z {
                             self.zone = (z != group).then_some(z);
@@ -761,7 +761,7 @@ impl RoutePlan {
                     }
                 })
                 .response
-                .on_hover_text("For this route only. The group's limit stays as it is.");
+                .on_hover_text("For this route only. The default stays as it is.");
         });
         if changed {
             self.replan();
@@ -1085,7 +1085,7 @@ impl RoutePlan {
         ui.horizontal(|ui| {
             ui.label("Cyno");
             let mut b = self.prefs.ahead_beacons;
-            ui.menu_value(&mut b, true, "Beacons only").on_hover_text("Land only on the group's cyno beacons");
+            ui.menu_value(&mut b, true, "Beacons only").on_hover_text("Land only on The Imperium's cyno beacons");
             ui.menu_value(&mut b, false, "Any").on_hover_text("Land anywhere a cyno can be lit");
             if b != self.prefs.ahead_beacons {
                 self.prefs.ahead_beacons = b;
@@ -1101,7 +1101,7 @@ impl RoutePlan {
     /// Whether routes go through the group's holes, and which: kinds, mass, time left, size, and
     /// the holes switched off by hand.
     fn hole_options(&mut self, ui: &mut egui::Ui) {
-        if ui.checkbox(&mut self.prefs.via_holes, "Route via the group's wormholes").changed() {
+        if ui.checkbox(&mut self.prefs.via_holes, "Route via the folder's wormholes").changed() {
             self.dirty = true;
             self.replan();
         }
@@ -1336,7 +1336,7 @@ mod tests {
         p.zone = None;
         p.replan();
         p.update(&input);
-        assert_eq!(p.route().unwrap().path.len(), 2, "the group's limit again");
+        assert_eq!(p.route().unwrap().path.len(), 2, "the default limit again");
     }
 
     #[test]

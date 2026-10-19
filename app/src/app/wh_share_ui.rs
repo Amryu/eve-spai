@@ -165,7 +165,7 @@ impl SpaiApp {
             return Some((trf!("{icon}  Sync failed", icon = icon::CLOUD_WARNING), crate::theme::standing::WARNING, e));
         }
         if status.busy {
-            return Some((trf!("{icon}  Syncing", icon = icon::CLOUD_ARROW_UP), weak, tr!("Sending and fetching group changes").into()));
+            return Some((trf!("{icon}  Syncing", icon = icon::CLOUD_ARROW_UP), weak, tr!("Sending and fetching folder changes").into()));
         }
         let last = status.synced_at.values().copied().min();
         let names: Vec<&str> = self.wh_share.groups.iter().map(|g| g.name.as_str()).collect();
@@ -202,7 +202,7 @@ impl SpaiApp {
         let table_w = {
             let font = egui::TextStyle::Body.resolve(&ctx.global_style());
             let w = |t: &str| ctx.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x);
-            let names = groups.iter().map(|g| w(&g.name)).fold(w(tr!("Group")), f32::max);
+            let names = groups.iter().map(|g| w(&g.name)).fold(w(tr!("Folder")), f32::max);
             names + 2.0 * (w(tr!("Wormholes")) + w(tr!("Probe scans"))) + w(tr!("Hide")) + 20.0 + 5.0 * 14.0 + 16.0
         };
         let shown = egui::Window::new(trf!("{icon}  Wormhole sharing", icon = icon::USERS_THREE))
@@ -217,7 +217,7 @@ impl SpaiApp {
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        tr!("Groups are end-to-end encrypted: the server stores only what it cannot read, and only members hold the keys."),
+                        tr!("Folders are end-to-end encrypted: the server stores only what it cannot read, and only members hold the keys."),
                     )
                     .weak(),
                 );
@@ -252,19 +252,19 @@ impl SpaiApp {
                 }
                 ui.add_space(6.0);
                 if !groups.is_empty() {
-                    ui.label(egui::RichText::new(tr!("What each group gets and gives")).strong());
+                    ui.label(egui::RichText::new(tr!("What each folder gets and gives")).strong());
                     // Both ways: a language with longer column titles scrolls the table rather than widening
                     // the window over the dialogs that open beside it.
                     egui::ScrollArea::both().id_salt("wh_share_prefs_scroll").max_height(160.0).max_width(ui.available_width()).show(ui, |ui| {
                     egui::Grid::new("wh_share_prefs").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
                         ui.label("");
-                        ui.label(trf!("{icon}  Send", icon = icon::UPLOAD_SIMPLE)).on_hover_text(tr!("What of yours goes to the group. What came from another group never does."));
+                        ui.label(trf!("{icon}  Send", icon = icon::UPLOAD_SIMPLE)).on_hover_text(tr!("What of yours goes to the folder. What came from another folder never does."));
                         ui.label("");
-                        ui.label(trf!("{icon}  Receive", icon = icon::DOWNLOAD_SIMPLE)).on_hover_text(tr!("What the group's members share that is taken in here"));
+                        ui.label(trf!("{icon}  Receive", icon = icon::DOWNLOAD_SIMPLE)).on_hover_text(tr!("What the folder's members share that is taken in here"));
                         ui.label("");
                         ui.label("");
                         ui.end_row();
-                        ui.label(egui::RichText::new(tr!("Group")).weak());
+                        ui.label(egui::RichText::new(tr!("Folder")).weak());
                         for _ in 0..2 {
                             ui.label(egui::RichText::new(tr!("Wormholes")).weak());
                             ui.label(egui::RichText::new(tr!("Probe scans")).weak());
@@ -276,7 +276,7 @@ impl SpaiApp {
                             let mut p = was;
                             ui.label(&g.name);
                             let viewer = !g.role.can_write();
-                            let why = "A viewer sees the group's wormholes and shares nothing";
+                            let why = "A viewer sees the folder's wormholes and shares nothing";
                             ui.add_enabled(!viewer, egui::Checkbox::without_text(&mut p.send_holes))
                                 .on_hover_text(trf!("Send your wormholes to {v}", v = g.name))
                                 .on_disabled_hover_text(why);
@@ -301,7 +301,7 @@ impl SpaiApp {
                 let groups_h = (ctx.content_rect().height() * 0.5).max(200.0);
                 egui::ScrollArea::vertical().id_salt("wh_share_groups").max_height(groups_h).show(ui, |ui| {
                     if groups.is_empty() {
-                        ui.label(egui::RichText::new(tr!("Not in any group yet.")).weak());
+                        ui.label(egui::RichText::new(tr!("Not in any folder yet.")).weak());
                     }
                     for g in &groups {
                         let has_key = self.store.as_ref().is_some_and(|s| s.share_key(&g.id, g.epoch).is_some());
@@ -323,11 +323,11 @@ impl SpaiApp {
                                 let owner = members.iter().find(|m| m.role == Role::Owner).map_or("", |m| m.name.as_str());
                                 let n = members.len();
                                 ui.label(if n == 1 { trf!("1 member \u{b7} owner {owner}", owner = owner) } else { trf!("{n} members \u{b7} owner {owner}", n = n, owner = owner) });
-                                if ui.button(trf!("{icon}  Members\u{2026}", icon = icon::USERS)).on_hover_text(tr!("Everyone in the group, their roles and keys")).clicked() {
+                                if ui.button(trf!("{icon}  Members\u{2026}", icon = icon::USERS)).on_hover_text(tr!("Everyone in the folder, their roles and keys")).clicked() {
                                     self.wh_share.members_of = Some(g.id.clone());
                                     self.wh_share.members_filter.clear();
                                 }
-                                if g.role == Role::Owner && has_key && ui.button(icon::TRASH).on_hover_text(tr!("Delete the group for every member")).clicked() {
+                                if g.role == Role::Owner && has_key && ui.button(icon::TRASH).on_hover_text(tr!("Delete the folder for every member")).clicked() {
                                     self.wh_share.delete = Some((g.id.clone(), g.name.clone(), String::new()));
                                 }
                             });
@@ -373,7 +373,7 @@ impl SpaiApp {
                                         };
                                         if !admin {
                                             if existing.is_none()
-                                                && ui.add_enabled(r.verified, egui::Button::new(tr!("Approve as viewer"))).on_hover_text(tr!("Sees the group's wormholes, shares nothing")).clicked()
+                                                && ui.add_enabled(r.verified, egui::Button::new(tr!("Approve as viewer"))).on_hover_text(tr!("Sees the folder's wormholes, shares nothing")).clicked()
                                             {
                                                 cmd = Some(approve(Role::Viewer));
                                             }
@@ -385,7 +385,7 @@ impl SpaiApp {
                                             if ui.add_enabled(r.verified, egui::Button::new(tr!("Approve"))).on_hover_text(tr!("As a member: sees and shares")).clicked() {
                                                 cmd = Some(approve(Role::Member));
                                             }
-                                            if ui.add_enabled(r.verified, egui::Button::new(tr!("As viewer"))).on_hover_text(tr!("Sees the group's wormholes, shares nothing")).clicked() {
+                                            if ui.add_enabled(r.verified, egui::Button::new(tr!("As viewer"))).on_hover_text(tr!("Sees the folder's wormholes, shares nothing")).clicked() {
                                                 cmd = Some(approve(Role::Viewer));
                                             }
                                         }
@@ -413,7 +413,7 @@ impl SpaiApp {
                                             .selected_text(if *v { "as Viewer" } else { "as Member" })
                                             .show_ui(ui, |ui| {
                                                 ui.menu_value(v, false, tr!("as Member")).on_hover_text(tr!("Sees and shares"));
-                                                ui.menu_value(v, true, tr!("as Viewer")).on_hover_text(tr!("Sees the group's wormholes, shares nothing"));
+                                                ui.menu_value(v, true, tr!("as Viewer")).on_hover_text(tr!("Sees the folder's wormholes, shares nothing"));
                                             });
                                     } else {
                                         ui.label(egui::RichText::new(tr!("as Viewer")).weak());
@@ -466,17 +466,17 @@ impl SpaiApp {
                 let char_id = self.wh_share.char_id;
                 let new_prefs = self.wh_share.new_prefs.get_or_insert_with(SharePrefs::default);
                 ui.horizontal(|ui| {
-                    ui.label(tr!("A new group gets"));
+                    ui.label(tr!("A new folder gets"));
                     ui.checkbox(&mut new_prefs.send_holes, tr!("my wormholes"));
                     ui.checkbox(&mut new_prefs.send_sigs, tr!("my probe scans"));
                 })
                 .response
-                .on_hover_text(tr!("What of yours goes to a group you create or join here. Change it for each group above later."));
+                .on_hover_text(tr!("What of yours goes to a folder you create or join here. Change it for each folder above later."));
                 let new_prefs = *new_prefs;
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.new_name).hint_text(tr!("Group name")).desired_width(200.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.wh_share.new_name).hint_text(tr!("Folder name")).desired_width(200.0));
                     let ok = char_id.is_some() && !self.wh_share.new_name.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Create group", icon = icon::PLUS))).clicked() {
+                    if ui.add_enabled(ok, egui::Button::new(trf!("{icon}  Create folder", icon = icon::PLUS))).clicked() {
                         let char_name = chars.iter().find(|c| Some(c.0) == char_id).map(|c| c.1.clone()).unwrap_or_default();
                         cmd = Some(Cmd::Create {
                             name: self.wh_share.new_name.trim().to_owned(),
@@ -527,15 +527,15 @@ impl SpaiApp {
             .default_pos(egui::pos2(self.wh_share.right_edge.map_or(ctx.content_rect().center().x, |r| r + 8.0), ctx.content_rect().top() + 150.0))
             .default_width(380.0)
             .show(ctx, |ui| {
-                ui.label(tr!("This ends the group for every member: its members, keys and log go, and nothing more syncs. It cannot be undone."));
+                ui.label(tr!("This deletes the folder for every member: its members, keys and log go, and nothing more syncs. It cannot be undone."));
                 ui.label(tr!("Holes already on members' maps stay until they expire."));
                 ui.add_space(6.0);
-                ui.label(trf!("Type the group's name, {name}, to delete it:", name = name));
+                ui.label(trf!("Type the folder's name, {name}, to delete it:", name = name));
                 let edit = ui.add(egui::TextEdit::singleline(&mut typed).hint_text(name.as_str()).desired_width(260.0));
                 let matches = typed == name;
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let delete = egui::Button::new(egui::RichText::new(tr!("Delete the group")).color(if matches { crate::theme::standing::HOSTILE } else { ui.visuals().weak_text_color() }));
+                    let delete = egui::Button::new(egui::RichText::new(tr!("Delete the folder")).color(if matches { crate::theme::standing::HOSTILE } else { ui.visuals().weak_text_color() }));
                     go = ui.add_enabled(matches, delete).clicked() || (matches && edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                     cancel = ui.button(tr!("Cancel")).clicked();
                 });
