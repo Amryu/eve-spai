@@ -9,6 +9,39 @@ const DOT_PER_SPACING: f32 = 0.1;
 /// The usual gap between systems, in points, from which the universe map names them.
 const LABELS_FROM_SPACING: f32 = 40.0;
 
+/// Placed label rectangles, bucketed by screen area so a new label is only checked against the
+/// ones near it, not every label already placed.
+#[derive(Default)]
+struct RectGrid(std::collections::HashMap<(i32, i32), Vec<egui::Rect>>);
+
+impl RectGrid {
+    const CELL: f32 = 96.0;
+
+    fn cells(r: egui::Rect) -> impl Iterator<Item = (i32, i32)> {
+        let c = |v: f32| (v / Self::CELL).floor() as i32;
+        let (x0, x1, y0, y1) = (c(r.min.x), c(r.max.x), c(r.min.y), c(r.max.y));
+        (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| (x, y)))
+    }
+
+    fn overlaps(&self, r: egui::Rect) -> bool {
+        Self::cells(r).any(|k| self.0.get(&k).is_some_and(|v| v.iter().any(|p| p.intersects(r))))
+    }
+
+    fn insert(&mut self, r: egui::Rect) {
+        for k in Self::cells(r) {
+            self.0.entry(k).or_default().push(r);
+        }
+    }
+}
+
+/// The icons the map draws over its systems, as [`SpaiApp::map_icons`] builds them.
+pub(crate) struct MapIcons {
+    lead: std::collections::HashMap<i64, Vec<(&'static str, egui::Color32)>>,
+    holes: std::collections::HashMap<i64, (super::HoleMark, bool)>,
+    upgrades: std::collections::HashMap<i64, Vec<String>>,
+    storms: Vec<(i64, crate::systemstatus::StormKind)>,
+}
+
 /// What the bridge directions were worked out from.
 #[derive(PartialEq)]
 pub(crate) struct MapBridgeKey {
@@ -113,6 +146,102 @@ impl SpaiApp {
         let r = g.route_with(from, to, true, true, &holes, |_| true).map(std::sync::Arc::new);
         self.map_ingame_route = Some((key, std::time::Instant::now(), r.clone()));
         r
+    }
+
+    /// The icons over the systems: holes, Jove towers, storms, notes, camps and sov upgrades. They
+    /// follow data that changes in seconds, not frames, so they are rebuilt a few times a second
+    /// rather than every frame.
+    fn map_icons(&mut self, ov: MapOverlays, show_sys_labels: bool, zoomed: bool, weak: egui::Color32) -> std::sync::Arc<MapIcons> {
+        let key = (ov, show_sys_labels, zoomed, weak, self.map_draw.as_ptr() as usize, self.map_draw.len());
+        if let Some((k, at, icons)) = &self.map_icons {
+            if *k == key && at.elapsed() < std::time::Duration::from_millis(250) {
+                return icons.clone();
+            }
+        }
+        let mut lead_icons: std::collections::HashMap<i64, Vec<(&'static str, egui::Color32)>> =
+            std::collections::HashMap::new();
+        // Drawn ahead of the other icons, composed from the kinds of hole the system has.
+        let hole_marks: std::collections::HashMap<i64, (super::HoleMark, bool)> = if ov.wormholes {
+            self.wh_overlay.marks.iter().map(|(id, m)| (*id, (m.clone(), self.wh_overlay.jspace_blocked.contains(id)))).collect()
+        } else {
+            Default::default()
+        };
+        // Zoomed out a tower per system is clutter: a glow under the dot says it until names show.
+        if ov.jove && show_sys_labels {
+            for s in &self.map_draw {
+                if crate::jove::has(s.id) {
+                    lead_icons
+                        .entry(s.id)
+                        .or_default()
+                        .push((egui_phosphor::regular::CELL_TOWER, JOVE_COLOR));
+                }
+            }
+        }
+        let storms: Vec<(i64, crate::systemstatus::StormKind)> = if ov.storms {
+            self.system_status.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(|(id, f)| Some((*id, f.storm.as_ref()?.kind))).collect()
+        } else {
+            Vec::new()
+        };
+        if show_sys_labels {
+            for (id, kind) in &storms {
+                lead_icons.entry(*id).or_default().push((egui_phosphor::regular::CLOUD_LIGHTNING, storm_color(*kind)));
+            }
+        }
+        if ov.notes {
+            for (id, m) in &self.notes_view.systems {
+                let icons = lead_icons.entry(*id).or_default();
+                // One marker per tag, so a second tag is visible without hovering. Capped so a heavily
+                // tagged system does not push its name off across its neighbours.
+                for t in self.notes_view.tags_of(m).take(MAP_TAG_MARKS) {
+                    icons.push((egui_phosphor::regular::TAG, crate::notes::color32(t.color)));
+                }
+                if m.has_note() {
+                    icons.push((egui_phosphor::regular::NOTE, weak));
+                }
+            }
+        }
+        if ov.camps {
+            let now = crate::clock::utc().timestamp();
+            if now - self.camped_cache_at >= 2 {
+                self.camped_cache = self.camps.lock().unwrap().camped(now);
+                self.camped_cache_at = now;
+            }
+            for (id, level) in &self.camped_cache {
+                lead_icons
+                    .entry(*id)
+                    .or_default()
+                    .push((egui_phosphor::regular::CAMPFIRE, camp_color(*level)));
+            }
+        }
+
+        let mut upgrade_icons: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::new();
+        if ov.upgrades && zoomed {
+            let mut by_name: std::collections::HashMap<String, Vec<&str>> =
+                std::collections::HashMap::new();
+            for u in &self.settings.sov_upgrades {
+                by_name.entry(u.system.to_lowercase()).or_default().push(u.upgrade.as_str());
+            }
+            let kinds = self.upgrade_kinds;
+            for s in &self.map_draw {
+                if let Some(ups) = by_name.get(&s.name.to_lowercase()) {
+                    let parts: Vec<String> = ups
+                        .iter()
+                        .flat_map(|u| split_upgrade_label(u))
+                        .filter(|up| kinds[upgrade_kind(up) as usize])
+                        .take(6)
+                        .map(str::to_owned)
+                        .collect();
+                    if !parts.is_empty() {
+                        upgrade_icons.insert(s.id, parts);
+                    }
+                }
+            }
+        }
+
+        let icons = std::sync::Arc::new(MapIcons { lead: lead_icons, holes: hole_marks, upgrades: upgrade_icons, storms });
+        self.map_icons = Some((key, std::time::Instant::now(), icons.clone()));
+        icons
     }
 
     /// The colours at each end of a bridge from `a` to `b`: the zone a jump landing there is priced
@@ -715,93 +844,20 @@ impl SpaiApp {
         let icon_w = icon_h + 3.0;
         let icon_font = egui::FontId::proportional(icon_h);
 
-        let mut lead_icons: std::collections::HashMap<i64, Vec<(&str, egui::Color32)>> =
-            std::collections::HashMap::new();
-        // Drawn ahead of the other icons, composed from the kinds of hole the system has.
-        let hole_marks: std::collections::HashMap<i64, (super::HoleMark, bool)> = if ov.wormholes {
-            self.wh_overlay.marks.iter().map(|(id, m)| (*id, (m.clone(), self.wh_overlay.jspace_blocked.contains(id)))).collect()
-        } else {
-            Default::default()
-        };
+        let icons = self.map_icons(ov, show_sys_labels, zoomed, ui.visuals().weak_text_color());
+        let (lead_icons, hole_marks, upgrade_icons, storms) = (&icons.lead, &icons.holes, &icons.upgrades, &icons.storms);
         let hole_slots = |id: i64| hole_marks.get(&id).map_or(0.0, |(m, _)| hole_mark_slots(m));
-        // Zoomed out a tower per system is clutter: a glow under the dot says it until names show.
-        if ov.jove && show_sys_labels {
-            for s in &self.map_draw {
-                if crate::jove::has(s.id) {
-                    lead_icons
-                        .entry(s.id)
-                        .or_default()
-                        .push((egui_phosphor::regular::CELL_TOWER, JOVE_COLOR));
-                }
-            }
-        }
-        let storms: Vec<(i64, crate::systemstatus::StormKind)> = if ov.storms {
-            self.system_status.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(|(id, f)| Some((*id, f.storm.as_ref()?.kind))).collect()
-        } else {
-            Vec::new()
-        };
-        if show_sys_labels {
-            for (id, kind) in &storms {
-                lead_icons.entry(*id).or_default().push((egui_phosphor::regular::CLOUD_LIGHTNING, storm_color(*kind)));
-            }
-        }
-        if ov.notes {
-            let weak = ui.visuals().weak_text_color();
-            for (id, m) in &self.notes_view.systems {
-                let icons = lead_icons.entry(*id).or_default();
-                // One marker per tag, so a second tag is visible without hovering. Capped so a heavily
-                // tagged system does not push its name off across its neighbours.
-                for t in self.notes_view.tags_of(m).take(MAP_TAG_MARKS) {
-                    icons.push((egui_phosphor::regular::TAG, crate::notes::color32(t.color)));
-                }
-                if m.has_note() {
-                    icons.push((egui_phosphor::regular::NOTE, weak));
-                }
-            }
-        }
-        if ov.camps {
-            let now = crate::clock::utc().timestamp();
-            if now - self.camped_cache_at >= 2 {
-                self.camped_cache = self.camps.lock().unwrap().camped(now);
-                self.camped_cache_at = now;
-            }
-            for (id, level) in &self.camped_cache {
-                lead_icons
-                    .entry(*id)
-                    .or_default()
-                    .push((egui_phosphor::regular::CAMPFIRE, camp_color(*level)));
-            }
-        }
-
-        let mut upgrade_icons: std::collections::HashMap<i64, Vec<String>> =
-            std::collections::HashMap::new();
-        if ov.upgrades && zoomed {
-            let mut by_name: std::collections::HashMap<String, Vec<&str>> =
-                std::collections::HashMap::new();
-            for u in &self.settings.sov_upgrades {
-                by_name.entry(u.system.to_lowercase()).or_default().push(u.upgrade.as_str());
-            }
-            let kinds = self.upgrade_kinds;
-            for s in &self.map_draw {
-                if let Some(ups) = by_name.get(&s.name.to_lowercase()) {
-                    let parts: Vec<String> = ups
-                        .iter()
-                        .flat_map(|u| split_upgrade_label(u))
-                        .filter(|up| kinds[upgrade_kind(up) as usize])
-                        .take(6)
-                        .map(str::to_owned)
-                        .collect();
-                    if !parts.is_empty() {
-                        upgrade_icons.insert(s.id, parts);
-                    }
-                }
-            }
-        }
 
         let mut label_at: std::collections::HashMap<i64, LabelRow> =
             std::collections::HashMap::new();
         {
-            let mut placed: Vec<egui::Rect> = Vec::new();
+            let mut placed = RectGrid::default();
+            // Widths by system, since the same names are measured every frame.
+            let ppp = ui.ctx().pixels_per_point();
+            if self.map_name_widths.0 != ppp {
+                self.map_name_widths = (ppp, Default::default());
+            }
+            let name_widths = &mut self.map_name_widths.1;
             for s in &self.map_draw {
                 let p = pos[&s.id];
                 if !cull.contains(p) {
@@ -815,10 +871,9 @@ impl SpaiApp {
                 // Extra lift without a name, to clear the halos that ring the bare dot.
                 let mid_y = p.y - dot - if show_sys_labels { 2.0 } else { 8.0 } - icon_h / 2.0;
                 let name_w = if show_sys_labels {
-                    painter
-                        .layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE)
-                        .size()
-                        .x
+                    *name_widths.entry(s.id).or_insert_with(|| {
+                        painter.layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE).size().x
+                    })
                 } else {
                     0.0
                 };
@@ -844,9 +899,9 @@ impl SpaiApp {
                 };
                 // A name is never dropped: one that lands on another is drawn over it on a backdrop.
                 let mut row = lay_at(name_w);
-                row.crowded = row.name_shown && placed.iter().any(|r| r.expand(1.0).intersects(row.rect));
+                row.crowded = row.name_shown && placed.overlaps(row.rect.expand(1.0));
                 if row.name_shown {
-                    placed.push(row.rect);
+                    placed.insert(row.rect);
                 }
                 label_at.insert(s.id, row);
             }
@@ -1041,7 +1096,7 @@ impl SpaiApp {
         }
 
         // Eight storms in all, so each keeps a ring at any zoom.
-        for (id, kind) in &storms {
+        for (id, kind) in storms {
             if let Some(p) = pos.get(id).filter(|p| cull.contains(**p)) {
                 let c = storm_color(*kind);
                 painter.circle_filled(*p, dot + 7.0, c.gamma_multiply(0.18));
@@ -1390,22 +1445,15 @@ impl SpaiApp {
                         painter.rect_filled(r, 3.0, ui.visuals().extreme_bg_color.gamma_multiply(0.85));
                     }
                     // Outlined, so the name survives whatever it lands on: halos, sov icons, routes.
+                    // Laid out once for all eight outline copies.
+                    let halo_col = spai_ui::theme::halo(ui.visuals().text_color());
+                    let halo = painter.layout_no_wrap(s.name.clone(), name_font.clone(), halo_col);
+                    let top_left = |at: egui::Pos2| egui::Align2::LEFT_CENTER.anchor_size(at, halo.size()).min;
                     for off in OUTLINE {
-                        painter.text(
-                            at + off,
-                            egui::Align2::LEFT_CENTER,
-                            &s.name,
-                            name_font.clone(),
-                            spai_ui::theme::halo(ui.visuals().text_color()),
-                        );
+                        painter.galley(top_left(at + off), halo.clone(), halo_col);
                     }
-                    painter.text(
-                        at,
-                        egui::Align2::LEFT_CENTER,
-                        &s.name,
-                        name_font.clone(),
-                        ui.visuals().text_color(),
-                    );
+                    let text = painter.layout_no_wrap(s.name.clone(), name_font.clone(), ui.visuals().text_color());
+                    painter.galley(top_left(at), text, ui.visuals().text_color());
                 }
             }
         }

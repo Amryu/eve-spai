@@ -57,6 +57,9 @@ pub(crate) use spai_ui::wh_form::SysHit;
 
 use spai_ui::star_map::JOVE_COLOR;
 
+/// What the map's system icons were built for.
+type MapIconsKey = (MapOverlays, bool, bool, egui::Color32, usize, usize);
+
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct MapOverlays {
@@ -769,6 +772,8 @@ pub struct SpaiApp {
     /// the bridges change: rebuilding them walked every drawn system's gates each frame.
     map_bridge_dirs: Option<(map_ui::MapBridgeKey, std::sync::Arc<std::collections::HashMap<(i64, i64), (bool, bool)>>)>,
     map_ingame_route: Option<((usize, i64, i64, bool), std::time::Instant, Option<std::sync::Arc<Vec<i64>>>)>,
+    map_icons: Option<(MapIconsKey, std::time::Instant, std::sync::Arc<map_ui::MapIcons>)>,
+    map_name_widths: (f32, std::collections::HashMap<i64, f32>),
     map_gate_segs: Option<((usize, usize, usize, usize), std::sync::Arc<Vec<spai_ui::star_map::GateSeg>>)>,
     ui_facts_at: Option<std::time::Instant>,
     /// The main window's saved position, sent again once it is up.
@@ -1704,6 +1709,8 @@ impl SpaiApp {
             alert_cfg_at: None,
             map_bridge_dirs: None,
             map_gate_segs: None,
+            map_name_widths: (0.0, Default::default()),
+            map_icons: None,
             map_ingame_route: None,
             ui_facts_at: None,
             main_pos_fix: main_pos_fix_at,
