@@ -140,8 +140,17 @@ mod end_to_end {
 
     impl Install {
         fn new(base: &str, secret: &str) -> Self {
-            let device: &'static DeviceKeys = Box::leak(Box::new(DeviceKeys::generate()));
+            Self::with_device(base, secret, DeviceKeys::generate())
+        }
+
+        fn with_device(base: &str, secret: &str, keys: DeviceKeys) -> Self {
+            let device: &'static DeviceKeys = Box::leak(Box::new(keys));
             Install { store: Store::mem(), device, status: Default::default(), env: TestEnv { base: base.to_owned(), secret: secret.to_owned() } }
+        }
+
+        /// This install's store driven by other keys, as a browser moving to new keys does.
+        fn engine_as<'a>(&'a self, device: &'a DeviceKeys) -> Engine<'a, Store, TestEnv> {
+            Engine { store: &self.store, env: &self.env, device, label: DEVICE_LABEL, status: &self.status }
         }
 
         fn engine(&self) -> Engine<'_, Store, TestEnv> {
@@ -198,6 +207,72 @@ mod end_to_end {
         fn hole(&self, sig: &str) -> Option<Wormhole> {
             self.store.wormholes().into_iter().find(|w| w.signature.as_deref() == Some(sig))
         }
+    }
+
+    /// An owner with keys from before recovery phrases moves to keys from a phrase, its member
+    /// keeps syncing with it, the old keys are shut out, and a fresh install brought back from the
+    /// phrase has the group, its name, its roster and its holes.
+    #[test]
+    #[ignore = "needs a running server (SPAI_SHARE_TEST_BASE, SPAI_SHARE_TEST_SECRET)"]
+    fn an_owner_moves_to_a_recovery_phrase_and_comes_back_from_it() {
+        let (Ok(base), Ok(secret)) = (std::env::var("SPAI_SHARE_TEST_BASE"), std::env::var("SPAI_SHARE_TEST_SECRET")) else { return };
+        let owner = 93_000_000 + (crate::clock::utc().timestamp() % 100_000) * 3;
+        let member = owner + 1;
+        let hole = |sig: &str| Wormhole {
+            system_id: 31_000_300,
+            signature: Some(sig.into()),
+            dest: DestClass::Highsec,
+            dest_system_id: Some(30_000_142),
+            source: Source::Manual,
+            reported_at: crate::clock::utc().timestamp(),
+            updated_at: crate::clock::utc().timestamp(),
+            ..Default::default()
+        };
+        let a = Install::new(&base, &secret);
+        let b = Install::new(&base, &secret);
+        a.store.upsert_wormhole(&hole("OLD"));
+        a.run(Cmd::Create { name: "Recovered chain".into(), char_id: owner, char_name: "Owner".into(), prefs: SharePrefs::default() });
+        let g = a.store.share_groups()[0].id.clone();
+        let link = a.invite_as(&g, member, "Pilot M", Role::Member);
+        b.run(Cmd::Join { link, char_id: member, prefs: SharePrefs::default() });
+        a.sync();
+        b.sync();
+        assert!(b.hole("OLD").is_some(), "the member is in");
+
+        let seed = spai_share::recovery::new_seed();
+        let new = DeviceKeys::from_seed(&seed);
+        let old_id = a.device.public().device_id();
+        a.run(Cmd::MoveTo { new: new.public() });
+        // Again, as a browser resuming a move cut short before the old keys went: nothing more to do.
+        a.run(Cmd::MoveTo { new: new.public() });
+        pollster::block_on(a.engine_as(&new).sync_all()).unwrap();
+        pollster::block_on(a.engine_as(&new).command(Cmd::DropDevice { device_id: old_id.clone() })).unwrap();
+
+        b.sync();
+        let owner_devices: Vec<String> = b.store.share_members(&g).into_iter().find(|m| m.char_id == owner).unwrap().devices.into_iter().map(|d| d.id).collect();
+        assert_eq!(owner_devices, vec![new.public().device_id()], "the member's roster has the owner's new keys only");
+        a.store.upsert_wormhole(&hole("NEW"));
+        pollster::block_on(a.engine_as(&new).sync_all()).unwrap();
+        b.sync();
+        assert!(b.hole("NEW").is_some(), "what the new keys share reaches the member");
+        assert!(pollster::block_on(a.client(owner).keys(&g)).is_err(), "the old keys are shut out");
+
+        let words = spai_share::recovery::phrase(&seed);
+        let c = Install::with_device(&base, &secret, spai_share::recovery::keys_of(&words).unwrap());
+        c.run(Cmd::Recover { char_id: owner, prefs: SharePrefs::default() });
+        c.sync();
+        let groups = c.store.share_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!((groups[0].name.as_str(), groups[0].role), ("Recovered chain", Role::Owner));
+        assert_eq!(c.store.share_members(&g).len(), 2);
+        assert!(c.hole("OLD").is_some() && c.hole("NEW").is_some(), "the holes come back from the log");
+        // And it can manage the group: an invite it makes lets someone in.
+        let d = Install::new(&base, &secret);
+        let link = c.invite_as(&g, member + 1, "Pilot N", Role::Viewer);
+        d.run(Cmd::Join { link, char_id: member + 1, prefs: SharePrefs::default() });
+        c.sync();
+        d.sync();
+        assert!(d.hole("NEW").is_some(), "the recovered owner let a viewer in");
     }
 
     #[test]

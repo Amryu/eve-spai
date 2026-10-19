@@ -258,6 +258,18 @@ pub fn open_op(env: &Envelope, key: &Key, author: &Member) -> Result<Op> {
     Ok(serde_json::from_slice(&plain)?)
 }
 
+/// A group's first entry, read with no roster to check it against: its owner signs it with the
+/// keys it names. Only for a device that knows nothing of the group yet (a recovered one); the
+/// group key it is sealed with is what makes it the group's.
+pub fn open_genesis(env: &Envelope, key: &Key) -> Result<Op> {
+    let plain = crypto::open(key, &context(&env.group, env.epoch, &env.op_id), &env.sealed)?;
+    let op: Op = serde_json::from_slice(&plain)?;
+    match &op {
+        Op::Genesis { owner, .. } if owner.char_id == env.author => open_op(env, key, owner),
+        _ => bail!("the group's first entry is not its genesis"),
+    }
+}
+
 /// Who is in a group, built only from signed membership entries. An entry counts only when its
 /// author could make it at the time: the owner creates, admins add and remove, the owner sets roles.
 #[derive(Clone, Debug, Default, PartialEq)]

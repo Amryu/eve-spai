@@ -77,6 +77,14 @@ impl<T: Transport> Client<T> {
         v["id"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("no group id"))
     }
 
+    /// The groups the character is in: id, role and current epoch.
+    pub async fn groups(&self) -> Result<Vec<(String, String, u32)>> {
+        let v: Vec<Value> = self.get("/groups").await?;
+        Ok(v.iter()
+            .filter_map(|g| Some((g["id"].as_str()?.to_owned(), g["role"].as_str().unwrap_or("member").to_owned(), g["epoch"].as_u64().unwrap_or(0) as u32)))
+            .collect())
+    }
+
     /// Ends the group for everyone; the owner only.
     pub async fn delete_group(&self, g: &str) -> Result<()> {
         self.call(Method::Delete, &format!("/groups/{g}"), None).await?;

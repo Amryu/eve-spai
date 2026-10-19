@@ -12,7 +12,7 @@ use crate::auth::{self, Auth};
 use crate::host::WebHost;
 use crate::page;
 use crate::starmap::{MapData, Network, StarMap};
-use crate::sync::{invite_link, Sync};
+use crate::sync::{invite_link, KeyJob, Sync};
 
 type Loading = Arc<Mutex<Option<Result<Universe, String>>>>;
 
@@ -42,6 +42,28 @@ struct SavedView {
 const VIEW_VERSION: u8 = 2;
 /// EVE-Scout's feed changes as its scouts report; five minutes, as the desktop polls it.
 const SCOUT_EVERY: i64 = 300;
+
+/// What `/me/access` answers.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+struct Access {
+    imperium: bool,
+    #[serde(default)]
+    owned: u32,
+    #[serde(default)]
+    groups: u32,
+    #[serde(default = "ten")]
+    max_owned: u32,
+    #[serde(default = "hundred")]
+    max_groups: u32,
+}
+
+fn ten() -> u32 {
+    10
+}
+
+fn hundred() -> u32 {
+    100
+}
 
 pub struct WebApp {
     loading: Loading,
@@ -78,6 +100,23 @@ pub struct WebApp {
     scout_changed: bool,
     /// The view as last saved, to save it again only when it changes.
     view_saved: Option<SavedView>,
+    /// Whether the signed-in character may use the site, as the server read it from EVE.
+    access: Arc<Mutex<Option<Result<Access, String>>>>,
+    /// The character `access` was asked for.
+    access_for: i64,
+    /// Ask again, keeping the answer shown until the new one is in: the group counts changed.
+    access_stale: bool,
+    /// The Group tab's own forms: a new group's name, an invite link, a phrase being typed, and
+    /// whether the phrase is showing.
+    new_group: String,
+    join_link: String,
+    restore_text: String,
+    restore_error: Option<String>,
+    show_phrase: bool,
+    /// Opens the recovery section once, after a group of one's own was made.
+    open_phrase: Option<bool>,
+    /// How many groups the store held last frame: a change asks the server for the counts again.
+    groups_seen: usize,
     wh_view: crate::host::WhView,
 }
 
@@ -142,6 +181,16 @@ impl WebApp {
             scout_at: 0,
             scout_changed: false,
             view_saved: None,
+            access: Default::default(),
+            access_for: 0,
+            access_stale: false,
+            new_group: String::new(),
+            join_link: String::new(),
+            restore_text: String::new(),
+            restore_error: None,
+            show_phrase: false,
+            open_phrase: None,
+            groups_seen: 0,
             route_note: Default::default(),
             skills: Default::default(),
         }
@@ -300,7 +349,13 @@ impl WebApp {
 
     /// Signed in: keeps the group in step, and uses an invite link opened earlier.
     fn run_sync(&mut self, session: &crate::sso::Session, ctx: &egui::Context) {
-        let sync = self.sync.get_or_insert_with(Sync::new);
+        let sync = self.sync.get_or_insert_with(|| {
+            let mut s = Sync::new();
+            // A group the server has this device's keys for comes back, should the browser have
+            // lost its store but kept its keys.
+            s.send(Cmd::Recover { char_id: session.character_id, prefs: SharePrefs::default() });
+            s
+        });
         // An invite the user chose to use here, before or after signing in.
         if !self.joined && page::load::<bool>(auth::INVITE_HERE) == Some(true) {
             self.joined = true;
@@ -374,8 +429,8 @@ impl WebApp {
                 self.map.plan.holes_changed();
                 self.shown = sync.store.generation.get();
             }
-            // The group's Ansiblex network, once in the group; routes on both tabs use it.
-            if !self.asked_network && sync.store.share_groups().iter().any(|g| sync.store.share_key(&g.id, g.epoch).is_some()) {
+            // The Imperium's Ansiblex network and cyno beacons; routes on both tabs use them.
+            if !self.asked_network && self.access.lock().unwrap().as_ref().is_some_and(|a| a.as_ref().is_ok_and(|a| a.imperium)) {
                 self.asked_network = true;
                 let (slot, ctx) = (self.network.clone(), ctx.clone());
                 let mut req = ehttp::Request::get(format!("{}/api/wh/v2/bridges", page::origin()));
@@ -438,6 +493,180 @@ impl WebApp {
         true
     }
 
+    /// Asks the server, once per character, whether it may use the site and how many groups it has.
+    fn check_access(&mut self, session: &crate::sso::Session, ctx: &egui::Context) {
+        if self.access_for == session.character_id && !std::mem::take(&mut self.access_stale) {
+            return;
+        }
+        if self.access_for != session.character_id {
+            *self.access.lock().unwrap() = None;
+        }
+        self.access_for = session.character_id;
+        let (slot, ctx) = (self.access.clone(), ctx.clone());
+        let mut req = ehttp::Request::get(format!("{}/api/wh/v2/me/access", page::origin()));
+        req.headers.insert("Authorization", format!("Bearer {}", session.token));
+        ehttp::fetch(req, move |r| {
+            let answer = match r {
+                Ok(r) if r.ok => serde_json::from_slice::<Access>(&r.bytes).map_err(|e| format!("the server's answer: {e}")),
+                Ok(r) => Err(serde_json::from_slice::<serde_json::Value>(&r.bytes)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("{} {}", r.status, r.status_text))),
+                Err(e) => Err(e),
+            };
+            *slot.lock().unwrap() = Some(answer);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Signed in, but not (yet) let in: checking, refused, or the check failed.
+    fn gate(&mut self, ui: &mut egui::Ui, session: &crate::sso::Session, access: &Option<Result<Access, String>>) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.3);
+            match access {
+                None => {
+                    ui.spinner();
+                    ui.label("Checking your alliance\u{2026}");
+                }
+                Some(Err(e)) => {
+                    ui.heading("Your alliance could not be checked");
+                    ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
+                    if ui.button("Try again").clicked() {
+                        self.access_for = 0;
+                    }
+                }
+                Some(Ok(_)) => {
+                    ui.heading("This map is for The Imperium");
+                    ui.label(format!(
+                        "{} is not in one of its alliances. EVE Spai's wormhole map and wormhole sharing are for pilots of Goonswarm Federation and its allies.",
+                        session.character_name
+                    ));
+                    ui.label(egui::RichText::new("Changed alliance recently? EVE takes a while to say so; try again later.").weak());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let w = 2.0 * 150.0 + ui.spacing().item_spacing.x;
+                        ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                        if ui.add_sized([150.0, 30.0], egui::Button::new("Try again")).clicked() {
+                            self.access_for = 0;
+                        }
+                        if ui.add_sized([150.0, 30.0], egui::Button::new("Sign out")).clicked() {
+                            auth::sign_out(&self.auth);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// The Group tab's own tools: a group of one's own, joining with a link, and the recovery
+    /// phrase that brings this browser's keys back.
+    fn group_tools(&mut self, ui: &mut egui::Ui, session: &crate::sso::Session, access: &Access) {
+        use egui_phosphor::regular as icon;
+        let Some(sync) = &mut self.sync else { return };
+        let keys = sync.keys.borrow().clone();
+        let in_groups = sync.store.share_groups_any();
+        let n = sync.store.share_groups().len();
+        if n != self.groups_seen {
+            self.groups_seen = n;
+            self.access_stale = true;
+        }
+        ui.set_max_width(760.0);
+        ui.add_space(6.0);
+        if !in_groups {
+            ui.label(
+                egui::RichText::new("No wormhole group yet: the map shows EVE-Scout's Thera and Turnur holes. Make a group of your own, or join one with an invite link.")
+                    .weak(),
+            );
+        }
+        egui::CollapsingHeader::new(format!("{}  New wormhole group", icon::PLUS)).id_salt("web_new_group").default_open(!in_groups).show(ui, |ui| {
+            let full = access.owned >= access.max_owned;
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.new_group).hint_text("Its name").desired_width(260.0));
+                let ok = !self.new_group.trim().is_empty() && !full;
+                if ui.add_enabled(ok, egui::Button::new("Create")).clicked() {
+                    sync.send(Cmd::Create { name: self.new_group.trim().to_owned(), char_id: session.character_id, char_name: session.character_name.clone(), prefs: SharePrefs::default() });
+                    self.new_group.clear();
+                    // The owner's keys are the group's; the phrase is how they come back.
+                    self.show_phrase = keys.seed.is_some();
+                    self.open_phrase = Some(true);
+                }
+            });
+            ui.label(egui::RichText::new(format!("You own {} of the {} groups one character may have, and are in {} of {}.", access.owned, access.max_owned, access.groups, access.max_groups)).weak());
+        });
+        egui::CollapsingHeader::new(format!("{}  Join with an invite link", icon::LINK)).id_salt("web_join_group").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.join_link).hint_text("https://eve-spai.com/wh/join/\u{2026}").desired_width(420.0));
+                if ui.add_enabled(spai_share::engine::parse_link(&self.join_link).is_some(), egui::Button::new("Join")).clicked() {
+                    sync.send(Cmd::Join { link: self.join_link.trim().to_owned(), char_id: session.character_id, prefs: SharePrefs::default() });
+                    self.join_link.clear();
+                }
+            });
+        });
+        let working = sync.key_job_pending();
+        egui::CollapsingHeader::new(format!("{}  Recovery phrase", icon::KEY)).id_salt("web_recovery").open(self.open_phrase.take()).show(ui, |ui| {
+            match keys.phrase() {
+                Some(words) => {
+                    ui.label("This browser's keys come from 24 words. Should the browser lose its data, typing them here brings this browser back into its groups, with no new invite. Anyone with them can act as this browser: keep them like a password.");
+                    if self.show_phrase {
+                        egui::Grid::new("web_phrase").num_columns(4).spacing([18.0, 4.0]).show(ui, |ui| {
+                            for (i, w) in words.split(' ').enumerate() {
+                                ui.label(egui::RichText::new(format!("{:>2}. {w}", i + 1)).monospace());
+                                if i % 4 == 3 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{}  Copy", icon::COPY)).clicked() {
+                                ui.ctx().copy_text(words.clone());
+                            }
+                            if ui.button("Hide").clicked() {
+                                self.show_phrase = false;
+                            }
+                        });
+                    } else if ui.button(format!("{}  Show the phrase", icon::EYE)).clicked() {
+                        self.show_phrase = true;
+                    }
+                }
+                None => {
+                    ui.label("This browser's keys are from before recovery phrases, so they cannot be written down. Setting up a phrase moves this browser onto new keys in every group it is in, then shows the words.");
+                    if working {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Moving to the new keys\u{2026}");
+                        });
+                    } else if ui.button(format!("{}  Set up a recovery phrase", icon::KEY)).clicked() {
+                        sync.key_job(KeyJob::MoveToPhrase);
+                        self.show_phrase = true;
+                        self.open_phrase = Some(true);
+                    }
+                }
+            }
+            ui.separator();
+            ui.label("Bring back another browser's keys, signed in as the same character:");
+            ui.add(egui::TextEdit::multiline(&mut self.restore_text).hint_text("The 24 words").desired_rows(2).desired_width(f32::INFINITY));
+            if let Some(e) = &self.restore_error {
+                ui.label(egui::RichText::new(e).color(ui.visuals().error_fg_color));
+            }
+            let warn = if in_groups { " This browser's current keys, and the groups only they are in, are left behind." } else { "" };
+            if ui
+                .add_enabled(!working && !self.restore_text.trim().is_empty(), egui::Button::new("Restore"))
+                .on_hover_text(format!("Becomes the browser the words stand for, and takes up its groups.{warn}"))
+                .clicked()
+            {
+                match spai_share::recovery::seed_of(&self.restore_text) {
+                    Ok(seed) => {
+                        sync.key_job(KeyJob::Restore(seed));
+                        self.restore_text.clear();
+                        self.restore_error = None;
+                    }
+                    Err(e) => self.restore_error = Some(format!("{e:#}")),
+                }
+            }
+        });
+        ui.separator();
+    }
+
     fn waiting(&self, ui: &mut egui::Ui, state: &Auth) -> bool {
         let say = |ui: &mut egui::Ui, lines: &[String]| {
             ui.vertical_centered(|ui| {
@@ -451,7 +680,7 @@ impl WebApp {
                 }
             });
         };
-        let Auth::SignedIn(session) = state else {
+        let Auth::SignedIn(_) = state else {
             if matches!(state, Auth::Working(_)) {
                 return false;
             }
@@ -462,39 +691,14 @@ impl WebApp {
                     ui,
                     &[
                         "EVE Spai wormhole map".into(),
-                        "The wormholes a group shares in EVE Spai, for its members without the app.".into(),
-                        "Open the invite link an admin of your group sent you, or sign in if this browser has joined before.".into(),
+                        "For pilots of The Imperium: the star map and route planner with the Ansiblexes and cyno beacons, EVE-Scout's Thera and Turnur holes, and wormhole groups shared with EVE Spai.".into(),
+                        "Sign in with EVE to use it.".into(),
                     ],
                 );
             }
             return true;
         };
-        let Some(sync) = &self.sync else { return false };
-        let status = sync.status.lock().unwrap().clone();
-        let groups = sync.store.share_groups();
-        let fingerprint = status.fingerprint.clone().unwrap_or_default();
-        if let Some(g) = groups.iter().find(|g| g.char_id == session.character_id && sync.store.share_key(&g.id, g.epoch).is_none()) {
-            let mut lines = vec![
-                format!("Waiting to be let into {}", g.name),
-                "The invite lets you in as soon as the EVE Spai that made it next syncs: it has to be running.".into(),
-                format!("Fingerprint: {fingerprint}"),
-            ];
-            lines.extend(status.error.clone());
-            say(ui, &lines);
-            return true;
-        }
-        if groups.is_empty() {
-            let mut lines = vec![
-                "No wormhole group yet".into(),
-                "Open the invite link an admin of your group gave you, while signed in as the character it is for.".into(),
-            ];
-            if status.busy {
-                lines.push("Asking to join\u{2026}".into());
-            }
-            lines.extend(status.error.clone());
-            say(ui, &lines);
-            return true;
-        }
+        // Signed in, the map is there with or without a group: the Group tab says where a join stands.
         false
     }
 }
@@ -538,8 +742,16 @@ impl eframe::App for WebApp {
             }
         }
         let state = self.auth.lock().unwrap().clone();
-        match &state {
+        let access = match &state {
             Auth::SignedIn(s) => {
+                self.check_access(s, ui.ctx());
+                self.access.lock().unwrap().clone()
+            }
+            _ => None,
+        };
+        let allowed = matches!(&access, Some(Ok(a)) if a.imperium);
+        match &state {
+            Auth::SignedIn(s) if allowed => {
                 self.run_sync(s, ui.ctx());
                 self.run_accounts(ui.ctx());
             }
@@ -553,7 +765,7 @@ impl eframe::App for WebApp {
         let top = egui::Panel::top("web_top").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 5))).show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("EVE Spai");
-                if self.host.is_some() && matches!(state, Auth::SignedIn(_)) {
+                if self.host.is_some() && allowed {
                     use spai_ui::widgets::SteadySelect as _;
                     ui.separator();
                     ui.menu_value(&mut self.tab, Tab::Wormholes, "Wormholes");
@@ -625,7 +837,16 @@ impl eframe::App for WebApp {
             if self.invite_choice(ui, &state) || self.waiting(ui, &state) {
                 return;
             }
-            if let (Tab::Group, Some(sync), Auth::SignedIn(session)) = (self.tab, &mut self.sync, &state) {
+            if let Auth::SignedIn(session) = &state {
+                if !allowed {
+                    self.gate(ui, session, &access);
+                    return;
+                }
+            }
+            if let (Tab::Group, Some(_), Auth::SignedIn(session)) = (self.tab, &self.sync, &state) {
+                let ok_access = access.as_ref().and_then(|a| a.as_ref().ok()).cloned().unwrap_or_default();
+                self.group_tools(ui, session, &ok_access);
+                let Some(sync) = &mut self.sync else { return };
                 let status = sync.status.lock().unwrap().clone();
                 for cmd in self.group.show(ui, &*sync.store, &status, session.character_id, &page::origin()) {
                     sync.send(cmd);
@@ -680,7 +901,7 @@ impl eframe::App for WebApp {
                 }
             }
         });
-        if let (Some(h), Auth::SignedIn(_)) = (&mut self.host, &state) {
+        if let (Some(h), true) = (&mut self.host, allowed) {
             h.form_window(ui.ctx(), top.response.rect.bottom());
             h.facts_window(ui.ctx(), top.response.rect.bottom());
             h.corner(ui.ctx(), top.response.rect.bottom());

@@ -9,8 +9,9 @@ use std::sync::Mutex;
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use spai_share::api::{Method, Transport};
-use spai_share::crypto::DeviceKeys;
+use spai_share::crypto::{self, DeviceKeys, Key};
 use spai_share::engine::{Cmd, Engine, Env, Status};
+use spai_share::store::SharePrefs;
 
 use crate::page;
 use crate::sso::Session;
@@ -20,6 +21,11 @@ use crate::store::WebStore;
 pub const DEVICE_LABEL: &str = "EVE Spai web";
 const STORE: &str = "spai.store";
 const DEVICE: &str = "spai.device";
+/// The seed of this browser's keys, when they came from a recovery phrase.
+const DEVICE_SEED: &str = "spai.device.seed";
+/// The seed of the keys a move to a recovery phrase is under way to, so a move cut short resumes
+/// with the same keys.
+const DEVICE_NEXT: &str = "spai.device.next";
 /// Seconds between rounds, as the desktop polls.
 const POLL: i64 = 15;
 
@@ -79,22 +85,57 @@ impl Env for WebEnv {
     }
 }
 
-/// This browser's keys, made on first use. Lost with the browser's data: then the group re-invites
-/// it, keeping the character's role.
-fn device() -> &'static DeviceKeys {
-    thread_local! {
-        static KEYS: &'static DeviceKeys = Box::leak(Box::new(
-            page::load::<String>(DEVICE).and_then(|t| DeviceKeys::from_text(&t).ok()).unwrap_or_else(|| {
-                let k = DeviceKeys::generate();
-                page::save(DEVICE, &k.to_text());
-                k
-            }),
-        ));
+/// This browser's keys, and the seed they came from when they can be recovered. Browsers from
+/// before recovery phrases have keys of their own until they move to a phrase.
+#[derive(Clone)]
+pub struct Keys {
+    pub device: Rc<DeviceKeys>,
+    pub seed: Option<Key>,
+}
+
+impl Keys {
+    fn load() -> Self {
+        if let Some(seed) = page::load::<String>(DEVICE_SEED).and_then(|t| crypto::unb64_32(&t).ok()) {
+            return Keys::of_seed(seed);
+        }
+        if let Some(k) = page::load::<String>(DEVICE).and_then(|t| DeviceKeys::from_text(&t).ok()) {
+            return Keys { device: Rc::new(k), seed: None };
+        }
+        let keys = Keys::of_seed(spai_share::recovery::new_seed());
+        keys.save();
+        keys
     }
-    KEYS.with(|k| *k)
+
+    fn of_seed(seed: Key) -> Self {
+        Keys { device: Rc::new(DeviceKeys::from_seed(&seed)), seed: Some(seed) }
+    }
+
+    fn save(&self) {
+        page::save(DEVICE, &self.device.to_text());
+        match &self.seed {
+            Some(s) => page::save(DEVICE_SEED, &crypto::b64(s)),
+            None => page::forget(DEVICE_SEED),
+        }
+    }
+
+    /// The 24 words that bring these keys back, when they came from a phrase.
+    pub fn phrase(&self) -> Option<String> {
+        self.seed.as_ref().map(spai_share::recovery::phrase)
+    }
+}
+
+/// Work on this browser's keys, done at the start of the next round.
+#[derive(Clone)]
+pub enum KeyJob {
+    /// Moves this browser to keys from a recovery phrase, taking its groups along.
+    MoveToPhrase,
+    /// Becomes the device a phrase stands for, and takes up its groups.
+    Restore(Key),
 }
 
 pub struct Sync {
+    pub keys: Rc<RefCell<Keys>>,
+    job: Rc<RefCell<Option<KeyJob>>>,
     pub store: Rc<WebStore>,
     pub status: Rc<Mutex<Status>>,
     commands: Rc<RefCell<VecDeque<Cmd>>>,
@@ -105,8 +146,36 @@ pub struct Sync {
 impl Sync {
     pub fn new() -> Self {
         let store = page::load_raw(STORE).map(|t| WebStore::from_json(&t)).unwrap_or_default();
-        let status = Status { fingerprint: Some(device().public().fingerprint()), ..Default::default() };
-        Sync { store: Rc::new(store), status: Rc::new(Mutex::new(status)), commands: Default::default(), running: Default::default(), last: 0 }
+        let mut keys = Keys::load();
+        // Nothing to take along: a browser in no group moves to a phrase on the spot.
+        if keys.seed.is_none() && !store.share_groups_any() {
+            keys = Keys::of_seed(spai_share::recovery::new_seed());
+            keys.save();
+        }
+        let status = Status { fingerprint: Some(keys.device.public().fingerprint()), ..Default::default() };
+        // Any group the server has keys for this device in comes back, should this browser have
+        // lost its store but kept its keys.
+        let commands: VecDeque<Cmd> = VecDeque::new();
+        Sync {
+            keys: Rc::new(RefCell::new(keys)),
+            job: Default::default(),
+            store: Rc::new(store),
+            status: Rc::new(Mutex::new(status)),
+            commands: Rc::new(RefCell::new(commands)),
+            running: Default::default(),
+            last: 0,
+        }
+    }
+
+    /// Asks for `job` at the start of the next round.
+    pub fn key_job(&mut self, job: KeyJob) {
+        *self.job.borrow_mut() = Some(job);
+        self.last = 0;
+    }
+
+    /// Whether a key job is waiting or running.
+    pub fn key_job_pending(&self) -> bool {
+        self.job.borrow().is_some()
     }
 
     /// Something changed here: sync now rather than at the next round.
@@ -130,9 +199,19 @@ impl Sync {
         *self.running.borrow_mut() = true;
         let (store, status, commands, running, ctx) = (self.store.clone(), self.status.clone(), self.commands.clone(), self.running.clone(), ctx.clone());
         let env = WebEnv { session: session.clone() };
+        let (keys, job) = (self.keys.clone(), self.job.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            let e = Engine { store: &*store, env: &env, device: device(), label: DEVICE_LABEL, status: &status };
             status.lock().unwrap().busy = true;
+            let pending = job.borrow().clone();
+            if let Some(j) = pending {
+                let done = key_job(j, &keys, &store, &env, &status).await;
+                if let Err(err) = &done {
+                    status.lock().unwrap().error = Some(format!("{err:#}"));
+                }
+                *job.borrow_mut() = None;
+            }
+            let device = keys.borrow().device.clone();
+            let e = Engine { store: &*store, env: &env, device: &device, label: DEVICE_LABEL, status: &status };
             // Everything asked since the last round, in order; the first failure is the one shown.
             let mut result = Ok(());
             loop {
@@ -157,6 +236,51 @@ impl Sync {
             ctx.request_repaint();
         });
     }
+}
+
+/// Carries out a [`KeyJob`]. The keys this browser uses change only once everything they hold has
+/// moved, so a job cut short leaves the browser as it was, and running it again picks up.
+async fn key_job(job: KeyJob, keys: &Rc<RefCell<Keys>>, store: &Rc<WebStore>, env: &WebEnv, status: &Rc<Mutex<Status>>) -> Result<()> {
+    let switch = |next: Keys| {
+        next.save();
+        page::forget(DEVICE_NEXT);
+        status.lock().unwrap().fingerprint = Some(next.device.public().fingerprint());
+        *keys.borrow_mut() = next;
+    };
+    match job {
+        KeyJob::Restore(seed) => {
+            store.reset();
+            switch(Keys::of_seed(seed));
+            let device = keys.borrow().device.clone();
+            let e = Engine { store: &**store, env, device: &device, label: DEVICE_LABEL, status };
+            e.command(Cmd::Recover { char_id: env.session.character_id, prefs: SharePrefs::default() }).await?;
+        }
+        KeyJob::MoveToPhrase => {
+            if keys.borrow().seed.is_some() {
+                return Ok(());
+            }
+            let seed = page::load::<String>(DEVICE_NEXT).and_then(|t| crypto::unb64_32(&t).ok()).unwrap_or_else(|| {
+                let s = spai_share::recovery::new_seed();
+                page::save(DEVICE_NEXT, &crypto::b64(&s));
+                s
+            });
+            let next = Keys::of_seed(seed);
+            let old = keys.borrow().device.clone();
+            let e_old = Engine { store: &**store, env, device: &old, label: DEVICE_LABEL, status };
+            e_old.sync_all().await?;
+            e_old.command(Cmd::MoveTo { new: next.device.public() }).await?;
+            // The new keys read what the old ones were let in to, then take the old ones out:
+            // only a device still in may sign the entry that removes the other.
+            let e_new = Engine { store: &**store, env, device: &next.device, label: DEVICE_LABEL, status };
+            e_new.sync_all().await?;
+            e_new.command(Cmd::DropDevice { device_id: old.public().device_id() }).await?;
+            switch(next);
+        }
+    }
+    if store.dirty.replace(false) {
+        page::save_raw(STORE, &store.to_json());
+    }
+    Ok(())
 }
 
 /// The link a stashed invite came from, in the form the engine reads.

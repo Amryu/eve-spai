@@ -23,6 +23,7 @@ sha2 = "0.10"
 # pkcs8 so keys stored by the ring-based versions still load.
 ed25519-dalek = { version = "2", features = ["pkcs8", "alloc"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+bip39 = "2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

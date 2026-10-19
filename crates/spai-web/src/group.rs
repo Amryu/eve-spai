@@ -59,9 +59,6 @@ impl GroupTab {
                     self.delete_ui(ui, g, &mut out);
                 }
             }
-            if groups.is_empty() {
-                ui.label(egui::RichText::new("Not in a group yet.").weak());
-            }
         });
         out
     }

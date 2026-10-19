@@ -57,6 +57,13 @@ impl WebStore {
         WebStore { data: RefCell::new(serde_json::from_str(text).unwrap_or_default()), ..Default::default() }
     }
 
+    /// Forgets everything: this browser is about to be another device, whose groups and holes come
+    /// from the server again.
+    pub fn reset(&self) {
+        *self.data.borrow_mut() = Data::default();
+        self.touch(true);
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(&*self.data.borrow()).expect("plain data serializes")
     }

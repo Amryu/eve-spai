@@ -122,11 +122,21 @@ struct StoredKeys {
 
 impl DeviceKeys {
     pub fn generate() -> Self {
-        let sign = SigningKey::from_bytes(&random32());
+        Self::from_secrets(random32(), random32())
+    }
+
+    /// The keys a recovery phrase's seed stands for: the same seed gives the same keys, and so the
+    /// same device, on any machine.
+    pub fn from_seed(seed: &Key) -> Self {
+        Self::from_secrets(hkdf(b"eve-spai device", seed, b"sign"), hkdf(b"eve-spai device", seed, b"enc"))
+    }
+
+    fn from_secrets(sign: Key, enc: Key) -> Self {
+        let sign = SigningKey::from_bytes(&sign);
         // PKCS#8 v2, public key included: the form ring wrote and reads.
         let pair = KeypairBytes { secret_key: sign.to_bytes(), public_key: Some(PublicKeyBytes(sign.verifying_key().to_bytes())) };
         let pkcs8 = pair.to_pkcs8_der().expect("an Ed25519 key encodes").as_bytes().to_vec();
-        Self::from_parts(pkcs8, random32()).expect("a fresh key parses")
+        Self::from_parts(pkcs8, enc).expect("a fresh key parses")
     }
 
     fn from_parts(sign_pkcs8: Vec<u8>, enc: Key) -> Result<Self> {

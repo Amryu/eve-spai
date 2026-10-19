@@ -6,4 +6,5 @@ pub mod crypto;
 pub mod engine;
 pub mod hole;
 pub mod ops;
+pub mod recovery;
 pub mod store;

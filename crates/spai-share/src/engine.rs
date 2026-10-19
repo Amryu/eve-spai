@@ -33,6 +33,15 @@ pub enum Cmd {
     SetRole { group: String, char_id: i64, role: Role },
     /// Reads the group's whole log again, for what was passed over while it was not taken.
     Rescan { group: String },
+    /// Takes up the groups the server holds keys for this device in that this install does not
+    /// know: a device brought back from its recovery phrase. Each is read from its first entry.
+    Recover { char_id: i64, prefs: SharePrefs },
+    /// Lets the device `new` into every group as another device of this character: the first half
+    /// of moving an install to new keys. The second is [`Cmd::DropDevice`], run as the new device:
+    /// a device taking itself out could not sign the entry that says so.
+    MoveTo { new: PublicKeys },
+    /// Takes the device `device_id` of this character out of every group it is in.
+    DropDevice { device_id: String },
     SyncNow,
 }
 
@@ -177,6 +186,33 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
                 self.store.share_members_save(&id, std::slice::from_ref(&owner));
                 self.post(&c, &g, &Op::Genesis { name, owner }).await?;
                 self.store.share_queue_group(&id, true, true);
+            }
+            Cmd::Recover { char_id, prefs } => {
+                let c = self.client(char_id)?;
+                let known: Vec<String> = self.store.share_groups().into_iter().map(|g| g.id).collect();
+                for (id, role, _) in c.groups().await? {
+                    // Only where this device was let in: elsewhere the server hands it no key.
+                    if known.contains(&id) || c.keys(&id).await.map_or(true, |k| k.is_empty()) {
+                        continue;
+                    }
+                    let role = Role::from_code(&role).unwrap_or(Role::Member);
+                    self.store.share_group_save(&ShareGroup { id, name: String::new(), char_id, role, epoch: 0, cursor: 0, prefs: prefs.clone() });
+                }
+            }
+            Cmd::MoveTo { new } => {
+                for g in self.store.share_groups() {
+                    if self.store.share_key(&g.id, g.epoch).is_some() {
+                        self.move_group(&g, new).await.with_context(|| format!("moving {} to the new keys", g.name))?;
+                    }
+                }
+            }
+            Cmd::DropDevice { device_id } => {
+                for g in self.store.share_groups() {
+                    let listed = self.store.share_members(&g.id).iter().any(|m| m.char_id == g.char_id && m.devices.iter().any(|d| d.id == device_id));
+                    if listed && self.store.share_key(&g.id, g.epoch).is_some() {
+                        self.remove(&g.id, g.char_id, Some(&device_id)).await.with_context(|| format!("taking the old keys out of {}", g.name))?;
+                    }
+                }
             }
             Cmd::Invite { group, for_name, role } => {
                 let g = self.group(&group)?;
@@ -326,6 +362,35 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
 
     async fn character(&self, name: &str) -> Result<(i64, String)> {
         self.env.character(name.trim()).await?.ok_or_else(|| anyhow!("no character named {}", name.trim()))
+    }
+
+    /// [`Cmd::MoveTo`] for one group. Skipped once the new device is in, so a move cut short
+    /// picks up where it stopped.
+    async fn move_group(&self, g: &ShareGroup, new: PublicKeys) -> Result<()> {
+        let new_id = new.device_id();
+        let c = self.client(g.char_id)?;
+        let has = |id: &str| self.store.share_members(&g.id).iter().any(|m| m.char_id == g.char_id && m.devices.iter().any(|d| d.id == id));
+        if !has(&new_id) {
+            let me = self.store.share_members(&g.id).into_iter().find(|m| m.char_id == g.char_id).map(|m| m.name).unwrap_or_default();
+            let secret = crypto::random32();
+            let info = InviteInfo { group_id: g.id.clone(), name: g.name.clone(), members: self.store.share_members(&g.id), for_char: g.char_id, for_name: me.clone() };
+            let blob = crypto::b64(&crypto::seal(&crypto::invite_key(&secret), b"eve-spai invite", &serde_json::to_vec(&info)?));
+            let invite = c.create_invite(&g.id, &blob, INVITE_TTL_SECS).await?;
+            self.store.share_invite_save(&invite, &g.id, &secret, g.char_id, &me);
+            self.store.share_invite_role_save(&invite, g.role);
+            let mac = crypto::b64(&crypto::invite_mac(&secret, &join_msg(g.char_id, &g.id, &new)));
+            let mac2 = Some(crypto::b64(&crypto::invite_mac(&secret, &join_msg2(g.char_id, &g.id, &new))));
+            let joining = Client::new(self.env.transport(g.char_id)?, &new_id);
+            joining.join(&invite, &serde_json::to_string(&JoinBody { keys: new, mac, mac2 })?, self.label).await?;
+            let req = self
+                .fetch_requests(&c, g)
+                .await?
+                .into_iter()
+                .find(|r| r.row.char_id == g.char_id && r.row.device_id == new_id)
+                .ok_or_else(|| anyhow!("the new keys' request did not arrive"))?;
+            self.approve(&c, g, req, g.role).await?;
+        }
+        Ok(())
     }
 
     /// Lets in the device behind `req`: a new character as `role`, another device of a member with
@@ -479,8 +544,10 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
     async fn finish(&self, c: &Client<E::T>, g: &ShareGroup, roster: &Roster, changed: bool) {
         self.store.share_members_save(&g.id, &roster.members.values().cloned().collect::<Vec<_>>());
         let role = roster.members.get(&g.char_id).map_or(g.role, |me| me.role);
-        if role != g.role {
-            self.store.share_group_save(&ShareGroup { role, ..g.clone() });
+        // A recovered group learns its name from its first entry.
+        let name = if g.name.is_empty() && !roster.name.is_empty() { roster.name.clone() } else { g.name.clone() };
+        if role != g.role || name != g.name {
+            self.store.share_group_save(&ShareGroup { role, name, ..g.clone() });
         }
         // After the log, whose role changes may have just demoted us, and never fatal: a member
         // who still took itself for an admin was refused here every round and so never read the
@@ -541,6 +608,12 @@ impl<S: ShareStore, E: Env> Engine<'_, S, E> {
 
     fn apply_new(&self, g: &ShareGroup, roster: &mut Roster, env: &Envelope) -> Result<bool> {
         let key = self.store.share_key(&g.id, env.epoch).ok_or_else(|| anyhow!("no key for epoch {}", env.epoch))?;
+        // A recovered device starts with no roster; the group's own first entry founds it.
+        if roster.members.is_empty() {
+            let op = ops::open_genesis(env, &key)?;
+            roster.apply(env.author, &op)?;
+            return Ok(false);
+        }
         let author = roster.members.get(&env.author).ok_or_else(|| anyhow!("author {} is not a member", env.author))?;
         let op = ops::open_op(env, &key, author)?;
         if op.is_data() && !roster.can_write(env.author) {
