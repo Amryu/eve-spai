@@ -671,6 +671,17 @@ impl SpaiApp {
                 self.map_pan = rect.center() - base;
             }
         }
+        if let Some(ids) = self.map_focus_ids.take() {
+            let ids: std::collections::HashSet<i64> = ids.into_iter().collect();
+            let group: Vec<crate::map::MapSystem> = self.map_draw.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
+            if let Some(g) = crate::map::Bounds::of(&group) {
+                let (zoom, pan) = crate::map::fit(&bounds, &g, rect, 0.7..=18.0);
+                self.map_zoom = zoom;
+                self.map_pan = pan;
+                self.map_follow = false;
+                ui.ctx().request_repaint();
+            }
+        }
 
         if resp.clicked() {
             if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {

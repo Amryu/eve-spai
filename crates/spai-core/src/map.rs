@@ -164,9 +164,36 @@ pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> 
     )
 }
 
+/// The zoom and pan that show `group` as large as `rect` holds, centred, in a view laid out over
+/// `view`: a lone system or a tight knot gets the top of `zoom` rather than a boundless close-up.
+pub fn fit(view: &Bounds, group: &Bounds, rect: Rect, zoom: std::ops::RangeInclusive<f32>) -> (f32, Vec2) {
+    let base = view.base_scale(rect, 30.0);
+    let z = if base > 0.0 { (group.base_scale(rect, 60.0) / base).clamp(*zoom.start(), *zoom.end()) } else { 1.0 };
+    let at = project(group.mid_x(), group.mid_z(), view, rect, z, Vec2::ZERO);
+    (z, rect.center() - at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fitted_group_is_centred_and_fills_the_view() {
+        let all: Vec<MapSystem> = (0..10).flat_map(|i| (0..10).map(move |j| sys(i as f64 * 100.0, j as f64 * 100.0))).collect();
+        let view = Bounds::of(&all).unwrap();
+        let rect = Rect::from_min_size(Pos2::ZERO, emath::vec2(400.0, 300.0));
+        let group = [sys(600.0, 100.0), sys(800.0, 200.0)];
+        let (zoom, pan) = fit(&view, &Bounds::of(&group).unwrap(), rect, 0.7..=60.0);
+        let mid = project(700.0, 150.0, &view, rect, zoom, pan);
+        assert!((mid - rect.center()).length() < 1e-3, "{mid:?}");
+        for s in &group {
+            let p = project(s.x, s.z, &view, rect, zoom, pan);
+            assert!(rect.contains(p), "{p:?} at zoom {zoom}");
+        }
+        assert!(zoom > 1.0 && zoom < 60.0, "{zoom}");
+        let (lone, _) = fit(&view, &Bounds::of(&group[..1]).unwrap(), rect, 0.7..=18.0);
+        assert_eq!(lone, 18.0, "a lone system gets the zoom cap, not infinity");
+    }
 
     #[test]
     fn spacing_is_the_usual_gap_to_the_nearest_system() {

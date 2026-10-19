@@ -1391,17 +1391,24 @@ impl SpaiApp {
 
         enum Hit {
             System { id: i64, name: String, sec: f64 },
-            Constellation { name: String, region: i64 },
+            Constellation { id: i64, name: String, region: i64 },
             Region { id: i64, name: String },
         }
         enum Action {
             Focus(i64),
-            Region(i64),
+            /// The view stays as it is and is fitted to these systems, in that region.
+            Fit { region: i64, ids: Vec<i64> },
         }
         let hit_action = |h: &Hit| match h {
             Hit::System { id, .. } => Action::Focus(*id),
-            Hit::Constellation { region, .. } => Action::Region(*region),
-            Hit::Region { id, .. } => Action::Region(*id),
+            Hit::Constellation { id, region, .. } => Action::Fit {
+                region: *region,
+                ids: self.store.as_ref().map(|s| s.constellation_systems(*id)).unwrap_or_default().into_iter().map(|s| s.id).collect(),
+            },
+            Hit::Region { id, .. } => Action::Fit {
+                region: *id,
+                ids: self.store.as_ref().map(|s| s.region_systems(*id)).unwrap_or_default().into_iter().map(|s| s.id).collect(),
+            },
         };
 
         let screen = ui.ctx().content_rect();
@@ -1431,11 +1438,7 @@ impl SpaiApp {
             let (sys, cons, reg) = if let Some(store) = &self.store {
                 (
                     store.search_systems(&query, 6),
-                    store
-                        .search_constellations(&query, 4)
-                        .into_iter()
-                        .map(|(_c, name, region)| (name, region))
-                        .collect::<Vec<_>>(),
+                    store.search_constellations(&query, 4),
                     store.search_regions(&query, 4),
                 )
             } else {
@@ -1460,8 +1463,8 @@ impl SpaiApp {
         for (id, name, sec) in &self.map_search_sys {
             hits.push(Hit::System { id: *id, name: name.clone(), sec: *sec });
         }
-        for (name, region) in &self.map_search_const {
-            hits.push(Hit::Constellation { name: name.clone(), region: *region });
+        for (id, name, region) in &self.map_search_const {
+            hits.push(Hit::Constellation { id: *id, name: name.clone(), region: *region });
         }
         for (id, name) in &self.map_search_reg {
             hits.push(Hit::Region { id: *id, name: name.clone() });
@@ -1648,10 +1651,14 @@ impl SpaiApp {
                 self.map_search_sel = 0;
                 self.focus_map_on_select(id);
             }
-            Some(Action::Region(id)) => {
+            Some(Action::Fit { region, ids }) => {
                 self.map_search.clear();
                 self.map_search_sel = 0;
-                self.map_go(MapView::Region(id));
+                // A region view shows one region: another's systems are only there after a switch.
+                if matches!(self.map_view, MapView::Region(r) if r != region) {
+                    self.map_go(MapView::Region(region));
+                }
+                self.map_focus_ids = Some(ids);
             }
             None if clear_search => {
                 self.map_search.clear();

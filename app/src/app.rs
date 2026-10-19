@@ -835,6 +835,8 @@ pub struct SpaiApp {
     map_draw_cache:
         std::collections::HashMap<(crate::map::MapView, bool), Vec<crate::store::MapSystem>>,
     map_focus: Option<i64>,
+    /// Systems the view is fitted to next frame: a region or constellation picked in the find field.
+    map_focus_ids: Option<Vec<i64>>,
     map_selected: Option<i64>,
     /// Which system the pointer has been resting on, and since when: the tooltip waits this out.
     map_hover_since: Option<(i64, std::time::Instant)>,
@@ -847,7 +849,7 @@ pub struct SpaiApp {
     map_search_sel: usize,
     map_search_key: String,
     map_search_sys: Vec<(i64, String, f64)>,
-    map_search_const: Vec<(String, i64)>,
+    map_search_const: Vec<(i64, String, i64)>,
     map_search_reg: Vec<(i64, String)>,
     map_search_upgrades: Vec<String>,
     left_dock_open: bool,
@@ -1759,6 +1761,7 @@ impl SpaiApp {
             map_systems_cache: std::collections::HashMap::new(),
             map_draw_cache: std::collections::HashMap::new(),
             map_focus: None,
+            map_focus_ids: None,
             map_selected: None,
             map_hover_since: None,
             logo_avg: std::collections::HashMap::new(),

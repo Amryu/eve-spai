@@ -101,6 +101,10 @@ pub struct StarMap {
     search_sel: usize,
     /// A system to centre on, once the view it is drawn in is laid out.
     focus: Option<i64>,
+    /// Systems to fit the view to, in that region: a region or constellation picked in the find field.
+    focus_ids: Option<(i64, Vec<i64>)>,
+    /// Every constellation on the flat map: name, region and systems, gathered on the first search.
+    constellations: Option<Vec<Constellation>>,
     /// The stargate lines for the graph, region and network they were built from.
     gates: Option<((usize, Option<i64>, u64), Vec<layers::GateSeg>)>,
 }
@@ -159,6 +163,9 @@ impl StarMap {
                 self.region = Some(s.region_id);
             }
         }
+        if let (Some((region, _)), Some(_)) = (&self.focus_ids, self.region) {
+            self.region = Some(*region);
+        }
         self.panel(ui, geo, d);
         let draw: Vec<MapSystem> = d.all.iter().filter(|s| self.region.is_none_or(|r| s.region_id == r)).cloned().collect();
         let Some(bounds) = Bounds::of(&draw) else { return };
@@ -168,6 +175,15 @@ impl StarMap {
                 self.zoom = if self.region.is_some() { 3.0 } else { 18.0 };
                 self.pan = rect.center() - spai_core::map::project(s.x, s.z, &bounds, rect, self.zoom, egui::Vec2::ZERO);
                 self.selected = Some(id);
+            }
+        }
+        if let Some((_, ids)) = self.focus_ids.take() {
+            let ids: HashSet<i64> = ids.into_iter().collect();
+            let group: Vec<MapSystem> = draw.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
+            if let Some(g) = Bounds::of(&group) {
+                let (zoom, pan) = spai_core::map::fit(&bounds, &g, rect, 0.5..=18.0);
+                self.zoom = zoom;
+                self.pan = pan;
             }
         }
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -385,8 +401,9 @@ impl StarMap {
         self.search_bar(ui, geo, d, rect);
     }
 
-    /// The desktop map's find field, over the map's bottom left: systems and regions, the hits
-    /// listed upwards from the field, arrows and Enter or a click take one, Ctrl+F focuses it.
+    /// The desktop map's find field, over the map's bottom left: systems, constellations and
+    /// regions, the hits listed upwards from the field, arrows and Enter or a click take one,
+    /// Ctrl+F focuses it. A constellation or region only fits the view to it.
     fn search_bar(&mut self, ui: &mut egui::Ui, geo: &Systems, d: &MapData, rect: egui::Rect) {
         use egui::Key;
         use egui_phosphor::regular as icon;
@@ -396,7 +413,8 @@ impl StarMap {
         if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::F))) {
             ui.ctx().memory_mut(|m| m.request_focus(input_id));
         }
-        let hits = search_hits(geo, d, &self.search);
+        let constellations = self.constellations.get_or_insert_with(|| constellations_of(geo, d));
+        let hits = search_hits(geo, d, constellations, &self.search);
         let has_query = !self.search.trim().is_empty();
         let (down, up, enter, esc) = if has_query {
             ui.input(|i| (i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowUp), i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)))
@@ -432,7 +450,7 @@ impl StarMap {
                     ui.horizontal(|ui| {
                         ui.label(icon::MAGNIFYING_GLASS).on_hover_text("Ctrl+F");
                         let w = (ui.available_width() - if has_query { 30.0 } else { 0.0 }).max(60.0);
-                        if ui.add(egui::TextEdit::singleline(&mut self.search).id(input_id).hint_text("Find (Ctrl+F)").desired_width(w)).on_hover_text("A system or region").changed() {
+                        if ui.add(egui::TextEdit::singleline(&mut self.search).id(input_id).hint_text("Find (Ctrl+F)").desired_width(w)).on_hover_text("A system, constellation or region").changed() {
                             sel = 0;
                         }
                         if has_query && ui.button(icon::X).clicked() {
@@ -456,6 +474,7 @@ impl StarMap {
                         for (i, h) in hits.iter().enumerate().rev() {
                             let label = match h {
                                 Hit::System { name, sec, .. } => egui::RichText::new(format!("{:.1}  {name}", (sec * 10.0).round() / 10.0)).color(spai_ui::colors::security_color(*sec)),
+                                Hit::Constellation { name, .. } => egui::RichText::new(format!("{}  {name}", icon::POLYGON)).weak(),
                                 Hit::Region { name, .. } => egui::RichText::new(format!("{}  {name}", icon::MAP_TRIFOLD)).weak(),
                             };
                             if ui.menu_label(i == sel, label).clicked() {
@@ -471,11 +490,15 @@ impl StarMap {
                 clear = true;
                 ui.ctx().request_repaint();
             }
-            Some(Hit::Region { id, .. }) => {
-                self.region = Some(*id);
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
+            Some(Hit::Constellation { region, ids, .. }) => {
+                self.focus_ids = Some((*region, ids.clone()));
                 clear = true;
+                ui.ctx().request_repaint();
+            }
+            Some(Hit::Region { id, .. }) => {
+                self.focus_ids = Some((*id, d.all.iter().filter(|s| s.region_id == *id).map(|s| s.id).collect()));
+                clear = true;
+                ui.ctx().request_repaint();
             }
             None => {}
         }
@@ -605,12 +628,37 @@ pub fn find(geo: &Systems, d: &MapData, from: &str, to: &str) -> Result<Vec<i64>
 #[derive(Debug, PartialEq)]
 enum Hit {
     System { id: i64, name: String, sec: f64 },
+    Constellation { name: String, region: i64, ids: Vec<i64> },
     Region { id: i64, name: String },
 }
 
-/// Systems the flat map draws (k-space, as `geo` finds them) and then the regions the map's region
-/// list offers, by name.
-fn search_hits(geo: &Systems, d: &MapData, q: &str) -> Vec<Hit> {
+#[derive(Debug, PartialEq)]
+struct Constellation {
+    name: String,
+    lower: String,
+    region: i64,
+    ids: Vec<i64>,
+}
+
+/// The constellations of the systems the flat map draws, alphabetical.
+fn constellations_of(geo: &Systems, d: &MapData) -> Vec<Constellation> {
+    let mut by_name: HashMap<&str, Constellation> = HashMap::new();
+    for s in &d.all {
+        let Some(i) = geo.info_of(s.id).filter(|i| !i.constellation.is_empty()) else { continue };
+        by_name
+            .entry(i.constellation.as_str())
+            .or_insert_with(|| Constellation { name: i.constellation.clone(), lower: i.constellation.to_lowercase(), region: s.region_id, ids: Vec::new() })
+            .ids
+            .push(s.id);
+    }
+    let mut out: Vec<Constellation> = by_name.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Systems the flat map draws (k-space, as `geo` finds them), then constellations, then the regions
+/// the map's region list offers, by name.
+fn search_hits(geo: &Systems, d: &MapData, constellations: &[Constellation], q: &str) -> Vec<Hit> {
     let q = q.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
@@ -622,6 +670,7 @@ fn search_hits(geo: &Systems, d: &MapData, q: &str) -> Vec<Hit> {
         .take(6)
         .map(|i| Hit::System { id: i.id, name: i.name.clone(), sec: i.security })
         .collect();
+    hits.extend(constellations.iter().filter(|c| c.lower.contains(&q)).take(4).map(|c| Hit::Constellation { name: c.name.clone(), region: c.region, ids: c.ids.clone() }));
     let mut regions: Vec<&(i64, String)> = d.regions.iter().filter(|(id, n)| *id < 11_000_000 && !n.chars().any(|c| c.is_ascii_digit()) && n.to_lowercase().contains(&q)).collect();
     regions.sort_by(|a, b| a.1.cmp(&b.1));
     hits.extend(regions.into_iter().take(4).map(|(id, n)| Hit::Region { id: *id, name: n.clone() }));
@@ -633,17 +682,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_find_field_offers_drawn_systems_then_regions() {
+    fn the_find_field_offers_drawn_systems_then_constellations_then_regions() {
         let geo = spai_core::test_support::small_universe(&[]);
         let sys = |id: i64, name: &str, sec: f64, region_id: i64| MapSystem { id, name: name.into(), security: sec, region_id, x: 0.0, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 };
         let real = vec![sys(30_004_759, "1DQ1-A", -0.36, 10_000_060), sys(30_000_142, "Jita", 0.95, 10_000_002), sys(31_000_002, "J110145", -1.0, 11_000_001)];
         let regions = vec![(10_000_060, "Delve".to_owned()), (10_000_002, "The Forge".to_owned()), (11_000_001, "A-R00001".to_owned())];
-        let d = MapData::new(Vec::new(), real, regions);
-        assert_eq!(search_hits(&geo, &d, "  "), Vec::<Hit>::new());
-        assert_eq!(search_hits(&geo, &d, "jit"), vec![Hit::System { id: 30_000_142, name: "Jita".into(), sec: 0.95 }]);
-        assert_eq!(search_hits(&geo, &d, "J1"), Vec::<Hit>::new(), "J-space is not on the flat map");
-        assert_eq!(search_hits(&geo, &d, "7-K5EL"), Vec::<Hit>::new(), "a system the flat map lacks");
-        assert_eq!(search_hits(&geo, &d, "e"), vec![Hit::Region { id: 10_000_060, name: "Delve".into() }, Hit::Region { id: 10_000_002, name: "The Forge".into() }], "the wormhole region is left out");
+        let all: Vec<MapSystem> = real.iter().filter(|s| s.id < 31_000_000).cloned().collect();
+        let d = MapData::new(all, real, regions);
+        let c = constellations_of(&geo, &d);
+        assert_eq!(c.len(), 1, "the test universe has one constellation");
+        assert_eq!(c[0].ids, vec![30_004_759, 30_000_142]);
+        assert_eq!(search_hits(&geo, &d, &c, "  "), Vec::<Hit>::new());
+        assert_eq!(search_hits(&geo, &d, &c, "jit"), vec![Hit::System { id: 30_000_142, name: "Jita".into(), sec: 0.95 }]);
+        assert_eq!(search_hits(&geo, &d, &c, "J1"), Vec::<Hit>::new(), "J-space is not on the flat map");
+        assert_eq!(search_hits(&geo, &d, &c, "7-K5EL"), Vec::<Hit>::new(), "a system the flat map lacks");
+        assert_eq!(search_hits(&geo, &d, &c, "e"), vec![Hit::Constellation { name: "O-EImg".into(), region: 10_000_060, ids: c[0].ids.clone() }, Hit::Region { id: 10_000_060, name: "Delve".into() }, Hit::Region { id: 10_000_002, name: "The Forge".into() }], "the wormhole region is left out");
     }
 
     #[test]
