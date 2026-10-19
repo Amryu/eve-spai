@@ -3712,3 +3712,16 @@ mod real_jump_ahead_tests {
         }
     }
 }
+
+#[test]
+fn threat_filter_includes_threat_hulls_and_big_gangs() {
+    use crate::intel::{DetectedShip, IntelReport};
+    let rules = crate::settings::SeverityRules::default();
+    let f = IntelTypeFilter::Threat;
+    let hull = IntelReport { ships: vec![DetectedShip { id: 0, name: "kikimora".into() }], ..Default::default() };
+    assert!(f.matches(&hull, &rules));
+    let plain = IntelReport { ships: vec![DetectedShip { id: 0, name: "Rifter".into() }], ..Default::default() };
+    assert!(!f.matches(&plain, &rules));
+    assert!(f.matches(&IntelReport { count: Some(rules.big_gang_threshold), ..Default::default() }, &rules));
+    assert!(!f.matches(&IntelReport { count: Some(rules.big_gang_threshold - 1), ..Default::default() }, &rules));
+}

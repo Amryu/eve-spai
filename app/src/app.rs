@@ -322,7 +322,7 @@ pub(crate) enum FitMode {
 }
 
 impl IntelTypeFilter {
-    fn matches(self, r: &crate::intel::IntelReport) -> bool {
+    fn matches(self, r: &crate::intel::IntelReport, rules: &crate::settings::SeverityRules) -> bool {
         match self {
             IntelTypeFilter::All => true,
             IntelTypeFilter::Hostile => {
@@ -330,7 +330,18 @@ impl IntelTypeFilter {
             }
             IntelTypeFilter::Clear => r.clear,
             IntelTypeFilter::Kill => r.killmail,
-            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.dropper || r.help || r.tackled || r.cap_tackled,
+            IntelTypeFilter::Threat => {
+                r.spike
+                    || r.camp
+                    || r.bubble
+                    || r.cyno
+                    || r.dropper
+                    || r.help
+                    || r.tackled
+                    || r.cap_tackled
+                    || r.count.is_some_and(|n| n >= rules.big_gang_threshold)
+                    || r.ships.iter().any(|sh| rules.threat_ships.iter().any(|t| t.eq_ignore_ascii_case(&sh.name)))
+            }
         }
     }
 }

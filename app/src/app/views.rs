@@ -145,7 +145,7 @@ impl SpaiApp {
             .reports
             .iter()
             .filter(|r| r.primary_system().is_some() || !r.gates.is_empty())
-            .filter(|r| type_filter.matches(r))
+            .filter(|r| type_filter.matches(r, &sev_rules))
             .filter(|r| {
                 max_jumps == 0
                     || jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges)
