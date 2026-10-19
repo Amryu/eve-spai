@@ -762,6 +762,10 @@ pub struct SpaiApp {
     /// A setting changed since the last plan, so the best plan is shown rather than the one picked.
     map_route_fresh: bool,
     map_route_job: map_route::RouteJob,
+    /// When the alert engine's copy of the settings and the web view's facts were last refreshed.
+    /// Both copy whole rule lists, notes and status maps, too much to do every frame.
+    alert_cfg_at: Option<std::time::Instant>,
+    ui_facts_at: Option<std::time::Instant>,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
     /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
@@ -1692,6 +1696,8 @@ impl SpaiApp {
             map_ahead_hull: 0,
             map_route_fresh: false,
             map_route_job: Default::default(),
+            alert_cfg_at: None,
+            ui_facts_at: None,
             main_pos_fix: main_pos_fix_at,
             main_maximize: main_maximize_at,
             rescue_geom_applied: false,
@@ -1921,7 +1927,15 @@ impl SpaiApp {
 
     fn drain_alerts(&mut self) {
         self.migrate_dock_permits();
-        {
+        let due = |at: &mut Option<std::time::Instant>, every: std::time::Duration| {
+            let now = std::time::Instant::now();
+            let due = at.is_none_or(|t| now.duration_since(t) >= every);
+            if due {
+                *at = Some(now);
+            }
+            due
+        };
+        if due(&mut self.alert_cfg_at, std::time::Duration::from_millis(250)) {
             let mut cfg = self.alerts_engine.config.lock().unwrap();
             cfg.enabled = self.settings.alert_enabled;
             cfg.alerts = self.settings.alerts.clone();
@@ -1939,7 +1953,9 @@ impl SpaiApp {
             cfg.staging = self.staging_system().map(str::to_owned);
             cfg.notes = self.notes_view.clone();
         }
-        self.publish_ui_facts();
+        if due(&mut self.ui_facts_at, std::time::Duration::from_millis(500)) {
+            self.publish_ui_facts();
+        }
         self.sync_web_server();
         let (fired, matched) = {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
