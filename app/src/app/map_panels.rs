@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The height the route's list of gates and jumps keeps however tall its settings grow.
+const ROUTE_LIST_MIN: f32 = 220.0;
+
 impl SpaiApp {
     /// The route panel: the same thing the browser's route window shows, in the sidebar.
     ///
@@ -223,64 +226,11 @@ impl SpaiApp {
         changed
     }
 
-    pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
+    /// The route panel above its list of gates and jumps: what the route is, its settings, the
+    /// plan picked. Returns false when the list below should not be drawn this frame.
+    fn jump_plan_top(&mut self, ui: &mut egui::Ui, mut replan: bool) -> bool {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
-
-        let fmt_min = |m: f64| -> String {
-            let t = m.round() as i64;
-            if t >= 60 {
-                format!("{}h {:02}m", t / 60, t % 60)
-            } else {
-                format!("{t}m")
-            }
-        };
-
-        ui.add_space(4.0);
-        let mut replan = false;
-        const KINDS: [(&str, &str, &str); 5] = [
-            ("gate", tr_noop!("By gate"), tr_noop!("Gates, bridges and holes")),
-            ("jump", tr_noop!("By jump drive"), tr_noop!("Capital jumps between cyno systems")),
-            ("ahead", tr_noop!("Jump-ahead"), tr_noop!("A capital jumps ahead and the fleet bridges or conduits with it, then gates what range leaves")),
-            ("mixed", tr_noop!("Mixed"), tr_noop!("Each leg flown by gate or jumped, switched per leg")),
-            ("scan", tr_noop!("Scan sweep"), tr_noop!("A sweep through the systems around a centre, for scouts")),
-        ];
-        let current = KINDS.iter().find(|k| k.0 == self.map_route_kind).map_or_else(|| tr!("By gate").to_owned(), |k| spai_ui::i18n::t_dyn(k.1));
-        let mut pick: Option<&str> = None;
-        egui::ComboBox::from_id_salt("route_kind").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
-            for (kind, label, hint) in KINDS {
-                if ui.menu_label(self.map_route_kind == kind, spai_ui::i18n::t_dyn(label)).on_hover_text(spai_ui::i18n::t_dyn(hint)).clicked() {
-                    pick = Some(kind);
-                }
-            }
-        });
-        if let Some(kind) = pick.filter(|k| *k != self.map_route_kind) {
-            self.map_set_route_mode(kind);
-            replan = true;
-        }
-        if self.map_route_kind == "scan" {
-            if replan {
-                self.scan_replan();
-            }
-            self.scan_panel(ui);
-            return;
-        }
-
-        if self.map_route_anchors.len() < 2 {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(
-                    tr!("Drag from one system to another on the map, or right-click a system to start a \
-                     route."),
-                )
-                .weak(),
-            );
-            if replan {
-                self.map_replan_route();
-            }
-            return;
-        }
-
         // The systems the user named, in order, each removable. The start is not: a route has to
         // begin somewhere, and removing it would leave an anchor list that means nothing.
         let anchors = self.map_route_anchors.clone();
@@ -315,11 +265,11 @@ impl SpaiApp {
         });
         if let Some(i) = drop_anchor {
             self.map_route_remove_anchor(i);
-            return;
+            return false;
         }
         if let Some((i, k)) = flip {
             self.map_set_leg_kind(i, k);
-            return;
+            return false;
         }
 
         // A jump-ahead leg gates whatever range leaves, so it takes the gate settings too.
@@ -327,17 +277,23 @@ impl SpaiApp {
         if gating && self.route_zone_combo(ui) {
             replan = true;
         }
-        if gating
-            && ui
-                .checkbox(&mut self.settings.route_via_wormholes, tr!("Route via scanned wormholes"))
-                .changed()
-        {
-            self.needs_save = true;
-            replan = true;
-        }
-        if gating && self.settings.route_via_wormholes && self.wh_route_options_ui(ui) {
-            self.needs_save = true;
-            replan = true;
+        if gating {
+            let head = if self.settings.route_via_wormholes {
+                trf!("{icon}  Wormholes: used", icon = icon::SPIRAL)
+            } else {
+                trf!("{icon}  Wormholes: not used", icon = icon::SPIRAL)
+            };
+            let mut changed = false;
+            egui::CollapsingHeader::new(head).id_salt("route_wormholes").show(ui, |ui| {
+                changed |= ui.checkbox(&mut self.settings.route_via_wormholes, tr!("Route via scanned wormholes")).changed();
+                if self.settings.route_via_wormholes {
+                    changed |= self.wh_route_options_ui(ui);
+                }
+            });
+            if changed {
+                self.needs_save = true;
+                replan = true;
+            }
         }
         if gating && self.route_rules_ui(ui) {
             self.needs_save = true;
@@ -459,7 +415,7 @@ impl SpaiApp {
             } else {
                 ui.label(egui::RichText::new(tr!("No route with these settings.")).color(crate::theme::standing::WARNING));
             }
-            return;
+            return false;
         };
         ui.separator();
         let mut head = format!("{} jumps", o.jumps);
@@ -524,7 +480,7 @@ impl SpaiApp {
             }
             if at != self.map_route_at {
                 self.map_route_at = at;
-                return;
+                return false;
             }
         }
         for step in o.capital_steps() {
@@ -592,6 +548,78 @@ impl SpaiApp {
             }
         });
 
+        true
+    }
+
+    pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+
+        let fmt_min = |m: f64| -> String {
+            let t = m.round() as i64;
+            if t >= 60 {
+                format!("{}h {:02}m", t / 60, t % 60)
+            } else {
+                format!("{t}m")
+            }
+        };
+
+        ui.add_space(4.0);
+        let mut replan = false;
+        const KINDS: [(&str, &str, &str); 5] = [
+            ("gate", tr_noop!("By gate"), tr_noop!("Gates, bridges and holes")),
+            ("jump", tr_noop!("By jump drive"), tr_noop!("Capital jumps between cyno systems")),
+            ("ahead", tr_noop!("Jump-ahead"), tr_noop!("A capital jumps ahead and the fleet bridges or conduits with it, then gates what range leaves")),
+            ("mixed", tr_noop!("Mixed"), tr_noop!("Each leg flown by gate or jumped, switched per leg")),
+            ("scan", tr_noop!("Scan sweep"), tr_noop!("A sweep through the systems around a centre, for scouts")),
+        ];
+        let current = KINDS.iter().find(|k| k.0 == self.map_route_kind).map_or_else(|| tr!("By gate").to_owned(), |k| spai_ui::i18n::t_dyn(k.1));
+        let mut pick: Option<&str> = None;
+        egui::ComboBox::from_id_salt("route_kind").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            for (kind, label, hint) in KINDS {
+                if ui.menu_label(self.map_route_kind == kind, spai_ui::i18n::t_dyn(label)).on_hover_text(spai_ui::i18n::t_dyn(hint)).clicked() {
+                    pick = Some(kind);
+                }
+            }
+        });
+        if let Some(kind) = pick.filter(|k| *k != self.map_route_kind) {
+            self.map_set_route_mode(kind);
+            replan = true;
+        }
+        if self.map_route_kind == "scan" {
+            if replan {
+                self.scan_replan();
+            }
+            self.scan_panel(ui);
+            return;
+        }
+
+        if self.map_route_anchors.len() < 2 {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    tr!("Drag from one system to another on the map, or right-click a system to start a \
+                     route."),
+                )
+                .weak(),
+            );
+            if replan {
+                self.map_replan_route();
+            }
+            return;
+        }
+
+        // The settings scroll on their own, so a tall stack of them never pushes the list of gates and
+        // jumps off the bottom.
+        let top_max = (ui.available_height() - ROUTE_LIST_MIN).max(120.0);
+        let go = egui::ScrollArea::vertical()
+            .id_salt("route_top")
+            .max_height(top_max)
+            .auto_shrink([false, true])
+            .show(ui, |ui| self.jump_plan_top(ui, replan))
+            .inner;
+        if !go {
+            return;
+        }
         ui.separator();
         let hops: Vec<crate::web::route::Hop> = self
             .map_route_opts

@@ -2662,6 +2662,8 @@
   "{icon}  Wormhole?": "{icon}  Wurmloch?",
   "{icon}  Wormhole? (1 of {count})": "{icon}  Wurmloch? (1 von {count})",
   "{icon}  Wormholes": "{icon}  Wurmlöcher",
+  "{icon}  Wormholes: not used": "{icon}  Wurmlöcher: nicht genutzt",
+  "{icon}  Wormholes: used": "{icon}  Wurmlöcher: genutzt",
   "{icon}  advert off": "{icon}  Werbung aus",
   "{icon}  auto, Op {w} in use": "{icon}  auto, Op {w} belegt",
   "{icon}  avoiding 1 system": "{icon}  meide 1 System",

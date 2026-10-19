@@ -2662,6 +2662,8 @@
   "{icon}  Wormhole?": "{icon}  ¿Agujero de gusano?",
   "{icon}  Wormhole? (1 of {count})": "{icon}  ¿Agujero de gusano? (1 de {count})",
   "{icon}  Wormholes": "{icon}  Agujeros de gusano",
+  "{icon}  Wormholes: not used": "{icon}  Agujeros de gusano: sin usar",
+  "{icon}  Wormholes: used": "{icon}  Agujeros de gusano: en uso",
   "{icon}  advert off": "{icon}  anuncio desactivado",
   "{icon}  auto, Op {w} in use": "{icon}  auto, Op {w} en uso",
   "{icon}  avoiding 1 system": "{icon}  evitando 1 sistema",

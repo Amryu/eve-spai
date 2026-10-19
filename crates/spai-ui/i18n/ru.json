@@ -2662,6 +2662,8 @@
   "{icon}  Wormhole?": "{icon}  Червоточина?",
   "{icon}  Wormhole? (1 of {count})": "{icon}  Червоточина? (1 из {count})",
   "{icon}  Wormholes": "{icon}  Червоточины",
+  "{icon}  Wormholes: not used": "{icon}  Червоточины: не используются",
+  "{icon}  Wormholes: used": "{icon}  Червоточины: используются",
   "{icon}  advert off": "{icon}  объявление снято",
   "{icon}  auto, Op {w} in use": "{icon}  авто, Op {w} занят",
   "{icon}  avoiding 1 system": "{icon}  в обход 1 системы",

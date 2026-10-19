@@ -2662,6 +2662,8 @@
   "{icon}  Wormhole?": "{icon}  虫洞？",
   "{icon}  Wormhole? (1 of {count})": "{icon}  虫洞？（第 1 个，共 {count} 个）",
   "{icon}  Wormholes": "{icon}  虫洞",
+  "{icon}  Wormholes: not used": "{icon}  虫洞：不使用",
+  "{icon}  Wormholes: used": "{icon}  虫洞：使用",
   "{icon}  advert off": "{icon}  广告已关闭",
   "{icon}  auto, Op {w} in use": "{icon}  自动，Op {w} 占用中",
   "{icon}  avoiding 1 system": "{icon}  正在避开 1 个星系",

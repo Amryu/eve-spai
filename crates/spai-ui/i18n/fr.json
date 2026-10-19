@@ -2662,6 +2662,8 @@
   "{icon}  Wormhole?": "{icon}  Trou de ver ?",
   "{icon}  Wormhole? (1 of {count})": "{icon}  Trou de ver ? (1 sur {count})",
   "{icon}  Wormholes": "{icon}  Trous de ver",
+  "{icon}  Wormholes: not used": "{icon}  Trous de ver : non utilisés",
+  "{icon}  Wormholes: used": "{icon}  Trous de ver : utilisés",
   "{icon}  advert off": "{icon}  annonce retirée",
   "{icon}  auto, Op {w} in use": "{icon}  auto, Op {w} occupée",
   "{icon}  avoiding 1 system": "{icon}  évite 1 système",
