@@ -197,7 +197,9 @@ pub fn reach(
     let mut prev: HashMap<(usize, u32), (usize, usize)> = HashMap::new();
     let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
     let mut launches_of: HashMap<usize, Vec<(usize, u32)>> = HashMap::new();
-    for &(id, pre) in sources {
+    let mut sources = sources.to_vec();
+    sources.sort_unstable();
+    for &(id, pre) in &sources {
         let Some(&i) = idx.get(&id) else { continue };
         let k = Key { pre, jumps: 0, off_pref: 0, ly: 0.0 };
         if !jumpable(&systems[i]) || best.get(&(i, 0)).is_some_and(|b| *b <= k) {
@@ -252,7 +254,7 @@ pub fn reach(
     }
     let mut out: HashMap<i64, (Key, Vec<(i64, i64)>)> = HashMap::new();
     for (&(i, j), k) in &best {
-        if j == 0 || out.get(&systems[i].id).is_some_and(|(o, _)| o <= k) {
+        if j == 0 || out.get(&systems[i].id).is_some_and(|(o, _)| o < k) {
             continue;
         }
         let mut legs = Vec::new();
@@ -264,6 +266,11 @@ pub fn reach(
             jj -= 1;
         }
         legs.reverse();
+        // Equal plans are settled by their systems, not by the order a hash map hands them over,
+        // or the plan shown could change between two plannings of the same route.
+        if out.get(&systems[i].id).is_some_and(|(o, ol)| o == k && *ol <= legs) {
+            continue;
+        }
         out.insert(systems[i].id, (*k, legs));
     }
     out.into_iter()
@@ -334,6 +341,12 @@ pub struct HopCost {
     pub reactivation_min: f64,
 }
 
+/// The fatigue carried into the next jump: it drains a minute a minute, and the next jump cannot
+/// come before the reactivation timer of the last one has run out.
+pub fn carried_into_next(fatigue_min: f64, reactivation_min: f64) -> f64 {
+    (fatigue_min - reactivation_min).max(0.0)
+}
+
 /// One jump's fatigue and reactivation, given the fatigue already carried. The rules live here
 /// alone: a second copy is a second chance to get them wrong.
 pub fn next_fatigue(carried_min: f64, ly: f64, class: &ShipClass) -> (f64, f64) {
@@ -355,13 +368,12 @@ pub fn hop_costs(
 ) -> Vec<HopCost> {
     let idx: HashMap<i64, &MapSystem> = systems.iter().map(|s| (s.id, s)).collect();
     let fuel_mult = 1.0 - 0.10 * jfc as f64;
-    let mut fatigue = 0.0_f64;
+    let (mut fatigue, mut reactivation) = (0.0_f64, 0.0_f64);
     let mut out = Vec::with_capacity(path.len().saturating_sub(1));
     for w in path.windows(2) {
         let (Some(a), Some(b)) = (idx.get(&w[0]), idx.get(&w[1])) else { continue };
         let ly = ly_distance(a, b);
-        let reactivation;
-        (fatigue, reactivation) = next_fatigue(fatigue, ly, class);
+        (fatigue, reactivation) = next_fatigue(carried_into_next(fatigue, reactivation), ly, class);
         out.push(HopCost {
             ly,
             fuel: ly * class.fuel_per_ly * fuel_mult * (1.0 - class.fuel_role_reduction),
@@ -461,6 +473,17 @@ mod tests {
         let s = vec![at(1, 0.0, 0.0), mid, at(3, 8.0, 0.0)];
         assert!(!jumpable(&s[1]));
         assert!(shortest_path_pref(&s, 5.0, 1, 3, &HashSet::new()).is_none());
+    }
+
+    /// Fatigue drains while the drive cools down, so the second jump starts from what is left after
+    /// the first one's reactivation: two 1 ly titan jumps end at 36 minutes, not 40.
+    #[test]
+    fn fatigue_drains_while_the_drive_cools_down() {
+        let s = vec![at(1, 0.0, 0.0), at(2, 1.0, 0.0), at(3, 2.0, 0.0)];
+        let hops = hop_costs(&s, &[1, 2, 3], &SHIP_CLASSES[1], 5);
+        assert!((hops[0].fatigue_min - 20.0).abs() < 0.01 && (hops[0].reactivation_min - 2.0).abs() < 0.01);
+        assert!((hops[1].fatigue_min - 36.0).abs() < 0.01, "fatigue {}", hops[1].fatigue_min);
+        assert!((hops[1].reactivation_min - 2.0).abs() < 0.01);
     }
 
     /// Per-hop fatigue is what the totals are made of, so they cannot disagree.

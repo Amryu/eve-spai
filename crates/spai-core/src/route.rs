@@ -880,7 +880,9 @@ fn jump_ahead_plans(
         (ka.0, ka.1).cmp(&(kb.0, kb.1)).then(ka.2.total_cmp(&kb.2)).is_lt()
     };
     let mut alone: std::collections::HashMap<i64, (u32, i64, f64)> = std::collections::HashMap::new();
-    for (&l, &d) in &launches {
+    let mut sorted_launches: Vec<(i64, u32)> = launches.iter().map(|(&l, &d)| (l, d)).collect();
+    sorted_launches.sort_unstable();
+    for &(l, d) in &sorted_launches {
         let Some(lp) = pos(coords, l).filter(|p| crate::jumproute::jumpable(p)) else { continue };
         for x in coords {
             if x.id == l || x.id == to || !crate::jumproute::jumpable(x) || !land(x) {
@@ -892,8 +894,12 @@ fn jump_ahead_plans(
             }
         }
     }
-    for (&x, &(d, l, ly)) in &alone {
-        for (stand, after) in capital_ball(x) {
+    let mut sorted_alone: Vec<(i64, (u32, i64, f64))> = alone.iter().map(|(&x, &v)| (x, v)).collect();
+    sorted_alone.sort_unstable_by_key(|(x, _)| *x);
+    for &(x, (d, l, ly)) in &sorted_alone {
+        let mut ball: Vec<(i64, u32)> = capital_ball(x).into_iter().collect();
+        ball.sort_unstable();
+        for (stand, after) in ball {
             let cand: Stand = (d, Some((l, x, ly, after)));
             if stands.get(&stand).is_none_or(|cur| better(&cand, cur)) {
                 stands.insert(stand, cand);
@@ -1448,12 +1454,11 @@ fn titan_via(
 /// starts from nothing, so an assembled route has to be re-costed or every waypoint reads as a
 /// fresh capital with no fatigue.
 fn recost_fatigue(o: &mut RouteOption, class: &crate::jumproute::ShipClass) {
-    let mut fatigue = 0.0;
+    let (mut fatigue, mut reactivation) = (0.0, 0.0);
     for h in &mut o.hops {
         // Jump hops only: gates and bridges carry no fatigue.
         let (Some(ly), 2) = (h.ly, h.kind) else { continue };
-        let reactivation;
-        (fatigue, reactivation) = crate::jumproute::next_fatigue(fatigue, ly, class);
+        (fatigue, reactivation) = crate::jumproute::next_fatigue(crate::jumproute::carried_into_next(fatigue, reactivation), ly, class);
         h.fatigue_min = Some(fatigue);
         h.reactivation_min = Some(reactivation);
     }
@@ -2128,8 +2133,14 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         let out = jump_ahead(&g, &coords, ids[0], ids[9], titan, 0, 5, true, &Avoid::default(), &Avoid::default(), &Default::default(), &a, &Picks::new());
         let o = &out[0];
         let tj = o.titan_jump.as_ref().expect("the capital jumps alone");
-        assert_eq!((tj.from, tj.to), (ids[0], ids[3]));
-        assert_eq!(o.capital_gates.iter().map(|r| r.iter().map(|b| b.id).collect::<Vec<_>>()).collect::<Vec<_>>(), vec![vec![ids[3], ids[4]]], "then one gate on");
+        // Gating one first and jumping to A4 is as good; either way one gate and one jump alone.
+        let runs: Vec<Vec<i64>> = o.capital_gates.iter().map(|r| r.iter().map(|b| b.id).collect()).collect();
+        assert!(
+            ((tj.from, tj.to) == (ids[0], ids[3]) && runs == vec![vec![ids[3], ids[4]]])
+                || ((tj.from, tj.to) == (ids[1], ids[4]) && runs == vec![vec![ids[0], ids[1]]]),
+            "{:?} {runs:?}",
+            (tj.from, tj.to)
+        );
         assert_eq!((o.hops[1].id, o.hops[1].kind), (ids[4], 1), "the fleet over the Ansiblex to it");
         assert_eq!(jumped(o), vec![ids[7]]);
     }
@@ -2530,6 +2541,10 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         for seed in 0..400 {
             let c = random_case(seed);
             let out = c.plan();
+            if seed % 20 == 0 {
+                let again: Vec<String> = c.plan().iter().map(|o| o.label.clone()).collect();
+                assert_eq!(out.iter().map(|o| o.label.clone()).collect::<Vec<_>>(), again, "seed {seed}: the same plans every time");
+            }
             if c.from == c.to {
                 assert!(out.is_empty(), "seed {seed}: nowhere to go");
                 continue;
