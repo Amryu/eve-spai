@@ -2409,6 +2409,10 @@ impl SpaiApp {
             st.eve_focused = self.eve_focused.load(std::sync::atomic::Ordering::Relaxed);
             st.win_pos = self.settings.fleet_ping_window_pos;
             st.win_size = self.settings.fleet_ping_window_size;
+            // A hidden deferred viewport's own callback cannot be relied on to un-hide it.
+            for cmd in ping_window_commands(&mut st) {
+                ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of("fleet_ping_window"), cmd);
+            }
             (st.moved.take(), st.moved_size.take())
         };
         self.persist_ping_geometry(moved, moved_size);

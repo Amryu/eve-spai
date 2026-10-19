@@ -764,6 +764,23 @@ pub(crate) fn build_alert_viewport_cb(
     })
 }
 
+/// The commands the ping window needs this pass. On Windows a show also activates the window, so it
+/// is sent on a change or a new ping, never every pass. A show alone does not restore a minimized
+/// window, and on X11 `Minimized(false)` is what raises it.
+pub(crate) fn ping_window_commands(st: &mut PingWindowState) -> Vec<egui::ViewportCommand> {
+    let want = st.enabled && !st.windows.is_empty();
+    let raise = std::mem::take(&mut st.raise) && want;
+    if st.applied_visible == Some(want) && !raise {
+        return Vec::new();
+    }
+    st.applied_visible = Some(want);
+    let mut cmds = vec![egui::ViewportCommand::Visible(want)];
+    if raise {
+        cmds.push(egui::ViewportCommand::Minimized(false));
+    }
+    cmds
+}
+
 #[allow(deprecated)]
 pub(crate) fn build_ping_viewport_cb(
     ping_shared: SharedPingWindow,
@@ -771,14 +788,7 @@ pub(crate) fn build_ping_viewport_cb(
     std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
         let ctx = ui.ctx().clone();
         let mut st = ping_shared.lock().unwrap();
-        let want_visible = st.enabled && !st.windows.is_empty();
-        // Showing a visible window activates it again on Windows, and every command repaints, so
-        // sending it each frame kept taking focus from the main window.
-        if st.applied_visible != Some(want_visible) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
-            st.applied_visible = Some(want_visible);
-        }
-        if !want_visible {
+        if !st.enabled || st.windows.is_empty() {
             st.level_applied = None;
             st.open = false;
             return;
@@ -814,9 +824,6 @@ pub(crate) fn build_ping_viewport_cb(
             st.level_applied = Some(on_top);
             st.level_at = Some(std::time::Instant::now());
         }
-        // A new ping requests foreground via WindowLevel above (SWP_NOACTIVATE raise); it never
-        // takes keyboard focus, so it can't steal it from the game. Clear the flag either way.
-        std::mem::take(&mut st.raise);
         let pings = st.windows.clone();
         let systems = st.systems.clone();
         let doctrine_url = st.doctrine_url.clone();
@@ -1089,24 +1096,40 @@ mod feed_tests {
 mod ping_window_tests {
     use super::*;
 
+    fn new_ping(st: &mut PingWindowState) {
+        st.windows.insert(0, PingShown { ping: crate::uitest::fixtures::ping_fleet(), shown_at: std::time::Instant::now() });
+        st.raise = true;
+    }
+
+    fn show() -> Vec<egui::ViewportCommand> {
+        vec![egui::ViewportCommand::Visible(true), egui::ViewportCommand::Minimized(false)]
+    }
+
     #[test]
-    fn an_open_ping_window_is_shown_once() {
-        let st = PingWindowState {
-            enabled: true,
-            windows: vec![PingShown { ping: crate::uitest::fixtures::ping_fleet(), shown_at: std::time::Instant::now() }],
-            ..Default::default()
-        };
-        let cb = build_ping_viewport_cb(std::sync::Arc::new(std::sync::Mutex::new(st)));
-        let ctx = egui::Context::default();
-        let shows = |out: egui::FullOutput| {
-            out.viewport_output
-                .values()
-                .flat_map(|v| v.commands.iter())
-                .filter(|c| matches!(c, egui::ViewportCommand::Visible(true)))
-                .count()
-        };
-        let first = shows(ctx.run_ui(Default::default(), |ui| cb(ui, egui::ViewportClass::Root)));
-        let second = shows(ctx.run_ui(Default::default(), |ui| cb(ui, egui::ViewportClass::Root)));
-        assert_eq!((first, second), (1, 0));
+    fn a_shown_ping_window_is_not_shown_again_every_pass() {
+        let mut st = PingWindowState { enabled: true, ..Default::default() };
+        new_ping(&mut st);
+        ping_window_commands(&mut st);
+        assert_eq!(ping_window_commands(&mut st), vec![]);
+    }
+
+    #[test]
+    fn a_new_ping_brings_a_shown_window_to_the_front() {
+        let mut st = PingWindowState { enabled: true, ..Default::default() };
+        new_ping(&mut st);
+        ping_window_commands(&mut st);
+        new_ping(&mut st);
+        assert_eq!(ping_window_commands(&mut st), show());
+    }
+
+    #[test]
+    fn a_ping_after_the_window_closed_shows_it_again() {
+        let mut st = PingWindowState { enabled: true, ..Default::default() };
+        new_ping(&mut st);
+        ping_window_commands(&mut st);
+        st.windows.clear();
+        assert_eq!(ping_window_commands(&mut st), vec![egui::ViewportCommand::Visible(false)]);
+        new_ping(&mut st);
+        assert_eq!(ping_window_commands(&mut st), show());
     }
 }
