@@ -152,9 +152,20 @@ async fn pool() -> Option<PgPool> {
     Some(pool)
 }
 
+/// Alliances without ESI: everyone is in Goonswarm Federation but the outsider of the wormhole
+/// tests, who is in The Initiative.
+struct TestAffiliations;
+
+impl eve_spai_br::imperium::AffiliationSource for TestAffiliations {
+    fn fetch(&self, chars: Vec<i64>) -> eve_spai_br::imperium::Fetched {
+        let rows = chars.into_iter().map(|c| (c, Some(if c == 90_000_003 { 1900696668 } else { 1354830081 }))).collect();
+        Box::pin(async move { Ok(rows) })
+    }
+}
+
 fn app(pool: PgPool, cfg: Config) -> axum::Router {
     let verifier = Verifier::from_jwks(&test_jwks(), cfg.client_id.clone()).unwrap().with_extras(cfg.extra_client_ids.clone());
-    eve_spai_br::routes::router(AppState::new(pool, verifier, cfg))
+    eve_spai_br::routes::router(AppState::new(pool, verifier, cfg).with_affiliations(Box::new(TestAffiliations)))
 }
 
 fn lazy_app() -> axum::Router {
@@ -494,10 +505,17 @@ async fn wormhole_group_membership_and_log() {
     let file = std::env::temp_dir().join(format!("wh-bridges-{}.json", std::process::id()));
     std::fs::write(&file, r#"{"capital": "A24L-V", "max_zone": 2, "bridges": [["Q-UEN6", "5-2PQU"]]}"#).unwrap();
     std::env::set_var("WH_BRIDGES_FILE", &file);
-    let (s, _) = wh(&app, "GET", "/bridges", &outsider, &xd, None).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "not in a group, no bridges");
+    let (s, v) = wh(&app, "GET", "/bridges", &outsider, &xd, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not in The Imperium, no bridges");
+    assert!(v["error"].as_str().unwrap().contains("Outsider is not in a member alliance"), "{v}");
     let (s, v) = wh(&app, "GET", "/bridges", &owner, &od, None).await;
     assert_eq!((s, v["bridges"][0][1].as_str()), (StatusCode::OK, Some("5-2PQU")), "{v}");
+    let (s, v) = wh(&app, "GET", "/bridges", &joiner, &jd, None).await;
+    assert_eq!(s, StatusCode::OK, "in The Imperium, no group needed: {v}");
+    let (_, v) = wh(&app, "GET", "/me/access", &owner, &od, None).await;
+    assert_eq!((v["imperium"].as_bool(), v["owned"].as_i64(), v["groups"].as_i64(), v["max_owned"].as_i64()), (Some(true), Some(1), Some(1), Some(10)), "{v}");
+    let (_, v) = wh(&app, "GET", "/me/access", &outsider, &xd, None).await;
+    assert_eq!(v["imperium"].as_bool(), Some(false), "{v}");
     let _ = std::fs::remove_file(&file);
 
     let op = |id: &str, keep: bool| json!({ "op_id": id, "epoch": 0, "keep": keep, "blob": "sealed" });
@@ -519,8 +537,14 @@ async fn wormhole_group_membership_and_log() {
     let inv = invite(app.clone(), owner.clone(), g.clone()).await;
     let (s, _) = wh(&app, "POST", &format!("/invites/{inv}/join"), &joiner, &jd, Some(json!({ "body": "keys+mac", "device_id": jd, "label": "laptop" }))).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, _) = wh(&app, "POST", &format!("/invites/{inv}/join"), &outsider, &xd, Some(json!({ "body": "x", "device_id": xd }))).await;
+    let (s, _) = wh(&app, "POST", &format!("/invites/{inv}/join"), &viewer, &vd, Some(json!({ "body": "x", "device_id": vd }))).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "an invite works once");
+    // Someone outside The Imperium cannot answer an invite, and the invite stays usable.
+    let inv_x = invite(app.clone(), owner.clone(), g.clone()).await;
+    let (s, v) = wh(&app, "POST", &format!("/invites/{inv_x}/join"), &outsider, &xd, Some(json!({ "body": "x", "device_id": xd }))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _) = wh(&app, "GET", &format!("/invites/{inv_x}"), &owner, &od, None).await;
+    assert_eq!(s, StatusCode::OK, "not used up by a refused join");
     let (_, mine) = wh(&app, "GET", "/me/requests", &joiner, &jd, None).await;
     assert_eq!(mine[0]["device_id"].as_str(), Some(jd.as_str()), "the joiner sees what it waits on");
     let (_, reqs) = wh(&app, "GET", &format!("/groups/{g}/requests"), &owner, &od, None).await;

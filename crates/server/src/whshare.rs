@@ -23,6 +23,9 @@ const MAX_PAGE: i64 = 500;
 const V: &str = "/api/wh/v2";
 const MAX_DEVICES: i64 = 16;
 const MAX_PENDING: i64 = 3;
+/// Folders one character may own, and be in, owned ones included.
+const MAX_OWNED: i64 = 10;
+const MAX_GROUPS: i64 = 100;
 
 pub fn routes(state: AppState) -> Router<AppState> {
     let r = |p: &str| format!("{V}{p}");
@@ -43,6 +46,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(&r("/invites/{i}"), get(fetch_invite))
         .route(&r("/invites/{i}/join"), post(join))
         .route(&r("/me/requests"), get(my_requests))
+        .route(&r("/me/access"), get(my_access))
         .route(&r("/bridges"), get(bridges))
         .route("/api/wh/{*rest}", axum::routing::any(gone))
         .layer(axum::middleware::from_fn_with_state(state, rate_limit))
@@ -215,6 +219,10 @@ async fn create_group(
     check_blob(&body.wrapped)?;
     check_device(&body.device_id)?;
     check_label(&body.label)?;
+    let (owned, _) = folder_counts(&st, me.char_id).await?;
+    if let Some(why) = owned_refusal(owned) {
+        return Err(AppError::ForbiddenMsg(why));
+    }
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query("INSERT INTO wh_groups (id, owner) VALUES ($1, $2)").bind(&id).bind(me.char_id).execute(&mut *tx).await?;
@@ -469,6 +477,7 @@ async fn create_invite(
     // Members invite too, for viewers, and anyone in the group invites their own other devices:
     // they approve their own invites, and the roster and `approve` hold them to that.
     member(&st, &g, me.char_id).await?;
+    st.imperium.require(&[(me.char_id, &me.name)]).await?;
     check_blob(&inv.blob)?;
     let ttl = inv.ttl_secs.clamp(300, 7 * 86_400);
     let id = new_id();
@@ -522,6 +531,7 @@ async fn join(
     check_blob(&j.body)?;
     check_device(&j.device_id)?;
     check_label(&j.label)?;
+    st.imperium.require(&[(me.char_id, &me.name)]).await?;
     let mut tx = st.db.begin().await?;
     let group: String = sqlx::query_scalar(
         "UPDATE wh_invites SET used_by = $2 WHERE id = $1 AND expires_at > now() AND used_by IS NULL RETURNING group_id",
@@ -531,6 +541,12 @@ async fn join(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Refused before anything is written: the transaction rolls back and the invite stays usable.
+    let already = role(&st, &group, me.char_id).await?.is_some();
+    let (_, total) = folder_counts(&st, me.char_id).await?;
+    if let Some(why) = joined_refusal(total, already, "You are") {
+        return Err(AppError::ForbiddenMsg(why));
+    }
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id <> $3")
         .bind(&group)
         .bind(me.char_id)
@@ -572,16 +588,70 @@ async fn my_requests(State(st): State<AppState>, SessionIdentity(me): SessionIde
     Ok(Json(rows.iter().map(|r| MyRequest { group_id: r.get(0), device_id: r.get(1) }).collect()))
 }
 
-/// The Ansiblex network routes may use, as the operator keeps it in `WH_BRIDGES_FILE`: for
-/// members of a group only, so the alliance's bridges are not public. `null` when there is none.
+/// The Ansiblex network and cyno beacons routes may use, as the operator keeps them in
+/// `WH_BRIDGES_FILE`: for The Imperium only, so they are not public. `null` when there is none.
 async fn bridges(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<serde_json::Value>, AppError> {
-    let member: Option<i32> = sqlx::query_scalar("SELECT 1 FROM wh_members WHERE char_id = $1 LIMIT 1").bind(me.char_id).fetch_optional(&st.db).await?;
-    if member.is_none() {
-        return Err(AppError::Forbidden);
-    }
+    st.imperium.require(&[(me.char_id, &me.name)]).await?;
     let path = std::env::var("WH_BRIDGES_FILE").unwrap_or_else(|_| "/srv/wh-bridges.json".into());
     let v = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
     Ok(Json(v))
+}
+
+#[derive(Serialize)]
+struct Access {
+    imperium: bool,
+    alliance_id: Option<i64>,
+    owned: i64,
+    groups: i64,
+    max_owned: i64,
+    max_groups: i64,
+}
+
+/// Whether the signed-in character may use the map and sharing, and how many folders it owns and
+/// is in, so a client can say so before anything is refused.
+async fn my_access(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<Access>, AppError> {
+    let alliance_id = st.imperium.alliance(me.char_id).await?;
+    let (owned, groups) = folder_counts(&st, me.char_id).await?;
+    Ok(Json(Access {
+        imperium: alliance_id.is_some_and(br_core::packs::is_imperium),
+        alliance_id,
+        owned,
+        groups,
+        max_owned: MAX_OWNED,
+        max_groups: MAX_GROUPS,
+    }))
+}
+
+/// The groups `char_id` owns and is in, owned ones included.
+async fn folder_counts(st: &AppState, char_id: i64) -> Result<(i64, i64), AppError> {
+    let row = sqlx::query("SELECT count(DISTINCT group_id) FILTER (WHERE role = 'owner'), count(DISTINCT group_id) FROM wh_members WHERE char_id = $1")
+        .bind(char_id)
+        .fetch_one(&st.db)
+        .await?;
+    Ok((row.get(0), row.get(1)))
+}
+
+fn owned_refusal(owned: i64) -> Option<String> {
+    (owned >= MAX_OWNED).then(|| format!("You own {MAX_OWNED} folders, the most one character may."))
+}
+
+/// Another device of someone already in the group is not a new group for them.
+fn joined_refusal(groups: i64, already_in: bool, who: &str) -> Option<String> {
+    (!already_in && groups >= MAX_GROUPS).then(|| format!("{who} in {MAX_GROUPS} folders, the most one character may."))
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn ten_owned_and_a_hundred_in_all() {
+        assert!(owned_refusal(9).is_none());
+        assert_eq!(owned_refusal(10).as_deref(), Some("You own 10 folders, the most one character may."));
+        assert!(joined_refusal(99, false, "You are").is_none());
+        assert_eq!(joined_refusal(100, false, "You are").as_deref(), Some("You are in 100 folders, the most one character may."));
+        assert!(joined_refusal(100, true, "You are").is_none(), "another device of someone already in");
+    }
 }
 
 #[derive(Serialize)]
@@ -661,6 +731,18 @@ async fn approve(
     };
     if !allowed {
         return Err(AppError::Forbidden);
+    }
+    let asker: String = sqlx::query_scalar("SELECT name FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3")
+        .bind(&g)
+        .bind(c)
+        .bind(&d)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    st.imperium.require(&[(me.char_id, &me.name), (c, &asker)]).await?;
+    let (_, total) = folder_counts(&st, c).await?;
+    if let Some(why) = joined_refusal(total, already, &format!("{asker} is")) {
+        return Err(AppError::ForbiddenMsg(why));
     }
     let mut tx = st.db.begin().await?;
     let row = sqlx::query("DELETE FROM wh_join_requests WHERE group_id = $1 AND char_id = $2 AND device_id = $3 RETURNING name, label")

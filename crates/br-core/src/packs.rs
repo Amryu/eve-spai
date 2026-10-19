@@ -11,6 +11,24 @@ pub fn coalition_of(alliance_id: i64) -> Option<&'static str> {
         .map(|p| p.name)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imperium_membership_is_by_alliance() {
+        assert!(is_imperium(1354830081), "Goonswarm Federation");
+        assert!(is_imperium(99003214), "Brave Collective");
+        assert!(!is_imperium(1900696668), "The Initiative. is a pack of its own");
+        assert!(!is_imperium(0));
+    }
+}
+
+/// Whether `alliance_id` is one of The Imperium's member alliances.
+pub fn is_imperium(alliance_id: i64) -> bool {
+    PACKS.iter().any(|p| p.name == "The Imperium" && p.member_alliance_ids.contains(&alliance_id))
+}
+
 pub const PACKS: &[ConfigPack] = &[
     ConfigPack {
         name: "The Imperium",

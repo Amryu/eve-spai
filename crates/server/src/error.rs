@@ -9,6 +9,12 @@ pub enum AppError {
     Unauthorized(String),
     #[error("forbidden")]
     Forbidden,
+    /// Refused, with the reason a person can act on.
+    #[error("{0}")]
+    ForbiddenMsg(String),
+    /// Something this answer depends on is out of reach for now.
+    #[error("{0}")]
+    Unavailable(String),
     #[error("not found")]
     NotFound,
     #[error("payload too large")]
@@ -30,7 +36,8 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::ForbiddenMsg(_) => StatusCode::FORBIDDEN,
+            AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,

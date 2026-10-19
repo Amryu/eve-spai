@@ -22,6 +22,8 @@ pub struct AppState {
     buckets: Arc<Mutex<HashMap<(i64, bool), (f64, Instant)>>>,
     /// Invite budgets by client address, the same way.
     ip_buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
+    /// Who is in The Imperium, which wormhole sharing is for.
+    pub imperium: Arc<crate::imperium::Gate>,
 }
 
 impl AppState {
@@ -38,7 +40,14 @@ impl AppState {
             views: Arc::new(Mutex::new(HashMap::new())),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             ip_buckets: Arc::new(Mutex::new(HashMap::new())),
+            imperium: Arc::new(crate::imperium::Gate::new(Box::new(crate::imperium::Esi::new()))),
         }
+    }
+
+    /// The same state, with alliances read from `source` instead of ESI.
+    pub fn with_affiliations(mut self, source: Box<dyn crate::imperium::AffiliationSource>) -> Self {
+        self.imperium = Arc::new(crate::imperium::Gate::new(source));
+        self
     }
 
     /// Takes one request from `char_id`'s budget. False when it is spent.

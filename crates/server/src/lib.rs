@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod imperium;
 pub mod models;
 pub mod pipeline;
 pub mod routes;
