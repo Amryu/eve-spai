@@ -6995,20 +6995,36 @@ pub(crate) fn rescue_chat_feed(
     let mut out = None;
     let mut prev_sender: Option<String> = None;
     let mut prev_time = 0i64;
+    // Rows out of sight take the height they had when last drawn instead of being laid out again:
+    // the window redraws every frame and a long backlog was laid out whole each time.
+    let clip = ui.clip_rect();
+    let width = ui.available_width().round() as i32;
     for (i, (who, body, outgoing, time)) in msgs.iter().enumerate() {
         let sender = if *outgoing { "\u{0}me".to_owned() } else { who.clone() };
         let grouped = rescue_grouped(&sender, *time, prev_sender.as_deref(), prev_time);
-        if !grouped {
-            ui.add_space(5.0);
-            ui.label(egui::RichText::new(eve_time_label(*time, now)).weak().size(9.5));
-        }
-        let show = MsgActions { copy: true, mention: !*outgoing, dm: !*outgoing };
-        let act = rescue_chat_line(ui, ui.id().with((salt, i)), who, body, grouped, show);
-        if act != MsgRowAction::None {
-            out = Some((act, who.clone(), body.clone()));
-        }
         prev_sender = Some(sender);
         prev_time = *time;
+        let key = ui.id().with(("rescue_row_h", salt, who, *time, body.len(), grouped, width));
+        let top = ui.cursor().top();
+        if let Some(h) = ui.data(|d| d.get_temp::<f32>(key)) {
+            if top + h < clip.top() || top > clip.bottom() {
+                ui.allocate_space(egui::vec2(ui.available_width(), h));
+                continue;
+            }
+        }
+        let row_id = ui.id().with((salt, i));
+        let shown = ui.scope(|ui| {
+            if !grouped {
+                ui.add_space(5.0);
+                ui.label(egui::RichText::new(eve_time_label(*time, now)).weak().size(9.5));
+            }
+            let show = MsgActions { copy: true, mention: !*outgoing, dm: !*outgoing };
+            rescue_chat_line(ui, row_id, who, body, grouped, show)
+        });
+        ui.data_mut(|d| d.insert_temp(key, shown.response.rect.height()));
+        if shown.inner != MsgRowAction::None {
+            out = Some((shown.inner, who.clone(), body.clone()));
+        }
     }
     out
 }
