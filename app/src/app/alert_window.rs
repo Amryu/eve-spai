@@ -866,7 +866,7 @@ pub(crate) fn build_ping_viewport_cb(
             }
         }
         if blinking {
-            ctx.request_repaint();
+            ctx.request_repaint_after(super::map_ui::ANIM_FRAME);
         }
         if on_top {
             ctx.request_repaint_after(std::time::Duration::from_millis(800));

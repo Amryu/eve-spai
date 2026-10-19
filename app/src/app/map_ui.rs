@@ -9,6 +9,9 @@ const DOT_PER_SPACING: f32 = 0.1;
 /// The usual gap between systems, in points, from which the universe map names them.
 const LABELS_FROM_SPACING: f32 = 40.0;
 
+/// How often an animation that is only decoration repaints: about 30 fps.
+pub(crate) const ANIM_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
 impl SpaiApp {
     /// A planned route's legs: capital jumps and bridges as arcs, gates as crawling dashes.
     pub(crate) fn draw_route_legs(
@@ -998,7 +1001,7 @@ impl SpaiApp {
                         last = Some((id, p));
                         jumped_hole = false;
                     }
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+                    ui.ctx().request_repaint_after(ANIM_FRAME);
                 }
             }
         }
@@ -1091,7 +1094,9 @@ impl SpaiApp {
         // The route the drag settled on, in its own colours so it does not read as the travel route.
         if let Some(o) = self.map_route_opts.get(self.map_route_at) {
             let phase = (crate::clock::anim(ui) * 28.0) as f32;
-            ui.ctx().request_repaint();
+            // About 30 fps is smooth for crawling dashes; a full-rate repaint redraws the whole map
+            // at the display's refresh rate for as long as a route is planned.
+            ui.ctx().request_repaint_after(ANIM_FRAME);
             const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
             self.draw_route_legs(&painter, &pos, o, phase);
             // The systems the user named, as opposed to the ones the route passes through.
