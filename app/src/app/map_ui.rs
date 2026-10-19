@@ -244,6 +244,45 @@ impl SpaiApp {
         icons
     }
 
+    /// [`Self::intel_highlights`] for the map, which asks every frame: rebuilt four times a second,
+    /// which is as often as a highlight can change colour.
+    fn map_intel_highlights(&mut self) -> std::sync::Arc<std::collections::HashMap<i64, (crate::settings::Severity, i64)>> {
+        if let Some((at, m)) = &self.map_intel_cache {
+            if at.elapsed() < std::time::Duration::from_millis(250) {
+                return m.clone();
+            }
+        }
+        let m = std::sync::Arc::new(self.intel_highlights());
+        self.map_intel_cache = Some((std::time::Instant::now(), m.clone()));
+        m
+    }
+
+    /// [`Self::sov_art`] for the map: sov changes in hours, and a logo's colour arrives within a
+    /// second of the logo, so once a second is enough.
+    fn map_sov_art(&mut self, ctx: &egui::Context) -> std::sync::Arc<std::collections::HashMap<i64, SovArt>> {
+        let key = (self.map_overlays.sov, self.map_draw.as_ptr() as usize, self.map_draw.len());
+        if let Some((k, at, m)) = &self.map_sov_cache {
+            if *k == key && at.elapsed() < std::time::Duration::from_secs(1) {
+                return m.clone();
+            }
+        }
+        let m = std::sync::Arc::new(self.sov_art(ctx));
+        self.map_sov_cache = Some((key, std::time::Instant::now(), m.clone()));
+        m
+    }
+
+    /// [`Self::jump_dockable_ids`] for the map, which draws them every frame of a capital route.
+    fn map_dockable_ids(&mut self) -> std::sync::Arc<std::collections::HashSet<i64>> {
+        if let Some((ship, at, m)) = &self.map_dock_cache {
+            if *ship == self.jump_ship && at.elapsed() < std::time::Duration::from_secs(1) {
+                return m.clone();
+            }
+        }
+        let m = std::sync::Arc::new(self.jump_dockable_ids());
+        self.map_dock_cache = Some((self.jump_ship, std::time::Instant::now(), m.clone()));
+        m
+    }
+
     /// The colours at each end of a bridge from `a` to `b`: the zone a jump landing there is priced
     /// at, or `fallback` where the zone is unknown.
     pub(crate) fn bridge_colors(&self, a: i64, b: i64, fallback: egui::Color32) -> (egui::Color32, egui::Color32) {
@@ -1136,8 +1175,8 @@ impl SpaiApp {
         // Where a capital can sit, while a capital route is being planned.
         if !self.map_route_anchors.is_empty() && self.map_route_kind != "scan" && self.map_route_jumps() {
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
-            for d in self.jump_dockable_ids() {
-                if let Some(p) = pos.get(&d) {
+            for d in self.map_dockable_ids().iter() {
+                if let Some(p) = pos.get(d) {
                     painter.circle_stroke(*p, 9.0, egui::Stroke::new(1.5, teal));
                 }
             }
@@ -1333,13 +1372,14 @@ impl SpaiApp {
         }
 
         let now_ts = crate::clock::utc().timestamp();
-        let intel_map = self.intel_highlights();
+        let intel_map = self.map_intel_highlights();
         let blink = (crate::clock::anim(ui) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
         // The holder's colour rides the dot at every zoom; the logo only appears once the dots are
         // big enough to hang one on, below which a logo per system is unreadable clutter.
         let icon_px = (dot * 2.6).floor();
-        let sov_art = self.sov_art(ui.ctx());
+        let sov_art = self.map_sov_art(ui.ctx());
+        let bookmarks: std::collections::HashSet<i64> = self.settings.bookmarks.iter().copied().collect();
         let show_icons = icon_px >= 10.0;
         for s in &self.map_draw {
             let p = pos[&s.id];
@@ -1376,7 +1416,7 @@ impl SpaiApp {
                     );
                 }
             }
-            if self.settings.bookmarks.contains(&s.id) {
+            if bookmarks.contains(&s.id) {
                 painter.circle_stroke(
                     p,
                     dot,
