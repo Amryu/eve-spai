@@ -2921,8 +2921,8 @@ pub(crate) fn all() -> Vec<Scene> {
             capital_gates: vec![[1, 2, 3].map(|id| Branch { id, name: format!("S{id}") }).to_vec()],
         };
         let painter = ui.painter();
-        spai_ui::star_map::paint_route_legs(painter, &pos, &o.hops, 6.0, egui::Color32::LIGHT_BLUE, |_, _| false, |_, _, c| (c, c));
-        spai_ui::star_map::paint_capital_moves(painter, &pos, &o, 6.0, |a, b| (a, b) == (2, 3));
+        spai_ui::star_map::paint_route_legs(painter, &pos, &o.hops, 6.0, egui::Color32::LIGHT_BLUE, |_, _| false, |_, _, c| (c, c), |a, b| (a, b) == (2, 3) || (a, b) == (4, 5));
+        spai_ui::star_map::paint_capital_moves(painter, &pos, &o, 6.0, |a, b| (a, b) == (2, 3) || (a, b) == (3, 4));
         for p in pos.values() {
             painter.circle_filled(*p, 4.0, egui::Color32::LIGHT_GRAY);
         }

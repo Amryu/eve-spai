@@ -215,9 +215,9 @@ impl StarMap {
         if !hops.is_empty() {
             let phase = (ui.input(|i| i.time) * 28.0) as f32;
             let by_hole = |a: i64, b: i64| d.holes.get(&a).is_some_and(|v| v.contains(&b));
-            layers::paint_route_legs(&painter, &pos, &hops, phase, HOLE, by_hole, |a, b, fallback| layers::bridge_colors(geo, &capital, a, b, fallback));
+            layers::paint_route_legs(&painter, &pos, &hops, phase, HOLE, by_hole, |a, b, fallback| layers::bridge_colors(geo, &capital, a, b, fallback), |a, b| geo.is_bridge(a, b) || geo.is_bridge(b, a));
             if let Some(o) = self.plan.route() {
-                layers::paint_capital_moves(&painter, &pos, o, phase, |a, b| geo.is_bridge(a, b));
+                layers::paint_capital_moves(&painter, &pos, o, phase, |a, b| geo.is_bridge(a, b) || geo.is_bridge(b, a));
             }
             ui.ctx().request_repaint();
         }

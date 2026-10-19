@@ -616,6 +616,12 @@ pub fn paint_wormholes(
         }
 }
 
+/// How a capital jump bows: like a bridge, or the other way where an Ansiblex joins the same two
+/// systems, so the jump does not read as taking the bridge.
+fn jump_bow(over_a_bridge: bool) -> f32 {
+    if over_a_bridge { -BRIDGE_BOW } else { BRIDGE_BOW }
+}
+
 /// Cyno beacons on the map, as the desktop's cyno layer rings them.
 pub const BEACON_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xC8, 0xE0);
 
@@ -691,7 +697,7 @@ pub fn paint_capital_moves(
     }
     if let Some(tj) = &o.titan_jump {
         if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
-            dotted_flow(painter, &arc_polyline(a, b, BRIDGE_BOW), CAPITAL_MOVE, phase);
+            dotted_flow(painter, &arc_polyline(a, b, jump_bow(is_bridge(tj.from, tj.to))), CAPITAL_MOVE, phase);
         }
     }
 }
@@ -707,6 +713,7 @@ pub fn paint_route_legs(
     hole_color: egui::Color32,
     by_hole: impl Fn(i64, i64) -> bool,
     bridge_colors: impl Fn(i64, i64, egui::Color32) -> (egui::Color32, egui::Color32),
+    is_bridge: impl Fn(i64, i64) -> bool,
 ) {
     const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
     const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
@@ -735,7 +742,7 @@ pub fn paint_route_legs(
                 };
                 // Dashed and crawling like the gates and like the browser's: an arc drawn
                 // solid while the rest of the route moves reads as a different kind of thing.
-                polyline_flow_gradient(painter, &arc_polyline(a, b, BRIDGE_BOW), ca, cb, phase);
+                polyline_flow_gradient(painter, &arc_polyline(a, b, jump_bow(h.kind == 2 && is_bridge(prev_id, h.id))), ca, cb, phase);
             }
             // Crawling dashes, the same as the browser's and the same as this map's own
             // travel route: a static line is hard to pick out of a map already full of them.

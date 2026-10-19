@@ -146,7 +146,9 @@ const DASH = [6, 6];
 const BRIDGE_BOW = 0.12;
 
 /// The control point of the bowed arc from a to b, or null when the two are on top of each other.
-function arcControl(ax, ay, bx, by) {
+/// `flip` bows it the other way: a capital jump between two systems an Ansiblex also joins, so the
+/// jump does not read as taking the bridge.
+function arcControl(ax, ay, bx, by, flip = false) {
   const dx = bx - ax;
   const dy = by - ay;
   const len = Math.hypot(dx, dy);
@@ -159,12 +161,13 @@ function arcControl(ax, ay, bx, by) {
     nx = -nx;
     ny = -ny;
   }
-  return [(ax + bx) / 2 + nx * len * BRIDGE_BOW, (ay + by) / 2 + ny * len * BRIDGE_BOW];
+  const bow = flip ? -BRIDGE_BOW : BRIDGE_BOW;
+  return [(ax + bx) / 2 + nx * len * bow, (ay + by) / 2 + ny * len * bow];
 }
 
 /// Add a bowed arc to the current path, the same quadratic the app samples.
-function arc(c, ax, ay, bx, by) {
-  const k = arcControl(ax, ay, bx, by);
+function arc(c, ax, ay, bx, by, flip = false) {
+  const k = arcControl(ax, ay, bx, by, flip);
   c.moveTo(ax, ay);
   if (k) c.quadraticCurveTo(k[0], k[1], bx, by);
   else c.lineTo(bx, by);
@@ -753,6 +756,12 @@ function paint() {
     // full of lines, and the crawl says which way round the route runs.
     ctx.setLineDash(DASH);
     ctx.lineDashOffset = -((performance.now() / 45) % (DASH[0] + DASH[1]));
+    // Both ways round: a capital jump where an Ansiblex runs bows the other way.
+    const ansiblex = new Set();
+    for (const [a, b] of geo.bridges ?? []) {
+      ansiblex.add(`${geo.nodes[a].i},${geo.nodes[b].i}`);
+      ansiblex.add(`${geo.nodes[b].i},${geo.nodes[a].i}`);
+    }
     for (let i = 1; i < picked.path.length; i++) {
       const p = geo.nodes[geo.byId.get(picked.path[i - 1])];
       const q = geo.nodes[geo.byId.get(picked.path[i])];
@@ -762,7 +771,7 @@ function paint() {
       ctx.strokeStyle = kind === 2 ? PICK_JUMP : kind === 1 ? ROUTE_BRIDGE : PICK_GATE;
       ctx.beginPath();
       // Bridges and jumps arc, as elsewhere on the map, so neither reads as a gate.
-      if (kind === 2 || kind === 1) arc(ctx, px, py, qx, qy);
+      if (kind === 2 || kind === 1) arc(ctx, px, py, qx, qy, kind === 2 && ansiblex.has(`${picked.path[i - 1]},${picked.path[i]}`));
       else {
         ctx.moveTo(px, py);
         ctx.lineTo(qx, qy);
@@ -792,11 +801,6 @@ function paint() {
         else if (h?.kind === 1) fleetBridges.add(key);
       }
       // Black ops may take an Ansiblex the fleet does not, which still arcs like one.
-      const ansiblex = new Set();
-      for (const [a, b] of geo.bridges ?? []) {
-        ansiblex.add(`${geo.nodes[a].i},${geo.nodes[b].i}`);
-        ansiblex.add(`${geo.nodes[b].i},${geo.nodes[a].i}`);
-      }
       const shared = (key) => fleetGates.has(key) || fleetBridges.has(key);
       const period = DASH[0] + DASH[1];
       const off = (performance.now() / 45) % period;
@@ -832,7 +836,7 @@ function paint() {
       if (tj) {
         const a = at(tj.from);
         const b = at(tj.to);
-        if (a && b) arc(ctx, a[0], a[1], b[0], b[1]);
+        if (a && b) arc(ctx, a[0], a[1], b[0], b[1], ansiblex.has(`${tj.from},${tj.to}`));
       }
       ctx.stroke();
       ctx.lineCap = "butt";

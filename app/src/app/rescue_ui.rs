@@ -2045,7 +2045,7 @@ pub(crate) fn rescue_map_ui(ui: &mut egui::Ui, m: &RescueMap, view: &mut RescueM
     }
     if !m.hops.is_empty() {
         let phase = (ui.input(|i| i.time) * 28.0) as f32;
-        spai_ui::star_map::paint_route_legs(&painter, &pos, &m.hops, phase, egui::Color32::from_rgb(0x4D, 0xD0, 0xC4), |_, _| false, |_, _, c| (c, c));
+        spai_ui::star_map::paint_route_legs(&painter, &pos, &m.hops, phase, egui::Color32::from_rgb(0x4D, 0xD0, 0xC4), |_, _| false, |_, _, c| (c, c), |_, _| false);
         ui.ctx().request_repaint_after(super::map_ui::ANIM_FRAME);
     }
     let font = egui::FontId::proportional(12.0);
