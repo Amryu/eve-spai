@@ -759,6 +759,9 @@ pub struct SpaiApp {
     map_ahead_jumps: u32,
     /// Index into `map_route::AHEAD_HULLS`.
     map_ahead_hull: usize,
+    /// A setting changed since the last plan, so the best plan is shown rather than the one picked.
+    map_route_fresh: bool,
+    map_route_job: map_route::RouteJob,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
     /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
@@ -1687,6 +1690,8 @@ impl SpaiApp {
             map_ahead_gates: 0,
             map_ahead_jumps: 1,
             map_ahead_hull: 0,
+            map_route_fresh: false,
+            map_route_job: Default::default(),
             main_pos_fix: main_pos_fix_at,
             main_maximize: main_maximize_at,
             rescue_geom_applied: false,
@@ -3808,6 +3813,7 @@ impl SpaiApp {
         self.fleet_ping_window_ui(ctx);
         self.safety_watch(ctx);
         self.route_live_tick(ctx);
+        self.map_route_poll(ctx);
         self.screen_flash(ctx);
         if let Some(vp) = self.focus_window.take() {
             ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);

@@ -2765,6 +2765,23 @@ mod route_extension_tests {
         assert_eq!(a.map_ahead_gates, 0, "every new route gates nothing first");
     }
 
+    /// A jump-ahead plan is worked out off the UI thread after a short pause, and only the newest
+    /// request's answer is taken.
+    #[test]
+    fn a_jump_ahead_route_plans_in_the_background() {
+        let (ctx, mut a) = app();
+        a.map_take_route("ahead", "ahead", DQ, THREE);
+        a.map_take_route("ahead", "ahead", DQ, K5);
+        assert!(a.map_route_planning(), "waiting out the pause");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while a.map_route_planning() && std::time::Instant::now() < until {
+            a.map_route_poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!a.map_route_planning(), "the answer came back");
+        assert_eq!(a.map_route_anchors, vec![DQ, K5]);
+    }
+
     /// Black ops dock anywhere and may gate through high sec; a titan wants super docking. Beacons
     /// limit the landings only when chosen.
     #[test]
@@ -3634,6 +3651,7 @@ mod real_jump_ahead_tests {
         let cases = [
             ("C-J6MT", "Atioth", 1, 2, false, blops),
             ("C-J6MT", "Atioth", 1, 2, false, titan),
+            ("C-J6MT", "Atioth", 1, 1, false, titan),
             ("C-J6MT", "Atioth", 0, 1, true, titan),
             ("C-J6MT", "Y-2ANO", 0, 1, false, titan),
             ("C-J6MT", "1DQ1-A", 0, 3, true, titan),

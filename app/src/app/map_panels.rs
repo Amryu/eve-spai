@@ -444,16 +444,21 @@ impl SpaiApp {
 
         if replan {
             // A setting changed: the best plan for it, not the one picked before.
-            self.map_route_opts.clear();
+            self.map_route_fresh = true;
             self.map_replan_route();
         }
 
+        let planning = self.map_route_planning();
         let Some(o) = self.map_route_opts.get(self.map_route_at) else {
             ui.separator();
-            ui.label(
-                egui::RichText::new(tr!("No route with these settings."))
-                    .color(crate::theme::standing::WARNING),
-            );
+            if planning {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(tr!("Planning…")).weak());
+                });
+            } else {
+                ui.label(egui::RichText::new(tr!("No route with these settings.")).color(crate::theme::standing::WARNING));
+            }
             return;
         };
         ui.separator();
@@ -464,7 +469,12 @@ impl SpaiApp {
         if o.total_ly > 0.0 {
             head.push_str(&format!(" · {:.1} ly", o.total_ly));
         }
-        ui.label(egui::RichText::new(head).strong());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(head).strong());
+            if planning {
+                ui.spinner();
+            }
+        });
         if self.map_route_opts.len() > 1 {
             use crate::app::SteadySelect as _;
             let steps = |o: &crate::web::route::RouteOption| o.hops.iter().skip(1).filter(|h| h.kind != 2).count();

@@ -2,6 +2,66 @@
 
 use super::*;
 
+/// How long a jump-ahead route waits after the last change before it is worked out again.
+const ROUTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
+pub(crate) struct RouteInput {
+    graph: std::sync::Arc<crate::geo::Systems>,
+    coords: std::sync::Arc<Vec<crate::store::MapSystem>>,
+    anchors: Vec<i64>,
+    kinds: Vec<&'static str>,
+    ship: usize,
+    jdc: u32,
+    jfc: u32,
+    bridges: bool,
+    avoid_gate: crate::web::route::Avoid,
+    avoid_jump: crate::web::route::Avoid,
+    holes: std::collections::HashMap<i64, Vec<i64>>,
+    danger: std::collections::HashMap<i64, crate::web::route::HopWarning>,
+    pick: Vec<usize>,
+    forks: crate::web::route::Picks,
+    ahead: crate::web::route::Ahead,
+}
+
+impl RouteInput {
+    fn plan(&self) -> (Vec<crate::web::route::LegChoice>, Vec<crate::web::route::RouteOption>) {
+        let (legs, mut opts) = crate::web::route::chain(
+            &self.graph,
+            &self.coords,
+            &self.anchors,
+            &self.kinds,
+            &crate::jumproute::SHIP_CLASSES[self.ship],
+            self.jdc,
+            self.jfc,
+            self.bridges,
+            &self.avoid_gate,
+            &self.avoid_jump,
+            &self.holes,
+            &self.pick,
+            &self.forks,
+            &self.ahead,
+        );
+        crate::web::route::annotate(&mut opts, &self.danger);
+        crate::web::route::mark_anchors(&mut opts, &self.anchors);
+        // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
+        // legs end.
+        crate::web::route::mark_forks(&mut opts, &self.graph, self.bridges, &self.avoid_gate, &self.holes);
+        (legs, opts)
+    }
+}
+
+/// A jump-ahead plan worked out off the UI thread: the newest request, when to start it, the plan
+/// to keep picked, and where the answer lands.
+#[derive(Default)]
+pub(crate) struct RouteJob {
+    gen: u64,
+    due: Option<std::time::Instant>,
+    picked: Option<String>,
+    input: Option<RouteInput>,
+    running: u32,
+    slot: std::sync::Arc<std::sync::Mutex<Option<(u64, Vec<crate::web::route::LegChoice>, Vec<crate::web::route::RouteOption>)>>>,
+}
+
 /// The Black Ops entry of [`crate::jumproute::SHIP_CLASSES`].
 const BLACK_OPS: usize = 2;
 
@@ -311,11 +371,13 @@ impl SpaiApp {
 
     /// [`Self::map_replan_route`] without bringing the dock up, for a change made elsewhere.
     pub(crate) fn map_recompute_route(&mut self) {
-        // A fork switched or a system avoided keeps the plan picked, found again by its landing.
-        let picked = self.map_route_opts.get(self.map_route_at).map(|o| o.label.clone());
-        self.map_route_opts.clear();
-        self.map_route_at = 0;
+        // A fork switched or a system avoided keeps the plan picked, found again by its landing; a
+        // setting changed shows the best plan.
+        let fresh = std::mem::take(&mut self.map_route_fresh);
+        let picked = self.map_route_opts.get(self.map_route_at).map(|o| o.label.clone()).filter(|_| !fresh);
         if self.map_route_kind == "scan" {
+            self.map_route_opts.clear();
+            self.map_route_at = 0;
             self.scan_replan();
             return;
         }
@@ -323,44 +385,93 @@ impl SpaiApp {
         if self.map_route_has("ahead") {
             self.jump_ship = AHEAD_HULLS[self.map_ahead_hull.min(AHEAD_HULLS.len() - 1)].0;
         }
-        let Some(graph) = self.route_graph() else { return };
-        let coords = self.jump_systems.clone().unwrap_or_default();
-        let bridges = self.settings.intel_count_bridges;
-        let danger = self.route_danger();
+        let Some(input) = self.route_input() else {
+            self.map_route_opts.clear();
+            self.map_route_at = 0;
+            return;
+        };
+        // A jump-ahead search can take a moment on a big map: it runs off the UI thread, a little
+        // after the last change, and the plan on screen stays until the new one is in.
+        if self.map_route_has("ahead") {
+            let job = &mut self.map_route_job;
+            job.gen += 1;
+            job.due = Some(std::time::Instant::now() + ROUTE_DEBOUNCE);
+            job.picked = picked;
+            job.input = Some(input);
+            return;
+        }
+        let (legs, opts) = input.plan();
+        self.map_apply_route(legs, opts, picked);
+    }
+
+    fn map_apply_route(&mut self, legs: Vec<crate::web::route::LegChoice>, opts: Vec<crate::web::route::RouteOption>, picked: Option<String>) {
+        self.map_route_legs = legs;
+        self.map_route_opts = opts;
+        self.map_route_at = picked.and_then(|l| self.map_route_opts.iter().position(|o| o.label == l)).unwrap_or(0);
+    }
+
+    /// Whether a jump-ahead plan is being worked out.
+    pub(crate) fn map_route_planning(&self) -> bool {
+        self.map_route_job.input.is_some() || self.map_route_job.running > 0
+    }
+
+    /// Starts the debounced jump-ahead search when it is due and takes in its answer, once a frame.
+    pub(crate) fn map_route_poll(&mut self, ctx: &egui::Context) {
+        let job = &mut self.map_route_job;
+        if let Some(due) = job.due {
+            let now = std::time::Instant::now();
+            if now < due {
+                ctx.request_repaint_after(due - now);
+            } else if let Some(input) = job.input.take() {
+                job.due = None;
+                job.running += 1;
+                let (gen, slot, ctx) = (job.gen, job.slot.clone(), ctx.clone());
+                let _ = std::thread::Builder::new().name("route-plan".into()).spawn(move || {
+                    let (legs, opts) = input.plan();
+                    let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    // An older search finishing late must not replace a newer answer.
+                    if s.as_ref().is_none_or(|(g, _, _)| *g < gen) {
+                        *s = Some((gen, legs, opts));
+                    }
+                    drop(s);
+                    ctx.request_repaint();
+                });
+            }
+        }
+        let done = job.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((gen, legs, opts)) = done {
+            job.running = job.running.saturating_sub(1);
+            if gen == job.gen {
+                let picked = job.picked.take();
+                self.map_apply_route(legs, opts, picked);
+            }
+        }
+    }
+
+    /// Everything a route plan reads, owned, so it can be worked out off the UI thread.
+    fn route_input(&mut self) -> Option<RouteInput> {
+        let graph = self.route_graph()?;
         let (mut avoid_gate, mut avoid_jump) = (self.route_avoid(false), self.route_avoid(true));
         let rules = self.route_rule_avoid();
         avoid_gate.once.extend(rules.iter().copied());
         avoid_jump.once.extend(rules);
-        let holes =
-            if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
-        let kinds: Vec<&str> = (0..self.map_route_anchors.len().saturating_sub(1)).map(|i| self.map_leg_kind(i)).collect();
-        let (legs, opts) = crate::web::route::chain(
-            &graph,
-            &coords,
-            &self.map_route_anchors,
-            &kinds,
-            &crate::jumproute::SHIP_CLASSES[self.jump_ship.min(crate::jumproute::SHIP_CLASSES.len() - 1)],
-            self.jump_jdc,
-            self.jump_jfc,
-            bridges,
-            &avoid_gate,
-            &avoid_jump,
-            &holes,
-            &self.map_leg_pick,
-            &self.map_forks,
-            &self.route_ahead(),
-        );
-        self.map_route_legs = legs;
-        self.map_route_opts = opts;
-        crate::web::route::annotate(&mut self.map_route_opts, &danger);
-        let anchors = self.map_route_anchors.clone();
-        crate::web::route::mark_anchors(&mut self.map_route_opts, &anchors);
-        // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
-        // legs end.
-        crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid_gate, &holes);
-        if let Some(at) = picked.and_then(|l| self.map_route_opts.iter().position(|o| o.label == l)) {
-            self.map_route_at = at;
-        }
+        Some(RouteInput {
+            graph,
+            coords: self.jump_systems.clone().unwrap_or_default(),
+            anchors: self.map_route_anchors.clone(),
+            kinds: (0..self.map_route_anchors.len().saturating_sub(1)).map(|i| self.map_leg_kind(i)).collect(),
+            ship: self.jump_ship.min(crate::jumproute::SHIP_CLASSES.len() - 1),
+            jdc: self.jump_jdc,
+            jfc: self.jump_jfc,
+            bridges: self.settings.intel_count_bridges,
+            holes: if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() },
+            danger: self.route_danger(),
+            pick: self.map_leg_pick.clone(),
+            forks: self.map_forks.clone(),
+            ahead: self.route_ahead(),
+            avoid_gate,
+            avoid_jump,
+        })
     }
 
     /// The avoid lists this route is planned against: the gate list for gate legs, the jump list for

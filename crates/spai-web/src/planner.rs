@@ -209,6 +209,8 @@ pub struct RoutePlan {
     pub at: usize,
     /// A setting changed since the last plan, so the best plan is shown rather than the one picked.
     fresh: bool,
+    /// When the route went stale, for the jump-ahead debounce.
+    stale_at: Option<f64>,
     pub legs: Vec<LegChoice>,
     /// A jump-ahead route's gates before the jump and jumps at most, per route like the desktop's.
     pub ahead_gates: u32,
@@ -457,6 +459,21 @@ impl RoutePlan {
         if self.anchors.len() > 1 {
             self.stale = true;
         }
+    }
+
+    /// [`Self::update`], a jump-ahead route only once its settings have been still for a moment:
+    /// the browser has no thread to plan it on, and each change would otherwise stall the map.
+    /// Returns whether a plan is waiting, so the caller asks for another frame.
+    pub fn update_at(&mut self, input: &PlanInput, now: f64) -> bool {
+        if self.stale && self.has("ahead") {
+            let since = *self.stale_at.get_or_insert(now);
+            if now - since < 0.15 {
+                return true;
+            }
+        }
+        self.stale_at = None;
+        self.update(input);
+        false
     }
 
     /// Works the route out again if anything changed.
