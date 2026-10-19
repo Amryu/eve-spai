@@ -749,6 +749,30 @@ type Stand = (u32, Option<(i64, i64, f64, u32)>);
 /// not, when the user asked for no gating.
 pub const GATED_PLAN_GATES: u32 = 5;
 
+/// One thing the capital does on its own, in the order it does them.
+pub enum CapitalStep<'a> {
+    Gates(&'a [Branch]),
+    Alone(&'a TitanJump),
+}
+
+impl RouteOption {
+    /// The capital's own moves in order: its jump alone falls after the gates that bring it to
+    /// where it jumps from and before the gates it takes on from where it lands.
+    pub fn capital_steps(&self) -> Vec<CapitalStep<'_>> {
+        let mut out: Vec<CapitalStep<'_>> = self.capital_gates.iter().filter(|r| r.len() > 1).map(|r| CapitalStep::Gates(r)).collect();
+        if let Some(tj) = &self.titan_jump {
+            let at = self
+                .capital_gates
+                .iter()
+                .filter(|r| r.len() > 1)
+                .position(|r| r.last().is_some_and(|b| b.id == tj.from))
+                .map_or(0, |i| i + 1);
+            out.insert(at, CapitalStep::Alone(tj));
+        }
+        out
+    }
+}
+
 /// A gate, an Ansiblex and a hole are one step each for the fleet; the capital's jumps are not.
 fn fleet_steps(o: &RouteOption) -> usize {
     o.hops.iter().skip(1).filter(|h| h.kind != 2).count()
@@ -2143,6 +2167,29 @@ console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
         );
         assert_eq!((o.hops[1].id, o.hops[1].kind), (ids[4], 1), "the fleet over the Ansiblex to it");
         assert_eq!(jumped(o), vec![ids[7]]);
+    }
+
+    /// Gates to where it jumps from, the jump alone, then the gates on from where it lands.
+    #[test]
+    fn the_capitals_moves_are_listed_in_the_order_it_makes_them() {
+        let b = |id: i64| Branch { id, name: format!("S{id}") };
+        let tj = TitanJump { from: 2, to: 5, from_name: "S2".into(), to_name: "S5".into(), ly: 4.0 };
+        let mut o = gate_option(&crate::geo::Systems::new(Default::default(), Default::default()), vec![1]);
+        o.titan_jump = Some(tj);
+        o.capital_gates = vec![vec![b(1), b(2)], vec![b(5), b(6)], vec![b(8), b(9)]];
+        let order: Vec<String> = o
+            .capital_steps()
+            .iter()
+            .map(|s| match s {
+                CapitalStep::Gates(r) => format!("g{}", r[0].id),
+                CapitalStep::Alone(t) => format!("j{}", t.from),
+            })
+            .collect();
+        assert_eq!(order, ["g1", "j2", "g5", "g8"]);
+        o.capital_gates.remove(0);
+        o.titan_jump.as_mut().unwrap().from = 1;
+        assert_eq!(o.capital_steps().len(), 3);
+        assert!(matches!(o.capital_steps()[0], CapitalStep::Alone(_)), "from the start, the jump comes first");
     }
 
     /// A carrier goes through an XL hole to its jump-off point, which the planner is handed.

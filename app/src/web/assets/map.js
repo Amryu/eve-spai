@@ -145,16 +145,12 @@ const DASH = [6, 6];
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
 const BRIDGE_BOW = 0.12;
 
-/// Add a bowed arc to the current path, the same quadratic the app samples.
-function arc(c, ax, ay, bx, by) {
+/// The control point of the bowed arc from a to b, or null when the two are on top of each other.
+function arcControl(ax, ay, bx, by) {
   const dx = bx - ax;
   const dy = by - ay;
   const len = Math.hypot(dx, dy);
-  if (len < 0.5) {
-    c.moveTo(ax, ay);
-    c.lineTo(bx, by);
-    return;
-  }
+  if (len < 0.5) return null;
   // Always bows upward: the perpendicular flips with the segment's direction, so otherwise the arch
   // side would depend on node order.
   let nx = -dy / len;
@@ -163,10 +159,47 @@ function arc(c, ax, ay, bx, by) {
     nx = -nx;
     ny = -ny;
   }
-  const cx = (ax + bx) / 2 + nx * len * BRIDGE_BOW;
-  const cy = (ay + by) / 2 + ny * len * BRIDGE_BOW;
+  return [(ax + bx) / 2 + nx * len * BRIDGE_BOW, (ay + by) / 2 + ny * len * BRIDGE_BOW];
+}
+
+/// Add a bowed arc to the current path, the same quadratic the app samples.
+function arc(c, ax, ay, bx, by) {
+  const k = arcControl(ax, ay, bx, by);
   c.moveTo(ax, ay);
-  c.quadraticCurveTo(cx, cy, bx, by);
+  if (k) c.quadraticCurveTo(k[0], k[1], bx, by);
+  else c.lineTo(bx, by);
+}
+
+/// The arc from a to b as a polyline, fine enough that lengths along it match the canvas's own.
+function arcPoints(ax, ay, bx, by) {
+  const k = arcControl(ax, ay, bx, by);
+  if (!k) return [[ax, ay], [bx, by]];
+  const pts = [];
+  for (let i = 0; i <= 48; i++) {
+    const t = i / 48;
+    const u = 1 - t;
+    pts.push([u * u * ax + 2 * u * t * k[0] + t * t * bx, u * u * ay + 2 * u * t * k[1] + t * t * by]);
+  }
+  return pts;
+}
+
+/// Filled dots along a polyline, the first `first` along it and then one every `step`.
+function dotsAlong(c, pts, first, step, radius) {
+  let at = first;
+  let walked = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1];
+    const [bx, by] = pts[i];
+    const seg = Math.hypot(bx - ax, by - ay);
+    while (at <= walked + seg) {
+      const f = seg > 0 ? (at - walked) / seg : 0;
+      c.beginPath();
+      c.arc(ax + (bx - ax) * f, ay + (by - ay) * f, radius, 0, Math.PI * 2);
+      c.fill();
+      at += step;
+    }
+    walked += seg;
+  }
 }
 
 /// The app's own heat ramp: yellow into red as the count approaches the scale.
@@ -749,26 +782,34 @@ function paint() {
       // Where the capital gates the same way as the fleet, its dots sit in the gaps of the fleet's
       // dashes, so the two read as one dash-dot line. The dash at distance t along a segment is on
       // while (t - off) mod period is below DASH[0], so a gap's middle is at off + DASH[0] + DASH[1]/2.
+      // The same for an Ansiblex both take, along the arc the fleet's bridge dashes follow.
       const fleetGates = new Set();
+      const fleetBridges = new Set();
       for (let i = 1; i < picked.path.length; i++) {
         const h = picked.hops?.[i];
-        if ((h?.kind ?? 0) === 0 && !h?.hole) fleetGates.add(`${picked.path[i - 1]},${picked.path[i]}`);
+        const key = `${picked.path[i - 1]},${picked.path[i]}`;
+        if ((h?.kind ?? 0) === 0 && !h?.hole) fleetGates.add(key);
+        else if (h?.kind === 1) fleetBridges.add(key);
       }
+      // Black ops may take an Ansiblex the fleet does not, which still arcs like one.
+      const ansiblex = new Set();
+      for (const [a, b] of geo.bridges ?? []) {
+        ansiblex.add(`${geo.nodes[a].i},${geo.nodes[b].i}`);
+        ansiblex.add(`${geo.nodes[b].i},${geo.nodes[a].i}`);
+      }
+      const shared = (key) => fleetGates.has(key) || fleetBridges.has(key);
       const period = DASH[0] + DASH[1];
       const off = (performance.now() / 45) % period;
+      const first = (off + DASH[0] + DASH[1] / 2) % period;
       ctx.fillStyle = TITAN_COL;
       for (const [from, to] of capSteps) {
-        if (!fleetGates.has(`${from},${to}`)) continue;
+        const key = `${from},${to}`;
+        if (!shared(key)) continue;
         const a = at(from);
         const b = at(to);
         if (!a || !b) continue;
-        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (len < 0.5) continue;
-        for (let t = (off + DASH[0] + DASH[1] / 2) % period; t <= len; t += period) {
-          ctx.beginPath();
-          ctx.arc(a[0] + ((b[0] - a[0]) * t) / len, a[1] + ((b[1] - a[1]) * t) / len, 2.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        const pts = fleetBridges.has(key) ? arcPoints(a[0], a[1], b[0], b[1]) : [a, b];
+        dotsAlong(ctx, pts, first, period, 2.2);
       }
       ctx.strokeStyle = TITAN_COL;
       ctx.lineWidth = 4.4;
@@ -777,12 +818,16 @@ function paint() {
       ctx.lineDashOffset = -((performance.now() / 45) % 9);
       ctx.beginPath();
       for (const [from, to] of capSteps) {
-        if (fleetGates.has(`${from},${to}`)) continue;
+        const key = `${from},${to}`;
+        if (shared(key)) continue;
         const a = at(from);
         const b = at(to);
         if (!a || !b) continue;
-        ctx.moveTo(a[0], a[1]);
-        ctx.lineTo(b[0], b[1]);
+        if (ansiblex.has(key)) arc(ctx, a[0], a[1], b[0], b[1]);
+        else {
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
       }
       if (tj) {
         const a = at(tj.from);

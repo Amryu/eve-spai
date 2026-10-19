@@ -212,7 +212,7 @@ impl StarMap {
             let by_hole = |a: i64, b: i64| d.holes.get(&a).is_some_and(|v| v.contains(&b));
             layers::paint_route_legs(&painter, &pos, &hops, phase, HOLE, by_hole, |a, b, fallback| layers::bridge_colors(geo, &capital, a, b, fallback));
             if let Some(o) = self.plan.route() {
-                layers::paint_capital_moves(&painter, &pos, o, phase);
+                layers::paint_capital_moves(&painter, &pos, o, phase, |a, b| geo.is_bridge(a, b));
             }
             ui.ctx().request_repaint();
         }

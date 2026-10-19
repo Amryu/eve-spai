@@ -966,13 +966,15 @@ impl RoutePlan {
                 });
             }
         }
-        if let Some(tj) = &o.titan_jump {
-            ui.label(egui::RichText::new(format!("{}  Capital jumps alone {} \u{2192} {}, {:.1} ly", icon::FAST_FORWARD, tj.from_name, tj.to_name, tj.ly)).color(spai_ui::star_map::CAPITAL_MOVE));
-        }
-        for run in o.capital_gates.iter().filter(|r| r.len() > 1) {
-            let m = run.len() - 1;
-            let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
-            ui.label(egui::RichText::new(format!("Capital gates {m}: {path}")).color(spai_ui::star_map::CAPITAL_MOVE));
+        for step in o.capital_steps() {
+            let line = match step {
+                route::CapitalStep::Gates(run) => {
+                    let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" \u{2192} ");
+                    format!("Capital gates {}: {path}", run.len() - 1)
+                }
+                route::CapitalStep::Alone(tj) => format!("{}  Capital jumps alone {} \u{2192} {}, {:.1} ly", icon::FAST_FORWARD, tj.from_name, tj.to_name, tj.ly),
+            };
+            ui.label(egui::RichText::new(line).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {
             ui.label(egui::RichText::new(if saved == 1 { "saves 1 gate".to_owned() } else { format!("saves {saved} gates") }).color(spai_ui::theme::standing::FRIENDLY));

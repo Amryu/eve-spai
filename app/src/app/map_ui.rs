@@ -1249,7 +1249,8 @@ impl SpaiApp {
                 }
             }
             // The capital's own moves, which the fleet does not fly: dotted in its own colour.
-            spai_ui::star_map::paint_capital_moves(&painter, &pos, o, phase);
+            let graph = self.systems.clone();
+            spai_ui::star_map::paint_capital_moves(&painter, &pos, o, phase, |a, b| graph.as_ref().is_some_and(|g| g.is_bridge(a, b)));
         }
 
         // The route drag: a line from where it started to the pointer, snapped to whatever it is

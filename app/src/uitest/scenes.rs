@@ -2908,7 +2908,7 @@ pub(crate) fn all() -> Vec<Scene> {
         let o = RouteOption {
             label: String::new(),
             path: vec![1, 2, 3, 4, 5, 6],
-            hops: vec![hop(1, 0), hop(2, 0), hop(3, 0), hop(4, 0), hop(5, 2), hop(6, 0)],
+            hops: vec![hop(1, 0), hop(2, 0), hop(3, 1), hop(4, 0), hop(5, 2), hop(6, 0)],
             gates: 4,
             jumps: 5,
             total_ly: 5.0,
@@ -2922,7 +2922,7 @@ pub(crate) fn all() -> Vec<Scene> {
         };
         let painter = ui.painter();
         spai_ui::star_map::paint_route_legs(painter, &pos, &o.hops, 6.0, egui::Color32::LIGHT_BLUE, |_, _| false, |_, _, c| (c, c));
-        spai_ui::star_map::paint_capital_moves(painter, &pos, &o, 6.0);
+        spai_ui::star_map::paint_capital_moves(painter, &pos, &o, 6.0, |a, b| (a, b) == (2, 3));
         for p in pos.values() {
             painter.circle_filled(*p, 4.0, egui::Color32::LIGHT_GRAY);
         }

@@ -678,6 +678,18 @@ function paintRoute(kind, onPick) {
   // Jump-ahead plans in two dropdowns: the plain ones, and the ones where the capital gates first.
   // The one not holding the picked plan reads "Pick a plan".
   const steps = (x) => x.hops.slice(1).filter((h) => h.kind !== 2).length;
+  // The capital's own moves in the order it makes them, as the desktop lists them: its jump alone
+  // after the gates that end where it jumps from.
+  const capitalSteps = (x) => {
+    const runs = (x.capital_gates ?? []).filter((run) => run.length > 1);
+    const out = runs.map((run) => `Capital gates ${run.length - 1}: ${run.map((s) => esc(s.name)).join(" → ")}`);
+    const tj = x.titan_jump;
+    if (tj) {
+      const after = runs.findIndex((run) => run[run.length - 1].id === tj.from);
+      out.splice(after + 1, 0, `Capital jumps alone ${esc(tj.from_name)} → ${esc(tj.to_name)}, ${tj.ly.toFixed(1)} ly`);
+    }
+    return out;
+  };
   const capGates = (x) => (x.capital_gates ?? []).reduce((n, run) => n + Math.max(0, run.length - 1), 0);
   const planRow = (title, gated) => {
     const items = routeOpts.map((x, i) => [x, i]).filter(([x]) => !!x.gated === gated);
@@ -760,18 +772,9 @@ function paintRoute(kind, onPick) {
       (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
-      (o.capital_gates ?? [])
-        .filter((run) => run.length > 1)
-        .map(
-          (run) =>
-            `<p class="mgroup" style="color:#2ed3c4">Capital gates ${run.length - 1}: ` +
-            `${run.map((s) => esc(s.name)).join(" → ")}</p>`
-        )
+      capitalSteps(o)
+        .map((line) => `<p class="mgroup" style="color:#2ed3c4">${line}</p>`)
         .join("") +
-      (o.titan_jump
-        ? `<p class="mgroup" style="color:#2ed3c4">Capital jumps alone ${esc(o.titan_jump.from_name)} → ` +
-          `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
-        : "") +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
       (o.saved != null

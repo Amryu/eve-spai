@@ -655,12 +655,32 @@ pub fn dotted_flow(painter: &egui::Painter, pts: &[egui::Pos2], color: egui::Col
 /// What the capital does on its own before the fleet rides with it: its gates as crawling dots,
 /// its jump alone as a dotted arc. A gate the fleet takes too gets the dots in the gaps of the
 /// fleet's dashes, one dash-dot line moving as one.
-pub fn paint_capital_moves(painter: &egui::Painter, pos: &HashMap<i64, egui::Pos2>, o: &spai_core::route::RouteOption, phase: f32) {
-    let fleet_gates: std::collections::HashSet<(i64, i64)> =
-        o.hops.windows(2).filter(|w| w[1].kind == 0 && !w[1].hole).map(|w| (w[0].id, w[1].id)).collect();
+/// `is_bridge` says which of its steps are Ansiblexes, drawn on the bridge's arc.
+pub fn paint_capital_moves(
+    painter: &egui::Painter,
+    pos: &HashMap<i64, egui::Pos2>,
+    o: &spai_core::route::RouteOption,
+    phase: f32,
+    is_bridge: impl Fn(i64, i64) -> bool,
+) {
+    let fleet: HashMap<(i64, i64), u8> =
+        o.hops.windows(2).filter(|w| w[1].kind != 2 && !w[1].hole).map(|w| ((w[0].id, w[1].id), w[1].kind)).collect();
     for w in o.capital_gates.iter().flat_map(|r| r.windows(2)) {
         let (Some(&a), Some(&b)) = (pos.get(&w[0].id), pos.get(&w[1].id)) else { continue };
-        if fleet_gates.contains(&(w[0].id, w[1].id)) {
+        let shared = fleet.get(&(w[0].id, w[1].id)).copied();
+        if shared == Some(1) || (shared.is_none() && is_bridge(w[0].id, w[1].id)) {
+            let arc = arc_polyline(a, b, BRIDGE_BOW);
+            if shared.is_some() {
+                // The same walk as the bridge's dashes, so the dots sit in their gaps.
+                let mut walked = 0.0;
+                for seg in arc.windows(2) {
+                    gap_dots(painter, seg[0], seg[1], CAPITAL_MOVE, phase - walked);
+                    walked += (seg[1] - seg[0]).length();
+                }
+            } else {
+                dotted_flow(painter, &arc, CAPITAL_MOVE, phase);
+            }
+        } else if shared == Some(0) {
             gap_dots(painter, a, b, CAPITAL_MOVE, phase);
         } else {
             dotted_flow(painter, &[a, b], CAPITAL_MOVE, phase);

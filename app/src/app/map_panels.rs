@@ -527,10 +527,15 @@ impl SpaiApp {
                 return;
             }
         }
-        for run in o.capital_gates.iter().filter(|r| r.len() > 1) {
-            let m = run.len() - 1;
-            let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
-            let line = if m == 1 { trf!("Capital gates 1: {path}", path = path) } else { trf!("Capital gates {m}: {path}", m = m, path = path) };
+        for step in o.capital_steps() {
+            let line = match step {
+                crate::web::route::CapitalStep::Gates(run) => {
+                    let m = run.len() - 1;
+                    let path = run.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" → ");
+                    if m == 1 { trf!("Capital gates 1: {path}", path = path) } else { trf!("Capital gates {m}: {path}", m = m, path = path) }
+                }
+                crate::web::route::CapitalStep::Alone(tj) => trf!("{icon}  Capital jumps alone {v} → {v2}, {v3} ly", icon = egui_phosphor::regular::FAST_FORWARD, v = tj.from_name, v2 = tj.to_name, v3 = format!("{:.1}", tj.ly)),
+            };
             ui.label(egui::RichText::new(line).color(spai_ui::star_map::CAPITAL_MOVE));
         }
         if let Some(saved) = o.saved {
@@ -549,12 +554,6 @@ impl SpaiApp {
             ui.label(
                 egui::RichText::new(format!("{}  {d}", egui_phosphor::regular::EYE_SLASH))
                     .color(crate::theme::standing::WARNING),
-            );
-        }
-        if let Some(tj) = &o.titan_jump {
-            ui.label(
-                egui::RichText::new(trf!("{icon}  Capital jumps alone {v} → {v2}, {v3} ly", icon = egui_phosphor::regular::FAST_FORWARD, v = tj.from_name, v2 = tj.to_name, v3 = format!("{:.1}", tj.ly)))
-                .color(spai_ui::star_map::CAPITAL_MOVE),
             );
         }
         if let Some(n) = &o.note {
