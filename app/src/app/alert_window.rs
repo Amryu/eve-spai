@@ -154,6 +154,11 @@ pub(crate) fn ping_viewport_builder(
         .with_resizable(true)
         .with_taskbar(false)
         .with_visible(false)
+        // Windows shows a window with SW_SHOW, which activates it, whenever any of its flags
+        // changes, and Smart on-top flips the level every time EVE gains or loses focus: an
+        // active ping window took the focus from the game at each flip. Inactive windows are
+        // shown with SW_SHOWNOACTIVATE instead.
+        .with_active(false)
         .with_window_level(if on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
@@ -1052,6 +1057,16 @@ mod feed_tests {
         remove_card(&mut short, 2);
         assert_eq!(short.feed.len(), 1);
         assert_eq!(short.from_you, [Some(1)]);
+    }
+
+    /// Overlay windows never activate on show: Windows re-shows an active window with SW_SHOW on
+    /// every flag change, and the on-top level flips with EVE focus, which took the focus from
+    /// the game as long as a ping was up.
+    #[test]
+    fn overlay_windows_are_created_inactive() {
+        assert_eq!(ping_viewport_builder(true, None, None).active, Some(false));
+        assert_eq!(ping_viewport_builder(false, None, None).active, Some(false));
+        assert_eq!(alert_viewport_builder(true, None, None).active, Some(false));
     }
 
     /// A refresh changes the cards, never whether the window is up or counting down.

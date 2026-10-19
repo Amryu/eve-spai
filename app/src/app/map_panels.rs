@@ -1773,6 +1773,9 @@ impl SpaiApp {
                 .with_decorations(!overlay)
                 .with_transparent(overlay && crate::window_alpha::PER_PIXEL)
                 .with_taskbar(!overlay)
+                // The overlay's level flips with EVE focus in Smart mode, and Windows activates
+                // an active window on every flag change (see ping_viewport_builder).
+                .with_active(!overlay)
                 .with_window_level(if on_top {
                     egui::WindowLevel::AlwaysOnTop
                 } else {

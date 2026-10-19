@@ -34,6 +34,11 @@ mirror itself to a local web view. It uses only EVE's public static data.
   need a C compiler): point `CC_x86_64_pc_windows_gnu` at a wrapper that drops cc-rs's
   `--target=<rust triple>` and passes `-target x86_64-windows-gnu`, then
   `cargo check --target x86_64-pc-windows-gnu --all-features`. macOS is only checked by CI.
+- `eframe` is the crates.io 0.34.3 source vendored under `vendor/eframe` through
+  `[patch.crates-io]`, with one fix (`vendor/eframe/PATCH.md`): Windows repaints a minimized or
+  hidden main window from eframe's timer path, which had no event-loop context, so a pop-out
+  first opened from there could not create its window and egui panicked. Drop the copy once an
+  upstream release wraps `new_events`.
 - The version lives once in the root `Cargo.toml` `[workspace.package]`; `app` inherits it.
 
 ## Release process
