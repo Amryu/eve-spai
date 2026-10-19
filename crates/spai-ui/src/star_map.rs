@@ -313,9 +313,69 @@ fn seg_visible(cull: egui::Rect, a: egui::Pos2, b: egui::Pos2) -> bool {
     egui::Rect::from_two_pos(a, b).intersects(cull)
 }
 
+/// One stargate line between drawn systems, and how it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GateSeg {
+    pub a: i64,
+    pub b: i64,
+    pub kind: GateKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GateKind {
+    Inside,
+    OtherConstellation,
+    OtherRegion,
+}
+
 /// Stargates between the drawn systems, except where a bridge is drawn instead. A gate says where
 /// you are as much as where you can go: inside a constellation, out of it, or out of the region
 /// entirely. On a map of identical solid lines none of those boundaries would be visible.
+///
+/// The list only changes with the graph, the drawn systems and the bridges, so callers that draw
+/// every frame keep it and only place it with [`paint_gate_segs`].
+pub fn gate_segments(graph: &Systems, draw: &[MapSystem], bridges: &HashMap<(i64, i64), (bool, bool)>) -> Vec<GateSeg> {
+    let region_of: HashMap<i64, i64> = draw.iter().map(|s| (s.id, s.region_id)).collect();
+    let constel_of: HashMap<i64, &str> = draw.iter().filter_map(|s| graph.info_of(s.id).map(|i| (s.id, i.constellation.as_str()))).collect();
+    let mut out = Vec::new();
+    for s in draw {
+        for &n in graph.neighbors(s.id) {
+            if s.id < n && !bridges.contains_key(&(s.id, n)) && region_of.contains_key(&n) {
+                let kind = if region_of.get(&n).is_some_and(|r| *r != s.region_id) {
+                    GateKind::OtherRegion
+                } else if constel_of.get(&s.id).zip(constel_of.get(&n)).is_some_and(|(a, b)| a != b) {
+                    GateKind::OtherConstellation
+                } else {
+                    GateKind::Inside
+                };
+                out.push(GateSeg { a: s.id, b: n, kind });
+            }
+        }
+    }
+    out
+}
+
+pub fn paint_gate_segs(painter: &egui::Painter, visuals: &egui::Visuals, segs: &[GateSeg], pos: &HashMap<i64, egui::Pos2>, cull: egui::Rect) {
+    let line_col = visuals.weak_text_color().gamma_multiply(0.5);
+    let stroke = egui::Stroke::new(1.0, line_col);
+    for g in segs {
+        let (Some(&p1), Some(&p2)) = (pos.get(&g.a), pos.get(&g.b)) else { continue };
+        if !seg_visible(cull, p1, p2) {
+            continue;
+        }
+        match g.kind {
+            GateKind::OtherRegion => painter.extend(egui::Shape::dashed_line(&[p1, p2], stroke, 4.0, 4.0)),
+            // Dotted: a short dash with a wide gap reads as dots without needing a separate shape.
+            // 1 px dots shimmered out of sight as their sub-pixel position moved with pan and zoom.
+            GateKind::OtherConstellation => painter.extend(egui::Shape::dashed_line(&[p1, p2], egui::Stroke::new(1.3, line_col), 2.0, 3.0)),
+            GateKind::Inside => {
+                painter.line_segment([p1, p2], stroke);
+            }
+        }
+    }
+}
+
+/// [`gate_segments`] and [`paint_gate_segs`] in one, for a map drawn too rarely to keep the list.
 pub fn paint_gates(
     painter: &egui::Painter,
     visuals: &egui::Visuals,
@@ -325,33 +385,7 @@ pub fn paint_gates(
     bridges: &HashMap<(i64, i64), (bool, bool)>,
     cull: egui::Rect,
 ) {
-    let line_col = visuals.weak_text_color().gamma_multiply(0.5);
-    let region_of: HashMap<i64, i64> = draw.iter().map(|s| (s.id, s.region_id)).collect();
-    let constel_of: HashMap<i64, &str> = draw.iter().filter_map(|s| graph.info_of(s.id).map(|i| (s.id, i.constellation.as_str()))).collect();
-    for s in draw {
-        let p1 = pos[&s.id];
-        for &n in graph.neighbors(s.id) {
-            if s.id < n && !bridges.contains_key(&(s.id, n)) {
-                if let Some(p2) = pos.get(&n) {
-                    if seg_visible(cull, p1, *p2) {
-                        let stroke = egui::Stroke::new(1.0, line_col);
-                        let other_region = region_of.get(&n).is_some_and(|r| *r != s.region_id);
-                        let other_constel = constel_of.get(&s.id).zip(constel_of.get(&n)).is_some_and(|(a, b)| a != b);
-                        if other_region {
-                            painter.extend(egui::Shape::dashed_line(&[p1, *p2], stroke, 4.0, 4.0));
-                        } else if other_constel {
-                            // Dotted: a short dash with a wide gap reads as dots without needing a
-                            // separate shape. 1 px dots shimmered out of sight as their sub-pixel
-                            // position moved with pan and zoom.
-                            painter.extend(egui::Shape::dashed_line(&[p1, *p2], egui::Stroke::new(1.3, line_col), 2.0, 3.0));
-                        } else {
-                            painter.line_segment([p1, *p2], stroke);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    paint_gate_segs(painter, visuals, &gate_segments(graph, draw, bridges), pos, cull);
 }
 
 /// How far to pan this frame while a route is dragged near the edge of `view`: faster the deeper

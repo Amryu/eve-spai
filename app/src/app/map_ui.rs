@@ -9,6 +9,13 @@ const DOT_PER_SPACING: f32 = 0.1;
 /// The usual gap between systems, in points, from which the universe map names them.
 const LABELS_FROM_SPACING: f32 = 40.0;
 
+/// What the bridge directions were worked out from.
+#[derive(PartialEq)]
+pub(crate) struct MapBridgeKey {
+    graph: usize,
+    bridges: crate::ansiblex::BridgeKey,
+}
+
 /// How often an animation that is only decoration repaints: about 30 fps.
 pub(crate) const ANIM_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
@@ -72,6 +79,40 @@ impl SpaiApp {
         self.map_systems_cache.clear();
         self.map_draw_cache.clear();
         ctx.request_repaint();
+    }
+
+    /// Each bridge's open directions under the zone limit, rebuilt only when the graph or the bridge
+    /// settings change.
+    pub(crate) fn map_bridge_dirs(&mut self) -> std::sync::Arc<std::collections::HashMap<(i64, i64), (bool, bool)>> {
+        let Some(g) = self.systems.clone() else { return Default::default() };
+        let key = MapBridgeKey {
+            graph: std::sync::Arc::as_ptr(&g) as usize,
+            bridges: crate::ansiblex::key_of(&self.settings),
+        };
+        if let Some((k, dirs)) = &self.map_bridge_dirs {
+            if *k == key {
+                return dirs.clone();
+            }
+        }
+        let dirs = std::sync::Arc::new(spai_ui::star_map::bridge_directions(&key.bridges.bridges, &g, &key.bridges.capital, key.bridges.max_zone));
+        self.map_bridge_dirs = Some((key, dirs.clone()));
+        dirs
+    }
+
+    /// The in-game destination's route over the same graph the waypoints came from, kept for a couple
+    /// of seconds: the map draws it every frame and a fresh search walks the whole graph.
+    pub(crate) fn ingame_route(&mut self, from: i64, to: i64) -> Option<std::sync::Arc<Vec<i64>>> {
+        let g = self.systems.clone()?;
+        let key = (std::sync::Arc::as_ptr(&g) as usize, from, to, self.settings.route_via_wormholes);
+        if let Some((k, at, r)) = &self.map_ingame_route {
+            if *k == key && at.elapsed() < std::time::Duration::from_secs(2) {
+                return r.clone();
+            }
+        }
+        let holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
+        let r = g.route_with(from, to, true, true, &holes, |_| true).map(std::sync::Arc::new);
+        self.map_ingame_route = Some((key, std::time::Instant::now(), r.clone()));
+        r
     }
 
     /// The colours at each end of a bridge from `a` to `b`: the zone a jump landing there is priced
@@ -837,15 +878,21 @@ impl SpaiApp {
             }
         }
 
-        let bridges = match &self.systems {
-            Some(g) => spai_ui::star_map::bridge_directions(&self.settings.jump_bridges, g, &self.settings.ansiblex_capital, self.settings.ansiblex_max_zone),
-            None => Default::default(),
-        };
+        let bridges = self.map_bridge_dirs();
 
         let cull = rect.expand(8.0);
 
-        if let Some(graph) = &self.systems {
-            spai_ui::star_map::paint_gates(&painter, ui.visuals(), graph, &self.map_draw, &pos, &bridges, cull);
+        if let Some(graph) = self.systems.clone() {
+            let key = (std::sync::Arc::as_ptr(&graph) as usize, self.map_draw.as_ptr() as usize, self.map_draw.len(), std::sync::Arc::as_ptr(&bridges) as usize);
+            let segs = match &self.map_gate_segs {
+                Some((k, s)) if *k == key => s.clone(),
+                _ => {
+                    let s = std::sync::Arc::new(spai_ui::star_map::gate_segments(&graph, &self.map_draw, &bridges));
+                    self.map_gate_segs = Some((key, s.clone()));
+                    s
+                }
+            };
+            spai_ui::star_map::paint_gate_segs(&painter, ui.visuals(), &segs, &pos, cull);
         }
         // A bridge or hole a route is flying is drawn by that route, animated and in the route's
         // colour, so the plain line is skipped rather than putting two lines on one hop.
@@ -856,15 +903,8 @@ impl SpaiApp {
                 route_pairs(&o.hops.iter().map(|h| h.id).collect::<Vec<_>>(), &mut routed);
             }
             // And the in-game destination route, which walks the same graph a few lines below.
-            if let (Some(ps), Some(dest), Some(g)) =
-                (player_sys, self.set_route_shown(), self.systems.as_ref())
-            {
-                let holes = if self.settings.route_via_wormholes {
-                    self.wh_adjacency()
-                } else {
-                    std::collections::HashMap::new()
-                };
-                if let Some(r) = g.route_with(ps, dest, true, true, &holes, |_| true) {
+            if let (Some(ps), Some(dest)) = (player_sys, self.set_route_shown()) {
+                if let Some(r) = self.ingame_route(ps, dest) {
                     route_pairs(&r, &mut routed);
                 }
             }
@@ -961,22 +1001,13 @@ impl SpaiApp {
             } else {
                 // Drawing the client's own idea of the route would trace the long k-space path a
                 // hole route deliberately skips, so this walks the same graph the waypoints came from.
-                let holes = if self.settings.route_via_wormholes {
-                    self.wh_adjacency()
-                } else {
-                    std::collections::HashMap::new()
-                };
-                let route = self
-                    .systems
-                    .as_ref()
-                    .and_then(|g| g.route_with(ps, dest, true, true, &holes, |_| true));
-                if let Some(route) = route {
+                if let Some(route) = self.ingame_route(ps, dest) {
                     let phase = (crate::clock::anim(ui) * 28.0) as f32;
                     // A J-space leg has no place on the map, so the hop is drawn between the k-space
                     // systems on either side of the hole.
                     let mut last: Option<(i64, egui::Pos2)> = None;
                     let mut jumped_hole = false;
-                    for &id in &route {
+                    for &id in route.iter() {
                         let Some(&p) = pos.get(&id) else {
                             jumped_hole = true;
                             continue;

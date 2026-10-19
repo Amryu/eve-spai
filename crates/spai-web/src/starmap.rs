@@ -47,12 +47,14 @@ pub struct MapData {
     pub hole_list: Vec<Wormhole>,
     /// Where each system sits in `real`.
     real_at: HashMap<i64, usize>,
+    /// Bumped whenever the network changes, so drawn state built from it knows to rebuild.
+    pub network_gen: u64,
 }
 
 impl MapData {
     pub fn new(all: Vec<MapSystem>, real: Vec<MapSystem>, regions: Vec<(i64, String)>) -> Self {
         let real_at = real.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
-        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new(), real_at }
+        MapData { all, real, regions, network: Network::default(), bridges: HashMap::new(), overlay: WhOverlay::default(), holes: HashMap::new(), hole_list: Vec::new(), real_at, network_gen: 0 }
     }
 
     pub fn set_holes(&mut self, holes: &[Wormhole]) {
@@ -74,6 +76,7 @@ impl MapData {
     pub fn set_network(&mut self, network: Network, geo: &Systems) {
         self.bridges = layers::bridge_directions(&network.list(), geo, &network.capital, network.max_zone.max(1));
         self.network = network;
+        self.network_gen += 1;
     }
 }
 
@@ -90,6 +93,8 @@ pub struct StarMap {
     pub layers: Layers,
     /// Systems with added characters in them: how many, and whether any is online.
     pub here: HashMap<i64, (usize, bool)>,
+    /// The stargate lines for the graph, region and network they were built from.
+    gates: Option<((usize, Option<i64>, u64), Vec<layers::GateSeg>)>,
 }
 
 /// What the map draws over New Eden, as the desktop's layer toggles.
@@ -180,7 +185,13 @@ impl StarMap {
         let cull = rect.expand(8.0);
         let dot = (0.5 * self.zoom * if self.region.is_some() { 6.0 } else { 1.0 }).clamp(1.5, 7.0);
 
-        layers::paint_gates(&painter, &visuals, geo, &draw, &pos, &d.bridges, cull);
+        let key = (geo as *const Systems as usize, self.region, d.network_gen);
+        if self.gates.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.gates = Some((key, layers::gate_segments(geo, &draw, &d.bridges)));
+        }
+        if let Some((_, segs)) = &self.gates {
+            layers::paint_gate_segs(&painter, &visuals, segs, &pos, cull);
+        }
         let hops = self.plan.route().map(|o| o.hops.clone()).unwrap_or_default();
         // A bridge the route flies is drawn by the route, animated, rather than twice.
         let routed: HashSet<(i64, i64)> =
