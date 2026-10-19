@@ -3685,7 +3685,12 @@ mod real_jump_ahead_tests {
                         _ => h.name.clone(),
                     })
                     .collect();
-                let alone = o.titan_jump.as_ref().map(|t| format!(" [capital alone {} -> {}]", t.from_name, t.to_name)).unwrap_or_default();
+                // Where the capital jumps alone along an Ansiblex, the map bows its jump the other way.
+                let alone = o
+                    .titan_jump
+                    .as_ref()
+                    .map(|t| format!(" [capital alone {} -> {}{}]", t.from_name, t.to_name, if g.is_bridge(t.from, t.to) || g.is_bridge(t.to, t.from) { ", over an Ansiblex: bowed the other way" } else { "" }))
+                    .unwrap_or_default();
                 println!("  [{}] {}{} steps: {}{alone}", o.label, if o.gated { "gated " } else { "" }, o.hops.iter().skip(1).filter(|h| h.kind != 2).count(), steps.join(" "));
                 for w in o.hops.windows(2) {
                     match w[1].kind {
