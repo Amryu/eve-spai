@@ -40,7 +40,7 @@ impl AppState {
             views: Arc::new(Mutex::new(HashMap::new())),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             ip_buckets: Arc::new(Mutex::new(HashMap::new())),
-            imperium: Arc::new(crate::imperium::Gate::new(Box::new(crate::imperium::Esi::new()))),
+            imperium: Arc::new(crate::imperium::Gate::new(crate::imperium::source())),
         }
     }
 

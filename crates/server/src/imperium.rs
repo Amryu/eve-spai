@@ -56,6 +56,25 @@ impl AffiliationSource for Esi {
     }
 }
 
+/// Everyone in Goonswarm, for a local test server whose characters are made up: debug builds only,
+/// and only when `WH_TEST_EVERYONE_IMPERIUM=1`.
+pub struct Everyone;
+
+impl AffiliationSource for Everyone {
+    fn fetch(&self, chars: Vec<i64>) -> Fetched {
+        Box::pin(async move { Ok(chars.into_iter().map(|c| (c, Some(1_354_830_081))).collect()) })
+    }
+}
+
+/// The source the server runs with.
+pub fn source() -> Box<dyn AffiliationSource> {
+    if cfg!(debug_assertions) && std::env::var("WH_TEST_EVERYONE_IMPERIUM").as_deref() == Ok("1") {
+        tracing::warn!("WH_TEST_EVERYONE_IMPERIUM: every character counts as The Imperium (debug build)");
+        return Box::new(Everyone);
+    }
+    Box::new(Esi::new())
+}
+
 /// What the cache says about one character at `now`.
 #[derive(Debug, PartialEq)]
 enum Cached {
