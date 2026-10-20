@@ -42,7 +42,6 @@ impl SpaiApp {
                 battles: self.battles.clone(),
                 camps: self.camps.clone(),
                 rescue: self.rescue.clone(),
-                fleet: self.fleet.clone(),
                 lookup_table: self.lookup_table.clone(),
                 facts: self.ai_facts.clone(),
                 memories: self.ai_memories.clone(),
@@ -55,7 +54,6 @@ impl SpaiApp {
                 standings: self.standings.clone(),
                 jump_skills: self.jump_skills.clone(),
                 battle_history: self.battle_history.clone(),
-                view: view.clone(),
                 battle_history_loading: self.battle_history_loading.clone(),
                 want_battle_history: self.want_battle_history.clone(),
                 online: true,
@@ -110,19 +108,16 @@ impl SpaiApp {
         let facts = crate::ai::deps::AiFacts {
             systems: self.systems.clone(),
             perms: s.ai.perms.clone(),
-            unlocked: crate::ai::perms::Unlocked { fleet: self.fleet_on(), rescue: self.rescue_on() },
+            unlocked: crate::ai::perms::Unlocked { rescue: self.rescue_on() },
             chat_dir: self.chat_dir.clone(),
             severity: s.severity.clone(),
             cyno_generators: s.cyno_generators.clone(),
             jump_bridges: s.jump_bridges.clone(),
             sov_upgrades: s.sov_upgrades.clone(),
-            fleet_presets: s.fleet_presets.clone(),
-            fleet_backend: self.fleet_on().then(|| self.fleet_backend.clone()),
             notes_view: Some(self.notes_view.clone()),
             ai: s.ai.clone(),
             lookup_current: self.lookup_current.clone(),
             alert_rules: s.alerts.rules.clone(),
-            doctrines: self.ai_doctrine_facts(),
             route_anchors: self.map_route_anchors.clone(),
             route_destination: self.route_destination,
             last_dscan: self.ai_last_dscan(),
@@ -139,7 +134,6 @@ impl SpaiApp {
             coalitions: s.coalitions.clone(),
             chat_windows: self.jabber_popouts.iter().map(|w| (w.id, w.tabs.clone())).collect(),
             jabber_domain: s.jabber_jid.split('@').nth(1).unwrap_or("").split('/').next().unwrap_or("").to_owned(),
-            skirmish_room: crate::app::goon_jid(&s.rescue_skirmish_jid, "skirmish_commanders@conference.goonfleet.com"),
             opsec: false,
         };
         *self.ai_facts.lock().unwrap_or_else(|e| e.into_inner()) = facts;
@@ -214,23 +208,6 @@ impl SpaiApp {
                     }
                 }
             }
-            // Through the Fleet tab's own way in: a mumble:// link goes straight to Mumble, a short link
-            // is resolved first and only opened in the browser when that fails.
-            ActionKind::Fleet(op) => match op {
-                crate::ai::tools::FleetOp::Start => {
-                    // The same wait Track starts: a fresh boss and ESI check, every 5 seconds.
-                    self.fleet.lock().unwrap_or_else(|e| e.into_inner()).begin_track_wait();
-                    self.fleet_boss_asked = None;
-                    return format!("{summary}: tracking once the FC is fleet boss and ESI has caught up, checked every 5 seconds for up to 2 minutes");
-                }
-                crate::ai::tools::FleetOp::Act(id, action) => self.fleet_dispatch(crate::fleets::state::Cmd::Act(id.clone(), action.clone())),
-                crate::ai::tools::FleetOp::RequestPing => self.fleet_send_ping(crate::fleets::ping::COORD),
-                crate::ai::tools::FleetOp::CreateBr(id) => {
-                    let _ = self.fleet_br_view(id);
-                    self.fleet_br_click(crate::app::fleet_map::BrClick::Create, &self.ui_ctx.clone());
-                    return format!("{summary}: the report is being made; fleet_links has its link once it is done");
-                }
-            },
             ActionKind::MumbleSet { mute, deaf, transmit } => {
                 let ok = mute.is_none_or(crate::mumble::set_self_muted) & deaf.is_none_or(crate::mumble::set_self_deaf) & transmit.is_none_or(crate::mumble::set_transmit);
                 if !ok {
@@ -238,6 +215,8 @@ impl SpaiApp {
                     return format!("Mumble did not take it: {summary}");
                 }
             }
+            // A mumble:// link goes straight to Mumble, a short link is resolved first and only
+            // opened in the browser when that fails.
             ActionKind::JoinMumble { url } if url.starts_with("mumble://") => crate::mumble::open_url(url),
             ActionKind::JoinMumble { url } => self.comms_join(crate::fleets::comms::Links { mumble: None, short: Some(url.clone()) }),
             ActionKind::KeepWatching(id) => {
@@ -290,7 +269,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(trf!("{icon}  Assistant", icon = icon::SPARKLE)).heading());
                 ui.add_space(8.0);
                 ui.label(
-                    tr!("Ask about intel, kills, routes, wormholes and fleets in plain words, typed or spoken while you play. \
+                    tr!("Ask about intel, kills, routes and wormholes in plain words, typed or spoken while you play. \
                      It reads only the data you allow, can keep watch for you, and every change it proposes waits for your click."),
                 );
                 ui.add_space(4.0);
@@ -548,29 +527,6 @@ impl SpaiApp {
                 handle.send(Command::ActionResult { id, applied, note });
             }
         }
-    }
-
-    /// The doctrines set up for fleets, by setup, with their hulls, tank, fit link and ping line.
-    fn ai_doctrine_facts(&self) -> Vec<crate::ai::deps::DoctrineFacts> {
-        let s = &self.settings;
-        let mut ids: Vec<i32> = s.fleet_hulls.iter().map(|h| h.setup_id).chain(s.fleet_doctrine_urls.iter().map(|x| x.0)).chain(s.fleet_doctrine_tanks.iter().map(|x| x.0)).filter(|id| *id != 0).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-        ids.into_iter()
-            .map(|id| crate::ai::deps::DoctrineFacts {
-                name: st.seed.setup_name(crate::fleets::model::SetupId(id)).map(str::to_owned).unwrap_or_else(|| format!("setup {id}")),
-                main: s.fleet_hulls.iter().filter(|h| h.setup_id == id && h.main).map(|h| h.name.clone()).collect(),
-                support: s.fleet_hulls.iter().filter(|h| (h.setup_id == id || h.setup_id == 0) && !h.main).map(|h| h.name.clone()).collect(),
-                tank: s.fleet_doctrine_tanks.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
-                url: s.fleet_doctrine_urls.iter().find(|x| x.0 == id).map(|x| x.1.clone()).or_else(|| {
-                    st.seed.setup_name(crate::fleets::model::SetupId(id)).and_then(crate::doctrines::link_for).map(str::to_owned)
-                }),
-                strict: s.fleet_doctrine_strict.contains(&id),
-                boosts: s.fleet_boost_requirements.iter().filter(|b| b.setup_id == id).map(|b| (b.charge.clone(), b.priority.clone())).collect(),
-                line: s.fleet_doctrine_lines.iter().find(|x| x.0 == id).map(|x| x.1.clone()),
-            })
-            .collect()
     }
 
     /// Carries out the actions that need no click as soon as they arrive.
@@ -919,8 +875,6 @@ impl SpaiApp {
                 self.battle_select_pending = Some((vec![kid], std::time::Instant::now()));
                 self.view = View::Battles;
             }
-            Link::Fleet(id) if self.fleet_on() => self.fleet_show(crate::fleets::model::FleetId(id)),
-            Link::Fleet(_) => {}
             Link::Chat(jid) => self.jabber_open(&jid, super::chat_tabs::ChatWinKey::Main),
             Link::Pings => self.jabber_open(crate::jabber::PING_FEED_KEY, super::chat_tabs::ChatWinKey::Main),
             Link::Wormholes(id) => {
@@ -943,7 +897,6 @@ impl SpaiApp {
                     "lookup" => Some(View::Lookup),
                     "characters" => Some(View::Characters),
                     "jabber" => Some(View::Jabber),
-                    "fleet" if self.fleet_on() => Some(View::Fleet),
                     "rescue" if self.rescue_on() => Some(View::Rescue),
                     "settings" => Some(View::Settings),
                     _ => None,
@@ -1248,7 +1201,6 @@ fn link_hint(l: &Link) -> &'static str {
         Link::Pilot(_) => tr!("Open pilot"),
         Link::Kill(_) => tr!("Open the killmail"),
         Link::Battle(_) => tr!("Open the battle report"),
-        Link::Fleet(_) => tr!("Open the fleet"),
         Link::Chat(_) => tr!("Open the conversation"),
         Link::Pings => tr!("Open the ping feed"),
         Link::Wormholes(_) => tr!("Show its wormholes"),

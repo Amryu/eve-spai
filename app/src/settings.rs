@@ -40,6 +40,9 @@ pub struct Settings {
     /// Leave pilots at +5 standing or better out of a looked-up local.
     #[serde(default)]
     pub lookup_hide_blues: bool,
+    /// Shows what is still being worked on: the fitting and fleet simulator tab.
+    #[serde(default)]
+    pub beta_features: bool,
     /// The version of the bundled bridge and upgrade defaults already applied.
     #[serde(default)]
     pub baked_defaults: u32,
@@ -472,6 +475,9 @@ pub struct Settings {
     /// Label of the fleet preset the rescue ping is built from. Empty until one is picked.
     #[serde(default)]
     pub rescue_preset: String,
+    /// The user ticked "don't ask again" on the warning for a ping with no formup or doctrine.
+    #[serde(default)]
+    pub fleet_ping_check_off: bool,
     /// The cap-save template has been turned into a fleet preset, so it is not done twice.
     #[serde(default)]
     pub rescue_preset_seeded: bool,
@@ -1538,6 +1544,7 @@ impl Default for Settings {
             lookup_history: Vec::new(),
             lookup_hidden_columns: Vec::new(),
             lookup_hide_blues: false,
+            beta_features: false,
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_only_undocked: false,
@@ -1694,6 +1701,7 @@ impl Default for Settings {
             rescue_op_channel: default_rescue_op_channel(),
             rescue_ping_template: default_rescue_template(),
             rescue_preset: String::new(),
+            fleet_ping_check_off: false,
             rescue_preset_seeded: false,
             rescue_skirmish_jid: String::new(),
             rescue_delve911_jid: String::new(),

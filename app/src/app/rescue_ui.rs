@@ -1322,15 +1322,30 @@ impl SpaiApp {
                             r.ping_edited = false;
                         }
                     }
-                    if ui
-                        .add(
+                    // A ping with no formup or doctrine gets a red pulsing border and nothing
+                    // more: the FC may still send it, and the dashboard's rendering replaces an
+                    // untouched draft when it lands.
+                    let lacking = crate::fleets::ping::missing(&r.pending_ping);
+                    let stroke = if lacking.is_empty() {
+                        egui::Stroke::NONE
+                    } else {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                        let k = 0.5 + 0.5 * (crate::clock::anim(ui) * 2.2).sin();
+                        egui::Stroke::new(2.0, crate::theme::standing::HOSTILE.gamma_multiply(0.45 + 0.55 * k as f32))
+                    };
+                    let edit = egui::Frame::new().stroke(stroke).inner_margin(2.0).corner_radius(3.0).show(ui, |ui| {
+                        ui.add(
                             egui::TextEdit::multiline(&mut r.pending_ping)
                                 .desired_rows(if compact { 2 } else { 3 })
                                 .desired_width(f32::INFINITY),
                         )
-                        .changed()
-                    {
+                    });
+                    if edit.inner.changed() {
                         r.ping_edited = true;
+                    }
+                    if !lacking.is_empty() {
+                        let what: Vec<&str> = lacking.iter().map(|p| p.label().tr()).collect();
+                        edit.response.on_hover_text(trf!("This ping looks incomplete: {what}", what = what.join(", ")));
                     }
                     // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
                     // their delve911 nick so it reads as a direct call-out in the channel.

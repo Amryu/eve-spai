@@ -979,6 +979,9 @@ pub struct SpaiApp {
         &'static str,
         usize,
     )>,
+    /// A ping that lacks its formup or doctrine, held until the user sends it anyway: the group,
+    /// the body and what it lacks.
+    pub(crate) fleet_ping_warning: Option<(&'static str, String, Vec<crate::fleets::ping::Part>)>,
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
     rescue_feed_cursor: u64,
@@ -1863,6 +1866,7 @@ impl SpaiApp {
             fleet_trackers: Default::default(),
             fleet_tracks_resumed: false,
             fleet_confirm: None,
+            fleet_ping_warning: None,
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             rescue_feed_cursor: 0,
             rescue_history_loaded: false,
@@ -3673,11 +3677,13 @@ impl SpaiApp {
                 // of fleet command rather than a feature beside it. It keeps its own switch only
                 // because it also needs the delve911 rooms joined.
                 let has_rescue = self.rescue_on();
+                let beta = self.settings.beta_features;
                 let rows: Vec<nav::View> = nav::View::primary()
                     .iter()
                     .copied()
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
+                    .filter(|v| *v != nav::View::Imperium || beta)
                     .collect();
                 let member = self.is_imperium_member();
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &move |v| v.label_for(member));
@@ -3914,7 +3920,9 @@ impl SpaiApp {
     /// The central panel and its dispatch on [`Self::view`]. `jframe` stays a parameter because
     /// `App::ui` builds it once per frame and reuses it for the popout windows afterwards.
     pub(crate) fn root_central(&mut self, ui: &mut egui::Ui, jframe: Option<&JabberFrame>) {
-        egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
+        let frame = egui::Frame::central_panel(ui.style());
+        let frame = if self.view == View::Imperium { frame.inner_margin(0) } else { frame };
+        egui::CentralPanel::default().frame(frame).show_inside(ui, |ui| match self.view {
             View::Dashboard => self.dashboard_view(ui),
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
@@ -8079,10 +8087,10 @@ pub(crate) fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
 pub(crate) fn damage_type(name: &str) -> Option<(&'static str, egui::Color32, &'static str)> {
     use egui_phosphor::regular as i;
     Some(match name.trim().to_lowercase().as_str() {
-        "em" => (i::LIGHTNING, egui::Color32::from_rgb(0x5A, 0xA9, 0xE0), "EM"),
-        "thermal" | "th" => (i::FIRE, egui::Color32::from_rgb(0xD6, 0x45, 0x45), "Thermal"),
-        "kinetic" | "kin" => (i::HAMMER, egui::Color32::from_rgb(0x9A, 0xA3, 0xA8), "Kinetic"),
-        "explosive" | "exp" => (i::ASTERISK, egui::Color32::from_rgb(0xD6, 0xA6, 0x45), "Explosive"),
+        "em" => (i::LIGHTNING, spai_ui::colors::DAMAGE[0], "EM"),
+        "thermal" | "th" => (i::FIRE, spai_ui::colors::DAMAGE[1], "Thermal"),
+        "kinetic" | "kin" => (i::HAMMER, spai_ui::colors::DAMAGE[2], "Kinetic"),
+        "explosive" | "exp" => (i::ASTERISK, spai_ui::colors::DAMAGE[3], "Explosive"),
         _ => return None,
     })
 }

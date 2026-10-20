@@ -6,7 +6,6 @@
 //! Nothing here can send a message anywhere; `no_tool_sends_messages` keeps it that way.
 
 mod actions;
-mod fleet;
 pub(crate) mod intel;
 mod kills;
 mod map;
@@ -26,7 +25,7 @@ use serde_json::{json, Value};
 use super::deps::{AiDeps, AiFacts};
 use super::provider::ToolDef;
 
-pub use actions::{ActionKind, ChatWindowPick, FleetOp, PendingAction};
+pub use actions::{ActionKind, ChatWindowPick, PendingAction};
 
 /// Results longer than this are cut, and say so.
 pub const RESULT_CAP: usize = 8_000;
@@ -102,7 +101,6 @@ fn registry() -> Vec<&'static ToolSpec> {
     v.extend(web::TOOLS);
     v.extend(actions::TOOLS);
     v.extend(memory::TOOLS);
-    v.extend(fleet::TOOLS);
     v
 }
 
@@ -246,11 +244,6 @@ pub(crate) fn eve_time(t: i64) -> String {
     }
 }
 
-/// An ISO time from an outside service (the fleet dashboard), told the same way.
-pub(crate) fn iso_time(s: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(s).map(|d| eve_time(d.timestamp())).unwrap_or_else(|_| s.to_owned())
-}
-
 /// Leaves out what says nothing: nulls, empty text, empty lists and objects. Absent means none.
 pub(crate) fn compact(v: &mut Value) {
     match v {
@@ -339,7 +332,7 @@ pub(crate) mod testkit {
         AiFacts {
             systems: Some(crate::uitest::fixtures::systems()),
             perms,
-            unlocked: crate::ai::perms::Unlocked { fleet: true, rescue: true },
+            unlocked: crate::ai::perms::Unlocked { rescue: true },
             ..Default::default()
         }
     }
@@ -371,8 +364,7 @@ mod tests {
         assert!(tools_for(&deps.facts()).iter().any(|t| t.name == "search_intel"));
     }
 
-    /// Two tools write to anyone, send_jabber and the fleet ping request, and both only propose: the
-    /// user clicks or says yes. Reading the ping's progress writes nothing.
+    /// One tool writes to anyone, send_jabber, and it only proposes: the user clicks.
     #[test]
     fn only_send_jabber_sends_and_it_waits_for_a_click() {
         for t in registry() {
@@ -380,15 +372,6 @@ mod tests {
             if n == "send_jabber" {
                 assert_eq!(t.kind, Kind::Action);
                 assert!(matches!(t.need, Need::All(&["actions.jabber"])));
-                continue;
-            }
-            if n == "fleet_request_ping" {
-                assert_eq!(t.kind, Kind::Action);
-                assert!(matches!(t.need, Need::All(&["actions.fleet"])));
-                continue;
-            }
-            if n == "fleet_ping_status" {
-                assert_eq!(t.kind, Kind::Read);
                 continue;
             }
             for word in ["send", "post", "message", "ping_", "broadcast", "notify"] {

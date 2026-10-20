@@ -37,6 +37,66 @@ pub fn render(template: &str, v: &Vars) -> String {
         .replace("{mumble}", &or(&v.mumble))
 }
 
+/// A part a ping is not complete without, in the order the dashboard writes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Description,
+    FcName,
+    Formup,
+    PapType,
+    Comms,
+    Doctrine,
+}
+
+impl Part {
+    pub fn label(self) -> &'static str {
+        match self {
+            Part::Description => tr_noop!("No description"),
+            Part::FcName => tr_noop!("No FC name"),
+            Part::Formup => tr_noop!("No formup location"),
+            Part::PapType => tr_noop!("No PAP type"),
+            Part::Comms => tr_noop!("No comms"),
+            Part::Doctrine => tr_noop!("No doctrine"),
+        }
+    }
+
+    /// The names the line goes under, the dashboard's own first.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Part::Description => &["Description"],
+            Part::FcName => &["FC Name", "FC"],
+            Part::Formup => &["Formup Location", "Formup"],
+            Part::PapType => &["PAP Type", "PAP"],
+            Part::Comms => &["Comms"],
+            Part::Doctrine => &["Doctrine"],
+        }
+    }
+}
+
+const PARTS: [Part; 6] = [Part::Description, Part::FcName, Part::Formup, Part::PapType, Part::Comms, Part::Doctrine];
+
+/// `Key: value` with something after the colon, by any of the key's names.
+fn value_after<'a>(line: &'a str, keys: &[&str]) -> Option<&'a str> {
+    let l = line.trim();
+    keys.iter().find_map(|k| {
+        let (head, rest) = l.split_at_checked(k.len())?;
+        let v = rest.strip_prefix(':')?.trim();
+        (head.eq_ignore_ascii_case(k) && !v.is_empty() && v != UNKNOWN).then_some(v)
+    })
+}
+
+/// What a ping lacks. Each part is a `Key:` line with something after the colon; the description
+/// is the free text above the first such line, or a `Description:` line. The dashboard renders
+/// every one and the local template fills them in, so a missing part means the preview had not
+/// come back yet or a field was still empty. A `?` is the local template's own mark for unknown
+/// and counts as missing.
+pub fn missing(body: &str) -> Vec<Part> {
+    let keyed = |p: Part| body.lines().any(|l| value_after(l, p.keys()).is_some());
+    let is_key_line = |l: &str| PARTS.iter().any(|p| p.keys().iter().any(|k| l.trim().get(..k.len()).is_some_and(|h| h.eq_ignore_ascii_case(k)) && l.trim()[k.len()..].starts_with(':')));
+    let described = keyed(Part::Description) || body.lines().take_while(|l| !is_key_line(l)).any(|l| !l.trim().is_empty());
+    PARTS.into_iter().filter(|p| if *p == Part::Description { !described } else { !keyed(*p) }).collect()
+}
+
 /// The directorbot ping groups, in the order the rescue offers them.
 pub const GROUPS: [&str; 3] = [COORD, "fc", "all"];
 
@@ -86,6 +146,21 @@ mod tests {
     #[test]
     fn the_bot_reads_the_first_line() {
         assert_eq!(bping("coord", "body"), "!bping coord\n\nbody");
+    }
+
+    #[test]
+    fn a_ping_missing_any_of_its_parts_is_called_out() {
+        let full = "Hostiles need time to dock. Bring tackle.\n\nFC Name: Someone\nFormup Location: 1DQ1-A\nPAP Type: Strategic\nComms: Op 4 https://gnf.lt/x.html\nDoctrine: Void Rays (MWD) (Boosts > Logi > Kikis)";
+        assert!(missing(full).is_empty());
+        let keyed = "Description: Get in\nFC: Someone\nFormup: C-J6MT\nPAP: Strategic\nComms: Op 4\nDoctrine: Alpha Fleet";
+        assert!(missing(keyed).is_empty(), "short key names count too");
+        assert_eq!(missing("Get in!\n\nFC Name: Someone\nComms: Op 4"), vec![Part::Formup, Part::PapType, Part::Doctrine]);
+        // No free text above the first key line is no description.
+        assert_eq!(missing("FC Name: Someone\nFormup Location: 1DQ1-A\nPAP Type: Strategic\nComms: Op 4\nDoctrine: X"), vec![Part::Description]);
+        // The local template's unknown mark and an empty value are both nothing.
+        assert_eq!(missing("Get in\nFC Name: ?\nFormup Location: ?\nPAP Type: Strategic\nComms: Op 4\nDoctrine: Alpha Fleet"), vec![Part::FcName, Part::Formup]);
+        assert_eq!(missing("Get in\nFC Name: A\nformup: C-J6MT\nPAP Type: S\nComms: Op 1\nDoctrine:   "), vec![Part::Doctrine]);
+        assert_eq!(missing("").len(), 6);
     }
 }
 

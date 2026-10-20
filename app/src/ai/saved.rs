@@ -1,7 +1,7 @@
 //! The chat and the watches, kept in the store so a restart picks up where the user left off.
 //!
 //! Mirrors of the session's types rather than serde on the types themselves: an action card's
-//! kind reaches into settings, fleets and alert rules, and none of that is worth keeping. A card
+//! kind reaches into settings and alert rules, and none of that is worth keeping. A card
 //! comes back as its summary only, closed, since what it would have done may no longer hold.
 
 use std::collections::HashSet;

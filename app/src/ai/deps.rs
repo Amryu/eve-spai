@@ -16,7 +16,6 @@ pub struct AiDeps {
     pub battles: crate::zkill::SharedBattles,
     pub camps: crate::camp::SharedCamps,
     pub rescue: Arc<Mutex<crate::rescue::RescueState>>,
-    pub fleet: Arc<Mutex<crate::fleets::FleetState>>,
     pub lookup_table: crate::localscan::SharedTable,
     pub facts: Arc<Mutex<AiFacts>>,
     pub memories: crate::ai::memory::SharedMemories,
@@ -30,8 +29,6 @@ pub struct AiDeps {
     pub alerts: Arc<Mutex<Vec<(i64, String)>>>,
     /// The Battles page's history, clustered from the stored kills, and whether it is being built.
     pub battle_history: crate::zkill::SharedBattles,
-    /// The conversation as the chat shows it, for the tool that takes a spoken yes.
-    pub view: crate::ai::session::SharedView,
     pub battle_history_loading: Arc<std::sync::atomic::AtomicBool>,
     /// Set by the assistant when it needs the history and the page has not built it: the app
     /// builds it the way the page does.
@@ -57,15 +54,11 @@ pub struct AiFacts {
     pub cyno_generators: Vec<i64>,
     pub jump_bridges: Vec<crate::settings::JumpBridge>,
     pub sov_upgrades: Vec<crate::settings::SovUpgrade>,
-    pub fleet_presets: Vec<crate::settings::FleetPreset>,
-    /// The fleet dashboard, while it is unlocked. Tools only ever read through it.
-    pub fleet_backend: Option<Arc<dyn crate::fleets::backend::FleetBackend>>,
     pub notes_view: Option<Arc<crate::notes::NotesView>>,
     /// The assistant's own settings: provider, model, caps.
     pub ai: crate::ai::config::AiSettings,
     pub alert_rules: Vec<crate::settings::AlertRule>,
     pub setup: Setup,
-    pub doctrines: Vec<DoctrineFacts>,
     pub route_anchors: Vec<i64>,
     pub route_destination: Option<i64>,
     /// The comms channels the app knows: (name, mumble:// link when known, gnf.lt link when known).
@@ -79,25 +72,8 @@ pub struct AiFacts {
     pub chat_windows: Vec<(u64, Vec<String>)>,
     /// The server of the user's own Jabber address, for addressing someone not met yet.
     pub jabber_domain: String,
-    /// The room ping requests go to, skirmish_commanders unless set otherwise.
-    pub skirmish_room: String,
     /// The conversation has read opsec data (see [`AiDeps::opsec`]); set by the session per request.
     pub opsec: bool,
-}
-
-/// A doctrine as the user set it up for fleets.
-#[derive(Clone, Default)]
-pub struct DoctrineFacts {
-    pub name: String,
-    pub main: Vec<String>,
-    pub support: Vec<String>,
-    pub tank: Option<String>,
-    pub url: Option<String>,
-    pub line: Option<String>,
-    /// Only its own hulls belong in it.
-    pub strict: bool,
-    /// Boosts it wants: (charge, priority).
-    pub boosts: Vec<(String, String)>,
 }
 
 /// The parts of the user's setup the assistant reads.
@@ -134,7 +110,6 @@ impl AiDeps {
             battles: Default::default(),
             camps: Default::default(),
             rescue: Default::default(),
-            fleet: Default::default(),
             lookup_table: Default::default(),
             facts: Arc::new(Mutex::new(facts)),
             memories: Default::default(),
@@ -147,7 +122,6 @@ impl AiDeps {
             standings: Default::default(),
             jump_skills: Default::default(),
             battle_history: Default::default(),
-            view: Default::default(),
             battle_history_loading: Default::default(),
             want_battle_history: Default::default(),
             online: false,

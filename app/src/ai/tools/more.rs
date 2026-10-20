@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{eve_time, fmt_age, schema, str_arg, Ctx, Kind, Need, ToolSpec};
 
 pub static TOOLS: &[&ToolSpec] =
-    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &DOCTRINES, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &MUMBLE_SET, &COMMS, &JOIN_MUMBLE];
+    &[&JUMP_ROUTE, &WH_ROUTE, &KILL_DETAIL, &MY_ROUTE, &LAST_DSCAN, &BR_LINKS, &RATS, &WH_LOG, &MUMBLE_NOW, &MUMBLE_SET, &COMMS, &JOIN_MUMBLE];
 
 static JUMP_ROUTE: ToolSpec = ToolSpec {
     name: "jump_route",
@@ -171,30 +171,6 @@ static KILL_DETAIL: ToolSpec = ToolSpec {
     },
 };
 
-static DOCTRINES: ToolSpec = ToolSpec {
-    name: "doctrines",
-    description: "The fleet doctrines: each one's hulls (main and support), how it tanks, the forum topic with its fits, \
-                  its ping line, whether only its own hulls belong, and the boosts it wants. The forum topics need the user's \
-                  forum login; link them for the user to open.",
-    need: Need::Any(&["fleets.presets", "fleets.current"]),
-    kind: Kind::Read,
-    schema: || schema(json!({"name": {"type": "string", "description": "Part of a doctrine's name"}}), &[]),
-    run: |ctx, v| {
-        let want = str_arg(v, "name").map(|n| n.to_lowercase());
-        Ok(json!(ctx
-            .facts
-            .doctrines
-            .iter()
-            .filter(|d| want.as_ref().is_none_or(|w| d.name.to_lowercase().contains(w.as_str())))
-            .map(|d| json!({
-                "name": d.name, "main_hulls": d.main, "support_hulls": d.support, "tank": d.tank,
-                "fits_forum_topic": d.url, "ping_line": d.line, "only_its_own_hulls": d.strict.then_some(true),
-                "boosts_wanted": d.boosts.iter().map(|(c, p)| format!("{c} ({p})")).collect::<Vec<_>>(),
-            }))
-            .collect::<Vec<_>>()))
-    },
-};
-
 static MY_ROUTE: ToolSpec = ToolSpec {
     name: "my_route",
     description: "The route the user has laid out on the map now and the destination set, with how many jumps are left \
@@ -232,17 +208,13 @@ static LAST_DSCAN: ToolSpec = ToolSpec {
 
 static BR_LINKS: ToolSpec = ToolSpec {
     name: "battle_report_links",
-    description: "Battle reports the user published to br.evetools.org, newest first, and the one for a tracked fleet.",
+    description: "Battle reports the user published to br.evetools.org, newest first.",
     need: Need::All(&["battles"]),
     kind: Kind::Read,
-    schema: || schema(json!({"fleet_id": {"type": "string"}}), &[]),
-    run: |ctx, v| {
+    schema: || schema(json!({}), &[]),
+    run: |ctx, _| {
         let store = ctx.store.ok_or("the database is not open")?;
-        let mut out = json!({"published": store.evetools_all().iter().rev().take(20).map(|(anchor, s)| json!({"battle_id": anchor, "link": s.url()})).collect::<Vec<_>>()});
-        if let Some(f) = str_arg(v, "fleet_id") {
-            out["fleet_report"] = json!(store.fleet_br(f));
-        }
-        Ok(out)
+        Ok(json!({"published": store.evetools_all().iter().rev().take(20).map(|(anchor, s)| json!({"battle_id": anchor, "link": s.url()})).collect::<Vec<_>>()}))
     },
 };
 
@@ -460,15 +432,10 @@ mod tests {
     }
 
     #[test]
-    fn rats_and_doctrines_answer_from_what_is_known() {
-        let mut f = facts(&["fleets.presets"]);
-        f.doctrines = vec![crate::ai::deps::DoctrineFacts { name: "Muninn Fleet".into(), main: vec!["Muninn".into()], support: vec!["Scimitar".into()], tank: Some("armor".into()), url: Some("https://example.invalid/fits".into()), line: None, strict: false, boosts: vec![] }];
-        let deps = AiDeps::for_tests(f);
+    fn rats_answer_from_what_is_known() {
+        let deps = AiDeps::for_tests(facts(&[]));
         let (r, err) = run(&deps, "rats", json!({"system": "1DQ1-A"}));
         assert!(!err, "{r}");
         assert!(r["faction"].is_string());
-        let (d, err) = run(&deps, "doctrines", json!({"name": "muninn"}));
-        assert!(!err);
-        assert_eq!(d[0]["main_hulls"][0], "Muninn");
     }
 }

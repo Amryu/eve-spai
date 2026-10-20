@@ -252,6 +252,8 @@ pub struct SimUi {
     pub browser: browser::Browser,
     pub dock: dock::DockState,
     pub warnings_expanded: bool,
+    /// The width the user dragged the left column to; read from egui's memory on first use.
+    left_w: Option<f32>,
     pub skills_window: bool,
     pub traits_window: bool,
     pub graph_window: bool,
@@ -295,6 +297,7 @@ impl Default for SimUi {
             browser: browser::Browser::default(),
             dock: dock::DockState::default(),
             warnings_expanded: false,
+            left_w: None,
             skills_window: false,
             traits_window: false,
             graph_window: false,
@@ -586,9 +589,7 @@ impl SimUi {
         self.top_bar(ui, now_ms, narrow);
         if self.mode == Mode::Fleets {
             if !narrow {
-                egui::Panel::left("sim_fleet_library").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
-                    fleet_panel::library(self, ui, now_ms);
-                });
+                self.left_panel(ui, |sim, ui| fleet_panel::library(sim, ui, now_ms));
                 egui::Panel::right("sim_fleet_results").resizable(false).exact_size(STATS_W + 40.0).show_inside(ui, |ui| {
                     fleet_panel::results(self, ui);
                 });
@@ -617,11 +618,11 @@ impl SimUi {
             return;
         }
         if self.show_library && !narrow {
-            egui::Panel::left("sim_left").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
-                self.left_tabs(ui);
-                match self.left {
-                    LeftTab::Fits => library_panel::show(self, ui, now_ms),
-                    LeftTab::Browse => browser::show(self, ui, now_ms),
+            self.left_panel(ui, |sim, ui| {
+                sim.left_tabs(ui);
+                match sim.left {
+                    LeftTab::Fits => library_panel::show(sim, ui, now_ms),
+                    LeftTab::Browse => browser::show(sim, ui, now_ms),
                 }
             });
         }
@@ -665,12 +666,36 @@ impl SimUi {
         graphs_panel::window(self, ctx, now_ms);
     }
 
+    /// The left column, as wide as the user dragged it and no wider: egui lets content that
+    /// overflows widen a panel, and a column that moves on its own is worse than one that clips.
+    fn left_panel(&mut self, ui: &mut egui::Ui, body: impl FnOnce(&mut Self, &mut egui::Ui)) {
+        const MIN_W: f32 = 200.0;
+        const MAX_W: f32 = 600.0;
+        let id = egui::Id::new("sim_left");
+        let ctx = ui.ctx().clone();
+        let stored = egui::PanelState::load(&ctx, id).map(|st| st.rect.width());
+        let w = *self.left_w.get_or_insert_with(|| stored.unwrap_or(SIDE_W).clamp(MIN_W, MAX_W));
+        let dragging = ctx.is_being_dragged(id.with("__resize"));
+        if !dragging && stored.is_some_and(|s| (s - w).abs() > 0.5) {
+            if let Some(mut st) = egui::PanelState::load(&ctx, id) {
+                st.rect.set_width(w);
+                ctx.data_mut(|d| d.insert_persisted(id, st));
+            }
+        }
+        egui::Panel::left(id).resizable(true).default_size(w).min_size(MIN_W).max_size(MAX_W).show_inside(ui, |ui| body(self, ui));
+        if dragging {
+            if let Some(st) = egui::PanelState::load(&ctx, id) {
+                self.left_w = Some(st.rect.width().clamp(MIN_W, MAX_W));
+            }
+        }
+    }
+
     fn left_tabs(&mut self, ui: &mut egui::Ui) {
         use spai_ui::widgets::SteadySelect as _;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(rows::GAP);
-            let w = egui::vec2((ui.available_width() - rows::GAP - ui.spacing().item_spacing.x) / 2.0, 22.0);
+            let w = egui::vec2(84.0, 22.0);
             if ui.menu_label_sized(w, self.left == LeftTab::Fits, tr!("Fits")).clicked() {
                 self.left = LeftTab::Fits;
             }
@@ -706,7 +731,8 @@ impl SimUi {
     fn top_bar(&mut self, ui: &mut egui::Ui, _now_ms: u64, narrow: bool) {
         use egui_phosphor::regular as icon;
         use spai_ui::widgets::icon_button;
-        egui::Panel::top("sim_top").resizable(false).show_inside(ui, |ui| {
+        let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 });
+        egui::Panel::top("sim_top").resizable(false).frame(frame).show_inside(ui, |ui| {
             // Words on the buttons only when the bar has room for all of them.
             let narrow = narrow || ui.available_width() < 1200.0;
             ui.horizontal(|ui| {

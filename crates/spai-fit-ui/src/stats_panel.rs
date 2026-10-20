@@ -17,6 +17,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
     let target_sig = sim.session.as_ref().map_or(100.0, |s| f64::from(s.fit.target.signature));
     egui::ScrollArea::vertical().id_salt("sim_stats_scroll").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
+        ui.add_space(2.0);
         fitting(ui, &computed);
         defense(ui, &computed);
         offense(ui, &dogma, &computed);
@@ -28,13 +29,17 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
     });
 }
 
+/// A section title a step larger than the lines under it, with a rule beneath.
 fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.add_space(10.0);
+    let size = egui::TextStyle::Body.resolve(ui.style()).size + 2.0;
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), size + 6.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(rows::GAP);
-        ui.label(egui::RichText::new(title).strong());
+        ui.add(egui::Label::new(egui::RichText::new(title).strong().size(size)).selectable(false));
     });
-    ui.add_space(1.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 2.0 * rows::GAP, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect.translate(egui::vec2(rows::GAP, 0.0)), 0.0, ui.visuals().widgets.noninteractive.bg_stroke.color);
+    ui.add_space(3.0);
 }
 
 /// A labelled value on one line of fixed height, the value right-aligned.
@@ -45,7 +50,7 @@ pub fn line(ui: &mut egui::Ui, label: &str, value: String) {
 fn line_colored(ui: &mut egui::Ui, label: &str, value: String, color: Option<egui::Color32>) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(rows::GAP);
-        ui.label(label);
+        ui.add(egui::Label::new(label).selectable(false));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(rows::GAP);
             let t = egui::RichText::new(value).monospace();
@@ -53,13 +58,13 @@ fn line_colored(ui: &mut egui::Ui, label: &str, value: String, color: Option<egu
                 Some(c) => t.color(c),
                 None => t,
             };
-            ui.add(egui::Label::new(t).truncate());
+            ui.add(egui::Label::new(t).truncate().selectable(false));
         });
     });
 }
 
-/// A used-of-total line with a thin bar under it that turns red past the total.
-fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str) {
+/// A used-of-total line with a thin bar under it in the resource's colour, red past the total.
+fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str, color: egui::Color32) {
     let over = used > total + 1e-6;
     let txt = trf!("{used} / {total} {unit}", used = text::num(used), total = text::num(total), unit = unit);
     line_colored(ui, label, txt, over.then(|| ui.visuals().error_fg_color));
@@ -68,7 +73,7 @@ fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str) {
     let fill = if total > 0.0 { (used / total).clamp(0.0, 1.0) as f32 } else { 0.0 };
     let painter = ui.painter();
     painter.rect_filled(rect, 1.5, ui.visuals().faint_bg_color);
-    let color = if over { ui.visuals().error_fg_color } else { ui.visuals().hyperlink_color };
+    let color = if over { ui.visuals().error_fg_color } else { color };
     painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fill, rect.height())), 1.5, color);
     ui.add_space(2.0);
 }
@@ -76,10 +81,10 @@ fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str) {
 fn fitting(ui: &mut egui::Ui, c: &Computed) {
     let f = &c.fitting;
     section(ui, tr!("Fitting"));
-    bar(ui, tr!("CPU"), f.cpu_used, f.cpu_total, "tf");
-    bar(ui, tr!("Powergrid"), f.power_used, f.power_total, "MW");
+    bar(ui, tr!("CPU"), f.cpu_used, f.cpu_total, "tf", spai_ui::colors::CPU);
+    bar(ui, tr!("Powergrid"), f.power_used, f.power_total, "MW", spai_ui::colors::POWERGRID);
     if f.calibration_total > 0.0 {
-        bar(ui, tr!("Calibration"), f.calibration_used, f.calibration_total, "");
+        bar(ui, tr!("Calibration"), f.calibration_used, f.calibration_total, "", spai_ui::colors::CALIBRATION);
     }
     line(ui, tr!("Turrets / launchers"), trf!("{t1}/{t2}  {l1}/{l2}", t1 = f.turrets_used, t2 = f.turrets_total, l1 = f.launchers_used, l2 = f.launchers_total));
 }
@@ -96,18 +101,18 @@ fn defense(ui: &mut egui::Ui, c: &Computed) {
         ui.add_space(rows::GAP);
         rows::head_cell(ui, name_w, "", false);
         rows::head_cell(ui, hp_w, "HP", true);
-        for h in ["EM", "TH", "KIN", "EXP"] {
-            rows::head_cell(ui, res_w, h, true);
+        for (i, h) in ["EM", "TH", "KIN", "EXP"].into_iter().enumerate() {
+            rows::head_cell_colored(ui, res_w, h, true, spai_ui::colors::DAMAGE[i]);
         }
     });
     for (name, layer) in [(tr!("Shield"), &t.shield), (tr!("Armor"), &t.armor), (tr!("Hull"), &t.hull)] {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(rows::GAP);
-            ui.add_sized([name_w, 18.0], egui::Label::new(name).halign(egui::Align::LEFT));
+            ui.add_sized([name_w, 18.0], egui::Label::new(name).halign(egui::Align::LEFT).selectable(false));
             rows::num_cell(ui, hp_w, text::num(layer.hp), false);
             for i in 0..4 {
-                rows::num_cell(ui, res_w, format!("{:.0}%", layer.resist(i) * 100.0), false);
+                rows::num_cell_colored(ui, res_w, format!("{:.0}%", layer.resist(i) * 100.0), spai_ui::colors::DAMAGE[i]);
             }
         });
     }
@@ -202,8 +207,9 @@ fn drones(ui: &mut egui::Ui, c: &Computed) {
         return;
     }
     section(ui, tr!("Drones"));
-    bar(ui, tr!("Bandwidth"), d.bandwidth_used, d.bandwidth_total, "Mbit/s");
-    bar(ui, tr!("Drone bay"), d.bay_used, d.bay_total, "m³");
+    let c = ui.visuals().hyperlink_color;
+    bar(ui, tr!("Bandwidth"), d.bandwidth_used, d.bandwidth_total, "Mbit/s", c);
+    bar(ui, tr!("Drone bay"), d.bay_used, d.bay_total, "m³", c);
     line(ui, tr!("In space"), trf!("{n} of {max}", n = d.active, max = d.max_active));
     line(ui, tr!("Control range"), text::metres(d.control_range));
 }

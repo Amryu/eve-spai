@@ -87,7 +87,7 @@ pub fn cell(ui: &mut egui::Ui, width: f32, text: egui::RichText, full: &str) -> 
         .allocate_ui_with_layout(egui::vec2(width, ROW_H - 4.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_min_width(width);
             ui.set_max_width(width);
-            ui.add(egui::Label::new(text).truncate())
+            ui.add(egui::Label::new(text).truncate().selectable(false))
         })
         .inner;
     if full.is_empty() {
@@ -100,21 +100,38 @@ pub fn cell(ui: &mut egui::Ui, width: f32, text: egui::RichText, full: &str) -> 
 /// A right-aligned number cell.
 pub fn num_cell(ui: &mut egui::Ui, width: f32, text: impl Into<String>, weak: bool) {
     let t = egui::RichText::new(text.into()).monospace();
-    let t = if weak { t.weak() } else { t };
+    num_cell_rich(ui, width, if weak { t.weak() } else { t });
+}
+
+/// A right-aligned number cell in a colour.
+pub fn num_cell_colored(ui: &mut egui::Ui, width: f32, text: impl Into<String>, color: egui::Color32) {
+    num_cell_rich(ui, width, egui::RichText::new(text.into()).monospace().color(color));
+}
+
+fn num_cell_rich(ui: &mut egui::Ui, width: f32, t: egui::RichText) {
     ui.allocate_ui_with_layout(egui::vec2(width, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.set_min_width(width);
         ui.set_max_width(width);
-        ui.add(egui::Label::new(t).truncate());
+        ui.add(egui::Label::new(t).truncate().selectable(false));
     });
 }
 
 /// A column header cell.
 pub fn head_cell(ui: &mut egui::Ui, width: f32, text: &str, right: bool) {
+    head_cell_rich(ui, width, egui::RichText::new(text).weak(), right);
+}
+
+/// A column header cell in a colour.
+pub fn head_cell_colored(ui: &mut egui::Ui, width: f32, text: &str, right: bool, color: egui::Color32) {
+    head_cell_rich(ui, width, egui::RichText::new(text).color(color), right);
+}
+
+fn head_cell_rich(ui: &mut egui::Ui, width: f32, t: egui::RichText, right: bool) {
     let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
     ui.allocate_ui_with_layout(egui::vec2(width, 18.0), layout, |ui| {
         ui.set_min_width(width);
         ui.set_max_width(width);
-        ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate());
+        ui.add(egui::Label::new(t).truncate().selectable(false));
     });
 }
 
@@ -122,9 +139,9 @@ pub fn head_cell(ui: &mut egui::Ui, width: f32, text: &str, right: bool) {
 pub fn heading(ui: &mut egui::Ui, title: &str, note: Option<egui::RichText>, right: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(GAP);
-        ui.label(egui::RichText::new(title).strong());
+        ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
         if let Some(n) = note {
-            ui.label(n);
+            ui.add(egui::Label::new(n).selectable(false));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(GAP);

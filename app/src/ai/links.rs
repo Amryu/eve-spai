@@ -1,7 +1,7 @@
 //! Turns the assistant's text into spans the chat can make clickable.
 //!
 //! Two sources: links the model writes as `[text](spai:kind/arg)` for things it has an id for from a
-//! tool (a killmail, a battle, a fleet, a conversation), and system and ship names found in plain
+//! tool (a killmail, a battle, a conversation), and system and ship names found in plain
 //! text, matched against the game's own spelling so an ordinary word is not taken for one.
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,7 +12,6 @@ pub enum Link {
     Kill(i64),
     /// A battle, by any kill in it.
     Battle(i64),
-    Fleet(String),
     /// A Jabber conversation, by its address.
     Chat(String),
     Pings,
@@ -37,7 +36,7 @@ pub trait Names {
 }
 
 /// The pages a link can open.
-pub const PAGES: [&str; 12] = ["overview", "map", "wormholes", "intel", "alerts", "battles", "lookup", "characters", "jabber", "fleet", "rescue", "settings"];
+pub const PAGES: [&str; 11] = ["overview", "map", "wormholes", "intel", "alerts", "battles", "lookup", "characters", "jabber", "rescue", "settings"];
 
 /// Longest system or ship name, in words.
 const MAX_WORDS: usize = 4;
@@ -98,7 +97,6 @@ fn target_link(target: &str, names: &dyn Names) -> Option<Link> {
         "pilot" if !arg.is_empty() => Some(Link::Pilot(arg.to_owned())),
         "kill" => num().map(Link::Kill),
         "battle" => num().map(Link::Battle),
-        "fleet" if !arg.is_empty() => Some(Link::Fleet(arg.to_owned())),
         "chat" if !arg.is_empty() => Some(Link::Chat(arg.to_owned())),
         "pings" => Some(Link::Pings),
         "page" if PAGES.contains(&arg.to_lowercase().as_str()) => Some(Link::Page(arg.to_lowercase())),

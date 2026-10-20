@@ -210,7 +210,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         let mut remove: Option<usize> = None;
         let counts = fleet::resolve_counts(f);
         // Below this width the count controls go on a second line under the fit.
-        let narrow = ui.available_width() < 640.0;
+        let narrow = ui.available_width() < 720.0;
         for i in 0..f.slots.len() {
             let count = counts.get(i).copied().unwrap_or(0);
             let rule_row = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
@@ -255,7 +255,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 }
                 let slot = &mut f.slots[i];
                 let fit_name = library.iter().find(|x| x.id == slot.fit_id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(id, _)| *id == slot.fit_id).map(|(_, n)| n.clone())).unwrap_or_else(|| tr!("Choose a fit").to_owned());
-                let rest = if narrow { 40.0 } else { 330.0 };
+                let rest = if narrow { 40.0 } else { 360.0 };
                 let fit_w = (ui.available_width() - rest).max(100.0);
                 egui::ComboBox::from_id_salt(("sim_fleet_fit", i)).selected_text(text::clip(&fit_name, 28)).width(fit_w).show_ui(ui, |ui| {
                     for x in &library {

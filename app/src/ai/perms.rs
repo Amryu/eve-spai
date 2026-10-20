@@ -2,14 +2,13 @@
 //!
 //! Nothing is allowed until the user allows it, except the static game data (`sde`). A key without
 //! its own setting takes its parent's, so `intel.chatlogs.Delve` follows `intel.chatlogs`, which
-//! follows `intel`. Fleet and rescue keys also need the feature itself unlocked.
+//! follows `intel`. Rescue keys also need the feature itself unlocked.
 
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gate {
     None,
-    Fleet,
     Rescue,
 }
 
@@ -68,17 +67,6 @@ pub const TREE: &[Node] = &[
     leaf("battles", tr_noop!("Battle reports"), ""),
     Node { key: "rescue", label: tr_noop!("delve911 rescue"), hint: "", gate: Gate::Rescue, children: &[] },
     Node {
-        key: "fleets",
-        label: tr_noop!("Fleets"),
-        hint: "",
-        gate: Gate::Fleet,
-        children: &[
-            Node { key: "fleets.current", label: tr_noop!("Current fleets"), hint: "", gate: Gate::Fleet, children: &[] },
-            Node { key: "fleets.history", label: tr_noop!("Past fleets"), hint: "", gate: Gate::Fleet, children: &[] },
-            Node { key: "fleets.presets", label: tr_noop!("Fleet templates"), hint: "", gate: Gate::Fleet, children: &[] },
-        ],
-    },
-    Node {
         key: "jabber",
         label: tr_noop!("Jabber"),
         hint: "",
@@ -107,13 +95,6 @@ pub const TREE: &[Node] = &[
             leaf("actions.settings", tr_noop!("Add alert rules and watches"), ""),
             leaf("actions.mumble", tr_noop!("Join Mumble channels"), tr_noop!("Each move is shown to you first")),
             leaf("actions.jabber", tr_noop!("Write Jabber messages"), tr_noop!("Each message is shown to you before it is sent; broadcast commands only when you ask for them by name")),
-            Node {
-                key: "actions.fleet",
-                label: tr_noop!("Run fleets"),
-                hint: tr_noop!("Start tracking and act on a running fleet; each action is read out and waits for your yes"),
-                gate: Gate::Fleet,
-                children: &[],
-            },
         ],
     },
 ];
@@ -121,15 +102,12 @@ pub const TREE: &[Node] = &[
 /// What gates are open right now.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unlocked {
-    pub fleet: bool,
     pub rescue: bool,
 }
 
 fn gate_of(key: &str) -> Gate {
     if key == "rescue" || key.starts_with("rescue.") {
         Gate::Rescue
-    } else if key == "fleets" || key.starts_with("fleets.") {
-        Gate::Fleet
     } else {
         Gate::None
     }
@@ -138,7 +116,6 @@ fn gate_of(key: &str) -> Gate {
 fn gate_open(g: Gate, u: Unlocked) -> bool {
     match g {
         Gate::None => true,
-        Gate::Fleet => u.fleet,
         Gate::Rescue => u.rescue,
     }
 }
@@ -226,7 +203,7 @@ pub fn channel_key(channel: &str) -> String {
 mod tests {
     use super::*;
 
-    const OPEN: Unlocked = Unlocked { fleet: true, rescue: true };
+    const OPEN: Unlocked = Unlocked { rescue: true };
 
     #[test]
     fn denied_until_allowed_and_children_follow_parents() {
@@ -244,15 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn fleet_and_rescue_need_the_feature_unlocked() {
+    fn the_rescue_needs_the_feature_unlocked() {
         let mut p = BTreeMap::new();
-        set(&mut p, "fleets", true);
         set(&mut p, "rescue", true);
-        assert!(!allowed(&p, "fleets.current", Unlocked::default()));
-        assert!(!allowed(&p, "rescue", Unlocked { fleet: true, rescue: false }));
-        assert!(allowed(&p, "fleets.current", OPEN));
-        let fleets = TREE.iter().find(|n| n.key == "fleets").unwrap();
-        assert!(!visible(fleets, Unlocked::default()));
+        assert!(!allowed(&p, "rescue", Unlocked::default()));
+        assert!(allowed(&p, "rescue", OPEN));
+        let rescue = TREE.iter().find(|n| n.key == "rescue").unwrap();
+        assert!(!visible(rescue, Unlocked::default()));
     }
 
     #[test]

@@ -586,7 +586,7 @@ impl SpaiApp {
         if !self.ai_perms_open {
             return;
         }
-        let unlocked = perms::Unlocked { fleet: self.fleet_on(), rescue: self.rescue_on() };
+        let unlocked = perms::Unlocked { rescue: self.rescue_on() };
         let channels = self.settings.intel_channels.clone();
         let feeds: Vec<(String, String)> = self.settings.ai.feeds.iter().map(|f| (f.perm_key(), f.name.clone())).collect();
         let feed_keys: Vec<String> = feeds.iter().map(|(k, _)| k.clone()).collect();

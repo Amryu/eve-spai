@@ -2066,6 +2066,26 @@ fn fleet_confirm_scene(
     })
 }
 
+/// The warning for a ping sent before the dashboard rendered it. On its own for the same reason
+/// as the confirm dialogs.
+fn fleet_ping_warning_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+            a.fleet_booted = true;
+            let body = "Alpha fleet - Get In!\n\nFC Name: Fixture Commander\nFormup Location: \nPAP Type: Strategic\nComms: Op 4 https://gnf.lt/x.html\nDoctrine: ".to_owned();
+            let lacking = crate::fleets::ping::missing(&body);
+            a.fleet_ping_warning = Some((crate::fleets::ping::COORD, body, lacking));
+            a
+        });
+        app.fleet_ping_warning_modal(ctx);
+    })
+}
+
 /// The rescue panel with a ping in it, which is the only way to see the ops column at all.
 fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
     rescue_panel_scene_with(name, size, None, false, false)
@@ -2085,6 +2105,12 @@ fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
 /// and picks it. The invented table's "Comms N" names resolve to no op at all.
 fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool) -> Scene {
+    rescue_panel_scene_full(name, size, in_use, compact, map, false)
+}
+
+/// `incomplete` leaves the draft ping without its formup and doctrine, as a ping sent before the
+/// dashboard rendered it would be.
+fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool, incomplete: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -2115,6 +2141,11 @@ fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8
                     })
                     .collect();
                 a.rescue_state_for_test().lock().unwrap().op_channel = op;
+            }
+            if incomplete {
+                let mut r = a.rescue_state_for_test().lock().unwrap();
+                r.pending_ping = "CAP Save - Get In!\n\nFC Name: Placeholder Commander\nComms: Op 3".to_owned();
+                r.ping_edited = true;
             }
             a
         });
@@ -3244,6 +3275,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
+    v.push(rescue_panel_scene_full("rescue_ping_incomplete", [1100.0, 700.0], None, false, false, true));
     v.push(rescue_panel_scene_with("rescue_popout_op_auto", [525.0, 600.0], Some(3), true, false));
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
@@ -3257,6 +3289,7 @@ pub(crate) fn all() -> Vec<Scene> {
         crate::fleets::backend::Action::KickCapsules,
         "Kick every pod out of the fleet?",
     ));
+    v.push(fleet_ping_warning_scene("fleet_ping_incomplete", [560.0, 520.0]));
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
     v.push(rescue_timer_scene("rescue_ping_timer", 372));
@@ -9477,4 +9510,21 @@ fn uitest_assistant_answers_select_and_copy() {
         let copied: Vec<String> = h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None }).collect();
         assert!(copied.iter().any(|t| t.contains("gang went south") && t.contains("killed a Hound") && t.contains("Jove observatory in Y-OMTZ")), "popped {popped}: {copied:?}");
     }
+}
+
+/// The simulator's left column is as wide as the user dragged it and no wider. egui widens a
+/// panel whose content overflows, so a stored width no drag produced has to be put back.
+#[test]
+fn uitest_sim_left_column_holds_its_width() {
+    let mut scene = imperium_scene("sim_left_width", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let id = egui::Id::new("sim_left");
+    let width = |h: &egui_kittest::Harness<'_>| egui::PanelState::load(&h.ctx, id).map(|s| s.rect.width()).expect("the column is a panel");
+    let w = width(&h);
+    let mut st = egui::PanelState::load(&h.ctx, id).unwrap();
+    st.rect.set_width(w + 120.0);
+    h.ctx.data_mut(|d| d.insert_persisted(id, st));
+    h.run_steps(3);
+    assert!((width(&h) - w).abs() < 0.5, "the column grew on its own: {} from {w}", width(&h));
 }

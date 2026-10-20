@@ -11,10 +11,9 @@ use crate::ai::deps::AiDeps;
 #[ignore = "writes a report for reading, asserts nothing"]
 fn ai_token_audit() {
     use crate::uitest::fixtures as fx;
-    let mut f = facts(&["intel", "kills", "battles", "map", "wormholes", "jabber", "pilots", "notes", "characters.locations", "fleets", "rescue", "actions", "feeds", "internet"]);
+    let mut f = facts(&["intel", "kills", "battles", "map", "wormholes", "jabber", "pilots", "notes", "characters.locations", "rescue", "actions", "feeds", "internet"]);
     f.lookup_current = fx::lookup_rows().into_iter().map(|(n, _)| n).collect();
     f.notes_view = Some(std::sync::Arc::new(fx::notebook().view_with("", &Default::default())));
-    f.fleet_backend = Some(std::sync::Arc::new(crate::fleets::spoof::SpoofBackend::with(crate::fleets::seed::invented(), std::time::Duration::ZERO)));
     f.alert_rules = vec![crate::settings::default_rule()];
     let mut deps = AiDeps::for_tests(f);
     deps.online = true;
@@ -58,8 +57,6 @@ fn ai_token_audit() {
         ("jabber_rooms", json!({})),
         ("local_scan", json!({})),
         ("pilot_info", json!({"name": "Hostile Pilot"})),
-        ("fleets_current", json!({})),
-        ("fleets_history", json!({})),
         ("alerts", json!({})),
         ("alert_rules", json!({})),
         ("notes", json!({"search": "cyno"})),

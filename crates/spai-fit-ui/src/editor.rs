@@ -115,6 +115,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("sim_editor").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add_space(8.0);
             header(sim, ui, &dogma, now_ms);
             variation_tabs(sim, ui, now_ms);
             crate::warnings_panel::strip(sim, ui);

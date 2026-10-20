@@ -964,6 +964,7 @@ impl SpaiApp {
         }
         self.quick_fleet_window(ui.ctx(), &presets, &mut act);
         self.fleet_confirm_modal(ui.ctx());
+        self.fleet_ping_warning_modal(ui.ctx());
         self.fleet_apply_form(act);
     }
 
@@ -1267,7 +1268,7 @@ impl SpaiApp {
     ///
     /// The same ping to the same group twice inside `PING_REPEAT` is a double click, not a second
     /// ping, and a ping that goes out twice is an FC's mistake broadcast to everyone.
-    pub(crate) fn fleet_send_ping(&mut self, group: &str) {
+    pub(crate) fn fleet_send_ping(&mut self, group: &'static str) {
         let rendered = {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             st.preview.value.as_ref().map(|p| p.ping.clone())
@@ -1276,6 +1277,17 @@ impl SpaiApp {
             Some(p) => p,
             None => self.fleet_local_ping(),
         };
+        // A ping with no formup or doctrine is most likely one sent before the preview came
+        // back. It is shown and sent on a second click, never refused.
+        let lacking = crate::fleets::ping::missing(&body);
+        if !lacking.is_empty() && !self.settings.fleet_ping_check_off {
+            self.fleet_ping_warning = Some((group, body, lacking));
+            return;
+        }
+        self.fleet_send_ping_now(group, body);
+    }
+
+    fn fleet_send_ping_now(&mut self, group: &str, body: String) {
         let now = std::time::Instant::now();
         let repeat = self.fleet_last_ping.as_ref().is_some_and(|(g, b, at)| {
             g == group && *b == body && now.duration_since(*at) < PING_REPEAT
@@ -6802,6 +6814,50 @@ impl SpaiApp {
             });
         if !open {
             self.fleet_quick_open = false;
+        }
+    }
+
+    /// A ping that lacks its formup or doctrine, shown before it goes out. The user may always
+    /// send it, and may stop being asked.
+    pub(crate) fn fleet_ping_warning_modal(&mut self, ctx: &egui::Context) {
+        let Some((group, body, lacking)) = self.fleet_ping_warning.clone() else { return };
+        let mut decided: Option<bool> = None;
+        let mut off = self.settings.fleet_ping_check_off;
+        egui::Modal::new(egui::Id::new("fleet_ping_warning")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(egui::RichText::new(tr!("This ping looks incomplete")).color(crate::theme::standing::WARNING));
+            for part in &lacking {
+                ui.label(trf!("{icon} {what}", icon = egui_phosphor::regular::WARNING, what = part.label().tr()));
+            }
+            ui.label(egui::RichText::new(tr!("The dashboard may not have rendered the preview yet. Check the ping before it goes out.")).weak());
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                // The same step down as the preview pane: a dozen fixed-width lines in a narrow box.
+                ui.add(egui::Label::new(egui::RichText::new(body.clone()).monospace().size(11.0)).wrap());
+            });
+            ui.add_space(8.0);
+            ui.checkbox(&mut off, tr!("Don't check pings again"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("Cancel")).clicked() {
+                    decided = Some(false);
+                }
+                if ui.button(trf!("{icon}  Send anyway", icon = egui_phosphor::regular::PAPER_PLANE_TILT)).clicked() {
+                    decided = Some(true);
+                }
+            });
+        });
+        if off != self.settings.fleet_ping_check_off {
+            self.settings.fleet_ping_check_off = off;
+            self.needs_save = true;
+        }
+        match decided {
+            Some(true) => {
+                self.fleet_ping_warning = None;
+                self.fleet_send_ping_now(group, body);
+            }
+            Some(false) => self.fleet_ping_warning = None,
+            None => {}
         }
     }
 
