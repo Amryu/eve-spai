@@ -6401,6 +6401,7 @@ dependencies = [
  "egui-phosphor",
  "egui_extras",
  "ehttp",
+ "image",
  "log",
  "serde",
  "serde_json",
