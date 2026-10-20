@@ -9,3 +9,6 @@ crates/server/target/
 crates/spai-web/dist/
 crates/spai-web/e2e/node_modules/
 crates/spai-web/e2e/package-lock.json
+crates/spai-sim-web/dist/
+crates/spai-sim-web/target/
+crates/spai-web/target/
