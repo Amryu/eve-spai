@@ -75,11 +75,12 @@ fn hashes(blocks: &[&str]) -> String {
         .join(" ")
 }
 
-/// Only this origin, the EVE sign-in and ESI; WebAssembly compiled from our own file.
+/// Only this origin, the EVE sign-in, ESI and the image server (the wasm apps fetch icons rather
+/// than showing them in img tags); WebAssembly compiled from our own file.
 pub fn csp(index: &str) -> String {
     format!(
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' {}; style-src 'self' {}; \
-         connect-src 'self' https://login.eveonline.com https://esi.evetech.net https://api.eve-scout.com; img-src 'self' data: https://images.evetech.net; \
+         connect-src 'self' https://login.eveonline.com https://esi.evetech.net https://api.eve-scout.com https://images.evetech.net; img-src 'self' data: https://images.evetech.net; \
          object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         hashes(&inline_blocks(index, "script")),
         hashes(&inline_blocks(index, "style")),
