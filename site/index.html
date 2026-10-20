@@ -203,7 +203,7 @@
     <img class="logo" src="eve-spai.png" alt="EVE Spai logo" width="96" height="96" />
     <h1>EVE&nbsp;Spai<span class="dot">.</span></h1>
     <p class="tag">Intel, maps and wormholes for EVE Online, built by and for the <span class="imperium">Imperium</span>.</p>
-    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste, turns nearby kills into battle reports, with an optional AI assistant that answers by voice. Free, open source, and on Windows, Linux and macOS.</p>
+    <p class="sub">It reads your intel channels as reports land, puts hostiles on the map, keeps your wormhole chains, looks up a local in one paste, turns nearby kills into battle reports, simulates fits and fleets, with an optional AI assistant that answers by voice. Free, open source, and on Windows, Linux and macOS.</p>
     <div><span class="alpha">Version 1.0 &middot; in active development</span></div>
 
     <div class="download">
@@ -253,6 +253,7 @@
         <li><strong>Wormhole</strong> chains, signatures and scan routes</li>
         <li><strong>Pilot lookup</strong> for a pasted local</li>
         <li><strong>Battle reports</strong> from zKillboard</li>
+        <li><strong>Fitting and fleet simulator</strong> with doctrine presets, also in the browser</li>
         <li><strong>Jabber</strong> chat and fleet pings</li>
         <li><strong>AI assistant</strong> that answers by voice mid-fight</li>
         <li><strong>Alerts</strong>, notes, tags and a map over the game</li>
@@ -358,6 +359,23 @@
       <div class="feature">
         <div class="text">
           <div class="rank">07</div>
+          <h3>Fitting and fleet simulator</h3>
+          <p>A fitting tool in the app and at <a href="/sim/">eve-spai.com/sim</a>: paste an EFT fit, see its tank, damage, capacitor, speed and application the way the game works them out, with your characters' real skills and the skills a fit still needs. Record variations for ammo, implants, boosters or a refit and switch them in one click, and put fits together into a fleet to compare it with the enemy's.</p>
+          <ul>
+            <li><strong>Doctrines:</strong> the Imperium's presets and the enemy's, kept up to date for coalition members.</li>
+            <li><strong>Warnings:</strong> missing paste, no ammo for a damage type or a range, an unstable capacitor, unmet skills.</li>
+            <li><strong>Graphs:</strong> damage against distance, speed and signature, capacitor and shield over time, remote repair and ewar reach.</li>
+            <li><strong>Fleets:</strong> how many of each fit fly, command bursts on everyone, and against another fleet: applied damage, critical mass and the break point of their reps.</li>
+          </ul>
+        </div>
+        <div class="shots">
+          <img class="shot" src="img/fitting.webp" loading="lazy" width="1920" height="1200" alt="The fitting simulator with a rail Ferox open" data-caption="A rail Ferox in the fitting simulator, the coalition's presets in the left column." />
+        </div>
+      </div>
+
+      <div class="feature flip">
+        <div class="text">
+          <div class="rank">08</div>
           <h3>Jabber, made for the Imperium</h3>
           <p>Never miss a fleet: pings and chat right in the app. Pings are read into FC, formup, doctrine and comms, with a button to join Mumble.</p>
           <ul>
@@ -372,9 +390,9 @@
         </div>
       </div>
 
-      <div class="feature flip">
+      <div class="feature">
         <div class="text">
-          <div class="rank">08</div>
+          <div class="rank">09</div>
           <h3>AI assistant <span class="opt">optional</span></h3>
           <p>Ask about the situation in plain words, typed or spoken: where a gang went, what is near you, the fastest safe route home. It reads the same intel, kills, maps and pings you see and answers in a few lines, with systems, ships and killmails linked.</p>
           <ul>
