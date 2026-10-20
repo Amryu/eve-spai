@@ -53,6 +53,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     ui.separator();
     egui::ScrollArea::vertical().id_salt("sim_variations_list").auto_shrink([false, false]).show(ui, |ui| {
         crate::variations_panel::show(sim, ui, _now_ms);
+        doctrines(sim, ui, _now_ms);
     });
     if let Some(id) = load {
         if current.as_deref() != Some(id.as_str()) {
@@ -65,5 +66,55 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         }
         sim.library.retain(|e| e.id != id);
         sim.request(HostRequest::DeleteFit(id));
+    }
+}
+
+/// The doctrine presets the server lists, by side; a click opens a copy.
+fn doctrines(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr!("Doctrines")).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch the presets again")).clicked() {
+                sim.request(HostRequest::FetchDoctrines);
+            }
+        });
+    });
+    ui.separator();
+    if sim.doctrines.is_empty() {
+        let note = if sim.access.signed_in { tr!("No presets published yet.") } else { tr!("Sign in with an Imperium character to see the coalition's presets.") };
+        ui.add(egui::Label::new(egui::RichText::new(note).weak()).wrap());
+        return;
+    }
+    let mut open: Option<String> = None;
+    let mut delete: Option<String> = None;
+    for side in crate::DoctrineSide::ALL {
+        let list: Vec<(String, String, u32)> = sim.doctrines.iter().filter(|d| d.side == side).map(|d| (d.id.clone(), d.name.clone(), d.ship)).collect();
+        if list.is_empty() {
+            continue;
+        }
+        ui.label(egui::RichText::new(side.name()).weak());
+        for (id, name, ship) in list {
+            ui.horizontal(|ui| {
+                ui.set_height(26.0);
+                crate::icons::type_icon(ui, ship, 20.0);
+                let trash = if sim.access.admin { 28.0 } else { 0.0 };
+                let w = (ui.available_width() - trash).max(40.0);
+                let ship_name = sim.dogma.as_ref().and_then(|d| d.type_(ship)).map_or(String::new(), |t| t.name.clone());
+                if crate::editor::name_cell(ui, w, egui::RichText::new(&name), &trf!("{name}\n{ship}", name = name, ship = ship_name)).clicked() {
+                    open = Some(id.clone());
+                }
+                if sim.access.admin && icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete the preset")).clicked() {
+                    delete = Some(id.clone());
+                }
+            });
+        }
+    }
+    if let Some(id) = open {
+        sim.open_doctrine(&id, now_ms);
+    }
+    if let Some(id) = delete {
+        sim.doctrines.retain(|d| d.id != id);
+        sim.request(HostRequest::DeleteDoctrine(id));
     }
 }

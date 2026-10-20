@@ -14,6 +14,11 @@ pub struct Entry {
     pub ship: u32,
     pub updated_at: i64,
     pub doc: String,
+    /// Counted up on each save here; `server_rev` is what the server last confirmed.
+    #[serde(default)]
+    pub rev: i64,
+    #[serde(default)]
+    pub server_rev: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -37,7 +42,8 @@ impl Library {
     }
 
     pub fn put(&mut self, id: &str, name: &str, ship: u32, doc: &str, now: i64) {
-        self.fits.insert(id.to_owned(), Entry { name: name.to_owned(), ship, updated_at: now, doc: doc.to_owned() });
+        let (rev, server_rev) = self.fits.get(id).map_or((1, 0), |e| (e.rev + 1, e.server_rev));
+        self.fits.insert(id.to_owned(), Entry { name: name.to_owned(), ship, updated_at: now, doc: doc.to_owned(), rev, server_rev });
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -57,6 +63,8 @@ mod tests {
         assert_eq!(l.summaries().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["New", "Old"]);
         let back = Library::from_json(&l.to_json());
         assert_eq!(back, l);
+        l.put("a", "Old again", 587, "{}", 30);
+        assert_eq!((l.fits["a"].rev, l.fits["a"].server_rev), (2, 0), "saves count up until the server confirms one");
         l.remove("a");
         assert_eq!(l.summaries().len(), 1);
         assert_eq!(Library::from_json("garbage"), Library::default());

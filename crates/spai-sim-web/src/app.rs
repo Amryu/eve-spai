@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use spai_fit_ui::{HostEvent, HostRequest, Profile, SimUi};
+use spai_fit_ui::{Doctrine, DoctrineSide, HostEvent, HostRequest, Profile, SimUi};
 use spai_ui::{tr, trf};
 use spai_webkit::accounts::{self, Account, SKILLS};
 use spai_webkit::page;
@@ -43,7 +43,145 @@ impl SimWebApp {
         };
         app.sim.handle(HostEvent::Fits(app.library.summaries()));
         app.load_profiles();
+        app.fetch_doctrines(&cc.egui_ctx);
+        app.sync(&cc.egui_ctx);
         app
+    }
+
+    fn bearer(&self) -> Option<String> {
+        self.session.as_ref().map(|s| s.token.clone())
+    }
+
+    fn api(path: &str) -> String {
+        format!("{}/api/sim{path}", page::origin())
+    }
+
+    fn fetch_doctrines(&self, ctx: &egui::Context) {
+        let (events, bearer, ctx) = (self.events.clone(), self.bearer(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let auth = |mut req: ehttp::Request| {
+                if let Some(b) = &bearer {
+                    req.headers.insert("Authorization", format!("Bearer {b}"));
+                }
+                req
+            };
+            let (mut imperium, mut admin) = (false, false);
+            if bearer.is_some() {
+                if let Ok(r) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/me")))).await {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&r.bytes) {
+                        imperium = v["imperium"].as_bool().unwrap_or(false);
+                        admin = v["admin"].as_bool().unwrap_or(false);
+                    }
+                }
+            }
+            events.lock().unwrap().push(HostEvent::Access { signed_in: bearer.is_some(), imperium, admin });
+            match ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/doctrines")))).await {
+                Ok(r) if r.ok => {
+                    if let Ok(list) = serde_json::from_slice::<Vec<Doctrine>>(&r.bytes) {
+                        events.lock().unwrap().push(HostEvent::Doctrines(list));
+                    }
+                }
+                _ => {}
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish(&self, ctx: &egui::Context, id: String, side: DoctrineSide, name: String, tags: Vec<String>, refit_keys: Vec<String>, doc: String) {
+        let (events, bearer, ctx2) = (self.events.clone(), self.bearer(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let outcome: Result<(), String> = async {
+                let b = bearer.ok_or("sign in first")?;
+                let doc: serde_json::Value = serde_json::from_str(&doc).map_err(|e| e.to_string())?;
+                let body = serde_json::json!({ "side": side, "name": name, "tags": tags, "refit_keys": refit_keys, "doc": doc });
+                let mut req = ehttp::Request::post(Self::api(&format!("/doctrines/{id}")), body.to_string().into_bytes());
+                req.method = ehttp::Method::PUT;
+                req.headers = ehttp::Headers::new(&[("Content-Type", "application/json"), ("Authorization", &format!("Bearer {b}"))]);
+                let r = ehttp::fetch_async(req).await?;
+                if !r.ok {
+                    return Err(serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or_else(|| r.status.to_string()));
+                }
+                Ok(())
+            }
+            .await;
+            events.lock().unwrap().push(HostEvent::Status(match outcome {
+                Ok(()) => tr!("Published").to_owned(),
+                Err(e) => trf!("Could not publish: {e}", e = e),
+            }));
+            ctx2.request_repaint();
+        });
+        self.fetch_doctrines(ctx);
+    }
+
+    fn delete_doctrine(&self, ctx: &egui::Context, id: String) {
+        let (bearer, ctx) = (self.bearer(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(b) = bearer {
+                let mut req = ehttp::Request::get(Self::api(&format!("/doctrines/{id}")));
+                req.method = ehttp::Method::DELETE;
+                req.headers.insert("Authorization", format!("Bearer {b}"));
+                let _ = ehttp::fetch_async(req).await;
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// The browser's library against the server's: newer local saves go up, newer server copies
+    /// come down, by revision.
+    fn sync(&self, ctx: &egui::Context) {
+        let Some(b) = self.bearer() else { return };
+        let (events, ctx) = (self.events.clone(), ctx.clone());
+        let mut lib = self.library.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let auth = |mut req: ehttp::Request| {
+                req.headers.insert("Authorization", format!("Bearer {b}"));
+                req
+            };
+            for (id, e) in lib.fits.clone() {
+                if e.server_rev >= e.rev {
+                    continue;
+                }
+                let Ok(doc) = serde_json::from_str::<serde_json::Value>(&e.doc) else { continue };
+                let body = serde_json::json!({ "name": e.name, "rev": e.server_rev, "doc": doc });
+                let mut req = ehttp::Request::post(Self::api(&format!("/fits/{id}")), body.to_string().into_bytes());
+                req.method = ehttp::Method::PUT;
+                req.headers = ehttp::Headers::new(&[("Content-Type", "application/json")]);
+                if let Ok(r) = ehttp::fetch_async(auth(req)).await {
+                    if r.ok {
+                        if let Some(rev) = serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["rev"].as_i64()) {
+                            if let Some(x) = lib.fits.get_mut(&id) {
+                                x.server_rev = rev;
+                                x.rev = rev;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(r) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/fits")))).await {
+                if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
+                    for entry in list {
+                        let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
+                        if lib.fits.get(id).is_some_and(|e| e.server_rev >= rev) {
+                            continue;
+                        }
+                        let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/fits/{id}"))))).await else { continue };
+                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&full.bytes) else { continue };
+                        lib.fits.insert(id.to_owned(), crate::store::Entry {
+                            name: v["name"].as_str().unwrap_or("").to_owned(),
+                            ship: v["ship_type_id"].as_u64().unwrap_or(0) as u32,
+                            updated_at: v["updated_at"].as_i64().unwrap_or(0),
+                            doc: v["doc"].to_string(),
+                            rev,
+                            server_rev: rev,
+                        });
+                    }
+                }
+            }
+            page::save_raw(KEY, &lib.to_json());
+            events.lock().unwrap().push(HostEvent::Status("\u{0}reload".into()));
+            ctx.request_repaint();
+        });
     }
 
     fn load_profiles(&mut self) {
@@ -53,6 +191,13 @@ impl SimWebApp {
             .map(|(id, name, skills)| Profile { id: id.to_string(), name, skills: spai_fit::skills::SkillSet::from_esi(skills) })
             .collect();
         self.sim.handle(HostEvent::Profiles(profiles));
+    }
+
+    /// Off to EVE for an EVE Spai session, back through `/wh/callback` and then here.
+    fn sign_in(&self) {
+        let p = Pending { return_to: Some(format!("{}{}", page::origin(), page::base_of("sim"))), ..Pending::new() };
+        page::save(PENDING_KEY, &p);
+        page::go(&p.authorize_url(&format!("{}/wh/callback", page::origin())));
     }
 
     /// Off to EVE to add a character whose skills this page may read; back through `/wh/callback`.
@@ -135,6 +280,7 @@ impl SimWebApp {
                 self.library.put(&id, &name, ship, &doc, now);
                 page::save_raw(KEY, &self.library.to_json());
                 self.sim.handle(HostEvent::Saved(id));
+                self.sync(ctx);
             }
             HostRequest::DeleteFit(id) => {
                 self.library.remove(&id);
@@ -143,6 +289,10 @@ impl SimWebApp {
             }
             HostRequest::FetchSkills => self.fetch_skills(ctx),
             HostRequest::CopyText(t) => ctx.copy_text(t),
+            HostRequest::FetchDoctrines => self.fetch_doctrines(ctx),
+            HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.publish(ctx, id, side, name, tags, refit_keys, doc),
+            HostRequest::DeleteDoctrine(id) => self.delete_doctrine(ctx, id),
+            HostRequest::SyncLibrary => self.sync(ctx),
         }
     }
 
@@ -162,8 +312,12 @@ impl SimWebApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &self.session {
                 Some(s) => {
                     ui.label(egui::RichText::new(&s.character_name).weak());
+                    ui.label(egui::RichText::new(tr!("Fits sync with eve-spai.com as")).weak());
                 }
                 None => {
+                    if ui.small_button(tr!("Sign in")).on_hover_text(tr!("Sign in to EVE Spai to keep fits on the server and see the Imperium doctrines")).clicked() {
+                        self.sign_in();
+                    }
                     ui.label(egui::RichText::new(tr!("Fits are kept in this browser")).weak());
                 }
             });
@@ -177,6 +331,10 @@ impl eframe::App for SimWebApp {
         for e in events {
             match e {
                 HostEvent::Status(s) if s.is_empty() => self.load_profiles(),
+                HostEvent::Status(s) if s == "\u{0}reload" => {
+                    self.library = page::load_raw(KEY).map(|t| Library::from_json(&t)).unwrap_or_default();
+                    self.sim.handle(HostEvent::Fits(self.library.summaries()));
+                }
                 e => self.sim.handle(e),
             }
         }

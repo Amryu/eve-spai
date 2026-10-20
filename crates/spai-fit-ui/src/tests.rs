@@ -167,3 +167,34 @@ fn recording_a_variation_keeps_the_difference_and_switches_it_on() {
     s.keep_recording(10);
     assert_eq!(s.session.as_ref().unwrap().fit.variations.len(), 1, "no change, no variation");
 }
+
+#[test]
+fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
+    let mut s = sim();
+    let mut fit = Fit::new(ids::SHIP, "Doctrine Rifter");
+    fit.add_module(ids::GUN, Slot::High);
+    fit.variations.push(spai_fit::variations::Variation { id: 1, name: "AB".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+    let doc: serde_json::Value = serde_json::from_str(&spai_fit::doc::to_json(&fit)).unwrap();
+    s.handle(HostEvent::Doctrines(vec![Doctrine { id: "d1".into(), side: DoctrineSide::Imperium, name: "Alpha Rifter".into(), ship: ids::SHIP, tags: vec!["alpha".into()], refit_keys: vec!["prop:ab".into()], rev: 1, doc }]));
+    s.open_doctrine("d1", 5);
+    let open = s.session.as_ref().unwrap();
+    assert_eq!(open.fit.name, "Alpha Rifter");
+    assert_ne!(open.id, "d1", "a copy with its own id");
+    assert_eq!(open.fit.modules.len(), 1);
+    assert!(open.dirty);
+    s.handle(HostEvent::Access { signed_in: true, imperium: true, admin: true });
+    s.start_publish();
+    let d = s.publish.as_mut().unwrap();
+    d.name = "Alpha Rifter v2".into();
+    d.side = DoctrineSide::Enemy;
+    d.tags = "alpha, kiting".into();
+    let (id, name, side, tags, keys, doc) = {
+        let (Some(d), Some(sess)) = (s.publish.take(), s.session.as_ref()) else { panic!() };
+        (d.id, d.name, d.side, d.tags, sess.fit.variations.iter().filter_map(|v| v.refit_key.clone()).collect::<Vec<_>>(), spai_fit::doc::to_json(&sess.fit))
+    };
+    s.request(HostRequest::PublishDoctrine { id: id.clone(), side, name: name.clone(), tags: tags.split(',').map(|t| t.trim().to_owned()).collect(), refit_keys: keys.clone(), doc });
+    let reqs = s.take_requests();
+    assert!(matches!(&reqs[0], HostRequest::PublishDoctrine { side: DoctrineSide::Enemy, refit_keys, tags, .. } if refit_keys == &vec!["prop:ab".to_owned()] && tags == &vec!["alpha".to_owned(), "kiting".to_owned()]), "{reqs:?}");
+    let json = serde_json::to_string(&s.doctrines[0]).unwrap();
+    assert!(json.contains("\"side\":\"imperium\"") && json.contains("\"ship_type_id\""));
+}

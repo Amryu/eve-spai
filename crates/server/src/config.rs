@@ -24,6 +24,8 @@ pub struct Config {
     pub extra_client_ids: Vec<String>,
     /// Web origins allowed to call the session mint and the sharing routes from a browser.
     pub cors_origins: Vec<String>,
+    /// Characters who may publish and change the fitting simulator's doctrine presets.
+    pub sim_admin_char_ids: Vec<i64>,
     pub wh_rate: WhRate,
 }
 
@@ -96,6 +98,7 @@ impl Config {
             session_secret,
             session_ttl_secs: env_i64("BR_SESSION_TTL_SECS", DEFAULT_SESSION_TTL_SECS),
             extra_client_ids: env_list("EVE_EXTRA_CLIENT_IDS"),
+            sim_admin_char_ids: env_list("SIM_ADMIN_CHAR_IDS").iter().filter_map(|s| s.parse().ok()).collect(),
             cors_origins: env_list("WH_CORS_ORIGINS"),
             wh_rate: {
                 let d = WhRate::default();

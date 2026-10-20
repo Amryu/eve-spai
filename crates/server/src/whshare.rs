@@ -58,7 +58,7 @@ async fn gone() -> AppError {
 
 /// Holds each character to its request budget. A request without a valid session goes through
 /// untouched: its route turns it away.
-async fn rate_limit(
+pub(crate) async fn rate_limit(
     State(st): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,

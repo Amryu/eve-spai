@@ -23,7 +23,7 @@ const PER_PAGE: i64 = 20;
 pub fn router(state: AppState) -> Router {
     let max_compressed = state.cfg.max_compressed;
     // Only the session mint and wormhole sharing are open to other clients' web pages.
-    let shared = Router::new().route("/api/session", post(create_session)).merge(crate::whshare::routes(state.clone()));
+    let shared = Router::new().route("/api/session", post(create_session)).merge(crate::whshare::routes(state.clone())).merge(crate::sim::routes(state.clone()));
     let shared = match crate::config::cors(&state.cfg.cors_origins) {
         Some(cors) => shared.layer(cors),
         None => shared,

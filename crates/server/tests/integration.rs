@@ -90,6 +90,7 @@ fn base_config(database_url: String) -> Config {
         extra_client_ids: Vec::new(),
         cors_origins: Vec::new(),
         wh_rate: Default::default(),
+        sim_admin_char_ids: vec![90000001],
     }
 }
 
@@ -148,7 +149,7 @@ async fn pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new().max_connections(5).connect(&url).await.unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-    sqlx::query("TRUNCATE battle_reports, upload_quota").execute(&pool).await.unwrap();
+    sqlx::query("TRUNCATE battle_reports, upload_quota, sim_doctrines, sim_fits, sim_fleets").execute(&pool).await.unwrap();
     Some(pool)
 }
 
@@ -884,4 +885,94 @@ async fn a_new_device_does_not_take_the_keys_from_before_devices() {
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (_, keys) = wh(&app, "GET", &format!("/groups/{g}/keys"), &old, &bd, None).await;
     assert_eq!(keys[0]["wrapped"].as_str(), Some("k0-browser"), "the approval's key, not the one it cannot open");
+}
+
+async fn send_json(app: &axum::Router, method: &str, uri: &str, token: Option<&str>, body: Value) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    let resp = app.clone().oneshot(builder.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    (status, if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) })
+}
+
+#[tokio::test]
+async fn sim_routes_want_a_session_where_one_is_needed() {
+    let app = lazy_app();
+    assert_eq!(send(&app, "GET", "/api/sim/me", None, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, "GET", "/api/sim/fits", None, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/abc", None, json!({})).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, "GET", "/api/sim/doctrines", Some("not-a-token"), None).await.0, StatusCode::UNAUTHORIZED, "a bad token is refused, not ignored");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn sim_library_is_per_character_with_revisions_and_limits() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool, base_config(url));
+    let a = mint(&app, 90000001, "Pilot A").await;
+    let b = mint(&app, 90000002, "Pilot B").await;
+    let doc = json!({"v": 1, "ship": 587, "name": "Rifter", "modules": []});
+    let (status, saved) = send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&a), json!({"name": "Rifter", "rev": 0, "doc": doc})).await;
+    assert_eq!(status, StatusCode::OK, "{saved:?}");
+    assert_eq!(saved["rev"], 1);
+    assert_eq!(saved["ship_type_id"], 587);
+    let (status, again) = send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&a), json!({"name": "Rifter II", "rev": 1, "doc": doc})).await;
+    assert_eq!((status, again["rev"].as_i64()), (StatusCode::OK, Some(2)));
+    let (status, _) = send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&a), json!({"name": "Stale", "rev": 1, "doc": doc})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "a save on an old revision is refused");
+    let (status, list) = send(&app, "GET", "/api/sim/fits", Some(&a), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["name"], "Rifter II");
+    assert_eq!(send(&app, "GET", "/api/sim/fits", Some(&b), None).await.1.as_array().unwrap().len(), 0, "another character sees nothing");
+    assert_eq!(send(&app, "GET", "/api/sim/fits/fit-1", Some(&b), None).await.0, StatusCode::NOT_FOUND);
+    let (status, got) = send(&app, "GET", "/api/sim/fits/fit-1", Some(&a), None).await;
+    assert_eq!((status, got["doc"]["ship"].as_i64()), (StatusCode::OK, Some(587)));
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/bad%20id", Some(&a), json!({"name": "x", "doc": doc})).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/no-ship", Some(&a), json!({"name": "x", "doc": {"v": 1}})).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send(&app, "DELETE", "/api/sim/fits/fit-1", Some(&a), None).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "DELETE", "/api/sim/fits/fit-1", Some(&a), None).await.0, StatusCode::NOT_FOUND);
+    let (status, fleet) = send_json(&app, "PUT", "/api/sim/fleets/fleet-1", Some(&a), json!({"name": "Alpha", "rev": 0, "doc": {"size": 50}})).await;
+    assert_eq!((status, fleet["rev"].as_i64()), (StatusCode::OK, Some(1)));
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn sim_doctrines_are_gated_by_side_and_written_by_admins() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool, base_config(url));
+    let admin = mint(&app, 90000001, "Admin").await;
+    let member = mint(&app, 90000002, "Member").await;
+    let outsider = mint(&app, 90000003, "Outsider").await;
+    let (status, me) = send(&app, "GET", "/api/sim/me", Some(&admin), None).await;
+    assert_eq!((status, me["admin"].as_bool(), me["imperium"].as_bool()), (StatusCode::OK, Some(true), Some(true)));
+    let (_, me) = send(&app, "GET", "/api/sim/me", Some(&outsider), None).await;
+    assert_eq!((me["admin"].as_bool(), me["imperium"].as_bool()), (Some(false), Some(false)));
+    let doc = json!({"v": 1, "ship": 17843, "name": "Vindicator", "modules": []});
+    for (id, side) in [("imp-1", "imperium"), ("enemy-1", "enemy"), ("pub-1", "public")] {
+        let (status, body) = send_json(&app, "PUT", &format!("/api/sim/doctrines/{id}"), Some(&admin), json!({"side": side, "name": id, "tags": ["t"], "refit_keys": ["prop:ab"], "doc": doc})).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+    }
+    assert_eq!(send_json(&app, "PUT", "/api/sim/doctrines/x", Some(&member), json!({"side": "public", "name": "x", "doc": doc})).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/doctrines/x", Some(&admin), json!({"side": "nope", "name": "x", "doc": doc})).await.0, StatusCode::BAD_REQUEST);
+    let names = |v: &Value| v.as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    let (status, anon) = send(&app, "GET", "/api/sim/doctrines", None, None).await;
+    assert_eq!((status, names(&anon)), (StatusCode::OK, vec!["pub-1".to_owned()]));
+    assert_eq!(names(&send(&app, "GET", "/api/sim/doctrines", Some(&outsider), None).await.1), vec!["pub-1"]);
+    let seen = names(&send(&app, "GET", "/api/sim/doctrines", Some(&member), None).await.1);
+    assert_eq!(seen, vec!["enemy-1", "imp-1", "pub-1"]);
+    assert_eq!(send(&app, "GET", "/api/sim/doctrines/all", Some(&member), None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(names(&send(&app, "GET", "/api/sim/doctrines/all", Some(&admin), None).await.1).len(), 3);
+    let (status, updated) = send_json(&app, "PUT", "/api/sim/doctrines/imp-1", Some(&admin), json!({"side": "imperium", "name": "renamed", "doc": doc})).await;
+    assert_eq!((status, updated["rev"].as_i64(), updated["name"].as_str()), (StatusCode::OK, Some(2), Some("renamed")));
+    assert_eq!(send(&app, "DELETE", "/api/sim/doctrines/imp-1", Some(&member), None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "DELETE", "/api/sim/doctrines/imp-1", Some(&admin), None).await.0, StatusCode::OK);
+    assert_eq!(names(&send(&app, "GET", "/api/sim/doctrines", Some(&member), None).await.1), vec!["enemy-1", "pub-1"]);
 }

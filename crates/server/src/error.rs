@@ -25,6 +25,9 @@ pub enum AppError {
     BadRequest(String),
     #[error("too many requests")]
     TooManyRequests,
+    /// A save against a revision someone else has moved on from.
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// A route of an earlier protocol, answered with what to do instead.
     #[error("{0}")]
     Gone(String),
@@ -42,6 +45,7 @@ impl IntoResponse for AppError {
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             AppError::Gone(_) => StatusCode::GONE,
             AppError::Internal(e) => {

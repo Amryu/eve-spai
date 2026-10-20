@@ -45,6 +45,8 @@ services:
       EVE_EXTRA_CLIENT_IDS: "6951c713dc604df9a17d2bb28b2fc194,c0e78d5da88849ac94775034063ec68f"
       # Browser origins allowed on /api/session and /api/wh/* (comma list; empty = no CORS).
       WH_CORS_ORIGINS: ""
+      # Characters (ids, comma list) who publish the fitting simulator's doctrine presets.
+      SIM_ADMIN_CHAR_IDS: ""
 
     # The web wormhole map (a trunk build of crates/spai-web), served at /wh/. Filled by
     # deploy/web.sh; the server reads it at start, so a new build takes a restart.

@@ -2609,6 +2609,22 @@ pub(crate) fn all() -> Vec<Scene> {
         });
         sim.editing_variation = Some(2);
     }));
+    v.push(imperium_scene_with("imperium_doctrines", [1280.0, 800.0], false, spai_fit_ui::Pane::Stats, |sim| {
+        use spai_fit::test_support::ids;
+        let doc = |name: &str| serde_json::from_str(&spai_fit::doc::to_json(&spai_fit::fit::Fit::new(ids::SHIP, name))).unwrap();
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
+        sim.handle(spai_fit_ui::HostEvent::Doctrines(vec![
+            spai_fit_ui::Doctrine { id: "d1".into(), side: spai_fit_ui::DoctrineSide::Imperium, name: "Alpha Fleet Rifter with a very long preset name".into(), ship: ids::SHIP, tags: vec!["alpha".into()], refit_keys: vec!["prop:ab".into()], rev: 3, doc: doc("Alpha") },
+            spai_fit_ui::Doctrine { id: "d2".into(), side: spai_fit_ui::DoctrineSide::Imperium, name: "Beta Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Beta") },
+            spai_fit_ui::Doctrine { id: "d3".into(), side: spai_fit_ui::DoctrineSide::Enemy, name: "Hostile kiting Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Hostile") },
+            spai_fit_ui::Doctrine { id: "d4".into(), side: spai_fit_ui::DoctrineSide::Public, name: "Starter Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Starter") },
+        ]));
+    }));
+    v.push(imperium_dialog_scene("imperium_publish", [460.0, 280.0], |sim| {
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
+        sim.start_publish();
+        sim.publish.as_mut().unwrap().tags = "alpha, armor".into();
+    }));
     v.push(imperium_dialog_scene("imperium_picker", [460.0, 520.0], |sim| {
         spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::High, 2));
         sim.picker.as_mut().unwrap().query = "auto".into();

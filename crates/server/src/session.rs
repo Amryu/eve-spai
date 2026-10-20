@@ -124,6 +124,27 @@ where
     }
 }
 
+/// Like [`SessionIdentity`] for routes open to everyone: `None` without a bearer token, a 401 for
+/// a token that does not verify.
+pub struct OptionalSessionIdentity(pub Option<Identity>);
+
+impl<S> FromRequestParts<S> for OptionalSessionIdentity
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        if !parts.headers.contains_key(AUTHORIZATION) {
+            return Ok(OptionalSessionIdentity(None));
+        }
+        let app = AppState::from_ref(state);
+        let token = bearer(&parts.headers)?;
+        app.session_verifier.verify(token).map(|id| OptionalSessionIdentity(Some(id)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

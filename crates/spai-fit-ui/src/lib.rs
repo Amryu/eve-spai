@@ -50,6 +50,44 @@ pub struct FitSummary {
     pub updated_at: i64,
 }
 
+/// Whose preset a doctrine is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DoctrineSide {
+    Imperium,
+    Enemy,
+    Public,
+}
+
+impl DoctrineSide {
+    pub const ALL: [DoctrineSide; 3] = [DoctrineSide::Imperium, DoctrineSide::Enemy, DoctrineSide::Public];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DoctrineSide::Imperium => tr!("Imperium"),
+            DoctrineSide::Enemy => tr!("Enemy"),
+            DoctrineSide::Public => tr!("Public"),
+        }
+    }
+}
+
+/// A doctrine preset as the server lists it, its fit document included.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Doctrine {
+    pub id: String,
+    pub side: DoctrineSide,
+    pub name: String,
+    #[serde(rename = "ship_type_id")]
+    pub ship: TypeId,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub refit_keys: Vec<String>,
+    #[serde(default)]
+    pub rev: i64,
+    pub doc: serde_json::Value,
+}
+
 /// What the screens ask the host to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostRequest {
@@ -60,6 +98,12 @@ pub enum HostRequest {
     DeleteFit(String),
     FetchSkills,
     CopyText(String),
+    /// The doctrine presets and what the signed-in character may do with them.
+    FetchDoctrines,
+    PublishDoctrine { id: String, side: DoctrineSide, name: String, tags: Vec<String>, refit_keys: Vec<String>, doc: String },
+    DeleteDoctrine(String),
+    /// Push the library's changes to the server and take its newer entries.
+    SyncLibrary,
 }
 
 /// What the host tells the screens.
@@ -72,6 +116,9 @@ pub enum HostEvent {
     Profiles(Vec<Profile>),
     Saved(String),
     Status(String),
+    Doctrines(Vec<Doctrine>),
+    /// Whether the character is signed in with the server, in the Imperium, and a doctrine admin.
+    Access { signed_in: bool, imperium: bool, admin: bool },
 }
 
 /// The fit on screen with its undo history and what it computes to.
@@ -129,6 +176,21 @@ pub struct ImportDialog {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    pub signed_in: bool,
+    pub imperium: bool,
+    pub admin: bool,
+}
+
+/// Publishing the open fit as a doctrine preset.
+pub struct PublishDialog {
+    pub id: String,
+    pub name: String,
+    pub side: DoctrineSide,
+    pub tags: String,
+}
+
 pub struct SimUi {
     pub dogma: Option<Arc<Dogma>>,
     pub dogma_error: Option<String>,
@@ -146,6 +208,9 @@ pub struct SimUi {
     /// The fit as it was when a variation recording started.
     pub recording: Option<Fit>,
     pub editing_variation: Option<u32>,
+    pub doctrines: Vec<Doctrine>,
+    pub access: Access,
+    pub publish: Option<PublishDialog>,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -169,6 +234,9 @@ impl Default for SimUi {
             graph_drones: true,
             recording: None,
             editing_variation: None,
+            doctrines: Vec::new(),
+            access: Access::default(),
+            publish: None,
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -218,6 +286,73 @@ impl SimUi {
                 self.status(tr!("Saved").to_owned());
             }
             HostEvent::Status(s) => self.status(s),
+            HostEvent::Doctrines(d) => self.doctrines = d,
+            HostEvent::Access { signed_in, imperium, admin } => self.access = Access { signed_in, imperium, admin },
+        }
+    }
+
+    /// Opens a copy of the doctrine as a new fit of the library.
+    pub fn open_doctrine(&mut self, id: &str, now_ms: u64) {
+        let Some(d) = self.doctrines.iter().find(|d| d.id == id) else { return };
+        match spai_fit::doc::from_json(&d.doc.to_string()) {
+            Ok(mut fit) => {
+                fit.name = d.name.clone();
+                self.open_fit(fit, now_ms);
+            }
+            Err(e) => self.status(trf!("Could not read the fit: {e}", e = e)),
+        }
+    }
+
+    /// Starts publishing the open fit; the dialog takes the name, side and tags.
+    pub fn start_publish(&mut self) {
+        let Some(s) = &self.session else { return };
+        let existing = self.doctrines.iter().find(|d| d.id == s.id);
+        self.publish = Some(PublishDialog {
+            id: s.id.clone(),
+            name: s.fit.name.clone(),
+            side: existing.map_or(DoctrineSide::Imperium, |d| d.side),
+            tags: existing.map(|d| d.tags.join(", ")).unwrap_or_default(),
+        });
+    }
+
+    fn publish_window(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.publish else { return };
+        let mut open = true;
+        let mut go = false;
+        let size = egui::vec2(420.0, 220.0);
+        egui::Window::new(tr!("Publish as doctrine")).open(&mut open).collapsible(false).resizable(false).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+            use spai_ui::widgets::SteadySelect as _;
+            egui::Grid::new("sim_publish").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                ui.label(tr!("Name"));
+                ui.add(egui::TextEdit::singleline(&mut dialog.name).desired_width(280.0));
+                ui.end_row();
+                ui.label(tr!("Side"));
+                egui::ComboBox::from_id_salt("sim_publish_side").selected_text(dialog.side.name()).width(160.0).show_ui(ui, |ui| {
+                    for side in DoctrineSide::ALL {
+                        ui.menu_value(&mut dialog.side, side, side.name());
+                    }
+                });
+                ui.end_row();
+                ui.label(tr!("Tags"));
+                ui.add(egui::TextEdit::singleline(&mut dialog.tags).desired_width(280.0).hint_text(tr!("comma separated")));
+                ui.end_row();
+            });
+            ui.add(egui::Label::new(egui::RichText::new(tr!("Refit keys come from the fit's variations. Publishing again replaces the preset with the same id.")).weak()).wrap());
+            ui.add_space(6.0);
+            if ui.add_enabled(!dialog.name.trim().is_empty(), egui::Button::new(tr!("Publish"))).clicked() {
+                go = true;
+            }
+        });
+        if go {
+            if let (Some(d), Some(s)) = (self.publish.take(), self.session.as_ref()) {
+                let refit_keys: Vec<String> = s.fit.variations.iter().filter_map(|v| v.refit_key.clone()).collect();
+                let tags: Vec<String> = d.tags.split(',').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
+                let mut fit = s.fit.clone();
+                fit.name = d.name.trim().to_owned();
+                self.requests.push(HostRequest::PublishDoctrine { id: d.id, side: d.side, name: fit.name.clone(), tags, refit_keys, doc: spai_fit::doc::to_json(&fit) });
+            }
+        } else if !open {
+            self.publish = None;
         }
     }
 
@@ -365,10 +500,11 @@ impl SimUi {
         self.show_dialogs(ui.ctx(), now_ms);
     }
 
-    /// The picker and the import dialog, floating over whatever is below.
+    /// The picker and the dialogs, floating over whatever is below.
     pub fn show_dialogs(&mut self, ctx: &egui::Context, now_ms: u64) {
         picker::show_window(self, ctx, now_ms);
         self.import_window(ctx, now_ms);
+        self.publish_window(ctx);
     }
 
     fn loading(&mut self, ui: &mut egui::Ui) {
@@ -444,6 +580,9 @@ impl SimUi {
                         self.requests.push(HostRequest::CopyText(text));
                         self.status(tr!("EFT copied").to_owned());
                     }
+                }
+                if self.access.admin && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::UPLOAD_SIMPLE, tr!("Publish")))).on_hover_text(tr!("Publish as doctrine")).clicked() {
+                    self.start_publish();
                 }
                 ui.separator();
                 if !narrow {

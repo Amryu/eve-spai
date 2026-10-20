@@ -738,6 +738,44 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Fits saved here since the server last confirmed them, and the deletions not yet sent:
+    /// `(id, name, ship, doc, rev, server_rev, deleted)`.
+    pub fn fits_unsynced(&self) -> Vec<(String, String, i64, String, i64, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, ship_type_id, doc, rev, server_rev, deleted FROM fits WHERE rev > server_rev OR (deleted = 1 AND server_rev > 0)") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, i64>(6)? == 1)))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    /// The server confirmed `id` at `server_rev`; a deleted row is gone for good once told.
+    pub fn fit_mark_synced(&self, id: &str, server_rev: i64) -> Result<()> {
+        self.exec_essential("DELETE FROM fits WHERE id = ?1 AND deleted = 1", params![id])?;
+        self.exec_essential("UPDATE fits SET server_rev = ?2, rev = ?2 WHERE id = ?1", params![id, server_rev]).map(|_| ())
+    }
+
+    pub fn fit_purge(&self, id: &str) -> Result<()> {
+        self.exec_essential("DELETE FROM fits WHERE id = ?1", params![id]).map(|_| ())
+    }
+
+    /// `(id, server_rev, deleted)` of every row, for deciding what the server has newer.
+    pub fn fits_revisions(&self) -> Vec<(String, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, server_rev, deleted FROM fits") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// A fit as the server has it, taken whole.
+    pub fn fit_put_from_server(&self, id: &str, name: &str, ship_type_id: i64, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
+        self.exec_essential(
+            "INSERT INTO fits(id, name, ship_type_id, doc, rev, updated_at, server_rev, deleted) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?5, 0)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, ship_type_id = excluded.ship_type_id, doc = excluded.doc,
+             rev = excluded.rev, updated_at = excluded.updated_at, server_rev = excluded.server_rev, deleted = 0",
+            params![id, name, ship_type_id, doc, rev, updated_at],
+        )
+        .map(|_| ())
+    }
+
     pub fn fit_delete(&self, id: &str) -> Result<()> {
         let now = crate::clock::utc().timestamp();
         self.exec_essential("UPDATE fits SET deleted = 1, updated_at = ?2 WHERE id = ?1", params![id, now]).map(|_| ())
