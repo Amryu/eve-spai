@@ -342,6 +342,7 @@ pub struct Dogma {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Index {
     type_by_id: HashMap<TypeId, u32>,
+    type_by_name: HashMap<String, TypeId>,
     attr_by_id: HashMap<AttrId, u32>,
     attr_by_name: HashMap<String, AttrId>,
     effect_by_id: HashMap<EffectId, u32>,
@@ -372,6 +373,7 @@ impl Dogma {
         let mut ix = Index::default();
         for (i, t) in self.types.iter().enumerate() {
             ix.type_by_id.insert(t.id, i as u32);
+            ix.type_by_name.insert(t.name.to_lowercase(), t.id);
             ix.types_by_group.entry(t.group).or_default().push(t.id);
         }
         for (i, a) in self.attributes.iter().enumerate() {
@@ -407,6 +409,26 @@ impl Dogma {
 
     pub fn type_(&self, id: TypeId) -> Option<&TypeDef> {
         self.index.type_by_id.get(&id).map(|&i| &self.types[i as usize])
+    }
+
+    /// By English name, case-insensitively; the last of several identically named types wins.
+    pub fn type_named(&self, name: &str) -> Option<&TypeDef> {
+        self.index.type_by_name.get(&name.trim().to_lowercase()).and_then(|&id| self.type_(id))
+    }
+
+    /// The rack a module goes in, from the slot effect its type carries.
+    pub fn slot_of(&self, type_id: TypeId) -> Option<crate::fit::Slot> {
+        use crate::fit::Slot;
+        let t = self.type_(type_id)?;
+        t.effects.iter().find_map(|(e, _)| match self.effect(*e)?.name.as_str() {
+            "hiPower" => Some(Slot::High),
+            "medPower" => Some(Slot::Mid),
+            "loPower" => Some(Slot::Low),
+            "rigSlot" => Some(Slot::Rig),
+            "subSystem" => Some(Slot::Subsystem),
+            "serviceSlot" => Some(Slot::Service),
+            _ => None,
+        })
     }
 
     pub fn attr(&self, id: AttrId) -> Option<&AttrDef> {

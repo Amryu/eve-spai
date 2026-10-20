@@ -1,192 +1,12 @@
 use super::*;
-use crate::dogma::{AttrDef, EffectDef, GroupDef, Modifier, TypeDef};
+use super::tests_support::{close, dataset, effect, ids::*, modifier, type_def};
 use crate::fit::{Booster, DroneStack, Module, Projected};
-
-fn attr_def(id: AttrId, name: &str, stackable: bool, high_is_good: bool, default: f32) -> AttrDef {
-    AttrDef { id, name: name.into(), display: String::new(), stackable, high_is_good, default, unit: None, min_attr: None, max_attr: None, category: None, published: true }
-}
-
-fn effect(id: EffectId, name: &str, category: EffectCategory, modifiers: Vec<Modifier>) -> EffectDef {
-    EffectDef {
-        id,
-        name: name.into(),
-        category,
-        offensive: false,
-        assistance: false,
-        duration_attr: None,
-        range_attr: None,
-        falloff_attr: None,
-        tracking_attr: None,
-        discharge_attr: None,
-        usage_chance_attr: None,
-        resistance_attr: None,
-        modifiers,
-    }
-}
-
-fn modifier(domain: Domain, func: Func, modified: AttrId, modifying: AttrId, op: Op) -> Modifier {
-    Modifier { domain, func, modified, modifying, op, group: None, skill: None }
-}
-
-fn type_def(id: TypeId, name: &str, group: GroupId, category: CategoryId, attrs: &[(AttrId, f32)], effects: &[EffectId], skills: &[(TypeId, u8)]) -> TypeDef {
-    let mut attrs = attrs.to_vec();
-    for base in [attr::MASS, attr::CAPACITY, attr::VOLUME, attr::RADIUS] {
-        if !attrs.iter().any(|(a, _)| *a == base) {
-            attrs.push((base, 0.0));
-        }
-    }
-    attrs.sort_by_key(|(a, _)| *a);
-    TypeDef {
-        id,
-        name: name.into(),
-        group,
-        category,
-        market_group: None,
-        meta_group: None,
-        meta_level: None,
-        tech: None,
-        variation_parent: None,
-        published: true,
-        attrs,
-        effects: effects.iter().map(|e| (*e, false)).collect(),
-        required_skills: skills.to_vec(),
-    }
-}
-
-const SHIP: TypeId = 587;
-const SKILL_MF: TypeId = 3329;
-const SKILL_SPT: TypeId = 3300;
-const SKILL_DRONES: TypeId = 3436;
-const GUN: TypeId = 2881;
-const AMMO: TypeId = 185;
-const DC: TypeId = 2048;
-const HARDENER: TypeId = 11269;
-const MWD: TypeId = 434;
-const IMPLANT: TypeId = 10226;
-const BOOSTER: TypeId = 28672;
-const DRONE: TypeId = 2454;
-const WEB: TypeId = 526;
-const RIG: TypeId = 31055;
-const SKILL_CRUISE: TypeId = 3326;
-const SKILL_CRUISE_SPEC: TypeId = 20212;
-const LAUNCHER: TypeId = 19739;
-const MISSILE: TypeId = 2514;
-const SUBSYSTEM: TypeId = 45586;
-
-const SHIP_BONUS_MF: AttrId = 587;
-const DRONE_DAMAGE_BONUS: AttrId = 1255;
-const WEB_SPEED_FACTOR: AttrId = 20;
-const BOOSTER_SIDE: AttrId = 1223;
-const USAGE_CHANCE: AttrId = 1287;
-
-/// A frigate, its skills and a rack of modules whose effects cover every modifier route.
-fn dataset() -> Dogma {
-    let types = vec![
-        type_def(SHIP, "Rifter", 25, 6, &[(attr::MAX_VELOCITY, 365.0), (attr::MASS, 1_067_000.0), (attr::SIGNATURE_RADIUS, 35.0), (attr::ARMOR_EM_RESONANCE, 0.4), (SHIP_BONUS_MF, 7.5), (attr::LOW_SLOTS, 4.0), (attr::ARMOR_HP, 350.0)], &[101, 102], &[(SKILL_MF, 1)]),
-        type_def(SKILL_MF, "Minmatar Frigate", 257, 16, &[], &[201], &[]),
-        type_def(SKILL_SPT, "Small Projectile Turret", 255, 16, &[], &[202], &[]),
-        type_def(SKILL_DRONES, "Drones", 273, 16, &[], &[203], &[]),
-        type_def(GUN, "200mm AutoCannon II", 55, 7, &[(attr::FALLOFF, 6000.0), (attr::MAX_RANGE, 1200.0), (attr::DAMAGE_MULTIPLIER, 3.0), (attr::SPEED, 3000.0)], &[301], &[(SKILL_SPT, 1)]),
-        type_def(AMMO, "EMP S", 83, 8, &[(120, 0.5), (attr::EM_DAMAGE, 9.0)], &[302], &[]),
-        type_def(DC, "Damage Control II", 60, 7, &[(attr::ARMOR_EM_RESONANCE, 0.85)], &[303], &[]),
-        type_def(HARDENER, "EM Armor Hardener", 328, 7, &[(attr::ARMOR_EM_RESONANCE, -30.0), (attr::OVERLOAD_HARDENING_BONUS, 20.0)], &[304, 305], &[]),
-        type_def(MWD, "1MN Microwarpdrive II", 46, 7, &[(attr::SPEED_FACTOR, 500.0), (attr::SPEED_BOOST_FACTOR, 1_500_000.0), (attr::MASS_ADDITION, 500_000.0), (attr::SIGNATURE_RADIUS_BONUS, 500.0), (attr::OVERLOAD_SPEED_FACTOR_BONUS, 50.0)], &[306, 307], &[]),
-        type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0)], &[308], &[]),
-        type_def(BOOSTER, "Synth Exile Booster", 303, 20, &[(attr::ARMOR_DAMAGE_AMOUNT, 3.0), (BOOSTER_SIDE, -10.0), (USAGE_CHANCE, 0.3)], &[309, 310], &[]),
-        type_def(DRONE, "Warrior II", 100, 18, &[(attr::DAMAGE_MULTIPLIER, 1.0)], &[], &[(SKILL_DRONES, 5)]),
-        type_def(WEB, "Stasis Webifier II", 65, 7, &[(WEB_SPEED_FACTOR, -60.0)], &[311], &[]),
-        type_def(RIG, "Small Trimark Armor Pump II", 773, 7, &[(attr::ARMOR_HP, 20.0)], &[312], &[]),
-        type_def(SKILL_CRUISE, "Cruise Missiles", 256, 16, &[(attr::DAMAGE_MULTIPLIER_BONUS, 5.0)], &[204, 205, 206], &[]),
-        type_def(SKILL_CRUISE_SPEC, "Cruise Missile Specialization", 256, 16, &[(attr::ROF_BONUS, -2.0)], &[207, 208], &[]),
-        type_def(LAUNCHER, "Cruise Missile Launcher II", 506, 7, &[(attr::SPEED, 10_000.0)], &[], &[(SKILL_CRUISE_SPEC, 1)]),
-        type_def(MISSILE, "Scourge Cruise Missile", 386, 8, &[(attr::KINETIC_DAMAGE, 300.0), (attr::EM_DAMAGE, 0.0)], &[], &[(SKILL_CRUISE, 1)]),
-        type_def(SUBSYSTEM, "Loki Core - Augmented Nuclear Reactor", 1101, 32, &[(attr::HI_SLOT_MODIFIER, 2.0), (attr::TURRET_HARDPOINT_MODIFIER, 3.0)], &[313, 314], &[]),
-    ];
-    let effects = vec![
-        // Ship: skill-scaled falloff bonus to small projectile turrets.
-        effect(101, "shipBonusSPTFalloffMF2", EffectCategory::Passive, vec![Modifier { skill: Some(SkillRef::Of(SKILL_SPT)), ..modifier(Domain::Ship, Func::LocationRequiredSkill, attr::FALLOFF, SHIP_BONUS_MF, Op::PostPercent) }]),
-        effect(102, "shipNothing", EffectCategory::System, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, SHIP_BONUS_MF, Op::PostPercent)]),
-        // Skills: the level scales the ship bonus; a turret skill adds damage; a drone skill reaches owned drones.
-        effect(201, "minmatarFrigateSkillLevelPreMul", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, SHIP_BONUS_MF, attr::SKILL_LEVEL, Op::PreMul)]),
-        effect(202, "smallProjectileTurretDamage", EffectCategory::Passive, vec![Modifier { skill: Some(SkillRef::Own), ..modifier(Domain::Ship, Func::LocationRequiredSkill, attr::DAMAGE_MULTIPLIER, attr::SKILL_LEVEL, Op::PostPercent) }]),
-        effect(204, "skillBoostDamageMultiplierBonus", EffectCategory::Passive, vec![modifier(Domain::Item, Func::Item, attr::DAMAGE_MULTIPLIER_BONUS, attr::SKILL_LEVEL, Op::PreMul)]),
-        effect(205, "missileKineticDmgBonus2", EffectCategory::Passive, vec![]),
-        effect(206, "missileEMDmgBonus", EffectCategory::Passive, vec![]),
-        effect(207, "rapidFiringSkillBoostRofBonus", EffectCategory::Passive, vec![modifier(Domain::Item, Func::Item, attr::ROF_BONUS, attr::SKILL_LEVEL, Op::PreMul)]),
-        effect(208, "selfRof", EffectCategory::Passive, vec![]),
-        effect(313, "slotModifier", EffectCategory::Passive, vec![]),
-        effect(314, "hardPointModifierEffect", EffectCategory::Passive, vec![]),
-        effect(203, "dronesDamage", EffectCategory::Passive, vec![Modifier { skill: Some(SkillRef::Own), ..modifier(Domain::Char, Func::OwnerRequiredSkill, attr::DAMAGE_MULTIPLIER, DRONE_DAMAGE_BONUS, Op::PostPercent) }]),
-        // Gun: its charge reaches it through otherID; the gun's own target effect does nothing here.
-        effect(301, "projectileFired", EffectCategory::Target, vec![]),
-        effect(302, "ammoInfluenceRange", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::MAX_RANGE, 120, Op::PreMul)]),
-        // Damage control: PreMul on the ship's resonance, an online effect.
-        effect(303, "damageControl", EffectCategory::Online, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_EM_RESONANCE, attr::ARMOR_EM_RESONANCE, Op::PreMul)]),
-        // Hardener: active PostPercent, overloaded 20% stronger.
-        effect(304, "armorHardener", EffectCategory::Active, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_EM_RESONANCE, attr::ARMOR_EM_RESONANCE, Op::PostPercent)]),
-        effect(305, "overloadSelfHardening", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::ARMOR_EM_RESONANCE, attr::OVERLOAD_HARDENING_BONUS, Op::PostPercent)]),
-        effect(306, "moduleBonusMicrowarpdrive", EffectCategory::Active, vec![]),
-        effect(307, "overloadSelfSpeedBonus", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::SPEED_FACTOR, attr::OVERLOAD_SPEED_FACTOR_BONUS, Op::PostPercent)]),
-        effect(308, "implantVelocity", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, attr::MAX_VELOCITY, Op::PostPercent)]),
-        effect(309, "boosterArmorRep", EffectCategory::Passive, vec![Modifier { group: Some(62), ..modifier(Domain::Ship, Func::LocationGroup, attr::ARMOR_DAMAGE_AMOUNT, attr::ARMOR_DAMAGE_AMOUNT, Op::PostPercent) }]),
-        EffectDef { usage_chance_attr: Some(USAGE_CHANCE), ..effect(310, "boosterSideEffect", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, BOOSTER_SIDE, Op::PostPercent)]) },
-        effect(311, "remoteWebifier", EffectCategory::Target, vec![modifier(Domain::Target, Func::Item, attr::MAX_VELOCITY, WEB_SPEED_FACTOR, Op::PostPercent)]),
-        effect(312, "rigArmorHp", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_HP, attr::ARMOR_HP, Op::PostPercent)]),
-    ];
-    let attributes = vec![
-        attr_def(attr::MAX_VELOCITY, "maxVelocity", false, true, 0.0),
-        attr_def(attr::MASS, "mass", true, true, 0.0),
-        attr_def(attr::SIGNATURE_RADIUS, "signatureRadius", false, true, 0.0),
-        attr_def(attr::ARMOR_EM_RESONANCE, "armorEmDamageResonance", false, false, 1.0),
-        attr_def(attr::ARMOR_HP, "armorHP", false, true, 0.0),
-        attr_def(attr::FALLOFF, "falloff", false, true, 0.0),
-        attr_def(attr::MAX_RANGE, "maxRange", false, true, 0.0),
-        attr_def(attr::DAMAGE_MULTIPLIER, "damageMultiplier", false, true, 1.0),
-        attr_def(attr::SKILL_LEVEL, "skillLevel", true, true, 0.0),
-        attr_def(SHIP_BONUS_MF, "shipBonusMF2", true, true, 0.0),
-        attr_def(DRONE_DAMAGE_BONUS, "droneDamageBonus", true, true, 10.0),
-        attr_def(attr::ARMOR_DAMAGE_AMOUNT, "armorDamageAmount", false, true, 0.0),
-        attr_def(attr::SPEED_FACTOR, "speedFactor", false, true, 0.0),
-        attr_def(attr::SPEED_BOOST_FACTOR, "speedBoostFactor", true, true, 0.0),
-        attr_def(attr::MASS_ADDITION, "massAddition", true, true, 0.0),
-        attr_def(attr::SIGNATURE_RADIUS_BONUS, "signatureRadiusBonus", true, true, 0.0),
-        attr_def(attr::OVERLOAD_SPEED_FACTOR_BONUS, "overloadSpeedFactorBonus", true, true, 0.0),
-        attr_def(attr::OVERLOAD_HARDENING_BONUS, "overloadHardeningBonus", true, true, 0.0),
-        attr_def(attr::LOW_SLOTS, "lowSlots", true, true, 0.0),
-        attr_def(120, "weaponRangeMultiplier", true, true, 1.0),
-        attr_def(BOOSTER_SIDE, "boosterVelocityPenalty", true, true, 0.0),
-        attr_def(USAGE_CHANCE, "boosterChance", true, true, 0.0),
-        attr_def(attr::CAPACITY, "capacity", true, true, 0.0),
-        attr_def(attr::VOLUME, "volume", true, true, 0.0),
-        attr_def(attr::RADIUS, "radius", true, true, 0.0),
-        attr_def(attr::EM_DAMAGE, "emDamage", true, true, 0.0),
-        attr_def(attr::KINETIC_DAMAGE, "kineticDamage", true, true, 0.0),
-        attr_def(attr::DAMAGE_MULTIPLIER_BONUS, "damageMultiplierBonus", true, true, 0.0),
-        attr_def(attr::ROF_BONUS, "rofBonus", true, true, 0.0),
-        attr_def(attr::SPEED, "speed", false, false, 0.0),
-        attr_def(attr::HI_SLOTS, "hiSlots", true, true, 0.0),
-        attr_def(attr::TURRET_SLOTS_LEFT, "turretSlotsLeft", true, true, 0.0),
-        attr_def(attr::HI_SLOT_MODIFIER, "hiSlotModifier", true, true, 0.0),
-        attr_def(attr::TURRET_HARDPOINT_MODIFIER, "turretHardPointModifier", true, true, 0.0),
-        attr_def(attr::DRONE_CONTROL_DISTANCE, "droneControlDistance", true, true, 20000.0),
-    ];
-    let groups = vec![
-        GroupDef { id: 25, name: "Frigate".into(), category: 6 },
-        GroupDef { id: 62, name: "Armor Repair Unit".into(), category: 7 },
-        GroupDef { id: 55, name: "Projectile Weapon".into(), category: 7 },
-    ];
-    Dogma { sde_build: 1, types, attributes, effects, groups, ..Dogma::default() }.finish()
-}
 
 fn fit() -> Fit {
     let mut f = Fit::new(SHIP, "test");
     f.modules.push(Module::new(GUN, Slot::High, 0).with_charge(AMMO).with_state(State::Active));
     f.modules.push(Module::new(DC, Slot::Low, 0).with_state(State::Active));
     f
-}
-
-fn close(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-6 * b.abs().max(1.0)
 }
 
 #[test]
@@ -374,23 +194,25 @@ fn subsystems_add_their_slots_and_hardpoints_to_the_hull() {
     let mut f = fit();
     f.modules.push(Module::new(SUBSYSTEM, Slot::Subsystem, 0));
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
-    assert!(close(c.ship(attr::HI_SLOTS), 2.0));
-    assert!(close(c.ship(attr::TURRET_SLOTS_LEFT), 3.0));
-    assert!(close(c.ship(attr::MED_SLOTS), 0.0));
+    assert!(close(c.ship(attr::HI_SLOTS), 5.0));
+    assert!(close(c.ship(attr::TURRET_SLOTS_LEFT), 6.0));
+    assert!(close(c.ship(attr::MED_SLOTS), 3.0));
 }
 
 #[test]
 fn the_pilot_node_carries_the_character_types_attributes_when_present() {
-    let mut d = dataset();
-    d.types.push(type_def(crate::ids::CHARACTER_TYPE, "CharacterType", 1, 1, &[(attr::DRONE_CONTROL_DISTANCE, 20_000.0)], &[], &[]));
-    let d = d.finish();
+    let d = dataset();
     let c = Calc::new(&d, &fit(), &SkillSet::all_v(), &Env::default());
     assert!(close(c.char(attr::DRONE_CONTROL_DISTANCE), 20_000.0));
+    assert!(close(c.char(attr::MAX_LOCKED_TARGETS), 2.0));
     assert!(c.unknown_types.is_empty());
-    let plain = dataset();
+    let mut plain = dataset();
+    plain.types.retain(|t| t.id != crate::ids::CHARACTER_TYPE);
+    let plain = plain.finish();
     let c = Calc::new(&plain, &fit(), &SkillSet::all_v(), &Env::default());
     assert!(c.unknown_types.is_empty(), "a dataset without it is not an error");
     assert!(close(c.char(attr::DRONE_CONTROL_DISTANCE), 20_000.0), "the attribute default stands in");
+    let _ = type_def(1, "unused", 1, 1, &[], &[], &[]);
 }
 
 /// `SPAI_DOGMA_BLOB=path/to/dogma-v1.bin.gz`: the named attributes and the patched effects exist

@@ -5,9 +5,14 @@
 #[cfg(feature = "bake")]
 pub mod bake;
 pub mod calc;
+pub mod doc;
 pub mod dogma;
 pub mod fit;
+pub mod formats;
+pub mod history;
 pub mod ids;
 pub mod skills;
+pub mod stats;
+pub mod warnings;
 
 pub use dogma::Dogma;

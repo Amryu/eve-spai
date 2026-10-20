@@ -1,0 +1,188 @@
+//! EFT text, the format every fitting tool and the game's own fitting window read and write.
+//!
+//! ```text
+//! [Rifter, Rifter fit]
+//! Damage Control II
+//! Gyrostabilizer II
+//!
+//! 1MN Afterburner II
+//! [Empty Med slot]
+//!
+//! 200mm AutoCannon II, Republic Fleet EMP S
+//! 200mm AutoCannon II, Republic Fleet EMP S /OFFLINE
+//!
+//! Small Projectile Burst Aerator I
+//!
+//!
+//! Warrior II x2
+//!
+//! Republic Fleet EMP S x1000
+//! ```
+//!
+//! Racks come in the order low, mid, high, rig, subsystem, service, one blank line between;
+//! then drones and fighters (`Name xN`), implants and boosters, and cargo (`Name xN`). On import
+//! the rack is taken from the type, not the position, so any order reads.
+
+use crate::dogma::Dogma;
+use crate::fit::{Fit, Slot, State};
+use crate::ids::TypeId;
+
+use super::{add_item, name_of, place_of, Place};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Imported {
+    pub fit: Fit,
+    /// Names the data does not know, in order of appearance.
+    pub unknown: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Line<'a> {
+    name: &'a str,
+    charge: Option<&'a str>,
+    offline: bool,
+    quantity: u32,
+}
+
+/// `Name[, Charge][ /OFFLINE][ xN][ [mutation]]`; `None` for an empty-slot marker.
+fn parse_line(raw: &str) -> Option<Line<'_>> {
+    let mut s = raw.trim();
+    if s.starts_with('[') && s.ends_with(']') {
+        return None;
+    }
+    let mut offline = false;
+    if let Some(cut) = s.to_ascii_lowercase().rfind("/offline") {
+        offline = true;
+        s = s[..cut].trim_end();
+    }
+    if let Some(open) = s.rfind(" [") {
+        if s.ends_with(']') && s[open + 2..s.len() - 1].chars().all(|c| c.is_ascii_digit()) {
+            s = s[..open].trim_end();
+        }
+    }
+    let mut quantity = 1;
+    if let Some(x) = s.rfind(" x") {
+        let digits = &s[x + 2..];
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            quantity = digits.parse().unwrap_or(1);
+            s = s[..x].trim_end();
+        }
+    }
+    let (name, charge) = match s.split_once(',') {
+        Some((n, c)) => (n.trim(), Some(c.trim()).filter(|c| !c.is_empty())),
+        None => (s, None),
+    };
+    if name.is_empty() {
+        return None;
+    }
+    Some(Line { name, charge, offline, quantity })
+}
+
+pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
+    let mut lines = text.lines().map(str::trim).skip_while(|l| l.is_empty());
+    let header = lines.next()?;
+    let inner = header.strip_prefix('[')?.strip_suffix(']')?;
+    let (ship_name, fit_name) = inner.split_once(',').map_or((inner.trim(), ""), |(s, n)| (s.trim(), n.trim()));
+    let mut out = Imported::default();
+    match dogma.type_named(ship_name) {
+        Some(t) if place_of(dogma, t) == Place::Ship => out.fit.ship = t.id,
+        _ => out.unknown.push(ship_name.to_owned()),
+    }
+    out.fit.name = if fit_name.is_empty() { ship_name.to_owned() } else { fit_name.to_owned() };
+    for raw in lines {
+        let Some(line) = parse_line(raw) else { continue };
+        let Some(t) = dogma.type_named(line.name) else {
+            out.unknown.push(line.name.to_owned());
+            continue;
+        };
+        let charge = line.charge.map(|c| match dogma.type_named(c) {
+            Some(ct) => Some(ct.id),
+            None => {
+                out.unknown.push(c.to_owned());
+                None
+            }
+        });
+        match place_of(dogma, t) {
+            Place::Module(slot) => {
+                for _ in 0..line.quantity.max(1) {
+                    let index = out.fit.add_module(t.id, slot);
+                    let m = out.fit.module_mut(slot, index).expect("just added");
+                    m.state = if line.offline { State::Offline } else { super::default_state(dogma, t.id) };
+                    m.charge = charge.flatten();
+                }
+            }
+            Place::Other | Place::Ship => out.unknown.push(line.name.to_owned()),
+            _ => {
+                add_item(dogma, &mut out.fit, t.id, line.quantity);
+            }
+        }
+    }
+    Some(out)
+}
+
+pub fn export(dogma: &Dogma, fit: &Fit) -> String {
+    export_named(fit, |id| name_of(dogma, id))
+}
+
+/// With names from elsewhere, for callers without the data at hand.
+pub fn export_named(fit: &Fit, name: impl Fn(TypeId) -> String) -> String {
+    let mut out = format!("[{}, {}]\n", name(fit.ship), if fit.name.is_empty() { name(fit.ship) } else { fit.name.clone() });
+    let mut sections: Vec<Vec<String>> = Vec::new();
+    for slot in [Slot::Low, Slot::Mid, Slot::High, Slot::Rig, Slot::Subsystem, Slot::Service] {
+        let lines: Vec<String> = fit
+            .rack(slot)
+            .map(|m| {
+                let mut l = name(m.type_id);
+                if let Some(c) = m.charge {
+                    l.push_str(", ");
+                    l.push_str(&name(c));
+                }
+                if m.state == State::Offline {
+                    l.push_str(" /OFFLINE");
+                }
+                l
+            })
+            .collect();
+        if !lines.is_empty() {
+            sections.push(lines);
+        }
+    }
+    let counted = |items: Vec<(TypeId, u32)>| items.into_iter().map(|(id, n)| format!("{} x{n}", name(id))).collect::<Vec<_>>();
+    let bay: Vec<(TypeId, u32)> = fit.drones.iter().map(|d| (d.type_id, d.count)).chain(fit.fighters.iter().map(|f| (f.type_id, f.count))).collect();
+    if !bay.is_empty() {
+        sections.push(counted(bay));
+    }
+    let worn: Vec<String> = fit.implants.iter().copied().chain(fit.boosters.iter().map(|b| b.type_id)).map(&name).collect();
+    if !worn.is_empty() {
+        sections.push(worn);
+    }
+    if !fit.cargo.is_empty() {
+        sections.push(counted(fit.cargo.iter().map(|c| (c.type_id, c.quantity)).collect()));
+    }
+    for (i, section) in sections.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        for l in section {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_parse_every_decoration() {
+        assert_eq!(parse_line("200mm AutoCannon II, Republic Fleet EMP S /OFFLINE"), Some(Line { name: "200mm AutoCannon II", charge: Some("Republic Fleet EMP S"), offline: true, quantity: 1 }));
+        assert_eq!(parse_line("Warrior II x2"), Some(Line { name: "Warrior II", charge: None, offline: false, quantity: 2 }));
+        assert_eq!(parse_line("Gyrostabilizer II /offline"), Some(Line { name: "Gyrostabilizer II", charge: None, offline: true, quantity: 1 }));
+        assert_eq!(parse_line("Abyssal Stasis Webifier [12]"), Some(Line { name: "Abyssal Stasis Webifier", charge: None, offline: false, quantity: 1 }));
+        assert_eq!(parse_line("[Empty Low slot]"), None);
+        assert_eq!(parse_line("Mjolnir Fury Light Missile x1,000"), Some(Line { name: "Mjolnir Fury Light Missile x1", charge: Some("000"), offline: false, quantity: 1 }), "a thousands separator reads as a charge, which the lookup then rejects by name");
+        assert_eq!(parse_line("   "), None);
+    }
+}

@@ -183,3 +183,91 @@ implants and boosters and of those skills in turn, and reports each `(skill, nee
 the item that asks for it.
 
 Tests: `skills::tests::*`.
+
+## 9. Stats (`stats`)
+
+Pure functions of the resolved tree. `stats::tests::*` pin each on a synthetic dataset;
+`the_real_blob_computes_a_known_rifter` (ignored, `SPAI_DOGMA_BLOB`) checks a classic fit lands
+in the band fitting tools agree on.
+
+| Stat | Rule |
+|---|---|
+| CPU, power | Sum of `cpu` (50) / `power` (30) of every module that is at least online, against the ship's `cpuOutput` (48) / `powerOutput` (11). |
+| Calibration | Sum of rigs' `upgradeCost` (1153) against `upgradeCapacity` (1132). |
+| Slots, hardpoints | Fitted per rack against `hiSlots`/`medSlots`/`lowSlots`/`rigSlots`/`maxSubSystems`/`serviceSlots`; modules with the `turretFitted` / `launcherFitted` effect against `turretSlotsLeft` (102) / `launcherSlotsLeft` (101). |
+| EHP | Per layer `hp / Σ_t w_t · resonance_t` with the damage profile's weights normalised to 1 (pyfa `damagePattern.py`); shield 263 with 271–274, armour 265 with 267–270, hull 9 with 113/110/109/111. |
+| Shield regen | Peak `2.5 × shieldCapacity / (shieldRechargeRate / 1000)` per second, at 25% (same curve as the capacitor). |
+| Local reps | Active repairers only: `armorDamageAmount` (84) / `shieldBonus` (68) / `structureDamageAmount` (83) per `duration` (73) seconds, overload already in the attributes. An ancillary armour repairer with Nanite Repair Paste (group 916) repairs `chargedArmorDamageMultiplier` (1886) times as much for its load (cycles = `floor(capacity / paste volume / chargeRate)`), then reloads `reloadTime` (1795): the sustained figure counts the reload, the burst figure does not. An ancillary shield booster with charges runs its load, then reloads; without, it runs on capacitor. |
+| Turret volley | `damageMultiplier` (64) of the turret × the charge's four damage attributes (114, 118, 117, 116). No charge, no damage. Effects: `projectileFired`, `targetAttack`, `ChainLightning`, `targetDisintegratorAttack`. |
+| Disintegrator spool | Volley × `(1 + damageMultiplierBonusMax (2734) × spool)`, spool 0..1 from the fit (`Module::spool`, fully spooled by default). |
+| Missile volley | The charge's damage × the pilot's `missileDamageMultiplier` (212, which Ballistic Control Systems raise); launcher effect `useMissiles`, charge effect `missileLaunching` (or the FoF / breacher variants). |
+| Drone volley | `damageMultiplier` × the drone's damage × drones in space; effect `targetAttack`. |
+| Smartbomb | The module's own damage per `duration`, range `empFieldRange` (99). |
+| Cycle | `speed` (51) for weapons, plus `moduleReactivationDelay` (669). |
+| Load | `floor(floor(capacity / chargeVolume) / chargeRate)` cycles; crystals that wear (`crystalsGetDamaged` 786): `floor(hp / (crystalVolatilityDamage × crystalVolatilityChance))` per crystal carried; scripts and unworn crystals: unlimited. |
+| DPS | Burst `volley / cycle`; sustained `volley × shots / (shots × cycle + reloadTime)` (pyfa `module.py` cycle sequence). |
+| Weapon groups | Same type, same charge, same cycle: one group (so split ammo is two groups). |
+| Missile range | `maxVelocity (37) × explosionDelay (281) / 1000`, the charge's values after modifiers. (pyfa adds the launching ship's radius and the missile's acceleration; this build does not yet.) |
+| Capacitor | Peak `2.5 × capacitorCapacity (482) / (rechargeRate (55) / 1000)`; usage = every active effect's `dischargeAttributeID` per its `durationAttributeID`, reloads counted; capacitor boosters (`powerBooster`) give the charge's `capacitorBonus` (67); an ancillary shield booster with charges draws nothing. |
+| Align | `ln 2 × agility (70) × mass (4) / 500 000` seconds (pyfa, EVEShipFit). |
+| Warp | `warpSpeedMultiplier (600) × baseWarpSpeed (1281)` AU/s. |
+| Lock time | `min(40 000 / (scanResolution × asinh(signature)²), 1800)` seconds (pyfa `calc.py`, EVE Uni). |
+| Sensors | Strength and kind: the largest of 208–211; locked targets: the lower of the ship's and the pilot's `maxLockedTargets` (192). |
+| Drones | Control range: the pilot's `droneControlDistance` (458); bandwidth: Σ `droneBandwidthUsed` (1272) of drones in space against the ship's 1271; bay: Σ volume against `droneCapacity` (283); in space at most the pilot's `maxActiveDrones` (352). |
+
+## 10. Capacitor simulation (`stats::cap_sim`)
+
+Event-driven, as pyfa's `capSim.py`:
+
+- Between activations the capacitor recharges along
+  `c(t + dt) = C × (1 + (√(c / C) − 1) × e^(−5 dt / τ))²`, τ = `rechargeRate` in seconds. The rate at
+  fraction `p` is `10 C / τ × (√p − p)`, peaking at `p = 0.25` with `2.5 C / τ`.
+- Each user activates every `cycle`, drawing `need` and giving `give`; after `shots` activations it
+  reloads for `reloadTime`. Identical users start staggered over one cycle.
+- A capacitor booster is held back while its charge would overfill the capacitor (pyfa's
+  injectors); when a module finds less capacitor than it needs, the ready booster that wastes the
+  least fires first, and only when none can is the capacitor dry.
+- A capacitor booster waits while `cap + give > C` (pyfa holds injectors back from overfilling),
+  looking again a second later.
+- The run stops when an activation finds less capacitor than it needs: `lasts_s`. Otherwise the
+  capacitor is "stable at" the lowest level of the run's last fifth (horizon one hour).
+- The closed-form estimate, where a steady drain `D` meets the curve:
+  `p = ¼ (1 + √(1 − 0.4 D τ / C))²`, none when `D` exceeds the peak. (The factor is 0.4, not the 2
+  sometimes quoted: 2 belongs with τ expressed as the time to the peak.)
+
+Tests: `stats::cap_sim::tests::*` (curve, peak, settle vs estimate, running dry, boosters,
+stagger), `capacitor_usage_comes_from_the_effects_discharge_attributes`.
+
+## 11. Formats (`formats`)
+
+- **EFT**: header `[Ship, Name]`; racks low, mid, high, rig, subsystem, service with one blank line
+  between; `Name, Charge`, ` /OFFLINE`, `[Empty X slot]`, ` [N]` mutation references (stripped),
+  `Name xN` for drones, fighters and cargo; implants and boosters by name. Import places every
+  line by its type (`formats::place_of`: category, then the `hiPower`/`medPower`/`loPower`/
+  `rigSlot`/`subSystem`/`serviceSlot` effect), so rack order does not matter; unknown names are
+  returned, not fatal. A module arrives active when it has a capacitor need or an active effect,
+  else online.
+- **ESI fitting JSON**: flags low 11–18, mid 19–26, high 27–34, rig 92–99, subsystem 125–132,
+  service 164–171, drone bay 87, fighter bay 158, cargo 5; loaded charges are exported into cargo
+  as the game does.
+- **DNA**: `ship:type;count:...::`, subsystems first, then modules, drones, fighters, charges.
+
+Tests: `formats::tests::*`, `eft::tests::lines_parse_every_decoration`.
+
+## 12. Warnings (`warnings`)
+
+Errors: CPU, power, calibration, slots, hardpoints, drone bandwidth, bay or count over; unknown
+types. Warnings: no propulsion module, offline modules, an ancillary armour repairer without
+paste, a capacitor or ancillary shield booster without charges, a weapon without ammo, capacitor
+running dry, missing skills. Info: free slots; ammo coverage: for each turret or launcher group,
+the charges it can load (`chargeGroup1..5` 604/605/606/609/610 and `chargeSize` 128) are compared
+with what is loaded and carried: a damage type nothing carried deals though some compatible charge
+does, and a short or long end of the reach (`weaponRangeMultiplier` 120 for turret ammo, velocity ×
+flight time for missiles) nothing carried covers.
+
+Tests: `warnings::tests::*`.
+
+## 13. History (`history`)
+
+Snapshot undo: the fit before each edit, up to 200 steps; slider and target edits of the same kind
+within 600 ms fold into one step; a new edit drops the redo branch. Test: `history::tests::*`.

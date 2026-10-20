@@ -7756,37 +7756,34 @@ fn eft_string(
     names: &std::collections::HashMap<i64, String>,
 ) -> String {
     use crate::lookup::Slot;
-    let name = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"));
-    let mut sections: Vec<Vec<String>> = vec![Vec::new(); 5];
-    let idx = |s: Slot| match s {
-        Slot::Low => 0,
-        Slot::Mid => 1,
-        Slot::High => 2,
-        Slot::Rig => 3,
-        _ => 4,
-    };
+    let mut fit = spai_fit::fit::Fit::new(0, "EVE Spai");
     for it in &loss.items {
-        let s = crate::lookup::slot_of(it.flag);
-        if !matches!(s, Slot::Cargo | Slot::Other) && it.qty == 1 {
-            sections[idx(s)].push(name(it.type_id));
+        let slot = match crate::lookup::slot_of(it.flag) {
+            Slot::Low => spai_fit::fit::Slot::Low,
+            Slot::Mid => spai_fit::fit::Slot::Mid,
+            Slot::High => spai_fit::fit::Slot::High,
+            Slot::Rig => spai_fit::fit::Slot::Rig,
+            Slot::Subsystem => spai_fit::fit::Slot::Subsystem,
+            Slot::Cargo | Slot::Other => continue,
+        };
+        if it.qty == 1 {
+            if let Ok(id) = u32::try_from(it.type_id) {
+                fit.add_module(id, slot);
+            }
         }
-    }
-    let mut out = format!("[{ship}, EVE Spai]\n");
-    for sec in &sections {
-        for line in sec {
-            out.push_str(line);
-            out.push('\n');
-        }
-        out.push('\n');
     }
     for (tid, q) in fit_cargo(loss) {
-        if q > 1 {
-            out.push_str(&format!("{} x{}\n", name(tid), q));
-        } else {
-            out.push_str(&format!("{}\n", name(tid)));
+        if let (Ok(type_id), Ok(quantity)) = (u32::try_from(tid), u32::try_from(q)) {
+            fit.cargo.push(spai_fit::fit::CargoItem { type_id, quantity });
         }
     }
-    out
+    spai_fit::formats::eft::export_named(&fit, |id| {
+        if id == 0 {
+            ship.to_owned()
+        } else {
+            names.get(&i64::from(id)).cloned().unwrap_or_else(|| format!("Type {id}"))
+        }
+    })
 }
 
 const FIT_SITES: &[(&str, &str)] =

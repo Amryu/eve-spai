@@ -16,8 +16,34 @@ pub const LAUNCHER_HARDPOINT_MODIFIER: AttrId = 1369;
 pub const HI_SLOT_MODIFIER: AttrId = 1374;
 pub const MED_SLOT_MODIFIER: AttrId = 1375;
 pub const LOW_SLOT_MODIFIER: AttrId = 1376;
+pub const CAPACITOR_BONUS: AttrId = 67;
+pub const EMP_FIELD_RANGE: AttrId = 99;
+pub const WEAPON_RANGE_MULTIPLIER: AttrId = 120;
+pub const CHARGE_GROUP_2: AttrId = 605;
+pub const CHARGE_GROUP_3: AttrId = 606;
+pub const CHARGE_GROUP_4: AttrId = 609;
+pub const CHARGE_GROUP_5: AttrId = 610;
+pub const DRONE_BANDWIDTH_USED: AttrId = 1272;
+pub const DAMAGE_MULTIPLIER_BONUS_PER_CYCLE: AttrId = 2733;
+pub const DAMAGE_MULTIPLIER_BONUS_MAX: AttrId = 2734;
+pub const MAX_RANGE_BONUS: AttrId = 351;
+pub const FALLOFF_BONUS: AttrId = 349;
+pub const TRACKING_SPEED_BONUS: AttrId = 767;
+pub const MAX_TARGET_RANGE_BONUS: AttrId = 309;
+pub const SCAN_RESOLUTION_BONUS: AttrId = 566;
+pub const FALLOFF_EFFECTIVENESS: AttrId = 2044;
+pub const AOE_CLOUD_SIZE_BONUS: AttrId = 848;
+pub const AOE_VELOCITY_BONUS: AttrId = 847;
+pub const MISSILE_VELOCITY_BONUS: AttrId = 547;
+pub const EXPLOSION_DELAY_BONUS: AttrId = 596;
+pub const STASIS_WEBIFIER_RESISTANCE: AttrId = 2115;
+pub const SENSOR_DAMPENER_RESISTANCE: AttrId = 2112;
+pub const WEAPON_DISRUPTION_RESISTANCE: AttrId = 2113;
+pub const TARGET_PAINTER_RESISTANCE: AttrId = 2114;
+pub const ENERGY_WARFARE_RESISTANCE: AttrId = 2045;
 pub const IS_ONLINE: AttrId = 2;
 pub const DAMAGE: AttrId = 3;
+pub const CAPACITOR_NEED: AttrId = 6;
 pub const HP: AttrId = 9;
 pub const POWER_OUTPUT: AttrId = 11;
 pub const LOW_SLOTS: AttrId = 12;
@@ -145,8 +171,34 @@ pub const NAMED: &[(AttrId, &str)] = &[
     (HI_SLOT_MODIFIER, "hiSlotModifier"),
     (MED_SLOT_MODIFIER, "medSlotModifier"),
     (LOW_SLOT_MODIFIER, "lowSlotModifier"),
+    (CAPACITOR_BONUS, "capacitorBonus"),
+    (EMP_FIELD_RANGE, "empFieldRange"),
+    (WEAPON_RANGE_MULTIPLIER, "weaponRangeMultiplier"),
+    (CHARGE_GROUP_2, "chargeGroup2"),
+    (CHARGE_GROUP_3, "chargeGroup3"),
+    (CHARGE_GROUP_4, "chargeGroup4"),
+    (CHARGE_GROUP_5, "chargeGroup5"),
+    (DRONE_BANDWIDTH_USED, "droneBandwidthUsed"),
+    (DAMAGE_MULTIPLIER_BONUS_PER_CYCLE, "damageMultiplierBonusPerCycle"),
+    (DAMAGE_MULTIPLIER_BONUS_MAX, "damageMultiplierBonusMax"),
+    (MAX_RANGE_BONUS, "maxRangeBonus"),
+    (FALLOFF_BONUS, "falloffBonus"),
+    (TRACKING_SPEED_BONUS, "trackingSpeedBonus"),
+    (MAX_TARGET_RANGE_BONUS, "maxTargetRangeBonus"),
+    (SCAN_RESOLUTION_BONUS, "scanResolutionBonus"),
+    (FALLOFF_EFFECTIVENESS, "falloffEffectiveness"),
+    (AOE_CLOUD_SIZE_BONUS, "aoeCloudSizeBonus"),
+    (AOE_VELOCITY_BONUS, "aoeVelocityBonus"),
+    (MISSILE_VELOCITY_BONUS, "missileVelocityBonus"),
+    (EXPLOSION_DELAY_BONUS, "explosionDelayBonus"),
+    (STASIS_WEBIFIER_RESISTANCE, "stasisWebifierResistance"),
+    (SENSOR_DAMPENER_RESISTANCE, "sensorDampenerResistance"),
+    (WEAPON_DISRUPTION_RESISTANCE, "weaponDisruptionResistance"),
+    (TARGET_PAINTER_RESISTANCE, "targetPainterResistance"),
+    (ENERGY_WARFARE_RESISTANCE, "energyWarfareResistance"),
     (IS_ONLINE, "isOnline"),
     (DAMAGE, "damage"),
+    (CAPACITOR_NEED, "capacitorNeed"),
     (HP, "hp"),
     (POWER_OUTPUT, "powerOutput"),
     (LOW_SLOTS, "lowSlots"),
