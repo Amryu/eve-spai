@@ -10,19 +10,7 @@ use crate::ids::{AttrId, BuffId, CategoryId, EffectId, GroupId, MarketGroupId, T
 
 pub mod blob;
 
-/// Attribute ids the engine and the baker rely on by number.
-pub mod attr {
-    use crate::ids::AttrId;
-
-    pub const MASS: AttrId = 4;
-    pub const CAPACITY: AttrId = 38;
-    pub const VOLUME: AttrId = 161;
-    pub const RADIUS: AttrId = 162;
-    pub const META_LEVEL: AttrId = 633;
-    /// `requiredSkill1..6` with their `requiredSkill1Level..` partners.
-    pub const REQUIRED_SKILLS: [(AttrId, AttrId); 6] =
-        [(182, 277), (183, 278), (184, 279), (1285, 1286), (1289, 1287), (1290, 1288)];
-}
+pub mod attr;
 
 /// How a modifier changes the attribute, in the order they are applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

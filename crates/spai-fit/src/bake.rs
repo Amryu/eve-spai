@@ -12,7 +12,7 @@ use crate::dogma::{
     attr, Aggregate, AttrDef, Bonus, BuffDef, CategoryDef, Dogma, Domain, EffectCategory, EffectDef, Func, GroupDef,
     MarketGroup, MetaGroup, Modifier, Op, SkillRef, TypeDef, TypeTraits, UnitDef,
 };
-use crate::ids::{category, AttrId, EffectId, GroupId, MarketGroupId, TypeId};
+use crate::ids::{category, AttrId, EffectId, GroupId, MarketGroupId, TypeId, CHARACTER_TYPE};
 
 #[derive(Deserialize, Default)]
 struct Loc {
@@ -366,7 +366,8 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         let r: TypeRec = record(l)?;
         let Some((_, cat)) = group_recs.get(&r.group_id) else { return Ok(()) };
         let cat = u8::try_from(*cat).unwrap_or(u8::MAX);
-        if !category::BAKED.contains(&cat) || !(r.published || cat == category::SKILL) {
+        let wanted = r.key == CHARACTER_TYPE || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
+        if !wanted {
             return Ok(());
         }
         base_attrs.insert(
@@ -657,8 +658,8 @@ pub(crate) mod tests {
     pub(crate) fn mini_zip() -> Vec<u8> {
         zip_of(&[
             ("_sde.jsonl", r#"{"_key": "sde", "buildNumber": 3607705, "releaseDate": "2026-10-12T11:08:38Z"}"#),
-            ("categories.jsonl", "{\"_key\": 6, \"name\": {\"en\": \"Ship\"}}\n{\"_key\": 7, \"name\": {\"en\": \"Module\"}}\n{\"_key\": 16, \"name\": {\"en\": \"Skill\"}}\n{\"_key\": 2, \"name\": {\"en\": \"Celestial\"}}"),
-            ("groups.jsonl", "{\"_key\": 25, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}}\n{\"_key\": 60, \"categoryID\": 7, \"name\": {\"en\": \"Damage Control\"}}\n{\"_key\": 257, \"categoryID\": 16, \"name\": {\"en\": \"Spaceship Command\"}}\n{\"_key\": 5, \"categoryID\": 2, \"name\": {\"en\": \"Solar System\"}}\n{\"_key\": 55, \"categoryID\": 7, \"name\": {\"en\": \"Projectile Weapon\"}}"),
+            ("categories.jsonl", "{\"_key\": 1, \"name\": {\"en\": \"Owner\"}}\n{\"_key\": 6, \"name\": {\"en\": \"Ship\"}}\n{\"_key\": 7, \"name\": {\"en\": \"Module\"}}\n{\"_key\": 16, \"name\": {\"en\": \"Skill\"}}\n{\"_key\": 2, \"name\": {\"en\": \"Celestial\"}}"),
+            ("groups.jsonl", "{\"_key\": 1, \"categoryID\": 1, \"name\": {\"en\": \"Character\"}}\n{\"_key\": 25, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}}\n{\"_key\": 60, \"categoryID\": 7, \"name\": {\"en\": \"Damage Control\"}}\n{\"_key\": 257, \"categoryID\": 16, \"name\": {\"en\": \"Spaceship Command\"}}\n{\"_key\": 5, \"categoryID\": 2, \"name\": {\"en\": \"Solar System\"}}\n{\"_key\": 55, \"categoryID\": 7, \"name\": {\"en\": \"Projectile Weapon\"}}"),
             ("types.jsonl", concat!(
                 "{\"_key\": 587, \"groupID\": 25, \"name\": {\"de\": \"Rifter\", \"en\": \"Rifter\"}, \"published\": true, \"marketGroupID\": 64, \"metaGroupID\": 1, \"metaLevel\": 0, \"techLevel\": 1, \"mass\": 1067000.0, \"volume\": 27289.0, \"capacity\": 140.0, \"radius\": 35.0, \"description\": {\"en\": \"long\"}}\n",
                 "{\"_key\": 2048, \"groupID\": 60, \"name\": {\"en\": \"Damage Control II\"}, \"published\": true, \"marketGroupID\": 1, \"metaGroupID\": 2, \"metaLevel\": 5, \"techLevel\": 2, \"variationParentTypeID\": 2046, \"volume\": 5.0}\n",
@@ -666,12 +667,15 @@ pub(crate) mod tests {
                 "{\"_key\": 3329, \"groupID\": 257, \"name\": {\"en\": \"Minmatar Frigate\"}, \"published\": false, \"volume\": 0.01}\n",
                 "{\"_key\": 30000142, \"groupID\": 5, \"name\": {\"en\": \"Jita\"}, \"published\": true}\n",
                 "{\"_key\": 999, \"groupID\": 55, \"name\": {\"en\": \"Unpublished Gun\"}, \"published\": false}\n",
+                "{\"_key\": 1373, \"groupID\": 1, \"name\": {\"en\": \"CharacterType\"}, \"published\": false}\n",
+                "{\"_key\": 1374, \"groupID\": 1, \"name\": {\"en\": \"CharacterLegacy10\"}, \"published\": false}\n",
             )),
             ("typeDogma.jsonl", concat!(
                 "{\"_key\": 587, \"dogmaAttributes\": [{\"attributeID\": 37, \"value\": 365.0}, {\"attributeID\": 182, \"value\": 3329.0}, {\"attributeID\": 277, \"value\": 1.0}, {\"attributeID\": 4, \"value\": 1067000.0}], \"dogmaEffects\": [{\"effectID\": 16, \"isDefault\": false}]}\n",
                 "{\"_key\": 2048, \"dogmaAttributes\": [{\"attributeID\": 50, \"value\": 30.0}, {\"attributeID\": 182, \"value\": 3392.0}, {\"attributeID\": 277, \"value\": 4.0}, {\"attributeID\": 183, \"value\": 3392.0}, {\"attributeID\": 278, \"value\": 1.0}], \"dogmaEffects\": [{\"effectID\": 16, \"isDefault\": false}, {\"effectID\": 2000, \"isDefault\": true}]}\n",
                 "{\"_key\": 3329, \"dogmaAttributes\": [{\"attributeID\": 275, \"value\": 2.0}], \"dogmaEffects\": [{\"effectID\": 2001, \"isDefault\": false}]}\n",
                 "{\"_key\": 30000142, \"dogmaAttributes\": [{\"attributeID\": 4, \"value\": 1.0}], \"dogmaEffects\": [{\"effectID\": 2002, \"isDefault\": false}]}\n",
+                "{\"_key\": 1373, \"dogmaAttributes\": [{\"attributeID\": 458, \"value\": 20000.0}]}\n",
             )),
             ("dogmaAttributes.jsonl", concat!(
                 "{\"_key\": 37, \"attributeCategoryID\": 5, \"defaultValue\": 0.0, \"displayName\": {\"en\": \"Maximum Velocity\"}, \"highIsGood\": true, \"name\": \"maxVelocity\", \"published\": true, \"stackable\": false, \"unitID\": 11}\n",
@@ -707,7 +711,8 @@ pub(crate) mod tests {
         assert_eq!(d.sde_build, 3607705);
         let mut ids: Vec<_> = d.types.iter().map(|t| t.id).collect();
         ids.sort_unstable();
-        assert_eq!(ids, vec![587, 2046, 2048, 3329], "fitting categories only, unpublished skills kept");
+        assert_eq!(ids, vec![587, 1373, 2046, 2048, 3329], "fitting categories only, unpublished skills and the pilot's type kept");
+        assert_eq!(d.type_(1373).unwrap().attr(458), Some(20000.0));
         let rifter = d.type_(587).unwrap();
         assert_eq!(rifter.category, 6);
         assert_eq!(rifter.attr(37), Some(365.0));
@@ -748,10 +753,10 @@ pub(crate) mod tests {
         let d = from_zip(&mini_zip()).unwrap();
         let mut groups: Vec<_> = d.groups.iter().map(|g| g.id).collect();
         groups.sort_unstable();
-        assert_eq!(groups, vec![25, 60, 257], "groups of kept types; the unused gun group has no modifier left");
+        assert_eq!(groups, vec![1, 25, 60, 257], "groups of kept types; the unused gun group has no modifier left");
         let mut cats: Vec<_> = d.categories.iter().map(|c| (c.id, c.name.as_str())).collect();
         cats.sort_unstable();
-        assert_eq!(cats, vec![(6, "Ship"), (7, "Module"), (16, "Skill")]);
+        assert_eq!(cats, vec![(1, "Owner"), (6, "Ship"), (7, "Module"), (16, "Skill")]);
         let mut markets: Vec<_> = d.market_groups.iter().map(|m| m.id).collect();
         markets.sort_unstable();
         assert_eq!(markets, vec![1, 4, 64], "ancestors kept, blueprints dropped");

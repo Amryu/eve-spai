@@ -9,6 +9,10 @@ pub type MarketGroupId = u16;
 pub type BuffId = u16;
 pub type CategoryId = u8;
 
+/// The type standing for the pilot: it carries the base drone control range, lock count and the
+/// like, and skills, implants and boosters hang off it.
+pub const CHARACTER_TYPE: TypeId = 1373;
+
 /// The item categories a fit is made of.
 pub mod category {
     use super::CategoryId;
