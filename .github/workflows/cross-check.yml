@@ -66,7 +66,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (wasm32)
-        run: cargo check -p spai-core -p spai-share -p spai-ui -p spai-web -p spai-fit -p spai-fit-ui --target wasm32-unknown-unknown
+        run: cargo check -p spai-core -p spai-share -p spai-ui -p spai-web -p spai-fit -p spai-fit-ui -p spai-webkit -p spai-sim-web --target wasm32-unknown-unknown
 
   # The web map as it is deployed: a trunk release build, wasm-opt included.
   web:
@@ -80,6 +80,9 @@ jobs:
       - name: Install trunk
         run: |
           curl -sSfL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin trunk
-      - name: trunk build
+      - name: trunk build (wormhole map)
         working-directory: crates/spai-web
         run: trunk build --release --public-url /wh/
+      - name: trunk build (fitting simulator)
+        working-directory: crates/spai-sim-web
+        run: trunk build --release --public-url /sim/

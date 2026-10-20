@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 
 pub const LOCATION: &str = "esi-location.read_location.v1";
 pub const ONLINE: &str = "esi-location.read_online.v1";
@@ -14,21 +13,7 @@ pub const SKILLS: &str = "esi-skills.read_skills.v1";
 const JUMP_DRIVE_CALIBRATION: i64 = 21611;
 const JUMP_FUEL_CONSERVATION: i64 = 21610;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Account {
-    pub char_id: i64,
-    pub name: String,
-    pub scopes: Vec<String>,
-    pub access: String,
-    pub refresh: String,
-    pub expires_at: i64,
-}
-
-impl Account {
-    pub fn can(&self, scope: &str) -> bool {
-        self.scopes.iter().any(|s| s == scope)
-    }
-}
+pub use spai_webkit::accounts::{keep, Account};
 
 /// Where each added character is, as ESI last said: system and whether they are online.
 pub type Live = HashMap<i64, (i64, bool)>;
@@ -110,12 +95,6 @@ pub fn jump_skills(skills: &serde_json::Value) -> (u32, u32) {
     (level(JUMP_DRIVE_CALIBRATION), level(JUMP_FUEL_CONSERVATION))
 }
 
-/// Adds or replaces `a` by character.
-pub fn keep(list: &mut Vec<Account>, a: Account) {
-    list.retain(|x| x.char_id != a.char_id);
-    list.push(a);
-    list.sort_by(|x, y| x.name.cmp(&y.name));
-}
 
 #[cfg(target_arch = "wasm32")]
 pub mod web {
@@ -126,10 +105,9 @@ pub mod web {
 
     use super::*;
     use crate::page;
-    use crate::sso::{TokenReply, CLIENT_ID, TOKEN};
+    use crate::sso::TokenReply;
 
-    const STORE: &str = "spai.accounts";
-    const ESI: &str = "https://esi.evetech.net/latest";
+    const STORE: &str = spai_webkit::sso::ACCOUNTS_KEY;
     /// Seconds between location checks: ESI caches a location for five.
     const POLL: i64 = 10;
 
@@ -159,20 +137,13 @@ pub mod web {
 
     /// A character just signed in with scopes: kept here.
     pub fn add(shared: &Shared, token: TokenReply) -> Result<String, String> {
-        let facts = crate::sso::token_facts(&token.access_token).ok_or("EVE sent a token this page cannot read")?;
         let now = spai_core::clock::utc().timestamp();
-        let a = Account {
-            char_id: facts.char_id,
-            name: facts.name.clone(),
-            scopes: facts.scopes,
-            access: token.access_token,
-            refresh: token.refresh_token.unwrap_or_default(),
-            expires_at: now + token.expires_in.unwrap_or(1199),
-        };
+        let a = Account::from_token(token, now)?;
+        let name = a.name.clone();
         let mut s = shared.borrow_mut();
         keep(&mut s.list, a);
         save(&s);
-        Ok(facts.name)
+        Ok(name)
     }
 
     pub fn remove(shared: &Shared, char_id: i64) {
@@ -185,46 +156,19 @@ pub mod web {
     /// A usable access token for `char_id`, refreshed first when it is about to expire.
     async fn token(shared: &Shared, char_id: i64) -> Result<String, String> {
         let now = spai_core::clock::utc().timestamp();
-        let (access, refresh, fresh) = {
-            let s = shared.borrow();
-            let a = s.list.iter().find(|a| a.char_id == char_id).ok_or("not added here")?;
-            (a.access.clone(), a.refresh.clone(), a.expires_at > now + 60)
-        };
-        if fresh {
-            return Ok(access);
+        let a = shared.borrow().list.iter().find(|a| a.char_id == char_id).cloned().ok_or("not added here")?;
+        let (access, renewed) = spai_webkit::accounts::fresh_token(&a, now).await?;
+        if let Some(r) = renewed {
+            let mut s = shared.borrow_mut();
+            keep(&mut s.list, r);
+            save(&s);
         }
-        if refresh.is_empty() {
-            return Err("signed out: add the character again".into());
-        }
-        let form = format!("grant_type=refresh_token&refresh_token={}&client_id={CLIENT_ID}", encode(&refresh));
-        let mut req = ehttp::Request::post(TOKEN, form.into_bytes());
-        req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
-        let r = ehttp::fetch_async(req).await?;
-        if !r.ok {
-            return Err(format!("EVE refused to renew the login ({}): add the character again", r.status));
-        }
-        let t: TokenReply = serde_json::from_slice(&r.bytes).map_err(|e| e.to_string())?;
-        let mut s = shared.borrow_mut();
-        if let Some(a) = s.list.iter_mut().find(|a| a.char_id == char_id) {
-            a.access = t.access_token.clone();
-            if let Some(rt) = t.refresh_token {
-                a.refresh = rt;
-            }
-            a.expires_at = now + t.expires_in.unwrap_or(1199);
-        }
-        save(&s);
-        Ok(t.access_token)
+        Ok(access)
     }
 
     async fn esi(shared: &Shared, char_id: i64, method: ehttp::Method, path: &str) -> Result<serde_json::Value, String> {
         let token = token(shared, char_id).await?;
-        let mut req = ehttp::Request::new(method, format!("{ESI}{path}"), ehttp::Headers::new(&[("Accept", "application/json")]));
-        req.headers.insert("Authorization", format!("Bearer {token}"));
-        let r = ehttp::fetch_async(req).await?;
-        if !r.ok {
-            return Err(format!("ESI answered {} {}", r.status, r.status_text));
-        }
-        Ok(if r.bytes.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&r.bytes).map_err(|e| e.to_string())? })
+        spai_webkit::accounts::esi(&token, method, path).await
     }
 
     /// Asks ESI where the characters with the location scope are, when a round is due.
@@ -296,14 +240,6 @@ pub mod web {
         });
     }
 
-    fn encode(s: &str) -> String {
-        s.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-                _ => format!("%{b:02X}"),
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]

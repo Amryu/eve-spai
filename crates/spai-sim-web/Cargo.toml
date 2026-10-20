@@ -1,0 +1,27 @@
+[package]
+name = "spai-sim-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai's fitting simulator in the browser, at eve-spai.com/sim/"
+publish = false
+
+[dependencies]
+spai-fit = { path = "../spai-fit" }
+spai-fit-ui = { path = "../spai-fit-ui" }
+spai-ui = { path = "../spai-ui" }
+spai-webkit = { path = "../spai-webkit" }
+spai-core = { path = "../spai-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+egui = "0.34"
+egui_extras = { version = "0.34", default-features = false, features = ["http", "image"] }
+egui-phosphor = "0.12"
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+ehttp = "0.7"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Window", "Element", "HtmlCanvasElement", "Location", "History", "Storage"] }

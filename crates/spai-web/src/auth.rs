@@ -3,10 +3,10 @@
 use std::sync::{Arc, Mutex};
 
 use crate::page;
-use crate::sso::{callback_code, Pending, Session, TokenReply, TOKEN};
+use crate::sso::{callback_code, Pending, Session, TokenReply};
 
-const SESSION: &str = "spai.session";
-const PENDING: &str = "spai.sso";
+const SESSION: &str = spai_webkit::sso::SESSION_KEY;
+const PENDING: &str = spai_webkit::sso::PENDING_KEY;
 /// An invite link opened before signing in, kept until it can be used.
 pub const INVITE: &str = "spai.invite";
 /// Set once the invite is to be used here in the browser rather than opened in EVE Spai.
@@ -49,6 +49,11 @@ pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added
                 wasm_bindgen_futures::spawn_local(async move {
                     let r = token(&p, &code).await.and_then(|t| crate::accounts::web::add(&accounts, t));
                     *added.borrow_mut() = Some(r);
+                    // Started by another of our pages (the fitting simulator): back there.
+                    if let Some(to) = &p.return_to {
+                        page::go(to);
+                        return;
+                    }
                     ctx.request_repaint();
                 });
                 if let Some(s) = page::load::<Session>(SESSION).filter(|s| s.usable(now)) {
@@ -73,6 +78,10 @@ pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added
                         }
                         Err(e) => Auth::Failed(e),
                     };
+                    if let Some(to) = &p.return_to {
+                        page::go(to);
+                        return;
+                    }
                     ctx.request_repaint();
                 });
             }
@@ -107,29 +116,10 @@ pub fn sign_out(auth: &Shared) {
 
 /// Trades the code for EVE's tokens.
 async fn token(p: &Pending, code: &str) -> Result<TokenReply, String> {
-    let mut req = ehttp::Request::post(TOKEN, p.token_form(code).into_bytes());
-    req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
-    let r = ehttp::fetch_async(req).await?;
-    if !r.ok {
-        return Err(format!("EVE refused the sign-in ({} {})", r.status, r.status_text));
-    }
-    serde_json::from_slice(&r.bytes).map_err(|e| format!("EVE's answer: {e}"))
+    spai_webkit::sso::token(p, code).await
 }
 
 async fn exchange(p: &Pending, code: &str) -> Result<Session, String> {
-    let mut req = ehttp::Request::post(TOKEN, p.token_form(code).into_bytes());
-    req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
-    let r = ehttp::fetch_async(req).await?;
-    if !r.ok {
-        return Err(format!("EVE refused the sign-in ({} {})", r.status, r.status_text));
-    }
-    let token: TokenReply = serde_json::from_slice(&r.bytes).map_err(|e| format!("EVE's answer: {e}"))?;
-    let mut req = ehttp::Request::post(format!("{}/api/session", page::origin()), Vec::new());
-    req.headers = ehttp::Headers::new(&[("Authorization", &format!("Bearer {}", token.access_token)), ("Accept", "application/json")]);
-    let r = ehttp::fetch_async(req).await?;
-    if !r.ok {
-        let msg = serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["error"].as_str().map(str::to_owned));
-        return Err(format!("the EVE Spai server refused the sign-in: {}", msg.unwrap_or_else(|| r.status.to_string())));
-    }
-    serde_json::from_slice(&r.bytes).map_err(|e| format!("the server's answer: {e}"))
+    let token = spai_webkit::sso::token(p, code).await?;
+    spai_webkit::sso::session(&page::origin(), &token.access_token).await
 }

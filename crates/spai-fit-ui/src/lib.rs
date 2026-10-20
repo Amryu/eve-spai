@@ -488,8 +488,10 @@ impl SimUi {
         let size = egui::vec2(480.0, 360.0);
         egui::Window::new(tr!("Import EFT")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
             ui.label(tr!("Paste a fit in EFT format (as the game's fitting window copies it)."));
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut dialog.text).desired_width(f32::INFINITY).desired_rows(12).font(egui::TextStyle::Monospace));
+            // A fixed box: the text scrolls inside, the Import button stays where it is.
+            egui::ScrollArea::vertical().max_height(260.0).min_scrolled_height(260.0).show(ui, |ui| {
+                ui.set_min_height(260.0);
+                ui.add(egui::TextEdit::multiline(&mut dialog.text).desired_width(f32::INFINITY).desired_rows(14).font(egui::TextStyle::Monospace));
             });
             let slot = egui::vec2(ui.available_width(), 20.0);
             ui.add_sized(slot, egui::Label::new(egui::RichText::new(dialog.error.clone().unwrap_or_default()).color(ui.visuals().error_fg_color)).truncate());

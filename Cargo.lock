@@ -6393,6 +6393,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "spai-sim-web"
+version = "1.0.12"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui-phosphor",
+ "egui_extras",
+ "ehttp",
+ "log",
+ "serde",
+ "serde_json",
+ "spai-core",
+ "spai-fit",
+ "spai-fit-ui",
+ "spai-ui",
+ "spai-webkit",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "spai-ui"
 version = "1.0.12"
 dependencies = [
@@ -6422,6 +6444,23 @@ dependencies = [
  "spai-core",
  "spai-share",
  "spai-ui",
+ "spai-webkit",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "spai-webkit"
+version = "1.0.12"
+dependencies = [
+ "base64",
+ "ehttp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "spai-core",
+ "spai-share",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

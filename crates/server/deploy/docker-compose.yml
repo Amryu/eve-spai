@@ -50,6 +50,9 @@ services:
     # deploy/web.sh; the server reads it at start, so a new build takes a restart.
     volumes:
       - ./wh-dist:/srv/wh:ro
+      # The fitting simulator (a trunk build of crates/spai-sim-web), served at /sim/; also filled
+      # by deploy/web.sh.
+      - ./sim-dist:/srv/sim:ro
       # The Ansiblex network the web map routes over, for group members only:
       # {"capital": "A24L-V", "max_zone": 2, "bridges": [["Q-UEN6", "5-2PQU"], ...]}
       - ./wh-bridges.json:/srv/wh-bridges.json:ro

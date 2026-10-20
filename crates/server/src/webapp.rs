@@ -1,6 +1,7 @@
-//! The web wormhole map at `/wh/`: a trunk build, loaded from `WH_WEB_DIR` at start. Any path
-//! under `/wh/` that is no file gets the app's page, which routes itself (join links, the SSO
-//! callback). The page's inline script and style are allowed by hash, nothing else inline.
+//! The browser apps: trunk builds loaded at start, the wormhole map from `WH_WEB_DIR` at `/wh/`
+//! and the fitting simulator from `SIM_WEB_DIR` at `/sim/`. Any path under the prefix that is no
+//! file gets the app's page, which routes itself (join links, the SSO callback). The page's
+//! inline script and style are allowed by hash, nothing else inline.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -117,12 +118,14 @@ impl WebApp {
     }
 }
 
-pub fn routes(app: Option<Arc<WebApp>>) -> Router {
+/// The app under `/{prefix}/`; `/{prefix}` redirects there.
+pub fn routes(app: Option<Arc<WebApp>>, prefix: &'static str) -> Router {
     let Some(app) = app else { return Router::new() };
+    let slash: &'static str = Box::leak(format!("/{prefix}/").into_boxed_str());
     Router::new()
-        .route("/wh", get(|| async { Redirect::permanent("/wh/") }))
-        .route("/wh/", get(|h: HeaderMap, State(app): State<Arc<WebApp>>| async move { serve(&app, "", &h) }))
-        .route("/wh/{*path}", get(|Path(p): Path<String>, h: HeaderMap, State(app): State<Arc<WebApp>>| async move { serve(&app, &p, &h) }))
+        .route(&format!("/{prefix}"), get(move || async move { Redirect::permanent(slash) }))
+        .route(slash, get(|h: HeaderMap, State(app): State<Arc<WebApp>>| async move { serve(&app, "", &h) }))
+        .route(&format!("/{prefix}/{{*path}}"), get(|Path(p): Path<String>, h: HeaderMap, State(app): State<Arc<WebApp>>| async move { serve(&app, &p, &h) }))
         .with_state(app)
 }
 
@@ -206,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn files_are_served_and_every_other_path_is_the_page() {
         let d = build();
-        let app = routes(WebApp::load(&d.0).unwrap().map(Arc::new));
+        let app = routes(WebApp::load(&d.0).unwrap().map(Arc::new), "wh");
         let js = get(&app, "/wh/spai-web-0123456789abcdef.js").await;
         assert_eq!(js.headers()[header::CONTENT_ENCODING], "gzip");
         assert!(js.headers()[header::CACHE_CONTROL].to_str().unwrap().contains("immutable"));
@@ -219,6 +222,11 @@ mod tests {
         assert_eq!((uni.headers()[header::CONTENT_TYPE].to_str().unwrap(), uni.headers().get(header::CONTENT_ENCODING)), ("application/gzip", None));
         assert_eq!(get(&app, "/wh/../Cargo.toml").await.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
         assert_eq!(get(&app, "/wh").await.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(get(&app, "/sim/").await.status(), StatusCode::NOT_FOUND, "another prefix is another app");
+        let sim = routes(WebApp::load(&d.0).unwrap().map(Arc::new), "sim");
+        assert_eq!(get(&sim, "/sim/anything/deeper").await.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(get(&sim, "/sim").await.headers()[header::LOCATION], "/sim/");
+        assert_eq!(get(&sim, "/wh/").await.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
