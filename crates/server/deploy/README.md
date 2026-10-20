@@ -263,6 +263,10 @@ start).
   first cron run) and publishes it under the static `/sde/` directory. The browser app fetches it
   from there; the desktop app falls back to it when a profile has no blob of its own.
 
+Bake before anything asks for the blob: Cloudflare caches a 404 from the static site for four
+hours, so a client that tried `/sde/dogma-v1.bin.gz` too early keeps getting it until the cache
+expires or the URL is purged in the Cloudflare dashboard (Caching > Purge by URL).
+
 **Check:**
 
 ```sh
