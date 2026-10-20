@@ -1,8 +1,8 @@
 //! A synthetic dataset for the engine's and the screens' tests: a frigate, its skills and enough modules, charges
 //! and drones to exercise every modifier route and every stat. Numbers are round, not EVE's.
 
-use crate::dogma::{attr, AttrDef, Dogma, Domain, EffectCategory, EffectDef, Func, GroupDef, Modifier, Op, SkillRef, TypeDef};
-use crate::ids::{AttrId, CategoryId, EffectId, GroupId, TypeId, CHARACTER_TYPE};
+use crate::dogma::{attr, AttrDef, Dogma, Domain, EffectCategory, EffectDef, Func, GroupDef, MarketGroup, Modifier, Op, SkillRef, TypeDef};
+use crate::ids::{AttrId, CategoryId, EffectId, GroupId, MarketGroupId, TypeId, CHARACTER_TYPE};
 
 pub fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6 * b.abs().max(1.0)
@@ -106,6 +106,10 @@ pub const USAGE_CHANCE: AttrId = 1287;
 pub const GROUP_AMMO: GroupId = 83;
 pub const GROUP_PASTE: GroupId = 916;
 pub const GROUP_CAP_CHARGE: GroupId = 87;
+
+fn market(id: MarketGroupId, name: &str, parent: Option<MarketGroupId>) -> MarketGroup {
+    MarketGroup { id, name: name.into(), parent }
+}
 
 pub fn dataset() -> Dogma {
     use ids::*;
@@ -391,5 +395,47 @@ pub fn dataset() -> Dogma {
         GroupDef { id: GROUP_CAP_CHARGE, name: "Capacitor Booster Charge".into(), category: 8 },
         GroupDef { id: 386, name: "Cruise Missile".into(), category: 8 },
     ];
-    Dogma { sde_build: 1, types, attributes, effects, groups, ..Dogma::default() }.finish()
+    // A market tree like the game's, so a browser over this data has something to show.
+    let market_groups = vec![
+        market(4, "Ships", None),
+        market(1361, "Frigates", Some(4)),
+        market(9, "Ship Equipment", None),
+        market(10, "Turrets & Launchers", Some(9)),
+        market(11, "Projectile Turrets", Some(10)),
+        market(12, "Missile Launchers", Some(10)),
+        market(13, "Propulsion", Some(9)),
+        market(14, "Hull & Armor", Some(9)),
+        market(15, "Electronic Warfare", Some(9)),
+        market(16, "Ship Modifications", None),
+        market(17, "Rigs", Some(16)),
+        market(18, "Subsystems", Some(16)),
+        market(19, "Ammunition & Charges", None),
+        market(20, "Projectile Ammo", Some(19)),
+        market(21, "Missiles", Some(19)),
+        market(22, "Other Charges", Some(19)),
+        market(23, "Drones", None),
+        market(24, "Implants & Boosters", None),
+        market(25, "Fighters", None),
+    ];
+    let mut types = types;
+    for t in &mut types {
+        t.market_group = match (t.category, t.group) {
+            (6, _) => Some(1361),
+            (7, 55) => Some(11),
+            (7, 506) => Some(12),
+            (7, 46) => Some(13),
+            (7, 65) => Some(15),
+            (7, 773 | 774 | 775 | 776 | 777 | 778) => Some(17),
+            (7, _) => Some(14),
+            (32, _) => Some(18),
+            (8, 83) => Some(20),
+            (8, 384 | 385 | 386 | 387 | 388 | 389 | 390 | 391 | 392 | 393 | 394) => Some(21),
+            (8, _) => Some(22),
+            (18, _) => Some(23),
+            (20, _) => Some(24),
+            (87, _) => Some(25),
+            _ => None,
+        };
+    }
+    Dogma { sde_build: 1, types, attributes, effects, groups, market_groups, ..Dogma::default() }.finish()
 }

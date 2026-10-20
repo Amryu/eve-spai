@@ -788,6 +788,11 @@ fn drones(calc: &Calc) -> Drones {
 /// Every active effect with a discharge attribute draws that much per cycle of its duration
 /// attribute; capacitor boosters give their charge's `capacitorBonus` per cycle.
 pub fn cap_users(calc: &Calc) -> Vec<cap_sim::User> {
+    cap_users_by_item(calc).into_iter().map(|(_, u)| u).collect()
+}
+
+/// The same, each user with the module it belongs to.
+pub fn cap_users_by_item(calc: &Calc) -> Vec<(ItemIdx, cap_sim::User)> {
     let mut users = Vec::new();
     for (i, it) in calc.modules() {
         if it.state < State::Active {
@@ -815,16 +820,42 @@ pub fn cap_users(calc: &Calc) -> Vec<cap_sim::User> {
             if need == 0.0 && give == 0.0 {
                 continue;
             }
-            users.push(cap_sim::User {
+            users.push((i, cap_sim::User {
                 cycle_ms: cycle_ms + calc.value(i, attr::MODULE_REACTIVATION_DELAY),
                 need,
                 give,
                 shots: load_cycles(calc, i),
                 reload_ms: calc.value(i, attr::RELOAD_TIME),
-            });
+            }));
         }
     }
     users
+}
+
+/// One fitted module's own figures, for the columns beside its name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleStat {
+    pub slot: Slot,
+    pub index: u8,
+    pub cpu: f64,
+    pub power: f64,
+    /// Capacitor drawn per second while running, after boosters' injections.
+    pub cap_per_s: f64,
+    pub dps: f64,
+}
+
+/// Every fitted module's CPU, powergrid, capacitor draw and damage, in the fit's order.
+pub fn module_stats(calc: &Calc, c: &Computed) -> Vec<ModuleStat> {
+    let cap = cap_users_by_item(calc);
+    let mut out = Vec::new();
+    for (i, it) in calc.modules() {
+        let ItemKind::Module { slot, index } = it.kind else { continue };
+        let cap_per_s: f64 = cap.iter().filter(|(j, _)| *j == i).map(|(_, u)| u.average_per_s()).sum();
+        let dps: f64 = c.weapons.iter().filter(|w| w.items.contains(&i)).map(|w| w.dps / w.items.len().max(1) as f64).sum();
+        let (cpu, power) = if it.state >= State::Online { (calc.value(i, attr::CPU), calc.value(i, attr::POWER)) } else { (0.0, 0.0) };
+        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps });
+    }
+    out
 }
 
 fn capacitor(calc: &Calc, _weapons: &[WeaponGroup]) -> Capacitor {

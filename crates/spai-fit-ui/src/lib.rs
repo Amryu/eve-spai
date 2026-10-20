@@ -14,6 +14,8 @@ use spai_fit::warnings::Warning;
 use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
+pub mod browser;
+pub mod dock;
 pub mod editor;
 pub mod fleet_panel;
 pub mod graphs_panel;
@@ -21,13 +23,17 @@ pub mod icons;
 pub mod library_panel;
 pub mod picker;
 pub mod plot;
+pub mod rows;
 pub mod stats_panel;
 pub mod text;
 pub mod variations_panel;
 pub mod warnings_panel;
 
+pub use browser::{drop_on, quick_add, DropTarget};
+pub use dock::DockTab;
 pub use fleet_panel::{FleetSession, FleetSummary};
 pub use picker::{PickTarget, Picker};
+pub use rows::DragItem;
 
 /// A pilot's skills to compute with.
 #[derive(Clone, Debug, PartialEq)]
@@ -146,12 +152,14 @@ pub struct Session {
     pub computed: Option<Arc<Computed>>,
     pub warnings: Vec<Warning>,
     pub missing: Vec<MissingSkill>,
+    /// Each fitted module's own draw and damage, for the table's columns.
+    pub module_stats: Vec<spai_fit::stats::ModuleStat>,
     pub dirty: bool,
 }
 
 impl Session {
     pub fn new(id: String, fit: Fit) -> Self {
-        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), dirty: false }
+        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false }
     }
 
     fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet) {
@@ -165,19 +173,34 @@ impl Session {
         let mut warnings = spai_fit::warnings::check(dogma, &resolved, &computed, &self.missing);
         warnings.extend(spai_fit::warnings::check(dogma, &self.fit, &computed, &[]).into_iter().filter(|w| matches!(w.kind, spai_fit::warnings::WarningKind::VariationConflict { .. })));
         self.warnings = warnings;
+        self.module_stats = spai_fit::stats::module_stats(&calc, &computed);
         self.computed = Some(Arc::new(computed));
         self.computed_for = Some((self.rev, profile));
     }
 }
 
-/// Which column a narrow window shows; a wide one shows the fit beside stats or warnings.
+/// Which column a narrow window shows; a wide one shows them side by side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     Library,
+    Browse,
     Fit,
     Stats,
     Graphs,
-    Warnings,
+}
+
+/// What the middle shows in a wide window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Center {
+    Fit,
+    Graphs,
+}
+
+/// What the left column shows: saved fits or the module browser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeftTab {
+    Fits,
+    Browse,
 }
 
 /// Fits or fleets: what the screens are about.
@@ -189,8 +212,8 @@ pub enum Mode {
 
 /// Below this width the stats and warnings become tabs over the fit instead of a column beside it.
 pub const NARROW: f32 = 1000.0;
-const SIDE_W: f32 = 240.0;
-const STATS_W: f32 = 340.0;
+const SIDE_W: f32 = 270.0;
+const STATS_W: f32 = 300.0;
 
 #[derive(Default)]
 pub struct ImportDialog {
@@ -223,7 +246,15 @@ pub struct SimUi {
     pub profile: usize,
     pub picker: Option<Picker>,
     pub pane: Pane,
+    pub center: Center,
+    pub left: LeftTab,
     pub show_library: bool,
+    pub browser: browser::Browser,
+    pub dock: dock::DockState,
+    pub warnings_expanded: bool,
+    pub skills_window: bool,
+    pub traits_window: bool,
+    pub graph_window: bool,
     pub import: Option<ImportDialog>,
     pub graph: spai_fit::graphs::GraphKind,
     pub graph_drones: bool,
@@ -258,7 +289,15 @@ impl Default for SimUi {
             profile: 0,
             picker: None,
             pane: Pane::Fit,
+            center: Center::Fit,
+            left: LeftTab::Browse,
             show_library: true,
+            browser: browser::Browser::default(),
+            dock: dock::DockState::default(),
+            warnings_expanded: false,
+            skills_window: false,
+            traits_window: false,
+            graph_window: false,
             import: None,
             graph: spai_fit::graphs::GraphKind::DamageVsDistance,
             graph_drones: true,
@@ -323,7 +362,14 @@ impl SimUi {
                 self.status(tr!("Saved").to_owned());
             }
             HostEvent::Status(s) => self.status(s),
-            HostEvent::Doctrines(d) => self.doctrines = d,
+            HostEvent::Doctrines(d) => {
+                for doc in &d {
+                    if let Ok(fit) = spai_fit::doc::from_json(&doc.doc.to_string()) {
+                        self.fit_docs.insert(doc.id.clone(), fit);
+                    }
+                }
+                self.doctrines = d;
+            }
             HostEvent::Access { signed_in, imperium, admin } => self.access = Access { signed_in, imperium, admin },
             HostEvent::FitDocs(docs) => {
                 for (id, doc) in docs {
@@ -433,6 +479,11 @@ impl SimUi {
         self.status = Some((text, 0.0));
     }
 
+    /// A short note in the top bar.
+    pub fn note(&mut self, text: String) {
+        self.status(text);
+    }
+
     pub fn skills(&self) -> &SkillSet {
         static ALL_V: std::sync::OnceLock<SkillSet> = std::sync::OnceLock::new();
         self.profiles.get(self.profile).map_or_else(|| ALL_V.get_or_init(SkillSet::all_v), |p| &p.skills)
@@ -529,6 +580,7 @@ impl SimUi {
             return;
         }
         let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
+        rows::clear_log(ui.ctx());
         self.computed();
         let narrow = ui.available_width() < NARROW;
         self.top_bar(ui, now_ms, narrow);
@@ -557,7 +609,7 @@ impl SimUi {
                 }
                 match (narrow, self.pane) {
                     (true, Pane::Library) => fleet_panel::library(self, ui, now_ms),
-                    (true, Pane::Stats | Pane::Graphs | Pane::Warnings) => fleet_panel::results(self, ui),
+                    (true, Pane::Stats | Pane::Graphs | Pane::Browse) => fleet_panel::results(self, ui),
                     _ => fleet_panel::editor(self, ui, now_ms),
                 }
             });
@@ -565,18 +617,17 @@ impl SimUi {
             return;
         }
         if self.show_library && !narrow {
-            egui::Panel::left("sim_library").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
-                library_panel::show(self, ui, now_ms);
+            egui::Panel::left("sim_left").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
+                self.left_tabs(ui);
+                match self.left {
+                    LeftTab::Fits => library_panel::show(self, ui, now_ms),
+                    LeftTab::Browse => browser::show(self, ui, now_ms),
+                }
             });
         }
-        if !narrow {
+        if !narrow && self.center == Center::Fit {
             egui::Panel::right("sim_stats").resizable(false).exact_size(STATS_W).show_inside(ui, |ui| {
-                self.side_tabs(ui);
-                match self.pane {
-                    Pane::Warnings => warnings_panel::show(self, ui),
-                    Pane::Graphs => graphs_panel::show(self, ui, now_ms),
-                    _ => stats_panel::show(self, ui),
-                }
+                stats_panel::show(self, ui);
             });
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
@@ -584,7 +635,7 @@ impl SimUi {
                 // Everything becomes a tab, so nothing is ever wider than the window.
                 ui.horizontal(|ui| {
                     use spai_ui::widgets::SteadySelect as _;
-                    let tabs = [(Pane::Library, tr!("Fits")), (Pane::Fit, tr!("Fit")), (Pane::Stats, tr!("Stats")), (Pane::Graphs, tr!("Graphs")), (Pane::Warnings, tr!("Warnings"))];
+                    let tabs = [(Pane::Library, tr!("Fits")), (Pane::Browse, tr!("Browse")), (Pane::Fit, tr!("Fit")), (Pane::Stats, tr!("Stats")), (Pane::Graphs, tr!("Graphs"))];
                     let w = egui::vec2(((ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0).max(40.0), 24.0);
                     for (pane, label) in tabs {
                         if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
@@ -594,11 +645,11 @@ impl SimUi {
                 });
                 ui.separator();
             }
-            match (narrow, self.pane) {
-                (true, Pane::Library) => library_panel::show(self, ui, now_ms),
-                (true, Pane::Stats) => stats_panel::show(self, ui),
-                (true, Pane::Graphs) => graphs_panel::show(self, ui, now_ms),
-                (true, Pane::Warnings) => warnings_panel::show(self, ui),
+            match (narrow, self.pane, self.center) {
+                (true, Pane::Library, _) => library_panel::show(self, ui, now_ms),
+                (true, Pane::Browse, _) => browser::show(self, ui, now_ms),
+                (true, Pane::Stats, _) => stats_panel::show(self, ui),
+                (true, Pane::Graphs, _) | (false, _, Center::Graphs) => graphs_panel::show(self, ui, now_ms),
                 _ => editor::show(self, ui, now_ms),
             }
         });
@@ -610,6 +661,24 @@ impl SimUi {
         picker::show_window(self, ctx, now_ms);
         self.import_window(ctx, now_ms);
         self.publish_window(ctx);
+        warnings_panel::skills_window(self, ctx);
+        graphs_panel::window(self, ctx, now_ms);
+    }
+
+    fn left_tabs(&mut self, ui: &mut egui::Ui) {
+        use spai_ui::widgets::SteadySelect as _;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(rows::GAP);
+            let w = egui::vec2((ui.available_width() - rows::GAP - ui.spacing().item_spacing.x) / 2.0, 22.0);
+            if ui.menu_label_sized(w, self.left == LeftTab::Fits, tr!("Fits")).clicked() {
+                self.left = LeftTab::Fits;
+            }
+            if ui.menu_label_sized(w, self.left == LeftTab::Browse, tr!("Browse")).clicked() {
+                self.left = LeftTab::Browse;
+            }
+        });
+        ui.separator();
     }
 
     fn loading(&mut self, ui: &mut egui::Ui) {
@@ -634,32 +703,14 @@ impl SimUi {
         });
     }
 
-    fn side_tabs(&mut self, ui: &mut egui::Ui) {
-        use spai_ui::widgets::SteadySelect as _;
-        ui.horizontal(|ui| {
-            let w = egui::vec2((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0, 24.0);
-            let warnings = self.session.as_ref().map_or(0, |s| s.warnings.len());
-            let label = if warnings > 0 { trf!("Warnings ({n})", n = warnings) } else { tr!("Warnings").to_owned() };
-            let stats = !matches!(self.pane, Pane::Warnings | Pane::Graphs);
-            if ui.menu_label_sized(w, stats, tr!("Stats")).clicked() {
-                self.pane = Pane::Stats;
-            }
-            if ui.menu_label_sized(w, self.pane == Pane::Graphs, tr!("Graphs")).clicked() {
-                self.pane = Pane::Graphs;
-            }
-            if ui.menu_label_sized(w, self.pane == Pane::Warnings, label).clicked() {
-                self.pane = Pane::Warnings;
-            }
-        });
-        ui.separator();
-    }
-
     fn top_bar(&mut self, ui: &mut egui::Ui, _now_ms: u64, narrow: bool) {
         use egui_phosphor::regular as icon;
         use spai_ui::widgets::icon_button;
         egui::Panel::top("sim_top").resizable(false).show_inside(ui, |ui| {
+            // Words on the buttons only when the bar has room for all of them.
+            let narrow = narrow || ui.available_width() < 1200.0;
             ui.horizontal(|ui| {
-                if icon_button(ui, icon::LIST).on_hover_text(tr!("Fit library")).clicked() {
+                if icon_button(ui, icon::SIDEBAR_SIMPLE).on_hover_text(tr!("Fits and browser column")).clicked() {
                     self.show_library = !self.show_library;
                 }
                 {
@@ -720,6 +771,20 @@ impl SimUi {
                 });
                 if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch skills from EVE")).clicked() {
                     self.requests.push(HostRequest::FetchSkills);
+                }
+                if self.mode == Mode::Fits && !narrow {
+                    ui.separator();
+                    use spai_ui::widgets::SteadySelect as _;
+                    let w = egui::vec2(64.0, 22.0);
+                    if ui.menu_label_sized(w, self.center == Center::Fit, tr!("Fit")).clicked() {
+                        self.center = Center::Fit;
+                    }
+                    if ui.menu_label_sized(w, self.center == Center::Graphs, tr!("Graphs")).clicked() {
+                        self.center = Center::Graphs;
+                    }
+                    if icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Graphs in their own window")).clicked() {
+                        self.graph_window = !self.graph_window;
+                    }
                 }
                 // A fixed slot for notes, so one appearing never moves the buttons; it takes what
                 // is left and nothing more.

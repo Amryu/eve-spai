@@ -242,3 +242,126 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     s.handle(HostEvent::Fleet { id: "enemy".into(), doc: "nope".into() });
     assert_eq!(s.fleet.as_ref().unwrap().id, *id, "a broken fleet document changes nothing");
 }
+
+#[test]
+fn a_double_click_puts_each_kind_where_it_belongs() {
+    use crate::browser::quick_add;
+    let mut s = sim();
+    assert!(!quick_add(&mut s, ids::GUN, 1), "no hull yet: a module has nowhere to go");
+    assert!(quick_add(&mut s, ids::SHIP, 1));
+    assert!(s.session.is_some());
+    assert!(quick_add(&mut s, ids::GUN, 2) && quick_add(&mut s, ids::GUN, 3));
+    let fit = |s: &SimUi| s.session.as_ref().unwrap().fit.clone();
+    assert_eq!(fit(&s).rack(Slot::High).map(|m| m.index).collect::<Vec<_>>(), vec![0, 1], "the first free slots");
+    quick_add(&mut s, ids::AMMO_LONG, 4);
+    assert!(fit(&s).rack(Slot::High).all(|m| m.charge == Some(ids::AMMO_LONG)), "a charge loads every weapon that takes it");
+    assert!(fit(&s).cargo.is_empty());
+    quick_add(&mut s, ids::CAP_CHARGE, 5);
+    assert_eq!(fit(&s).cargo.len(), 1, "a charge nothing takes goes to the cargo");
+    quick_add(&mut s, ids::DRONE, 6);
+    quick_add(&mut s, ids::DRONE, 7);
+    assert_eq!(fit(&s).drones[0].count, 2);
+    quick_add(&mut s, ids::IMPLANT, 8);
+    quick_add(&mut s, ids::IMPLANT, 9);
+    assert_eq!(fit(&s).implants, vec![ids::IMPLANT], "one implant per slot: the second replaces the first");
+    quick_add(&mut s, ids::BOOSTER, 10);
+    assert_eq!(fit(&s).boosters.len(), 1);
+    assert!(fit(&s).cargo.iter().all(|c| c.type_id != ids::IMPLANT && c.type_id != ids::BOOSTER), "worn things never land in the cargo");
+    quick_add(&mut s, ids::SHIP, 11);
+    assert_eq!(fit(&s).ship, ids::SHIP);
+}
+
+#[test]
+fn a_drop_lands_only_where_it_makes_sense() {
+    use crate::browser::{drop_on, DropTarget};
+    use crate::dock::DockTab;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    assert!(drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::GUN, 1));
+    assert!(!drop_on(&mut s, DropTarget::Module(Slot::Mid, 0), ids::GUN, 2), "a high-slot module on a mid slot");
+    assert!(drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::AMMO, 3), "a charge on the gun that takes it");
+    assert!(!drop_on(&mut s, DropTarget::Module(Slot::High, 0), ids::AMMO, 4), "no module there");
+    assert!(!drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::PASTE, 5), "paste does not go in a gun");
+    let fit = |s: &SimUi| s.session.as_ref().unwrap().fit.clone();
+    assert_eq!(fit(&s).module(Slot::High, 1).unwrap().charge, Some(ids::AMMO));
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::IMPLANT, 6));
+    assert_eq!((fit(&s).implants.len(), fit(&s).cargo.len()), (1, 0), "an implant dropped on the cargo is worn, not carried");
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Drones), ids::BOOSTER, 7));
+    assert_eq!(fit(&s).boosters.len(), 1);
+    assert!(!drop_on(&mut s, DropTarget::Dock(DockTab::Drones), ids::AMMO, 8));
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::AMMO, 9));
+    assert_eq!(fit(&s).cargo.len(), 1);
+    assert!(!drop_on(&mut s, DropTarget::Hull, ids::GUN, 10));
+    assert!(drop_on(&mut s, DropTarget::Hull, ids::SHIP, 11));
+    assert!(drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::GUN, 12), "a module on a full slot replaces what is there");
+    assert_eq!(fit(&s).rack(Slot::High).count(), 1);
+}
+
+#[test]
+fn the_browser_tree_holds_only_groups_with_something_in_them() {
+    use crate::browser::Tree;
+    let d = dataset();
+    let t = Tree::build(&d);
+    let roots: Vec<&str> = t.roots().iter().map(|g| t.name(*g)).collect();
+    assert_eq!(roots, vec!["Ammunition & Charges", "Drones", "Fighters", "Implants & Boosters", "Ship Equipment", "Ship Modifications", "Ships"]);
+    let equipment = t.roots().iter().copied().find(|g| t.name(*g) == "Ship Equipment").unwrap();
+    let children: Vec<&str> = t.children(equipment).iter().map(|g| t.name(*g)).collect();
+    assert!(children.contains(&"Turrets & Launchers") && children.contains(&"Propulsion"), "{children:?}");
+    assert!(!children.contains(&"Hull & Armor") || t.children(equipment).iter().any(|g| !t.types(*g).is_empty()));
+    let turrets = t.children(equipment).iter().copied().find(|g| t.name(*g) == "Turrets & Launchers").unwrap();
+    let projectile = t.children(turrets).iter().copied().find(|g| t.name(*g) == "Projectile Turrets").unwrap();
+    assert!(t.types(projectile).contains(&ids::GUN));
+    assert_eq!(t.path(&d, projectile), "Ship Equipment › Turrets & Launchers › Projectile Turrets");
+    let mut b = crate::browser::Browser::default();
+    b.query = "auto".into();
+    assert_eq!(b.search(&d), &[ids::GUN]);
+    b.query = "II".into();
+    assert!(b.search(&d).len() > 3);
+    b.query = String::new();
+    assert!(b.search(&d).is_empty(), "no query, no hits: the tree shows instead");
+}
+
+#[test]
+fn the_dock_shows_as_many_panels_as_fit_from_the_chosen_tab() {
+    use crate::dock::{visible, DockTab, PANEL_W};
+    let tabs = [DockTab::Drones, DockTab::Implants, DockTab::Boosters, DockTab::Cargo];
+    assert_eq!(visible(PANEL_W - 1.0, &tabs, 0), vec![DockTab::Drones], "too narrow for two: one panel");
+    assert_eq!(visible(PANEL_W * 2.5, &tabs, 0), vec![DockTab::Drones, DockTab::Implants]);
+    assert_eq!(visible(PANEL_W * 2.5, &tabs, 3), vec![DockTab::Boosters, DockTab::Cargo], "the last tab chosen: the window slides back so two still show");
+    assert_eq!(visible(PANEL_W * 10.0, &tabs, 2), tabs.to_vec());
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    assert_eq!(crate::dock::tabs(&s), vec![DockTab::Drones, DockTab::Implants, DockTab::Boosters, DockTab::Cargo], "a frigate has no fighter bay");
+    s.edit(EditKind::Drones, 1, |f| f.fighters.push(spai_fit::fit::FighterSquad { type_id: ids::FIGHTER, count: 1, active: true }));
+    assert!(crate::dock::tabs(&s).contains(&DockTab::Fighters));
+}
+
+#[test]
+fn module_rows_carry_their_own_draw_and_the_states_they_can_take() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Module(Slot::Low, 0), ids::DC, 2);
+    s.computed();
+    let stats = s.session.as_ref().unwrap().module_stats.clone();
+    assert_eq!(stats.len(), 2);
+    assert!(stats.iter().any(|m| m.slot == Slot::High && m.cpu > 0.0));
+    let d = dataset();
+    assert_eq!(crate::editor::states_of(&d, ids::DC), vec![State::Offline, State::Online], "a damage control is never active");
+    assert_eq!(crate::editor::next_state(&d, ids::DC, State::Online), State::Offline);
+    assert_eq!(crate::editor::next_state(&d, ids::GUN, State::Online), State::Active);
+    assert_eq!(crate::editor::next_state(&d, ids::GUN, State::Offline), State::Online);
+}
+
+#[test]
+fn rows_of_a_list_must_share_one_height_and_pitch() {
+    use crate::rows::uneven_lists;
+    let id = egui::Id::new("list");
+    let r = |y: f32, h: f32| egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(100.0, h));
+    assert!(uneven_lists(&[(id, r(0.0, 24.0)), (id, r(26.0, 24.0)), (id, r(52.0, 24.0))]).is_empty());
+    assert!(uneven_lists(&[(id, r(0.0, 24.0)), (id, r(0.0, 24.0)), (id, r(26.0, 24.0))]).is_empty(), "two panels side by side");
+    assert_eq!(uneven_lists(&[(id, r(0.0, 24.0)), (id, r(26.0, 30.0))]).len(), 1, "a taller row");
+    assert_eq!(uneven_lists(&[(id, r(0.0, 24.0)), (id, r(26.0, 24.0)), (id, r(60.0, 24.0))]).len(), 1, "a gap");
+    let other = egui::Id::new("other");
+    assert!(uneven_lists(&[(id, r(0.0, 24.0)), (other, r(0.0, 30.0))]).is_empty(), "lists are judged apart");
+}

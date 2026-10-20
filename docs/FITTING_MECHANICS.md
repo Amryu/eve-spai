@@ -215,6 +215,11 @@ in the band fitting tools agree on.
 | Sensors | Strength and kind: the largest of 208–211; locked targets: the lower of the ship's and the pilot's `maxLockedTargets` (192). |
 | Drones | Control range: the pilot's `droneControlDistance` (458); bandwidth: Σ `droneBandwidthUsed` (1272) of drones in space against the ship's 1271; bay: Σ volume against `droneCapacity` (283); in space at most the pilot's `maxActiveDrones` (352). |
 
+**Per module** (`stats::module_stats`): each fitted module's CPU and powergrid (zero while
+offline), its capacitor draw per second (the same users the simulation runs, section 10, by
+module) and its share of its weapon group's DPS (the group's DPS over the modules in it). The
+fit table shows these beside the module.
+
 ## 10. Capacitor simulation (`stats::cap_sim`)
 
 Event-driven, as pyfa's `capSim.py`:
@@ -384,8 +389,10 @@ section 17), neuts, the slowest and fastest hull.
 
 **Against** (`fleet::against`), fleet A on fleet B's main hull at A's engagement range:
 
-- The target as A's ewar leaves it: each web −60% speed, each painter +30% signature, penalised
-  like modules; B's tracking disruptors cut A's turret optimal, falloff and tracking by 17.19%
+- A's ewar on the target: unless typed by hand (`ewar_auto` off), what A's ships project,
+  every web, painter and tracking disruptor fitted times the ships carrying it
+  (`FleetStats.projected`); each web −60% speed, each painter +30% signature, penalised like
+  modules; B's tracking disruptors cut A's turret optimal, falloff and tracking by 17.19%
   each, penalised. The target moves fully transversally at its speed.
 - Applied DPS and volley: each weapon group's listed figure times its applied share (section 14),
   summed by count.
@@ -395,5 +402,10 @@ section 17), neuts, the slowest and fastest hull.
 - Kills per volley: `applied volley × efficiency / EHP`.
 - Break point: B's logistics plus B's main hull's own repairs per second; the margin is A's
   applied DPS × efficiency above it, negative when B out-repairs A.
+
+**From a doctrine** (`fleet::from_doctrine`): every preset of a doctrine becomes a slot with a
+rule by its hull's group: logistics 15 %, command ships and command destroyers 2, interdictors
+and heavy interdictors 3, recons and electronic attack ships 2, everything else fills; the first
+filling slot is the main; a fit with an active command burst becomes the booster of that kind.
 
 Tests: `fleet::tests::*`, `spai-fit-ui` `fleets_ask_for_fit_documents_and_compute_once_they_arrive`.

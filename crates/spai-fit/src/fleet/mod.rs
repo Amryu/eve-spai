@@ -8,7 +8,8 @@ use crate::dogma::{attr, Dogma};
 use crate::fit::{Fit, State, TargetProfile};
 use crate::ids::BuffId;
 use crate::skills::SkillSet;
-use crate::stats::{application::applied_factor, compute_with, Computed, WeaponKind};
+use crate::ids::{GroupId, TypeId};
+use crate::stats::{application::applied_factor, compute_with, Computed, RemoteKind, WeaponKind};
 
 /// How many of a fit fly, for a fleet of a given size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,14 +94,20 @@ pub struct Fleet {
     pub range: f32,
     /// The share of a volley that lands in practice: mechanical failures, lacking skills.
     pub volley_efficiency: f32,
-    /// What this fleet keeps on the enemy.
+    /// What this fleet keeps on the enemy, typed by hand; without it, what its ships project.
     pub ewar: Ewar,
+    #[serde(default = "default_true")]
+    pub ewar_auto: bool,
     pub notes: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Fleet {
     fn default() -> Self {
-        Fleet { id: String::new(), name: String::new(), size: 50, slots: Vec::new(), boosters: Vec::new(), main: None, range: 30_000.0, volley_efficiency: 0.85, ewar: Ewar::default(), notes: String::new() }
+        Fleet { id: String::new(), name: String::new(), size: 50, slots: Vec::new(), boosters: Vec::new(), main: None, range: 30_000.0, volley_efficiency: 0.85, ewar: Ewar::default(), ewar_auto: true, notes: String::new() }
     }
 }
 
@@ -185,6 +192,9 @@ pub struct SlotStats {
 #[derive(Clone, Debug, Default)]
 pub struct FleetStats {
     pub name: String,
+    /// What the fleet's ships project on one target: every web, painter and disruptor fitted,
+    /// times the ships that carry it.
+    pub projected: Ewar,
     pub ships: u32,
     pub slots: Vec<SlotStats>,
     pub dps: f64,
@@ -218,6 +228,15 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
         let n = f64::from(count);
         out.dps += computed.dps() * n;
         out.volley += computed.volley() * n;
+        for m in &computed.remote.modules {
+            let slot = match m.kind {
+                RemoteKind::Web => &mut out.projected.webs,
+                RemoteKind::Painter => &mut out.projected.painters,
+                RemoteKind::TrackingDisruptor => &mut out.projected.tracking_disruptors,
+                _ => continue,
+            };
+            *slot += count;
+        }
         out.logi_rep += (computed.remote.armor_rep + computed.remote.shield_rep) * n;
         out.neut += computed.remote.neut * n;
         if count > 0 {
@@ -263,17 +282,28 @@ pub struct Against {
     pub target_signature: f64,
 }
 
-/// `a` shooting at `b`'s main hull at `a.range`, with `a.ewar` on it and `b.ewar` on `a`'s guns.
+/// The ewar a fleet keeps on the enemy: what its ships project unless typed by hand.
+pub fn ewar_of(fleet: &Fleet, stats: &FleetStats) -> Ewar {
+    if fleet.ewar_auto {
+        stats.projected
+    } else {
+        fleet.ewar
+    }
+}
+
+/// `a` shooting at `b`'s main hull at `a.range`, with `a`'s ewar on it and `b`'s on `a`'s guns.
 pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stats: &FleetStats) -> Against {
     let mut out = Against::default();
     let Some(target) = b_stats.main() else { return out };
     let t = &target.computed;
-    let (velocity, signature) = ewar_on_target(&a.ewar, t.mobility.max_velocity, t.mobility.signature);
+    let a_ewar = ewar_of(a, a_stats);
+    let b_ewar = ewar_of(b, b_stats);
+    let (velocity, signature) = ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature);
     out.target_velocity = velocity;
     out.target_signature = signature;
     let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0 };
     // Tracking disruptors on the shooters: weaker range and tracking, penalised.
-    let td: Vec<(crate::dogma::Op, f64, bool)> = (0..b.ewar.tracking_disruptors).map(|_| (crate::dogma::Op::PostPercent, -17.19, true)).collect();
+    let td: Vec<(crate::dogma::Op, f64, bool)> = (0..b_ewar.tracking_disruptors).map(|_| (crate::dogma::Op::PostPercent, -17.19, true)).collect();
     let td_factor = crate::calc::combine(1.0, true, &td);
     let mut main_volley_per_ship = 0.0;
     for (i, slot) in a_stats.slots.iter().enumerate() {
@@ -305,6 +335,51 @@ pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stat
     out.margin = out.applied_dps * eff - out.break_point;
     let _ = dogma;
     out
+}
+
+/// What a hull does in a fleet, by its group: the rule a doctrine preset gets as a slot.
+pub fn role_rule(dogma: &Dogma, ship: TypeId) -> CountRule {
+    const LOGI: [GroupId; 3] = [832, 1527, 1538];
+    const COMMAND: [GroupId; 2] = [540, 1534];
+    const TACKLE: [GroupId; 2] = [541, 894];
+    const EWAR: [GroupId; 3] = [833, 906, 893];
+    let Some(group) = dogma.type_(ship).map(|t| t.group) else { return CountRule::Fill { min: 0, max: 1000 } };
+    if LOGI.contains(&group) {
+        CountRule::Percent(15.0)
+    } else if COMMAND.contains(&group) {
+        CountRule::Fixed(2)
+    } else if TACKLE.contains(&group) {
+        CountRule::Fixed(3)
+    } else if EWAR.contains(&group) {
+        CountRule::Fixed(2)
+    } else {
+        CountRule::Fill { min: 0, max: 1000 }
+    }
+}
+
+/// A fleet from a doctrine's presets: every fit a slot with its role's rule, the first line ship
+/// the main, and the booster fits by the bursts they carry.
+pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: &SkillSet) -> Fleet {
+    let mut fleet = Fleet { name: name.to_owned(), ..Fleet::default() };
+    for (id, fit) in fits {
+        let rule = role_rule(dogma, fit.ship);
+        if fleet.main.is_none() && matches!(rule, CountRule::Fill { .. }) {
+            fleet.main = Some(fleet.slots.len());
+        }
+        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None });
+        let calc = Calc::new(dogma, fit, skills, &Env::default());
+        for (i, it) in calc.modules() {
+            if it.state < State::Active {
+                continue;
+            }
+            for kind in BurstKind::ALL {
+                if calc.effect_names(i).any(|n| n == kind.effect()) && !fleet.boosters.iter().any(|(k, _)| *k == kind) {
+                    fleet.boosters.push((kind, id.clone()));
+                }
+            }
+        }
+    }
+    fleet
 }
 
 #[cfg(test)]

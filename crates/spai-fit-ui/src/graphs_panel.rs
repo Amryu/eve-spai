@@ -1,8 +1,8 @@
-//! The graphs tab: which curve, what target, and the chart.
+//! The graphs: a kind to pick, the target's figures, and the curves drawn large in the middle or
+//! in a window of their own.
 
 use spai_fit::graphs::{self, GraphKind, GraphSpec, SeriesLabel};
 use spai_fit::history::EditKind;
-use spai_ui::widgets::SteadySelect as _;
 use spai_ui::{tr, trf};
 
 use crate::plot::{series_color, Plot, PlotSeries};
@@ -23,19 +23,13 @@ pub fn kind_name(kind: GraphKind) -> &'static str {
     }
 }
 
-fn axes(kind: GraphKind) -> (&'static str, &'static str, fn(f64) -> String, fn(f64) -> String) {
-    fn km(v: f64) -> String {
-        format!("{:.0} km", v / 1000.0)
-    }
-    fn plain(v: f64) -> String {
-        text::num(v)
-    }
-    fn s(v: f64) -> String {
-        format!("{v:.0} s")
-    }
-    fn au(v: f64) -> String {
-        format!("{v:.0} AU")
-    }
+type Fmt = fn(f64) -> String;
+
+fn axes(kind: GraphKind) -> (&'static str, &'static str, Fmt, Fmt) {
+    let km: Fmt = text::metres;
+    let s: Fmt = |v| format!("{v:.0} s");
+    let au: Fmt = |v| format!("{v:.0} AU");
+    let plain: Fmt = text::num;
     match kind {
         GraphKind::DamageVsDistance => (tr!("Distance"), tr!("DPS"), km, plain),
         GraphKind::DamageVsTargetSpeed => (tr!("Target speed (m/s)"), tr!("DPS"), plain, plain),
@@ -50,52 +44,71 @@ fn axes(kind: GraphKind) -> (&'static str, &'static str, fn(f64) -> String, fn(f
     }
 }
 
+/// The graphs filling the space given: the controls on top, the plot below.
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
     let Some(computed) = sim.computed() else {
+        ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!("No fit open.")).weak());
         return;
     };
     let kind = sim.graph;
-    egui::ComboBox::from_id_salt("sim_graph_kind").selected_text(kind_name(kind)).width(ui.available_width().min(260.0)).show_ui(ui, |ui| {
-        for k in GraphKind::ALL {
-            ui.menu_value(&mut sim.graph, k, kind_name(k));
-        }
-    });
     let mut target = sim.session.as_ref().map(|s| s.fit.target.clone()).unwrap_or_default();
+    let before = target.clone();
     let damage = matches!(kind, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature);
-    if damage {
-        let before = target.clone();
-        egui::Grid::new("sim_graph_target").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+    // Each control a cell of known size, so the row wraps whole controls, value box included.
+    let cell = egui::vec2(330.0, 26.0);
+    let slider_w = 150.0;
+    let slider = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.allocate_ui_with_layout(cell, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().slider_width = slider_w;
+            ui.add_sized([104.0, 20.0], egui::Label::new(label).truncate().halign(egui::Align::LEFT));
+            add(ui);
+        });
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+        ui.allocate_ui_with_layout(egui::vec2(250.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            egui::ComboBox::from_id_salt("sim_graph_kind").selected_text(kind_name(kind)).width(240.0).show_ui(ui, |ui| {
+                use spai_ui::widgets::SteadySelect as _;
+                for k in GraphKind::ALL {
+                    ui.menu_value(&mut sim.graph, k, kind_name(k));
+                }
+            });
+        });
+        if damage {
             if kind != GraphKind::DamageVsTargetSignature {
-                ui.label(tr!("Target signature"));
-                ui.add(egui::Slider::new(&mut target.signature, 25.0..=2000.0).logarithmic(true).suffix(" m"));
-                ui.end_row();
+                slider(ui, tr!("Target signature"), &mut |ui| {
+                    ui.add(egui::Slider::new(&mut target.signature, 25.0..=2000.0).logarithmic(true).suffix(" m"));
+                });
             }
             if kind != GraphKind::DamageVsTargetSpeed {
-                ui.label(tr!("Target speed"));
-                ui.add(egui::Slider::new(&mut target.velocity, 0.0..=5000.0).suffix(" m/s"));
-                ui.end_row();
-                ui.label(tr!("Transversal"));
-                ui.add(egui::Slider::new(&mut target.transversal, 0.0..=5000.0).suffix(" m/s"));
-                ui.end_row();
+                slider(ui, tr!("Target speed"), &mut |ui| {
+                    ui.add(egui::Slider::new(&mut target.velocity, 0.0..=5000.0).suffix(" m/s"));
+                });
+                slider(ui, tr!("Transversal"), &mut |ui| {
+                    ui.add(egui::Slider::new(&mut target.transversal, 0.0..=5000.0).suffix(" m/s"));
+                });
             }
             if kind != GraphKind::DamageVsDistance {
-                ui.label(tr!("Distance"));
-                ui.add(egui::Slider::new(&mut target.distance, 0.0..=250_000.0).logarithmic(true).custom_formatter(|v, _| text::metres(v)));
-                ui.end_row();
+                slider(ui, tr!("Distance"), &mut |ui| {
+                    ui.add(egui::Slider::new(&mut target.distance, 0.0..=250_000.0).custom_formatter(|v, _| text::metres(v)));
+                });
             }
-        });
-        if target != before {
-            let t = target.clone();
-            sim.edit(EditKind::Target, now_ms, move |f| f.target = t);
+            ui.allocate_ui_with_layout(egui::vec2(160.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.checkbox(&mut sim.graph_drones, tr!("Include drones"));
+            });
         }
-        ui.checkbox(&mut sim.graph_drones, tr!("Include drones"));
+    });
+    if target != before {
+        let t = target.clone();
+        sim.edit(EditKind::Target, now_ms, move |f| f.target = t);
     }
     let spec = GraphSpec { include_drones: sim.graph_drones, ..GraphSpec::new(kind, target) };
     let cap = sim.cap_inputs();
     let series = graphs::sample(&computed, &spec, cap.as_ref());
     if series.is_empty() {
+        ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
         return;
     }
@@ -133,8 +146,21 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             })
             .collect(),
     };
-    let height = (ui.available_height() - 8.0).clamp(220.0, 420.0);
+    let height = (ui.available_height() - 8.0).max(200.0);
     plot.show(ui, height);
+}
+
+/// The graphs in a window of their own, over everything, while `graph_window` is on.
+pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
+    if !sim.graph_window {
+        return;
+    }
+    let mut open = true;
+    let size = egui::vec2(760.0, 480.0);
+    egui::Window::new(tr!("Graphs")).id(egui::Id::new("sim_graph_window")).open(&mut open).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        show(sim, ui, now_ms);
+    });
+    sim.graph_window = open;
 }
 
 /// What a remote curve's numbers are.

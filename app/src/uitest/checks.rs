@@ -150,6 +150,11 @@ fn wrapped_lead_in(a: &Widget, b: &Widget) -> bool {
         && wrapped.rect.height() - lead.rect.height() > 8.0
 }
 
+/// Every node past `x`, any role: for finding what widens a scene.
+pub(crate) fn past_right_edge(harness: &Harness<'_>, x: f32) -> Vec<String> {
+    collect(harness).into_iter().filter(|w| w.rect.max.x > x + 0.5).map(|w| w.describe()).collect()
+}
+
 /// Inspects the rendered pass for the layout faults that are invisible in a passing test but
 /// obvious in a screenshot: click targets on top of each other, widgets pushed out of the window,
 /// hit rects with no area, and content too wide for the space it was given.

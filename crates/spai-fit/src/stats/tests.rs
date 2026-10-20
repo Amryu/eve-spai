@@ -242,3 +242,28 @@ fn remote_modules_are_listed_with_their_reach_and_fighters_shoot_like_missiles()
     let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
     assert!(c.weapons.iter().all(|w| w.kind != crate::stats::WeaponKind::Fighter));
 }
+
+#[test]
+fn module_stats_give_each_module_its_fitting_draw_and_damage() {
+    use crate::stats::module_stats;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+    f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO).with_state(State::Active));
+    f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Offline));
+    f.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
+    let calc = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let c = compute_with(&calc, &f);
+    let m = module_stats(&calc, &c);
+    assert_eq!(m.len(), 4);
+    let gun = m.iter().find(|x| x.slot == Slot::High && x.index == 0).unwrap();
+    let group = c.weapons.iter().find(|w| w.type_id == ids::GUN).unwrap();
+    assert!((gun.dps - group.dps / 2.0).abs() < 1e-9, "each gun carries half the group's DPS");
+    assert!(gun.cpu > 0.0 && gun.power > 0.0 && gun.cap_per_s == 0.0, "{gun:?}: autocannons draw no capacitor");
+    let dc = m.iter().find(|x| x.slot == Slot::Low && x.index == 0).unwrap();
+    assert_eq!((dc.cpu, dc.power, dc.cap_per_s, dc.dps), (0.0, 0.0, 0.0, 0.0), "offline: nothing drawn");
+    let rep = m.iter().find(|x| x.slot == Slot::Low && x.index == 1).unwrap();
+    assert!(rep.cap_per_s > 0.0 && rep.dps == 0.0);
+    let total: f64 = m.iter().map(|x| x.cpu).sum();
+    assert!((total - c.fitting.cpu_used).abs() < 1e-6);
+}

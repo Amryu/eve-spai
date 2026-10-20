@@ -2590,8 +2590,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene("imperium_fit_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Stats));
     v.push(imperium_scene("imperium_fit_narrow", [720.0, 800.0], false, spai_fit_ui::Pane::Fit));
     v.push(imperium_scene("imperium_fit_narrow_stats", [720.0, 800.0], false, spai_fit_ui::Pane::Stats));
-    v.push(imperium_scene("imperium_fit_extreme", [1280.0, 900.0], true, spai_fit_ui::Pane::Warnings));
-    v.push(imperium_scene("imperium_fit_extreme_narrow", [640.0, 900.0], true, spai_fit_ui::Pane::Warnings));
+    v.push(imperium_scene("imperium_fit_extreme", [1280.0, 900.0], true, spai_fit_ui::Pane::Fit));
+    v.push(imperium_scene("imperium_fit_extreme_narrow", [640.0, 900.0], true, spai_fit_ui::Pane::Fit));
     v.push(imperium_scene("imperium_graphs_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs));
     v.push(imperium_scene("imperium_graphs_narrow", [720.0, 800.0], true, spai_fit_ui::Pane::Graphs));
     v.push(imperium_scene_with("imperium_graphs_cap", [1280.0, 800.0], true, spai_fit_ui::Pane::Graphs, |sim| {
@@ -2624,6 +2624,36 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
         sim.start_publish();
         sim.publish.as_mut().unwrap().tags = "alpha, armor".into();
+    }));
+    v.push(imperium_scene_with("imperium_browse", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.left = spai_fit_ui::LeftTab::Browse;
+        sim.browser.expanded.extend([9, 10, 11, 13]);
+    }));
+    v.push(imperium_scene_with("imperium_browse_search_narrow", [720.0, 800.0], false, spai_fit_ui::Pane::Browse, |sim| {
+        sim.browser.query = "II".into();
+    }));
+    v.push(imperium_scene_with("imperium_graphs_center", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.center = spai_fit_ui::Center::Graphs;
+    }));
+    v.push(imperium_dialog_scene("imperium_graph_window", [820.0, 560.0], |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| {
+            f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+            f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 1).with_charge(ids::MISSILE).with_state(State::Active));
+        });
+        sim.graph_window = true;
+    }));
+    v.push(imperium_scene_with("imperium_fit_bare", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.new_fit(spai_fit::test_support::ids::SHIP, 0);
+    }));
+    v.push(imperium_scene_with("imperium_fit_two_docks", [1100.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.dock.first = 2;
+        sim.show_library = false;
+    }));
+    v.push(imperium_scene_with("imperium_fit_many_warnings", [1280.0, 800.0], true, spai_fit_ui::Pane::Fit, |sim| {
+        sim.warnings_expanded = true;
+        sim.skills_window = true;
     }));
     v.push(imperium_scene_with("imperium_graphs_remote", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| {
         use spai_fit::fit::{Module, Slot, State};
@@ -3388,8 +3418,36 @@ fn uitest_layout() {
         if !report.is_empty() {
             failures.push(report.render(name));
         }
+        // The simulator's lists: every row of a list at one height and one pitch, so a button
+        // or a long name never grows its row.
+        let uneven = spai_fit_ui::rows::uneven_lists(&spai_fit_ui::rows::log(&harness.ctx));
+        if !uneven.is_empty() {
+            failures.push(format!("{name}:\n  [uneven rows] {}", uneven.join("\n  [uneven rows] ")));
+        }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// `SPAI_SHOT_ONLY=<scene>`: every node past the window's right edge, any role, for a scene the
+/// layout gate reports as too wide without naming the widget.
+#[test]
+#[ignore = "diagnostic; run with --ignored and SPAI_SHOT_ONLY"]
+fn uitest_past_edge() {
+    let only = std::env::var("SPAI_SHOT_ONLY").unwrap_or_default();
+    for mut scene in all().into_iter().filter(|s| !only.is_empty() && s.name == only) {
+        let size = scene.size;
+        scene.density = 1.0;
+        let mut harness = harness::build(&mut scene, false);
+        for line in super::checks::past_right_edge(&harness, size.x) {
+            eprintln!("{line}");
+        }
+        eprintln!("used: {:?}", harness.ctx.globally_used_rect());
+        harness.ctx.memory(|m| {
+            for l in m.areas().visible_layer_ids() {
+                eprintln!("area {:?} {:?} {:?}", l.id, l.order, m.area_rect(l.id));
+            }
+        });
+    }
 }
 
 #[test]

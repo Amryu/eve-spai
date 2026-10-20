@@ -18,6 +18,7 @@ pub enum PickTarget {
     Module(Slot, u8),
     Charge(Slot, u8),
     Drone,
+    Fighter,
     Implant,
     Booster,
     Cargo,
@@ -45,6 +46,7 @@ impl Picker {
             PickTarget::Module(slot, _) => trf!("Choose a {slot} module", slot = slot_name(slot)),
             PickTarget::Charge(..) => tr!("Choose a charge").to_owned(),
             PickTarget::Drone => tr!("Choose a drone").to_owned(),
+            PickTarget::Fighter => tr!("Choose a fighter").to_owned(),
             PickTarget::Implant => tr!("Choose an implant").to_owned(),
             PickTarget::Booster => tr!("Choose a booster").to_owned(),
             PickTarget::Cargo => tr!("Add cargo").to_owned(),
@@ -107,6 +109,7 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
                 PickTarget::Module(slot, _) => (t.category == category::MODULE || t.category == category::SUBSYSTEM) && dogma.slot_of(t.id) == Some(slot),
                 PickTarget::Charge(..) => false,
                 PickTarget::Drone => t.category == category::DRONE,
+                PickTarget::Fighter => t.category == category::FIGHTER,
                 PickTarget::Implant => place_of(dogma, t) == Place::Implant,
                 PickTarget::Booster => place_of(dogma, t) == Place::Booster,
                 PickTarget::Cargo => t.category == category::CHARGE,
@@ -144,9 +147,12 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
                 m.charge = Some(type_id);
             }
         }),
-        PickTarget::Drone | PickTarget::Implant | PickTarget::Booster | PickTarget::Cargo => sim.edit(EditKind::Drones, now_ms, |f| {
+        PickTarget::Drone | PickTarget::Fighter | PickTarget::Cargo => sim.edit(EditKind::Drones, now_ms, |f| {
             spai_fit::formats::add_item(&dogma, f, type_id, 1);
         }),
+        PickTarget::Implant | PickTarget::Booster => {
+            crate::browser::quick_add(sim, type_id, now_ms);
+        }
     }
 }
 
@@ -187,15 +193,15 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                 let id = picker.results[i];
                 let Some(t) = dogma.type_(id) else { continue };
                 let group = dogma.group(t.group).map_or("", |g| g.name.as_str());
-                ui.horizontal(|ui| {
-                    ui.set_height(24.0);
-                    crate::icons::type_icon(ui, id, 20.0);
+                let r = crate::rows::row(ui, "picker", ("sim_pick", id), 24.0, false, |ui| {
+                    crate::icons::type_icon(ui, id, 18.0);
                     let w = (ui.available_width() - 120.0).max(80.0);
-                    if crate::editor::name_cell(ui, w, egui::RichText::new(t.name.as_str()), &t.name).clicked() {
-                        chosen = Some(id);
-                    }
+                    crate::rows::cell(ui, w, egui::RichText::new(t.name.as_str()), &t.name);
                     ui.add(egui::Label::new(egui::RichText::new(crate::text::clip(group, 18)).weak()).truncate());
                 });
+                if r.clicked() {
+                    chosen = Some(id);
+                }
             }
         });
     });

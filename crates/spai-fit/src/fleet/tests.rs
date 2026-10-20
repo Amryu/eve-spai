@@ -105,6 +105,7 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert!(far.applied_dps < close.applied_dps * 0.2, "{} vs {}", far.applied_dps, close.applied_dps);
     let mut b_fast = b.clone();
     b_fast.ewar.tracking_disruptors = 2;
+    b_fast.ewar_auto = false;
     let disrupted = against(&d, &a, &sa, &b_fast, &sb);
     assert!(disrupted.applied_dps < far.applied_dps);
     a.range = 500.0;
@@ -114,6 +115,7 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert!(fast.applied_dps < close.applied_dps, "a fast target takes less");
     a.ewar.webs = 2;
     a.ewar.painters = 1;
+    a.ewar_auto = false;
     let webbed = against(&d, &a, &sa, &b, &moving);
     assert!(webbed.applied_dps > fast.applied_dps);
     let (v, sig) = ewar_on_target(&a.ewar, 2000.0, 100.0);
@@ -125,4 +127,40 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert!(full.critical_mass.unwrap() <= close.critical_mass.unwrap());
     let json = serde_json::to_string(&a).unwrap();
     assert_eq!(serde_json::from_str::<Fleet>(&json).unwrap(), a);
+}
+
+#[test]
+fn a_fleets_ewar_comes_from_its_ships_unless_typed() {
+    let d = dataset();
+    let lib = library();
+    let mut a = fleet(30, vec![slot("brawler", CountRule::Fill { min: 1, max: 100 }), slot("webber", CountRule::Fixed(4))]);
+    let b = fleet(30, vec![slot("kiter", CountRule::Fill { min: 1, max: 100 })]);
+    let (sa, mut sb) = (stats(&d, &a, &lookup(&lib), &|_| SkillSet::all_v()), stats(&d, &b, &lookup(&lib), &|_| SkillSet::all_v()));
+    assert_eq!(sa.projected, Ewar { webs: 4, painters: 0, tracking_disruptors: 0 }, "four webbers, one web each");
+    assert_eq!(ewar_of(&a, &sa), sa.projected);
+    sb.slots[0].computed.mobility.max_velocity = 2000.0;
+    a.range = 500.0;
+    let auto = against(&d, &a, &sa, &b, &sb);
+    assert!(auto.target_velocity < 2000.0 * 0.5, "{}: the fleet's webs slow the target without being typed", auto.target_velocity);
+    a.ewar_auto = false;
+    let typed = against(&d, &a, &sa, &b, &sb);
+    assert_eq!(typed.target_velocity, 2000.0, "typed ewar, none typed: nothing on the target");
+    a.ewar.webs = 1;
+    assert_eq!(ewar_of(&a, &sa).webs, 1);
+}
+
+#[test]
+fn a_fleet_from_a_doctrine_takes_roles_from_the_hulls_and_boosters_from_the_bursts() {
+    let d = dataset();
+    let mut booster = Fit::new(ids::SHIP, "booster");
+    booster.modules.push(Module::new(ids::BURST, Slot::High, 0).with_charge(ids::BURST_CHARGE).with_state(State::Active));
+    let fits = vec![("d-logi".to_owned(), Fit::new(ids::SHIP, "logi")), ("d-dps".to_owned(), gun_fit("dps", 2)), ("d-boost".to_owned(), booster)];
+    let f = from_doctrine(&d, "Hammer", &fits, &SkillSet::all_v());
+    assert_eq!(f.name, "Hammer");
+    assert_eq!(f.slots.iter().map(|s| s.fit_id.as_str()).collect::<Vec<_>>(), vec!["d-logi", "d-dps", "d-boost"]);
+    assert!(f.slots.iter().all(|s| matches!(s.rule, CountRule::Fill { .. })), "the synthetic hull is no logi or command ship: every slot fills");
+    assert_eq!(f.main, Some(0));
+    assert_eq!(f.boosters, vec![(BurstKind::Shield, "d-boost".to_owned())]);
+    assert!(f.ewar_auto);
+    assert_eq!(role_rule(&d, 0), CountRule::Fill { min: 0, max: 1000 });
 }
