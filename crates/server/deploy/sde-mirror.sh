@@ -38,7 +38,7 @@ IMAGE=${SDE_BAKE_IMAGE:-eve-spai-br:latest}
 if [ -s "$DEST/eve-online-static-data-latest-jsonl.zip" ]; then
     sum=$(sha256sum "$DEST/eve-online-static-data-latest-jsonl.zip" | cut -d' ' -f1)
     if [ "$sum" != "$(cat "$DEST/.baked-from" 2>/dev/null)" ]; then
-        if docker run --rm --entrypoint /usr/local/bin/spai-fit-bake -v "$DEST:/sde" "$IMAGE" \
+        if docker run --rm --user 0 --entrypoint /usr/local/bin/spai-fit-bake -v "$DEST:/sde" "$IMAGE" \
             /sde/eve-online-static-data-latest-jsonl.zip /sde; then
             echo "$sum" > "$DEST/.baked-from"
         else
