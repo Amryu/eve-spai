@@ -29,4 +29,21 @@ for f in mapRegions mapConstellations mapSolarSystems mapSolarSystemJumps invGro
     fetch "$FUZZ/$f.csv" "$f.csv"
 done
 fetch "$CCP" "eve-online-static-data-latest-jsonl.zip"
+
+# The fitting simulator's data, baked from the zip by the server image's `spai-fit-bake`
+# (crates/server/Dockerfile): the web app fetches dogma-v*.bin.gz, the desktop falls back to it
+# when a profile has no blob of its own. Baked only when the zip changed; a failed bake keeps the
+# previous blob.
+IMAGE=${SDE_BAKE_IMAGE:-eve-spai-br:latest}
+if [ -s "$DEST/eve-online-static-data-latest-jsonl.zip" ]; then
+    sum=$(sha256sum "$DEST/eve-online-static-data-latest-jsonl.zip" | cut -d' ' -f1)
+    if [ "$sum" != "$(cat "$DEST/.baked-from" 2>/dev/null)" ]; then
+        if docker run --rm --entrypoint /usr/local/bin/spai-fit-bake -v "$DEST:/sde" "$IMAGE" \
+            /sde/eve-online-static-data-latest-jsonl.zip /sde; then
+            echo "$sum" > "$DEST/.baked-from"
+        else
+            echo "sde-mirror: fitting data bake failed, keeping the previous blob" >&2
+        fi
+    fi
+fi
 date -u +%Y-%m-%dT%H:%M:%SZ > "$DEST/updated.txt"

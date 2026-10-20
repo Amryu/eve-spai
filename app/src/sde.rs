@@ -556,6 +556,25 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
     // across the 224MB moon parse blocks every UI-thread write on busy_timeout.
     bake_celestials(&mut conn, &zip_bytes, set)?;
 
+    // The fitting data is a sidecar file, so a failure here leaves the map usable.
+    if let Err(e) = bake_dogma(path, &zip_bytes, set) {
+        crate::esilog::record("fitting data", &format!("{e:#}"));
+    }
+
+    Ok(())
+}
+
+/// The fitting blob next to the database, from the same zip. The simulator loads it on first
+/// use; when a profile has none, it fetches the mirror's prebaked copy instead.
+fn bake_dogma(db: &std::path::Path, zip_bytes: &[u8], set: &impl Fn(SdeStatus)) -> Result<()> {
+    set(SdeStatus::Downloading(tr!("Building fitting data…").to_owned()));
+    let dogma = spai_fit::bake::from_zip(zip_bytes)?;
+    let blob = spai_fit::dogma::blob::encode(&dogma)?;
+    let dir = db.parent().context("database path has no directory")?;
+    let out = dir.join(spai_fit::dogma::blob::file_name());
+    let part = dir.join(format!(".{}.part", spai_fit::dogma::blob::file_name()));
+    std::fs::write(&part, &blob).with_context(|| format!("writing {}", part.display()))?;
+    std::fs::rename(&part, &out).with_context(|| format!("moving {}", out.display()))?;
     Ok(())
 }
 

@@ -51,6 +51,25 @@ RUN cargo build --release --locked --bin eve-spai-br \
     && { strip target/release/eve-spai-br || true; }
 
 ############################
+# Stage 1b — the fitting-data baker
+############################
+# `spai-fit-bake` turns EVE's static-data zip into the blob the fitting simulator loads
+# (crates/spai-fit). It ships in this image so the daily mirror job on the box can run it with
+# `docker run --entrypoint` and needs no toolchain of its own. spai-fit is a member of the
+# repo-root workspace whose other members are not in this context, so it builds under a stub
+# workspace of its own; the root manifest's package table is copied over for its inherited fields.
+FROM rust:1-slim-bookworm AS baker
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /bake
+COPY Cargo.toml /tmp/root-Cargo.toml
+COPY crates/spai-fit crates/spai-fit
+RUN { printf '[workspace]\nmembers = ["crates/spai-fit"]\nresolver = "2"\n'; sed -n '/^\[workspace.package\]/,/^$/p' /tmp/root-Cargo.toml; } > Cargo.toml \
+    && cargo build --release -p spai-fit --features bake --bin spai-fit-bake \
+    && { strip target/release/spai-fit-bake || true; }
+
+############################
 # Stage 2 — runtime
 ############################
 FROM debian:bookworm-slim AS runtime
@@ -63,6 +82,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin appuser
 
 COPY --from=builder /build/crates/server/target/release/eve-spai-br /usr/local/bin/eve-spai-br
+COPY --from=baker /bake/target/release/spai-fit-bake /usr/local/bin/spai-fit-bake
 
 USER appuser
 
