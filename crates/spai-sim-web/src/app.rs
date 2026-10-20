@@ -6,6 +6,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use spai_fit_ui::{Doctrine, DoctrineSide, HostEvent, HostRequest, Profile, SimUi};
+
+use crate::store::FleetEntry;
 use spai_ui::{tr, trf};
 use spai_webkit::accounts::{self, Account, SKILLS};
 use spai_webkit::page;
@@ -293,6 +295,33 @@ impl SimWebApp {
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.delete_doctrine(ctx, id),
             HostRequest::SyncLibrary => self.sync(ctx),
+            HostRequest::FitDocs(ids) => {
+                let docs = ids.iter().filter_map(|id| self.library.fits.get(id).map(|e| (id.clone(), e.doc.clone()))).collect();
+                self.sim.handle(HostEvent::FitDocs(docs));
+            }
+            HostRequest::ListFleets => self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries())),
+            HostRequest::LoadFleet(id) => {
+                if let Some(e) = self.library.fleets.get(&id) {
+                    let doc = e.doc.clone();
+                    self.sim.handle(HostEvent::Fleet { id, doc });
+                }
+            }
+            HostRequest::LoadFleetDoc(id) => {
+                if let Some(e) = self.library.fleets.get(&id) {
+                    let doc = e.doc.clone();
+                    self.sim.handle(HostEvent::FleetDoc { id, doc });
+                }
+            }
+            HostRequest::SaveFleet { id, name, doc } => {
+                self.library.fleets.insert(id.clone(), FleetEntry { name, updated_at: now, doc });
+                page::save_raw(KEY, &self.library.to_json());
+                self.sim.handle(HostEvent::FleetSaved(id));
+            }
+            HostRequest::DeleteFleet(id) => {
+                self.library.fleets.remove(&id);
+                page::save_raw(KEY, &self.library.to_json());
+                self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries()));
+            }
         }
     }
 

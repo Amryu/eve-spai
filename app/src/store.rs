@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS fits (
     server_rev   INTEGER NOT NULL DEFAULT 0,
     deleted      INTEGER NOT NULL DEFAULT 0
 );
+-- The simulator's fleets, the same shape as fits; `doc` is spai_fit::fleet::Fleet as JSON.
+CREATE TABLE IF NOT EXISTS fleets (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    doc        TEXT NOT NULL,
+    rev        INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL,
+    server_rev INTEGER NOT NULL DEFAULT 0,
+    deleted    INTEGER NOT NULL DEFAULT 0
+);
 -- A character's trained skills from ESI, for the simulator's per-pilot profiles.
 CREATE TABLE IF NOT EXISTS character_skills (
     character_id INTEGER NOT NULL,
@@ -774,6 +784,35 @@ impl Store {
             params![id, name, ship_type_id, doc, rev, updated_at],
         )
         .map(|_| ())
+    }
+
+    pub fn fleets_list(&self) -> Vec<(String, String, i64)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, updated_at FROM fleets WHERE deleted = 0 ORDER BY updated_at DESC") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    pub fn fleet_doc(&self, id: &str) -> Option<String> {
+        self.conn.query_row("SELECT doc FROM fleets WHERE id = ?1 AND deleted = 0", params![id], |r| r.get(0)).ok()
+    }
+
+    pub fn fleet_put(&self, id: &str, name: &str, doc: &str) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        self.exec_essential(
+            "INSERT INTO fleets(id, name, doc, rev, updated_at, deleted) VALUES(?1, ?2, ?3, 1, ?4, 0)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, doc = excluded.doc, rev = fleets.rev + 1, updated_at = excluded.updated_at, deleted = 0",
+            params![id, name, doc, now],
+        )
+        .map(|_| ())
+    }
+
+    pub fn fleet_delete(&self, id: &str) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        self.exec_essential("UPDATE fleets SET deleted = 1, updated_at = ?2 WHERE id = ?1", params![id, now]).map(|_| ())
+    }
+
+    /// `(id, doc)` of the given fits, those that exist.
+    pub fn fit_docs(&self, ids: &[String]) -> Vec<(String, String)> {
+        ids.iter().filter_map(|id| self.fit_doc(id).map(|d| (id.clone(), d))).collect()
     }
 
     pub fn fit_delete(&self, id: &str) -> Result<()> {

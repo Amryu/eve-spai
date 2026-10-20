@@ -329,3 +329,35 @@ kinds, so a fleet swaps as one (`variations::apply_refit_key`).
 
 Tests: `variations::tests::*`, `warnings::tests::clashing_variations_are_pointed_out`,
 `spai-fit-ui` `recording_a_variation_keeps_the_difference_and_switches_it_on`.
+
+## 17. Fleets (`fleet`)
+
+A fleet is a list of saved fits with a count rule each: a fixed number, a share of the fleet size
+in percent, or "fill" (what the others leave, within bounds: the line ship). Fixed and percent
+counts are taken first, fill slots share the rest, a typed number overrides its rule
+(`fleet::resolve_counts`).
+
+**Bursts.** One booster fit per burst kind; every active burst module with a charge names up to
+four buffs (`warfareBuffNID`, `warfareBuffNValue`, the module's values after the charge's
+`chargeBonusWarfareCharge` modifiers and the booster's own skills), the strongest of each buff id
+is kept (section 6) and every ship of the fleet is computed with them (`fleet::env_of`).
+
+**Fleet numbers** (`fleet::stats`): each slot computed with the fleet's buffs and its own skills
+profile, scaled by its count: DPS, volley, logistics (remote armour and shield repairs per second,
+section 9 `Remote`), neuts, the slowest and fastest hull.
+
+**Against** (`fleet::against`), fleet A on fleet B's main hull at A's engagement range:
+
+- The target as A's ewar leaves it: each web −60% speed, each painter +30% signature, penalised
+  like modules; B's tracking disruptors cut A's turret optimal, falloff and tracking by 17.19%
+  each, penalised. The target moves fully transversally at its speed.
+- Applied DPS and volley: each weapon group's listed figure times its applied share (section 14),
+  summed by count.
+- Critical mass: `ceil(EHP of B's main hull / (applied volley of one A main ship × efficiency))`,
+  the ships of A's main slot that must volley together to kill one B main hull; the efficiency
+  (85% by default) stands for lacking skills and mechanical failures.
+- Kills per volley: `applied volley × efficiency / EHP`.
+- Break point: B's logistics plus B's main hull's own repairs per second; the margin is A's
+  applied DPS × efficiency above it, negative when B out-repairs A.
+
+Tests: `fleet::tests::*`, `spai-fit-ui` `fleets_ask_for_fit_documents_and_compute_once_they_arrive`.

@@ -198,3 +198,47 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     let json = serde_json::to_string(&s.doctrines[0]).unwrap();
     assert!(json.contains("\"side\":\"imperium\"") && json.contains("\"ship_type_id\""));
 }
+
+#[test]
+fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, doc, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let (fit_id, doc) = (fit_id.clone(), doc.clone());
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.handle(HostEvent::Fits(vec![FitSummary { id: fit_id.clone(), name: "Rifter".into(), ship: ids::SHIP, updated_at: 0 }]));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.range = 1000.0;
+    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None });
+    let (mine, enemy) = s.fleet_stats().unwrap();
+    assert_eq!((mine.ships, mine.slots.len()), (20, 1), "the saved fit's document is already at hand");
+    assert!(enemy.is_none());
+    assert!(mine.dps > 0.0);
+    s.forget_fit_doc(&fit_id);
+    assert_eq!(s.fleet_stats().unwrap().0.slots.len(), 0, "without the document the slot is left out");
+    s.handle(HostEvent::FitDocs(vec![(fit_id.clone(), doc.clone())]));
+    assert_eq!(s.fleet_stats().unwrap().0.slots.len(), 1);
+    s.save_fleet();
+    let reqs = s.take_requests();
+    let Some(HostRequest::SaveFleet { id, name, doc: fleet_doc }) = reqs.iter().find(|r| matches!(r, HostRequest::SaveFleet { .. })) else { panic!("{reqs:?}") };
+    assert_eq!(name, "New fleet");
+    s.handle(HostEvent::FleetSaved(id.clone()));
+    assert!(!s.fleet.as_ref().unwrap().dirty);
+    s.handle(HostEvent::Fleets(vec![FleetSummary { id: id.clone(), name: name.clone(), updated_at: 0 }]));
+    s.handle(HostEvent::FleetDoc { id: "enemy".into(), doc: fleet_doc.clone() });
+    s.fleet.as_mut().unwrap().enemy = Some("enemy".into());
+    let (_, enemy) = s.fleet_stats().unwrap();
+    let (theirs, a, b) = enemy.unwrap();
+    assert_eq!(theirs.ships, 20);
+    assert!(a.applied_dps > 0.0 && (a.applied_dps - b.applied_dps).abs() < 1e-9, "a fleet against its own copy is symmetric: {a:?} vs {b:?}");
+    assert!(a.critical_mass.is_some());
+    s.handle(HostEvent::Fleet { id: "enemy".into(), doc: "nope".into() });
+    assert_eq!(s.fleet.as_ref().unwrap().id, *id, "a broken fleet document changes nothing");
+}

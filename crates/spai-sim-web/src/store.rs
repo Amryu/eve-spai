@@ -22,8 +22,17 @@ pub struct Entry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FleetEntry {
+    pub name: String,
+    pub updated_at: i64,
+    pub doc: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Library {
     pub fits: BTreeMap<String, Entry>,
+    pub fleets: BTreeMap<String, FleetEntry>,
 }
 
 impl Library {
@@ -48,6 +57,12 @@ impl Library {
 
     pub fn remove(&mut self, id: &str) {
         self.fits.remove(id);
+    }
+
+    pub fn fleet_summaries(&self) -> Vec<spai_fit_ui::FleetSummary> {
+        let mut v: Vec<spai_fit_ui::FleetSummary> = self.fleets.iter().map(|(id, e)| spai_fit_ui::FleetSummary { id: id.clone(), name: e.name.clone(), updated_at: e.updated_at }).collect();
+        v.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.name.cmp(&b.name)));
+        v
     }
 }
 

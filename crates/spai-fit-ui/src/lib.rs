@@ -15,6 +15,7 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod editor;
+pub mod fleet_panel;
 pub mod graphs_panel;
 pub mod icons;
 pub mod library_panel;
@@ -25,6 +26,7 @@ pub mod text;
 pub mod variations_panel;
 pub mod warnings_panel;
 
+pub use fleet_panel::{FleetSession, FleetSummary};
 pub use picker::{PickTarget, Picker};
 
 /// A pilot's skills to compute with.
@@ -104,6 +106,14 @@ pub enum HostRequest {
     DeleteDoctrine(String),
     /// Push the library's changes to the server and take its newer entries.
     SyncLibrary,
+    /// The documents of these saved fits, for a fleet's numbers.
+    FitDocs(Vec<String>),
+    ListFleets,
+    LoadFleet(String),
+    /// A fleet's document without opening it: the one compared against.
+    LoadFleetDoc(String),
+    SaveFleet { id: String, name: String, doc: String },
+    DeleteFleet(String),
 }
 
 /// What the host tells the screens.
@@ -119,6 +129,11 @@ pub enum HostEvent {
     Doctrines(Vec<Doctrine>),
     /// Whether the character is signed in with the server, in the Imperium, and a doctrine admin.
     Access { signed_in: bool, imperium: bool, admin: bool },
+    FitDocs(Vec<(String, String)>),
+    Fleets(Vec<FleetSummary>),
+    Fleet { id: String, doc: String },
+    FleetDoc { id: String, doc: String },
+    FleetSaved(String),
 }
 
 /// The fit on screen with its undo history and what it computes to.
@@ -163,6 +178,13 @@ pub enum Pane {
     Stats,
     Graphs,
     Warnings,
+}
+
+/// Fits or fleets: what the screens are about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Fits,
+    Fleets,
 }
 
 /// Below this width the stats and warnings become tabs over the fit instead of a column beside it.
@@ -211,6 +233,14 @@ pub struct SimUi {
     pub doctrines: Vec<Doctrine>,
     pub access: Access,
     pub publish: Option<PublishDialog>,
+    pub mode: Mode,
+    pub fleets: Vec<FleetSummary>,
+    pub fleet: Option<FleetSession>,
+    /// Fit documents by library id, as fleets need them.
+    pub fit_docs: std::collections::HashMap<String, Fit>,
+    fit_docs_asked: std::collections::HashSet<String>,
+    /// Fleets by library id, for the one compared against.
+    pub fleet_docs: std::collections::HashMap<String, spai_fit::fleet::Fleet>,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -237,6 +267,12 @@ impl Default for SimUi {
             doctrines: Vec::new(),
             access: Access::default(),
             publish: None,
+            mode: Mode::Fits,
+            fleets: Vec::new(),
+            fleet: None,
+            fit_docs: std::collections::HashMap::new(),
+            fit_docs_asked: std::collections::HashSet::new(),
+            fleet_docs: std::collections::HashMap::new(),
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -280,6 +316,7 @@ impl SimUi {
                 if let Some(s) = &mut self.session {
                     if s.id == id {
                         s.dirty = false;
+                        self.fit_docs.insert(id.clone(), s.fit.clone());
                     }
                 }
                 self.requests.push(HostRequest::ListFits);
@@ -288,7 +325,43 @@ impl SimUi {
             HostEvent::Status(s) => self.status(s),
             HostEvent::Doctrines(d) => self.doctrines = d,
             HostEvent::Access { signed_in, imperium, admin } => self.access = Access { signed_in, imperium, admin },
+            HostEvent::FitDocs(docs) => {
+                for (id, doc) in docs {
+                    if let Ok(fit) = spai_fit::doc::from_json(&doc) {
+                        self.fit_docs.insert(id, fit);
+                    }
+                }
+            }
+            HostEvent::Fleets(list) => self.fleets = list,
+            HostEvent::Fleet { id, doc } => match serde_json::from_str::<spai_fit::fleet::Fleet>(&doc) {
+                Ok(fleet) => {
+                    self.fleet_docs.insert(id.clone(), fleet.clone());
+                    self.fleet = Some(FleetSession { id, fleet, dirty: false, enemy: self.fleet.as_ref().and_then(|f| f.enemy.clone()) });
+                }
+                Err(e) => self.status(trf!("Could not read the fleet: {e}", e = e)),
+            },
+            HostEvent::FleetDoc { id, doc } => {
+                if let Ok(fleet) = serde_json::from_str::<spai_fit::fleet::Fleet>(&doc) {
+                    self.fleet_docs.insert(id, fleet);
+                }
+            }
+            HostEvent::FleetSaved(id) => {
+                if let Some(f) = &mut self.fleet {
+                    if f.id == id {
+                        f.dirty = false;
+                        self.fleet_docs.insert(id, f.fleet.clone());
+                    }
+                }
+                self.requests.push(HostRequest::ListFleets);
+                self.status(tr!("Saved").to_owned());
+            }
         }
+    }
+
+    /// A saved fit changed: its document here is stale.
+    pub fn forget_fit_doc(&mut self, id: &str) {
+        self.fit_docs.remove(id);
+        self.fit_docs_asked.remove(id);
     }
 
     /// Opens a copy of the doctrine as a new fit of the library.
@@ -459,6 +532,38 @@ impl SimUi {
         self.computed();
         let narrow = ui.available_width() < NARROW;
         self.top_bar(ui, now_ms, narrow);
+        if self.mode == Mode::Fleets {
+            if !narrow {
+                egui::Panel::left("sim_fleet_library").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
+                    fleet_panel::library(self, ui, now_ms);
+                });
+                egui::Panel::right("sim_fleet_results").resizable(false).exact_size(STATS_W + 40.0).show_inside(ui, |ui| {
+                    fleet_panel::results(self, ui);
+                });
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+                if narrow {
+                    ui.horizontal(|ui| {
+                        use spai_ui::widgets::SteadySelect as _;
+                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results"))];
+                        let w = egui::vec2(((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(40.0), 24.0);
+                        for (pane, label) in tabs {
+                            if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
+                                self.pane = pane;
+                            }
+                        }
+                    });
+                    ui.separator();
+                }
+                match (narrow, self.pane) {
+                    (true, Pane::Library) => fleet_panel::library(self, ui, now_ms),
+                    (true, Pane::Stats | Pane::Graphs | Pane::Warnings) => fleet_panel::results(self, ui),
+                    _ => fleet_panel::editor(self, ui, now_ms),
+                }
+            });
+            self.show_dialogs(ui.ctx(), now_ms);
+            return;
+        }
         if self.show_library && !narrow {
             egui::Panel::left("sim_library").resizable(false).exact_size(SIDE_W).show_inside(ui, |ui| {
                 library_panel::show(self, ui, now_ms);
@@ -557,6 +662,18 @@ impl SimUi {
                 if icon_button(ui, icon::LIST).on_hover_text(tr!("Fit library")).clicked() {
                     self.show_library = !self.show_library;
                 }
+                {
+                    use spai_ui::widgets::SteadySelect as _;
+                    let w = egui::vec2(if narrow { 52.0 } else { 64.0 }, 22.0);
+                    if ui.menu_label_sized(w, self.mode == Mode::Fits, tr!("Fits")).clicked() {
+                        self.mode = Mode::Fits;
+                    }
+                    if ui.menu_label_sized(w, self.mode == Mode::Fleets, tr!("Fleets")).clicked() {
+                        self.mode = Mode::Fleets;
+                        self.requests.push(HostRequest::ListFleets);
+                    }
+                }
+                ui.separator();
                 let (can_undo, can_redo) = self.session.as_ref().map_or((false, false), |s| (s.history.can_undo(), s.history.can_redo()));
                 if ui.add_enabled(can_undo, egui::Button::new(icon::ARROW_U_UP_LEFT)).on_hover_text(tr!("Undo")).clicked() {
                     self.undo();
@@ -565,11 +682,15 @@ impl SimUi {
                     self.redo();
                 }
                 ui.separator();
-                let has_fit = self.session.is_some();
+                let has_fit = if self.mode == Mode::Fleets { self.fleet.is_some() } else { self.session.is_some() };
                 // Icons alone when the window is narrow; the words are on hover either way.
                 let labelled = |glyph: &str, word: &str| if narrow { glyph.to_owned() } else { format!("{glyph} {word}") };
                 if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
-                    self.save();
+                    if self.mode == Mode::Fleets {
+                        self.save_fleet();
+                    } else {
+                        self.save();
+                    }
                 }
                 if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import EFT"))).on_hover_text(tr!("Import EFT")).clicked() {
                     self.import = Some(ImportDialog::default());

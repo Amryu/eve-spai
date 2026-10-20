@@ -91,6 +91,9 @@ pub mod ids {
     pub const CAP_BOOSTER: TypeId = 3568;
     pub const CAP_CHARGE: TypeId = 11283;
     pub const HEAVY: TypeId = 99901;
+    pub const REMOTE_REP: TypeId = 3538;
+    pub const BURST: TypeId = 43552;
+    pub const BURST_CHARGE: TypeId = 42830;
 }
 
 pub const SHIP_BONUS_MF: AttrId = 587;
@@ -161,7 +164,7 @@ pub fn dataset() -> Dogma {
                 (attr::MAX_RANGE, 1200.0),
                 (attr::DAMAGE_MULTIPLIER, 3.0),
                 (attr::SPEED, 3000.0),
-                (attr::TRACKING_SPEED, 0.5),
+                (attr::TRACKING_SPEED, 400.0),
                 (attr::OPTIMAL_SIG_RADIUS, 40_000.0),
                 (attr::CPU, 25.0),
                 (attr::POWER, 15.0),
@@ -214,6 +217,9 @@ pub fn dataset() -> Dogma {
         type_def(CAP_BOOSTER, "Small Capacitor Booster II", 76, 7, &[(attr::DURATION, 12_000.0), (attr::CAPACITY, 40.0), (attr::RELOAD_TIME, 10_000.0), (attr::CHARGE_RATE, 1.0), (attr::CPU, 10.0), (attr::POWER, 5.0), (attr::CHARGE_GROUP_1, GROUP_CAP_CHARGE as f32)], &[344, 323, 330], &[]),
         type_def(CAP_CHARGE, "Cap Booster 400", GROUP_CAP_CHARGE, 8, &[(attr::CAPACITOR_BONUS, 400.0), (attr::VOLUME, 10.0)], &[], &[]),
         type_def(HEAVY, "Oversized Turret", 55, 7, &[(attr::CPU, 100.0), (attr::POWER, 50.0), (attr::SPEED, 3000.0), (attr::CHARGE_GROUP_1, GROUP_AMMO as f32)], &[301, 320, 321, 330], &[]),
+        type_def(REMOTE_REP, "Small Remote Armor Repairer II", 325, 7, &[(attr::ARMOR_DAMAGE_AMOUNT, 60.0), (attr::DURATION, 6000.0), (attr::CAPACITOR_NEED, 20.0), (attr::MAX_RANGE, 7000.0), (attr::FALLOFF_EFFECTIVENESS, 2000.0), (attr::CPU, 20.0), (attr::POWER, 10.0)], &[345, 320, 330], &[]),
+        type_def(BURST, "Shield Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1769.0), (attr::CAPACITY, 10.0)], &[346, 320, 330], &[]),
+        type_def(BURST_CHARGE, "Shield Harmonizing Charge", 1769, 8, &[(attr::WARFARE_BUFF_1_ID, 12.0), (2596, 20.0), (attr::VOLUME, 1.0)], &[347], &[]),
     ];
     let effects = vec![
         effect(101, "shipBonusSPTFalloffMF2", EffectCategory::Passive, vec![Modifier { skill: Some(SkillRef::Of(SKILL_SPT)), ..modifier(Domain::Ship, Func::LocationRequiredSkill, attr::FALLOFF, SHIP_BONUS_MF, Op::PostPercent) }]),
@@ -255,6 +261,10 @@ pub fn dataset() -> Dogma {
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(342, "empWave", EffectCategory::Active, vec![]) },
         EffectDef { duration_attr: Some(attr::SPEED), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(343, "targetDisintegratorAttack", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), ..effect(344, "powerBooster", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(345, "shipModuleRemoteArmorRepairer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(346, "moduleBonusWarfareLinkShield", EffectCategory::Active, vec![]) },
+        // The charge names the buff and multiplies the module's strength into its value.
+        effect(347, "chargeBonusWarfareCharge", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_ID, Op::PostAssign), modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_VALUE, 2596, Op::PostMul)]),
     ];
     let attributes = vec![
         attr_def(attr::MAX_VELOCITY, "maxVelocity", false, true, 0.0),
@@ -351,6 +361,10 @@ pub fn dataset() -> Dogma {
         attr_def(attr::DRONE_CAPACITY, "droneCapacity", true, true, 0.0),
         attr_def(attr::IMPLANTNESS, "implantness", true, true, 0.0),
         attr_def(attr::BOOSTERNESS, "boosterness", true, true, 0.0),
+        attr_def(attr::FALLOFF_EFFECTIVENESS, "falloffEffectiveness", true, true, 0.0),
+        attr_def(attr::WARFARE_BUFF_1_ID, "warfareBuff1ID", true, true, 0.0),
+        attr_def(attr::WARFARE_BUFF_1_VALUE, "warfareBuff1Value", true, true, 0.0),
+        attr_def(2596, "warfareBuff1Multiplier", true, true, 0.0),
     ];
     let groups = vec![
         GroupDef { id: 1, name: "Character".into(), category: 1 },

@@ -214,10 +214,23 @@ impl Sensors {
     }
 }
 
+/// What the fit does to others per second: repairs, capacitor and neuts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Remote {
+    pub armor_rep: f64,
+    pub shield_rep: f64,
+    pub hull_rep: f64,
+    pub cap_transfer: f64,
+    pub neut: f64,
+    /// The longest reach of the remote repairers, optimal plus falloff.
+    pub rep_range: f64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Computed {
     /// The fastest drone in space, for how well drones keep up.
     pub drone_speed: Option<f64>,
+    pub remote: Remote,
     pub fitting: Fitting,
     pub tank: Tank,
     pub weapons: Vec<WeaponGroup>,
@@ -248,6 +261,7 @@ pub fn compute_with(calc: &Calc, fit: &Fit) -> Computed {
     let drone_speed = calc.drones().filter(|(_, it)| it.state >= State::Active).map(|(i, _)| calc.value(i, attr::MAX_VELOCITY)).fold(None, |best: Option<f64>, v| Some(best.map_or(v, |b| b.max(v))));
     Computed {
         drone_speed,
+        remote: remote(calc),
         fitting: fitting(calc, fit),
         tank: tank(calc, fit),
         drones: drones(calc),
@@ -375,6 +389,37 @@ fn reps(calc: &Calc) -> Reps {
             };
         } else if has_effect(calc, i, "structureRepair") {
             r.hull += calc.value(i, attr::STRUCTURE_DAMAGE_AMOUNT) / cycle;
+        }
+    }
+    r
+}
+
+/// Remote effects of the active modules, per second, by effect name.
+fn remote(calc: &Calc) -> Remote {
+    let mut r = Remote::default();
+    for (i, it) in calc.modules() {
+        if it.state < State::Active {
+            continue;
+        }
+        let cycle = calc.value(i, attr::DURATION) / 1000.0;
+        if cycle <= 0.0 {
+            continue;
+        }
+        let names: Vec<&str> = calc.effect_names(i).collect();
+        let reach = calc.value(i, attr::MAX_RANGE) + calc.value(i, attr::FALLOFF_EFFECTIVENESS);
+        if names.iter().any(|n| ["shipModuleRemoteArmorRepairer", "shipModuleAncillaryRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"].contains(n)) {
+            r.armor_rep += calc.value(i, attr::ARMOR_DAMAGE_AMOUNT) / cycle;
+            r.rep_range = r.rep_range.max(reach);
+        } else if names.iter().any(|n| ["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"].contains(n)) {
+            r.shield_rep += calc.value(i, attr::SHIELD_BONUS) / cycle;
+            r.rep_range = r.rep_range.max(reach);
+        } else if names.contains(&"shipModuleRemoteHullRepairer") {
+            r.hull_rep += calc.value(i, attr::STRUCTURE_DAMAGE_AMOUNT) / cycle;
+            r.rep_range = r.rep_range.max(reach);
+        } else if names.contains(&"shipModuleRemoteCapacitorTransmitter") {
+            r.cap_transfer += calc.value(i, attr::POWER_TRANSFER_AMOUNT) / cycle;
+        } else if names.contains(&"energyNeutralizerFalloff") {
+            r.neut += calc.value(i, attr::ENERGY_NEUTRALIZER_AMOUNT) / cycle;
         }
     }
     r

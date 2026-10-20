@@ -2,6 +2,7 @@
 
 /// `1,234`, `12.3k`, `1.23M`.
 pub fn num(v: f64) -> String {
+    let v = if v == 0.0 || !v.is_finite() { 0.0 } else { v };
     let a = v.abs();
     if a >= 1.0e9 {
         format!("{:.2}B", v / 1.0e9)
@@ -59,6 +60,8 @@ mod tests {
     #[test]
     fn numbers_read_at_a_glance() {
         assert_eq!(num(0.0), "0.00");
+        assert_eq!(num(-0.0), "0.00");
+        assert_eq!(num(f64::NAN), "0.00");
         assert_eq!(num(3.14159), "3.14");
         assert_eq!(num(42.42), "42.4");
         assert_eq!(num(365.4), "365");

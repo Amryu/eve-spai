@@ -8,6 +8,7 @@ pub mod calc;
 pub mod doc;
 pub mod dogma;
 pub mod fit;
+pub mod fleet;
 pub mod formats;
 pub mod graphs;
 pub mod history;

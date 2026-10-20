@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use spai_fit_ui::{Doctrine, DoctrineSide, FitSummary, HostEvent, HostRequest, Profile};
+use spai_fit_ui::{Doctrine, DoctrineSide, FitSummary, FleetSummary, HostEvent, HostRequest, Profile};
 
 use super::SpaiApp;
 use crate::store::Store;
@@ -64,7 +64,13 @@ impl SpaiApp {
                     self.char_alliances = self.store.as_ref().map(|s| s.affiliations_get()).unwrap_or_default();
                     self.sim_load_profiles();
                 }
-                HostEvent::Status(s) if s == "\u{0}list" => self.sim_list_fits(),
+                HostEvent::Status(s) if s == "\u{0}list" => {
+                    let ids: Vec<String> = self.sim.fit_docs.keys().cloned().collect();
+                    for id in ids {
+                        self.sim.forget_fit_doc(&id);
+                    }
+                    self.sim_list_fits();
+                }
                 e => self.sim.handle(e),
             }
         }
@@ -105,7 +111,40 @@ impl SpaiApp {
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.sim_publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.sim_delete_doctrine(ctx, id),
             HostRequest::SyncLibrary => self.sim_sync(ctx),
+            HostRequest::FitDocs(ids) => {
+                let docs = self.store.as_ref().map(|s| s.fit_docs(&ids)).unwrap_or_default();
+                self.sim.handle(HostEvent::FitDocs(docs));
+            }
+            HostRequest::ListFleets => self.sim_list_fleets(),
+            HostRequest::LoadFleet(id) => {
+                if let Some(doc) = self.store.as_ref().and_then(|s| s.fleet_doc(&id)) {
+                    self.sim.handle(HostEvent::Fleet { id, doc });
+                }
+            }
+            HostRequest::LoadFleetDoc(id) => {
+                if let Some(doc) = self.store.as_ref().and_then(|s| s.fleet_doc(&id)) {
+                    self.sim.handle(HostEvent::FleetDoc { id, doc });
+                }
+            }
+            HostRequest::SaveFleet { id, name, doc } => {
+                if self.store.as_ref().is_some_and(|s| s.fleet_put(&id, &name, &doc).is_ok()) {
+                    self.sim.handle(HostEvent::FleetSaved(id));
+                } else {
+                    self.sim.handle(HostEvent::Status(spai_ui::tr!("Could not save the fleet").to_owned()));
+                }
+            }
+            HostRequest::DeleteFleet(id) => {
+                if let Some(s) = &self.store {
+                    let _ = s.fleet_delete(&id);
+                }
+                self.sim_list_fleets();
+            }
         }
+    }
+
+    fn sim_list_fleets(&mut self) {
+        let list = self.store.as_ref().map(|s| s.fleets_list()).unwrap_or_default().into_iter().map(|(id, name, updated_at)| FleetSummary { id, name, updated_at }).collect();
+        self.sim.handle(HostEvent::Fleets(list));
     }
 
     /// The signed-in character the server work runs as: the active one, else the first.
