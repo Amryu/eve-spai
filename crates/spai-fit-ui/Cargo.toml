@@ -1,0 +1,22 @@
+[package]
+name = "spai-fit-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai's fitting simulator screens, egui only, shared by the desktop and web apps"
+
+[lib]
+name = "spai_fit_ui"
+path = "src/lib.rs"
+
+[dependencies]
+spai-fit = { path = "../spai-fit" }
+spai-ui = { path = "../spai-ui" }
+egui = "0.34"
+egui_extras = { version = "0.34", default-features = false }
+egui-phosphor = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+spai-fit = { path = "../spai-fit", features = ["test-support"] }

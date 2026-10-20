@@ -1,5 +1,5 @@
 use super::*;
-use super::tests_support::{close, dataset, effect, ids::*, modifier, type_def};
+use crate::test_support::{close, dataset, effect, ids::*, modifier, type_def};
 use crate::fit::{Booster, DroneStack, Module, Projected};
 
 fn fit() -> Fit {

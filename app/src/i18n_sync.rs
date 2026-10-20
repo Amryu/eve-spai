@@ -27,6 +27,7 @@ fn sources() -> Vec<PathBuf> {
     walk(&root().join("app/src"), &mut out);
     walk(&root().join("crates/spai-ui/src"), &mut out);
     walk(&root().join("crates/spai-core/src"), &mut out);
+    walk(&root().join("crates/spai-fit-ui/src"), &mut out);
     out
 }
 

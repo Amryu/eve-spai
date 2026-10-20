@@ -13,6 +13,8 @@ pub mod history;
 pub mod ids;
 pub mod skills;
 pub mod stats;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod warnings;
 
 pub use dogma::Dogma;

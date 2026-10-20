@@ -152,3 +152,19 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
         }
     });
 }
+
+/// The alliances of the given characters, handed to `done` on a worker thread as
+/// `(character, alliance)`.
+pub fn fetch_own(ids: Vec<i64>, done: Box<dyn FnOnce(Vec<(i64, Option<i64>)>) + Send>, ctx: egui::Context) {
+    let _ = std::thread::Builder::new().name("esi-own-affiliation".into()).spawn(move || {
+        if ids.is_empty() {
+            return;
+        }
+        let Ok(client) = crate::http::client(20) else { return };
+        let rows: Vec<(i64, Option<i64>)> = lookup(&client, &ids).into_iter().map(|(c, (_, a))| (c, a)).collect();
+        if !rows.is_empty() {
+            done(rows);
+            ctx.request_repaint();
+        }
+    });
+}

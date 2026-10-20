@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "crates/br-core", "crates/spai-core", "crates/spai-share", "crates/spai-ui", "crates/spai-assets", "crates/spai-web", "crates/spai-fit"]
+members = ["app", "crates/br-core", "crates/spai-core", "crates/spai-share", "crates/spai-ui", "crates/spai-assets", "crates/spai-web", "crates/spai-fit", "crates/spai-fit-ui"]
 resolver = "2"
 
 # eframe 0.34.3 with one fix, see vendor/eframe/PATCH.md.

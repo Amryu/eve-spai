@@ -233,6 +233,7 @@ pub(crate) mod ai_voice_in;
 mod ai_settings_ui;
 mod sealed_feed_ui;
 mod toasts;
+pub(crate) mod imperium_ui;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
@@ -1049,6 +1050,13 @@ pub struct SpaiApp {
     notes_error: Option<String>,
     note_editor: Option<NoteDraft>,
     notes_manager: Option<notes_ui::NotesManager>,
+    /// The fitting simulator on the Imperium tab.
+    pub(crate) sim: spai_fit_ui::SimUi,
+    pub(crate) sim_events: imperium_ui::SimEvents,
+    pub(crate) sim_opened: bool,
+    /// `(character, alliance, checked_at)` of the signed-in characters.
+    char_alliances: Vec<(i64, Option<i64>, i64)>,
+    char_alliances_requested: bool,
     /// Set where `self` is still borrowed; opened on the next frame.
     note_editor_pending: Option<crate::notes::Subject>,
     /// Every system's 3D position, for the titan-range check. Loaded once with the SDE.
@@ -1903,6 +1911,11 @@ impl SpaiApp {
             notes_error: None,
             note_editor: None,
             notes_manager: None,
+            sim: spai_fit_ui::SimUi::default(),
+            sim_events: Default::default(),
+            sim_opened: false,
+            char_alliances: Vec::new(),
+            char_alliances_requested: false,
             note_editor_pending: None,
             map_coords: None,
             rescue_range_for: None,
@@ -3636,6 +3649,11 @@ impl SpaiApp {
     }
 
     fn nav_rail(&mut self, ui: &mut egui::Ui) {
+        if !self.char_alliances_requested && self.store.is_some() {
+            self.char_alliances = self.store.as_ref().map(|s| s.affiliations_get()).unwrap_or_default();
+            self.refresh_affiliations(ui.ctx());
+            self.char_alliances_requested = true;
+        }
         let width = self.nav_width();
         let badge = self.jabber_has_unread();
         // Only once a session has worked: before that the Jabber page shows its own login state.
@@ -3661,7 +3679,8 @@ impl SpaiApp {
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
                     .collect();
-                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows);
+                let member = self.is_imperium_member();
+                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &move |v| v.label_for(member));
                 if selected != self.view {
                     self.view = selected;
                 }
@@ -3914,6 +3933,7 @@ impl SpaiApp {
             View::Fleet => self.fleet_view(ui),
             View::Rescue => self.rescue_view(ui),
             View::Assistant => self.assistant_view(ui),
+            View::Imperium => self.imperium_view(ui),
             View::Settings => self.settings_view(ui),
         });
         // Its own window, opened from settings and from a tracked fleet, so it cannot live inside

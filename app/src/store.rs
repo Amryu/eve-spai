@@ -34,6 +34,36 @@ CREATE INDEX IF NOT EXISTS idx_sde_celestials_sys ON sde_celestials(system_id);
 -- Camp-relevant type ids by kind ('dic'|'hic'|'smartbomb'|'bubble'), for camp signals.
 CREATE TABLE IF NOT EXISTS sde_camp_types (id INTEGER PRIMARY KEY, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- The fitting simulator's library: one row per fit, `doc` the versioned JSON the engine reads
+-- (spai_fit::doc). `server_rev` is the revision the share server last confirmed, 0 for never.
+CREATE TABLE IF NOT EXISTS fits (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    ship_type_id INTEGER NOT NULL,
+    doc          TEXT NOT NULL,
+    rev          INTEGER NOT NULL DEFAULT 1,
+    updated_at   INTEGER NOT NULL,
+    server_rev   INTEGER NOT NULL DEFAULT 0,
+    deleted      INTEGER NOT NULL DEFAULT 0
+);
+-- A character's trained skills from ESI, for the simulator's per-pilot profiles.
+CREATE TABLE IF NOT EXISTS character_skills (
+    character_id INTEGER NOT NULL,
+    skill_id     INTEGER NOT NULL,
+    level        INTEGER NOT NULL,
+    PRIMARY KEY (character_id, skill_id)
+);
+CREATE TABLE IF NOT EXISTS character_skills_meta (
+    character_id INTEGER PRIMARY KEY,
+    fetched_at   INTEGER NOT NULL
+);
+-- Which alliance each signed-in character is in, from ESI's public affiliation call: the Imperium
+-- tab reads it to know whether to offer the coalition's doctrines.
+CREATE TABLE IF NOT EXISTS character_affiliations (
+    character_id INTEGER PRIMARY KEY,
+    alliance_id  INTEGER,
+    checked_at   INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sde_ships (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -443,6 +473,14 @@ pub struct ShipDetails {
 
 pub use spai_core::map::MapSystem;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct FitRow {
+    pub id: String,
+    pub name: String,
+    pub ship_type_id: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct CharacterRow {
     pub id: i64,
@@ -674,6 +712,77 @@ impl Store {
         st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
             .map(|rows| rows.flatten().filter_map(|(k, b)| Some((k, serde_json::from_str(&b).ok()?))).collect())
             .unwrap_or_default()
+    }
+
+    pub fn fits_list(&self) -> Vec<FitRow> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, ship_type_id, updated_at FROM fits WHERE deleted = 0 ORDER BY updated_at DESC") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok(FitRow { id: r.get(0)?, name: r.get(1)?, ship_type_id: r.get(2)?, updated_at: r.get(3)? }))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn fit_doc(&self, id: &str) -> Option<String> {
+        self.conn.query_row("SELECT doc FROM fits WHERE id = ?1 AND deleted = 0", params![id], |r| r.get(0)).ok()
+    }
+
+    pub fn fit_put(&self, id: &str, name: &str, ship_type_id: i64, doc: &str) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        self.exec_essential(
+            "INSERT INTO fits(id, name, ship_type_id, doc, rev, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, 1, ?5, 0)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, ship_type_id = excluded.ship_type_id, doc = excluded.doc,
+             rev = fits.rev + 1, updated_at = excluded.updated_at, deleted = 0",
+            params![id, name, ship_type_id, doc, now],
+        )
+        .map(|_| ())
+    }
+
+    pub fn fit_delete(&self, id: &str) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        self.exec_essential("UPDATE fits SET deleted = 1, updated_at = ?2 WHERE id = ?1", params![id, now]).map(|_| ())
+    }
+
+    /// Replaces the character's skills with what ESI reported.
+    pub fn skills_put(&mut self, character_id: i64, skills: &[(i64, u32)]) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM character_skills WHERE character_id = ?1", params![character_id])?;
+        {
+            let mut ins = tx.prepare("INSERT INTO character_skills(character_id, skill_id, level) VALUES(?1, ?2, ?3)")?;
+            for (skill, level) in skills {
+                ins.execute(params![character_id, skill, *level as i64])?;
+            }
+        }
+        tx.execute("INSERT OR REPLACE INTO character_skills_meta(character_id, fetched_at) VALUES(?1, ?2)", params![character_id, now])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The character's skills and when they were fetched, if ever.
+    pub fn skills_get(&self, character_id: i64) -> Option<(Vec<(i64, u32)>, i64)> {
+        let fetched: i64 = self.conn.query_row("SELECT fetched_at FROM character_skills_meta WHERE character_id = ?1", params![character_id], |r| r.get(0)).ok()?;
+        let mut stmt = self.conn.prepare("SELECT skill_id, level FROM character_skills WHERE character_id = ?1").ok()?;
+        let skills = stmt.query_map(params![character_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u32))).ok()?.flatten().collect();
+        Some((skills, fetched))
+    }
+
+    pub fn affiliations_put(&self, rows: &[(i64, Option<i64>)]) -> Result<()> {
+        let now = crate::clock::utc().timestamp();
+        for (character_id, alliance_id) in rows {
+            self.exec_essential(
+                "INSERT OR REPLACE INTO character_affiliations(character_id, alliance_id, checked_at) VALUES(?1, ?2, ?3)",
+                params![character_id, alliance_id, now],
+            )?;
+        }
+        Ok(())
+    }
+
+
+    /// `(character, alliance, checked_at)` for every character ever looked up.
+    pub fn affiliations_get(&self) -> Vec<(i64, Option<i64>, i64)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT character_id, alliance_id, checked_at FROM character_affiliations") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
     pub fn kv_get(&self, key: &str) -> Option<String> {

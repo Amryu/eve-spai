@@ -1,5 +1,5 @@
 use super::*;
-use crate::calc::tests_support::{dataset, ids};
+use crate::test_support::{dataset, ids};
 use crate::calc::Env;
 use crate::fit::{CargoItem, DroneStack, Module};
 use crate::skills::SkillSet;

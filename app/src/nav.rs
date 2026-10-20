@@ -1,4 +1,5 @@
 use spai_ui::i18n::Tr;
+use spai_ui::tr_noop;
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,9 @@ pub enum View {
     Rescue,
     /// The AI assistant, shown only while it is switched on.
     Assistant,
+    /// Imperium services, the fitting simulator first. Everyone gets the simulator; the label
+    /// says "Fitting" until a signed-in character's alliance puts it in the coalition.
+    Imperium,
     Settings,
 }
 
@@ -38,6 +42,7 @@ impl View {
             View::Jabber,
             View::Fleet,
             View::Rescue,
+            View::Imperium,
             View::Assistant,
         ]
     }
@@ -56,7 +61,16 @@ impl View {
             View::Fleet => "Fleet",
             View::Rescue => "Rescue",
             View::Assistant => "Assistant",
+            View::Imperium => "Imperium",
             View::Settings => "Settings",
+        }
+    }
+
+    /// The label for a pilot who is, or is not, in the Imperium.
+    pub fn label_for(self, imperium_member: bool) -> &'static str {
+        match self {
+            View::Imperium if !imperium_member => tr_noop!("Fitting"),
+            v => v.label(),
         }
     }
 
@@ -74,6 +88,7 @@ impl View {
             View::Fleet => icon::ROCKET_LAUNCH,
             View::Rescue => icon::WARNING_OCTAGON,
             View::Assistant => icon::SPARKLE,
+            View::Imperium => icon::WRENCH,
             View::Settings => icon::GEAR_SIX,
         }
     }
@@ -97,6 +112,7 @@ pub fn rail(
     warns: &[View],
     // Not `View::primary()`: rescue is opt-in, and when off its row is absent rather than disabled.
     items: &[View],
+    label_of: &dyn Fn(View) -> &'static str,
 ) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
@@ -143,12 +159,12 @@ pub fn rail(
     let avail = ui.available_height();
 
     if avail >= list_h + foot_h {
-        primary_items(ui, &mut selected, *expanded, badges, warns, items);
+        primary_items(ui, &mut selected, *expanded, badges, warns, items, label_of);
         pinned_footer(ui, &mut selected, *expanded);
     } else if avail >= list_h + ROW_HEIGHT {
         // No room under the list to pin the footer, and bottom_up would walk it back up over the
         // last nav item, so Settings joins the list as its final row instead.
-        primary_items(ui, &mut selected, *expanded, badges, warns, items);
+        primary_items(ui, &mut selected, *expanded, badges, warns, items, label_of);
         settings_item(ui, &mut selected, *expanded);
     } else {
         // The 460px minimum window height allows this. The list scrolls and the footer keeps its
@@ -159,7 +175,7 @@ pub fn rail(
             .max_height((avail - foot_h).max(0.0))
             .auto_shrink([false, false])
             .show_viewport(ui, |ui, vp| {
-                scrolled_items(ui, vp, &mut selected, *expanded, badges, warns, items)
+                scrolled_items(ui, vp, &mut selected, *expanded, badges, warns, items, label_of)
             });
         pinned_footer(ui, &mut selected, *expanded);
     }
@@ -174,12 +190,13 @@ fn primary_items(
     badges: &[View],
     warns: &[View],
     items: &[View],
+    label_of: &dyn Fn(View) -> &'static str,
 ) {
     for &v in items {
         if nav_item(
             ui,
             v.icon(),
-            v.label().tr(),
+            label_of(v).tr(),
             v == *selected,
             expanded,
             badges.contains(&v),
@@ -202,6 +219,7 @@ fn scrolled_items(
     badges: &[View],
     warns: &[View],
     items: &[View],
+    label_of: &dyn Fn(View) -> &'static str,
 ) {
     let step = ROW_HEIGHT + ROW_GAP + ui.spacing().item_spacing.y;
     let first = (viewport.min.y / step).ceil().max(0.0) as usize;
@@ -213,7 +231,7 @@ fn scrolled_items(
         if nav_item(
             ui,
             v.icon(),
-            v.label().tr(),
+            label_of(v).tr(),
             v == *selected,
             expanded,
             badges.contains(&v),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::calc::tests_support::{dataset, ids};
+use crate::test_support::{dataset, ids};
 use crate::fit::{DroneStack, Module};
 
 const TEXT: &str = "[Rifter, Test fit]\nDamage Control II\nGyrostabilizer II /OFFLINE\n\n1MN Microwarpdrive II\n[Empty Med slot]\n\n200mm AutoCannon II, EMP S\n200mm AutoCannon II, Barrage S\n\nSmall Trimark Armor Pump II\n\n\nWarrior II x2\n\nZor's Custom Navigation Hyper-Link\nSynth Exile Booster\n\nEMP S x500\n";

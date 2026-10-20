@@ -1,4 +1,4 @@
-//! A synthetic dataset for the engine's tests: a frigate, its skills and enough modules, charges
+//! A synthetic dataset for the engine's and the screens' tests: a frigate, its skills and enough modules, charges
 //! and drones to exercise every modifier route and every stat. Numbers are round, not EVE's.
 
 use crate::dogma::{attr, AttrDef, Dogma, Domain, EffectCategory, EffectDef, Func, GroupDef, Modifier, Op, SkillRef, TypeDef};

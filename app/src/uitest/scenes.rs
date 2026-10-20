@@ -411,7 +411,7 @@ fn nav_scene(name: &'static str, expanded: bool, height: f32) -> Scene {
     let mut expanded = expanded;
     let width = if expanded { crate::nav::WIDTH_EXPANDED } else { crate::nav::WIDTH_COLLAPSED };
     Scene::ui(name, [width, height], move |ui| {
-        crate::nav::rail(ui, View::Intel, &mut expanded, &[View::Alerts], &[View::Jabber], crate::nav::View::primary());
+        crate::nav::rail(ui, View::Intel, &mut expanded, &[View::Alerts], &[View::Jabber], crate::nav::View::primary(), &|v| v.label());
     })
 }
 
@@ -494,6 +494,79 @@ fn language_scene(name: &'static str, wizard: bool) -> Scene {
         } else {
             app.language_dialog(ui.ctx());
         }
+    })
+}
+
+/// The fitting simulator with the synthetic dataset and a fixture fit. `extreme` loads a fit with
+/// an over-long name, every slot used, five drone stacks and a long cargo list.
+fn imperium_scene(name: &'static str, size: [f32; 2], extreme: bool, pane: spai_fit_ui::Pane) -> Scene {
+    imperium_scene_with(name, size, extreme, pane, |_| {})
+}
+
+/// A picker or dialog over the fit: `setup` runs once the fixture fit is open.
+fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: spai_fit_ui::Pane, setup: impl Fn(&mut spai_fit_ui::SimUi) + 'static) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            use spai_fit::fit::{CargoItem, DroneStack, Module, Slot, State};
+            use spai_fit::test_support::{dataset, ids};
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Imperium;
+            a.sim_opened = true;
+            a.sim.handle(spai_fit_ui::HostEvent::Dogma(std::sync::Arc::new(dataset())));
+            let mut fit = spai_fit::fit::Fit::new(ids::SHIP, if extreme { "A fit name so long that no column could ever hold it without cutting it short somewhere" } else { "Brawler" });
+            fit.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+            fit.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO_LONG).with_state(State::Active));
+            fit.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
+            fit.modules.push(Module::new(ids::DC, Slot::Low, 0));
+            fit.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
+            fit.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true });
+            if extreme {
+                fit.modules.push(Module::new(ids::GUN, Slot::High, 2).with_charge(ids::AMMO).with_state(State::Overload));
+                fit.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active));
+                fit.modules.push(Module::new(ids::CAP_BOOSTER, Slot::Mid, 2).with_charge(ids::CAP_CHARGE).with_state(State::Active));
+                fit.modules.push(Module::new(ids::AAR, Slot::Low, 2).with_charge(ids::PASTE).with_state(State::Active));
+                fit.modules.push(Module::new(ids::HARDENER, Slot::Low, 3).with_state(State::Offline));
+                for i in 0..3 {
+                    fit.modules.push(Module::new(ids::RIG, Slot::Rig, i));
+                }
+                fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false });
+                fit.implants.push(ids::IMPLANT);
+                fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true });
+                for q in [1, 500, 12_345, 1_000_000] {
+                    fit.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: q });
+                }
+            }
+            a.sim.open_fit(fit, 0);
+            a.sim.pane = pane;
+            let summaries: Vec<spai_fit_ui::FitSummary> = (0..if extreme { 30 } else { 3 })
+                .map(|i| spai_fit_ui::FitSummary { id: format!("f{i}"), name: if extreme && i == 0 { "An absurdly long saved fit name that keeps going".into() } else { format!("Rifter fit {i}") }, ship: ids::SHIP, updated_at: 0 })
+                .collect();
+            a.sim.handle(spai_fit_ui::HostEvent::Fits(summaries));
+            setup(&mut a.sim);
+            a
+        });
+        app.apply_language();
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// A simulator dialog on its own, sized to it: the picker or the EFT import.
+fn imperium_dialog_scene(name: &'static str, size: [f32; 2], open: impl Fn(&mut spai_fit_ui::SimUi) + 'static) -> Scene {
+    harness::scratch_profile();
+    let mut sim: Option<spai_fit_ui::SimUi> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let sim = sim.get_or_insert_with(|| {
+            harness::render_dialogs_on_the_root(ctx);
+            let mut s = spai_fit_ui::SimUi::default();
+            s.handle(spai_fit_ui::HostEvent::Dogma(std::sync::Arc::new(spai_fit::test_support::dataset())));
+            s.new_fit(spai_fit::test_support::ids::SHIP, 0);
+            open(&mut s);
+            s
+        });
+        sim.show_dialogs(ctx, 0);
     })
 }
 
@@ -2513,6 +2586,19 @@ pub(crate) fn all() -> Vec<Scene> {
     // 720 is the app's minimum window width (main.rs), where the settings path fields and their
     // Browse buttons have the least room to share.
     v.push(view_scene("view_settings_narrow", View::Settings, [720.0, 800.0]));
+    v.push(view_scene("imperium_empty", View::Imperium, [1280.0, 800.0]));
+    v.push(imperium_scene("imperium_fit_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Stats));
+    v.push(imperium_scene("imperium_fit_narrow", [720.0, 800.0], false, spai_fit_ui::Pane::Fit));
+    v.push(imperium_scene("imperium_fit_narrow_stats", [720.0, 800.0], false, spai_fit_ui::Pane::Stats));
+    v.push(imperium_scene("imperium_fit_extreme", [1280.0, 900.0], true, spai_fit_ui::Pane::Warnings));
+    v.push(imperium_scene("imperium_fit_extreme_narrow", [640.0, 900.0], true, spai_fit_ui::Pane::Warnings));
+    v.push(imperium_dialog_scene("imperium_picker", [460.0, 520.0], |sim| {
+        spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::High, 2));
+        sim.picker.as_mut().unwrap().query = "auto".into();
+    }));
+    v.push(imperium_dialog_scene("imperium_import", [520.0, 440.0], |sim| {
+        sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("Unknown: Nope Module".into()) });
+    }));
     // Names on the map keep an edge against their own colour, not a fixed black one.
     v.push({
         harness::scratch_profile();
@@ -4964,7 +5050,7 @@ fn uitest_nav_rail_short_reaches_every_item() {
     let sink = selected.clone();
     let mut expanded = true;
     let mut scene = Scene::ui("nav_probe_short", [crate::nav::WIDTH_EXPANDED, 460.0], move |ui| {
-        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary());
+        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary(), &|v| v.label());
         *sink.borrow_mut() = got;
     });
     let mut harness = harness::build(&mut scene, false);
@@ -5017,7 +5103,7 @@ fn uitest_nav_rail_click_selects() {
     let sink = selected.clone();
     let mut expanded = true;
     let mut scene = Scene::ui("nav_probe", [crate::nav::WIDTH_EXPANDED, 560.0], move |ui| {
-        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary());
+        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary(), &|v| v.label());
         *sink.borrow_mut() = got;
     });
     let mut harness = harness::build(&mut scene, false);

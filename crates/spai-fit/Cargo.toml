@@ -24,5 +24,7 @@ zip = { version = "2", default-features = false, features = ["deflate"], optiona
 sha2 = { version = "0.10", optional = true }
 
 [features]
+# The synthetic dataset the engine tests use, for the UI crates' tests and scenes.
+test-support = []
 # Reading EVE's JSONL static-data zip into a dataset: native only, the web gets the baked blob.
 bake = ["dep:zip", "dep:sha2"]

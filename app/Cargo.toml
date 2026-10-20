@@ -37,6 +37,7 @@ spai-core = { path = "../crates/spai-core" }
 spai-share = { path = "../crates/spai-share" }
 spai-ui = { path = "../crates/spai-ui" }
 spai-fit = { path = "../crates/spai-fit", features = ["bake"] }
+spai-fit-ui = { path = "../crates/spai-fit-ui" }
 # Drives the sharing engine's async code on the share thread; the network calls under it block.
 pollster = "0.4"
 eframe = "0.34"
@@ -92,6 +93,7 @@ fs4 = "1.1.0"
 qrcode = { version = "0.14.1", default-features = false }
 
 [dev-dependencies]
+spai-fit = { path = "../crates/spai-fit", features = ["bake", "test-support"] }
 spai-core = { path = "../crates/spai-core", features = ["test-support"] }
 spai-ui = { path = "../crates/spai-ui", features = ["test-support"] }
 # Headless UI harness: renders any egui surface to a PNG and drives hover/click through the

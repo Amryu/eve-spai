@@ -552,6 +552,35 @@ pub fn fetch_jump_skills(
     });
 }
 
+/// Fetches every trained skill of the character, `(skill id, active level)`, and hands the list to
+/// `done` on the worker thread.
+pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i64, Vec<(i64, u32)>) + Send>, ctx: egui::Context) {
+    let _ = std::thread::Builder::new().name("esi-skills".into()).spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else { return };
+        let Ok(client) = crate::http::client(20) else { return };
+        #[derive(serde::Deserialize)]
+        struct Skill {
+            skill_id: i64,
+            active_skill_level: u32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Skills {
+            skills: Vec<Skill>,
+        }
+        let url = format!("https://esi.evetech.net/latest/characters/{}/skills/?datasource=tranquility", character.id);
+        let Ok(resp) = client.get(url).bearer_auth(&token).send() else { return };
+        match resp.error_for_status().and_then(|r| r.json::<Skills>()) {
+            Ok(skills) => {
+                done(character.id, skills.skills.into_iter().map(|s| (s.skill_id, s.active_skill_level)).collect());
+                ctx.request_repaint();
+            }
+            Err(e) => crate::esilog::record("skills", &format!("{char_name}: {e}")),
+        }
+    });
+}
+
 pub fn save_fitting(
     client_id: String,
     char_name: String,
