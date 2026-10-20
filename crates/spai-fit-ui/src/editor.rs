@@ -179,11 +179,12 @@ fn rack(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, slot: Slot, used: u32
         ui.label(count);
     });
     let rows = used.max(total);
-    let Some(s) = &sim.session else { return };
-    let positions: Vec<(u8, Option<(TypeId, State, Option<TypeId>)>)> = (0..rows.min(16) as u8).map(|i| (i, s.fit.module(slot, i).map(|m| (m.type_id, m.state, m.charge)))).collect();
+    let Some(view) = sim.view_fit() else { return };
+    let fixed = sim.variation_positions();
+    let positions: Vec<(u8, Option<(TypeId, State, Option<TypeId>)>)> = (0..rows.min(16) as u8).map(|i| (i, view.module(slot, i).map(|m| (m.type_id, m.state, m.charge)))).collect();
     for (index, module) in positions {
         match module {
-            Some((type_id, state, charge)) => module_row(sim, ui, dogma, slot, index, type_id, state, charge, now_ms),
+            Some((type_id, state, charge)) => module_row(sim, ui, dogma, slot, index, type_id, state, charge, fixed.contains(&(slot, index)), now_ms),
             None => {
                 ui.horizontal(|ui| {
                     ui.set_height(ROW_H);
@@ -200,12 +201,26 @@ fn rack(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, slot: Slot, used: u32
 }
 
 #[allow(clippy::too_many_arguments)]
-fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, slot: Slot, index: u8, type_id: TypeId, state: State, charge: Option<TypeId>, now_ms: u64) {
+fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, slot: Slot, index: u8, type_id: TypeId, state: State, charge: Option<TypeId>, by_variation: bool, now_ms: u64) {
     let name = dogma.type_(type_id).map_or_else(|| trf!("Unknown type {id}", id = type_id), |t| t.name.clone());
     let takes_charges = !picker::charge_filter(dogma, type_id).0.is_empty();
     let charge_name = charge.and_then(|c| dogma.type_(c)).map(|t| t.name.clone());
     ui.horizontal(|ui| {
         ui.set_height(ROW_H);
+        if by_variation {
+            // Decided by a switched-on variation: shown, not editable here.
+            ui.add_enabled_ui(false, |ui| {
+                crate::icons::type_icon(ui, type_id, 20.0);
+                let charge_w = if charge_name.is_some() { 150.0_f32.min((ui.available_width() - 28.0) * 0.4) } else { 0.0 };
+                let w = (ui.available_width() - charge_w - 28.0 - 2.0 * ui.spacing().item_spacing.x).max(60.0);
+                name_cell(ui, w, egui::RichText::new(&name), &trf!("{name}\nSet by a variation", name = name));
+                if let Some(c) = &charge_name {
+                    name_cell(ui, charge_w, egui::RichText::new(c).weak(), c);
+                }
+                ui.label(egui::RichText::new(icon::SLIDERS_HORIZONTAL).weak()).on_disabled_hover_text(tr!("Set by a variation"));
+            });
+            return;
+        }
         crate::icons::type_icon(ui, type_id, 20.0);
         let buttons_w = 2.0 * 28.0;
         let charge_w = if takes_charges { 150.0_f32.min((ui.available_width() - buttons_w) * 0.4) } else { 0.0 };

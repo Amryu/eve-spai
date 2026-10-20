@@ -2592,6 +2592,23 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene("imperium_fit_narrow_stats", [720.0, 800.0], false, spai_fit_ui::Pane::Stats));
     v.push(imperium_scene("imperium_fit_extreme", [1280.0, 900.0], true, spai_fit_ui::Pane::Warnings));
     v.push(imperium_scene("imperium_fit_extreme_narrow", [640.0, 900.0], true, spai_fit_ui::Pane::Warnings));
+    v.push(imperium_scene("imperium_graphs_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs));
+    v.push(imperium_scene("imperium_graphs_narrow", [720.0, 800.0], true, spai_fit_ui::Pane::Graphs));
+    v.push(imperium_scene_with("imperium_graphs_cap", [1280.0, 800.0], true, spai_fit_ui::Pane::Graphs, |sim| {
+        sim.graph = spai_fit::graphs::GraphKind::CapacitorOverTime;
+    }));
+    v.push(imperium_scene_with("imperium_variations", [1280.0, 800.0], false, spai_fit_ui::Pane::Stats, |sim| {
+        use spai_fit::fit::Slot;
+        use spai_fit::test_support::ids;
+        use spai_fit::variations::{ModulePredicate, RefitOp, Variation, VariationKind};
+        sim.edit(spai_fit::history::EditKind::Variation, 0, |f| {
+            f.variations.push(Variation { id: 1, name: "Barrage".into(), kind: VariationKind::Ammo, refit_key: Some("ammo:long".into()), ops: vec![RefitOp::SetChargeWhere { matches: ModulePredicate { group: Some(55), ..Default::default() }, charge: Some(ids::AMMO_LONG) }] });
+            f.variations.push(Variation { id: 2, name: "Web instead of MWD, a long name to cut".into(), kind: VariationKind::Refit, refit_key: Some("prop:web".into()), ops: vec![RefitOp::Replace { slot: Slot::Mid, index: 0, with: Some(ids::WEB) }] });
+            f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: None, ops: vec![RefitOp::SetImplants(vec![ids::IMPLANT])] });
+            f.active_variations = vec![1, 3];
+        });
+        sim.editing_variation = Some(2);
+    }));
     v.push(imperium_dialog_scene("imperium_picker", [460.0, 520.0], |sim| {
         spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::High, 2));
         sim.picker.as_mut().unwrap().query = "auto".into();

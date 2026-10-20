@@ -209,6 +209,9 @@ pub struct Fit {
     pub damage_profile: DamageProfile,
     pub target: TargetProfile,
     pub projected: Vec<Projected>,
+    pub variations: Vec<crate::variations::Variation>,
+    /// Switched-on variations, applied in this order.
+    pub active_variations: Vec<u32>,
     pub notes: String,
     pub tags: Vec<String>,
 }

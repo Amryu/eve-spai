@@ -23,14 +23,19 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let mut load: Option<String> = None;
     let mut delete: Option<String> = None;
     let entries = sim.library.clone();
-    egui::ScrollArea::vertical().id_salt("sim_library_list").auto_shrink([false, false]).show(ui, |ui| {
+    let row_h = 26.0;
+    let row = row_h + ui.spacing().item_spacing.y;
+    // A whole number of rows, and only the visible ones laid out: a row cut by the edge would
+    // sit over the variations below.
+    let list_h = ((ui.available_height() * 0.55 / row).floor() * row).max(row * 3.0);
+    egui::ScrollArea::vertical().id_salt("sim_library_list").auto_shrink([false, false]).max_height(list_h).show_rows(ui, row_h, entries.len().max(1), |ui, range| {
         if entries.is_empty() {
             ui.label(egui::RichText::new(tr!("No saved fits yet.")).weak());
         }
-        for e in &entries {
+        for e in entries.iter().skip(range.start).take(range.end - range.start) {
             let selected = current.as_deref() == Some(e.id.as_str());
             ui.horizontal(|ui| {
-                ui.set_height(26.0);
+                ui.set_height(row_h);
                 crate::icons::type_icon(ui, e.ship, 20.0);
                 let name_w = (ui.available_width() - 28.0).max(40.0);
                 let label = if selected && dirty { format!("{}*", e.name) } else { e.name.clone() };
@@ -44,6 +49,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 }
             });
         }
+    });
+    ui.separator();
+    egui::ScrollArea::vertical().id_salt("sim_variations_list").auto_shrink([false, false]).show(ui, |ui| {
+        crate::variations_panel::show(sim, ui, _now_ms);
     });
     if let Some(id) = load {
         if current.as_deref() != Some(id.as_str()) {

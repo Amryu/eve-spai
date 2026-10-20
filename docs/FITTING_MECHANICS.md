@@ -271,3 +271,61 @@ Tests: `warnings::tests::*`.
 
 Snapshot undo: the fit before each edit, up to 200 steps; slider and target edits of the same kind
 within 600 ms fold into one step; a new edit drops the redo branch. Test: `history::tests::*`.
+
+## 14. Applied damage (`stats::application`)
+
+| Weapon | Share of listed damage that lands |
+|---|---|
+| Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / d` in rad/s, and 0 past `optimal + 3 × falloff` (pyfa). Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
+| Missile | `min(1, sig / aoeCloudSize, ((sig × aoeVelocity) / (aoeCloudSize × targetVelocity))^aoeDamageReductionFactor)` (EVE Uni "Missile mechanics"); nothing beyond the flight distance. |
+| Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and lands its listed damage; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation: pyfa models drone speed capping the attacker's). |
+| Smartbomb | All within `empFieldRange`, nothing beyond. |
+
+Tests: `stats::application::tests::*` (every shot hits in optimal, half at one falloff, cut-off at
+three; the 425mm AutoCannon II figure against a 400 m target at 0.1 rad/s; wrecking shots below
+a 1% chance; missiles against big slow and small fast targets).
+
+## 15. Graphs (`graphs`)
+
+- Damage vs distance, target speed (moving fully transversally at the chosen distance) and target
+  signature: one series per weapon group with its applied DPS, plus the total.
+- Capacitor over time: the simulation's trace (section 10), the recharge curve between activations,
+  zero once dry.
+- Shield over time: the same curve from empty, no users.
+- Speed over time: `v(t) = vmax × (1 − e^(−t / τ))`, `τ = agility × mass / 10⁶` (pyfa `fitMobility`).
+- Warp time vs distance (pyfa `fitWarpTime`): `k_a` = warp speed in AU/s, `k_d = min(k_a / 3, 2)`,
+  `V = k_a × AU`, drop-out speed `min(sub-warp speed / 2, 100)`, `D_min = AU + V / k_d`; a warp
+  shorter than `D_min` peaks at `d × k_a × k_d / (k_a + k_d)` and never cruises;
+  `t = ln(V / k_a) / k_a + cruise + ln(V / v_drop) / k_d`. A 5 AU/s frigate warps 10 AU in about
+  20 s.
+- Lock time vs signature: section 9.
+
+Tests: `graphs::tests::*`, `stats::cap_sim::tests::a_trace_follows_the_run_and_hits_zero_when_dry`.
+
+## 16. Variations (`variations`)
+
+A fit carries named variations, each a list of operations: put a type in a position or empty it,
+set a position's charge or state, replace or re-charge every module matching a rule (rack, group,
+effect name or type), or set the implants, boosters, drones or cargo whole. The switched-on
+variations apply in the order they were switched on; the numbers, the racks and the warnings show
+the fit with them applied, and the positions they decide are read-only in the racks. Two active
+variations that touch the same position or section are a warning (the later one wins).
+
+A variation is recorded by editing: every variation is switched off, the fit is edited, and the
+difference between the snapshot and the edit (`variations::diff`: one operation per changed
+position or section) becomes the variation, which is switched on while the fit goes back to the
+snapshot.
+
+Variations are partial on purpose (a doctrine's afterburner refit must touch only the propulsion
+module of each hull), and to keep what they combine into checkable, **one of each kind is on at a
+time**: switching an ammo load on switches the other ammo load off, likewise refits, implant sets,
+booster sets and drone loads (`variations::activate`). The numbers and warnings always describe
+the fit with every active variation applied, so a combination over CPU or powergrid shows as an
+error at once.
+
+A **refit key** such as `prop:ab` links one variation across every fit of a doctrine. The part
+before the colon is its family: switching `prop:ab` on switches `prop:mwd` off whatever their
+kinds, so a fleet swaps as one (`variations::apply_refit_key`).
+
+Tests: `variations::tests::*`, `warnings::tests::clashing_variations_are_pointed_out`,
+`spai-fit-ui` `recording_a_variation_keeps_the_difference_and_switches_it_on`.

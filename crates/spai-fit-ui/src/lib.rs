@@ -15,11 +15,14 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod editor;
+pub mod graphs_panel;
 pub mod icons;
 pub mod library_panel;
 pub mod picker;
+pub mod plot;
 pub mod stats_panel;
 pub mod text;
+pub mod variations_panel;
 pub mod warnings_panel;
 
 pub use picker::{PickTarget, Picker};
@@ -93,10 +96,13 @@ impl Session {
         if self.computed_for == Some((self.rev, profile)) {
             return;
         }
-        let calc = Calc::new(dogma, &self.fit, skills, &Env::default());
-        let computed = spai_fit::stats::compute_with(&calc, &self.fit);
-        self.missing = spai_fit::skills::missing(&self.fit, dogma, skills);
-        self.warnings = spai_fit::warnings::check(dogma, &self.fit, &computed, &self.missing);
+        let resolved = spai_fit::variations::resolve(dogma, &self.fit);
+        let calc = Calc::new(dogma, &resolved, skills, &Env::default());
+        let computed = spai_fit::stats::compute_with(&calc, &resolved);
+        self.missing = spai_fit::skills::missing(&resolved, dogma, skills);
+        let mut warnings = spai_fit::warnings::check(dogma, &resolved, &computed, &self.missing);
+        warnings.extend(spai_fit::warnings::check(dogma, &self.fit, &computed, &[]).into_iter().filter(|w| matches!(w.kind, spai_fit::warnings::WarningKind::VariationConflict { .. })));
+        self.warnings = warnings;
         self.computed = Some(Arc::new(computed));
         self.computed_for = Some((self.rev, profile));
     }
@@ -108,6 +114,7 @@ pub enum Pane {
     Library,
     Fit,
     Stats,
+    Graphs,
     Warnings,
 }
 
@@ -134,6 +141,11 @@ pub struct SimUi {
     pub pane: Pane,
     pub show_library: bool,
     pub import: Option<ImportDialog>,
+    pub graph: spai_fit::graphs::GraphKind,
+    pub graph_drones: bool,
+    /// The fit as it was when a variation recording started.
+    pub recording: Option<Fit>,
+    pub editing_variation: Option<u32>,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -153,6 +165,10 @@ impl Default for SimUi {
             pane: Pane::Fit,
             show_library: true,
             import: None,
+            graph: spai_fit::graphs::GraphKind::DamageVsDistance,
+            graph_drones: true,
+            recording: None,
+            editing_variation: None,
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -290,6 +306,14 @@ impl SimUi {
         s.computed.clone()
     }
 
+    /// What the capacitor graph needs beyond the computed numbers.
+    pub fn cap_inputs(&self) -> Option<spai_fit::graphs::CapInputs> {
+        let (dogma, s) = (self.dogma.as_ref()?, self.session.as_ref()?);
+        let resolved = spai_fit::variations::resolve(dogma, &s.fit);
+        let calc = Calc::new(dogma, &resolved, self.skills(), &Env::default());
+        Some(spai_fit::graphs::CapInputs { users: spai_fit::stats::cap_users(&calc) })
+    }
+
     /// The whole simulator, in the space given.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         if self.dogma.is_none() {
@@ -310,6 +334,7 @@ impl SimUi {
                 self.side_tabs(ui);
                 match self.pane {
                     Pane::Warnings => warnings_panel::show(self, ui),
+                    Pane::Graphs => graphs_panel::show(self, ui, now_ms),
                     _ => stats_panel::show(self, ui),
                 }
             });
@@ -319,8 +344,8 @@ impl SimUi {
                 // Everything becomes a tab, so nothing is ever wider than the window.
                 ui.horizontal(|ui| {
                     use spai_ui::widgets::SteadySelect as _;
-                    let tabs = [(Pane::Library, tr!("Fits")), (Pane::Fit, tr!("Fit")), (Pane::Stats, tr!("Stats")), (Pane::Warnings, tr!("Warnings"))];
-                    let w = egui::vec2(((ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0).max(40.0), 24.0);
+                    let tabs = [(Pane::Library, tr!("Fits")), (Pane::Fit, tr!("Fit")), (Pane::Stats, tr!("Stats")), (Pane::Graphs, tr!("Graphs")), (Pane::Warnings, tr!("Warnings"))];
+                    let w = egui::vec2(((ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0).max(40.0), 24.0);
                     for (pane, label) in tabs {
                         if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
                             self.pane = pane;
@@ -332,6 +357,7 @@ impl SimUi {
             match (narrow, self.pane) {
                 (true, Pane::Library) => library_panel::show(self, ui, now_ms),
                 (true, Pane::Stats) => stats_panel::show(self, ui),
+                (true, Pane::Graphs) => graphs_panel::show(self, ui, now_ms),
                 (true, Pane::Warnings) => warnings_panel::show(self, ui),
                 _ => editor::show(self, ui, now_ms),
             }
@@ -370,11 +396,15 @@ impl SimUi {
     fn side_tabs(&mut self, ui: &mut egui::Ui) {
         use spai_ui::widgets::SteadySelect as _;
         ui.horizontal(|ui| {
-            let w = egui::vec2((ui.available_width() - ui.spacing().item_spacing.x) / 2.0, 24.0);
+            let w = egui::vec2((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0, 24.0);
             let warnings = self.session.as_ref().map_or(0, |s| s.warnings.len());
             let label = if warnings > 0 { trf!("Warnings ({n})", n = warnings) } else { tr!("Warnings").to_owned() };
-            if ui.menu_label_sized(w, self.pane != Pane::Warnings, tr!("Stats")).clicked() {
+            let stats = !matches!(self.pane, Pane::Warnings | Pane::Graphs);
+            if ui.menu_label_sized(w, stats, tr!("Stats")).clicked() {
                 self.pane = Pane::Stats;
+            }
+            if ui.menu_label_sized(w, self.pane == Pane::Graphs, tr!("Graphs")).clicked() {
+                self.pane = Pane::Graphs;
             }
             if ui.menu_label_sized(w, self.pane == Pane::Warnings, label).clicked() {
                 self.pane = Pane::Warnings;
@@ -456,7 +486,7 @@ impl SimUi {
         let mut open = true;
         let mut done: Option<Result<Fit, String>> = None;
         let size = egui::vec2(480.0, 360.0);
-        egui::Window::new(tr!("Import EFT")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.screen_rect().center() - size / 2.0).show(ctx, |ui| {
+        egui::Window::new(tr!("Import EFT")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
             ui.label(tr!("Paste a fit in EFT format (as the game's fitting window copies it)."));
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(&mut dialog.text).desired_width(f32::INFINITY).desired_rows(12).font(egui::TextStyle::Monospace));

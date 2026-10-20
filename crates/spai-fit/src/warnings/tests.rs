@@ -4,6 +4,7 @@ use crate::calc::Env;
 use crate::fit::{CargoItem, DroneStack, Module};
 use crate::skills::SkillSet;
 use crate::stats::compute;
+use crate::variations as spai_fit_variations;
 
 fn kinds(fit: &Fit, missing: &[MissingSkill]) -> Vec<WarningKind> {
     let d = dataset();
@@ -92,4 +93,16 @@ fn capacitor_drones_skills_and_unknown_types_have_their_warnings() {
     assert!(has(&k, |w| matches!(w, WarningKind::DroneBandwidthOver { .. })));
     assert!(has(&k, |w| matches!(w, WarningKind::MissingSkills { count: 1 })));
     assert!(has(&k, |w| matches!(w, WarningKind::UnknownTypes(ids) if ids == &vec![424242])));
+}
+
+#[test]
+fn clashing_variations_are_pointed_out() {
+    use spai_fit_variations::*;
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+    f.variations.push(Variation { id: 1, name: "Long".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO_LONG) }] });
+    f.variations.push(Variation { id: 2, name: "Short".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO) }] });
+    f.active_variations = vec![1, 2];
+    let k = kinds(&f, &[]);
+    assert!(has(&k, |w| matches!(w, WarningKind::VariationConflict { first, second } if first == "Long" && second == "Short")), "{k:?}");
 }

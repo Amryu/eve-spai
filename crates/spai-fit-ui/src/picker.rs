@@ -166,7 +166,7 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     let target = picker.target;
     let title = picker.title();
     let size = egui::vec2(420.0, 460.0);
-    egui::Window::new(title).id(egui::Id::new("sim_picker")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.screen_rect().center() - size / 2.0).show(ctx, |ui| {
+    egui::Window::new(title).id(egui::Id::new("sim_picker")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
         let edit = ui.add(egui::TextEdit::singleline(&mut picker.query).hint_text(tr!("Search by name")).desired_width(f32::INFINITY));
         if picker.focus {
             edit.request_focus();

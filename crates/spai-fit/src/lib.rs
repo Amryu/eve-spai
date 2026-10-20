@@ -9,12 +9,14 @@ pub mod doc;
 pub mod dogma;
 pub mod fit;
 pub mod formats;
+pub mod graphs;
 pub mod history;
 pub mod ids;
 pub mod skills;
 pub mod stats;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod variations;
 pub mod warnings;
 
 pub use dogma::Dogma;

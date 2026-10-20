@@ -8,6 +8,7 @@ use crate::fit::{DamageProfile, Fit, Slot, State};
 use crate::ids::{GroupId, TypeId};
 use crate::skills::SkillSet;
 
+pub mod application;
 pub mod cap_sim;
 
 /// The four damage types, in EVE's order: em, thermal, kinetic, explosive.
@@ -215,6 +216,8 @@ impl Sensors {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Computed {
+    /// The fastest drone in space, for how well drones keep up.
+    pub drone_speed: Option<f64>,
     pub fitting: Fitting,
     pub tank: Tank,
     pub weapons: Vec<WeaponGroup>,
@@ -242,7 +245,9 @@ pub fn compute(dogma: &Dogma, fit: &Fit, skills: &SkillSet, env: &Env) -> Comput
 
 pub fn compute_with(calc: &Calc, fit: &Fit) -> Computed {
     let weapons = weapons(calc, fit);
+    let drone_speed = calc.drones().filter(|(_, it)| it.state >= State::Active).map(|(i, _)| calc.value(i, attr::MAX_VELOCITY)).fold(None, |best: Option<f64>, v| Some(best.map_or(v, |b| b.max(v))));
     Computed {
+        drone_speed,
         fitting: fitting(calc, fit),
         tank: tank(calc, fit),
         drones: drones(calc),

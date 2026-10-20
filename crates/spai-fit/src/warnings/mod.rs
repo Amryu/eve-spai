@@ -51,6 +51,8 @@ pub enum WarningKind {
     CapUnstable { lasts_s: f64 },
     MissingSkills { count: usize },
     UnknownTypes(Vec<TypeId>),
+    /// Two switched-on variations change the same thing; the later one wins.
+    VariationConflict { first: String, second: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -207,6 +209,10 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
     }
     if !missing_skills.is_empty() {
         out.push(warn(Severity::Warn, WarningKind::MissingSkills { count: missing_skills.len() }));
+    }
+    for (a, b) in crate::variations::conflicts(dogma, fit) {
+        let name = |id: u32| fit.variations.iter().find(|v| v.id == id).map_or(String::new(), |v| v.name.clone());
+        out.push(warn(Severity::Warn, WarningKind::VariationConflict { first: name(a), second: name(b) }));
     }
     out.sort_by_key(|w| w.severity);
     out

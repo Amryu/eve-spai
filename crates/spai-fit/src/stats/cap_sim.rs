@@ -50,6 +50,27 @@ pub fn recharge(c: f64, cap: f64, tau: f64, dt: f64) -> f64 {
     cap * (1.0 + x * (-5.0 * dt / tau).exp()).powi(2)
 }
 
+/// The capacitor level over time on `n` points up to `horizon_s`: a run of the simulation, the
+/// recharge curve filling in between activations.
+pub fn trace(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, n: usize) -> Vec<[f64; 2]> {
+    let n = n.max(2);
+    let mut events: Vec<(f64, f64)> = Vec::new();
+    simulate_impl(capacity, tau_s, users, horizon_s, true, Some(&mut events));
+    let mut out = Vec::with_capacity(n);
+    let mut last = (0.0, capacity);
+    let mut next = 0;
+    for i in 0..n {
+        let t = horizon_s * i as f64 / (n - 1) as f64;
+        while next < events.len() && events[next].0 <= t {
+            last = events[next];
+            next += 1;
+        }
+        let dried = events.last().is_some_and(|e| e.1 < 0.0 && e.0 <= t);
+        out.push([t, if dried { 0.0 } else { recharge(last.1, capacity, tau_s, t - last.0) }]);
+    }
+    out
+}
+
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 struct Time(f64);
 
@@ -79,6 +100,12 @@ pub fn simulate(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64) -> Ou
 }
 
 pub fn simulate_with(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stagger: bool) -> Outcome {
+    simulate_impl(capacity, tau_s, users, horizon_s, stagger, None)
+}
+
+/// `events`, when given, receives `(time, capacitor after)` at every activation; running dry adds
+/// a final `(time, -1)`.
+fn simulate_impl(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stagger: bool, mut events: Option<&mut Vec<(f64, f64)>>) -> Outcome {
     if capacity <= 0.0 {
         return Outcome { stable_at: None, lasts_s: Some(0.0) };
     }
@@ -128,6 +155,9 @@ pub fn simulate_with(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, 
                     .filter(|&b| is_booster(&users[b]) && ready_at[b] <= t + 1e-9 && users[b].need <= cap)
                     .min_by(|&a, &b| (cap + users[a].give - capacity).abs().partial_cmp(&(cap + users[b].give - capacity).abs()).unwrap_or(std::cmp::Ordering::Equal));
                 let Some(b) = pick else {
+                    if let Some(ev) = events.as_deref_mut() {
+                        ev.push((t, -1.0));
+                    }
                     return Outcome { stable_at: None, lasts_s: Some(t) };
                 };
                 cap = (cap - users[b].need + users[b].give).min(capacity);
@@ -142,6 +172,9 @@ pub fn simulate_with(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, 
             }
         }
         cap = (cap - u.need + u.give).min(capacity);
+        if let Some(ev) = events.as_deref_mut() {
+            ev.push((t, cap));
+        }
         if t >= tail_from {
             low_tail = low_tail.min(cap);
         }
@@ -218,6 +251,19 @@ mod tests {
         let staggered = simulate_with(100.0, 400.0, &[u.clone(), u.clone()], 600.0, true);
         assert!(together.lasts_s.is_none() && staggered.lasts_s.is_none(), "{together:?} {staggered:?}");
         assert!(staggered.stable_at.unwrap() > together.stable_at.unwrap() + 0.01, "{staggered:?} vs {together:?}");
+    }
+
+    #[test]
+    fn a_trace_follows_the_run_and_hits_zero_when_dry() {
+        let users = vec![User { cycle_ms: 1000.0, need: 50.0, give: 0.0, shots: None, reload_ms: 0.0 }];
+        let pts = trace(1000.0, 200.0, &users, 120.0, 25);
+        assert_eq!(pts.len(), 25);
+        assert_eq!(pts[0][0], 0.0);
+        assert!((pts[0][1] - 950.0).abs() < 1e-6, "{}: the first activation lands at time zero", pts[0][1]);
+        assert!(pts[1][1] < 950.0 && pts[1][1] > 0.0);
+        assert_eq!(pts.last().unwrap()[1], 0.0);
+        let idle = trace(1000.0, 200.0, &[], 10.0, 3);
+        assert!(idle.iter().all(|p| (p[1] - 1000.0).abs() < 1e-9));
     }
 
     #[test]

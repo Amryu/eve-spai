@@ -45,6 +45,7 @@ pub fn describe(dogma: &Dogma, w: &Warning) -> String {
         WarningKind::CapUnstable { lasts_s } => trf!("Capacitor lasts {t}", t = text::secs(*lasts_s)),
         WarningKind::MissingSkills { count } => trf!("{n} skills missing for this pilot", n = count),
         WarningKind::UnknownTypes(ids) => trf!("Unknown types left out: {ids}", ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")),
+        WarningKind::VariationConflict { first, second } => trf!("Variations \"{first}\" and \"{second}\" change the same thing; the later one wins", first = first, second = second),
     }
 }
 

@@ -137,3 +137,33 @@ fn warnings_read_as_sentences() {
     let w = Warning { severity: Severity::Warn, kind: WarningKind::NoAmmo { slot: Slot::High, index: 1 } };
     assert_eq!(crate::warnings_panel::describe(&d, &w), "No ammunition loaded in high slot 2");
 }
+
+#[test]
+fn recording_a_variation_keeps_the_difference_and_switches_it_on() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    let short = s.computed().unwrap().weapons[0].optimal;
+    s.start_recording(3);
+    assert!(s.recording.is_some());
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO_LONG, 4);
+    s.keep_recording(5);
+    assert!(s.recording.is_none());
+    let f = &s.session.as_ref().unwrap().fit;
+    assert_eq!(f.variations.len(), 1);
+    assert_eq!(f.variations[0].kind, spai_fit::variations::VariationKind::Ammo);
+    assert_eq!(f.active_variations, vec![1]);
+    assert_eq!(f.module(Slot::High, 0).unwrap().charge, Some(ids::AMMO), "the base keeps the short ammo");
+    assert_eq!(s.view_fit().unwrap().module(Slot::High, 0).unwrap().charge, Some(ids::AMMO_LONG), "the view shows the variation");
+    assert!(s.computed().unwrap().weapons[0].optimal > short);
+    assert_eq!(s.variation_positions().into_iter().collect::<Vec<_>>(), vec![(Slot::High, 0)]);
+    s.edit(EditKind::Variation, 6, |f| f.active_variations.clear());
+    assert_eq!(s.computed().unwrap().weapons[0].optimal, short);
+    s.start_recording(7);
+    s.discard_recording(8);
+    assert_eq!(s.session.as_ref().unwrap().fit.variations.len(), 1);
+    s.start_recording(9);
+    s.keep_recording(10);
+    assert_eq!(s.session.as_ref().unwrap().fit.variations.len(), 1, "no change, no variation");
+}
