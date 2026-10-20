@@ -5,7 +5,7 @@
 use crate::fit::TargetProfile;
 use crate::ids::TypeId;
 use crate::stats::application::applied_factor;
-use crate::stats::{cap_sim, Computed};
+use crate::stats::{RemoteKind, range_factor, cap_sim, Computed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GraphKind {
@@ -17,10 +17,12 @@ pub enum GraphKind {
     VelocityOverTime,
     WarpTime,
     LockTime,
+    RemoteRepVsDistance,
+    EwarVsDistance,
 }
 
 impl GraphKind {
-    pub const ALL: [GraphKind; 8] = [
+    pub const ALL: [GraphKind; 10] = [
         GraphKind::DamageVsDistance,
         GraphKind::DamageVsTargetSpeed,
         GraphKind::DamageVsTargetSignature,
@@ -29,6 +31,8 @@ impl GraphKind {
         GraphKind::VelocityOverTime,
         GraphKind::WarpTime,
         GraphKind::LockTime,
+        GraphKind::RemoteRepVsDistance,
+        GraphKind::EwarVsDistance,
     ];
 }
 
@@ -42,6 +46,8 @@ pub enum SeriesLabel {
     Velocity,
     Warp,
     Lock,
+    /// One kind of remote module, all of its type together.
+    Remote(TypeId, RemoteKind),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -174,7 +180,38 @@ pub fn sample(c: &Computed, spec: &GraphSpec, cap: Option<&CapInputs>) -> Vec<Se
             let to = spec.x_to.unwrap_or(2000.0);
             vec![Series { label: SeriesLabel::Lock, points: grid(10.0, to, n).map(|sig| [sig, c.sensors.lock_time_s(sig)]).collect() }]
         }
+        GraphKind::RemoteRepVsDistance => remote_series(c, spec, n, true),
+        GraphKind::EwarVsDistance => remote_series(c, spec, n, false),
     }
+}
+
+/// Remote modules by type and kind against distance: repairs (with their total) or ewar.
+fn remote_series(c: &Computed, spec: &GraphSpec, n: usize, reps: bool) -> Vec<Series> {
+    let mods: Vec<&crate::stats::RemoteModule> = c.remote.modules.iter().filter(|m| m.kind.is_rep() == reps).collect();
+    if mods.is_empty() {
+        return Vec::new();
+    }
+    let reach = mods.iter().map(|m| m.optimal + 3.0 * m.falloff).fold(1000.0, f64::max);
+    let xs: Vec<f64> = grid(0.0, spec.x_to.unwrap_or(reach * 1.1), n).collect();
+    let mut out: Vec<Series> = Vec::new();
+    let mut total = vec![0.0; xs.len()];
+    for m in mods {
+        let label = SeriesLabel::Remote(m.type_id, m.kind);
+        let points: Vec<f64> = xs.iter().map(|&x| m.amount * range_factor(x, m.optimal, m.falloff)).collect();
+        if m.kind != RemoteKind::CapTransfer {
+            for (t, y) in total.iter_mut().zip(&points) {
+                *t += y;
+            }
+        }
+        match out.iter_mut().find(|s| s.label == label) {
+            Some(s) => s.points.iter_mut().zip(points).for_each(|(p, y)| p[1] += y),
+            None => out.push(Series { label, points: xs.iter().zip(points).map(|(x, y)| [*x, y]).collect() }),
+        }
+    }
+    if reps && out.iter().filter(|s| !matches!(s.label, SeriesLabel::Remote(_, RemoteKind::CapTransfer))).count() > 1 {
+        out.push(Series { label: SeriesLabel::Total, points: xs.iter().zip(total).map(|(x, y)| [*x, y]).collect() });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -257,5 +294,29 @@ mod tests {
         assert!(warp_time(0.5 * AU, 5.0, 365.0) < t);
         assert_eq!(warp_time(AU, 0.0, 365.0), 0.0);
         assert!((velocity_at(1.0e9, 365.0, 3.0, 1.0e6) - 365.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remote_and_ewar_curves_follow_the_modules_reach() {
+        let d = dataset();
+        let mut f = Fit::new(ids::SHIP, "logi");
+        f.modules.push(Module::new(ids::REMOTE_REP, Slot::High, 0).with_state(State::Active));
+        f.modules.push(Module::new(ids::REMOTE_REP, Slot::High, 1).with_state(State::Active));
+        f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+        let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let reps = sample(&c, &GraphSpec::new(GraphKind::RemoteRepVsDistance, TargetProfile::default()), None);
+        assert_eq!(reps.len(), 1, "two repairers of one type are one curve, with no total for one kind: {reps:?}");
+        let SeriesLabel::Remote(t, kind) = reps[0].label else { panic!() };
+        assert_eq!((t, kind), (ids::REMOTE_REP, crate::stats::RemoteKind::ArmorRep));
+        assert!((reps[0].points[0][1] - 20.0).abs() < 1e-9);
+        assert_eq!(reps[0].points.last().unwrap()[1], 0.0);
+        let at = |x: f64| reps[0].points.iter().min_by(|a, b| (a[0] - x).abs().partial_cmp(&(b[0] - x).abs()).unwrap()).unwrap();
+        assert!(at(9000.0)[1] < 12.0 && at(9000.0)[1] > 8.0, "{:?}: half at one falloff", at(9000.0));
+        let ewar = sample(&c, &GraphSpec::new(GraphKind::EwarVsDistance, TargetProfile::default()), None);
+        assert_eq!(ewar.len(), 1);
+        assert_eq!(ewar[0].points[0][1], 60.0);
+        assert!(ewar[0].points.last().unwrap()[0] > 25_000.0, "the axis reaches past three falloffs");
+        let none = compute(&d, &Fit::new(ids::SHIP, "bare"), &SkillSet::all_v(), &Env::default());
+        assert!(sample(&none, &GraphSpec::new(GraphKind::EwarVsDistance, TargetProfile::default()), None).is_empty());
     }
 }

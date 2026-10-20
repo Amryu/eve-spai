@@ -4,13 +4,19 @@ How EVE Spai is put together today. For build, release and working conventions s
 
 ## Shape
 
-A single Rust binary built on egui/eframe, plus two workspace crates:
+A single Rust binary built on egui/eframe, plus the workspace crates:
 
 | Crate | What it is |
 |---|---|
 | `app` | The desktop app and the embedded web view. |
 | `crates/br-core` | The battle-report model and clustering, shared by the app and the server. |
-| `crates/server` | The battle-report sharing server (axum), its own workspace with its own lock file. |
+| `crates/server` | The sharing server (axum): battle reports, the wormhole map, the fitting simulator's presets and libraries; its own workspace with its own lock file. |
+| `crates/spai-ui` | Widgets, theme and i18n shared by every egui front end. |
+| `crates/spai-fit` | The fitting engine: the baked dogma dataset, the modifier calculation, stats, graphs, formats, variations and fleets. No egui, no I/O. |
+| `crates/spai-fit-ui` | The fitting simulator's screens, shared by the desktop tab and the browser; all I/O goes through `HostRequest`/`HostEvent`. |
+| `crates/spai-webkit` | What the browser apps share: page and storage helpers, EVE sign-in, ESI characters. |
+| `crates/spai-web` | The wormhole map in the browser (trunk, `/wh/`). |
+| `crates/spai-sim-web` | The fitting simulator in the browser (trunk, `/sim/`). |
 
 One process owns the windows, all state and every network worker. The alert and fleet ping windows
 are deferred viewports of it, kept on top of the game without taking focus from it. The alert
@@ -91,6 +97,17 @@ compiled into the binary (`web/assets.rs`), with no build step. The publisher ke
 pane and only republishes a pane whose content hash changed; the page merges pane updates from a
 server-sent event stream. Page actions are posted as `UiAction` messages (`ipc.rs`) and applied by
 the handler the app's own actions use.
+
+## Fitting simulator
+
+The Imperium tab (labelled Fitting for pilots outside the coalition) hosts `spai-fit-ui`. The
+engine reads one blob, `dogma-v1.bin.gz`, baked from the official static data by `spai-fit-bake`:
+the desktop bakes it along with its universe import and falls back to the copy the website mirrors;
+the browser fetches the mirrored one. The dataset, the calculation and every formula are written
+up in `docs/FITTING_MECHANICS.md`, each rule with the test that pins it. Fits and fleets live in the
+desktop store and the browser's local storage, synced by revision to the server for a signed-in
+character; doctrine presets come from the server, the Imperium's own and the enemy's only for
+coalition members, published by the characters named in `SIM_ADMIN_CHAR_IDS`.
 
 ## Battle reports
 

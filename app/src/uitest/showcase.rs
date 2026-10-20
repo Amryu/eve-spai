@@ -113,6 +113,7 @@ pub(crate) fn scenes() -> Vec<Scene> {
             a.settings.eve_logs_dir = r"C:\Users\Pilot\Documents\EVE\logs".into();
             a.settings.eve_settings_dir = r"C:\Users\Pilot\AppData\Local\CCP\EVE\c_ccp_eve_tq_tranquility".into();
         }),
+        showcase("showcase_fitting", View::Imperium, fitting_setup),
         showcase("showcase_battle", View::Battles, |a| {
             let (b, names) = fixtures::real_battle();
             a.seed_battle(b, names);
@@ -518,4 +519,83 @@ pub(crate) fn with_images(mut scene: Scene) -> Scene {
         })),
     };
     scene
+}
+
+/// A rail Ferox in the simulator. The real dataset when `SPAI_DOGMA_BLOB` points at the baked
+/// blob (the website render), else the engine's synthetic one so the layout checks need no data.
+const FITTING_EFT: &str = "[Ferox, Ferox Rail]
+Damage Control II
+Magnetic Field Stabilizer II
+Magnetic Field Stabilizer II
+Reactor Control Unit II
+
+50MN Quad LiF Restrained Microwarpdrive
+Large Shield Extender II
+Large Shield Extender II
+Multispectrum Shield Hardener II
+EM Shield Hardener II
+Sensor Booster II, Targeting Range Script
+
+250mm Railgun II, Spike M
+250mm Railgun II, Spike M
+250mm Railgun II, Spike M
+250mm Railgun II, Spike M
+250mm Railgun II, Spike M
+250mm Railgun II, Spike M
+Small Energy Neutralizer II
+
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+
+Hornet II x5
+
+Javelin M x1000
+Nanite Repair Paste x50
+";
+
+fn fitting_setup(a: &mut crate::app::SpaiApp) {
+    use spai_fit::fit::{Fit, Module, Slot, State};
+    use spai_fit::test_support::{dataset, ids};
+    a.sim_opened = true;
+    // Signed in with a Goonswarm character: the tab reads Imperium.
+    a.char_alliances = vec![(2_112_000_900, Some(1_354_830_081), crate::clock::utc().timestamp())];
+    let real = std::env::var("SPAI_DOGMA_BLOB").ok().and_then(|p| std::fs::read(p).ok()).and_then(|b| spai_fit::dogma::blob::decode(&b).ok());
+    let dogma = std::sync::Arc::new(real.unwrap_or_else(dataset));
+    a.sim.handle(spai_fit_ui::HostEvent::Dogma(dogma.clone()));
+    let fit = match spai_fit::formats::eft::import(&dogma, FITTING_EFT) {
+        Some(i) if i.unknown.is_empty() => i.fit,
+        _ => {
+            let mut f = Fit::new(ids::SHIP, "Ferox Rail");
+            for i in 0..2 {
+                f.modules.push(Module::new(ids::GUN, Slot::High, i).with_charge(ids::AMMO).with_state(State::Active));
+            }
+            f.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
+            f.modules.push(Module::new(ids::DC, Slot::Low, 0));
+            f
+        }
+    };
+    a.sim.open_fit(fit, 0);
+    a.sim.pane = spai_fit_ui::Pane::Stats;
+    let ship = a.sim.session.as_ref().map_or(0, |s| s.fit.ship);
+    let names = ["Ferox Rail", "Ferox Rail (MJD)", "Eagle Rail", "Basilisk", "Scimitar", "Drake Navy Issue", "Sabre", "Huginn"];
+    a.sim.handle(spai_fit_ui::HostEvent::Fits(names.iter().enumerate().map(|(i, n)| spai_fit_ui::FitSummary { id: format!("fit-{i}"), name: (*n).into(), ship, updated_at: 0 }).collect()));
+    // The coalition's presets, named as its doctrines are; the hulls are looked up in the data.
+    a.sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
+    let doc = a.sim.session.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(&spai_fit::doc::to_json(&s.fit)).ok()).unwrap_or_default();
+    let preset = |id: &str, side: spai_fit_ui::DoctrineSide, name: &str, hull: &str| {
+        dogma.type_named(hull).map(|t| spai_fit_ui::Doctrine { id: id.into(), side, name: name.into(), ship: t.id, tags: Vec::new(), refit_keys: Vec::new(), rev: 1, doc: doc.clone() })
+    };
+    use spai_fit_ui::DoctrineSide::{Enemy, Imperium};
+    let doctrines: Vec<spai_fit_ui::Doctrine> = [
+        preset("d1", Imperium, "Hammer Fleet (FNI)", "Ferox Navy Issue"),
+        preset("d2", Imperium, "Hammer Fleet (FNI) Basilisk", "Basilisk"),
+        preset("d3", Imperium, "Svipul", "Svipul"),
+        preset("d4", Enemy, "Rokh rail", "Rokh"),
+        preset("d5", Enemy, "Zealot", "Zealot"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    a.sim.handle(spai_fit_ui::HostEvent::Doctrines(doctrines));
 }

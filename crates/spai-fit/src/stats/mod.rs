@@ -214,6 +214,43 @@ impl Sensors {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RemoteKind {
+    ArmorRep,
+    ShieldRep,
+    HullRep,
+    CapTransfer,
+    Neut,
+    Nos,
+    Web,
+    Painter,
+    Damp,
+    TrackingDisruptor,
+    GuidanceDisruptor,
+    Ecm,
+    Scram,
+    Point,
+}
+
+impl RemoteKind {
+    /// Repairs and capacitor given, as opposed to ewar done.
+    pub fn is_rep(self) -> bool {
+        matches!(self, RemoteKind::ArmorRep | RemoteKind::ShieldRep | RemoteKind::HullRep | RemoteKind::CapTransfer)
+    }
+}
+
+/// One active module acting on another ship.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteModule {
+    pub type_id: TypeId,
+    pub kind: RemoteKind,
+    /// Repairs and capacitor per second; ewar as its strength: percent for webs, painters, damps
+    /// and disruptors, sensor points for ECM, warp points for tackle.
+    pub amount: f64,
+    pub optimal: f64,
+    pub falloff: f64,
+}
+
 /// What the fit does to others per second: repairs, capacitor and neuts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Remote {
@@ -224,6 +261,20 @@ pub struct Remote {
     pub neut: f64,
     /// The longest reach of the remote repairers, optimal plus falloff.
     pub rep_range: f64,
+    pub modules: Vec<RemoteModule>,
+}
+
+/// How much of a remote effect lands at `distance`: all of it inside the optimal, half at one
+/// falloff, nothing past three.
+pub fn range_factor(distance: f64, optimal: f64, falloff: f64) -> f64 {
+    let over = (distance - optimal).max(0.0);
+    if over <= 0.0 {
+        1.0
+    } else if falloff <= 0.0 || over > 3.0 * falloff {
+        0.0
+    } else {
+        0.5f64.powf((over / falloff).powi(2))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -394,7 +445,8 @@ fn reps(calc: &Calc) -> Reps {
     r
 }
 
-/// Remote effects of the active modules, per second, by effect name.
+/// Remote effects of the active modules by effect name: repairs and capacitor per second, ewar
+/// as its strength.
 fn remote(calc: &Calc) -> Remote {
     let mut r = Remote::default();
     for (i, it) in calc.modules() {
@@ -402,25 +454,61 @@ fn remote(calc: &Calc) -> Remote {
             continue;
         }
         let cycle = calc.value(i, attr::DURATION) / 1000.0;
-        if cycle <= 0.0 {
-            continue;
-        }
         let names: Vec<&str> = calc.effect_names(i).collect();
-        let reach = calc.value(i, attr::MAX_RANGE) + calc.value(i, attr::FALLOFF_EFFECTIVENESS);
-        if names.iter().any(|n| ["shipModuleRemoteArmorRepairer", "shipModuleAncillaryRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"].contains(n)) {
-            r.armor_rep += calc.value(i, attr::ARMOR_DAMAGE_AMOUNT) / cycle;
-            r.rep_range = r.rep_range.max(reach);
-        } else if names.iter().any(|n| ["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"].contains(n)) {
-            r.shield_rep += calc.value(i, attr::SHIELD_BONUS) / cycle;
-            r.rep_range = r.rep_range.max(reach);
-        } else if names.contains(&"shipModuleRemoteHullRepairer") {
-            r.hull_rep += calc.value(i, attr::STRUCTURE_DAMAGE_AMOUNT) / cycle;
-            r.rep_range = r.rep_range.max(reach);
-        } else if names.contains(&"shipModuleRemoteCapacitorTransmitter") {
-            r.cap_transfer += calc.value(i, attr::POWER_TRANSFER_AMOUNT) / cycle;
-        } else if names.contains(&"energyNeutralizerFalloff") {
-            r.neut += calc.value(i, attr::ENERGY_NEUTRALIZER_AMOUNT) / cycle;
+        let has = |list: &[&str]| names.iter().any(|n| list.contains(n));
+        let per_s = |a: crate::ids::AttrId| if cycle > 0.0 { calc.value(i, a) / cycle } else { 0.0 };
+        let strongest = |attrs: &[crate::ids::AttrId]| attrs.iter().map(|&a| calc.value(i, a).abs()).fold(0.0, f64::max);
+        let (kind, amount) = if has(&["shipModuleRemoteArmorRepairer", "shipModuleAncillaryRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"]) {
+            (RemoteKind::ArmorRep, per_s(attr::ARMOR_DAMAGE_AMOUNT))
+        } else if has(&["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"]) {
+            (RemoteKind::ShieldRep, per_s(attr::SHIELD_BONUS))
+        } else if has(&["shipModuleRemoteHullRepairer"]) {
+            (RemoteKind::HullRep, per_s(attr::STRUCTURE_DAMAGE_AMOUNT))
+        } else if has(&["shipModuleRemoteCapacitorTransmitter"]) {
+            (RemoteKind::CapTransfer, per_s(attr::POWER_TRANSFER_AMOUNT))
+        } else if has(&["energyNeutralizerFalloff"]) {
+            (RemoteKind::Neut, per_s(attr::ENERGY_NEUTRALIZER_AMOUNT))
+        } else if has(&["energyNosferatuFalloff"]) {
+            (RemoteKind::Nos, per_s(attr::POWER_TRANSFER_AMOUNT))
+        } else if has(&["remoteWebifierFalloff"]) {
+            (RemoteKind::Web, strongest(&[attr::SPEED_FACTOR]))
+        } else if has(&["remoteTargetPaintFalloff"]) {
+            (RemoteKind::Painter, strongest(&[attr::SIGNATURE_RADIUS_BONUS]))
+        } else if has(&["remoteSensorDampFalloff"]) {
+            (RemoteKind::Damp, strongest(&[attr::MAX_TARGET_RANGE_BONUS, attr::SCAN_RESOLUTION_BONUS]))
+        } else if has(&["shipModuleTrackingDisruptor"]) {
+            (RemoteKind::TrackingDisruptor, strongest(&[attr::TRACKING_SPEED_BONUS, attr::MAX_RANGE_BONUS, attr::FALLOFF_BONUS]))
+        } else if has(&["shipModuleGuidanceDisruptor"]) {
+            (RemoteKind::GuidanceDisruptor, strongest(&[attr::AOE_CLOUD_SIZE_BONUS, attr::AOE_VELOCITY_BONUS]))
+        } else if has(&["remoteECMFalloff"]) {
+            (RemoteKind::Ecm, strongest(&[attr::SCAN_GRAVIMETRIC_STRENGTH_BONUS, attr::SCAN_LADAR_STRENGTH_BONUS, attr::SCAN_MAGNETOMETRIC_STRENGTH_BONUS, attr::SCAN_RADAR_STRENGTH_BONUS]))
+        } else if names.iter().any(|n| n.starts_with("warpScramble")) {
+            (RemoteKind::Scram, calc.value(i, attr::WARP_SCRAMBLE_STRENGTH))
+        } else if has(&["warpDisrupt"]) {
+            (RemoteKind::Point, calc.value(i, attr::WARP_SCRAMBLE_STRENGTH))
+        } else {
+            continue;
+        };
+        let mut optimal = calc.value(i, attr::MAX_RANGE);
+        if matches!(kind, RemoteKind::Scram | RemoteKind::Point) {
+            optimal = calc.value(i, attr::WARP_SCRAMBLE_RANGE);
         }
+        let mut falloff = calc.value(i, attr::FALLOFF_EFFECTIVENESS);
+        if falloff <= 0.0 {
+            falloff = calc.value(i, attr::FALLOFF);
+        }
+        match kind {
+            RemoteKind::ArmorRep => r.armor_rep += amount,
+            RemoteKind::ShieldRep => r.shield_rep += amount,
+            RemoteKind::HullRep => r.hull_rep += amount,
+            RemoteKind::CapTransfer => r.cap_transfer += amount,
+            RemoteKind::Neut => r.neut += amount,
+            _ => {}
+        }
+        if kind.is_rep() {
+            r.rep_range = r.rep_range.max(optimal + falloff);
+        }
+        r.modules.push(RemoteModule { type_id: it.type_id, kind, amount, optimal, falloff });
     }
     r
 }
@@ -447,6 +535,53 @@ fn load_cycles(calc: &Calc, module: ItemIdx) -> Option<u32> {
     }
     let rate = calc.value(module, attr::CHARGE_RATE).max(1.0);
     Some((carried / rate).floor().max(0.0) as u32)
+}
+
+/// A fighter squadron's primary attack and its heavy missile volley, each a weapon of the squad:
+/// the ability's four damages times its multiplier times the squad, applied like missiles within
+/// the ability's optimal and falloff. The attributes are found by name: `fighterAbility…`.
+fn fighter_weapons(calc: &Calc, i: ItemIdx, count: u32) -> Vec<Weapon> {
+    let it = &calc.items()[i];
+    if it.state < State::Active {
+        return Vec::new();
+    }
+    let names: Vec<&str> = calc.effect_names(i).collect();
+    let v = |name: &str| calc.dogma.attr_named(name).map_or(0.0, |a| calc.value(i, a.id));
+    let mut out = Vec::new();
+    for (effect, prefix, optimal, falloff, drf) in [
+        ("fighterAbilityAttackM", "fighterAbilityAttackMissile", "fighterAbilityAttackMissileRangeOptimal", Some("fighterAbilityAttackMissileRangeFalloff"), "fighterAbilityAttackMissileReductionFactor"),
+        ("fighterAbilityMissiles", "fighterAbilityMissiles", "fighterAbilityMissilesRange", None, "fighterAbilityMissilesDamageReductionFactor"),
+    ] {
+        if !names.contains(&effect) {
+            continue;
+        }
+        let mult = v(&format!("{prefix}DamageMultiplier")) * f64::from(count);
+        let dmg = Damage { em: v(&format!("{prefix}DamageEM")), thermal: v(&format!("{prefix}DamageTherm")), kinetic: v(&format!("{prefix}DamageKin")), explosive: v(&format!("{prefix}DamageExp")) }.scaled(mult);
+        let cycle = v(&format!("{prefix}Duration")) / 1000.0;
+        let (optimal, falloff) = (v(optimal), falloff.map_or(0.0, v));
+        out.push(Weapon {
+            kind: WeaponKind::Fighter,
+            volley: dmg,
+            cycle_s: cycle,
+            reload_s: 0.0,
+            shots: None,
+            cap_per_cycle: 0.0,
+            optimal,
+            falloff,
+            tracking: 0.0,
+            signature_resolution: 0.0,
+            missile: Some(MissileProfile {
+                velocity: 0.0,
+                flight_time_s: 0.0,
+                range: optimal + falloff,
+                explosion_radius: v(&format!("{prefix}ExplosionRadius")),
+                explosion_velocity: v(&format!("{prefix}ExplosionVelocity")),
+                damage_reduction_factor: v(drf),
+            }),
+            spool_max: 0.0,
+        });
+    }
+    out
 }
 
 fn charge_damage(calc: &Calc, item: ItemIdx) -> Damage {
@@ -578,10 +713,14 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
 fn weapons(calc: &Calc, fit: &Fit) -> Vec<WeaponGroup> {
     let mut groups: Vec<WeaponGroup> = Vec::new();
     for (i, it) in calc.items().iter().enumerate() {
-        let Some(w) = weapon(calc, i, fit) else { continue };
+        let ws = match it.kind {
+            ItemKind::Fighter { count } => fighter_weapons(calc, i, count),
+            _ => weapon(calc, i, fit).into_iter().collect(),
+        };
+        for w in ws {
         let charge = it.charge.map(|c| calc.items()[c].type_id);
         let count = match it.kind {
-            ItemKind::Drone { count } => count,
+            ItemKind::Drone { count } | ItemKind::Fighter { count } => count,
             _ => 1,
         };
         let key = (w.kind, it.type_id, charge);
@@ -612,6 +751,7 @@ fn weapons(calc: &Calc, fit: &Fit) -> Vec<WeaponGroup> {
             cap_per_s: if w.cycle_s > 0.0 { w.cap_per_cycle / w.cycle_s } else { 0.0 },
             spool_max: w.spool_max,
         });
+        }
     }
     for g in &mut groups {
         let volley = g.volley.total();

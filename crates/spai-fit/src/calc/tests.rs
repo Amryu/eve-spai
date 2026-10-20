@@ -254,3 +254,4 @@ fn the_real_blob_agrees_with_the_named_attributes() {
     let want = 0.9 * 0.85 * 0.9;
     assert!(close(rof, want), "{rof} vs {want}: Missile Launcher Operation, Rapid Launch and the specialisation at V");
 }
+

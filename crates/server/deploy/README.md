@@ -242,3 +242,31 @@ docker exec -i <postgres-container> psql -U eve_spai -d eve_spai \
 docker ps -a | grep eve-spai-br || echo "service gone OK"
 curl -fsSI https://eve-spai.com/   # static site still 200
 ```
+
+---
+
+## 9. The fitting simulator (`/sim/` and `/api/sim/*`)
+
+The same container serves a second trunk build, the fitting simulator, and keeps its doctrine
+presets and each character's fit library in the same database (migration `0005_sim.sql` runs at
+start).
+
+- `deploy/web.sh <ssh target>` builds and uploads both browser apps (`wh-dist` and `sim-dist`)
+  and restarts the container; `docker-compose.yml` mounts `./sim-dist:/srv/sim:ro`.
+- nginx: the snippet gained `location /sim { proxy_pass http://eve-spai-br:8090; }` next to
+  `/wh`; reload nginx after pasting it.
+- `SIM_ADMIN_CHAR_IDS` (compose `environment:`): comma-separated character ids allowed to publish
+  and delete doctrine presets. Everyone signed in sees the public presets; characters in The
+  Imperium see the coalition's own and the enemy's.
+- The fitting data: `deploy/sde-mirror.sh` bakes `dogma-v1.bin.gz` from the mirrored static-data
+  zip with the `spai-fit-bake` binary inside the `eve-spai-br` image (so build the image before the
+  first cron run) and publishes it under the static `/sde/` directory. The browser app fetches it
+  from there; the desktop app falls back to it when a profile has no blob of its own.
+
+**Check:**
+
+```sh
+curl -fsS https://eve-spai.com/sim/ | head -c 200          # the page
+curl -fsSI https://eve-spai.com/sde/dogma-v1.bin.gz | head -1   # the data, after the first bake
+curl -fsS https://eve-spai.com/api/sim/doctrines              # [] until an admin publishes
+```

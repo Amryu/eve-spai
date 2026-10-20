@@ -78,7 +78,10 @@ pub fn applied_factor(w: &WeaponGroup, distance: f64, target: &TargetProfile, dr
                 0.0
             }
         }
-        WeaponKind::Fighter => 1.0,
+        WeaponKind::Fighter => {
+            let Some(m) = &w.missile else { return 1.0 };
+            crate::stats::range_factor(distance, w.optimal, w.falloff) * missile_damage_factor(sig, f64::from(target.velocity), m.explosion_radius, m.explosion_velocity, m.damage_reduction_factor)
+        }
     }
 }
 

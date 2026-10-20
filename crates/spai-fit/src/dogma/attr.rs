@@ -107,6 +107,12 @@ pub const SHIELD_RECHARGE_RATE: AttrId = 479;
 pub const CAPACITOR_CAPACITY: AttrId = 482;
 pub const SIGNATURE_RADIUS: AttrId = 552;
 pub const SIGNATURE_RADIUS_BONUS: AttrId = 554;
+pub const WARP_SCRAMBLE_RANGE: AttrId = 103;
+pub const WARP_SCRAMBLE_STRENGTH: AttrId = 105;
+pub const SCAN_GRAVIMETRIC_STRENGTH_BONUS: AttrId = 238;
+pub const SCAN_LADAR_STRENGTH_BONUS: AttrId = 239;
+pub const SCAN_MAGNETOMETRIC_STRENGTH_BONUS: AttrId = 240;
+pub const SCAN_RADAR_STRENGTH_BONUS: AttrId = 241;
 pub const SCAN_RESOLUTION: AttrId = 564;
 pub const SPEED_BOOST_FACTOR: AttrId = 567;
 pub const WARP_SPEED_MULTIPLIER: AttrId = 600;
@@ -262,6 +268,12 @@ pub const NAMED: &[(AttrId, &str)] = &[
     (CAPACITOR_CAPACITY, "capacitorCapacity"),
     (SIGNATURE_RADIUS, "signatureRadius"),
     (SIGNATURE_RADIUS_BONUS, "signatureRadiusBonus"),
+    (WARP_SCRAMBLE_RANGE, "warpScrambleRange"),
+    (WARP_SCRAMBLE_STRENGTH, "warpScrambleStrength"),
+    (SCAN_GRAVIMETRIC_STRENGTH_BONUS, "scanGravimetricStrengthBonus"),
+    (SCAN_LADAR_STRENGTH_BONUS, "scanLadarStrengthBonus"),
+    (SCAN_MAGNETOMETRIC_STRENGTH_BONUS, "scanMagnetometricStrengthBonus"),
+    (SCAN_RADAR_STRENGTH_BONUS, "scanRadarStrengthBonus"),
     (SCAN_RESOLUTION, "scanResolution"),
     (SPEED_BOOST_FACTOR, "speedBoostFactor"),
     (WARP_SPEED_MULTIPLIER, "warpSpeedMultiplier"),

@@ -1055,7 +1055,7 @@ pub struct SpaiApp {
     pub(crate) sim_events: imperium_ui::SimEvents,
     pub(crate) sim_opened: bool,
     /// `(character, alliance, checked_at)` of the signed-in characters.
-    char_alliances: Vec<(i64, Option<i64>, i64)>,
+    pub(crate) char_alliances: Vec<(i64, Option<i64>, i64)>,
     char_alliances_requested: bool,
     /// Set where `self` is still borrowed; opened on the next frame.
     note_editor_pending: Option<crate::notes::Subject>,

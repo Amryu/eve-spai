@@ -18,6 +18,8 @@ pub fn kind_name(kind: GraphKind) -> &'static str {
         GraphKind::VelocityOverTime => tr!("Speed over time"),
         GraphKind::WarpTime => tr!("Warp time vs distance"),
         GraphKind::LockTime => tr!("Lock time vs signature"),
+        GraphKind::RemoteRepVsDistance => tr!("Remote repair vs distance"),
+        GraphKind::EwarVsDistance => tr!("Ewar vs distance"),
     }
 }
 
@@ -43,6 +45,8 @@ fn axes(kind: GraphKind) -> (&'static str, &'static str, fn(f64) -> String, fn(f
         GraphKind::VelocityOverTime => (tr!("Time"), tr!("m/s"), s, plain),
         GraphKind::WarpTime => (tr!("Distance"), tr!("Seconds"), au, plain),
         GraphKind::LockTime => (tr!("Target signature (m)"), tr!("Seconds"), plain, plain),
+        GraphKind::RemoteRepVsDistance => (tr!("Distance"), tr!("Per second"), km, plain),
+        GraphKind::EwarVsDistance => (tr!("Distance"), tr!("Strength"), km, plain),
     }
 }
 
@@ -91,6 +95,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let spec = GraphSpec { include_drones: sim.graph_drones, ..GraphSpec::new(kind, target) };
     let cap = sim.cap_inputs();
     let series = graphs::sample(&computed, &spec, cap.as_ref());
+    if series.is_empty() {
+        ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
+        return;
+    }
     let (x_label, y_label, fmt_x, fmt_y) = axes(kind);
     let plot = Plot {
         x_label: x_label.to_owned(),
@@ -115,6 +123,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                     SeriesLabel::Velocity => tr!("Speed").to_owned(),
                     SeriesLabel::Warp => tr!("Warp time").to_owned(),
                     SeriesLabel::Lock => tr!("Lock time").to_owned(),
+                    SeriesLabel::Remote(t, kind) => {
+                        let name = dogma.type_(*t).map_or_else(|| trf!("Type {id}", id = t), |d| d.name.clone());
+                        format!("{} ({})", text::clip(&name, 30), remote_unit(*kind))
+                    }
                 },
                 color: if s.label == SeriesLabel::Total { ui.visuals().text_color() } else { series_color(i) },
                 points: s.points.clone(),
@@ -123,4 +135,19 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     };
     let height = (ui.available_height() - 8.0).clamp(220.0, 420.0);
     plot.show(ui, height);
+}
+
+/// What a remote curve's numbers are.
+fn remote_unit(kind: spai_fit::stats::RemoteKind) -> &'static str {
+    use spai_fit::stats::RemoteKind as K;
+    match kind {
+        K::ArmorRep => tr!("armor HP/s"),
+        K::ShieldRep => tr!("shield HP/s"),
+        K::HullRep => tr!("hull HP/s"),
+        K::CapTransfer | K::Nos => tr!("GJ/s given"),
+        K::Neut => tr!("GJ/s drained"),
+        K::Web | K::Painter | K::Damp | K::TrackingDisruptor | K::GuidanceDisruptor => tr!("%"),
+        K::Ecm => tr!("jam points"),
+        K::Scram | K::Point => tr!("warp points"),
+    }
 }

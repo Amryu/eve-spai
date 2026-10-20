@@ -94,6 +94,7 @@ pub mod ids {
     pub const REMOTE_REP: TypeId = 3538;
     pub const BURST: TypeId = 43552;
     pub const BURST_CHARGE: TypeId = 42830;
+    pub const FIGHTER: TypeId = 40354;
 }
 
 pub const SHIP_BONUS_MF: AttrId = 587;
@@ -204,7 +205,7 @@ pub fn dataset() -> Dogma {
         type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0), (attr::IMPLANTNESS, 6.0)], &[308], &[]),
         type_def(BOOSTER, "Synth Exile Booster", 303, 20, &[(attr::ARMOR_DAMAGE_AMOUNT, 3.0), (BOOSTER_SIDE, -10.0), (USAGE_CHANCE, 0.3), (attr::BOOSTERNESS, 1.0)], &[309, 310], &[]),
         type_def(DRONE, "Warrior II", 100, 18, &[(attr::DAMAGE_MULTIPLIER, 1.0), (attr::THERMAL_DAMAGE, 20.0), (attr::SPEED, 4000.0), (attr::VOLUME, 5.0), (attr::DRONE_BANDWIDTH_USED, 5.0), (attr::MAX_RANGE, 2000.0), (attr::FALLOFF, 1000.0), (attr::TRACKING_SPEED, 2.0), (attr::OPTIMAL_SIG_RADIUS, 25.0)], &[301], &[(SKILL_DRONES, 5)]),
-        type_def(WEB, "Stasis Webifier II", 65, 7, &[(WEB_SPEED_FACTOR, -60.0), (attr::CPU, 30.0), (attr::POWER, 1.0), (attr::CAPACITOR_NEED, 6.0), (attr::DURATION, 5000.0)], &[311, 323, 330], &[]),
+        type_def(WEB, "Stasis Webifier II", 65, 7, &[(WEB_SPEED_FACTOR, -60.0), (attr::CPU, 30.0), (attr::POWER, 1.0), (attr::CAPACITOR_NEED, 6.0), (attr::DURATION, 5000.0), (attr::MAX_RANGE, 10_000.0), (attr::FALLOFF_EFFECTIVENESS, 5000.0)], &[311, 323, 330], &[]),
         type_def(RIG, "Small Trimark Armor Pump II", 773, 7, &[(attr::ARMOR_HP, 20.0), (attr::UPGRADE_COST, 50.0)], &[312, 324], &[]),
         type_def(LAUNCHER, "Cruise Missile Launcher II", 506, 7, &[(attr::SPEED, 10_000.0), (attr::CPU, 40.0), (attr::POWER, 10.0), (attr::CAPACITY, 1.0), (attr::RELOAD_TIME, 10_000.0), (attr::CHARGE_GROUP_1, 386.0)], &[331, 320, 332, 330], &[(SKILL_CRUISE_SPEC, 1)]),
         type_def(MISSILE, "Scourge Cruise Missile", 386, 8, &[(attr::KINETIC_DAMAGE, 300.0), (attr::EM_DAMAGE, 0.0), (attr::MAX_VELOCITY, 4000.0), (attr::EXPLOSION_DELAY, 6000.0), (attr::AOE_CLOUD_SIZE, 100.0), (attr::AOE_VELOCITY, 50.0), (attr::AOE_DAMAGE_REDUCTION_FACTOR, 0.7), (attr::VOLUME, 0.1)], &[333], &[(SKILL_CRUISE, 1)]),
@@ -219,6 +220,7 @@ pub fn dataset() -> Dogma {
         type_def(HEAVY, "Oversized Turret", 55, 7, &[(attr::CPU, 100.0), (attr::POWER, 50.0), (attr::SPEED, 3000.0), (attr::CHARGE_GROUP_1, GROUP_AMMO as f32)], &[301, 320, 321, 330], &[]),
         type_def(REMOTE_REP, "Small Remote Armor Repairer II", 325, 7, &[(attr::ARMOR_DAMAGE_AMOUNT, 60.0), (attr::DURATION, 6000.0), (attr::CAPACITOR_NEED, 20.0), (attr::MAX_RANGE, 7000.0), (attr::FALLOFF_EFFECTIVENESS, 2000.0), (attr::CPU, 20.0), (attr::POWER, 10.0)], &[345, 320, 330], &[]),
         type_def(BURST, "Shield Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1769.0), (attr::CAPACITY, 10.0)], &[346, 320, 330], &[]),
+        type_def(FIGHTER, "Templar II", 1652, 87, &[(2901, 20.0), (2902, 10.0), (2903, 0.0), (2904, 0.0), (2905, 1.5), (2906, 4000.0), (2907, 6000.0), (2908, 3000.0), (2909, 40.0), (2910, 200.0), (2911, 0.8), (attr::VOLUME, 5000.0), (attr::MAX_VELOCITY, 4000.0)], &[348], &[]),
         type_def(BURST_CHARGE, "Shield Harmonizing Charge", 1769, 8, &[(attr::WARFARE_BUFF_1_ID, 12.0), (2596, 20.0), (attr::VOLUME, 1.0)], &[347], &[]),
     ];
     let effects = vec![
@@ -242,7 +244,7 @@ pub fn dataset() -> Dogma {
         effect(308, "implantVelocity", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, attr::MAX_VELOCITY, Op::PostPercent)]),
         effect(309, "boosterArmorRep", EffectCategory::Passive, vec![Modifier { group: Some(62), ..modifier(Domain::Ship, Func::LocationGroup, attr::ARMOR_DAMAGE_AMOUNT, attr::ARMOR_DAMAGE_AMOUNT, Op::PostPercent) }]),
         EffectDef { usage_chance_attr: Some(USAGE_CHANCE), ..effect(310, "boosterSideEffect", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, BOOSTER_SIDE, Op::PostPercent)]) },
-        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(311, "remoteWebifier", EffectCategory::Target, vec![modifier(Domain::Target, Func::Item, attr::MAX_VELOCITY, WEB_SPEED_FACTOR, Op::PostPercent)]) },
+        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(311, "remoteWebifierFalloff", EffectCategory::Target, vec![modifier(Domain::Target, Func::Item, attr::MAX_VELOCITY, WEB_SPEED_FACTOR, Op::PostPercent)]) },
         effect(312, "rigArmorHp", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_HP, attr::ARMOR_HP, Op::PostPercent)]),
         effect(313, "slotModifier", EffectCategory::Passive, vec![]),
         effect(314, "hardPointModifierEffect", EffectCategory::Passive, vec![]),
@@ -264,6 +266,7 @@ pub fn dataset() -> Dogma {
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(345, "shipModuleRemoteArmorRepairer", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(346, "moduleBonusWarfareLinkShield", EffectCategory::Active, vec![]) },
         // The charge names the buff and multiplies the module's strength into its value.
+        EffectDef { duration_attr: Some(2906), ..effect(348, "fighterAbilityAttackM", EffectCategory::Target, vec![]) },
         effect(347, "chargeBonusWarfareCharge", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_ID, Op::PostAssign), modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_VALUE, 2596, Op::PostMul)]),
     ];
     let attributes = vec![
@@ -365,6 +368,17 @@ pub fn dataset() -> Dogma {
         attr_def(attr::WARFARE_BUFF_1_ID, "warfareBuff1ID", true, true, 0.0),
         attr_def(attr::WARFARE_BUFF_1_VALUE, "warfareBuff1Value", true, true, 0.0),
         attr_def(2596, "warfareBuff1Multiplier", true, true, 0.0),
+        attr_def(2901, "fighterAbilityAttackMissileDamageEM", true, true, 0.0),
+        attr_def(2902, "fighterAbilityAttackMissileDamageTherm", true, true, 0.0),
+        attr_def(2903, "fighterAbilityAttackMissileDamageKin", true, true, 0.0),
+        attr_def(2904, "fighterAbilityAttackMissileDamageExp", true, true, 0.0),
+        attr_def(2905, "fighterAbilityAttackMissileDamageMultiplier", true, true, 0.0),
+        attr_def(2906, "fighterAbilityAttackMissileDuration", true, true, 0.0),
+        attr_def(2907, "fighterAbilityAttackMissileRangeOptimal", true, true, 0.0),
+        attr_def(2908, "fighterAbilityAttackMissileRangeFalloff", true, true, 0.0),
+        attr_def(2909, "fighterAbilityAttackMissileExplosionRadius", true, true, 0.0),
+        attr_def(2910, "fighterAbilityAttackMissileExplosionVelocity", true, true, 0.0),
+        attr_def(2911, "fighterAbilityAttackMissileReductionFactor", true, true, 0.0),
     ];
     let groups = vec![
         GroupDef { id: 1, name: "Character".into(), category: 1 },

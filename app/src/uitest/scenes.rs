@@ -2625,6 +2625,21 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.start_publish();
         sim.publish.as_mut().unwrap().tags = "alpha, armor".into();
     }));
+    v.push(imperium_scene_with("imperium_graphs_remote", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| {
+            f.modules.push(Module::new(ids::REMOTE_REP, Slot::High, 2).with_state(State::Active));
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active));
+        });
+        sim.graph = spai_fit::graphs::GraphKind::RemoteRepVsDistance;
+    }));
+    v.push(imperium_scene_with("imperium_graphs_ewar_narrow", [720.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| f.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active)));
+        sim.graph = spai_fit::graphs::GraphKind::EwarVsDistance;
+    }));
     for (name, size, narrow_pane) in [("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats)] {
         v.push(imperium_scene_with(name, size, false, narrow_pane, |sim| {
             use spai_fit::fleet::{BurstKind, CountRule, Fleet, FleetSlot};

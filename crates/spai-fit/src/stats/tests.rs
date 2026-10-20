@@ -206,3 +206,39 @@ fn the_real_blob_computes_a_known_rifter() {
     assert_eq!(again.modules.len(), fit.modules.len());
     assert_eq!(crate::formats::eft::export(&d, &again), back);
 }
+
+#[test]
+fn remote_modules_are_listed_with_their_reach_and_fighters_shoot_like_missiles() {
+    use crate::stats::{range_factor, RemoteKind};
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "logi");
+    f.modules.push(Module::new(ids::REMOTE_REP, Slot::High, 0).with_state(State::Active));
+    f.modules.push(Module::new(ids::REMOTE_REP, Slot::High, 1).with_state(State::Online));
+    f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+    f.fighters.push(crate::fit::FighterSquad { type_id: ids::FIGHTER, count: 9, active: true });
+    let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    let m = &c.remote.modules;
+    assert_eq!(m.len(), 2, "the online repairer does nothing: {m:?}");
+    let rep = m.iter().find(|x| x.kind == RemoteKind::ArmorRep).unwrap();
+    assert!((rep.amount - 10.0).abs() < 1e-9 && rep.optimal == 7000.0 && rep.falloff == 2000.0);
+    let web = m.iter().find(|x| x.kind == RemoteKind::Web).unwrap();
+    assert_eq!((web.amount, web.optimal, web.falloff), (60.0, 10_000.0, 5000.0), "a web's strength reads as a magnitude");
+    assert_eq!((c.remote.armor_rep, c.remote.rep_range), (10.0, 9000.0));
+    assert_eq!(range_factor(5000.0, 7000.0, 2000.0), 1.0);
+    assert!((range_factor(9000.0, 7000.0, 2000.0) - 0.5).abs() < 1e-12);
+    assert_eq!(range_factor(13_001.0, 7000.0, 2000.0), 0.0);
+    let fighters = c.weapons.iter().find(|w| w.kind == crate::stats::WeaponKind::Fighter).expect("a fighter group");
+    assert_eq!(fighters.count, 9);
+    assert!((fighters.volley.total() - 30.0 * 1.5 * 9.0).abs() < 1e-9, "{}", fighters.volley.total());
+    assert!((fighters.dps - fighters.volley.total() / 4.0).abs() < 1e-9);
+    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let at = |dist: f64, t: &crate::fit::TargetProfile| crate::stats::application::applied_factor(fighters, dist, t, 0.0, 0.0);
+    assert_eq!(at(6000.0, &big), 1.0);
+    assert!((at(9000.0, &big) - 0.5).abs() < 1e-12, "half at one falloff");
+    assert_eq!(at(20_000.0, &big), 0.0);
+    let small = crate::fit::TargetProfile { signature: 20.0, velocity: 1000.0, ..big };
+    assert!(at(1000.0, &small) < 0.5, "a small fast target takes a fraction, as from a missile");
+    f.fighters[0].active = false;
+    let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    assert!(c.weapons.iter().all(|w| w.kind != crate::stats::WeaponKind::Fighter));
+}

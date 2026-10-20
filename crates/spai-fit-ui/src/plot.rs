@@ -91,8 +91,8 @@ impl Plot {
         let legend_rows = self.series.len().min(8) as f32;
         let margin_l = 58.0;
         let margin_b = line_h * 2.0 + 8.0;
-        // The legend, then a line for the y label above the plot.
-        let margin_t = 6.0 + legend_rows * line_h + line_h;
+        // The legend, then a line for the y label above the plot, clear of the top tick's label.
+        let margin_t = 6.0 + legend_rows * line_h + line_h * 1.5;
         let inner = Rect::from_min_max(Pos2::new(rect.min.x + margin_l, rect.min.y + margin_t), Pos2::new(rect.max.x - 10.0, rect.max.y - margin_b));
         if inner.width() < 20.0 || inner.height() < 20.0 {
             return;
@@ -111,7 +111,7 @@ impl Plot {
             painter.text(Pos2::new(p.x, inner.max.y + 3.0), egui::Align2::CENTER_TOP, (self.fmt_x)(x), font.clone(), weak);
         }
         painter.text(Pos2::new(inner.center().x, rect.max.y - 2.0), egui::Align2::CENTER_BOTTOM, &self.x_label, font.clone(), text);
-        painter.text(Pos2::new(rect.min.x + 2.0, inner.min.y - 2.0), egui::Align2::LEFT_BOTTOM, &self.y_label, font.clone(), text);
+        painter.text(Pos2::new(rect.min.x + 2.0, inner.min.y - line_h / 2.0 - 2.0), egui::Align2::LEFT_BOTTOM, &self.y_label, font.clone(), text);
 
         for (i, s) in self.series.iter().enumerate() {
             let pts: Vec<Pos2> = s.points.iter().map(|p| to_screen(p[0], p[1])).collect();

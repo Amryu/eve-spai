@@ -330,7 +330,43 @@ kinds, so a fleet swaps as one (`variations::apply_refit_key`).
 Tests: `variations::tests::*`, `warnings::tests::clashing_variations_are_pointed_out`,
 `spai-fit-ui` `recording_a_variation_keeps_the_difference_and_switches_it_on`.
 
-## 17. Fleets (`fleet`)
+## 17. Remote modules and fighters (`stats::remote`, `stats::fighter_weapons`)
+
+**Remote modules** (`Computed.remote.modules`): every active module whose effect names it as
+acting on another ship, with the amount it gives or takes, its optimal (`maxRange`, warp
+scramble range for tackle) and its falloff (`falloffEffectiveness`, else `falloff`):
+
+| Kind | Effect | Amount |
+|---|---|---|
+| armour, shield, hull repair | `shipModuleRemote{Armor,Shield,Hull}…`, the ancillary and mutadaptive ones | repair per second (amount / cycle) |
+| capacitor transfer, nosferatu | `shipModuleRemoteCapacitorTransmitter`, `energyNosferatuFalloff` | GJ per second |
+| neutraliser | `energyNeutralizerFalloff` | GJ drained per second |
+| web, painter, damp, tracking and guidance disruptor | `remoteWebifierFalloff`, `remoteTargetPaintFalloff`, `remoteSensorDampFalloff`, `shipModule{Tracking,Guidance}Disruptor` | the strongest of its bonuses, as a magnitude in percent (a −60 % web reads 60) |
+| ECM | `remoteECMFalloff` | the strongest sensor-type jam strength |
+| scrambler, disruptor | `warpScramble…`, `warpDisrupt` | warp points |
+
+The totals `armor_rep`, `shield_rep`, `hull_rep`, `cap_transfer`, `neut` and `rep_range`
+(the longest optimal plus falloff of the repairers) feed the fleet numbers (section 18).
+
+`stats::range_factor(d, optimal, falloff)`: 1 inside the optimal, `0.5^((d − optimal) / falloff)²`
+beyond it, 0 past three falloffs or with no falloff. The graphs "Remote repair vs distance"
+(repairs by type, cap transfers apart, with a total of the repairs) and "Ewar vs distance"
+(each ewar module's strength) are `amount × range_factor`.
+
+**Fighters** (`fighter_weapons`): an active squadron is a weapon group of kind `Fighter` per
+ability it has, the primary attack (`fighterAbilityAttackM`) and heavy missiles
+(`fighterAbilityMissiles`): volley = the ability's four damages × its damage multiplier × the
+squadron size, cycle = the ability's duration, no reload. The ability attributes are found by
+name (`fighterAbilityAttackMissileDamageEM` and so on) rather than by baked id. Application is
+the missile formula (section 14) with the ability's explosion radius, velocity and reduction
+factor, times `range_factor` of the ability's optimal and falloff (missiles: range, no falloff).
+The reduction sensitivity, the squadron's own tank, speed and abilities beyond damage are not
+modelled.
+
+Tests: `stats::tests::remote_modules_are_listed_with_their_reach_and_fighters_shoot_like_missiles`,
+`graphs::tests::remote_and_ewar_curves_follow_the_modules_reach`.
+
+## 18. Fleets (`fleet`)
 
 A fleet is a list of saved fits with a count rule each: a fixed number, a share of the fleet size
 in percent, or "fill" (what the others leave, within bounds: the line ship). Fixed and percent
@@ -344,7 +380,7 @@ is kept (section 6) and every ship of the fleet is computed with them (`fleet::e
 
 **Fleet numbers** (`fleet::stats`): each slot computed with the fleet's buffs and its own skills
 profile, scaled by its count: DPS, volley, logistics (remote armour and shield repairs per second,
-section 9 `Remote`), neuts, the slowest and fastest hull.
+section 17), neuts, the slowest and fastest hull.
 
 **Against** (`fleet::against`), fleet A on fleet B's main hull at A's engagement range:
 
