@@ -16,6 +16,7 @@ use spai_ui::{tr, trf};
 
 pub mod browser;
 pub mod details;
+pub mod mutation;
 pub mod dock;
 pub mod editor;
 pub mod fleet_panel;
@@ -392,6 +393,8 @@ pub struct SimUi {
     pub details: Vec<details::DetailsWindow>,
     /// The booster whose side effects are being picked.
     pub side_window: Option<TypeId>,
+    /// The item whose abyssal roll is being set.
+    pub mutation_window: Option<mutation::MutTarget>,
     /// The fitted values behind the tooltips, for the revision and profile they were figured for.
     tip_cache: Option<((u64, usize), std::sync::Arc<details::TipValues>)>,
     /// Average market prices in ISK, by type, once the host has them.
@@ -416,6 +419,10 @@ pub struct SimUi {
     /// Open fits taken as targets, by session id: their signature and speed stand in for the
     /// target profile. Empty is the profile alone.
     pub graph_targets: Vec<String>,
+    /// Whether the fit on screen is among the graph's shooters, whichever tab that is.
+    pub graph_current: bool,
+    /// Whether the target profile is among the graph's targets.
+    pub graph_ideal: bool,
     /// The fit as it was when a variation recording started.
     pub recording: Option<Fit>,
     pub editing_variation: Option<u32>,
@@ -462,6 +469,7 @@ impl Default for SimUi {
             sel_anchor: None,
             details: Vec::new(),
             side_window: None,
+            mutation_window: None,
             tip_cache: None,
             prices: Default::default(),
             prices_asked: false,
@@ -477,6 +485,8 @@ impl Default for SimUi {
             graph_drones: true,
             graph_attackers: Vec::new(),
             graph_targets: Vec::new(),
+            graph_current: true,
+            graph_ideal: true,
             recording: None,
             editing_variation: None,
             doctrines: Vec::new(),
@@ -949,6 +959,11 @@ impl SimUi {
         Some(c)
     }
 
+    /// The damage the fit's effective HP is figured against.
+    pub fn set_damage_profile(&mut self, p: spai_fit::fit::DamageProfile) {
+        self.edit(EditKind::Target, self.now_ms, move |f| f.damage_profile = p);
+    }
+
     /// What an open fit computes to, by session id, refreshed when stale.
     pub fn computed_of(&mut self, id: &str) -> Option<Arc<Computed>> {
         let dogma = self.dogma.clone()?;
@@ -1240,6 +1255,7 @@ impl SimUi {
         graphs_panel::window(self, ctx, now_ms);
         details::windows(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
+        mutation::window(self, ctx, now_ms);
         library_panel::project_picker(self, ctx, now_ms);
         self.import_ask_window(ctx, now_ms);
         rows::drag_ghost(ctx);
@@ -1263,6 +1279,9 @@ impl SimUi {
             }
         }
         egui::Panel::left(id).resizable(true).default_size(w).min_size(MIN_W).max_size(MAX_W).show_inside(ui, |ui| body(self, ui));
+        // The resize grip reaches a few points past the edge, and whatever is laid out after it wins
+        // the pointer: a gap keeps the central view's drag areas off the grip.
+        egui::Panel::left(id.with("gap")).resizable(false).exact_size(4.0).frame(egui::Frame::NONE).show_inside(ui, |_| {});
         if dragging {
             if let Some(st) = egui::PanelState::load(&ctx, id) {
                 self.left_w = Some(st.rect.width().clamp(MIN_W, MAX_W));

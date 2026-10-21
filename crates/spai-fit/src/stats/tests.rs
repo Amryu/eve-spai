@@ -95,8 +95,8 @@ fn missiles_drones_and_smartbombs_are_weapons_too() {
     let mut f = Fit::new(ids::SHIP, "t");
     f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 0).with_charge(ids::MISSILE).with_state(State::Active));
     f.modules.push(Module::new(ids::SMARTBOMB, Slot::High, 1).with_state(State::Active));
-    f.drones.push(DroneStack { type_id: ids::DRONE, count: 3, active: true, launched: None });
-    f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: false, launched: None });
+    f.drones.push(DroneStack { type_id: ids::DRONE, count: 3, active: true, launched: None, mutation: None });
+    f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: false, launched: None, mutation: None });
     let c = compute(&d, &f, &SkillSet::all_v(), &env());
     let missile = c.weapons.iter().find(|w| w.kind == WeaponKind::Missile).unwrap();
     assert!(close(missile.volley.kinetic, 300.0 * 1.25), "{}", missile.volley.kinetic);

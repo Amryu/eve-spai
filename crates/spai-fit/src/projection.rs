@@ -207,3 +207,23 @@ fn real_data_booster_side_effects() {
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_mutaplasmids() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    println!("{} mutaplasmids", d.mutaplasmids.len());
+    for m in d.mutaplasmids.iter().take(3) {
+        println!("  {} {} attrs {} maps {}", m.id, m.name, m.attrs.len(), m.mapping.len());
+    }
+    if let Some(mwd) = d.type_named("50MN Microwarpdrive II") {
+        let names: Vec<&str> = d.mutaplasmids_for(mwd.id).iter().map(|m| m.name.as_str()).collect();
+        println!("50MN MWD II takes {names:?}");
+    }
+    if let Some(drone) = d.type_named("Hammerhead II") {
+        println!("Hammerhead II takes {}", d.mutaplasmids_for(drone.id).len());
+    }
+    println!("meta groups {:?}", d.meta_groups.iter().map(|m| (m.id, m.name.as_str())).collect::<Vec<_>>());
+    assert!(d.mutaplasmids.iter().all(|m| !m.name.starts_with("Mutaplasmid ")), "every one named");
+}

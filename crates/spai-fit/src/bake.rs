@@ -360,10 +360,49 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         Ok(())
     })?;
 
+    // Mutaplasmids first: their names come with the types, which are read next.
+    #[derive(Deserialize)]
+    struct DynAttr {
+        #[serde(rename = "_key")]
+        key: u32,
+        min: f64,
+        max: f64,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DynMap {
+        #[serde(default)]
+        applicable_types: Vec<u32>,
+        resulting_type: u32,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DynRec {
+        #[serde(rename = "_key")]
+        key: u32,
+        #[serde(default, rename = "attributeIDs")]
+        attribute_ids: Vec<DynAttr>,
+        #[serde(default)]
+        input_output_mapping: Vec<DynMap>,
+    }
+    let mut mutaplasmids: Vec<crate::dogma::Mutaplasmid> = Vec::new();
+    lines(archive, "dynamicItemAttributes.jsonl", false, |l| {
+        let r: DynRec = record(l)?;
+        let attrs = r.attribute_ids.iter().filter_map(|a| AttrId::try_from(a.key).ok().map(|id| (id, a.min as f32, a.max as f32))).collect();
+        let mapping = r.input_output_mapping.into_iter().map(|m| (m.applicable_types, m.resulting_type)).collect();
+        mutaplasmids.push(crate::dogma::Mutaplasmid { id: r.key, name: String::new(), attrs, mapping });
+        Ok(())
+    })?;
+    let mutaplasmid_ids: HashSet<u32> = mutaplasmids.iter().map(|m| m.id).collect();
+    let mut mutaplasmid_names: HashMap<u32, String> = HashMap::new();
+
     let mut types: HashMap<TypeId, TypeDef> = HashMap::new();
     let mut base_attrs: HashMap<TypeId, [(AttrId, f32); 4]> = HashMap::new();
     lines(archive, "types.jsonl", true, |l| {
         let r: TypeRec = record(l)?;
+        if mutaplasmid_ids.contains(&r.key) {
+            mutaplasmid_names.insert(r.key, r.name.en.clone());
+        }
         let Some((_, cat)) = group_recs.get(&r.group_id) else { return Ok(()) };
         let cat = u8::try_from(*cat).unwrap_or(u8::MAX);
         let beacon = u16::try_from(r.group_id).is_ok_and(|g| g == crate::ids::group::EFFECT_BEACON);
@@ -636,6 +675,13 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         units,
         buffs,
         traits,
+        mutaplasmids: {
+            for m in &mut mutaplasmids {
+                m.name = mutaplasmid_names.remove(&m.id).unwrap_or_else(|| format!("Mutaplasmid {}", m.id));
+            }
+            mutaplasmids.sort_by_key(|m| m.id);
+            mutaplasmids
+        },
         ..Dogma::default()
     }
     .finish())

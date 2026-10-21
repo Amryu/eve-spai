@@ -375,7 +375,7 @@ mod tests {
         e.module_mut(Slot::High, 1).unwrap().charge = Some(ids::AMMO_LONG);
         e.module_mut(Slot::Low, 0).unwrap().state = State::Offline;
         e.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
-        e.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None });
+        e.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
         let ops = diff(&b, &e);
         assert_eq!(ops.len(), 7, "{ops:?}");
         let mut f = b.clone();

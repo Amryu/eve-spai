@@ -82,6 +82,9 @@ pub mod ids {
     pub const BEACON_SPEED: AttrId = 9001;
     /// A titan's phenomena generator in the synthetic data.
     pub const GENERATOR: TypeId = 43_658;
+    pub const MUTAPLASMID: TypeId = 47_297;
+    /// What the mutaplasmid turns the microwarpdrive into.
+    pub const ABYSSAL_MWD: TypeId = 47_408;
     pub const DRONE: TypeId = 2454;
     pub const WEB: TypeId = 526;
     pub const RIG: TypeId = 31055;
@@ -334,7 +337,7 @@ pub fn dataset() -> Dogma {
         attr_def(attr::HI_SLOT_MODIFIER, "hiSlotModifier", true, true, 0.0),
         attr_def(attr::TURRET_HARDPOINT_MODIFIER, "turretHardPointModifier", true, true, 0.0),
         attr_def(attr::DRONE_CONTROL_DISTANCE, "droneControlDistance", true, true, 20000.0),
-        attr_def(attr::CPU, "cpu", true, true, 0.0),
+        attr_def(attr::CPU, "cpu", true, false, 0.0),
         attr_def(attr::POWER, "power", true, true, 0.0),
         attr_def(attr::CPU_OUTPUT, "cpuOutput", true, true, 0.0),
         attr_def(attr::POWER_OUTPUT, "powerOutput", true, true, 0.0),
@@ -448,5 +451,11 @@ pub fn dataset() -> Dogma {
             _ => None,
         };
     }
-    Dogma { sde_build: 1, types, attributes, effects, groups, market_groups, ..Dogma::default() }.finish()
+    let mutaplasmids = vec![crate::dogma::Mutaplasmid {
+        id: MUTAPLASMID,
+        name: "Unstable Microwarpdrive Mutaplasmid".into(),
+        attrs: vec![(attr::SPEED_FACTOR, 0.9, 1.1), (attr::CPU, 0.8, 1.5)],
+        mapping: vec![(vec![MWD], ABYSSAL_MWD)],
+    }];
+    Dogma { sde_build: 1, types, attributes, effects, groups, market_groups, mutaplasmids, ..Dogma::default() }.finish()
 }

@@ -1,6 +1,7 @@
 //! The graphs: a kind to pick, the target's figures, and the curves drawn large in the middle or
 //! in a window of their own.
 
+use egui_phosphor::regular as icon;
 use spai_fit::graphs::{self, GraphKind, GraphSpec, SeriesLabel};
 use spai_fit::history::EditKind;
 use spai_ui::{tr, trf};
@@ -152,18 +153,39 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
     sim.graph_attackers.retain(|id| *id != current && open.iter().any(|(o, _)| o == id));
     sim.graph_targets.retain(|id| open.iter().any(|(o, _)| o == id));
-    if open.len() > 1 {
-        ships_row(sim, ui, width, &open, &current, damage);
+    ui.add_space(4.0);
+    // The rest of the space, split: the ships' column on the left, the plot right of it.
+    let (area, _) = ui.allocate_exact_size(egui::vec2(width, (ui.available_height() - 8.0).max(200.0)), egui::Sense::hover());
+    let col_w = if width >= 640.0 { SHIPS_W } else { 0.0 };
+    if col_w > 0.0 {
+        let mut col = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(area.min, egui::vec2(col_w, area.height()))).layout(egui::Layout::top_down(egui::Align::Min)));
+        ships_panel(sim, &mut col, &open, &current, damage);
     }
-    // One labelled total per attacker and target once more than one ship is on either side.
-    if !sim.graph_attackers.is_empty() || sim.graph_targets.len() > 1 || (damage && !sim.graph_targets.is_empty()) {
+    let plot_rect = egui::Rect::from_min_max(area.min + egui::vec2(if col_w > 0.0 { col_w + 8.0 } else { 0.0 }, 0.0), area.max);
+    let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    let ui = &mut plot_ui;
+    let width = plot_rect.width();
+    if !sim.graph_current && sim.graph_attackers.is_empty() {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(tr!("Add a ship to shoot with, on the left.")).weak());
+        return;
+    }
+    if damage && !sim.graph_ideal && sim.graph_targets.is_empty() {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(tr!("Add a target, on the left.")).weak());
+        return;
+    }
+    // One labelled total per shooter and target once the graph holds more than the fit on screen
+    // against the profile; that one alone is drawn weapon by weapon.
+    let alone = sim.graph_current && sim.graph_attackers.is_empty() && (!damage || (sim.graph_ideal && sim.graph_targets.is_empty()));
+    if !alone {
         let plot = compare_plot(sim, ui, &spec, &open, &current, &computed, damage);
         let Some(plot) = plot else {
             ui.add_space(8.0);
             ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
             return;
         };
-        let height = (ui.available_height() - 8.0).max(200.0);
+        let height = ui.available_height().max(200.0);
         ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_max_width(width);
             plot.show(ui, height);
@@ -211,57 +233,100 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             })
             .collect(),
     };
-    let height = (ui.available_height() - 8.0).max(200.0);
+    let height = ui.available_height().max(200.0);
     ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
         ui.set_max_width(width);
         plot.show(ui, height);
     });
 }
 
-/// Which open fits shoot and which are shot at, as two drop-down lists of the tabs.
-fn ships_row(sim: &mut SimUi, ui: &mut egui::Ui, width: f32, open: &[(String, String)], current: &str, damage: bool) {
-    let row = egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, 26.0))).layout(egui::Layout::left_to_right(egui::Align::Center));
-    let r = ui.scope_builder(row, |ui| {
-        ui.set_height(26.0);
-        let menu_w = ((width - 16.0) / 2.0).clamp(120.0, 220.0);
-        let attackers = trf!("Fits drawn: {n}", n = 1 + sim.graph_attackers.len());
-        ui.allocate_ui_with_layout(egui::vec2(menu_w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.menu_button(text::clip(&attackers, 28), |ui| {
-                ui.set_min_width(240.0);
-                for (id, name) in open {
-                    let mut on = id == current || sim.graph_attackers.contains(id);
-                    let r = ui.add_enabled(id != current, egui::Checkbox::new(&mut on, text::clip(name, 40)));
-                    if r.changed() {
-                        if on {
-                            sim.graph_attackers.push(id.clone());
-                        } else {
-                            sim.graph_attackers.retain(|x| x != id);
-                        }
+const SHIPS_W: f32 = 230.0;
+
+/// The graph's ships, in a column of their own left of the plot: the shooters and, for damage, the
+/// targets, each with a button to add more. The graph belongs to no fit: it starts with the fit
+/// on screen against the target profile, and either can be taken out.
+fn ships_panel(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], current: &str, damage: bool) {
+    const W: f32 = SHIPS_W;
+    let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
+    let rect = ui.max_rect();
+    let height = rect.height();
+    ui.set_clip_rect(ui.clip_rect().intersect(rect));
+    {
+        egui::Frame::NONE.fill(ui.visuals().faint_bg_color).corner_radius(4.0).inner_margin(6).show(ui, |ui| {
+            ui.set_width(W - 12.0);
+            ui.set_min_height(height - 12.0);
+            egui::ScrollArea::vertical().id_salt("sim_graph_ships").auto_shrink([false, false]).show(ui, |ui| {
+                let row = |ui: &mut egui::Ui, label: String| -> bool {
+                    let mut remove = false;
+                    let w = ui.available_width();
+                    ui.allocate_ui_with_layout(egui::vec2(w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_width(w);
+                        ui.add_space(4.0);
+                        let name_w = w - 4.0 - 24.0 - ui.spacing().item_spacing.x;
+                        crate::rows::cell(ui, name_w, egui::RichText::new(&label), &label);
+                        remove = spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Take it off the graph")).clicked();
+                    });
+                    remove
+                };
+                ui.label(egui::RichText::new(tr!("Shooting")).strong());
+                if sim.graph_current && row(ui, trf!("{name} (on screen)", name = name_of(current))) {
+                    sim.graph_current = false;
+                }
+                for id in sim.graph_attackers.clone() {
+                    if row(ui, name_of(&id)) {
+                        sim.graph_attackers.retain(|x| *x != id);
                     }
                 }
-            });
-        });
-        if damage {
-            let targets = if sim.graph_targets.is_empty() { tr!("Target: the profile").to_owned() } else { trf!("Targets: {n}", n = sim.graph_targets.len()) };
-            ui.allocate_ui_with_layout(egui::vec2(menu_w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.menu_button(text::clip(&targets, 28), |ui| {
+                ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add a shooter")), |ui| {
                     ui.set_min_width(240.0);
-                    ui.label(egui::RichText::new(tr!("Their signature and speed stand in for the profile's.")).weak());
-                    for (id, name) in open {
-                        let mut on = sim.graph_targets.contains(id);
-                        if ui.checkbox(&mut on, text::clip(name, 40)).changed() {
-                            if on {
-                                sim.graph_targets.push(id.clone());
-                            } else {
-                                sim.graph_targets.retain(|x| x != id);
-                            }
+                    if !sim.graph_current && ui.button(tr!("The fit on screen")).clicked() {
+                        sim.graph_current = true;
+                        ui.close();
+                    }
+                    let mut any = false;
+                    let taken = sim.graph_attackers.clone();
+                    for (id, name) in open.iter().filter(|(id, _)| id != current && !taken.contains(id)) {
+                        any = true;
+                        if ui.button(text::clip(name, 40)).clicked() {
+                            sim.graph_attackers.push(id.clone());
+                            ui.close();
+                        }
+                    }
+                    if !any && sim.graph_current {
+                        ui.label(egui::RichText::new(tr!("Open more fits in tabs to draw them here.")).weak());
+                    }
+                });
+                if !damage {
+                    return;
+                }
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(tr!("Targets")).strong());
+                if sim.graph_ideal && row(ui, tr!("Target profile").to_owned()) {
+                    sim.graph_ideal = false;
+                }
+                for id in sim.graph_targets.clone() {
+                    if row(ui, name_of(&id)) {
+                        sim.graph_targets.retain(|x| *x != id);
+                    }
+                }
+                ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add a target")), |ui| {
+                    ui.set_min_width(240.0);
+                    if !sim.graph_ideal && ui.button(tr!("Target profile")).clicked() {
+                        sim.graph_ideal = true;
+                        ui.close();
+                    }
+                    ui.label(egui::RichText::new(tr!("A fit's signature and speed stand in for the profile's.")).weak());
+                    let taken = sim.graph_targets.clone();
+                    for (id, name) in open.iter().filter(|(id, _)| !taken.contains(id)) {
+                        if ui.button(text::clip(name, 40)).clicked() {
+                            sim.graph_targets.push(id.clone());
+                            ui.close();
                         }
                     }
                 });
             });
-        }
-    });
-    ui.advance_cursor_after_rect(r.response.rect);
+        });
+    }
 }
 
 /// One line per attacker (and per target, for damage), each the total of that fit's weapons.
@@ -275,6 +340,9 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, open: &[(Strin
     }
     let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile)> = Vec::new();
     if damage && !sim.graph_targets.is_empty() {
+        if sim.graph_ideal {
+            targets.push((Some(tr!("Target profile").to_owned()), spec.target.clone()));
+        }
         for id in sim.graph_targets.clone() {
             if let Some(c) = sim.computed_of(&id) {
                 let t = spai_fit::fit::TargetProfile { signature: c.mobility.signature as f32, velocity: c.mobility.max_velocity as f32, ..spec.target.clone() };

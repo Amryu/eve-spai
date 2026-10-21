@@ -98,7 +98,7 @@ fn implants_are_exempt_from_the_penalty_and_booster_side_effects_are_opt_in() {
 fn owner_required_skill_modifiers_reach_drones_and_location_group_modifiers_their_group() {
     let d = dataset();
     let mut f = fit();
-    f.drones.push(DroneStack { type_id: DRONE, count: 3, active: true, launched: None });
+    f.drones.push(DroneStack { type_id: DRONE, count: 3, active: true, launched: None, mutation: None });
     f.boosters.push(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     let (drone, _) = c.drones().next().unwrap();
@@ -123,7 +123,7 @@ fn a_projected_module_reaches_the_ship_and_nothing_else() {
 fn part_of_a_drone_stack_can_be_out_while_the_rest_waits_in_the_bay() {
     let d = dataset();
     let mut f = fit();
-    f.drones.push(DroneStack { type_id: DRONE, count: 5, active: true, launched: Some(2) });
+    f.drones.push(DroneStack { type_id: DRONE, count: 5, active: true, launched: Some(2), mutation: None });
     let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
     assert_eq!(c.drones.active, 2);
     let mut all = f.clone();
@@ -324,3 +324,19 @@ fn the_real_blob_agrees_with_the_named_attributes() {
     assert!(close(rof, want), "{rof} vs {want}: Missile Launcher Operation, Rapid Launch and the specialisation at V");
 }
 
+
+#[test]
+fn a_rolled_module_or_drone_carries_its_rolled_values() {
+    let d = dataset();
+    assert_eq!(d.mutaplasmids_for(MWD).len(), 1);
+    assert_eq!(d.mutaplasmids_for(MWD)[0].result_for(MWD), Some(ABYSSAL_MWD));
+    assert!(d.mutaplasmids_for(DC).is_empty());
+    let mut f = fit();
+    f.modules.push(Module { mutation: Some(crate::fit::Mutation { mutaplasmid: MUTAPLASMID, attrs: vec![(attr::CPU, 3.0)] }), ..Module::new(MWD, Slot::Mid, 0) });
+    f.drones.push(DroneStack { type_id: DRONE, count: 1, active: true, launched: None, mutation: Some(crate::fit::Mutation { mutaplasmid: MUTAPLASMID, attrs: vec![(attr::CPU, 7.0)] }) });
+    let c = Calc::new(&d, &f, &SkillSet::none(), &Env::default());
+    let mwd = c.module(Slot::Mid, 0).unwrap();
+    assert!(close(c.value(mwd, attr::CPU), 3.0));
+    let drone = c.drones().next().unwrap().0;
+    assert!(close(c.base(drone, attr::CPU), 7.0));
+}

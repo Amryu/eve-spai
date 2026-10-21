@@ -521,7 +521,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
             fit.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
             fit.modules.push(Module::new(ids::DC, Slot::Low, 0));
             fit.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
-            fit.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None });
+            fit.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
             if extreme {
                 fit.modules.push(Module::new(ids::GUN, Slot::High, 2).with_charge(ids::AMMO).with_state(State::Overload));
                 fit.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active));
@@ -531,7 +531,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
                 for i in 0..3 {
                     fit.modules.push(Module::new(ids::RIG, Slot::Rig, i));
                 }
-                fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false, launched: None });
+                fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false, launched: None, mutation: None });
                 fit.implants.push(ids::IMPLANT);
                 fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true, side_on: None });
                 for q in [1, 500, 12_345, 1_000_000] {
@@ -2826,6 +2826,14 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.fleet.as_mut().unwrap().enemy = Some("fl-2".into());
         }));
     }
+    v.push(imperium_dialog_scene("imperium_mutation", [520.0, 320.0], |sim| {
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 1, |f| f.modules.push(spai_fit::fit::Module::new(ids::MWD, spai_fit::fit::Slot::Mid, 0)));
+        let d = sim.dogma.clone().unwrap();
+        let worst = spai_fit_ui::mutation::roll(&d, ids::MWD, ids::MUTAPLASMID, |lo, hi, high| if high { lo } else { hi });
+        sim.set_mutation(spai_fit_ui::mutation::MutTarget::Module(spai_fit::fit::Slot::Mid, 0), worst, 2);
+        sim.mutation_window = Some(spai_fit_ui::mutation::MutTarget::Module(spai_fit::fit::Slot::Mid, 0));
+    }));
     v.push(imperium_dialog_scene("imperium_side_effects", [520.0, 320.0], |sim| {
         use spai_fit::test_support::ids;
         sim.edit(spai_fit::history::EditKind::Boosters, 1, |f| f.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: false, side_on: None }));
@@ -9689,4 +9697,92 @@ fn uitest_warnings_never_move_the_racks() {
     };
     let (few, many) = (top_of_rack(false), top_of_rack(true));
     assert!(few.is_finite() && (few - many).abs() < 0.5, "the racks start at {few} with few warnings and {many} with many");
+}
+
+/// A fitted module dragged by its icon or anywhere on its row onto another slot of its rack trades
+/// places with it.
+#[test]
+fn uitest_sim_drag_moves_a_fitted_module() {
+    for grab_x in [spai_fit_ui::rows::GAP + 9.0, 80.0, 200.0] {
+        drag_module_from(grab_x);
+    }
+}
+
+fn drag_module_from(grab_x: f32) {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_drag_module", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let y_of = |h: &egui_kittest::Harness<'_>, name: &str| h.query_all_by_label_contains(name).map(|n| n.rect().min.y).fold(f32::INFINITY, f32::min);
+    let (dc, rep) = (y_of(&h, "Damage Control II"), y_of(&h, "Small Armor Repairer II"));
+    assert!(dc < rep, "the damage control starts above the repairer: {dc} {rep}");
+    let rows = spai_fit_ui::rows::log(&h.ctx);
+    let low: Vec<egui::Rect> = rows.iter().filter(|(id, _)| *id == egui::Id::new("rack/low")).map(|(_, r)| *r).collect();
+    let (from, to) = (low.iter().find(|r| r.contains(egui::pos2(r.center().x, dc + 4.0))).copied().expect("a low row under the damage control"), low.iter().find(|r| r.min.y > dc + 10.0).copied().expect("the next low row"));
+    let grab = egui::pos2(from.min.x + grab_x, from.center().y);
+    let press = |h: &mut egui_kittest::Harness<'_>, pos, pressed| h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() });
+    h.event(egui::Event::PointerMoved(grab));
+    h.run_steps(1);
+    press(&mut h, grab, true);
+    h.run_steps(1);
+    let target = egui::pos2(to.center().x, to.center().y);
+    for k in 1..=12 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        h.event(egui::Event::PointerMoved(grab + (target - grab) * (k as f32 / 12.0)));
+        h.run_steps(1);
+    }
+    press(&mut h, target, false);
+    h.run_steps(3);
+    let (dc, rep) = (y_of(&h, "Damage Control II"), y_of(&h, "Small Armor Repairer II"));
+    assert!(dc > rep, "grabbed at {grab_x}, the damage control moved below the repairer: {dc} {rep}");
+}
+
+/// A kept layout comes back: the dock as high and the left bar as wide as they were left.
+#[test]
+fn uitest_sim_layout_is_restored() {
+    let mut scene = imperium_scene_with("sim_layout_restore", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.handle(spai_fit_ui::HostEvent::Layout(r#"{"left_w":380.0,"dock_h":420.0}"#.into()));
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(5);
+    let size = |id: &str| h.ctx.data_mut(|d| d.get_persisted::<egui::PanelState>(egui::Id::new(id))).map(|s| s.rect.size());
+    let (left, dock) = (size("sim_left").expect("left panel"), size("sim_dock").expect("dock"));
+    assert!((left.x - 380.0).abs() < 1.0, "left bar {}", left.x);
+    assert!((dock.y - 420.0).abs() < 1.0, "dock {}", dock.y);
+}
+
+/// A fitted module dragged onto an empty slot of its rack moves there, or is copied with Shift.
+#[test]
+fn uitest_sim_drag_onto_an_empty_slot() {
+    use egui_kittest::kittest::Queryable as _;
+    for copy in [false, true] {
+        let mut scene = imperium_scene("sim_drag_empty", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+        let mut h = harness::build(&mut scene, false);
+        h.run_steps(3);
+        let ys = |h: &egui_kittest::Harness<'_>, name: &str| h.query_all_by_label_contains(name).map(|n| n.rect().min.y).collect::<Vec<f32>>();
+        let dc = ys(&h, "Damage Control II")[0];
+        let empty = h.query_all_by_label_contains("Empty low slot").map(|n| n.rect().center()).next().expect("an empty low slot");
+        let rows = spai_fit_ui::rows::log(&h.ctx);
+        let from = rows.iter().filter(|(id, _)| *id == egui::Id::new("rack/low")).map(|(_, r)| *r).find(|r| r.min.y <= dc + 4.0 && r.max.y >= dc + 4.0).expect("the damage control row");
+        let grab = egui::pos2(from.min.x + 80.0, from.center().y);
+        let modifiers = if copy { egui::Modifiers::SHIFT } else { egui::Modifiers::default() };
+        let press = |h: &mut egui_kittest::Harness<'_>, pos, pressed| h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers });
+        h.event(egui::Event::PointerMoved(grab));
+        h.run_steps(1);
+        press(&mut h, grab, true);
+        h.run_steps(1);
+        for k in 1..=12 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            h.event(egui::Event::PointerMoved(grab + (empty - grab) * (k as f32 / 12.0)));
+            h.run_steps(1);
+        }
+        h.input_mut().modifiers = modifiers;
+        press(&mut h, empty, false);
+        h.run_steps(2);
+        h.event(egui::Event::PointerGone);
+        h.run_steps(3);
+        let after = ys(&h, "Damage Control II");
+        assert_eq!(after.len(), if copy { 2 } else { 1 }, "copy {copy}: {after:?}");
+        assert!(after.iter().any(|y| *y > dc + 10.0), "copy {copy}: a damage control sits where the empty slot was: {after:?} from {dc}");
+    }
 }

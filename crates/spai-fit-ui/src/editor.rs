@@ -598,7 +598,7 @@ fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: 
 /// A fitted module dropped on a slot of its own rack: moved there, trading places with what sat
 /// there, or copied with Shift held on release.
 fn accept_module_drop(sim: &mut SimUi, ui: &egui::Ui, r: &egui::Response, slot: Slot, index: u8, now_ms: u64) {
-    let Some(from) = r.dnd_release_payload::<rows::DragModule>() else { return };
+    let Some(from) = rows::released::<rows::DragModule>(r) else { return };
     let rows::DragModule(from_slot, from_index) = *from;
     if from_slot != slot || from_index == index {
         return;
@@ -641,6 +641,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let mut handle: Option<egui::Response> = None;
     let tips = sim.tip_values();
     let price = sim.prices.get(&type_id).copied();
+    let rolled = sim.view_fit().and_then(|v| v.module(slot, index).and_then(|m| m.mutation.clone()));
+    let can_roll = !dogma.mutaplasmids_for(type_id).is_empty();
+    let mut roll_it = false;
     let r = rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
         if by_variation {
             ui.disable();
@@ -648,10 +651,11 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         let inner = ui.available_width();
         // The icon is the handle: dragging it moves the module, with Shift copies it. The rest of
         // the row stays for clicks, menus and the charge button.
-        let icon = crate::icons::type_icon(ui, type_id, 18.0).interact(egui::Sense::drag()).on_hover_text(tr!("Drag to another slot to move it, with Shift to copy it"));
+        let icon = crate::icons::type_icon(ui, crate::mutation::icon_of(dogma, type_id, rolled.as_ref()), 18.0).interact(egui::Sense::drag()).on_hover_text(tr!("Drag to another slot to move it, with Shift to copy it"));
         handle = Some(icon);
         let name_w = cols.name_width(inner);
         let label = egui::RichText::new(&name);
+        let label = if rolled.is_some() { label.color(crate::mutation::ROLLED) } else { label };
         let label = if state == State::Offline { label.weak() } else { label };
         let note = if by_variation { tr!("Set by a variation") } else { "" };
         let fitted = tips.get(&DetailsTarget::Module(slot, index));
@@ -721,10 +725,11 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             remove = true;
         }
     });
-    if let Some(h) = &handle {
-        if !by_variation {
+    if !by_variation {
+        if let Some(h) = &handle {
             rows::drag_from(ui, h, rows::DragModule(slot, index), &name);
         }
+        rows::drag_from(ui, &r, rows::DragModule(slot, index), &name);
     }
     if !by_variation {
         accept_module_drop(sim, ui, &r, slot, index, now_ms);
@@ -794,16 +799,17 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             if !variants.is_empty() {
                 ui.menu_button(tr!("Variants"), |ui| {
                     ui.set_min_width(260.0);
-                    for v in variants {
-                        if ui.button(spai_fit::formats::name_of(dogma, v)).clicked() {
-                            replace = Some(v);
-                            ui.close();
-                        }
+                    if let Some(v) = variants_menu(ui, dogma, variants) {
+                        replace = Some(v);
                     }
                 });
             }
             if single && ui.button(tr!("Change module…")).clicked() {
                 open_picker = Some(PickTarget::Module(slot, index));
+                ui.close();
+            }
+            if single && can_roll && ui.button(if rolled.is_some() { tr!("Abyssal mutation…") } else { tr!("Roll with a mutaplasmid…") }).clicked() {
+                roll_it = true;
                 ui.close();
             }
             if single && ui.button(tr!("Details…")).clicked() {
@@ -823,6 +829,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
         if let Some(t) = details {
             sim.open_details(t);
+        }
+        if roll_it {
+            sim.mutation_window = Some(crate::mutation::MutTarget::Module(slot, index));
         }
         if let Some(t) = open_picker {
             picker::open(sim, t);
@@ -866,4 +875,42 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             sim.selection.clear();
         }
     }
+}
+
+/// A module's variants: Tech I and II and the like at the top, the storyline, faction, deadspace
+/// and officer ones each in a menu of their own, all by meta level with their icons.
+fn variants_menu(ui: &mut egui::Ui, dogma: &Dogma, mut variants: Vec<TypeId>) -> Option<TypeId> {
+    use spai_fit::ids::meta_group;
+    variants.sort_by_key(|v| dogma.type_(*v).map(|t| (t.meta_level.unwrap_or(0), t.name.clone())));
+    let group_of = |v: &TypeId| dogma.type_(*v).and_then(|t| t.meta_group);
+    let item = |ui: &mut egui::Ui, v: TypeId| {
+        let icon = egui::Image::new(crate::icons::type_icon_uri(v)).fit_to_exact_size(egui::vec2(18.0, 18.0));
+        let hit = ui.add(egui::Button::image_and_text(icon, spai_fit::formats::name_of(dogma, v)).frame_when_inactive(false)).clicked();
+        if hit {
+            ui.close();
+        }
+        hit
+    };
+    let sub = [(meta_group::STORYLINE, tr!("Storyline")), (meta_group::FACTION, tr!("Faction")), (meta_group::DEADSPACE, tr!("Deadspace")), (meta_group::OFFICER, tr!("Officer"))];
+    let mut picked = None;
+    for &v in variants.iter().filter(|v| !sub.iter().any(|(g, _)| group_of(v) == Some(*g))) {
+        if item(ui, v) {
+            picked = Some(v);
+        }
+    }
+    for (g, label) in sub {
+        let these: Vec<TypeId> = variants.iter().copied().filter(|v| group_of(v) == Some(g)).collect();
+        if these.is_empty() {
+            continue;
+        }
+        ui.menu_button(label, |ui| {
+            ui.set_min_width(260.0);
+            for v in these {
+                if item(ui, v) {
+                    picked = Some(v);
+                }
+            }
+        });
+    }
+    picked
 }

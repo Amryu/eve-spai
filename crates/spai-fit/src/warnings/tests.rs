@@ -84,7 +84,7 @@ fn capacitor_drones_skills_and_unknown_types_have_their_warnings() {
     for i in 0..3 {
         f.modules.push(Module::new(ids::REPAIRER, Slot::Low, i).with_state(State::Active));
     }
-    f.drones.push(DroneStack { type_id: ids::DRONE, count: 9, active: true, launched: None });
+    f.drones.push(DroneStack { type_id: ids::DRONE, count: 9, active: true, launched: None, mutation: None });
     f.modules.push(Module::new(424242, Slot::Mid, 0));
     let missing = vec![MissingSkill { skill: 1, needed: 5, have: 0, for_type: ids::GUN }];
     let k = kinds(&f, &missing);

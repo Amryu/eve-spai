@@ -9,6 +9,7 @@ use crate::{text, SimUi};
 
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
     let Some(dogma) = sim.dogma.clone() else { return };
+    let tree = sim.browser.tree(&dogma);
     let Some(computed) = sim.computed() else {
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!("No fit open.")).weak());
@@ -18,7 +19,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.add_space(2.0);
         fitting(ui, &computed);
-        defense(ui, &computed);
+        let profile = sim.session().map(|s| s.fit.damage_profile).unwrap_or_default();
+        if let Some(p) = defense(ui, &dogma, &tree, &computed, profile) {
+            sim.set_damage_profile(p);
+        }
         offense(ui, &dogma, &computed);
         capacitor(ui, &computed);
         navigation(ui, &computed);
@@ -99,7 +103,119 @@ fn rep_text(sustained: f64, running: f64) -> String {
     }
 }
 
-fn defense(ui: &mut egui::Ui, c: &Computed) {
+/// A charge's name without its size, so the sizes of one charge, which deal the same split, are
+/// offered once: "Antimatter Charge M" as "Antimatter Charge".
+fn without_size(name: &str) -> &str {
+    for suffix in [" XL", " S", " M", " L"] {
+        if let Some(n) = name.strip_suffix(suffix) {
+            return n;
+        }
+    }
+    name
+}
+
+/// Of each set of charges dealing the same split, of one item group and size, the plainest: faction
+/// versions sit in their own market groups but would only repeat the split.
+pub(crate) fn plain_charges(dogma: &Dogma, tree: &crate::browser::Tree) -> std::collections::HashSet<spai_fit::ids::TypeId> {
+    fn walk(tree: &crate::browser::Tree, g: spai_fit::ids::MarketGroupId, out: &mut Vec<spai_fit::ids::TypeId>) {
+        out.extend(tree.types(g).iter().copied());
+        for &c in tree.children(g) {
+            walk(tree, c, out);
+        }
+    }
+    let mut all = Vec::new();
+    for &r in tree.roots() {
+        walk(tree, r, &mut all);
+    }
+    let mut best: std::collections::HashMap<(spai_fit::ids::GroupId, String, [i64; 4]), (u8, usize, spai_fit::ids::TypeId)> = std::collections::HashMap::new();
+    for t in all {
+        let Some(def) = dogma.type_(t) else { continue };
+        let Some(p) = profile_of(dogma, &def.name) else { continue };
+        let size = def.name[without_size(&def.name).len()..].to_owned();
+        let key = (def.group, size, p.weights().map(|w| (w * 1000.0).round() as i64));
+        let rank = (def.meta_level.unwrap_or(0), def.name.len(), t);
+        best.entry(key).and_modify(|b| if rank < *b { *b = rank }).or_insert(rank);
+    }
+    best.into_values().map(|(_, _, t)| t).collect()
+}
+
+/// The charges of a market group and everything under it that deal damage, one per name.
+fn damaging(dogma: &Dogma, tree: &crate::browser::Tree, plain: &std::collections::HashSet<spai_fit::ids::TypeId>, g: spai_fit::ids::MarketGroupId, out: &mut Vec<(String, spai_fit::ids::TypeId)>) {
+    for &t in tree.types(g).iter().filter(|t| plain.contains(t)) {
+        let Some(def) = dogma.type_(t) else { continue };
+        if profile_of(dogma, &def.name).is_none() {
+            continue;
+        }
+        let short = without_size(&def.name).to_owned();
+        if !out.iter().any(|(n, _)| *n == short) {
+            out.push((short, t));
+        }
+    }
+    for &c in tree.children(g) {
+        damaging(dogma, tree, plain, c, out);
+    }
+}
+
+/// The charges sold directly in a market group as profile choices, one per name and per damage
+/// split.
+pub(crate) fn leaf_profiles(dogma: &Dogma, tree: &crate::browser::Tree, plain: &std::collections::HashSet<spai_fit::ids::TypeId>, g: spai_fit::ids::MarketGroupId) -> Vec<(String, spai_fit::ids::TypeId)> {
+    let mut here: Vec<(String, spai_fit::ids::TypeId)> = Vec::new();
+    for &t in tree.types(g).iter().filter(|t| plain.contains(t)) {
+        let Some(def) = dogma.type_(t) else { continue };
+        if profile_of(dogma, &def.name).is_some() {
+            let short = without_size(&def.name).to_owned();
+            if !here.iter().any(|(n, _)| *n == short) {
+                here.push((short, t));
+            }
+        }
+    }
+    // Faction versions of a charge deal the same split: one entry, the plainest name.
+    let split = |t: spai_fit::ids::TypeId| dogma.type_(t).and_then(|d| profile_of(dogma, &d.name)).map(|p| p.weights().map(|w| (w * 1000.0).round() as i64));
+    here.sort_by_key(|(n, _)| n.len());
+    let mut seen = Vec::new();
+    here.retain(|(_, t)| split(*t).is_some_and(|k| if seen.contains(&k) { false } else { seen.push(k); true }));
+    here.sort_by(|a, b| a.0.cmp(&b.0));
+    here
+}
+
+/// The market's ammunition as nested menus, each charge that deals damage offered as a profile.
+fn charge_menus(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, plain: &std::collections::HashSet<spai_fit::ids::TypeId>, g: spai_fit::ids::MarketGroupId, picked: &mut Option<spai_fit::fit::DamageProfile>) {
+    let here = leaf_profiles(dogma, tree, plain, g);
+    for &c in tree.children(g) {
+        let mut under = Vec::new();
+        damaging(dogma, tree, plain, c, &mut under);
+        if under.is_empty() {
+            continue;
+        }
+        ui.menu_button(tree.name(c), |ui| {
+            ui.set_min_width(220.0);
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| charge_menus(ui, dogma, tree, plain, c, picked));
+        });
+    }
+    for (name, t) in here {
+        let Some(def) = dogma.type_(t) else { continue };
+        let Some(p) = profile_of(dogma, &def.name) else { continue };
+        let item = egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(t)).fit_to_exact_size(egui::vec2(16.0, 16.0)), name).frame_when_inactive(false);
+        if ui.add(item).clicked() {
+            *picked = Some(p);
+            ui.close();
+        }
+    }
+}
+
+/// A charge's damage split as a profile.
+fn profile_of(dogma: &Dogma, name: &str) -> Option<spai_fit::fit::DamageProfile> {
+    use spai_fit::dogma::attr;
+    let t = dogma.type_named(name)?;
+    let d = |a| t.attr(a).unwrap_or(0.0);
+    let p = spai_fit::fit::DamageProfile { em: d(attr::EM_DAMAGE), thermal: d(attr::THERMAL_DAMAGE), kinetic: d(attr::KINETIC_DAMAGE), explosive: d(attr::EXPLOSIVE_DAMAGE) };
+    (p.em + p.thermal + p.kinetic + p.explosive > 0.0).then_some(p)
+}
+
+/// The layers, their resists, and the damage expected in, which the effective HP is figured
+/// against; a right click on it picks another. Returns the profile picked.
+fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Computed, profile: spai_fit::fit::DamageProfile) -> Option<spai_fit::fit::DamageProfile> {
+    let mut picked = None;
     let t = &c.tank;
     section(ui, tr!("Defense"));
     line(ui, tr!("Effective HP"), text::num(t.ehp));
@@ -126,6 +242,51 @@ fn defense(ui: &mut egui::Ui, c: &Computed) {
             }
         });
     }
+    let weights = profile.weights();
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(rows::GAP);
+        ui.add_sized([name_w + hp_w, 18.0], egui::Label::new(egui::RichText::new(tr!("Incoming")).weak()).halign(egui::Align::LEFT).selectable(false));
+        for (i, w) in weights.iter().enumerate() {
+            rows::num_cell_colored(ui, res_w, format!("{:.0}%", w * 100.0), spai_ui::colors::DAMAGE[i]);
+        }
+    });
+    let r = ui.interact(row.response.rect, egui::Id::new("sim_damage_profile"), egui::Sense::click());
+    let r = r.on_hover_text(tr!("The damage expected in, which the effective HP is figured against. Right-click to change it."));
+    r.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        if ui.button(tr!("Uniform")).clicked() {
+            picked = Some(spai_fit::fit::DamageProfile::UNIFORM);
+            ui.close();
+        }
+        // Every charge the market sells that deals damage, under the market's own categories.
+        let plain = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_insert_with(egui::Id::new("sim_plain_charges"), || std::sync::Arc::new(plain_charges(dogma, tree))).clone());
+        for &root in tree.roots() {
+            let mut any = Vec::new();
+            damaging(dogma, tree, &plain, root, &mut any);
+            if any.is_empty() {
+                continue;
+            }
+            ui.menu_button(tree.name(root), |ui| {
+                ui.set_min_width(220.0);
+                charge_menus(ui, dogma, tree, &plain, root, &mut picked);
+            });
+        }
+        ui.separator();
+        ui.label(egui::RichText::new(tr!("Custom")).weak());
+        let mut custom = profile;
+        let mut changed = false;
+        egui::Grid::new("sim_profile_custom").num_columns(2).show(ui, |ui| {
+            for (i, (label, v)) in [("EM", &mut custom.em), ("TH", &mut custom.thermal), ("KIN", &mut custom.kinetic), ("EXP", &mut custom.explosive)].into_iter().enumerate() {
+                ui.label(egui::RichText::new(label).color(spai_ui::colors::DAMAGE[i]));
+                changed |= ui.add(egui::DragValue::new(v).range(0.0..=1000.0).speed(0.5)).changed();
+                ui.end_row();
+            }
+        });
+        if changed {
+            picked = Some(custom);
+        }
+    });
     if t.reps.shield > 0.0 || t.reps.shield_burst > 0.0 {
         line(ui, tr!("Shield boost"), rep_text(t.reps.shield, t.reps.shield_burst));
     }
@@ -136,6 +297,7 @@ fn defense(ui: &mut egui::Ui, c: &Computed) {
         line(ui, tr!("Hull repair"), trf!("{v}/s", v = text::num(t.reps.hull)));
     }
     line(ui, tr!("Shield regen (peak)"), trf!("{v}/s", v = text::num(t.shield_peak_regen)));
+    picked
 }
 
 fn offense(ui: &mut egui::Ui, dogma: &Dogma, c: &Computed) {

@@ -78,6 +78,16 @@ pub fn drag_from<P: std::any::Any + Send + Sync>(ui: &egui::Ui, resp: &egui::Res
 
 const GHOST: &str = "sim_drag_label";
 
+/// What was dropped on `resp`, when it is a `P`. egui's own release takes the payload whatever its
+/// type, so asking for the wrong one would throw away a drop meant for another handler.
+pub fn released<P: std::any::Any + Send + Sync>(resp: &egui::Response) -> Option<std::sync::Arc<P>> {
+    if egui::DragAndDrop::has_payload_of_type::<P>(&resp.ctx) {
+        resp.dnd_release_payload::<P>()
+    } else {
+        None
+    }
+}
+
 /// How far the pointer has to travel, and how long the button be held, before a press is a drag:
 /// a click that slips a few pixels stays a click.
 pub const DRAG_DISTANCE: f32 = 6.0;
@@ -118,7 +128,8 @@ pub struct DragItem(pub TypeId);
 /// response is the row's own (clicks between the cells, right clicks, drops).
 pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, selected: bool, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    // Drag too, so a row can be carried by its name; `drag_from` decides which rows carry anything.
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
     ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<RowLog>(egui::Id::new(LOG)).0.push((egui::Id::new(list), rect)));
     // Out of sight altogether: the space is kept, the cells are not built. A row partly in view
     // is drawn, clipped at the edge, so it scrolls away smoothly instead of vanishing early.

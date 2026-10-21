@@ -38,3 +38,13 @@ pub mod category {
     /// What the dataset carries. Structures and their modules are not fitted yet.
     pub const BAKED: [CategoryId; 8] = [SHIP, MODULE, CHARGE, SKILL, DRONE, IMPLANT, SUBSYSTEM, FIGHTER];
 }
+
+/// The meta groups the game sorts variants of an item into.
+pub mod meta_group {
+    pub const TECH_I: u8 = 1;
+    pub const TECH_II: u8 = 2;
+    pub const STORYLINE: u8 = 3;
+    pub const FACTION: u8 = 4;
+    pub const OFFICER: u8 = 5;
+    pub const DEADSPACE: u8 = 6;
+}

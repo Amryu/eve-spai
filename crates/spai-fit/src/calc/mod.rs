@@ -225,6 +225,9 @@ impl<'d> Calc<'d> {
                 if let Some(i) = self.item_for(d.type_id, ItemKind::Drone { count: n }, state) {
                     self.items[i].location = Some(ship);
                     self.items[i].owner = Some(char);
+                    if let Some(mu) = &d.mutation {
+                        self.items[i].overrides.extend(mu.attrs.iter().map(|(a, v)| (*a, f64::from(*v))));
+                    }
                 }
             }
         }

@@ -15,7 +15,7 @@ fn eft_imports_by_type_not_by_position_and_exports_the_same_text() {
     assert_eq!(f.rack(Slot::Mid).map(|m| m.type_id).collect::<Vec<_>>(), vec![ids::MWD]);
     assert_eq!(f.rack(Slot::High).map(|m| (m.type_id, m.charge)).collect::<Vec<_>>(), vec![(ids::GUN, Some(ids::AMMO)), (ids::GUN, Some(ids::AMMO_LONG))]);
     assert_eq!(f.rack(Slot::Rig).map(|m| m.state).collect::<Vec<_>>(), vec![State::Online]);
-    assert_eq!(f.drones, vec![DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None }]);
+    assert_eq!(f.drones, vec![DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None }]);
     assert_eq!(f.implants, vec![ids::IMPLANT]);
     assert_eq!(f.boosters.iter().map(|b| b.type_id).collect::<Vec<_>>(), vec![ids::BOOSTER]);
     assert_eq!(f.cargo, vec![CargoItem { type_id: ids::AMMO, quantity: 500, hold: None }]);
@@ -96,7 +96,7 @@ fn items_are_placed_by_their_type() {
     assert_eq!(f.modules.len(), 2);
     assert_eq!(f.modules[0].state, State::Active, "a gun comes in active");
     assert_eq!(f.cargo, vec![CargoItem { type_id: ids::AMMO, quantity: 10, hold: None }]);
-    assert_eq!(f.drones, vec![DroneStack { type_id: ids::DRONE, count: 3, active: true, launched: None }]);
+    assert_eq!(f.drones, vec![DroneStack { type_id: ids::DRONE, count: 3, active: true, launched: None, mutation: None }]);
     assert_eq!(place_of(&d, d.type_(ids::BOOSTER).unwrap()), Place::Booster);
     assert_eq!(place_of(&d, d.type_(ids::RIG).unwrap()), Place::Module(Slot::Rig));
     assert_eq!(default_state(&d, ids::GUN), State::Active, "it has a target effect");

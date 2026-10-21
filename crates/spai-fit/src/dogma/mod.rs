@@ -335,8 +335,41 @@ pub struct Dogma {
     pub units: Vec<UnitDef>,
     pub buffs: Vec<BuffDef>,
     pub traits: Vec<TypeTraits>,
+    /// Abyssal mutaplasmids: what each may roll, and what it turns which items into.
+    pub mutaplasmids: Vec<Mutaplasmid>,
     #[serde(skip)]
     pub(crate) index: Index,
+}
+
+/// A mutaplasmid: each attribute it rolls, between a lowest and highest multiplier of the item's
+/// own value, and the abyssal item each item it takes becomes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Mutaplasmid {
+    pub id: TypeId,
+    pub name: String,
+    pub attrs: Vec<(AttrId, f32, f32)>,
+    /// (the items it takes, what they become).
+    pub mapping: Vec<(Vec<TypeId>, TypeId)>,
+}
+
+impl Mutaplasmid {
+    /// What the item becomes under this mutaplasmid, if it takes it.
+    pub fn result_for(&self, item: TypeId) -> Option<TypeId> {
+        self.mapping.iter().find(|(from, _)| from.contains(&item)).map(|(_, to)| *to)
+    }
+}
+
+impl Dogma {
+    /// The mutaplasmids that take this item, by name.
+    pub fn mutaplasmids_for(&self, item: TypeId) -> Vec<&Mutaplasmid> {
+        let mut v: Vec<&Mutaplasmid> = self.mutaplasmids.iter().filter(|m| m.result_for(item).is_some()).collect();
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        v
+    }
+
+    pub fn mutaplasmid(&self, id: TypeId) -> Option<&Mutaplasmid> {
+        self.mutaplasmids.iter().find(|m| m.id == id)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -622,6 +655,7 @@ pub(crate) mod test_data {
                 misc: vec![],
                 per_skill: vec![(3329, vec![Bonus { amount: Some(5.0), unit: Some(105), text: "bonus to Small Projectile Turret damage".into() }])],
             }],
+            mutaplasmids: vec![],
             index: Index::default(),
         }
         .finish()

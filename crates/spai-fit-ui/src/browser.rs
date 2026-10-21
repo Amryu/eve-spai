@@ -319,7 +319,7 @@ pub fn add_projected(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
 
 /// Takes a drop that landed on `resp`, if any, and reports a drop that fits nowhere.
 pub fn accept_drop(sim: &mut SimUi, resp: &egui::Response, target: DropTarget, now_ms: u64) {
-    if let Some(item) = resp.dnd_release_payload::<DragItem>() {
+    if let Some(item) = crate::rows::released::<DragItem>(resp) {
         if !drop_on(sim, target, item.0, now_ms) {
             let name = sim.dogma.as_ref().and_then(|d| d.type_(item.0)).map_or(String::new(), |t| t.name.clone());
             sim.note(trf!("{name} does not go there", name = name));

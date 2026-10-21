@@ -285,7 +285,7 @@ mod tests {
         let mut f = Fit::new(ids::SHIP, "t");
         f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
         f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 1).with_charge(ids::MISSILE).with_state(State::Active));
-        f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None });
+        f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
         f
     }
 

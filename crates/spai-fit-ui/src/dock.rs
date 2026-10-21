@@ -42,7 +42,7 @@ pub const DOCK_H: f32 = 168.0;
 const TAB_W: f32 = 100.0;
 const TAB_ROW_H: f32 = 24.0;
 /// Room under the panels, so they do not run into the window's edge.
-const BOTTOM_PAD: f32 = 8.0;
+const BOTTOM_PAD: f32 = 6.0;
 
 #[derive(Default)]
 pub struct DockState {
@@ -76,6 +76,8 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
     let tabs = tabs(sim);
     let shown = visible(ui.available_width(), &tabs, sim.dock.first);
+    // As far below the dock's edge as the panels sit from its sides.
+    ui.add_space(7.0);
     // Each tab put at a rect of its own on one line, so a framed (shown) tab and a bare one
     // cannot sit at different heights; the first starts where the first panel does.
     let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TAB_ROW_H), egui::Sense::hover());
@@ -344,6 +346,7 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, bool, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.active, d.in_space())).collect();
+    let rolls: Vec<Option<spai_fit::fit::Mutation>> = s.fit.drones.iter().map(|d| d.mutation.clone()).collect();
     if list.is_empty() {
         empty_note(ui, tr!("Drag drones here or double-click them in the browser."));
     }
@@ -353,10 +356,14 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut toggle = false;
         let mut remove = false;
         let mut launch: Option<u32> = None;
+        let mut sim_roll = false;
+        let rolled = rolls.get(i).cloned().flatten();
         let r = rows::row(ui, "dock/drones", ("sim_drone", i), ROW_H, false, |ui| {
-            crate::icons::type_icon(ui, type_id, 18.0);
+            crate::icons::type_icon(ui, crate::mutation::icon_of(dogma, type_id, rolled.as_ref()), 18.0);
             let w = rows::name_w(ui, 6.0);
-            let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
+            let label = egui::RichText::new(&name);
+            let label = if rolled.is_some() { label.color(crate::mutation::ROLLED) } else { label };
+            let label = if active { label } else { label.weak() };
             rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Drone(type_id))));
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).on_hover_text(tr!("One fewer in the bay")).clicked() {
                 delta = -1;
@@ -384,6 +391,10 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         }
         let mut details = false;
         r.context_menu(|ui| {
+            if !dogma.mutaplasmids_for(type_id).is_empty() && ui.button(if rolled.is_some() { tr!("Abyssal mutation…") } else { tr!("Roll with a mutaplasmid…") }).clicked() {
+                sim_roll = true;
+                ui.close();
+            }
             if ui.button(if active { tr!("Keep in the bay") } else { tr!("Launch") }).clicked() {
                 toggle = true;
                 ui.close();
@@ -399,6 +410,9 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         });
         if details {
             sim.open_details(crate::details::DetailsTarget::Drone(type_id));
+        }
+        if sim_roll {
+            sim.mutation_window = Some(crate::mutation::MutTarget::Drone(i));
         }
         if delta != 0 || toggle || remove || launch.is_some() {
             sim.edit(EditKind::Drones, now_ms, |f| {

@@ -82,6 +82,8 @@ pub struct DroneStack {
     pub active: bool,
     /// How many of the stack are in space while it is out; none means all of them.
     pub launched: Option<u32>,
+    /// An abyssal roll: a mutated drone, its values over its type's.
+    pub mutation: Option<Mutation>,
 }
 
 impl DroneStack {
@@ -97,7 +99,7 @@ impl DroneStack {
 
 impl Default for DroneStack {
     fn default() -> Self {
-        DroneStack { type_id: 0, count: 1, active: true, launched: None }
+        DroneStack { type_id: 0, count: 1, active: true, launched: None, mutation: None }
     }
 }
 
@@ -358,7 +360,7 @@ mod tests {
         a.add_module(1, Slot::High);
         a.add_module(2, Slot::High);
         a.add_module(3, Slot::Low);
-        a.drones.push(DroneStack { type_id: 9, count: 2, active: true, launched: None });
+        a.drones.push(DroneStack { type_id: 9, count: 2, active: true, launched: None, mutation: None });
         let mut b = a.clone();
         b.name = "B".into();
         b.modules.swap(0, 1);
@@ -399,7 +401,7 @@ mod tests {
         let mut f = Fit::new(587, "Rifter");
         f.add_module(2048, Slot::Low);
         f.modules[0].charge = Some(1);
-        f.drones.push(DroneStack { type_id: 2454, count: 2, active: true, launched: None });
+        f.drones.push(DroneStack { type_id: 2454, count: 2, active: true, launched: None, mutation: None });
         let json = serde_json::to_string(&f).unwrap();
         assert_eq!(serde_json::from_str::<Fit>(&json).unwrap(), f);
         let old: Fit = serde_json::from_str(r#"{"ship": 587, "modules": [{"type_id": 1, "slot": "Low"}]}"#).unwrap();

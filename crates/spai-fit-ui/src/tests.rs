@@ -792,3 +792,127 @@ fn a_fit_costs_what_its_parts_cost_at_the_market() {
     assert!(c.missing > 0, "the ammo has no price in this list");
     assert!((c.total() - c.hull - c.modules - c.charges - c.drones - c.worn - c.cargo).abs() < 1e-6);
 }
+
+#[test]
+fn a_roll_lands_within_the_mutaplasmid_and_best_is_best_for_each_attribute() {
+    use crate::mutation::{icon_of, roll, MutTarget};
+    use spai_fit::dogma::attr;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::MWD, 1);
+    let d = s.dogma.clone().unwrap();
+    let base = |a| f64::from(d.type_(ids::MWD).unwrap().attr(a).unwrap());
+    let best = roll(&d, ids::MWD, ids::MUTAPLASMID, |lo, hi, high| if high { hi } else { lo }).unwrap();
+    let get = |m: &spai_fit::fit::Mutation, a| f64::from(m.attrs.iter().find(|(x, _)| *x == a).unwrap().1);
+    assert!((get(&best, attr::SPEED_FACTOR) - base(attr::SPEED_FACTOR) * 1.1).abs() < 1e-3, "more speed is better: the top of its range");
+    assert!((get(&best, attr::CPU) - base(attr::CPU) * 0.8).abs() < 1e-3, "less CPU is better: the bottom of its range");
+    s.set_mutation(MutTarget::Module(Slot::Mid, 0), Some(best.clone()), 2);
+    let m = s.session().unwrap().fit.module(Slot::Mid, 0).unwrap().mutation.clone();
+    assert_eq!(m.as_ref(), Some(&best));
+    assert_eq!(icon_of(&d, ids::MWD, m.as_ref()), ids::ABYSSAL_MWD, "the rolled item shows the abyssal icon");
+    assert!(s.computed().is_some());
+    s.set_mutation(MutTarget::Module(Slot::Mid, 0), None, 3);
+    assert!(s.session().unwrap().fit.module(Slot::Mid, 0).unwrap().mutation.is_none(), "None takes the roll off");
+}
+
+#[test]
+fn the_incoming_damage_pattern_moves_the_effective_hp() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::Low, 0), ids::HARDENER, 1);
+    s.edit(EditKind::SetState, 2, |f| f.module_mut(Slot::Low, 0).unwrap().state = State::Active);
+    let uniform = s.computed().unwrap().tank.ehp;
+    s.set_damage_profile(spai_fit::fit::DamageProfile { em: 1.0, thermal: 0.0, kinetic: 0.0, explosive: 0.0 });
+    let em = s.computed().unwrap().tank.ehp;
+    assert!(em > uniform, "all EM into an EM hardener: {em} against {uniform}");
+    assert!(s.session().unwrap().fit.damage_profile.em == 1.0, "kept on the fit");
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_every_damaging_charge_is_offered_as_a_profile() {
+    use spai_fit::dogma::attr;
+    let d = std::sync::Arc::new(spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap());
+    let tree = crate::browser::Tree::build(&d);
+    let mut reachable = std::collections::HashSet::new();
+    fn walk(tree: &crate::browser::Tree, g: spai_fit::ids::MarketGroupId, out: &mut std::collections::HashSet<u32>) {
+        out.extend(tree.types(g).iter().copied());
+        for &c in tree.children(g) {
+            walk(tree, c, out);
+        }
+    }
+    for &r in tree.roots() {
+        walk(&tree, r, &mut reachable);
+    }
+    let damaging: Vec<&spai_fit::dogma::TypeDef> = d.types.iter().filter(|t| t.published && t.category == spai_fit::ids::category::CHARGE && [attr::EM_DAMAGE, attr::THERMAL_DAMAGE, attr::KINETIC_DAMAGE, attr::EXPLOSIVE_DAMAGE].iter().any(|a| t.attr(*a).unwrap_or(0.0) > 0.0)).collect();
+    let missing: Vec<&str> = damaging.iter().filter(|t| !reachable.contains(&t.id)).map(|t| t.name.as_str()).collect();
+    println!("{} damaging charges, {} not on the market: {:?}", damaging.len(), missing.len(), &missing[..missing.len().min(12)]);
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_faction_charges_with_the_same_split_are_offered_once() {
+    let d = std::sync::Arc::new(spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap());
+    let tree = crate::browser::Tree::build(&d);
+    let mut all = Vec::new();
+    fn walk(d: &spai_fit::Dogma, tree: &crate::browser::Tree, g: spai_fit::ids::MarketGroupId, out: &mut Vec<String>) {
+        let plain = crate::stats_panel::plain_charges(d, tree);
+        out.extend(crate::stats_panel::leaf_profiles(d, tree, &plain, g).into_iter().map(|(n, _)| n));
+        for &c in tree.children(g) {
+            walk(d, tree, c, out);
+        }
+    }
+    for &r in tree.roots() {
+        walk(&d, &tree, r, &mut all);
+    }
+    println!("{} entries; faction-looking: {:?}", all.len(), all.iter().filter(|n| ["Navy", "Imperial", "Republic", "Federation", "Dark Blood", "Shadow", "Guristas", "Sansha", "True", "Domination", "Arch Angel", "Blood", "Serpentis", "Dread"].iter().any(|f| n.contains(f))).take(30).collect::<Vec<_>>());
+    assert!(all.iter().any(|n| n == "Antimatter Charge"), "{:?}", &all[..20.min(all.len())]);
+    assert!(!all.iter().any(|n| n == "Caldari Navy Antimatter Charge"), "same split as plain Antimatter");
+    assert!(all.iter().any(|n| n == "Scourge Heavy Missile"));
+    assert!(!all.iter().any(|n| n == "Caldari Navy Scourge Heavy Missile"));
+    assert!(!all.iter().any(|n| n.starts_with("Blood ") || n.starts_with("Shadow ")), "faction crystals and charges repeat the plain splits");
+    assert!(all.iter().any(|n| n == "Scourge Light Missile"), "a different size of the same split stays");
+}
+
+/// Drags the edges of the dock and the left bar like a user, and reads back what is kept.
+#[test]
+fn resizing_the_dock_and_the_left_bar_is_kept() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let ctx = egui::Context::default();
+    let mut t = 0.0;
+    let mut frame = |s: &mut SimUi, events: Vec<egui::Event>| {
+        t += 0.05;
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), time: Some(t), events, ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| {
+            s.show(ui);
+            s.show_dialogs(&ui.ctx().clone(), 0);
+        });
+    };
+    for _ in 0..3 {
+        frame(&mut s, vec![]);
+    }
+    let rect = |id: &str| egui::PanelState::load(&ctx, egui::Id::new(id)).map(|p| p.rect).expect(id);
+    let drag = |s: &mut SimUi, frame: &mut dyn FnMut(&mut SimUi, Vec<egui::Event>), from: egui::Pos2, by: egui::Vec2| {
+        let b = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() };
+        frame(s, vec![egui::Event::PointerMoved(from)]);
+        frame(s, vec![b(from, true)]);
+        for k in 1..=8 {
+            frame(s, vec![egui::Event::PointerMoved(from + by * (k as f32 / 8.0))]);
+        }
+        frame(s, vec![b(from + by, false)]);
+        frame(s, vec![]);
+        frame(s, vec![]);
+    };
+    let dock = rect("sim_dock");
+    drag(&mut s, &mut frame, egui::pos2(dock.center().x, dock.min.y), egui::vec2(0.0, -120.0));
+    let left = rect("sim_left");
+    drag(&mut s, &mut frame, egui::pos2(left.max.x, left.center().y), egui::vec2(90.0, 0.0));
+    let (dock2, left2) = (rect("sim_dock"), rect("sim_left"));
+    assert!(dock2.height() > dock.height() + 100.0, "the dock grew: {} to {}", dock.height(), dock2.height());
+    assert!(left2.width() > left.width() + 70.0, "the left bar grew: {} to {}", left.width(), left2.width());
+    let kept = s.take_requests().into_iter().filter_map(|r| if let HostRequest::SaveLayout(j) = r { Some(j) } else { None }).last().expect("the layout was handed over");
+    let l: SimLayout = serde_json::from_str(&kept).unwrap();
+    assert!((l.dock_h.unwrap() - dock2.height()).abs() < 1.0, "kept dock {:?} against {}", l.dock_h, dock2.height());
+    assert!((l.left_w.unwrap() - left2.width()).abs() < 1.0, "kept left {:?} against {}", l.left_w, left2.width());
+}

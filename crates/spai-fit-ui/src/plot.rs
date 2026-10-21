@@ -88,7 +88,11 @@ impl Plot {
         }
         let y_step = nice_step(y_max, 5);
         let y_top = (y_max / y_step).ceil() * y_step;
-        let legend_rows = self.series.len().min(8) as f32;
+        // The legend flows across the width, entries of one size, so it takes a row or two
+        // however many lines there are, not a row each.
+        let entry_w = self.series.iter().map(|s| painter.layout_no_wrap(s.label.clone(), font.clone(), text).size().x).fold(0.0f32, f32::max) + 40.0;
+        let per_row = ((rect.width() - 12.0) / entry_w).floor().max(1.0) as usize;
+        let legend_rows = self.series.len().div_ceil(per_row) as f32;
         let margin_l = 58.0;
         let margin_b = line_h * 2.0 + 8.0;
         // The legend, then a line for the y label above the plot, clear of the top tick's label.
@@ -118,11 +122,11 @@ impl Plot {
             if pts.len() >= 2 {
                 painter.add(egui::Shape::line(pts, Stroke::new(1.5, s.color)));
             }
-            if i < 8 {
-                let y = rect.min.y + 3.0 + i as f32 * line_h + line_h / 2.0;
-                painter.line_segment([Pos2::new(rect.min.x + 6.0, y), Pos2::new(rect.min.x + 22.0, y)], Stroke::new(2.0, s.color));
-                painter.text(Pos2::new(rect.min.x + 26.0, y), egui::Align2::LEFT_CENTER, &s.label, font.clone(), text);
-            }
+            let (row, col) = (i / per_row, i % per_row);
+            let y = rect.min.y + 3.0 + row as f32 * line_h + line_h / 2.0;
+            let x = rect.min.x + 6.0 + col as f32 * entry_w;
+            painter.line_segment([Pos2::new(x, y), Pos2::new(x + 16.0, y)], Stroke::new(2.0, s.color));
+            painter.text(Pos2::new(x + 20.0, y), egui::Align2::LEFT_CENTER, &s.label, font.clone(), text);
         }
 
         if let Some(pos) = response.hover_pos().filter(|p| inner.contains(*p)) {
