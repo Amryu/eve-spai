@@ -257,6 +257,15 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
 }
 
+/// A switch's glyph: on, the toggle in green; off, the plain one.
+fn switch_glyph(ui: &egui::Ui, on: bool) -> egui::RichText {
+    if on {
+        egui::RichText::new(icon::TOGGLE_RIGHT).color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A))
+    } else {
+        egui::RichText::new(icon::TOGGLE_LEFT).color(ui.visuals().weak_text_color())
+    }
+}
+
 pub fn burst_kind_name(kind: spai_fit::fleet::BurstKind) -> &'static str {
     use spai_fit::fleet::BurstKind as K;
     match kind {
@@ -332,7 +341,7 @@ fn boost_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                     }
                 }
             });
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, if b.active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, b.active))).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 next.active = !next.active;
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
@@ -393,7 +402,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
                 delta = 1;
             }
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, active))).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle = true;
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
@@ -475,7 +484,7 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 for _ in 0..3 {
                     rows::no_slot(ui);
                 }
-                if rows::slot(ui, 1.0, |ui| icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, on))).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                     toggle = true;
                 }
             } else {
@@ -740,7 +749,7 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                     rows::no_slot(ui);
                 }
             }
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, on))).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle_on = true;
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
