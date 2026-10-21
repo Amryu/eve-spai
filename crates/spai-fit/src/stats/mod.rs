@@ -91,8 +91,9 @@ pub struct Reps {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tank {
-    /// A PANIC core is running: the game makes the ship all but untouchable for its duration,
-    /// by strengths the server applies and the data does not give, so no hit points are claimed.
+    /// A PANIC core is running: the game gives the shield near total resistances for its
+    /// duration, by strengths the server applies and the data does not give. Armor and hull are
+    /// untouched.
     pub invulnerable: bool,
     pub shield: Layer,
     pub armor: Layer,
