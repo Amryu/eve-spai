@@ -552,3 +552,26 @@ fn real_data_missile_step() {
     assert!(((step / full) - m.flight_time_s.fract()).abs() < 1e-6);
     assert_eq!(at(m.long_range() + 100.0), 0.0);
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB and SPAI_EFT"]
+fn real_data_eft_missile_flight() {
+    use crate::graphs::{sample, GraphKind, GraphSpec};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let fit = crate::formats::eft::import(&d, &std::fs::read_to_string(std::env::var("SPAI_EFT").unwrap()).unwrap()).unwrap().fit;
+    let c = crate::stats::compute(&d, &fit, &SkillSet::all_v(), &Env::default());
+    for w in c.weapons.iter().filter(|w| w.missile.is_some()) {
+        let m = w.missile.as_ref().unwrap();
+        println!("{} flight {:.4} s velocity {:.1} -> {:.0}..{:.0}", d.type_(w.type_id).unwrap().name, m.flight_time_s, m.velocity, m.short_range(), m.long_range());
+    }
+    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }), None);
+    let total = s.iter().find(|x| x.label == crate::graphs::SeriesLabel::Total).unwrap();
+    let mut last = f64::NAN;
+    for p in &total.points {
+        if (p[1] - last).abs() > 1e-6 && p[0] > 10_000.0 && p[0] < 30_000.0 {
+            println!("{:.0} {:.2}", p[0], p[1]);
+        }
+        last = p[1];
+    }
+}

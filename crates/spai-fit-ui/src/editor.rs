@@ -20,6 +20,8 @@ use crate::{text, SimUi};
 struct Cols {
     charge: f32,
     num: f32,
+    /// Optimal and falloff, or a missile's flight: wider than the other numbers.
+    range: f32,
     numbers: bool,
     /// Cycle time and each module's own figure, once there is room for them as well.
     extra: bool,
@@ -31,14 +33,16 @@ struct Cols {
 impl Cols {
     /// The numbers only when the table is wide enough to keep names readable.
     fn for_width(w: f32) -> Self {
-        let numbers = w >= 640.0;
-        Cols { charge: if w >= 520.0 { 160.0 } else { 120.0 }, num: 58.0, numbers, extra: w >= 840.0, info: 90.0, more: w >= 1000.0 }
+        // Room for the numbers and the range beside a readable name.
+        let numbers = w >= 760.0;
+        // Charge names run long ("Caldari Navy Scourge Heavy Missile"): the column gets room when there is some.
+        Cols { charge: if w >= 1000.0 { 220.0 } else if w >= 760.0 { 175.0 } else if w >= 520.0 { 160.0 } else { 120.0 }, num: 58.0, range: 100.0, numbers, extra: w >= 840.0, info: 90.0, more: w >= 1000.0 }
     }
 
     /// The name takes what the fixed cells leave of the row's inner width: icon, charge, the
     /// numbers, the two icon buttons and the gaps between them all.
     fn name_width(&self, inner: f32) -> f32 {
-        let fixed = STATE_W + 18.0 + self.charge + if self.numbers { 4.0 * self.num + 4.0 * rows::GAP } else { 0.0 } + if self.extra { self.num + self.info + 2.0 * rows::GAP } else { 0.0 } + if self.more { 2.0 * self.num + 2.0 * rows::GAP } else { 0.0 } + 21.0 + 6.0 * rows::GAP;
+        let fixed = STATE_W + 18.0 + self.charge + if self.numbers { 4.0 * self.num + self.range + 5.0 * rows::GAP } else { 0.0 } + if self.extra { self.num + self.info + 2.0 * rows::GAP } else { 0.0 } + if self.more { 2.0 * self.num + 2.0 * rows::GAP } else { 0.0 } + 21.0 + 6.0 * rows::GAP;
         (inner - fixed).max(60.0)
     }
 }
@@ -567,6 +571,7 @@ fn racks(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             rows::head_cell(ui, cols.num, tr!("CPU"), true);
             rows::head_cell(ui, cols.num, tr!("Cap/s"), true);
             rows::head_cell(ui, cols.num, tr!("DPS"), true);
+            rows::head_cell(ui, cols.range, tr!("Range"), true);
             if cols.extra {
                 rows::head_cell(ui, cols.num, tr!("Cycle"), true);
                 rows::head_cell(ui, cols.info, tr!("Effect"), true);
@@ -813,6 +818,16 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             rows::num_cell(ui, cols.num, s.map_or(String::new(), |m| text::num(m.cpu)), off);
             rows::num_cell(ui, cols.num, s.filter(|m| m.cap_per_s != 0.0).map_or(String::new(), |m| text::num(m.cap_per_s)), off);
             rows::num_cell(ui, cols.num, s.filter(|m| m.dps > 0.0).map_or(String::new(), |m| text::num(m.dps)), off);
+            let (range, hover) = s.and_then(|m| m.range).map_or((String::new(), String::new()), range_text);
+            let r = ui.allocate_ui_with_layout(egui::vec2(cols.range, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_min_width(cols.range);
+                ui.set_max_width(cols.range);
+                let t = egui::RichText::new(range).monospace();
+                ui.add(egui::Label::new(if off { t.weak() } else { t }).truncate().selectable(false).show_tooltip_when_elided(false));
+            });
+            if !hover.is_empty() {
+                r.response.on_hover_text(hover);
+            }
             if cols.extra {
                 rows::num_cell(ui, cols.num, s.and_then(|m| m.cycle_s).map_or(String::new(), |c| format!("{}s", text::num(c))), off);
                 let info = s.and_then(|m| m.info);
@@ -1120,4 +1135,24 @@ pub fn tabs_that_fit(widths: &[f32], room: f32, active: usize) -> Vec<usize> {
         bar.push(active);
     }
     bar
+}
+
+/// The Range column's text and its hover: optimal plus falloff, or a missile's sure flight and the
+/// one second more a share of them fly. Plain ASCII, the web font has no dashes.
+fn range_text(r: spai_fit::stats::ModuleRange) -> (String, String) {
+    let km = |m: f64| if m >= 1000.0 { format!("{:.1}", m / 1000.0) } else { format!("{:.0}m", m) };
+    let unit = |m: f64| if m >= 1000.0 { " km" } else { "" };
+    match r {
+        spai_fit::stats::ModuleRange::Optimal { optimal, falloff } if falloff > 0.0 => (
+            format!("{}+{}{}", km(optimal), km(falloff), unit(falloff)),
+            trf!("Optimal {o}, falloff {f}", o = text::metres(optimal), f = text::metres(falloff)),
+        ),
+        spai_fit::stats::ModuleRange::Optimal { optimal, .. } => (format!("{}{}", km(optimal), unit(optimal)), trf!("Range {o}", o = text::metres(optimal))),
+        // Whole seconds of flight: every missile flies just as far.
+        spai_fit::stats::ModuleRange::Flight { sure, longest } if (longest - sure).abs() < 1.0 => (format!("{}{}", km(sure), unit(sure)), trf!("Every missile flies {s}", s = text::metres(sure))),
+        spai_fit::stats::ModuleRange::Flight { sure, longest } => (
+            format!("{}-{}{}", km(sure), km(longest), unit(longest)),
+            trf!("Every missile reaches {s}; some fly one second more, to {l}", s = text::metres(sure), l = text::metres(longest)),
+        ),
+    }
 }

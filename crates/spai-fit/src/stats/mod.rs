@@ -973,6 +973,35 @@ pub struct ModuleStat {
     pub burnout_s: Option<f64>,
     /// What one cycle does, the figure the module is fitted for.
     pub info: Option<ModuleInfo>,
+    /// How far it reaches: optimal and falloff, or a missile's sure and longest flight.
+    pub range: Option<ModuleRange>,
+}
+
+/// A module's reach in metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ModuleRange {
+    /// Optimal range and falloff (zero when it has none).
+    Optimal { optimal: f64, falloff: f64 },
+    /// A missile's whole seconds of flight and one more.
+    Flight { sure: f64, longest: f64 },
+}
+
+/// The module's reach: its weapon group's figures for a weapon, its own range attributes else.
+fn range_of(calc: &Calc, c: &Computed, i: ItemIdx) -> Option<ModuleRange> {
+    if let Some(w) = c.weapons.iter().find(|w| w.items.contains(&i)) {
+        if let Some(m) = &w.missile {
+            return Some(ModuleRange::Flight { sure: m.short_range(), longest: m.long_range() });
+        }
+        if w.optimal > 0.0 {
+            return Some(ModuleRange::Optimal { optimal: w.optimal, falloff: w.falloff });
+        }
+    }
+    let get = |n: &str| calc.dogma.attr_named(n).map(|a| a.id).filter(|a| calc.has(i, *a)).map(|a| calc.value(i, a)).filter(|v| *v > 0.0);
+    if let Some(optimal) = get("maxRange").or_else(|| get("empFieldRange")) {
+        let falloff = get("falloffEffectiveness").or_else(|| get("falloff")).unwrap_or(0.0);
+        return Some(ModuleRange::Optimal { optimal, falloff });
+    }
+    None
 }
 
 /// What a module does in one cycle, in its own terms.
@@ -1154,7 +1183,7 @@ pub fn module_stats(calc: &Calc, c: &Computed) -> Vec<ModuleStat> {
         let cap_per_s: f64 = cap.iter().filter(|(j, _)| *j == i).map(|(_, u)| u.average_per_s()).sum();
         let dps: f64 = c.weapons.iter().filter(|w| w.items.contains(&i)).map(|w| w.dps / w.items.len().max(1) as f64).sum();
         let (cpu, power) = if it.state >= State::Online { (calc.value(i, attr::CPU), calc.value(i, attr::POWER)) } else { (0.0, 0.0) };
-        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps, cycle_s: cycle_of(calc, i), burnout_s: burnout_of(calc, i), info: module_info(calc, i) });
+        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps, cycle_s: cycle_of(calc, i), burnout_s: burnout_of(calc, i), info: module_info(calc, i), range: range_of(calc, c, i) });
     }
     out
 }
