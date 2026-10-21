@@ -551,3 +551,37 @@ fn what_acts_from_outside_goes_to_projected() {
     s.edit(EditKind::Other, 6, |f| f.projected.clear());
     assert!(s.computed().unwrap().mobility.max_velocity > slow);
 }
+
+#[test]
+fn fits_group_by_hull_or_tag_with_the_doctrines_among_them() {
+    use crate::library_panel::{entries, lines, parse_tags, Grouping, Line};
+    let mut s = sim();
+    s.handle(HostEvent::Fits(vec![
+        FitSummary { id: "a".into(), name: "Kiter".into(), ship: ids::SHIP, updated_at: 0 },
+        FitSummary { id: "b".into(), name: "Brawler".into(), ship: ids::SHIP, updated_at: 0 },
+    ]));
+    let mut kiter = Fit::new(ids::SHIP, "Kiter");
+    kiter.tags = vec!["kiting".into(), "Alpha".into()];
+    s.fit_docs.insert("a".into(), kiter.clone());
+    let doc: serde_json::Value = serde_json::from_str(&spai_fit::doc::to_json(&kiter)).unwrap();
+    s.handle(HostEvent::Doctrines(vec![Doctrine { id: "d".into(), side: DoctrineSide::Imperium, name: "Alpha Rifter".into(), ship: ids::SHIP, tags: vec!["Alpha".into()], refit_keys: vec![], rev: 1, doc }]));
+    let all = entries(&s);
+    assert_eq!(all.len(), 3, "the doctrine sits among the fits");
+    assert!(all.iter().any(|e| e.doctrine.is_some() && e.tags.iter().any(|t| t.contains("doctrine"))), "pre-tagged as a doctrine");
+    let name = |_t: u32| "Rifter".to_owned();
+    let none = std::collections::BTreeSet::new();
+    let by_hull = lines(&all, &name, Grouping::Hull, "", &none);
+    assert!(matches!(&by_hull[0], Line::Group { n: 3, .. }), "one hull, three fits");
+    let by_tag = lines(&all, &name, Grouping::Tag, "", &none);
+    let alpha = by_tag.iter().find_map(|l| match l { Line::Group { title, n, .. } if title == "Alpha" => Some(*n), _ => None });
+    assert_eq!(alpha, Some(2), "a fit and a doctrine both tagged Alpha");
+    assert!(matches!(by_tag.iter().rev().find(|l| matches!(l, Line::Group { .. })), Some(Line::Group { key, .. }) if key == "tag:"), "the untagged come last");
+    let found = lines(&all, &name, Grouping::Flat, "kit", &none);
+    assert_eq!(found.len(), 1, "the search reads tags as well as names");
+    let mut shut = std::collections::BTreeSet::new();
+    shut.insert(format!("hull:{}", ids::SHIP));
+    assert_eq!(lines(&all, &name, Grouping::Hull, "", &shut).len(), 1, "a folded group shows its header only");
+    assert_eq!(parse_tags(" kiting, Alpha ,alpha,, "), vec!["kiting".to_owned(), "Alpha".to_owned()]);
+    s.set_fit_tags("a", vec!["solo".into()], 9);
+    assert!(matches!(s.take_requests().iter().find(|r| matches!(r, HostRequest::SaveFit { .. })), Some(HostRequest::SaveFit { id, doc, .. }) if id == "a" && doc.contains("solo")));
+}

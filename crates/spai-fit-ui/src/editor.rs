@@ -598,7 +598,11 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                     Some(c) => egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0), label),
                     None => egui::Button::new(label),
                 };
-                ui.add_sized([cols.charge, ROW_H - 4.0], button.wrap_mode(egui::TextWrapMode::Truncate))
+                // Exactly the column's width whatever the label and icon want, so the number
+                // columns after it line up across the racks.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 4.0), egui::Sense::hover());
+                let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                cell.add_sized(rect.size(), button.wrap_mode(egui::TextWrapMode::Truncate))
             })
             .inner;
             if r.on_hover_text(charge_name.clone().unwrap_or_default()).clicked() {

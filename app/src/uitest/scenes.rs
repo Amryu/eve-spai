@@ -2642,6 +2642,33 @@ pub(crate) fn all() -> Vec<Scene> {
         });
         sim.editing_variation = Some(2);
     }));
+    for (name, tab, grouping) in [
+        ("imperium_library_by_hull", spai_fit_ui::LeftTab::Fits, spai_fit_ui::library_panel::Grouping::Hull),
+        ("imperium_library_by_tag", spai_fit_ui::LeftTab::Fits, spai_fit_ui::library_panel::Grouping::Tag),
+        ("imperium_library_doctrines", spai_fit_ui::LeftTab::Doctrines, spai_fit_ui::library_panel::Grouping::Hull),
+    ] {
+        v.push(imperium_scene_with(name, [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, move |sim| {
+            use spai_fit::test_support::ids;
+            let fit = |name: &str, tags: &[&str]| {
+                let mut f = spai_fit::fit::Fit::new(ids::SHIP, name);
+                f.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+                f
+            };
+            sim.handle(spai_fit_ui::HostEvent::Fits(vec![
+                spai_fit_ui::FitSummary { id: "f1".into(), name: "Kiting Rifter with a name too long for the column".into(), ship: ids::SHIP, updated_at: 0 },
+                spai_fit_ui::FitSummary { id: "f2".into(), name: "Brawler".into(), ship: ids::SHIP, updated_at: 0 },
+                spai_fit_ui::FitSummary { id: "f3".into(), name: "Solo".into(), ship: ids::SHIP, updated_at: 0 },
+            ]));
+            sim.fit_docs.insert("f1".into(), fit("Kiting Rifter", &["kiting", "Alpha"]));
+            sim.fit_docs.insert("f2".into(), fit("Brawler", &["Alpha"]));
+            sim.fit_docs.insert("f3".into(), fit("Solo", &[]));
+            let doc = serde_json::from_str(&spai_fit::doc::to_json(&fit("Alpha", &[]))).unwrap();
+            sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
+            sim.handle(spai_fit_ui::HostEvent::Doctrines(vec![spai_fit_ui::Doctrine { id: "d1".into(), side: spai_fit_ui::DoctrineSide::Imperium, name: "Alpha Fleet Rifter".into(), ship: ids::SHIP, tags: vec!["Alpha".into()], refit_keys: vec![], rev: 1, doc }]));
+            sim.left = tab;
+            sim.library_state.grouping = grouping;
+        }));
+    }
     v.push(imperium_scene_with("imperium_doctrines", [1280.0, 800.0], false, spai_fit_ui::Pane::Stats, |sim| {
         use spai_fit::test_support::ids;
         let doc = |name: &str| serde_json::from_str(&spai_fit::doc::to_json(&spai_fit::fit::Fit::new(ids::SHIP, name))).unwrap();

@@ -216,6 +216,7 @@ pub enum Center {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeftTab {
     Fits,
+    Doctrines,
     Browse,
 }
 
@@ -278,6 +279,7 @@ pub struct SimUi {
     pub left: LeftTab,
     pub show_library: bool,
     pub browser: browser::Browser,
+    pub library_state: library_panel::LibraryState,
     pub dock: dock::DockState,
     pub warnings_expanded: bool,
     /// The modules picked in the racks, for a menu that acts on all of them at once.
@@ -340,6 +342,7 @@ impl Default for SimUi {
             left: LeftTab::Browse,
             show_library: true,
             browser: browser::Browser::default(),
+            library_state: Default::default(),
             dock: dock::DockState::default(),
             warnings_expanded: false,
             selection: Vec::new(),
@@ -919,6 +922,7 @@ impl SimUi {
                 sim.left_tabs(ui);
                 match sim.left {
                     LeftTab::Fits => library_panel::show(sim, ui, now_ms),
+                    LeftTab::Doctrines => library_panel::doctrines_tab(sim, ui, now_ms),
                     LeftTab::Browse => browser::show(sim, ui, now_ms),
                 }
             });
@@ -994,12 +998,12 @@ impl SimUi {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(rows::GAP);
-            let w = egui::vec2(84.0, 22.0);
-            if ui.menu_label_sized(w, self.left == LeftTab::Fits, tr!("Fits")).clicked() {
-                self.left = LeftTab::Fits;
-            }
-            if ui.menu_label_sized(w, self.left == LeftTab::Browse, tr!("Browse")).clicked() {
-                self.left = LeftTab::Browse;
+            // Three tabs share what the column has, no wider than their words need.
+            let w = egui::vec2(((ui.available_width() - rows::GAP - 2.0 * ui.spacing().item_spacing.x) / 3.0).min(90.0), 22.0);
+            for (tab, label) in [(LeftTab::Fits, tr!("Fits")), (LeftTab::Doctrines, tr!("Doctrines")), (LeftTab::Browse, tr!("Browse"))] {
+                if ui.menu_label_sized(w, self.left == tab, label).clicked() {
+                    self.left = tab;
+                }
             }
         });
         ui.separator();
