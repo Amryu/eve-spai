@@ -13,6 +13,7 @@ pub mod formats;
 pub mod graphs;
 pub mod history;
 pub mod ids;
+pub mod projection;
 pub mod skills;
 pub mod stats;
 #[cfg(any(test, feature = "test-support"))]

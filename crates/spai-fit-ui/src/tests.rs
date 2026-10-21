@@ -613,3 +613,23 @@ fn the_plus_opens_an_empty_tab_that_a_hull_or_an_import_fills() {
     assert_eq!(s.sessions().len(), 3);
     assert_eq!(s.session().unwrap().fit.name, "Pasted", "an import fills the empty tab");
 }
+
+#[test]
+fn a_projected_fit_slows_this_one_and_follows_its_edits() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let support = s.session().unwrap().id.clone();
+    apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::WEB, 1);
+    s.edit(EditKind::SetState, 2, |f| f.module_mut(Slot::Mid, 0).unwrap().state = State::Active);
+    s.new_fit(ids::SHIP, 3);
+    let free = s.computed().unwrap().mobility.max_velocity;
+    let id = support.clone();
+    s.edit(EditKind::Other, 4, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }));
+    let webbed = s.computed().unwrap().mobility.max_velocity;
+    assert!(webbed < free * 0.5, "{webbed} vs {free}: the other tab's web lands");
+    // Switching the web off in its own tab frees this one again.
+    s.activate(0);
+    s.edit(EditKind::SetState, 5, |f| f.module_mut(Slot::Mid, 0).unwrap().state = State::Online);
+    s.activate(1);
+    assert!((s.computed().unwrap().mobility.max_velocity - free).abs() < 1e-6, "the numbers follow the projected fit");
+}

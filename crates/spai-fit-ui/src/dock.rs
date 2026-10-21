@@ -87,7 +87,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                 (DockTab::Implants, Some(s)) => s.fit.implants.len(),
                 (DockTab::Boosters, Some(s)) => s.fit.boosters.len(),
                 (DockTab::Cargo, Some(s)) => s.fit.cargo.len(),
-                (DockTab::Projected, Some(s)) => s.fit.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize,
+                (DockTab::Projected, Some(s)) => s.fit.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.projected_fits.iter().map(|p| p.count.max(1)).sum::<u32>() as usize,
                 _ => 0,
             };
             let label = if count > 0 { format!("{} ({count})", t.name()) } else { t.name().to_owned() };
@@ -129,7 +129,9 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
         ui.set_min_height(inner);
         ui.set_max_height(inner);
         rows::heading(ui, tab.name(), None, |ui| {
-            if ui.small_button(trf!("{icon} Add", icon = icon::PLUS)).clicked() {
+            if tab == DockTab::Projected {
+                add_projected_menu(sim, ui, now_ms);
+            } else if ui.small_button(trf!("{icon} Add", icon = icon::PLUS)).clicked() {
                 let target = match tab {
                     DockTab::Drones => PickTarget::Drone,
                     DockTab::Fighters => PickTarget::Fighter,
@@ -154,11 +156,124 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
 }
 
 /// What acts on the fit from outside: modules and drones pointed at it, and system effects.
+/// What the Projected tab can take, by kind: another fit (its remote modules, drones and boosts),
+/// one module or drone, or a system effect.
+fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
+    let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
+    let mut fits: Vec<(String, String)> = sim.sessions().iter().filter(|s| s.id != current && s.fit.ship != 0).map(|s| (s.id.clone(), s.fit.name.clone())).collect();
+    for e in &sim.library {
+        if e.id != current && !fits.iter().any(|(id, _)| *id == e.id) {
+            fits.push((e.id.clone(), e.name.clone()));
+        }
+    }
+    fits.sort_by_key(|(_, n)| n.to_lowercase());
+    let mut pick_fit: Option<String> = None;
+    let mut target: Option<PickTarget> = None;
+    ui.menu_button(trf!("{icon} Add", icon = icon::PLUS), |ui| {
+        ui.set_min_width(240.0);
+        ui.menu_button(trf!("{icon}  Another fit", icon = icon::ROCKET), |ui| {
+            ui.set_min_width(260.0);
+            if fits.is_empty() {
+                ui.label(egui::RichText::new(tr!("No other fit: open or save one first.")).weak());
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (id, name) in &fits {
+                    if ui.button(text::clip(name, 40)).clicked() {
+                        pick_fit = Some(id.clone());
+                        ui.close();
+                    }
+                }
+            });
+        })
+        .response
+        .on_hover_text(tr!("Its webs, paints, neuts, reps and drones act on this fit, and its command bursts boost it"));
+        if ui.button(trf!("{icon}  A module or drone…", icon = icon::CROSSHAIR)).clicked() {
+            target = Some(PickTarget::Projected);
+            ui.close();
+        }
+        if ui.button(trf!("{icon}  Weather or a system effect…", icon = icon::CLOUD)).clicked() {
+            target = Some(PickTarget::Environment);
+            ui.close();
+        }
+    });
+    if let Some(id) = pick_fit {
+        sim.edit(EditKind::Other, now_ms, |f| match f.projected_fits.iter_mut().find(|p| p.fit_id == id) {
+            Some(p) => p.count += 1,
+            None => f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }),
+        });
+    }
+    if let Some(t) = target {
+        picker::open(sim, t);
+    }
+}
+
+/// The fits projected onto this one: a count of ships, on or off, removable.
+fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let Some(s) = sim.session() else { return };
+    let list: Vec<(String, u32, bool)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active)).collect();
+    for (i, (id, count, active)) in list.into_iter().enumerate() {
+        let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship)));
+        let (name, ship) = found.unwrap_or_else(|| (tr!("A fit no longer saved").to_owned(), 0));
+        let mut delta: i32 = 0;
+        let mut toggle = false;
+        let mut remove = false;
+        let r = rows::row(ui, "dock/projected", ("sim_projected_fit", i), ROW_H, false, |ui| {
+            crate::icons::type_icon(ui, ship, 18.0);
+            let w = ui.available_width() - 5.0 * 26.0 - 5.0 * rows::GAP;
+            let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
+            let hull = dogma.type_(ship).map(|t| t.name.clone()).unwrap_or_default();
+            rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| {
+                ui.label(egui::RichText::new(&name).strong());
+                ui.label(egui::RichText::new(hull).weak());
+                ui.label(tr!("Its remote modules and drones act on this fit, and its command bursts boost it."));
+            });
+            if icon_button(ui, icon::MINUS).clicked() {
+                delta = -1;
+            }
+            rows::num_cell(ui, 22.0, count.to_string(), false);
+            if icon_button(ui, icon::PLUS).clicked() {
+                delta = 1;
+            }
+            if icon_button(ui, if active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT }).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                toggle = true;
+            }
+            if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+                remove = true;
+            }
+        });
+        if r.double_clicked() {
+            toggle = true;
+        }
+        r.context_menu(|ui| {
+            if ui.button(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                toggle = true;
+                ui.close();
+            }
+            if ui.button(tr!("Remove")).clicked() {
+                remove = true;
+                ui.close();
+            }
+        });
+        if delta != 0 || toggle || remove {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(p) = f.projected_fits.get_mut(i) {
+                    p.count = if remove { 0 } else { (p.count as i32 + delta).max(0) as u32 };
+                    if toggle {
+                        p.active = !p.active;
+                    }
+                }
+                f.projected_fits.retain(|p| p.count > 0);
+            });
+        }
+    }
+}
+
 fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    projected_fits(sim, ui, dogma, now_ms);
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, spai_fit::fit::State)> = s.fit.projected.iter().map(|p| (p.type_id, p.count, p.state)).collect();
-    if list.is_empty() {
-        empty_note(ui, tr!("Webs, paints, neuts and reps from other ships, and wormhole or abyssal weather. Boosts belong to fleets."));
+    if list.is_empty() && s.fit.projected_fits.is_empty() {
+        empty_note(ui, tr!("Other fits with their webs, reps and boosts, single modules or drones, and wormhole or abyssal weather."));
     }
     for (i, (type_id, count, state)) in list.into_iter().enumerate() {
         let name = spai_fit::formats::name_of(dogma, type_id);

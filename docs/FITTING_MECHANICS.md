@@ -147,7 +147,9 @@ attribute. Tests: `calc::explain::tests::*`.
 Modules and drones apply only their `Target`-domain modifiers, once per count, so several webs
 are penalised against each other. Effect beacons (group 920: wormhole and abyssal weather,
 incursions) become `Environment` items whose `System`-category effects run on the ship as if
-fitted; an offline beacon is switched off. Fleet boosts stay in `Env`. Unpublished skills are
+fitted; an offline beacon is switched off. A projected fit (`projected_fits`, `projection::expand`)
+brings its active remote modules and launched drones as projected items, figured with the
+receiving fit's calculation, and its command bursts as buffs in `Env`, figured with its own. Unpublished skills are
 never trained, so "All V" leaves their bonuses out. Implants and boosters in `disabled` are left
 out of the item tree, and a drone stack's `launched` count splits it into an active item and an
 item in the bay. Tests: `weather_reaches_the_ship_and_several_webs_each_apply`,

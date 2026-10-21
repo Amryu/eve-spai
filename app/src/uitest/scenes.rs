@@ -2718,6 +2718,12 @@ pub(crate) fn all() -> Vec<Scene> {
         spai_fit_ui::browser::add_projected(sim, ids::WEB, 5);
         spai_fit_ui::browser::add_projected(sim, ids::WEB, 6);
         spai_fit_ui::browser::add_projected(sim, ids::BEACON, 7);
+        let me = sim.sessions()[0].id.clone();
+        sim.new_fit(ids::SHIP, 8);
+        let other = sim.sessions()[1].id.clone();
+        sim.activate(0);
+        let _ = me;
+        sim.edit(spai_fit::history::EditKind::Other, 9, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: other, count: 3, active: true }));
         sim.dock.first = 3;
     }));
     for (name, size) in [("imperium_graphs_compare", [1440.0, 900.0]), ("imperium_graphs_compare_narrow", [720.0, 900.0])] {
@@ -2808,6 +2814,12 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.fleet.as_mut().unwrap().enemy = Some("fl-2".into());
         }));
     }
+    v.push(imperium_dialog_scene("imperium_picker_tree", [460.0, 520.0], |sim| {
+        spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Drone);
+        if let Some(p) = sim.picker.as_mut() {
+            p.expanded.extend(sim.dogma.as_ref().map(|d| d.market_groups.iter().map(|g| g.id).collect::<Vec<_>>()).unwrap_or_default());
+        }
+    }));
     v.push(imperium_dialog_scene("imperium_picker", [460.0, 520.0], |sim| {
         spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::High, 2));
         sim.picker.as_mut().unwrap().query = "auto".into();

@@ -152,7 +152,9 @@ pub struct Session {
     pub fit: Fit,
     pub history: History<Fit>,
     rev: u64,
-    computed_for: Option<(u64, usize)>,
+    /// What `computed` was figured for: the fit's revision, the skills profile, the fits it is
+    /// projected by.
+    computed_for: Option<(u64, usize, u64)>,
     pub computed: Option<Arc<Computed>>,
     pub warnings: Vec<Warning>,
     pub missing: Vec<MissingSkill>,
@@ -178,12 +180,13 @@ impl Session {
         Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false }
     }
 
-    fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet) {
-        if self.computed_for == Some((self.rev, profile)) {
+    fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside) {
+        let key = outside.key(&self.fit);
+        if self.computed_for == Some((self.rev, profile, key)) {
             return;
         }
-        let resolved = spai_fit::variations::resolve(dogma, &self.fit);
-        let calc = Calc::new(dogma, &resolved, skills, &Env::default());
+        let (resolved, env) = outside.apply(dogma, &self.fit, skills);
+        let calc = Calc::new(dogma, &resolved, skills, &env);
         let computed = spai_fit::stats::compute_with(&calc, &resolved);
         self.missing = spai_fit::skills::missing(&resolved, dogma, skills);
         let mut warnings = spai_fit::warnings::check(dogma, &resolved, &computed, &self.missing);
@@ -191,7 +194,32 @@ impl Session {
         self.warnings = warnings;
         self.module_stats = spai_fit::stats::module_stats(&calc, &computed);
         self.computed = Some(Arc::new(computed));
-        self.computed_for = Some((self.rev, profile));
+        self.computed_for = Some((self.rev, profile, key));
+    }
+}
+
+/// The other fits a fit can be projected by, by library id: the saved ones and the open tabs.
+pub struct Outside {
+    fits: std::collections::HashMap<String, Fit>,
+}
+
+impl Outside {
+    /// The fit with its variations applied and the fits projected onto it folded in, and the
+    /// boosts those give.
+    pub fn apply(&self, dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> (Fit, Env) {
+        let resolved = spai_fit::variations::resolve(dogma, fit);
+        spai_fit::projection::expand(dogma, &resolved, &|id| self.fits.get(id).cloned(), skills)
+    }
+
+    /// Changes when a fit projected onto `fit` changes, so its numbers are figured again.
+    fn key(&self, fit: &Fit) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for pf in &fit.projected_fits {
+            pf.fit_id.hash(&mut h);
+            self.fits.get(&pf.fit_id).map(spai_fit::doc::to_json).hash(&mut h);
+        }
+        h.finish()
     }
 }
 
@@ -710,8 +738,9 @@ impl SimUi {
         let dogma = self.dogma.clone()?;
         let profile = self.profile;
         let skills = self.skills().clone();
+        let outside = self.outside();
         let s = self.sessions.iter_mut().find(|s| s.id == id)?;
-        s.refresh(&dogma, profile, &skills);
+        s.refresh(&dogma, profile, &skills, &outside);
         s.computed.clone()
     }
 
@@ -866,16 +895,26 @@ impl SimUi {
         let dogma = self.dogma.clone()?;
         let profile = self.profile;
         let skills = self.skills().clone();
+        let outside = self.outside();
         let s = self.session_mut()?;
-        s.refresh(&dogma, profile, &skills);
+        s.refresh(&dogma, profile, &skills, &outside);
         s.computed.clone()
+    }
+
+    /// Every fit that can be projected onto another: the library's, then the open tabs over them.
+    pub fn outside(&self) -> Outside {
+        let mut fits = self.fit_docs.clone();
+        for s in &self.sessions {
+            fits.insert(s.id.clone(), s.fit.clone());
+        }
+        Outside { fits }
     }
 
     /// What the capacitor graph needs beyond the computed numbers.
     pub fn cap_inputs(&self) -> Option<spai_fit::graphs::CapInputs> {
         let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
-        let resolved = spai_fit::variations::resolve(dogma, &s.fit);
-        let calc = Calc::new(dogma, &resolved, self.skills(), &Env::default());
+        let (resolved, env) = self.outside().apply(dogma, &s.fit, self.skills());
+        let calc = Calc::new(dogma, &resolved, self.skills(), &env);
         Some(spai_fit::graphs::CapInputs { users: spai_fit::stats::cap_users(&calc) })
     }
 

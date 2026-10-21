@@ -152,6 +152,21 @@ pub struct Projected {
     pub charge: Option<TypeId>,
 }
 
+/// Another fit pointed at this one, by its library id, `count` ships of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectedFit {
+    pub fit_id: String,
+    pub count: u32,
+    pub active: bool,
+}
+
+impl Default for ProjectedFit {
+    fn default() -> Self {
+        ProjectedFit { fit_id: String::new(), count: 1, active: true }
+    }
+}
+
 impl Default for Projected {
     fn default() -> Self {
         Projected { type_id: 0, count: 1, state: State::Active, charge: None }
@@ -224,6 +239,8 @@ pub struct Fit {
     pub damage_profile: DamageProfile,
     pub target: TargetProfile,
     pub projected: Vec<Projected>,
+    /// Other fits acting on this one: their remote modules and drones, and their boosts.
+    pub projected_fits: Vec<ProjectedFit>,
     pub variations: Vec<crate::variations::Variation>,
     /// Switched-on variations, applied in this order.
     pub active_variations: Vec<u32>,

@@ -1,7 +1,7 @@
 //! What an item is made of: its attributes as the data has them and, once fitted, as the fit makes
 //! them, with every modifier that got it there. A window per item, and the short form as a tooltip.
 
-use spai_fit::calc::{Calc, Env, ItemIdx, ItemKind};
+use spai_fit::calc::{Calc, ItemIdx, ItemKind};
 use spai_fit::dogma::{attr, Op};
 use spai_fit::fit::Slot;
 use spai_fit::ids::{AttrId, TypeId};
@@ -274,9 +274,9 @@ fn build(sim: &SimUi, target: DetailsTarget, all: bool) -> Option<Details> {
         DetailsTarget::Type(t) => (t, rows_for_type(dogma, t, all), false),
         _ => {
             let s = sim.session()?;
-            let resolved = spai_fit::variations::resolve(dogma, &s.fit);
+            let (resolved, env) = sim.outside().apply(dogma, &s.fit, sim.skills());
             let type_id = type_of_target(&resolved, target)?;
-            let calc = Calc::new(dogma, &resolved, sim.skills(), &Env::default());
+            let calc = Calc::new(dogma, &resolved, sim.skills(), &env);
             match item_of(&calc, &resolved, target) {
                 Some(item) => (type_id, rows_for_item(dogma, &calc, item, all), true),
                 None => (type_id, rows_for_type(dogma, type_id, all), false),
