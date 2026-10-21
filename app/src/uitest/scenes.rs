@@ -2818,6 +2818,8 @@ pub(crate) fn all() -> Vec<Scene> {
         ("imperium_fleet_graphs_race", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::ShipsOverTime)),
         ("imperium_fleet_graphs_damage", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageOverTime)),
         ("imperium_fleet_graphs_angular_narrow", [720.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::Angular)),
+        ("imperium_fleet_scene", [1440.0, 900.0], spai_fit_ui::Pane::Scene, None),
+        ("imperium_fleet_scene_narrow", [720.0, 900.0], spai_fit_ui::Pane::Scene, None),
     ] {
         v.push(imperium_scene_with(name, size, false, narrow_pane, move |sim| {
             if let Some(g) = graph {
@@ -2859,6 +2861,21 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.handle(spai_fit_ui::HostEvent::FleetDoc { id: "fl-2".into(), doc: serde_json::to_string(&enemy).unwrap() });
             sim.handle(spai_fit_ui::HostEvent::Fleet { id: "fl-1".into(), doc: serde_json::to_string(&mine).unwrap() });
             sim.fleet.as_mut().unwrap().enemy = Some("fl-2".into());
+            if name.starts_with("imperium_fleet_scene") {
+                use spai_fit::fleet::scene::{Bubble, Scene, SceneObject};
+                sim.center = spai_fit_ui::Center::Scene;
+                let f = &mut sim.fleet.as_mut().unwrap().fleet;
+                f.enemy = Some("fl-2".into());
+                f.range = 35_000.0;
+                f.scene = Some(Scene {
+                    own_at: [0.0, 0.0, 0.0],
+                    enemy_at: [30_000.0, 8_000.0, 16_000.0],
+                    own_dir: [0.0, 0.0, 1.0],
+                    enemy_dir: [-1.0, 0.0, 0.2],
+                    enemy_share: 0.7,
+                    objects: vec![SceneObject { bubble: Bubble::InterdictorProbe, at: [15_000.0, 2_000.0, 5_000.0] }, SceneObject { bubble: Bubble::AnchoredLargeII, at: [-20_000.0, 0.0, -30_000.0] }],
+                });
+            }
         }));
     }
     v.push(imperium_dialog_scene("imperium_mutation", [520.0, 320.0], |sim| {

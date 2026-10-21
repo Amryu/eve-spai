@@ -155,6 +155,9 @@ pub struct Fleet {
     pub adc: bool,
     /// The fleet it is compared with, by library id.
     pub enemy: Option<String>,
+    /// The fight placed in 3D; when set, it gives the range, the headings and the opponent's
+    /// motion.
+    pub scene: Option<scene::Scene>,
 }
 
 fn default_true() -> bool {
@@ -182,6 +185,7 @@ impl Default for Fleet {
             adc: true,
             drones: true,
             enemy: None,
+            scene: None,
         }
     }
 }
@@ -655,6 +659,7 @@ pub mod ammo;
 pub mod ewar;
 pub mod geometry;
 pub mod race;
+pub mod scene;
 pub mod sweep;
 
 #[cfg(test)]

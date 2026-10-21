@@ -21,6 +21,7 @@ pub mod dock;
 pub mod editor;
 pub mod fleet_graphs;
 pub mod fleet_panel;
+pub mod fleet_scene;
 pub mod graphs_panel;
 pub mod icons;
 pub mod library_panel;
@@ -246,6 +247,8 @@ pub enum Pane {
     Fit,
     Stats,
     Graphs,
+    /// The fleets' 3D scene; the fit in fit mode.
+    Scene,
 }
 
 /// What of the screen's arrangement is kept between starts. Plain fields, each optional, so an
@@ -312,6 +315,8 @@ impl Cost {
 pub enum Center {
     Fit,
     Graphs,
+    /// The fleets' 3D scene; the fit in fit mode.
+    Scene,
 }
 
 /// What the left column shows: saved fits or the module browser.
@@ -940,6 +945,7 @@ impl SimUi {
             center: Some(match self.center {
                 Center::Fit => 0,
                 Center::Graphs => 1,
+                Center::Scene => 2,
             }),
             dock_first: Some(self.dock.first),
             // Only fits the library holds: a tab not saved yet could not be opened again.
@@ -973,7 +979,11 @@ impl SimUi {
             };
         }
         if let Some(c) = l.center {
-            self.center = if c == 1 { Center::Graphs } else { Center::Fit };
+            self.center = match c {
+                1 => Center::Graphs,
+                2 => Center::Scene,
+                _ => Center::Fit,
+            };
         }
         if let Some(f) = l.dock_first {
             self.dock.first = f;
@@ -1302,8 +1312,8 @@ impl SimUi {
                 if narrow {
                     ui.horizontal(|ui| {
                         use spai_ui::widgets::SteadySelect as _;
-                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results")), (Pane::Graphs, tr!("Graphs"))];
-                        let w = egui::vec2(((ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0).max(40.0), 24.0);
+                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results")), (Pane::Graphs, tr!("Graphs")), (Pane::Scene, tr!("Scene"))];
+                        let w = egui::vec2(((ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0).max(40.0), 24.0);
                         for (pane, label) in tabs {
                             if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
                                 self.pane = pane;
@@ -1316,6 +1326,7 @@ impl SimUi {
                     (true, Pane::Library, _) => fleet_panel::library(self, ui, now_ms),
                     (true, Pane::Stats | Pane::Browse, _) => fleet_panel::results(self, ui),
                     (true, Pane::Graphs, _) | (false, _, Center::Graphs) => fleet_graphs::show(self, ui),
+                    (true, Pane::Scene, _) | (false, _, Center::Scene) => fleet_scene::show(self, ui),
                     _ => fleet_panel::editor(self, ui, now_ms),
                 }
             });
@@ -1332,7 +1343,7 @@ impl SimUi {
                 }
             });
         }
-        if !narrow && self.center == Center::Fit {
+        if !narrow && self.center != Center::Graphs {
             egui::Panel::right("sim_stats").resizable(false).exact_size(STATS_W).show_inside(ui, |ui| {
                 stats_panel::show(self, ui);
             });
@@ -1545,11 +1556,16 @@ impl SimUi {
                     ui.separator();
                     use spai_ui::widgets::SteadySelect as _;
                     let w = egui::vec2(64.0, 24.0);
-                    if ui.menu_label_sized(w, self.center == Center::Fit, if self.mode == Mode::Fleets { tr!("Fleet") } else { tr!("Fit") }).clicked() {
+                    let fleets = self.mode == Mode::Fleets;
+                    let on_fit = self.center == Center::Fit || (!fleets && self.center == Center::Scene);
+                    if ui.menu_label_sized(w, on_fit, if fleets { tr!("Fleet") } else { tr!("Fit") }).clicked() {
                         self.center = Center::Fit;
                     }
                     if ui.menu_label_sized(w, self.center == Center::Graphs, tr!("Graphs")).clicked() {
                         self.center = Center::Graphs;
+                    }
+                    if fleets && ui.menu_label_sized(w, self.center == Center::Scene, tr!("Scene")).clicked() {
+                        self.center = Center::Scene;
                     }
                     if icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Graphs in their own window")).clicked() {
                         self.graph_window = !self.graph_window;

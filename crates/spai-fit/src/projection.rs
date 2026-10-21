@@ -687,3 +687,15 @@ fn real_data_fleet_race_with_assault_damage_controls() {
     }
     assert!(s.a_best > s.b_best, "railguns out-reach autocannons");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_bubbles() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for t in d.types.iter().filter(|t| t.name.contains("Warp Disrupt") || t.name.contains("Warp Disruption Field")) {
+        let g = d.groups.iter().find(|g| g.id == t.group).map_or("?", |g| g.name.as_str());
+        let attrs: Vec<String> = t.attrs.iter().filter_map(|(a, v)| d.attr(*a).filter(|x| x.name.to_lowercase().contains("range") || x.name.to_lowercase().contains("radius")).map(|x| format!("{}={v}", x.name))).collect();
+        println!("{} [{}] pub={} {}", t.name, g, t.published, attrs.join(" "));
+    }
+}

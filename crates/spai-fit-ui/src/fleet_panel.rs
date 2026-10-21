@@ -171,7 +171,11 @@ impl SimUi {
     pub(crate) fn fleet_analysis(&mut self) -> Option<std::sync::Arc<Analysis>> {
         use std::hash::{Hash, Hasher};
         let (dogma, f) = (self.dogma.clone()?, self.fleet.as_ref()?);
-        let enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id))?;
+        let mut enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id))?;
+        // Placed in the scene, the opponent moves as it was placed.
+        if let Some(scene) = &f.fleet.scene {
+            enemy.motion = scene.read().2;
+        }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&f.fleet).unwrap_or_default().hash(&mut h);
         serde_json::to_string(&enemy).unwrap_or_default().hash(&mut h);
