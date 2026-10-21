@@ -91,7 +91,7 @@ pub fn released<P: std::any::Any + Send + Sync>(resp: &egui::Response) -> Option
 /// How far the pointer has to travel, and how long the button be held, before a press is a drag:
 /// a click that slips a few pixels stays a click.
 pub const DRAG_DISTANCE: f32 = 6.0;
-pub const DRAG_DELAY_S: f64 = 0.15;
+pub const DRAG_DELAY_S: f64 = 0.06;
 
 /// Whether the press going on is a drag by those measures.
 pub fn is_drag(origin: egui::Pos2, now: egui::Pos2, held_s: f64) -> bool {

@@ -388,7 +388,8 @@ pub fn is_hold_attr(a: &crate::dogma::AttrDef) -> bool {
 pub fn holds(calc: &Calc, fit: &Fit) -> Vec<Hold> {
     let dogma = calc.dogma;
     let volume = |t: TypeId| dogma.type_(t).and_then(|d| d.attr(attr::VOLUME)).map_or(0.0, f64::from);
-    let used = |hold: Option<AttrId>| fit.cargo.iter().filter(|c| c.hold == hold).map(|c| volume(c.type_id) * f64::from(c.quantity)).sum::<f64>();
+    // Adding 0.0: an empty sum of floats is -0.0, which prints as "-0".
+    let used = |hold: Option<AttrId>| fit.cargo.iter().filter(|c| c.hold == hold).map(|c| volume(c.type_id) * f64::from(c.quantity)).sum::<f64>() + 0.0;
     let mut out = vec![Hold { attr: None, name: "Cargo hold".into(), capacity: calc.ship(attr::CAPACITY), used: used(None) }];
     for a in dogma.attributes.iter().filter(|a| is_hold_attr(a)) {
         let capacity = calc.ship(a.id);

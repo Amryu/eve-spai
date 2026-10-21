@@ -177,11 +177,13 @@ pub struct ProjectedFit {
     pub fit_id: String,
     pub count: u32,
     pub active: bool,
+    /// The variation it flies with; none is its base fit.
+    pub variation: Option<u32>,
 }
 
 impl Default for ProjectedFit {
     fn default() -> Self {
-        ProjectedFit { fit_id: String::new(), count: 1, active: true }
+        ProjectedFit { fit_id: String::new(), count: 1, active: true, variation: None }
     }
 }
 

@@ -60,6 +60,16 @@ pub struct Item {
     pub required_skills: Vec<TypeId>,
 }
 
+impl Item {
+    /// How many of a projected item there are; one for anything else.
+    pub(crate) fn projected_count(&self) -> u32 {
+        match self.kind {
+            ItemKind::Projected { count } => u32::from(count).max(1),
+            _ => 1,
+        }
+    }
+}
+
 /// A fleet buff in effect on the ship, the strongest of its kind already chosen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ActiveBuff {
@@ -420,6 +430,10 @@ impl<'d> Calc<'d> {
         self.items.iter().enumerate().filter(|(_, i)| matches!(i.kind, ItemKind::Module { slot: Slot::Subsystem, .. }))
     }
 
+    pub(crate) fn item_effects(&self, item: ItemIdx) -> impl Iterator<Item = &'d crate::dogma::EffectDef> + '_ {
+        self.items[item].effects.iter().filter_map(|e| self.dogma.effect(*e))
+    }
+
     pub fn effect_names(&self, item: ItemIdx) -> impl Iterator<Item = &'d str> + '_ {
         self.items[item].effects.iter().filter_map(|e| self.dogma.effect(*e)).map(|e| e.name.as_str())
     }
@@ -438,6 +452,16 @@ impl<'d> Calc<'d> {
 
     pub fn module(&self, slot: Slot, index: u8) -> Option<ItemIdx> {
         self.items.iter().position(|i| i.kind == ItemKind::Module { slot, index })
+    }
+
+    /// What other ships project here: modules and drones.
+    pub(crate) fn projected_items(&self) -> impl Iterator<Item = (ItemIdx, &Item)> {
+        self.items.iter().enumerate().filter(|(_, it)| matches!(it.kind, ItemKind::Projected { .. }))
+    }
+
+    /// The ship's own items needing the skill.
+    pub(crate) fn needing_on_ship(&self, skill: TypeId) -> Vec<ItemIdx> {
+        (0..self.items.len()).filter(|&i| self.items[i].location == Some(self.ship) && !matches!(self.items[i].kind, ItemKind::Projected { .. }) && self.items[i].required_skills.contains(&skill)).collect()
     }
 
     pub fn modules(&self) -> impl Iterator<Item = (ItemIdx, &Item)> {

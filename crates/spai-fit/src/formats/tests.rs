@@ -104,3 +104,62 @@ fn items_are_placed_by_their_type() {
     assert_eq!(default_state(&d, ids::DC), State::Online);
     let _ = Module::new(1, Slot::Low, 0);
 }
+
+/// The racks and bays of a fit, without states, which some formats do not carry.
+fn contents(f: &Fit) -> (TypeId, Vec<(Slot, TypeId)>, Vec<(TypeId, u32)>) {
+    let mut m: Vec<(Slot, TypeId)> = f.modules.iter().map(|m| (m.slot, m.type_id)).collect();
+    m.sort_by_key(|(s, t)| (*s as u8, *t));
+    (f.ship, m, f.drones.iter().map(|d| (d.type_id, d.count)).collect())
+}
+
+#[test]
+fn every_format_comes_back_through_the_one_import() {
+    let d = dataset();
+    let f = eft::import(&d, TEXT).unwrap().fit;
+    let eft_text = eft::export(&d, &f);
+    let esi = serde_json::to_string(&esi_json::export(&f, "")).unwrap();
+    let xml_text = xml::export(&d, &[&f, &f]);
+    let dna_text = dna::export(&f);
+    for (what, text, n) in [("EFT", eft_text.clone(), 1), ("ESI", esi.clone(), 1), ("ESI list", format!("[{esi}, {esi}]"), 2), ("XML", xml_text, 2), ("DNA", dna_text.clone(), 1), ("game link", format!("<url=fitting:{dna_text}>Test</url>"), 1), ("two EFT", format!("{eft_text}\n{eft_text}"), 2)] {
+        let got = import_any(&d, &text);
+        assert_eq!(got.len(), n, "{what}: {} fits", got.len());
+        assert_eq!(contents(&got[0].fit), contents(&f), "{what}");
+    }
+    let named = esi.replace("\"flag\":11", "\"flag\":\"LoSlot0\"").replace("\"flag\":27", "\"flag\":\"HiSlot0\"");
+    assert_eq!(contents(&import_any(&d, &named)[0].fit), contents(&f), "named flags");
+    assert!(import_any(&d, "hello").is_empty());
+}
+
+#[test]
+fn xml_carries_names_quantities_and_cargo() {
+    let d = dataset();
+    let f = eft::import(&d, TEXT).unwrap().fit;
+    let x = xml::export(&d, &[&f]);
+    assert!(x.contains("<shipType value=\"Rifter\"/>") && x.contains("slot=\"hi slot 0\"") && x.contains("qty=\"2\" slot=\"drone bay\""), "{x}");
+    let back = &xml::import(&d, &x)[0].fit;
+    assert_eq!(back.name, "Test fit");
+    let emp = back.cargo.iter().find(|c| c.type_id == ids::AMMO).map(|c| c.quantity);
+    assert_eq!(emp, Some(501), "the cargo's EMP and the loaded one together");
+}
+
+#[test]
+fn multibuy_counts_everything_once() {
+    let d = dataset();
+    let f = eft::import(&d, TEXT).unwrap().fit;
+    let m = multibuy::export(&d, &f);
+    assert!(m.starts_with("Rifter x1\n"), "{m}");
+    assert!(m.contains("200mm AutoCannon II x2") && m.contains("Warrior II x2") && m.contains("EMP S x501"), "{m}");
+}
+
+#[test]
+fn a_link_carries_a_fit_packed_or_plain() {
+    let text = "[Rifter, Link]\nDamage Control II\n\n200mm AutoCannon II, EMP S\n";
+    let packed = link::encode(text);
+    assert!(packed.starts_with("z:") && !packed.contains(['+', '/', '=', '\n']), "{packed}");
+    assert_eq!(link::decode(&packed).as_deref(), Some(text));
+    assert_eq!(link::decode("%5BRifter%2C%20Link%5D%0ADamage%20Control%20II%0A").as_deref(), Some("[Rifter, Link]\nDamage Control II"));
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text);
+    assert_eq!(link::decode(&b64).as_deref(), Some(text), "plain base64 too");
+    assert_eq!(link::param("#fit=z:abc&x=1"), Some("z:abc"));
+    assert_eq!(link::param("?a=1&fit=hello"), Some("hello"));
+}

@@ -367,6 +367,14 @@ impl Dogma {
         v
     }
 
+    /// The rolled items: abyssal versions, made by a mutaplasmid from a base item, so never picked
+    /// as such.
+    pub fn rolled_types(&self) -> std::collections::HashSet<TypeId> {
+        let mut out: std::collections::HashSet<TypeId> = self.mutaplasmids.iter().flat_map(|m| m.mapping.iter().map(|(_, to)| *to)).collect();
+        out.extend(self.types.iter().filter(|t| t.meta_group == Some(crate::ids::meta_group::ABYSSAL)).map(|t| t.id));
+        out
+    }
+
     pub fn mutaplasmid(&self, id: TypeId) -> Option<&Mutaplasmid> {
         self.mutaplasmids.iter().find(|m| m.id == id)
     }

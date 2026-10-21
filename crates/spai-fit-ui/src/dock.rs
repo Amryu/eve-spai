@@ -147,7 +147,10 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
                 picker::open(sim, target);
             }
         });
-        egui::ScrollArea::vertical().id_salt(("sim_dock", tab.name())).auto_shrink([false, false]).show(ui, |ui| match tab {
+        // The cargo tab keeps its hold's fill at its foot, the list scrolling above it.
+        let footer = if tab == DockTab::Cargo { FOOTER_H + ui.spacing().item_spacing.y } else { 0.0 };
+        let list_h = (ui.available_height() - footer).max(0.0);
+        egui::ScrollArea::vertical().id_salt(("sim_dock", tab.name())).auto_shrink([false, false]).max_height(list_h).min_scrolled_height(list_h).show(ui, |ui| match tab {
             DockTab::Drones => drones(sim, ui, dogma, now_ms),
             DockTab::Fighters => fighters(sim, ui, dogma, now_ms),
             DockTab::Implants => worn(sim, ui, dogma, true, now_ms),
@@ -155,6 +158,10 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
             DockTab::Cargo => cargo(sim, ui, dogma, now_ms),
             DockTab::Projected => projected(sim, ui, dogma, now_ms),
         });
+        if tab == DockTab::Cargo {
+            let holds = sim.computed().map(|c| c.holds.clone()).unwrap_or_default();
+            hold_footer(sim, ui, &holds);
+        }
     });
     browser::accept_drop(sim, &resp.response, DropTarget::Dock(tab), now_ms);
 }
@@ -192,8 +199,12 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
 /// The fits projected onto this one: a count of ships, on or off, removable.
 fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let Some(s) = sim.session() else { return };
-    let list: Vec<(String, u32, bool)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active)).collect();
-    for (i, (id, count, active)) in list.into_iter().enumerate() {
+    let list: Vec<(String, u32, bool, Option<u32>)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active, p.variation)).collect();
+    for (i, (id, count, active, variation)) in list.into_iter().enumerate() {
+        // The source fit's variations, to fly it with one of them.
+        let variations: Vec<(u32, String)> = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map(|f| f.variations.iter().map(|v| (v.id, v.name.clone())).collect()).unwrap_or_default();
+        let flying = variation.and_then(|v| variations.iter().find(|(x, _)| *x == v)).map(|(_, n)| n.clone());
+        let mut set_variation: Option<Option<u32>> = None;
         let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship)));
         let (name, ship) = found.unwrap_or_else(|| (tr!("A fit no longer saved").to_owned(), 0));
         let mut delta: i32 = 0;
@@ -202,12 +213,19 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
         let r = rows::row(ui, "dock/projected", ("sim_projected_fit", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, ship, 18.0);
             let w = rows::name_w(ui, 5.0);
-            let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
+            let shown = match &flying {
+                Some(v) => format!("{name} · {v}"),
+                None => name.clone(),
+            };
+            let label = if active { egui::RichText::new(&shown) } else { egui::RichText::new(&shown).weak() };
             let hull = dogma.type_(ship).map(|t| t.name.clone()).unwrap_or_default();
             rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| {
                 ui.label(egui::RichText::new(&name).strong());
                 ui.label(egui::RichText::new(hull).weak());
                 ui.label(tr!("Its remote modules and drones act on this fit, and its command bursts boost it."));
+                if !variations.is_empty() {
+                    ui.label(egui::RichText::new(trf!("Flies as: {v}. Right-click to pick another variation.", v = flying.clone().unwrap_or_else(|| tr!("Base").to_owned()))).weak());
+                }
             });
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                 delta = -1;
@@ -227,6 +245,22 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
             toggle = true;
         }
         r.context_menu(|ui| {
+            if !variations.is_empty() {
+                ui.menu_button(tr!("Variation"), |ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    ui.set_min_width(200.0);
+                    if ui.menu_label(variation.is_none() || flying.is_none(), tr!("Base")).clicked() {
+                        set_variation = Some(None);
+                        ui.close();
+                    }
+                    for (v, n) in &variations {
+                        if ui.menu_label(variation == Some(*v), n).clicked() {
+                            set_variation = Some(Some(*v));
+                            ui.close();
+                        }
+                    }
+                });
+            }
             if ui.button(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle = true;
                 ui.close();
@@ -236,6 +270,13 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                 ui.close();
             }
         });
+        if let Some(v) = set_variation {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(p) = f.projected_fits.get_mut(i) {
+                    p.variation = v;
+                }
+            });
+        }
         if delta != 0 || toggle || remove {
             sim.edit(EditKind::Other, now_ms, |f| {
                 if let Some(p) = f.projected_fits.get_mut(i) {
@@ -595,52 +636,61 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
 
 /// How full a hold is, as the dropdown and the bar print it: "123 / 400 m³ · 31%".
 fn fill_text(h: &spai_fit::stats::Hold) -> String {
-    let pct = if h.fraction().is_finite() { format!("{:.0}%", h.fraction() * 100.0) } else { "—".to_owned() };
-    trf!("{used} / {total} m³ · {pct}", used = text::num(h.used), total = text::num(h.capacity), pct = pct)
+    let pct = if h.fraction().is_finite() { format!("{:.0}%", (h.fraction() * 100.0).max(0.0)) } else { "—".to_owned() };
+    trf!("{used} / {total} m³ · {pct}", used = text::num(h.used.max(0.0)), total = text::num(h.capacity.max(0.0)), pct = pct)
 }
 
-/// The hold the tab shows, a choice between them when the hull has several, and its fill.
-fn hold_header(sim: &mut SimUi, ui: &mut egui::Ui, holds: &[spai_fit::stats::Hold]) {
+/// The hold the tab shows and its fill, on one line at the panel's foot, with a button to switch
+/// to another hold when the hull has several.
+fn hold_footer(sim: &mut SimUi, ui: &mut egui::Ui, holds: &[spai_fit::stats::Hold]) {
     let Some(shown) = holds.iter().find(|h| h.attr == sim.dock.hold).or_else(|| holds.first()).cloned() else { return };
     sim.dock.hold = shown.attr;
     let over = shown.over();
-    ui.horizontal(|ui| {
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(egui::vec2(w, FOOTER_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_height(FOOTER_H);
         ui.add_space(rows::GAP);
-        let w = ui.available_width() - rows::GAP;
-        if holds.len() > 1 {
-            egui::ComboBox::from_id_salt("sim_cargo_hold").width(w - 4.0).selected_text(text::clip(&format!("{}  {}", shown.name, fill_text(&shown)), 48)).show_ui(ui, |ui| {
-                for h in holds {
-                    let line = egui::RichText::new(format!("{}  {}", h.name, fill_text(h)));
-                    let line = if h.over() { line.color(ui.visuals().error_fg_color) } else { line };
-                    if ui.selectable_label(h.attr == shown.attr, line).clicked() {
-                        sim.dock.hold = h.attr;
-                    }
-                }
-            });
-        }
-    });
-    // The fill bar: the share used, red past full.
-    ui.horizontal(|ui| {
-        ui.add_space(rows::GAP);
-        let w = (ui.available_width() - rows::GAP).max(40.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), egui::Sense::hover());
+        let button_w = if holds.len() > 1 { 22.0 + ui.spacing().item_spacing.x } else { 0.0 };
+        let bar_w = (ui.available_width() - rows::GAP - button_w).max(40.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 20.0), egui::Sense::hover());
         let painter = ui.painter();
-        let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 13.0), egui::vec2(rect.width(), 4.0));
+        let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 15.0), egui::vec2(rect.width(), 4.0));
         painter.rect_filled(bar, 2.0, ui.visuals().extreme_bg_color);
         let f = shown.fraction().clamp(0.0, 1.0) as f32;
         let colour = if over { ui.visuals().error_fg_color } else { ui.visuals().hyperlink_color };
         painter.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 2.0, colour);
-        let text = if holds.len() > 1 { fill_text(&shown) } else { format!("{}  {}", shown.name, fill_text(&shown)) };
         let font = egui::TextStyle::Body.resolve(ui.style());
         let tc = if over { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
-        painter.text(rect.left_top(), egui::Align2::LEFT_TOP, text, font, tc);
+        let galley = painter.layout(format!("{}  {}", shown.name, fill_text(&shown)), font, tc, rect.width());
+        painter.with_clip_rect(rect).galley(rect.left_top() + egui::vec2(0.0, -1.0), galley, tc);
+        if holds.len() > 1 {
+            egui::containers::menu::MenuButton::from_button(egui::Button::new(icon::SWAP).frame_when_inactive(false).min_size(egui::vec2(22.0, 20.0)))
+                .ui(ui, |ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    ui.set_min_width(260.0);
+                    for h in holds {
+                        let line = egui::RichText::new(format!("{}  {}", h.name, fill_text(h)));
+                        let line = if h.over() { line.color(ui.visuals().error_fg_color) } else { line };
+                        if ui.menu_label(h.attr == shown.attr, line).clicked() {
+                            sim.dock.hold = h.attr;
+                            ui.close();
+                        }
+                    }
+                })
+                .0
+                .on_hover_text(tr!("Show another hold"));
+        }
     });
-    ui.add_space(2.0);
 }
+
+/// The cargo panel's foot: the hold's fill and the switch.
+const FOOTER_H: f32 = 24.0;
 
 fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let holds = sim.computed().map(|c| c.holds.clone()).unwrap_or_default();
-    hold_header(sim, ui, &holds);
+    if let Some(first) = holds.iter().find(|h| h.attr == sim.dock.hold).or_else(|| holds.first()) {
+        sim.dock.hold = first.attr;
+    }
     let hold = sim.dock.hold;
     let Some(s) = sim.session() else { return };
     let list: Vec<(usize, TypeId, u32)> = s.fit.cargo.iter().enumerate().filter(|(_, c)| c.hold == hold).map(|(i, c)| (i, c.type_id, c.quantity)).collect();

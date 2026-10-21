@@ -28,7 +28,11 @@ pub struct Tree {
 impl Tree {
     pub fn build(dogma: &Dogma) -> Self {
         let mut types: HashMap<MarketGroupId, Vec<TypeId>> = HashMap::new();
+        let rolled = dogma.rolled_types();
         for t in &dogma.types {
+            if rolled.contains(&t.id) {
+                continue;
+            }
             if !t.published || !matches!(place_of(dogma, t), Place::Ship | Place::Module(_) | Place::Charge | Place::Drone | Place::Fighter | Place::Implant | Place::Booster) {
                 continue;
             }
@@ -124,9 +128,11 @@ impl Browser {
             let mut hits: Vec<(String, TypeId)> = if words.is_empty() {
                 Vec::new()
             } else {
+                let rolled = dogma.rolled_types();
                 dogma
                     .types
                     .iter()
+                    .filter(|t| !rolled.contains(&t.id))
                     .filter(|t| t.published && t.market_group.is_some() && matches!(place_of(dogma, t), Place::Ship | Place::Module(_) | Place::Charge | Place::Drone | Place::Fighter | Place::Implant | Place::Booster))
                     .filter(|t| {
                         let n = t.name.to_lowercase();

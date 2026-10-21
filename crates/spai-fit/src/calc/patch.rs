@@ -37,7 +37,32 @@ const SUBSYSTEM_SLOTS: [(crate::ids::AttrId, crate::ids::AttrId); 5] = [
     (attr::LAUNCHER_HARDPOINT_MODIFIER, attr::LAUNCHER_SLOTS_LEFT),
 ];
 
+/// Ewar and remote assistance carry no modifiers in the data either. Each projected module or
+/// drone switched on changes the ship's (or its weapons' and charges') attribute by its own
+/// percentage, penalised among its kind: (effects, what it changes, by which of its attributes,
+/// on what: the ship, or what needs a skill).
+const REMOTE_EFFECTS: [(&[&str], &[(&str, &str)], Remote); 6] = [
+    (&["remoteWebifierFalloff", "remoteWebifierEntity"], &[("maxVelocity", "speedFactor")], Remote::Ship),
+    (&["remoteTargetPaintFalloff", "remoteTargetPaintEntity"], &[("signatureRadius", "signatureRadiusBonus")], Remote::Ship),
+    (&["remoteSensorDampFalloff", "remoteSensorDampEntity", "remoteSensorBoostFalloff"], &[("maxTargetRange", "maxTargetRangeBonus"), ("scanResolution", "scanResolutionBonus")], Remote::Ship),
+    (&["shipModuleTrackingDisruptor", "npcEntityWeaponDisruptor", "shipModuleRemoteTrackingComputer"], &[("maxRange", "maxRangeBonus"), ("falloff", "falloffBonus"), ("trackingSpeed", "trackingSpeedBonus")], Remote::Needing(GUNNERY)),
+    (&["npcEntityWeaponDisruptor"], &[("maxVelocity", "missileVelocityBonus"), ("explosionDelay", "explosionDelayBonus"), ("aoeCloudSize", "aoeCloudSizeBonus"), ("aoeVelocity", "aoeVelocityBonus")], Remote::Needing(MISSILE_LAUNCHER_OPERATION)),
+    (&["shipModuleGuidanceDisruptor"], &[("maxVelocity", "missileVelocityBonus"), ("explosionDelay", "explosionDelayBonus"), ("aoeCloudSize", "aoeCloudSizeBonus"), ("aoeVelocity", "aoeVelocityBonus")], Remote::Needing(MISSILE_LAUNCHER_OPERATION)),
+];
+
+#[derive(Clone, Copy)]
+enum Remote {
+    Ship,
+    /// The ship's items needing the skill: turrets for Gunnery, missiles for Missile Launcher
+    /// Operation.
+    Needing(crate::ids::TypeId),
+}
+
+const GUNNERY: crate::ids::TypeId = 3300;
+const MISSILE_LAUNCHER_OPERATION: crate::ids::TypeId = 3319;
+
 pub(super) fn apply(c: &mut Calc) {
+    remote_effects(c);
     prop_mods(c);
     skill_bonuses(c);
     subsystem_slots(c);
@@ -90,6 +115,35 @@ fn subsystem_slots(c: &mut Calc) {
         for (from, to) in SUBSYSTEM_SLOTS {
             if c.has(i, from) {
                 c.add_source_mod(ship, to, Op::ModAdd, Source::Attr(i, from), false);
+            }
+        }
+    }
+}
+
+fn remote_effects(c: &mut Calc) {
+    let ship = c.ship_idx();
+    let sources: Vec<(ItemIdx, u32)> = c.projected_items().filter(|(_, it)| it.state >= State::Active).map(|(i, it)| (i, it.projected_count())).collect();
+    for (src, times) in sources {
+        for (effects, changes, on) in REMOTE_EFFECTS {
+            // Only what the data leaves empty: an effect with modifiers of its own already applies.
+            let empty = c.item_effects(src).any(|e| effects.contains(&e.name.as_str()) && e.modifiers.is_empty());
+            if !empty {
+                continue;
+            }
+            let targets = match on {
+                Remote::Ship => vec![ship],
+                Remote::Needing(skill) => c.needing_on_ship(skill),
+            };
+            for (changed, by) in changes {
+                let (Some(changed), Some(by)) = (c.dogma.attr_named(changed).map(|a| a.id), c.dogma.attr_named(by).map(|a| a.id)) else { continue };
+                if !c.has(src, by) {
+                    continue;
+                }
+                for &t in &targets {
+                    for _ in 0..times {
+                        c.add_source_mod(t, changed, Op::PostPercent, Source::Attr(src, by), true);
+                    }
+                }
             }
         }
     }

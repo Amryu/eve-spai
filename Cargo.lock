@@ -6351,6 +6351,7 @@ name = "spai-fit"
 version = "1.0.13"
 dependencies = [
  "anyhow",
+ "base64",
  "flate2",
  "postcard",
  "serde",

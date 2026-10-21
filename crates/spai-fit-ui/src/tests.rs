@@ -983,3 +983,85 @@ fn an_axis_end_set_by_hand_is_where_the_graph_stops() {
     let last = series.iter().filter_map(|s| s.points.last()).map(|p| p[0]).fold(0.0, f64::max);
     assert!((last - 100_000.0).abs() < 1.0, "the bottom ends at 100 km: {last}");
 }
+
+#[test]
+fn the_open_tabs_come_back_in_order_with_the_same_one_on_screen() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.new_fit(ids::SHIP, 1);
+    s.new_fit(ids::SHIP, 2);
+    let ids_open: Vec<String> = s.sessions().iter().map(|x| x.id.clone()).collect();
+    s.handle(HostEvent::Fits(ids_open.iter().map(|id| FitSummary { id: id.clone(), name: "Rifter".into(), ship: ids::SHIP, updated_at: 0 }).collect()));
+    s.activate(1);
+    let docs: Vec<(String, String)> = s.sessions().iter().map(|x| (x.id.clone(), spai_fit::doc::to_json(&x.fit))).collect();
+    let layout = serde_json::to_string(&s.layout()).unwrap();
+
+    let mut back = sim();
+    back.apply_layout(&layout);
+    let asked: Vec<String> = back.take_requests().into_iter().filter_map(|r| if let HostRequest::LoadFit(id) = r { Some(id) } else { None }).collect();
+    assert_eq!(asked, ids_open, "each tab asked for, in order");
+    for (id, doc) in docs {
+        back.handle(HostEvent::Fit { id, doc });
+    }
+    let order: Vec<String> = back.sessions().iter().map(|x| x.id.clone()).collect();
+    assert_eq!(order, ids_open);
+    assert_eq!(back.session().unwrap().id, ids_open[1], "the tab that was on screen is on screen");
+}
+
+#[test]
+fn a_linked_fit_waits_for_the_data_and_then_opens() {
+    let mut s = SimUi::default();
+    let text = spai_fit::formats::link::decode(&spai_fit::formats::link::encode("[Rifter, From a link]\nDamage Control II\n")).unwrap();
+    s.import_when_ready(text);
+    assert!(s.sessions().is_empty(), "nothing without the data");
+    s.handle(HostEvent::Dogma(std::sync::Arc::new(spai_fit::test_support::dataset())));
+    assert_eq!(s.session().map(|x| x.fit.name.as_str()), Some("From a link"));
+}
+
+#[test]
+fn several_fits_pasted_at_once_open_in_tabs() {
+    let mut s = sim();
+    assert!(s.import_text("[Rifter, One]\nDamage Control II\n\n[Rifter, Two]\n200mm AutoCannon II\n", 1));
+    let names: Vec<&str> = s.sessions().iter().map(|x| x.fit.name.as_str()).collect();
+    assert_eq!(names, vec!["One", "Two"]);
+}
+
+#[test]
+fn a_copied_fit_keeps_its_variations_under_a_new_id() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::Other, 1, |f| f.variations.push(spai_fit::variations::Variation { id: 3, name: "Kite".into(), ..Default::default() }));
+    let id = s.session().unwrap().id.clone();
+    s.copy_fit(&id, 2);
+    let copy = s.session().unwrap();
+    assert_ne!(copy.id, id);
+    assert!(copy.fit.name.ends_with("(copy)"), "{}", copy.fit.name);
+    assert_eq!(copy.fit.variations.len(), 1);
+    assert!(copy.dirty, "saved on its own as a new fit");
+}
+
+#[test]
+fn a_hull_search_without_fits_offers_new_ones() {
+    let s = sim();
+    let found = crate::library_panel::hulls_matching_for_test(&s, "rif");
+    assert!(found.iter().any(|(t, _)| *t == ids::SHIP), "{found:?}");
+    assert!(crate::library_panel::hulls_matching_for_test(&s, "nothing like it").is_empty());
+}
+
+#[test]
+fn rolled_items_are_not_offered_on_their_own() {
+    let d = sim().dogma.clone().unwrap();
+    assert!(d.rolled_types().contains(&ids::ABYSSAL_MWD));
+    let tree = crate::browser::Tree::build(&d);
+    fn all(tree: &crate::browser::Tree, g: spai_fit::ids::MarketGroupId, out: &mut Vec<u32>) {
+        out.extend(tree.types(g).iter().copied());
+        for &c in tree.children(g) {
+            all(tree, c, out);
+        }
+    }
+    let mut listed = Vec::new();
+    for &r in tree.roots() {
+        all(&tree, r, &mut listed);
+    }
+    assert!(listed.contains(&ids::MWD) && !listed.contains(&ids::ABYSSAL_MWD), "the base item is offered, its abyssal version is not");
+}

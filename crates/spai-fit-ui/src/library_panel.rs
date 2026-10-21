@@ -173,15 +173,29 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let mut delete: Option<String> = None;
     let mut toggle: Option<String> = None;
     let mut edit_tags: Option<(String, Vec<String>)> = None;
+    let mut copy: Option<String> = None;
     let indent = if sim.library_state.grouping == Grouping::Flat { 0.0 } else { 12.0 };
     let folded = sim.library_state.folded.clone();
-    egui::ScrollArea::vertical().id_salt("sim_library_list").auto_shrink([false, false]).show_rows(ui, ROW_H, shown.len().max(1), |ui, range| {
+    // A search with no fit to show offers a new fit of each hull it names.
+    let hulls: Vec<(TypeId, String)> = if shown.is_empty() && sim.library_state.grouping == Grouping::Hull { hulls_matching(sim, &sim.library_state.query) } else { Vec::new() };
+    let mut new_hull: Option<TypeId> = None;
+    egui::ScrollArea::vertical().id_salt("sim_library_list").auto_shrink([false, false]).show_rows(ui, ROW_H, shown.len().max(1 + hulls.len()), |ui, range| {
         if shown.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(rows::GAP);
-                let note = if all.is_empty() { tr!("No saved fits yet.") } else { tr!("Nothing matches.") };
-                ui.add(egui::Label::new(egui::RichText::new(note).weak()).wrap());
+                let note = if !hulls.is_empty() { tr!("No fit of these yet:") } else if all.is_empty() { tr!("No saved fits yet.") } else { tr!("Nothing matches.") };
+                ui.add(egui::Label::new(egui::RichText::new(note).weak()).truncate());
             });
+            for (t, name) in &hulls {
+                let r = rows::row(ui, "fits", ("sim_lib_new", *t), ROW_H, false, |ui| {
+                    crate::icons::type_icon(ui, *t, 18.0);
+                    let w = ui.available_width();
+                    rows::cell(ui, w, egui::RichText::new(trf!("{icon} New {hull} fit", icon = icon::PLUS, hull = name)), "");
+                });
+                if r.clicked() {
+                    new_hull = Some(*t);
+                }
+            }
         }
         for line in shown.iter().skip(range.start).take(range.end - range.start) {
             match line {
@@ -232,6 +246,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                             load = Some(e.id.clone());
                             ui.close();
                         }
+                        if ui.button(trf!("{icon}  Copy, with its variations", icon = icon::COPY)).clicked() {
+                            copy = Some(e.id.clone());
+                            ui.close();
+                        }
                         if ui.button(trf!("{icon}  Tags…", icon = icon::TAG)).clicked() {
                             edit_tags = Some((e.id.clone(), e.tags.clone()));
                             ui.close();
@@ -247,6 +265,13 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     });
     if let Some((id, tags)) = edit_tags {
         sim.library_state.tag_edit = Some((id, tags.join(", ")));
+    }
+    if let Some(id) = copy {
+        sim.copy_fit(&id, now_ms);
+    }
+    if let Some(t) = new_hull {
+        sim.new_fit(t, now_ms);
+        sim.library_state.query.clear();
     }
     if let Some((id, tags)) = tag_window(sim, ui.ctx()) {
         sim.set_fit_tags(&id, tags, now_ms);
@@ -450,4 +475,31 @@ pub fn doctrines_tab(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         sim.doctrines.retain(|d| d.id != id);
         sim.request(HostRequest::DeleteDoctrine(id));
     }
+}
+
+/// Published hulls whose names hold every word of the search, for a fit started from it.
+fn hulls_matching(sim: &SimUi, query: &str) -> Vec<(TypeId, String)> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let Some(d) = sim.dogma.as_ref() else { return Vec::new() };
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(TypeId, String)> = d
+        .types
+        .iter()
+        .filter(|t| t.published && t.category == spai_fit::ids::category::SHIP && t.market_group.is_some())
+        .filter(|t| {
+            let n = t.name.to_lowercase();
+            words.iter().all(|w| n.contains(w.as_str()))
+        })
+        .map(|t| (t.id, t.name.clone()))
+        .collect();
+    out.sort_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| a.1.cmp(&b.1)));
+    out.truncate(8);
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn hulls_matching_for_test(sim: &SimUi, query: &str) -> Vec<(TypeId, String)> {
+    hulls_matching(sim, query)
 }

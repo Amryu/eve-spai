@@ -2735,7 +2735,7 @@ pub(crate) fn all() -> Vec<Scene> {
         let other = sim.sessions()[1].id.clone();
         sim.activate(0);
         let _ = me;
-        sim.edit(spai_fit::history::EditKind::Other, 9, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: other, count: 3, active: true }));
+        sim.edit(spai_fit::history::EditKind::Other, 9, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: other, count: 3, active: true, variation: None }));
         sim.dock.first = 3;
     }));
     for (name, size) in [("imperium_graphs_compare", [1440.0, 900.0]), ("imperium_graphs_compare_narrow", [720.0, 900.0])] {
@@ -2764,6 +2764,9 @@ pub(crate) fn all() -> Vec<Scene> {
             f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 1).with_charge(ids::MISSILE).with_state(State::Active));
         });
         sim.graph_window = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_traits", [520.0, 320.0], |sim| {
+        sim.traits_window = true;
     }));
     v.push(imperium_scene_with("imperium_fit_bare", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.new_fit(spai_fit::test_support::ids::SHIP, 0);
@@ -9784,5 +9787,27 @@ fn uitest_sim_drag_onto_an_empty_slot() {
         let after = ys(&h, "Damage Control II");
         assert_eq!(after.len(), if copy { 2 } else { 1 }, "copy {copy}: {after:?}");
         assert!(after.iter().any(|y| *y > dc + 10.0), "copy {copy}: a damage control sits where the empty slot was: {after:?} from {dc}");
+    }
+}
+
+/// The number columns line up across rows with a charge cell and rows without one.
+#[test]
+fn uitest_sim_columns_line_up_with_and_without_charges() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_columns", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let rows = spai_fit_ui::rows::log(&h.ctx);
+    let first = |list: &str| rows.iter().filter(|(id, _)| *id == egui::Id::new(list)).map(|(_, r)| *r).min_by(|a, b| a.min.y.total_cmp(&b.min.y)).expect("a row");
+    let numbers_in = |row: egui::Rect| {
+        let mut xs: Vec<f32> = (0..10).flat_map(|d| h.query_all_by_label_contains(&format!("{d}.")).map(|n| n.rect()).collect::<Vec<_>>()).filter(|r| r.center().y >= row.min.y && r.center().y <= row.max.y && r.min.x > row.center().x - 200.0).map(|r| r.max.x).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup_by(|a, b| (*a - *b).abs() < 0.1);
+        xs
+    };
+    let (gun, dc) = (numbers_in(first("rack/high")), numbers_in(first("rack/low")));
+    assert!(!gun.is_empty() && !dc.is_empty(), "{gun:?} {dc:?}");
+    for x in &dc {
+        assert!(gun.iter().any(|g| (g - x).abs() < 0.5), "a number of the damage control's row at {x} has no match in the gun's row {gun:?}");
     }
 }

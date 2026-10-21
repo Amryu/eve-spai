@@ -262,6 +262,9 @@ pub struct SimLayout {
     pub dock_first: Option<usize>,
     /// 0 hull, 1 tag, 2 A to Z.
     pub grouping: Option<u8>,
+    /// The fits open in tabs, by library id, in tab order, and the one on screen.
+    pub tabs: Option<Vec<String>>,
+    pub active_tab: Option<String>,
 }
 
 /// ESI's market price list: every type's average price across the market, public, no sign-in.
@@ -380,6 +383,9 @@ pub struct SimUi {
     pub dock_h: Option<f32>,
     /// The layout last handed to the host, so it is sent again only when it changed.
     layout_sent: Option<SimLayout>,
+    /// The tab to end on while last time's tabs are loading back.
+    restore_active: Option<String>,
+    restore_pending: Vec<String>,
     pub browser: browser::Browser,
     pub library_state: library_panel::LibraryState,
     /// The window that picks a fit to project, with its own grouping and search.
@@ -425,6 +431,10 @@ pub struct SimUi {
     pub graph_ideal: bool,
     /// How the shooter and the target move, for the damage graphs' transversal.
     pub graph_motion: graphs_panel::Motion,
+    /// The page address a fit link starts with, where the host can open one (the web).
+    pub link_base: Option<String>,
+    /// A fit handed over before the data is in, imported once it is.
+    pending_import: Option<String>,
     /// Where the bottom and the side of the graph end, per kind of axis; automatic without one.
     pub graph_x_to: std::collections::HashMap<spai_fit::graphs::GraphX, f64>,
     pub graph_y_to: std::collections::HashMap<spai_fit::graphs::GraphY, f64>,
@@ -465,6 +475,8 @@ impl Default for SimUi {
             show_library: true,
             dock_h: None,
             layout_sent: None,
+            restore_active: None,
+            restore_pending: Vec::new(),
             browser: browser::Browser::default(),
             library_state: Default::default(),
             project_picker: None,
@@ -493,6 +505,8 @@ impl Default for SimUi {
             graph_current: true,
             graph_ideal: true,
             graph_motion: graphs_panel::Motion::default(),
+            link_base: None,
+            pending_import: None,
             graph_x_to: Default::default(),
             graph_y_to: Default::default(),
             recording: None,
@@ -527,6 +541,11 @@ impl SimUi {
                 for s in &mut self.sessions {
                     s.computed_for = None;
                 }
+                if let Some(text) = self.pending_import.take() {
+                    if !self.import_text(&text, self.now_ms) {
+                        self.status(tr!("The link holds no fit this could read").to_owned());
+                    }
+                }
             }
             HostEvent::DogmaFailed(e) => {
                 self.dogma_error = Some(e);
@@ -538,7 +557,20 @@ impl SimUi {
                 self.want_fit_docs(ids.into_iter());
             }
             HostEvent::Fit { id, doc } => match spai_fit::doc::from_json(&doc) {
-                Ok(fit) => self.open_session(Session::new(id, fit)),
+                Ok(fit) => {
+                    let had = self.active;
+                    let restoring = self.restore_pending.contains(&id);
+                    self.restore_pending.retain(|x| *x != id);
+                    self.open_session(Session::new(id.clone(), fit));
+                    // Tabs coming back from last time open in their order, and the one that was on
+                    // screen stays on screen however they arrive.
+                    if restoring {
+                        self.active = self.restore_active.as_ref().and_then(|a| self.sessions.iter().position(|s| &s.id == a)).unwrap_or(had.min(self.sessions.len() - 1));
+                        if self.restore_pending.is_empty() {
+                            self.restore_active = None;
+                        }
+                    }
+                }
                 Err(e) => self.status(trf!("Could not read the fit: {e}", e = e)),
             },
             HostEvent::Profiles(p) => {
@@ -708,6 +740,17 @@ impl SimUi {
         self.open_session(Session::new(id, Fit::new(ship, name)));
     }
 
+    /// A new library fit from a saved one, its variations and all, opened in a tab.
+    pub fn copy_fit(&mut self, id: &str, now_ms: u64) {
+        let source = self.sessions.iter().find(|s| s.id == id).map(|s| s.fit.clone()).or_else(|| self.fit_docs.get(id).cloned());
+        let Some(mut fit) = source else {
+            self.status(tr!("That fit is still loading; try again in a moment").to_owned());
+            return;
+        };
+        fit.name = trf!("{name} (copy)", name = fit.name);
+        self.open_fit(fit, now_ms);
+    }
+
     /// Opens an imported fit as a new library entry.
     pub fn open_fit(&mut self, fit: Fit, now_ms: u64) {
         let id = self.new_id(now_ms);
@@ -722,14 +765,36 @@ impl SimUi {
         self.import_from_button = true;
     }
 
-    /// Imports EFT text; `false` when it is not a fit. Unknown names are noted, not refused.
+    /// A fit from outside, a link's, imported now or as soon as the data is in.
+    pub fn import_when_ready(&mut self, text: String) {
+        if self.dogma.is_some() {
+            if !self.import_text(&text, self.now_ms) {
+                self.status(tr!("The link holds no fit this could read").to_owned());
+            }
+        } else {
+            self.pending_import = Some(text);
+        }
+    }
+
+    /// Imports any fit format; `false` when it holds none. Unknown names are noted, not refused.
     pub fn import_text(&mut self, text: &str, now_ms: u64) -> bool {
         let Some(dogma) = self.dogma.clone() else { return false };
-        let Some(imp) = spai_fit::formats::eft::import(&dogma, text).filter(|i| i.fit.ship != 0) else { return false };
-        if !imp.unknown.is_empty() {
-            self.status(trf!("Unknown: {names}", names = imp.unknown.join(", ")));
+        let found = spai_fit::formats::import_any(&dogma, text);
+        if found.is_empty() {
+            return false;
         }
-        self.place_import(imp.fit, now_ms);
+        let unknown: Vec<String> = found.iter().flat_map(|i| i.unknown.iter().cloned()).collect();
+        if !unknown.is_empty() {
+            self.status(trf!("Unknown: {names}", names = unknown.join(", ")));
+        }
+        // One fit goes where it belongs, asking about near copies; several open side by side.
+        if found.len() == 1 {
+            self.place_import(found.into_iter().next().expect("one").fit, now_ms);
+        } else {
+            for imp in found {
+                self.open_imported(imp.fit, now_ms);
+            }
+        }
         true
     }
 
@@ -741,7 +806,7 @@ impl SimUi {
             return;
         }
         if from_button {
-            let error = if text.trim().is_empty() { None } else { Some(tr!("That is not an EFT fit: the first line must be [Ship, Name].").to_owned()) };
+            let error = if text.trim().is_empty() { None } else { Some(tr!("No fit found: paste EFT text, ESI's JSON, the game's fitting XML or a DNA string.").to_owned()) };
             self.import = Some(ImportDialog { text: text.to_owned(), error });
         }
     }
@@ -861,6 +926,9 @@ impl SimUi {
                 Center::Graphs => 1,
             }),
             dock_first: Some(self.dock.first),
+            // Only fits the library holds: a tab not saved yet could not be opened again.
+            tabs: Some(self.sessions.iter().filter(|s| s.fit.ship != 0 && self.library.iter().any(|e| e.id == s.id)).map(|s| s.id.clone()).collect()),
+            active_tab: self.session().filter(|s| s.fit.ship != 0).map(|s| s.id.clone()),
             grouping: Some(match self.library_state.grouping {
                 library_panel::Grouping::Hull => 0,
                 library_panel::Grouping::Tag => 1,
@@ -893,6 +961,13 @@ impl SimUi {
         }
         if let Some(f) = l.dock_first {
             self.dock.first = f;
+        }
+        if let Some(tabs) = l.tabs.filter(|t| !t.is_empty()) {
+            for id in &tabs {
+                self.requests.push(HostRequest::LoadFit(id.clone()));
+            }
+            self.restore_pending = tabs.clone();
+            self.restore_active = l.active_tab.or_else(|| tabs.last().cloned());
         }
         if let Some(g) = l.grouping {
             self.library_state.grouping = match g {
@@ -1264,6 +1339,7 @@ impl SimUi {
         details::windows(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
         mutation::window(self, ctx, now_ms);
+        editor::traits_window(self, ctx);
         library_panel::project_picker(self, ctx, now_ms);
         self.import_ask_window(ctx, now_ms);
         rows::drag_ghost(ctx);
@@ -1289,7 +1365,7 @@ impl SimUi {
         egui::Panel::left(id).resizable(true).default_size(w).min_size(MIN_W).max_size(MAX_W).show_inside(ui, |ui| body(self, ui));
         // The resize grip reaches a few points past the edge, and whatever is laid out after it wins
         // the pointer: a gap keeps the central view's drag areas off the grip.
-        egui::Panel::left(id.with("gap")).resizable(false).exact_size(4.0).frame(egui::Frame::NONE).show_inside(ui, |_| {});
+        egui::Panel::left(id.with("gap")).resizable(false).show_separator_line(false).exact_size(4.0).frame(egui::Frame::NONE).show_inside(ui, |_| {});
         if dragging {
             if let Some(st) = egui::PanelState::load(&ctx, id) {
                 self.left_w = Some(st.rect.width().clamp(MIN_W, MAX_W));
@@ -1373,16 +1449,37 @@ impl SimUi {
                 if self.mode == Mode::Fleets && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
                     self.save_fleet();
                 }
-                if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import EFT"))).on_hover_text(tr!("Import the fit on the clipboard, or paste one")).clicked() {
+                if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import"))).on_hover_text(tr!("Import the fit on the clipboard, or paste one: EFT, ESI JSON, fitting XML or DNA")).clicked() {
                     self.import_from_button = true;
                     self.requests.push(HostRequest::ReadClipboard);
                 }
-                if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::COPY, tr!("Copy EFT")))).on_hover_text(tr!("Copy EFT")).clicked() {
-                    if let (Some(d), Some(s)) = (&self.dogma, self.session()) {
-                        let text = spai_fit::formats::eft::export(d, &s.fit);
-                        self.requests.push(HostRequest::CopyText(text));
-                        self.status(tr!("EFT copied").to_owned());
-                    }
+                let mut copy: Option<(String, &'static str)> = None;
+                ui.add_enabled_ui(has_fit && self.mode != Mode::Fleets, |ui| {
+                    ui.menu_button(labelled(icon::COPY, tr!("Copy")), |ui| {
+                        ui.set_min_width(200.0);
+                        let (Some(d), Some(s)) = (self.dogma.clone(), self.session()) else { return };
+                        let fit = spai_fit::variations::resolve(&d, &s.fit);
+                        let mut item = |ui: &mut egui::Ui, label: &'static str, make: &dyn Fn() -> String| {
+                            if ui.button(label).clicked() {
+                                copy = Some((make(), label));
+                                ui.close();
+                            }
+                        };
+                        item(ui, tr!("EFT"), &|| spai_fit::formats::eft::export(&d, &fit));
+                        item(ui, tr!("ESI JSON"), &|| serde_json::to_string_pretty(&spai_fit::formats::esi_json::export(&fit, "")).unwrap_or_default());
+                        item(ui, tr!("Fitting XML"), &|| spai_fit::formats::xml::export(&d, &[&fit]));
+                        item(ui, tr!("DNA"), &|| spai_fit::formats::dna::export(&fit));
+                        item(ui, tr!("Multibuy"), &|| spai_fit::formats::multibuy::export(&d, &fit));
+                        if let Some(base) = self.link_base.clone() {
+                            item(ui, tr!("Link"), &|| format!("{base}#fit={}", spai_fit::formats::link::encode(&spai_fit::formats::eft::export(&d, &fit))));
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr!("Copy the fit on screen, with its active variations, in a format of your choice"));
+                });
+                if let Some((text, what)) = copy {
+                    self.requests.push(HostRequest::CopyText(text));
+                    self.status(trf!("{what} copied", what = what));
                 }
                 if self.access.admin && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::UPLOAD_SIMPLE, tr!("Publish")))).on_hover_text(tr!("Publish as doctrine")).clicked() {
                     self.start_publish();

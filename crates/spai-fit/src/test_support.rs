@@ -457,5 +457,11 @@ pub fn dataset() -> Dogma {
         attrs: vec![(attr::SPEED_FACTOR, 0.9, 1.1), (attr::CPU, 0.8, 1.5)],
         mapping: vec![(vec![MWD], ABYSSAL_MWD)],
     }];
-    Dogma { sde_build: 1, types, attributes, effects, groups, market_groups, mutaplasmids, ..Dogma::default() }.finish()
+    let traits = vec![crate::dogma::TypeTraits {
+        type_id: SHIP,
+        role: vec![crate::dogma::Bonus { amount: Some(100.0), unit: Some(105), text: "bonus to the effectiveness of something the role does, long enough to wrap onto a second line".into() }],
+        misc: vec![],
+        per_skill: vec![(SKILL_MF, vec![crate::dogma::Bonus { amount: Some(5.0), unit: Some(105), text: "bonus to Small Projectile Turret damage".into() }, crate::dogma::Bonus { amount: Some(7.5), unit: Some(105), text: "bonus to Small Projectile Turret falloff".into() }])],
+    }];
+    Dogma { sde_build: 1, types, attributes, effects, groups, market_groups, mutaplasmids, traits, ..Dogma::default() }.finish()
 }

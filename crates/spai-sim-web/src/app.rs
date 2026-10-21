@@ -50,6 +50,19 @@ impl SimWebApp {
         if let Some(layout) = page::load_raw(LAYOUT_KEY) {
             app.sim.handle(HostEvent::Layout(layout));
         }
+        if let Some(loc) = web_sys::window().map(|w| w.location()) {
+            let (origin, path) = (loc.origin().unwrap_or_default(), loc.pathname().unwrap_or_default());
+            app.sim.link_base = Some(format!("{origin}{path}"));
+            // A fit in the address, in the fragment or the query, comes in once the data is loaded;
+            // the address is cleaned so a reload does not bring it again.
+            let (hash, search) = (loc.hash().unwrap_or_default(), loc.search().unwrap_or_default());
+            if let Some(text) = spai_fit::formats::link::param(&hash).or_else(|| spai_fit::formats::link::param(&search)).and_then(spai_fit::formats::link::decode) {
+                app.sim.import_when_ready(text);
+                if let Ok(history) = web_sys::window().expect("a window").history() {
+                    let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&path));
+                }
+            }
+        }
         app.load_profiles();
         app.fetch_doctrines(&cc.egui_ctx);
         app.sync(&cc.egui_ctx);

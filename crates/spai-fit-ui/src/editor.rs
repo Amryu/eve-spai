@@ -341,53 +341,6 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     if traits_open {
         sim.traits_window = true;
     }
-    if sim.traits_window {
-        let mut open = true;
-        egui::Window::new(trf!("{ship} traits", ship = ship_name)).open(&mut open).collapsible(false).default_width(440.0).show(ui.ctx(), |ui| {
-            let Some(t) = dogma.traits_of(ship) else {
-                ui.label(egui::RichText::new(tr!("This hull has no traits.")).weak());
-                return;
-            };
-            // Each section a heading with the skill's icon, its bonuses as an amount column in the
-            // bonus colour beside the sentence, the way the tooltips lay out values.
-            let section = |ui: &mut egui::Ui, icon: Option<spai_fit::ids::TypeId>, title: String, note: Option<&str>, bonuses: &[spai_fit::dogma::Bonus], id: (u8, u32)| {
-                ui.horizontal(|ui| {
-                    if let Some(i) = icon {
-                        crate::icons::type_icon(ui, i, 18.0);
-                    }
-                    ui.label(egui::RichText::new(title).strong());
-                    if let Some(n) = note {
-                        ui.label(egui::RichText::new(n).weak());
-                    }
-                });
-                egui::Grid::new(("sim_traits", id)).num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
-                    for b in bonuses {
-                        let amount = b.amount.map(|a| {
-                            let unit = b.unit.and_then(|u| dogma.unit(u)).map_or("", |u| u.display.as_str());
-                            format!("{}{unit}", text::num(f64::from(a)))
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            ui.label(egui::RichText::new(amount.unwrap_or_default()).monospace().color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)));
-                        });
-                        ui.add(egui::Label::new(&b.text).wrap());
-                        ui.end_row();
-                    }
-                });
-                ui.add_space(6.0);
-            };
-            for (skill, bonuses) in &t.per_skill {
-                let skill_name = dogma.type_(*skill).map_or_else(|| format!("Skill {skill}"), |s| s.name.clone());
-                section(ui, Some(*skill), skill_name, Some(tr!("per skill level")), bonuses, (0, *skill));
-            }
-            if !t.role.is_empty() {
-                section(ui, None, tr!("Role bonus").to_owned(), None, &t.role, (1, 0));
-            }
-            if !t.misc.is_empty() {
-                section(ui, None, tr!("Also").to_owned(), None, &t.misc, (2, 0));
-            }
-        });
-        sim.traits_window = open;
-    }
 }
 
 /// The sub-fits: the base and every variation as a tab, one on at a time (Ctrl-click adds one of
@@ -681,7 +634,8 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 open_picker = Some(PickTarget::Charge(slot, index));
             }
         } else {
-            ui.add_space(cols.charge);
+            // Allocated like the charge cell, item spacing and all, so the columns after it line up.
+            ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 4.0), egui::Sense::hover());
         }
         if cols.numbers {
             let s = stat.as_ref();
@@ -913,4 +867,61 @@ fn variants_menu(ui: &mut egui::Ui, dogma: &Dogma, mut variants: Vec<TypeId>) ->
         });
     }
     picked
+}
+
+/// The hull's traits, laid out like the tooltips, while `traits_window` is on.
+pub fn traits_window(sim: &mut SimUi, ctx: &egui::Context) {
+    if !sim.traits_window {
+        return;
+    }
+    let (Some(dogma), Some(ship)) = (sim.dogma.clone(), sim.session().map(|s| s.fit.ship)) else { return };
+    let dogma = dogma.as_ref();
+    let ship_name = spai_fit::formats::name_of(dogma, ship);
+        let mut open = true;
+        egui::Window::new(trf!("{ship} traits", ship = ship_name)).open(&mut open).collapsible(false).default_width(440.0).show(ctx, |ui| {
+            let Some(t) = dogma.traits_of(ship) else {
+                ui.label(egui::RichText::new(tr!("This hull has no traits.")).weak());
+                return;
+            };
+            // Each section a heading with the skill's icon, its bonuses as an amount column in the
+            // bonus colour beside the sentence, the way the tooltips lay out values.
+            let section = |ui: &mut egui::Ui, icon: Option<spai_fit::ids::TypeId>, title: String, note: Option<&str>, bonuses: &[spai_fit::dogma::Bonus], id: (u8, u32)| {
+                ui.horizontal(|ui| {
+                    if let Some(i) = icon {
+                        crate::icons::type_icon(ui, i, 18.0);
+                    }
+                    ui.label(egui::RichText::new(title).strong());
+                    if let Some(n) = note {
+                        ui.label(egui::RichText::new(n).weak());
+                    }
+                });
+                egui::Grid::new(("sim_traits", id)).num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+                    for b in bonuses {
+                        let amount = b.amount.map(|a| {
+                            let unit = b.unit.and_then(|u| dogma.unit(u)).map_or("", |u| u.display.as_str());
+                            format!("{}{unit}", text::num(f64::from(a)))
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            // The sentence's own font: a monospace amount sat lower than the words beside it.
+                            ui.label(egui::RichText::new(amount.unwrap_or_default()).color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)));
+                        });
+                        // Top-aligned like the amount, so a sentence that wraps keeps its first line level with it.
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| ui.add(egui::Label::new(&b.text).wrap()));
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(6.0);
+            };
+            for (skill, bonuses) in &t.per_skill {
+                let skill_name = dogma.type_(*skill).map_or_else(|| format!("Skill {skill}"), |s| s.name.clone());
+                section(ui, Some(*skill), skill_name, Some(tr!("per skill level")), bonuses, (0, *skill));
+            }
+            if !t.role.is_empty() {
+                section(ui, None, tr!("Role bonus").to_owned(), None, &t.role, (1, 0));
+            }
+            if !t.misc.is_empty() {
+                section(ui, None, tr!("Also").to_owned(), None, &t.misc, (2, 0));
+            }
+        });
+        sim.traits_window = open;
 }

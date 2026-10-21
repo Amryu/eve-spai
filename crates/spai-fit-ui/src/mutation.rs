@@ -79,11 +79,12 @@ pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         let chosen = mutation.as_ref().map(|m| m.mutaplasmid);
         let label = chosen.and_then(|c| choices.iter().find(|(id, _)| *id == c)).map_or_else(|| tr!("None: the item as it is").to_owned(), |(_, n)| n.clone());
         egui::ComboBox::from_id_salt("sim_mutaplasmid").width(440.0).selected_text(label).show_ui(ui, |ui| {
-            if ui.selectable_label(chosen.is_none(), tr!("None: the item as it is")).clicked() {
+            use spai_ui::widgets::SteadySelect as _;
+            if ui.menu_label(chosen.is_none(), tr!("None: the item as it is")).clicked() {
                 set = Some(None);
             }
             for (id, n) in &choices {
-                if ui.selectable_label(chosen == Some(*id), n).clicked() && chosen != Some(*id) {
+                if ui.menu_label(chosen == Some(*id), n).clicked() && chosen != Some(*id) {
                     // A fresh mutaplasmid starts at no change where it can, in its range otherwise.
                     set = Some(roll(&dogma, type_id, *id, |lo, hi, _| 1.0f32.clamp(lo, hi)));
                 }

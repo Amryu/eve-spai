@@ -355,3 +355,12 @@ fn missiles_fly_whole_seconds_and_one_more_by_chance() {
     let whole = crate::stats::MissileProfile { flight_time_s: 6.0, ..m };
     assert_eq!((whole.reach(6000.0), whole.reach(6000.1)), (1.0, 0.0), "a whole flight time has a single wall");
 }
+
+#[test]
+fn an_empty_hold_holds_a_plain_zero() {
+    let d = dataset();
+    let c = compute(&d, &Fit::new(ids::SHIP, "x"), &SkillSet::all_v(), &Env::default());
+    for h in &c.holds {
+        assert!(h.used == 0.0 && h.used.is_sign_positive(), "{} uses {:?}", h.name, h.used);
+    }
+}

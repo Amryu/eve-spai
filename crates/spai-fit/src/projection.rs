@@ -62,7 +62,9 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
     }
     out.projected.retain(|p| !is_generator(dogma, p.type_id));
     for pf in fit.projected_fits.iter().filter(|p| p.active && p.count > 0) {
-        let Some(src) = lookup(&pf.fit_id) else { continue };
+        let Some(mut src) = lookup(&pf.fit_id) else { continue };
+        // The variation picked for it, or its base fit: not whatever was last switched on there.
+        src.active_variations = pf.variation.filter(|v| src.variations.iter().any(|x| x.id == *v)).into_iter().collect();
         let src = crate::variations::resolve(dogma, &src);
         for m in src.modules.iter().filter(|m| m.state >= State::Active && reaches_out(dogma, m.type_id)) {
             out.projected.push(Projected { type_id: m.type_id, count: pf.count, state: m.state, charge: m.charge });
@@ -91,6 +93,23 @@ mod tests {
     use crate::test_support::{close, dataset, ids};
 
     #[test]
+    fn a_projected_fit_flies_its_base_unless_a_variation_is_picked() {
+        use crate::variations::{RefitOp, Variation};
+        let d = dataset();
+        let mut support = Fit::new(ids::SHIP, "support");
+        support.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Online));
+        support.variations.push(Variation { id: 7, name: "Webbing".into(), ops: vec![RefitOp::SetState { slot: Slot::Mid, index: 0, state: State::Active }], ..Default::default() });
+        // Switched on in its own tab: that does not decide how it flies here.
+        support.active_variations = vec![7];
+        let lookup = |id: &str| (id == "support").then(|| support.clone());
+        let mut me = Fit::new(ids::SHIP, "me");
+        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), ..Default::default() });
+        assert!(expand(&d, &me, &lookup, &SkillSet::all_v()).0.projected.is_empty(), "the base fit's web is only online");
+        me.projected_fits[0].variation = Some(7);
+        assert_eq!(expand(&d, &me, &lookup, &SkillSet::all_v()).0.projected.len(), 1, "the picked variation switches it on");
+    }
+
+    #[test]
     fn a_projected_fit_brings_its_webs_and_its_boosts_and_switched_off_brings_nothing() {
         let mut d = dataset();
         d.buffs.push(crate::dogma::BuffDef { id: 12, name: "Shield HP".into(), aggregate: crate::dogma::Aggregate::Max, op: crate::dogma::Op::PostPercent, item: vec![attr::ARMOR_HP], location: vec![], location_group: vec![], location_skill: vec![] });
@@ -100,7 +119,7 @@ mod tests {
         support.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Active));
         support.modules.push(Module::new(ids::BURST, Slot::High, 0).with_charge(ids::BURST_CHARGE).with_state(State::Active));
         let mut me = Fit::new(ids::SHIP, "me");
-        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 2, active: true });
+        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 2, active: true, variation: None });
         let lookup = |id: &str| (id == "support").then(|| support.clone());
         let (fit, env) = expand(&d, &me, &lookup, &SkillSet::all_v());
         assert_eq!(fit.projected.len(), 1, "the web reaches out, the damage control does not: {:?}", fit.projected);
@@ -135,7 +154,7 @@ mod tests {
         let mut titan = Fit::new(ids::SHIP, "titan");
         titan.modules.push(Module::new(ids::GENERATOR, Slot::High, 0).with_state(State::Active));
         let mut me = Fit::new(ids::SHIP, "me");
-        me.projected_fits.push(ProjectedFit { fit_id: "titan".into(), count: 1, active: true });
+        me.projected_fits.push(ProjectedFit { fit_id: "titan".into(), count: 1, active: true, variation: None });
         let (_, env) = expand(&d, &me, &|id| (id == "titan").then(|| titan.clone()), &SkillSet::all_v());
         assert_eq!(env.buffs.len(), 1, "the titan's running generator reaches the fit it is projected onto");
     }
@@ -226,4 +245,59 @@ fn real_data_mutaplasmids() {
     }
     println!("meta groups {:?}", d.meta_groups.iter().map(|m| (m.id, m.name.as_str())).collect::<Vec<_>>());
     assert!(d.mutaplasmids.iter().all(|m| !m.name.starts_with("Mutaplasmid ")), "every one named");
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_a_projected_web_slows_the_ship() {
+    use crate::fit::{Module, ProjectedFit, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let rifter = d.type_named("Rifter").unwrap().id;
+    let web = d.type_named("Stasis Webifier II").unwrap().id;
+    let mut webber = Fit::new(rifter, "Webber");
+    webber.modules.push(Module::new(web, Slot::Mid, 0).with_state(State::Active));
+    let mut me = Fit::new(rifter, "Me");
+    let skills = SkillSet::all_v();
+    let alone = crate::stats::compute(&d, &me, &skills, &Env::default()).mobility.max_velocity;
+    me.projected_fits.push(ProjectedFit { fit_id: "w".into(), count: 1, active: true, variation: None });
+    let lookup = |id: &str| (id == "w").then(|| webber.clone());
+    let (expanded, env) = expand(&d, &me, &lookup, &skills);
+    println!("projected: {:?}", expanded.projected);
+    let webbed = crate::stats::compute(&d, &expanded, &skills, &env).mobility.max_velocity;
+    let effects: Vec<String> = d.type_(web).unwrap().effects.iter().filter_map(|(e, _)| d.effect(*e).map(|x| format!("{} cat {:?} mods {}", x.name, x.category, x.modifiers.len()))).collect();
+    println!("web effects {effects:?}; {alone} -> {webbed}");
+    assert!(webbed < alone * 0.6, "a web halves the speed: {alone} -> {webbed}");
+    let painter = d.type_named("Target Painter II").unwrap().id;
+    let td = d.type_named("Tracking Disruptor II").unwrap().id;
+    let gun = d.type_named("200mm AutoCannon II").unwrap().id;
+    webber.modules.push(Module::new(painter, Slot::Mid, 1).with_state(State::Active));
+    webber.modules.push(Module::new(td, Slot::Mid, 2).with_state(State::Active));
+    me.modules.push(Module::new(gun, Slot::High, 0).with_state(State::Active).with_charge(d.type_named("EMP S").unwrap().id));
+    let plain = crate::stats::compute(&d, &Fit { projected_fits: vec![], ..me.clone() }, &skills, &Env::default());
+    let lookup = |id: &str| (id == "w").then(|| webber.clone());
+    let (expanded, env) = expand(&d, &me, &lookup, &skills);
+    let hit = crate::stats::compute(&d, &expanded, &skills, &env);
+    println!("sig {} -> {}, optimal {} -> {}", plain.mobility.signature, hit.mobility.signature, plain.weapons[0].optimal, hit.weapons[0].optimal);
+    assert!(hit.mobility.signature > plain.mobility.signature * 1.2, "painted");
+    assert!(hit.weapons[0].optimal < plain.weapons[0].optimal * 0.9, "disrupted");
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_empty_target_effects() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    for t in d.types.iter().filter(|t| t.published && matches!(t.category, crate::ids::category::MODULE | crate::ids::category::DRONE)) {
+        for (e, _) in &t.effects {
+            let Some(x) = d.effect(*e) else { continue };
+            if x.category == crate::dogma::EffectCategory::Target && x.modifiers.is_empty() {
+                seen.entry(x.name.clone()).or_insert_with(|| (t.name.clone(), 0)).1 += 1;
+            }
+        }
+    }
+    for (n, (ex, k)) in seen {
+        println!("{n}: {k} types, e.g. {ex}");
+    }
 }

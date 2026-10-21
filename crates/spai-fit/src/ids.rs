@@ -47,4 +47,5 @@ pub mod meta_group {
     pub const FACTION: u8 = 4;
     pub const OFFICER: u8 = 5;
     pub const DEADSPACE: u8 = 6;
+    pub const ABYSSAL: u8 = 15;
 }
