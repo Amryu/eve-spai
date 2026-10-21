@@ -34,7 +34,7 @@ fn directions(n: usize) -> Vec<Vec3> {
 
 /// The inverse error function, to about 1e-7: what turns an even spread of shares into a
 /// bell-curve spread of distances.
-fn erf_inv(x: f64) -> f64 {
+pub(crate) fn erf_inv(x: f64) -> f64 {
     let x = x.clamp(-0.999_999, 0.999_999);
     let w = -((1.0 - x) * (1.0 + x)).ln();
     if w < 5.0 {

@@ -12,6 +12,18 @@ use crate::stats::WeaponGroup;
 
 /// Seconds a step lasts.
 const STEP: f64 = 0.25;
+/// When a new primary is called, how long until a ship's first volley lands: log-normally spread
+/// over the side's ships, most early, a few late. The median and the spread (σ of the log).
+pub const REACTION_MEDIAN_S: f64 = 1.5;
+pub const REACTION_SPREAD: f64 = 0.6;
+
+/// The reaction delay of the `i`-th of `n` ships: the log-normal's quantiles laid out evenly, so
+/// the same fleet always fires the same way.
+pub fn reaction(i: usize, n: usize) -> f64 {
+    let p = (i as f64 + 0.5) / n.max(1) as f64;
+    let z = std::f64::consts::SQRT_2 * super::geometry::erf_inv(2.0 * p - 1.0);
+    REACTION_MEDIAN_S * (REACTION_SPREAD * z).exp()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
@@ -174,6 +186,13 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     // When the current primary was picked, for spool, lock and the first-volley verdict.
     let mut since = [0.0f64; 2];
     let mut verdict_open: [Option<(usize, f64)>; 2] = [primary[0].map(|p| (p, 0.0)), primary[1].map(|p| (p, 0.0))];
+    // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
+    let mut next_fire: [Vec<Vec<f64>>; 2] = [0, 1].map(|side| {
+        guns[side].groups.iter().map(|(k, _, _)| {
+            let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
+            (0..n).map(|i| reaction(i, n)).collect()
+        }).collect()
+    });
     for side in 0..2 {
         if let Some(p) = primary[side] {
             start_adc(&mut fleets[1 - side][p], 0.0, &mut out, 1 - side);
@@ -186,23 +205,31 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             let Some(p) = primary[side] else { continue };
             let target_slot = fleets[1 - side][p].slot;
             let mut damage = [0.0f64; 4];
-            for (k, w, shares) in &guns[side].groups {
-                let alive = fleets[side].iter().filter(|s| s.alive && s.slot == *k).count() as f64;
-                if alive == 0.0 || w.cycle_s <= 0.0 {
+            for (g, (k, w, shares)) in guns[side].groups.iter().enumerate() {
+                let alive = fleets[side].iter().filter(|s| s.alive && s.slot == *k).count();
+                if alive == 0 || w.cycle_s <= 0.0 {
                     continue;
                 }
-                // A volley each cycle on the guns' own rhythm, whatever the target; only a
-                // disintegrator's spool starts again from cold on a new one.
+                // Each ship fires once its reaction to the call is over and its guns have cycled
+                // since its last volley: volleys spread out rather than landing at once.
                 let elapsed = t - since[side];
-                let fired = t < STEP || (t / w.cycle_s).floor() != ((t - STEP) / w.cycle_s).floor();
-                if !fired {
+                let next = &mut next_fire[side][g];
+                next.truncate(alive);
+                let mut firing = 0.0;
+                for at in next.iter_mut() {
+                    if *at <= t {
+                        firing += 1.0;
+                        *at += w.cycle_s;
+                    }
+                }
+                if firing == 0.0 {
                     continue;
                 }
                 let eff = f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
                 let share = shares.get(target_slot).copied().unwrap_or(0.0);
                 let spool = w.spool_at(elapsed) / (1.0 + w.spool_max * w.spool_frac);
                 let v = &w.volley;
-                let scale = alive * eff * share * spool;
+                let scale = firing * eff * share * spool;
                 damage[0] += v.em * scale;
                 damage[1] += v.thermal * scale;
                 damage[2] += v.kinetic * scale;
@@ -262,6 +289,13 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 }
                 primary[side] = pick(&sides[side].fleet.target_order, &fleets[1 - side]);
                 since[side] = t + STEP;
+                // A new call: no ship fires before it reacts, nor before its guns have cycled.
+                for next in next_fire[side].iter_mut() {
+                    let n = next.len();
+                    for (i, at) in next.iter_mut().enumerate() {
+                        *at = at.max(since[side] + reaction(i, n));
+                    }
+                }
                 verdict_open[side] = primary[side].map(|n| (n, t + STEP));
                 if let Some(n) = primary[side] {
                     start_adc(&mut fleets[1 - side][n], t + STEP, &mut out, 1 - side);
