@@ -12,7 +12,7 @@ use crate::ids::{AttrId, BuffId, CategoryId, EffectId, GroupId, TypeId, CHARACTE
 use crate::skills::SkillSet;
 
 mod explain;
-mod patch;
+pub(crate) mod patch;
 mod value;
 
 pub use explain::{Explanation, Step};
@@ -109,6 +109,10 @@ pub struct Calc<'d> {
     visiting: RefCell<HashSet<(ItemIdx, AttrId)>>,
     /// Type ids the fit names that the data does not know; those items are left out.
     pub unknown_types: Vec<TypeId>,
+    /// The incoming damage's shares, for a reactive hardener to adapt to.
+    pub(crate) incoming: [f64; 4],
+    /// Reactive hardeners kept at their even split.
+    pub(crate) fixed: Vec<ItemIdx>,
 }
 
 /// Source item categories whose modifiers are never stacking-penalised.
@@ -128,6 +132,8 @@ impl<'d> Calc<'d> {
             cache: RefCell::new(HashMap::new()),
             visiting: RefCell::new(HashSet::new()),
             unknown_types: Vec::new(),
+            incoming: fit.damage_profile.weights(),
+            fixed: Vec::new(),
         };
         c.build(fit, skills);
         c.collect();
@@ -210,6 +216,9 @@ impl<'d> Calc<'d> {
         }
         for m in &fit.modules {
             let Some(i) = self.item_for(m.type_id, ItemKind::Module { slot: m.slot, index: m.index }, m.state) else { continue };
+            if m.fixed {
+                self.fixed.push(i);
+            }
             self.items[i].location = Some(ship);
             self.items[i].owner = Some(char);
             if let Some(mu) = &m.mutation {
@@ -436,6 +445,16 @@ impl<'d> Calc<'d> {
 
     pub fn effect_names(&self, item: ItemIdx) -> impl Iterator<Item = &'d str> + '_ {
         self.items[item].effects.iter().filter_map(|e| self.dogma.effect(*e)).map(|e| e.name.as_str())
+    }
+
+    /// Forgets every value worked out, after a patch changed what they come from.
+    pub(crate) fn forget_values(&self) {
+        self.cache.borrow_mut().clear();
+    }
+
+    pub(crate) fn set_override(&mut self, item: ItemIdx, attr: AttrId, value: f64) {
+        self.items[item].overrides.retain(|(a, _)| *a != attr);
+        self.items[item].overrides.push((attr, value));
     }
 
     pub fn ship_idx(&self) -> ItemIdx {

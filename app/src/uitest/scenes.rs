@@ -9814,7 +9814,7 @@ fn uitest_sim_columns_line_up_with_and_without_charges() {
     let rows = spai_fit_ui::rows::log(&h.ctx);
     let first = |list: &str| rows.iter().filter(|(id, _)| *id == egui::Id::new(list)).map(|(_, r)| *r).min_by(|a, b| a.min.y.total_cmp(&b.min.y)).expect("a row");
     let numbers_in = |row: egui::Rect| {
-        let mut xs: Vec<f32> = (0..10).flat_map(|d| h.query_all_by_label_contains(&format!("{d}.")).map(|n| n.rect()).collect::<Vec<_>>()).filter(|r| r.center().y >= row.min.y && r.center().y <= row.max.y && r.min.x > row.center().x - 200.0).map(|r| r.max.x).collect();
+        let mut xs: Vec<f32> = (0..10).flat_map(|d| h.query_all_by_label_contains(&format!("{d}.")).map(|n| n.rect()).collect::<Vec<_>>()).filter(|r| r.center().y >= row.min.y && r.center().y <= row.max.y && r.min.x > row.center().x - 200.0 && r.max.x <= row.max.x).map(|r| r.max.x).collect();
         xs.sort_by(f32::total_cmp);
         xs.dedup_by(|a, b| (*a - *b).abs() < 0.1);
         xs

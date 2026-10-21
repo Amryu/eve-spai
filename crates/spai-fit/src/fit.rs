@@ -49,11 +49,13 @@ pub struct Module {
     pub mutation: Option<Mutation>,
     /// For weapons that spool up: how far along, 0..1, `None` for fully spooled.
     pub spool: Option<f32>,
+    /// A reactive hardener kept at its even split instead of adapting to the incoming damage.
+    pub fixed: bool,
 }
 
 impl Default for Module {
     fn default() -> Self {
-        Module { type_id: 0, slot: Slot::High, index: 0, state: State::Online, charge: None, mutation: None, spool: None }
+        Module { type_id: 0, slot: Slot::High, index: 0, state: State::Online, charge: None, mutation: None, spool: None, fixed: false }
     }
 }
 

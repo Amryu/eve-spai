@@ -575,3 +575,44 @@ fn real_data_eft_missile_flight() {
         last = p[1];
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_reactive_hardener() {
+    use crate::fit::{Module, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let rah = d.type_named("Reactive Armor Hardener").unwrap();
+    for (e, _) in &rah.effects {
+        let x = d.effect(*e).unwrap();
+        println!("effect {} {:?} mods {}", x.name, x.category, x.modifiers.len());
+    }
+    for (a, v) in &rah.attrs {
+        let n = d.attr(*a).map(|x| x.name.as_str()).unwrap_or("?");
+        if n.to_lowercase().contains("reson") || n.to_lowercase().contains("shift") || n == "duration" { println!("  {n} = {v}"); }
+    }
+    let mut f = Fit::new(d.type_named("Maller").unwrap().id, "m");
+    f.modules.push(Module::new(rah.id, Slot::Low, 0).with_state(State::Active));
+    f.damage_profile = crate::fit::DamageProfile { em: 0.0, thermal: 0.0, kinetic: 1.0, explosive: 0.0 };
+    let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    let adapted: Vec<f64> = (0..4).map(|i| (c.tank.armor.resist(i) * 1000.0).round() / 10.0).collect();
+    println!("armor resists vs kinetic only: {adapted:?}");
+    f.modules[0].fixed = true;
+    let fixed: Vec<f64> = (0..4).map(|i| (crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default()).tank.armor.resist(i) * 1000.0).round() / 10.0).collect();
+    println!("kept even: {fixed:?}");
+    f.modules[0].state = State::Online;
+    let off: Vec<f64> = (0..4).map(|i| (crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default()).tank.armor.resist(i) * 1000.0).round() / 10.0).collect();
+    println!("offline-ish (online): {off:?}");
+    assert!(fixed.iter().zip(&off).all(|(a, b)| a > b), "even, it adds to every type");
+    assert!(adapted[2] > fixed[2] + 10.0, "adapted to kinetic, kinetic gains most");
+    // Every hardener of the kind, the Xarasier's 16% a type (64% in all) among them.
+    for x in d.types.iter().filter(|t| t.published && t.effects.iter().any(|(e, _)| d.effect(*e).is_some_and(|e| e.name == "adaptiveArmorHardener"))) {
+        let mut g = Fit::new(d.type_named("Maller").unwrap().id, "m");
+        g.modules.push(Module::new(x.id, Slot::Low, 0).with_state(State::Active));
+        g.damage_profile = crate::fit::DamageProfile { em: 0.0, thermal: 0.0, kinetic: 1.0, explosive: 0.0 };
+        let kin = crate::stats::compute(&d, &g, &SkillSet::all_v(), &Env::default()).tank.armor.resist(2);
+        let each = 1.0 - f64::from(x.attr(crate::dogma::attr::ARMOR_KINETIC_RESONANCE).unwrap());
+        println!("{}: {:.0}% a type, kinetic armor {:.1}%", x.name, each * 100.0, kin * 100.0);
+        assert!((kin - (1.0 - 0.6 * (1.0 - 4.0 * each))).abs() < 0.005, "all of its {:.0}% moved to kinetic", 4.0 * each * 100.0);
+    }
+}

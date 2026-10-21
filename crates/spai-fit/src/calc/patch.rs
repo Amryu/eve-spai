@@ -67,9 +67,19 @@ const MISSILE_LAUNCHER_OPERATION: crate::ids::TypeId = 3319;
 pub const PANIC_SHIELD_RESONANCE: f64 = 0.000_137_055;
 const PANIC_EFFECT: &str = "moduleBonusIndustrialInvulnerability";
 
+/// The reactive armor hardener: its effect is empty in the data. Its four armor resonances (0.85
+/// each, 60% resistance in all) multiply the ship's, unpenalised. Running and not kept fixed, it
+/// adapts to the incoming damage: each cycle the two types hurting the ship least give up to
+/// `resistanceShiftAmount` percent each, shared between the two hurting it most (with a single
+/// type coming in, the other three give to it); the split shown is the average over the cycle it
+/// settles into.
+const RAH_EFFECT: &str = "adaptiveArmorHardener";
+const ARMOR_RESONANCES: [crate::ids::AttrId; 4] = [attr::ARMOR_EM_RESONANCE, attr::ARMOR_THERMAL_RESONANCE, attr::ARMOR_KINETIC_RESONANCE, attr::ARMOR_EXPLOSIVE_RESONANCE];
+
 pub(super) fn apply(c: &mut Calc) {
     remote_effects(c);
     panic_core(c);
+    reactive_hardener(c);
     prop_mods(c);
     skill_bonuses(c);
     subsystem_slots(c);
@@ -165,4 +175,68 @@ fn panic_core(c: &mut Calc) {
     for a in [attr::SHIELD_EM_RESONANCE, attr::SHIELD_THERMAL_RESONANCE, attr::SHIELD_KINETIC_RESONANCE, attr::SHIELD_EXPLOSIVE_RESONANCE] {
         c.add_source_mod(ship, a, Op::PostMul, Source::Const(PANIC_SHIELD_RESONANCE), false);
     }
+}
+
+fn reactive_hardener(c: &mut Calc) {
+    let ship = c.ship_idx();
+    let rahs: Vec<ItemIdx> = c.modules().filter(|(i, it)| it.state >= State::Active && c.effect_names(*i).any(|n| n == RAH_EFFECT)).map(|(i, _)| i).collect();
+    if rahs.is_empty() {
+        return;
+    }
+    // The ship's armor before any reactive hardener: what it adapts against.
+    let before: [f64; 4] = ARMOR_RESONANCES.map(|a| c.value(ship, a));
+    for &rah in &rahs {
+        if !c.fixed.contains(&rah) {
+            let shift = c.dogma.attr_named("resistanceShiftAmount").map(|a| a.id).filter(|a| c.has(rah, *a)).map_or(6.0, |a| c.value(rah, a)) / 100.0;
+            let start = ARMOR_RESONANCES.map(|a| 1.0 - c.value(rah, a));
+            let adapted = adapt(start, before, c.incoming, shift);
+            for (k, a) in ARMOR_RESONANCES.into_iter().enumerate() {
+                c.set_override(rah, a, 1.0 - adapted[k]);
+            }
+        }
+        for a in ARMOR_RESONANCES {
+            c.add_source_mod(ship, a, Op::PostMul, Source::Attr(rah, a), false);
+        }
+    }
+    c.forget_values();
+}
+
+/// The hardener's resistances after it settles: cycles of shifting from the two types hurting the
+/// ship least to the two hurting it most, averaged over the loop they fall into.
+pub(crate) fn adapt(start: [f64; 4], ship: [f64; 4], incoming: [f64; 4], shift: f64) -> [f64; 4] {
+    let mut res = start;
+    let mut seen: Vec<[f64; 4]> = Vec::new();
+    for _ in 0..200 {
+        let key = res.map(|r| (r * 1e6).round() / 1e6);
+        if let Some(at) = seen.iter().position(|s| *s == key) {
+            let lap = &seen[at..];
+            let mut avg = [0.0; 4];
+            for s in lap {
+                for k in 0..4 {
+                    avg[k] += s[k] / lap.len() as f64;
+                }
+            }
+            return avg;
+        }
+        seen.push(key);
+        let taken: [f64; 4] = std::array::from_fn(|k| incoming[k] * ship[k] * (1.0 - res[k]));
+        let mut order: Vec<usize> = (0..4).collect();
+        order.sort_by(|a, b| taken[*a].total_cmp(&taken[*b]).then(a.cmp(b)));
+        let hit = taken.iter().filter(|t| **t > 0.0).count();
+        // Nothing taken, or every type hurting alike: nothing to shift towards.
+        if hit == 0 || taken.iter().all(|t| (t - taken[0]).abs() < 1e-12) {
+            return res;
+        }
+        let (donors, takers): (Vec<usize>, Vec<usize>) = if hit == 1 { (order[..3].to_vec(), order[3..].to_vec()) } else { (order[..2].to_vec(), order[2..].to_vec()) };
+        let mut pool = 0.0;
+        for d in donors {
+            let give = shift.min(res[d]);
+            res[d] -= give;
+            pool += give;
+        }
+        for t in &takers {
+            res[*t] += pool / takers.len() as f64;
+        }
+    }
+    res
 }

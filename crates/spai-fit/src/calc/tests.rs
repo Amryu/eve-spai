@@ -340,3 +340,17 @@ fn a_rolled_module_or_drone_carries_its_rolled_values() {
     let drone = c.drones().next().unwrap().0;
     assert!(close(c.base(drone, attr::CPU), 7.0));
 }
+
+#[test]
+fn a_reactive_hardener_settles_where_the_damage_lands() {
+    use crate::calc::patch::adapt;
+    let even = [0.15; 4];
+    let ship = [1.0; 4];
+    let uniform = adapt(even, ship, [0.25; 4], 0.06);
+    assert!(uniform.iter().all(|r| (r - 0.15).abs() < 0.02), "uniform damage keeps it about even: {uniform:?}");
+    let kinetic = adapt(even, ship, [0.0, 0.0, 1.0, 0.0], 0.06);
+    assert!((kinetic[2] - 0.6).abs() < 1e-9 && kinetic.iter().sum::<f64>() > 0.599, "one type takes it all: {kinetic:?}");
+    let two = adapt(even, ship, [0.5, 0.5, 0.0, 0.0], 0.06);
+    assert!(two[0] > 0.2 && two[1] > 0.2 && two[2] < 0.1 && two[3] < 0.1, "two types share it: {two:?}");
+    assert!((two.iter().sum::<f64>() - 0.6).abs() < 1e-9, "never more or less than it has");
+}

@@ -733,6 +733,10 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let rolled = sim.view_fit().and_then(|v| v.module(slot, index).and_then(|m| m.mutation.clone()));
     let can_roll = !dogma.mutaplasmids_for(type_id).is_empty();
     let mut roll_it = false;
+    // A reactive hardener adapts to the incoming damage unless kept at its even split.
+    let reactive = dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == "adaptiveArmorHardener")));
+    let kept_even = sim.view_fit().and_then(|v| v.module(slot, index).map(|m| m.fixed)).unwrap_or(false);
+    let mut toggle_even = false;
     // Overloaded: a light red under the row and the state button's flame in red; active: a light green.
     let heat = match state {
         State::Overload => Some(ui.visuals().error_fg_color),
@@ -958,6 +962,13 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 details = Some(DetailsTarget::Module(slot, index));
                 ui.close();
             }
+            if single && reactive {
+                let mut adapts = !kept_even;
+                if ui.checkbox(&mut adapts, tr!("Adapts to the incoming damage")).on_hover_text(tr!("Off, it keeps its even split on every damage type")).changed() {
+                    toggle_even = true;
+                    ui.close();
+                }
+            }
             if single && charge.is_some() && ui.button(tr!("Charge details…")).clicked() {
                 details = Some(DetailsTarget::Charge(slot, index));
                 ui.close();
@@ -971,6 +982,13 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
         if let Some(t) = details {
             sim.open_details(t);
+        }
+        if toggle_even {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(m) = f.module_mut(slot, index) {
+                    m.fixed = !m.fixed;
+                }
+            });
         }
         if roll_it {
             sim.mutation_window = Some(crate::mutation::MutTarget::Module(slot, index));

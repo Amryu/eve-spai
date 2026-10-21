@@ -852,27 +852,20 @@ fn real_data_every_damaging_charge_is_offered_as_a_profile() {
 
 #[test]
 #[ignore = "needs SPAI_DOGMA_BLOB"]
-fn real_data_faction_charges_with_the_same_split_are_offered_once() {
+fn real_data_incoming_damage_menu_is_one_level_per_family() {
     let d = std::sync::Arc::new(spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap());
     let tree = crate::browser::Tree::build(&d);
-    let mut all = Vec::new();
-    fn walk(d: &spai_fit::Dogma, tree: &crate::browser::Tree, g: spai_fit::ids::MarketGroupId, out: &mut Vec<String>) {
-        let plain = crate::stats_panel::plain_charges(d, tree);
-        out.extend(crate::stats_panel::leaf_profiles(d, tree, &plain, g).into_iter().map(|(n, _)| n));
-        for &c in tree.children(g) {
-            walk(d, tree, c, out);
-        }
+    let families = crate::stats_panel::profile_families(&d, &tree);
+    for (f, e) in &families {
+        println!("{f}: {} entries, e.g. {:?}", e.len(), e.iter().take(8).map(|x| x.label.as_str()).collect::<Vec<_>>());
     }
-    for &r in tree.roots() {
-        walk(&d, &tree, r, &mut all);
+    let labels: Vec<&str> = families.iter().flat_map(|(_, e)| e.iter().map(|x| x.label.as_str())).collect();
+    for want in ["Berserker", "Hammerhead", "Ogre", "Hobgoblin", "Antimatter Charge", "EMP", "Scourge"] {
+        assert!(labels.contains(&want), "{want} offered: {labels:?}");
     }
-    println!("{} entries; faction-looking: {:?}", all.len(), all.iter().filter(|n| ["Navy", "Imperial", "Republic", "Federation", "Dark Blood", "Shadow", "Guristas", "Sansha", "True", "Domination", "Arch Angel", "Blood", "Serpentis", "Dread"].iter().any(|f| n.contains(f))).take(30).collect::<Vec<_>>());
-    assert!(all.iter().any(|n| n == "Antimatter Charge"), "{:?}", &all[..20.min(all.len())]);
-    assert!(!all.iter().any(|n| n == "Caldari Navy Antimatter Charge"), "same split as plain Antimatter");
-    assert!(all.iter().any(|n| n == "Scourge Heavy Missile"));
-    assert!(!all.iter().any(|n| n == "Caldari Navy Scourge Heavy Missile"));
-    assert!(!all.iter().any(|n| n.starts_with("Blood ") || n.starts_with("Shadow ")), "faction crystals and charges repeat the plain splits");
-    assert!(all.iter().any(|n| n == "Scourge Light Missile"), "a different size of the same split stays");
+    for copy in ["Caldari Navy Antimatter Charge", "Republic Fleet EMP", "Caldari Navy Scourge"] {
+        assert!(!labels.iter().any(|l| l.starts_with(copy)), "{copy} deals what its plain line does: folded in");
+    }
 }
 
 /// Drags the edges of the dock and the left bar like a user, and reads back what is kept.
@@ -1192,4 +1185,29 @@ fn the_fit_on_screen_can_be_taken_off_the_graph() {
         legend = crate::graphs_panel::last_line_count(&ctx);
     }
     assert_eq!(legend, 1, "only the other fit is drawn");
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_what_the_dialogs_leave_out() {
+    let d = std::sync::Arc::new(spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap());
+    let rolled = d.rolled_types();
+    for n in ["Berserker I", "Berserker II", "Hammerhead I", "Warrior I", "EMP S", "Scourge Heavy Missile", "Antimatter Charge M"] {
+        let t = d.type_named(n);
+        println!("{n}: present {} published {:?} market {:?} meta {:?} rolled {}", t.is_some(), t.map(|t| t.published), t.and_then(|t| t.market_group), t.and_then(|t| t.meta_group), t.is_some_and(|t| rolled.contains(&t.id)));
+    }
+    let published_drones = d.types.iter().filter(|t| t.published && t.category == spai_fit::ids::category::DRONE).count();
+    let rolled_drones = d.types.iter().filter(|t| t.published && t.category == spai_fit::ids::category::DRONE && rolled.contains(&t.id)).count();
+    let rolled_charges = d.types.iter().filter(|t| t.published && t.category == spai_fit::ids::category::CHARGE && rolled.contains(&t.id)).count();
+    println!("drones {published_drones}, rolled away {rolled_drones}; charges rolled away {rolled_charges}; rolled set {}", rolled.len());
+    let all = crate::picker::results(&d, crate::picker::PickTarget::Drone, None, "");
+    let b = d.type_named("Berserker I").unwrap().id;
+    println!("drone picker offers {} types, Berserker I {}", all.len(), all.contains(&b));
+    let tree = crate::browser::Tree::build(&d);
+    let mut g = d.type_(b).unwrap().market_group;
+    while let Some(id) = g {
+        println!("  group {id} {} kept-types {} children {}", tree.name(id), tree.types(id).len(), tree.children(id).len());
+        g = d.market_group(id).and_then(|m| m.parent);
+    }
+    println!("in its group's list: {}", tree.types(d.type_(b).unwrap().market_group.unwrap()).contains(&b));
 }
