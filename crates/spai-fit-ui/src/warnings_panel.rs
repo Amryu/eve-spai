@@ -57,7 +57,7 @@ const SHOWN: usize = 3;
 /// opens the list.
 pub fn strip(sim: &mut SimUi, ui: &mut egui::Ui) {
     let Some(dogma) = sim.dogma.clone() else { return };
-    let Some(s) = &sim.session else { return };
+    let Some(s) = sim.session() else { return };
     if s.warnings.is_empty() {
         return;
     }
@@ -107,7 +107,7 @@ pub fn skills_window(sim: &mut SimUi, ctx: &egui::Context) {
     let Some(dogma) = sim.dogma.clone() else { return };
     let pilot = sim.profiles.get(sim.profile).map_or(String::new(), |p| p.name.clone());
     let mut by_skill: Vec<(spai_fit::ids::TypeId, u8, u8)> = Vec::new();
-    if let Some(s) = &sim.session {
+    if let Some(s) = sim.session() {
         for m in &s.missing {
             match by_skill.iter_mut().find(|(sk, _, _)| *sk == m.skill) {
                 Some(e) => e.1 = e.1.max(m.needed),

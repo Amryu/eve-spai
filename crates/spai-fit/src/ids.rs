@@ -14,6 +14,14 @@ pub type CategoryId = u8;
 pub const CHARACTER_TYPE: TypeId = 1373;
 
 /// The item categories a fit is made of.
+pub mod group {
+    use super::GroupId;
+
+    /// Wormhole and abyssal weather, incursion and system effects: a celestial whose effects
+    /// reach every ship in the system.
+    pub const EFFECT_BEACON: GroupId = 920;
+}
+
 pub mod category {
     use super::CategoryId;
 

@@ -164,7 +164,7 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
     let Some(dogma) = sim.dogma.clone() else { return false };
     let Some(t) = dogma.type_(type_id) else { return false };
     let place = place_of(&dogma, t);
-    if sim.session.is_none() {
+    if sim.session().is_none() {
         if place == Place::Ship {
             sim.new_fit(type_id, now_ms);
             return true;
@@ -176,17 +176,20 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
         Place::Module(slot) => {
             let total = sim.computed().map_or(0, |c| c.fitting.slots[Slot::ALL.iter().position(|s| *s == slot).unwrap_or(0)].1);
             let view = sim.view_fit();
-            let free = (0..total as u8).find(|i| view.as_ref().is_none_or(|v| v.module(slot, *i).is_none()));
+            // The next free slot of its kind; a full rack takes nothing, rather than a module
+            // hanging past the last slot.
+            let Some(index) = (0..total as u8).find(|i| view.as_ref().is_none_or(|v| v.module(slot, *i).is_none())) else {
+                sim.status(trf!("No free {slot} slot", slot = picker::slot_name(slot)));
+                return false;
+            };
             sim.edit(EditKind::AddModule, now_ms, |f| {
-                let index = free.unwrap_or_else(|| f.add_module(type_id, slot));
-                f.remove_module(slot, index);
                 let mut m = spai_fit::fit::Module::new(type_id, slot, index);
                 m.state = formats::default_state(&dogma, type_id);
                 f.modules.push(m);
             });
         }
         Place::Charge => {
-            let takers: Vec<(Slot, u8)> = sim.session.as_ref().map(|s| s.fit.modules.iter().filter(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id)).map(|m| (m.slot, m.index)).collect()).unwrap_or_default();
+            let takers: Vec<(Slot, u8)> = sim.session().map(|s| s.fit.modules.iter().filter(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id)).map(|m| (m.slot, m.index)).collect()).unwrap_or_default();
             if takers.is_empty() {
                 sim.edit(EditKind::Cargo, now_ms, |f| {
                     formats::add_item(&dogma, f, type_id, 1);
@@ -243,7 +246,7 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
             true
         }
         (DropTarget::Module(slot, index), Place::Charge) => {
-            let takes = sim.session.as_ref().and_then(|s| s.fit.module(slot, index)).is_some_and(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id));
+            let takes = sim.session().and_then(|s| s.fit.module(slot, index)).is_some_and(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id));
             if !takes {
                 return false;
             }
@@ -255,6 +258,7 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
             true
         }
         (DropTarget::Dock(DockTab::Drones), Place::Drone) | (DropTarget::Dock(DockTab::Fighters), Place::Fighter) | (DropTarget::Dock(_), Place::Implant | Place::Booster) => quick_add(sim, type_id, now_ms),
+        (DropTarget::Dock(DockTab::Projected), _) => add_projected(sim, type_id, now_ms),
         (DropTarget::Dock(DockTab::Cargo), Place::Charge) => {
             sim.edit(EditKind::Cargo, now_ms, |f| {
                 formats::add_item(&dogma, f, type_id, 1);
@@ -263,6 +267,31 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
         }
         _ => false,
     }
+}
+
+/// What can act on the fit from outside: a module or drone another ship points at it, or a
+/// system effect (weather, an incursion, a beacon).
+pub fn projectable(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
+    use spai_fit::dogma::EffectCategory;
+    t.group == spai_fit::ids::group::EFFECT_BEACON
+        || t.category == category::DRONE
+        || (t.category == category::MODULE && t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.category == EffectCategory::Target)))
+}
+
+/// Puts a module, drone or system effect on the fit from outside; one more of it if it is there.
+pub fn add_projected(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
+    let Some(dogma) = sim.dogma.clone() else { return false };
+    let Some(t) = dogma.type_(type_id) else { return false };
+    if sim.session().is_none() || !projectable(&dogma, t) {
+        return false;
+    }
+    let beacon = t.group == spai_fit::ids::group::EFFECT_BEACON;
+    sim.edit(EditKind::Other, now_ms, |f| match f.projected.iter_mut().find(|p| p.type_id == type_id) {
+        Some(_) if beacon => {}
+        Some(p) => p.count += 1,
+        None => f.projected.push(spai_fit::fit::Projected { type_id, ..Default::default() }),
+    });
+    true
 }
 
 /// Takes a drop that landed on `resp`, if any, and reports a drop that fits nowhere.
@@ -288,6 +317,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     ui.add_space(2.0);
     let searching = !sim.browser.query.trim().is_empty();
     let mut add: Option<TypeId> = None;
+    let mut details: Option<TypeId> = None;
     egui::ScrollArea::vertical().id_salt("sim_browser").auto_shrink([false, false]).show(ui, |ui| {
         if searching {
             let hits: Vec<TypeId> = sim.browser.search(&dogma).to_vec();
@@ -297,7 +327,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             }
             for id in hits {
                 let group = dogma.type_(id).and_then(|t| t.market_group).map(|g| tree.path(&dogma, g)).unwrap_or_default();
-                if type_row(ui, &dogma, id, 0.0, &group) {
+                if type_row(ui, &dogma, id, 0.0, &group, &mut details) {
                     add = Some(id);
                 }
             }
@@ -307,18 +337,22 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         } else {
             let roots: Vec<MarketGroupId> = tree.roots().to_vec();
             for g in roots {
-                group_rows(sim, ui, &dogma, &tree, g, 0, &mut add);
+                group_rows(sim, ui, &dogma, &tree, g, 0, &mut add, &mut details);
             }
         }
     });
     if let Some(id) = add {
-        if !quick_add(sim, id, now_ms) {
+        if !quick_add(sim, id, now_ms) && sim.session().is_none() {
             sim.note(tr!("Pick a hull first").to_owned());
         }
     }
+    if let Some(id) = details {
+        sim.open_details(crate::details::DetailsTarget::Type(id));
+    }
 }
 
-fn group_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tree: &Tree, g: MarketGroupId, depth: usize, add: &mut Option<TypeId>) {
+#[allow(clippy::too_many_arguments)]
+fn group_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tree: &Tree, g: MarketGroupId, depth: usize, add: &mut Option<TypeId>, details: &mut Option<TypeId>) {
     let open = sim.browser.expanded.contains(&g);
     let indent = depth as f32 * 14.0;
     let r = rows::row(ui, "browser", ("sim_mg", g), ROW_H, false, |ui| {
@@ -339,26 +373,26 @@ fn group_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tree: &Tree, g:
     }
     let children: Vec<MarketGroupId> = tree.children(g).to_vec();
     for c in children {
-        group_rows(sim, ui, dogma, tree, c, depth + 1, add);
+        group_rows(sim, ui, dogma, tree, c, depth + 1, add, details);
     }
     for id in tree.types(g).to_vec() {
-        if type_row(ui, dogma, id, indent + 18.0, "") {
+        if type_row(ui, dogma, id, indent + 18.0, "", details) {
             *add = Some(id);
         }
     }
 }
 
-/// One type: an icon and its name, draggable; `true` on a double click.
-fn type_row(ui: &mut egui::Ui, dogma: &Dogma, id: TypeId, indent: f32, note: &str) -> bool {
+/// One type: an icon and its name, draggable; `true` on a double click. A right click offers
+/// the details window, opened through `details`.
+fn type_row(ui: &mut egui::Ui, dogma: &Dogma, id: TypeId, indent: f32, note: &str, details: &mut Option<TypeId>) -> bool {
     let Some(t) = dogma.type_(id) else { return false };
     let name = t.name.clone();
-    let hover = if note.is_empty() { name.clone() } else { format!("{name}\n{note}") };
     let r = ui.dnd_drag_source(egui::Id::new(("sim_drag", id, note.len())), DragItem(id), |ui| {
         rows::row(ui, "browser", ("sim_type", id, note.len()), ROW_H, false, |ui| {
             ui.add_space(indent);
             crate::icons::type_icon(ui, id, 18.0);
             let w = ui.available_width();
-            rows::cell(ui, w, egui::RichText::new(text::clip(&name, 40)), &hover);
+            rows::cell(ui, w, egui::RichText::new(text::clip(&name, 40)), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, id, note));
         })
     });
     let mut add = r.response.double_clicked();
@@ -369,6 +403,10 @@ fn type_row(ui: &mut egui::Ui, dogma: &Dogma, id: TypeId, indent: f32, note: &st
         }
         if t.category == category::SHIP && ui.button(tr!("Fit this hull")).clicked() {
             add = true;
+            ui.close();
+        }
+        if ui.button(tr!("Details…")).clicked() {
+            *details = Some(id);
             ui.close();
         }
     });

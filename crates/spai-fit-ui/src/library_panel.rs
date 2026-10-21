@@ -14,8 +14,8 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             picker::open(sim, PickTarget::Ship);
         }
     });
-    let current = sim.session.as_ref().map(|s| s.id.clone());
-    let dirty = sim.session.as_ref().is_some_and(|s| s.dirty);
+    let current = sim.session().map(|s| s.id.clone());
+    let dirty = sim.session().is_some_and(|s| s.dirty);
     let mut load: Option<String> = None;
     let mut delete: Option<String> = None;
     let entries = sim.library.clone();
@@ -69,7 +69,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     if let Some(id) = delete {
         if current.as_deref() == Some(id.as_str()) {
-            sim.session = None;
+            sim.close_id(&id);
         }
         sim.library.retain(|e| e.id != id);
         sim.request(HostRequest::DeleteFit(id));

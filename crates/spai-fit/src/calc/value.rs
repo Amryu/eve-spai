@@ -26,6 +26,11 @@ pub struct Modification {
 /// `exp(-(k / 2.67)²)`, so 100%, 86.9%, 57.1%, 28.3%, 10.5%, 3.0%, ...
 pub const PENALTY_FACTOR: f64 = 0.869_119_980_800_397_4;
 
+/// Where an operator sits in the order of application.
+pub(crate) fn order_of(op: Op) -> usize {
+    ORDER.iter().position(|o| *o == op).unwrap_or(ORDER.len())
+}
+
 const ORDER: [Op; 9] = [Op::PreAssign, Op::PreMul, Op::PreDiv, Op::ModAdd, Op::ModSub, Op::PostMul, Op::PostDiv, Op::PostPercent, Op::PostAssign];
 
 /// `mods` are `(operator, modifying value, penalised)`.
@@ -44,40 +49,63 @@ pub fn combine(base: f64, high_is_good: bool, mods: &[(Op, f64, bool)]) -> f64 {
             Op::ModAdd => v += group.iter().map(|(x, _)| *x).sum::<f64>(),
             Op::ModSub => v -= group.iter().map(|(x, _)| *x).sum::<f64>(),
             Op::PreMul | Op::PreDiv | Op::PostMul | Op::PostDiv | Op::PostPercent => {
-                let normalise = |x: f64| match op {
-                    Op::PreDiv | Op::PostDiv => {
-                        if x == 0.0 {
-                            0.0
-                        } else {
-                            1.0 / x - 1.0
-                        }
-                    }
-                    Op::PostPercent => x / 100.0,
-                    _ => x - 1.0,
-                };
-                let mut plain = 1.0;
-                let mut bonuses = Vec::new();
-                let mut maluses = Vec::new();
-                for (x, penalised) in group {
-                    let x = normalise(x);
-                    if !penalised {
-                        plain *= 1.0 + x;
-                    } else if x > 0.0 {
-                        bonuses.push(x);
-                    } else if x < 0.0 {
-                        maluses.push(x);
-                    }
-                }
-                v *= plain * penalised_product(bonuses) * penalised_product(maluses);
+                let normalise = |x: f64| fraction(op, x);
+                let xs: Vec<(f64, bool)> = group.iter().map(|(x, p)| (normalise(*x), *p)).collect();
+                let weights = weights_of(&xs);
+                v *= xs.iter().zip(weights).map(|((x, _), w)| 1.0 + x * w).product::<f64>();
             }
         }
     }
     v
 }
 
-fn penalised_product(mut xs: Vec<f64>) -> f64 {
-    xs.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap_or(std::cmp::Ordering::Equal));
-    xs.iter().enumerate().map(|(k, x)| 1.0 + x * PENALTY_FACTOR.powi((k * k) as i32)).product()
+/// The modifying value of a multiplying operator as the fraction it adds: `×1.2` and `+20%` are
+/// both `0.2`, `÷1.25` is `-0.2`.
+pub fn fraction(op: Op, x: f64) -> f64 {
+    match op {
+        Op::PreDiv | Op::PostDiv => {
+            if x == 0.0 {
+                0.0
+            } else {
+                1.0 / x - 1.0
+            }
+        }
+        Op::PostPercent => x / 100.0,
+        Op::PreMul | Op::PostMul => x - 1.0,
+        _ => x,
+    }
+}
+
+/// How much of each modifier of one operator stays after the stacking penalty: all of an
+/// unpenalised one, `PENALTY_FACTOR^(k²)` of the k-th strongest penalised one, bonuses and maluses
+/// ranked apart. `xs` are `(fraction, penalised)`.
+fn weights_of(xs: &[(f64, bool)]) -> Vec<f64> {
+    let rank = |same_sign: &dyn Fn(f64) -> bool| {
+        let mut idx: Vec<usize> = (0..xs.len()).filter(|&i| xs[i].1 && same_sign(xs[i].0)).collect();
+        idx.sort_by(|a, b| xs[*b].0.abs().partial_cmp(&xs[*a].0.abs()).unwrap_or(std::cmp::Ordering::Equal));
+        idx
+    };
+    let mut w = vec![1.0; xs.len()];
+    for ranked in [rank(&|x| x > 0.0), rank(&|x| x < 0.0)] {
+        for (k, i) in ranked.into_iter().enumerate() {
+            w[i] = PENALTY_FACTOR.powi((k * k) as i32);
+        }
+    }
+    w
+}
+
+/// The share of each modifier's effect that stays after the stacking penalty, in the order given;
+/// 1 for one that is not penalised or does nothing.
+pub fn penalty_weights(mods: &[(Op, f64, bool)]) -> Vec<f64> {
+    let mut w = vec![1.0; mods.len()];
+    for op in ORDER {
+        let idx: Vec<usize> = (0..mods.len()).filter(|&i| mods[i].0 == op).collect();
+        let xs: Vec<(f64, bool)> = idx.iter().map(|&i| (fraction(op, mods[i].1), mods[i].2)).collect();
+        for (i, wi) in idx.into_iter().zip(weights_of(&xs)) {
+            w[i] = wi;
+        }
+    }
+    w
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ pub enum PickTarget {
     Implant,
     Booster,
     Cargo,
+    Projected,
 }
 
 pub struct Picker {
@@ -50,6 +51,7 @@ impl Picker {
             PickTarget::Implant => tr!("Choose an implant").to_owned(),
             PickTarget::Booster => tr!("Choose a booster").to_owned(),
             PickTarget::Cargo => tr!("Add cargo").to_owned(),
+            PickTarget::Projected => tr!("Project onto this fit").to_owned(),
         }
     }
 }
@@ -103,7 +105,8 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
         _ => dogma
             .types
             .iter()
-            .filter(|t| t.published && matches(&t.name))
+            // Beacons are not on the market and not published; they are still what weather is.
+            .filter(|t| (t.published || (target == PickTarget::Projected && t.group == spai_fit::ids::group::EFFECT_BEACON)) && matches(&t.name))
             .filter(|t| match target {
                 PickTarget::Ship => t.category == category::SHIP,
                 PickTarget::Module(slot, _) => (t.category == category::MODULE || t.category == category::SUBSYSTEM) && dogma.slot_of(t.id) == Some(slot),
@@ -113,6 +116,7 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
                 PickTarget::Implant => place_of(dogma, t) == Place::Implant,
                 PickTarget::Booster => place_of(dogma, t) == Place::Booster,
                 PickTarget::Cargo => t.category == category::CHARGE,
+                PickTarget::Projected => crate::browser::projectable(dogma, t),
             })
             .map(|t| (t.name.to_lowercase(), t.id))
             .collect(),
@@ -130,7 +134,7 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
     let Some(dogma) = sim.dogma.clone() else { return };
     match target {
         PickTarget::Ship => {
-            if sim.session.is_some() {
+            if sim.session().is_some() {
                 sim.edit(EditKind::Other, now_ms, |f| f.ship = type_id);
             } else {
                 sim.new_fit(type_id, now_ms);
@@ -153,16 +157,19 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
         PickTarget::Implant | PickTarget::Booster => {
             crate::browser::quick_add(sim, type_id, now_ms);
         }
+        PickTarget::Projected => {
+            crate::browser::add_projected(sim, type_id, now_ms);
+        }
     }
 }
 
 pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     let Some(dogma): Option<Arc<Dogma>> = sim.dogma.clone() else { return };
-    let Some(picker) = &mut sim.picker else { return };
-    let module_type = match picker.target {
-        PickTarget::Charge(slot, index) => sim.session.as_ref().and_then(|s| s.fit.module(slot, index)).map(|m| m.type_id),
+    let module_type = match sim.picker.as_ref().map(|p| p.target) {
+        Some(PickTarget::Charge(slot, index)) => sim.session().and_then(|s| s.fit.module(slot, index)).map(|m| m.type_id),
         _ => None,
     };
+    let Some(picker) = &mut sim.picker else { return };
     if picker.last_query.as_deref() != Some(picker.query.as_str()) {
         picker.results = results(&dogma, picker.target, module_type, &picker.query);
         picker.last_query = Some(picker.query.clone());
@@ -196,7 +203,7 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                 let r = crate::rows::row(ui, "picker", ("sim_pick", id), 24.0, false, |ui| {
                     crate::icons::type_icon(ui, id, 18.0);
                     let w = (ui.available_width() - 120.0).max(80.0);
-                    crate::rows::cell(ui, w, egui::RichText::new(t.name.as_str()), &t.name);
+                    crate::rows::cell(ui, w, egui::RichText::new(t.name.as_str()), "").on_hover_ui(|ui| crate::details::type_tip(ui, &dogma, id, ""));
                     ui.add(egui::Label::new(egui::RichText::new(crate::text::clip(group, 18)).weak()).truncate());
                 });
                 if r.clicked() {

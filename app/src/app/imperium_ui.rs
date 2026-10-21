@@ -107,6 +107,10 @@ impl SpaiApp {
             }
             HostRequest::FetchSkills => self.sim_fetch_skills(ctx, true),
             HostRequest::CopyText(t) => ctx.copy_text(t),
+            HostRequest::ReadClipboard => {
+                let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+                self.sim.handle(HostEvent::Clipboard(text));
+            }
             HostRequest::FetchDoctrines => self.sim_fetch_doctrines(ctx),
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.sim_publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.sim_delete_doctrine(ctx, id),

@@ -80,11 +80,24 @@ pub struct DroneStack {
     pub count: u32,
     /// In space, not in the bay.
     pub active: bool,
+    /// How many of the stack are in space while it is out; none means all of them.
+    pub launched: Option<u32>,
+}
+
+impl DroneStack {
+    /// How many fight: none while the stack is in the bay, else those launched.
+    pub fn in_space(&self) -> u32 {
+        if self.active {
+            self.launched.unwrap_or(self.count).min(self.count)
+        } else {
+            0
+        }
+    }
 }
 
 impl Default for DroneStack {
     fn default() -> Self {
-        DroneStack { type_id: 0, count: 1, active: true }
+        DroneStack { type_id: 0, count: 1, active: true, launched: None }
     }
 }
 
@@ -205,6 +218,8 @@ pub struct Fit {
     pub fighters: Vec<FighterSquad>,
     pub implants: Vec<TypeId>,
     pub boosters: Vec<Booster>,
+    /// Implants and boosters switched off for now: kept on the fit, counted for nothing.
+    pub disabled: Vec<TypeId>,
     pub cargo: Vec<CargoItem>,
     pub damage_profile: DamageProfile,
     pub target: TargetProfile,
@@ -248,9 +263,84 @@ impl Fit {
     }
 }
 
+impl Fit {
+    /// What is fitted, carried and worn, in a form two fits can be compared by: the hull, the
+    /// modules by slot with their charges, the bays, the implants and boosters, the cargo. Not
+    /// the name, the states, the variations, the target or the notes.
+    pub fn fitting_key(&self) -> Vec<String> {
+        let mut k: Vec<String> = vec![format!("ship {}", self.ship)];
+        let mut mods: Vec<String> = self.modules.iter().map(|m| format!("{:?} {} {}", m.slot, m.type_id, m.charge.unwrap_or(0))).collect();
+        mods.sort();
+        k.extend(mods);
+        let mut drones: Vec<String> = self.drones.iter().map(|d| format!("drone {} x{}", d.type_id, d.count)).collect();
+        drones.sort();
+        k.extend(drones);
+        let mut fighters: Vec<String> = self.fighters.iter().map(|f| format!("fighter {} x{}", f.type_id, f.count)).collect();
+        fighters.sort();
+        k.extend(fighters);
+        let mut worn: Vec<String> = self.implants.iter().map(|i| format!("implant {i}")).chain(self.boosters.iter().map(|b| format!("booster {}", b.type_id))).collect();
+        worn.sort();
+        k.extend(worn);
+        let mut cargo: Vec<String> = self.cargo.iter().map(|c| format!("cargo {} x{}", c.type_id, c.quantity)).collect();
+        cargo.sort();
+        k.extend(cargo);
+        k
+    }
+
+    /// The same hull with the same things fitted, carried and worn.
+    pub fn same_fitting(&self, other: &Fit) -> bool {
+        self.fitting_key() == other.fitting_key()
+    }
+
+    /// How much of the racks two fits of one hull share, 0 to 1: the modules by slot and type
+    /// (charges aside) that both carry, over the larger rack. 0 for different hulls.
+    pub fn rack_similarity(&self, other: &Fit) -> f64 {
+        if self.ship != other.ship {
+            return 0.0;
+        }
+        let mut mine: Vec<(Slot, TypeId)> = self.modules.iter().map(|m| (m.slot, m.type_id)).collect();
+        let theirs: Vec<(Slot, TypeId)> = other.modules.iter().map(|m| (m.slot, m.type_id)).collect();
+        let larger = mine.len().max(theirs.len());
+        if larger == 0 {
+            return 1.0;
+        }
+        let mut shared = 0usize;
+        for t in theirs {
+            if let Some(i) = mine.iter().position(|m| *m == t) {
+                mine.remove(i);
+                shared += 1;
+            }
+        }
+        shared as f64 / larger as f64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fits_compare_by_what_is_fitted_and_racks_by_how_much_they_share() {
+        let mut a = Fit::new(587, "A");
+        a.add_module(1, Slot::High);
+        a.add_module(2, Slot::High);
+        a.add_module(3, Slot::Low);
+        a.drones.push(DroneStack { type_id: 9, count: 2, active: true, launched: None });
+        let mut b = a.clone();
+        b.name = "B".into();
+        b.modules.swap(0, 1);
+        b.modules[0].state = State::Offline;
+        assert!(a.same_fitting(&b), "names, order and states do not count");
+        b.cargo.push(CargoItem { type_id: 5, quantity: 1 });
+        assert!(!a.same_fitting(&b), "the cargo does");
+        let mut c = Fit::new(587, "C");
+        c.add_module(1, Slot::High);
+        c.add_module(4, Slot::High);
+        c.add_module(3, Slot::Low);
+        assert!((a.rack_similarity(&c) - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(a.rack_similarity(&Fit::new(588, "other hull")), 0.0);
+        assert_eq!(Fit::new(587, "x").rack_similarity(&Fit::new(587, "y")), 1.0);
+    }
 
     #[test]
     fn modules_are_addressed_by_rack_and_position() {
@@ -276,7 +366,7 @@ mod tests {
         let mut f = Fit::new(587, "Rifter");
         f.add_module(2048, Slot::Low);
         f.modules[0].charge = Some(1);
-        f.drones.push(DroneStack { type_id: 2454, count: 2, active: true });
+        f.drones.push(DroneStack { type_id: 2454, count: 2, active: true, launched: None });
         let json = serde_json::to_string(&f).unwrap();
         assert_eq!(serde_json::from_str::<Fit>(&json).unwrap(), f);
         let old: Fit = serde_json::from_str(r#"{"ship": 587, "modules": [{"type_id": 1, "slot": "Low"}]}"#).unwrap();

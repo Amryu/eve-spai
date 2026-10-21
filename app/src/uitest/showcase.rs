@@ -577,12 +577,12 @@ fn fitting_setup(a: &mut crate::app::SpaiApp) {
     };
     a.sim.open_fit(fit, 0);
     a.sim.pane = spai_fit_ui::Pane::Stats;
-    let ship = a.sim.session.as_ref().map_or(0, |s| s.fit.ship);
+    let ship = a.sim.session().map_or(0, |s| s.fit.ship);
     let names = ["Ferox Rail", "Ferox Rail (MJD)", "Eagle Rail", "Basilisk", "Scimitar", "Drake Navy Issue", "Sabre", "Huginn"];
     a.sim.handle(spai_fit_ui::HostEvent::Fits(names.iter().enumerate().map(|(i, n)| spai_fit_ui::FitSummary { id: format!("fit-{i}"), name: (*n).into(), ship, updated_at: 0 }).collect()));
     // The coalition's presets, named as its doctrines are; the hulls are looked up in the data.
     a.sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
-    let doc = a.sim.session.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(&spai_fit::doc::to_json(&s.fit)).ok()).unwrap_or_default();
+    let doc = a.sim.session().and_then(|s| serde_json::from_str::<serde_json::Value>(&spai_fit::doc::to_json(&s.fit)).ok()).unwrap_or_default();
     let preset = |id: &str, side: spai_fit_ui::DoctrineSide, name: &str, hull: &str| {
         dogma.type_named(hull).map(|t| spai_fit_ui::Doctrine { id: id.into(), side, name: name.into(), ship: t.id, tags: Vec::new(), refit_keys: Vec::new(), rev: 1, doc: doc.clone() })
     };

@@ -11,6 +11,7 @@ use spai_ui::widgets::icon_button;
 use spai_ui::{tr, trf};
 
 use crate::browser::{self, DropTarget};
+use crate::details::{self, DetailsTarget};
 use crate::picker::{self, PickTarget};
 use crate::rows::{self, ROW_H};
 use crate::{text, SimUi};
@@ -80,6 +81,71 @@ pub fn states_of(dogma: &Dogma, type_id: TypeId) -> Vec<State> {
     v
 }
 
+/// The states every one of the types can take, lowest first.
+pub fn common_states(dogma: &Dogma, types: &[TypeId]) -> Vec<State> {
+    let mut it = types.iter().map(|t| states_of(dogma, *t));
+    let Some(first) = it.next() else { return Vec::new() };
+    it.fold(first, |acc, s| acc.into_iter().filter(|x| s.contains(x)).collect())
+}
+
+/// The charges every one of the types takes, when they all take the same ones.
+pub fn common_charges(dogma: &Dogma, types: &[TypeId]) -> Vec<TypeId> {
+    let mut it = types.iter().map(|t| picker::compatible_charges(dogma, *t));
+    let Some(first) = it.next() else { return Vec::new() };
+    if first.is_empty() || it.any(|l| l != first) {
+        return Vec::new();
+    }
+    first
+}
+
+/// A click on a row of the racks: plain picks the row alone, Ctrl toggles it, Shift takes the
+/// stretch from the last plain or Ctrl click to it. `order` is every row top to bottom.
+pub fn pick(selection: &mut Vec<(Slot, u8)>, anchor: &mut Option<(Slot, u8)>, order: &[(Slot, u8)], hit: (Slot, u8), ctrl: bool, shift: bool) {
+    let at = |x: (Slot, u8)| order.iter().position(|o| *o == x);
+    match (shift, anchor.and_then(at), at(hit)) {
+        (true, Some(a), Some(h)) => {
+            let (lo, hi) = (a.min(h), a.max(h));
+            let range = order[lo..=hi].to_vec();
+            if !ctrl {
+                selection.clear();
+            }
+            for r in range {
+                if !selection.contains(&r) {
+                    selection.push(r);
+                }
+            }
+        }
+        _ if ctrl => {
+            match selection.iter().position(|s| *s == hit) {
+                Some(i) => {
+                    selection.remove(i);
+                }
+                None => selection.push(hit),
+            }
+            *anchor = Some(hit);
+        }
+        _ => {
+            selection.clear();
+            selection.push(hit);
+            *anchor = Some(hit);
+        }
+    }
+}
+
+/// Every charge at least one of the types takes, for a menu that loads each where it fits.
+pub fn any_charges(dogma: &Dogma, types: &[TypeId]) -> Vec<TypeId> {
+    let mut out: Vec<TypeId> = Vec::new();
+    for t in types {
+        for c in picker::compatible_charges(dogma, *t) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    out.sort_by_key(|c| spai_fit::formats::name_of(dogma, *c));
+    out
+}
+
 /// The next state a click moves a module to, round the ones it can take.
 pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
     let states = states_of(dogma, type_id);
@@ -89,7 +155,7 @@ pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
 
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
-    if sim.session.is_none() {
+    if sim.session().is_none() {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
             ui.label(tr!("No fit open."));
@@ -115,7 +181,9 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("sim_editor").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.add_space(8.0);
+            ui.add_space(4.0);
+            fit_tabs(sim, ui);
+            ui.add_space(4.0);
             header(sim, ui, &dogma, now_ms);
             variation_tabs(sim, ui, now_ms);
             crate::warnings_panel::strip(sim, ui);
@@ -125,21 +193,84 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     });
 }
 
+/// One tab per open fit, the way the Jabber tab bar works: a click shows it, the X closes the one
+/// shown, a right click offers to close the rest; the plus opens a hull picker for another.
+fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
+    let mut activate: Option<usize> = None;
+    let mut close: Option<usize> = None;
+    let mut close_others: Option<usize> = None;
+    let mut add = false;
+    let active = sim.active_tab();
+    let names: Vec<(String, bool)> = sim.sessions().iter().map(|s| (s.fit.name.clone(), s.dirty)).collect();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(rows::GAP);
+        for (i, (name, dirty)) in names.iter().enumerate() {
+            let hit = spai_ui::widgets::tab_box(ui, egui::Id::new(("sim_tab", i)), i == active, &text::clip(name, 22), *dirty);
+            let r = hit.resp.on_hover_text(name);
+            if hit.select {
+                activate = Some(i);
+            }
+            if hit.close {
+                close = Some(i);
+            }
+            r.context_menu(|ui| {
+                if ui.button(tr!("Close")).clicked() {
+                    close = Some(i);
+                    ui.close();
+                }
+                if names.len() > 1 && ui.button(tr!("Close the others")).clicked() {
+                    close_others = Some(i);
+                    ui.close();
+                }
+            });
+        }
+        ui.add_space(rows::GAP);
+        if icon_button(ui, icon::PLUS).on_hover_text(tr!("Another fit")).clicked() {
+            add = true;
+        }
+    });
+    if let Some(i) = activate {
+        sim.activate(i);
+    }
+    if let Some(i) = close {
+        sim.close_tab(i);
+    }
+    if let Some(keep) = close_others {
+        for i in (0..names.len()).rev() {
+            if i != keep {
+                sim.close_tab(i);
+            }
+        }
+    }
+    if add {
+        picker::open(sim, PickTarget::Ship);
+    }
+}
+
 fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
-    let Some(s) = &mut sim.session else { return };
+    let Some(s) = sim.session_mut() else { return };
     let ship = s.fit.ship;
     let ship_name = dogma.type_(ship).map_or_else(|| trf!("Unknown hull {id}", id = ship), |t| t.name.clone());
     let group = dogma.type_(ship).and_then(|t| dogma.group(t.group)).map_or(String::new(), |g| g.name.clone());
     let mut name = s.fit.name.clone();
     let mut pick_ship = false;
+    let mut hull_details = false;
     let mut traits_open = false;
     let resp = ui
         .horizontal(|ui| {
             ui.add_space(rows::GAP);
             let r = ui.add(egui::Image::new(crate::icons::ship_render_uri(ship)).fit_to_exact_size(egui::vec2(56.0, 56.0)).corner_radius(4.0)).interact(egui::Sense::click());
-            if r.on_hover_text(tr!("Change hull: click, or drop a ship here")).clicked() {
+            let r = r.on_hover_ui(|ui| details::type_tip(ui, dogma, ship, tr!("Click to change the hull, or drop a ship here")));
+            if r.clicked() {
                 pick_ship = true;
             }
+            r.context_menu(|ui| {
+                if ui.button(tr!("Hull details…")).clicked() {
+                    hull_details = true;
+                    ui.close();
+                }
+            });
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 let w = (ui.available_width() - rows::GAP).max(120.0);
@@ -160,6 +291,9 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     browser::accept_drop(sim, &resp, DropTarget::Hull, now_ms);
     if pick_ship {
         picker::open(sim, PickTarget::Ship);
+    }
+    if hull_details {
+        sim.open_details(DetailsTarget::Ship);
     }
     if traits_open {
         sim.traits_window = true;
@@ -208,7 +342,7 @@ fn bonus_line(dogma: &Dogma, b: &spai_fit::dogma::Bonus) -> String {
 /// another kind); a new one is recorded by editing.
 fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     use spai_ui::widgets::SteadySelect as _;
-    let Some(s) = &sim.session else { return };
+    let Some(s) = sim.session() else { return };
     let list: Vec<(u32, String, Option<String>, bool)> = s.fit.variations.iter().map(|v| (v.id, v.name.clone(), v.refit_key.clone(), s.fit.active_variations.contains(&v.id))).collect();
     let none_on = s.fit.active_variations.is_empty();
     let recording = sim.recording.is_some();
@@ -349,7 +483,8 @@ fn racks(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     });
     let fixed = sim.variation_positions();
     let Some(view) = sim.view_fit() else { return };
-    let stats: Vec<spai_fit::stats::ModuleStat> = sim.session.as_ref().map(|s| s.module_stats.clone()).unwrap_or_default();
+    sim.selection.retain(|(s, i)| view.module(*s, *i).is_some());
+    let stats: Vec<spai_fit::stats::ModuleStat> = sim.session().map(|s| s.module_stats.clone()).unwrap_or_default();
     for (i, slot) in Slot::ALL.iter().enumerate() {
         let (used, total) = slots[i];
         if total == 0 && used == 0 {
@@ -397,6 +532,38 @@ fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: 
         }
     });
     browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
+    accept_module_drop(sim, ui, &r, slot, index, now_ms);
+}
+
+/// A fitted module dropped on a slot of its own rack: moved there, trading places with what sat
+/// there, or copied with Shift held on release.
+fn accept_module_drop(sim: &mut SimUi, ui: &egui::Ui, r: &egui::Response, slot: Slot, index: u8, now_ms: u64) {
+    let Some(from) = r.dnd_release_payload::<rows::DragModule>() else { return };
+    let rows::DragModule(from_slot, from_index) = *from;
+    if from_slot != slot || from_index == index {
+        return;
+    }
+    let copy = ui.input(|i| i.modifiers.shift);
+    move_module(sim, slot, from_index, index, copy, now_ms);
+}
+
+/// Moves the module at `from` to `to` within a rack, swapping with any module there, or copies it.
+pub fn move_module(sim: &mut SimUi, slot: Slot, from: u8, to: u8, copy: bool, now_ms: u64) {
+    sim.edit(if copy { EditKind::AddModule } else { EditKind::Other }, now_ms, |f| {
+        let Some(moving) = f.module(slot, from).cloned() else { return };
+        if copy {
+            f.remove_module(slot, to);
+            f.modules.push(spai_fit::fit::Module { index: to, ..moving });
+            return;
+        }
+        let there = f.remove_module(slot, to);
+        f.remove_module(slot, from);
+        f.modules.push(spai_fit::fit::Module { index: to, ..moving });
+        if let Some(t) = there {
+            f.modules.push(spai_fit::fit::Module { index: from, ..t });
+        }
+    });
+    sim.selection.clear();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -409,7 +576,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let mut set_charge: Option<Option<TypeId>> = None;
     let mut replace: Option<TypeId> = None;
     let mut remove = false;
-    let r = rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, false, |ui| {
+    let mut details: Option<DetailsTarget> = None;
+    let selected = sim.selection.contains(&(slot, index));
+    let drag = ui.dnd_drag_source(egui::Id::new(("sim_mod_drag", slot, index)), rows::DragModule(slot, index), |ui| rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
         if by_variation {
             ui.disable();
         }
@@ -418,15 +587,18 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         let name_w = cols.name_width(inner);
         let label = egui::RichText::new(&name);
         let label = if state == State::Offline { label.weak() } else { label };
-        let hover = if by_variation { trf!("{name}\nSet by a variation", name = name) } else { name.clone() };
-        if rows::cell(ui, name_w, label, &hover).interact(egui::Sense::click()).clicked() {
-            open_picker = Some(PickTarget::Module(slot, index));
-        }
+        let note = if by_variation { tr!("Set by a variation") } else { "" };
+        rows::cell(ui, name_w, label, "").on_hover_ui(|ui| details::type_tip(ui, dogma, type_id, note));
         if takes_charges {
             let shown = charge_name.clone().unwrap_or_else(|| tr!("No charge").to_owned());
             let r = ui.scope(|ui| {
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 1.0);
-                ui.add_sized([cols.charge, ROW_H - 4.0], egui::Button::new(egui::RichText::new(text::clip(&shown, 24)).weak()).wrap_mode(egui::TextWrapMode::Truncate))
+                let label = egui::RichText::new(text::clip(&shown, 22)).weak();
+                let button = match charge {
+                    Some(c) => egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0), label),
+                    None => egui::Button::new(label),
+                };
+                ui.add_sized([cols.charge, ROW_H - 4.0], button.wrap_mode(egui::TextWrapMode::Truncate))
             })
             .inner;
             if r.on_hover_text(charge_name.clone().unwrap_or_default()).clicked() {
@@ -449,25 +621,63 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
             remove = true;
         }
-    });
+    }));
+    let r = drag.inner;
     if !by_variation {
+        accept_module_drop(sim, ui, &r, slot, index, now_ms);
+        if r.clicked() {
+            let m = ui.input(|i| i.modifiers);
+            let order: Vec<(Slot, u8)> = sim.view_fit().map(|v| Slot::ALL.iter().flat_map(|s| v.rack(*s).map(|m| (m.slot, m.index)).collect::<Vec<_>>()).collect()).unwrap_or_default();
+            let mut order = order;
+            order.sort_by_key(|(s, i)| (Slot::ALL.iter().position(|x| x == s), *i));
+            pick(&mut sim.selection, &mut sim.sel_anchor, &order, (slot, index), m.command, m.shift);
+        }
         if r.double_clicked() {
             set_state = Some(next_state(dogma, type_id, state));
         }
+        // A right click on a row of the selection acts on the whole selection; on any other row
+        // it picks that row alone first.
+        if r.secondary_clicked() && !sim.selection.contains(&(slot, index)) {
+            sim.selection = vec![(slot, index)];
+            sim.sel_anchor = Some((slot, index));
+        }
+        let targets: Vec<(Slot, u8)> = if sim.selection.len() > 1 && sim.selection.contains(&(slot, index)) { sim.selection.clone() } else { vec![(slot, index)] };
+        let view = sim.view_fit();
+        let target_mods: Vec<(TypeId, State, Option<TypeId>)> = targets.iter().filter_map(|(s, i)| view.as_ref().and_then(|v| v.module(*s, *i)).map(|m| (m.type_id, m.state, m.charge))).collect();
+        let types: Vec<TypeId> = target_mods.iter().map(|m| m.0).collect();
+        let single = targets.len() == 1;
         r.context_menu(|ui| {
             ui.set_min_width(200.0);
-            for st in states_of(dogma, type_id) {
-                if ui.radio(st == state, state_name(st)).clicked() {
+            if !single {
+                ui.label(egui::RichText::new(trf!("{n} modules", n = targets.len())).weak());
+            }
+            for st in common_states(dogma, &types) {
+                if ui.radio(target_mods.iter().all(|m| m.1 == st), state_name(st)).clicked() {
                     set_state = Some(st);
                     ui.close();
                 }
             }
             ui.separator();
-            if ui.button(tr!("Change module…")).clicked() {
-                open_picker = Some(PickTarget::Module(slot, index));
-                ui.close();
+            let charges = any_charges(dogma, &types);
+            if !charges.is_empty() {
+                ui.menu_button(tr!("Charge"), |ui| {
+                    ui.set_min_width(260.0);
+                    if ui.radio(target_mods.iter().all(|m| m.2.is_none()), tr!("None")).clicked() {
+                        set_charge = Some(None);
+                        ui.close();
+                    }
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for c in charges {
+                            if ui.radio(target_mods.iter().all(|m| m.2 == Some(c)), spai_fit::formats::name_of(dogma, c)).clicked() {
+                                set_charge = Some(Some(c));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
             }
-            let variants: Vec<TypeId> = dogma.variants_of(type_id).iter().copied().filter(|v| *v != type_id && dogma.type_(*v).is_some_and(|t| t.published)).collect();
+            let same_type = types.iter().all(|t| *t == type_id);
+            let variants: Vec<TypeId> = if same_type { dogma.variants_of(type_id).iter().copied().filter(|v| *v != type_id && dogma.type_(*v).is_some_and(|t| t.published)).collect() } else { Vec::new() };
             if !variants.is_empty() {
                 ui.menu_button(tr!("Variants"), |ui| {
                     ui.set_min_width(260.0);
@@ -479,59 +689,68 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                     }
                 });
             }
-            if takes_charges {
-                ui.menu_button(tr!("Charge"), |ui| {
-                    ui.set_min_width(260.0);
-                    if ui.radio(charge.is_none(), tr!("None")).clicked() {
-                        set_charge = Some(None);
-                        ui.close();
-                    }
-                    let list = picker::compatible_charges(dogma, type_id);
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        for c in list {
-                            if ui.radio(charge == Some(c), spai_fit::formats::name_of(dogma, c)).clicked() {
-                                set_charge = Some(Some(c));
-                                ui.close();
-                            }
-                        }
-                    });
-                });
+            if single && ui.button(tr!("Change module…")).clicked() {
+                open_picker = Some(PickTarget::Module(slot, index));
+                ui.close();
+            }
+            if single && ui.button(tr!("Details…")).clicked() {
+                details = Some(DetailsTarget::Module(slot, index));
+                ui.close();
+            }
+            if single && charge.is_some() && ui.button(tr!("Charge details…")).clicked() {
+                details = Some(DetailsTarget::Charge(slot, index));
+                ui.close();
             }
             ui.separator();
-            if ui.button(tr!("Remove")).clicked() {
+            if ui.button(if single { tr!("Remove").to_owned() } else { trf!("Remove {n} modules", n = targets.len()) }).clicked() {
                 remove = true;
                 ui.close();
             }
         });
         browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
-    }
-    if let Some(t) = open_picker {
-        picker::open(sim, t);
-    }
-    if let Some(st) = set_state {
-        sim.edit(EditKind::SetState, now_ms, |f| {
-            if let Some(m) = f.module_mut(slot, index) {
-                m.state = st;
-            }
-        });
-    }
-    if let Some(c) = set_charge {
-        sim.edit(EditKind::SetCharge, now_ms, |f| {
-            if let Some(m) = f.module_mut(slot, index) {
-                m.charge = c;
-            }
-        });
-    }
-    if let Some(v) = replace {
-        sim.edit(EditKind::AddModule, now_ms, |f| {
-            if let Some(m) = f.module_mut(slot, index) {
-                m.type_id = v;
-            }
-        });
-    }
-    if remove {
-        sim.edit(EditKind::RemoveModule, now_ms, |f| {
-            f.remove_module(slot, index);
-        });
+        if let Some(t) = details {
+            sim.open_details(t);
+        }
+        if let Some(t) = open_picker {
+            picker::open(sim, t);
+        }
+        if let Some(st) = set_state {
+            sim.edit(EditKind::SetState, now_ms, |f| {
+                for (s, i) in &targets {
+                    if let Some(m) = f.module_mut(*s, *i) {
+                        m.state = st;
+                    }
+                }
+            });
+        }
+        if let Some(c) = set_charge {
+            sim.edit(EditKind::SetCharge, now_ms, |f| {
+                for (s, i) in &targets {
+                    if let Some(m) = f.module_mut(*s, *i) {
+                        // A charge goes into the ones that take it; the rest keep theirs.
+                        if c.is_none_or(|c| picker::compatible_charges(dogma, m.type_id).contains(&c)) {
+                            m.charge = c;
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(v) = replace {
+            sim.edit(EditKind::AddModule, now_ms, |f| {
+                for (s, i) in &targets {
+                    if let Some(m) = f.module_mut(*s, *i) {
+                        m.type_id = v;
+                    }
+                }
+            });
+        }
+        if remove {
+            sim.edit(EditKind::RemoveModule, now_ms, |f| {
+                for (s, i) in &targets {
+                    f.remove_module(*s, *i);
+                }
+            });
+            sim.selection.clear();
+        }
     }
 }

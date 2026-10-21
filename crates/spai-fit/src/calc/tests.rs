@@ -98,7 +98,7 @@ fn implants_are_exempt_from_the_penalty_and_booster_side_effects_are_opt_in() {
 fn owner_required_skill_modifiers_reach_drones_and_location_group_modifiers_their_group() {
     let d = dataset();
     let mut f = fit();
-    f.drones.push(DroneStack { type_id: DRONE, count: 3, active: true });
+    f.drones.push(DroneStack { type_id: DRONE, count: 3, active: true, launched: None });
     f.boosters.push(Booster { type_id: BOOSTER, side_effects: false });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     let (drone, _) = c.drones().next().unwrap();
@@ -117,6 +117,61 @@ fn a_projected_module_reaches_the_ship_and_nothing_else() {
     f.projected[0].state = State::Online;
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     assert!(close(c.ship(attr::MAX_VELOCITY), 365.0));
+}
+
+#[test]
+fn part_of_a_drone_stack_can_be_out_while_the_rest_waits_in_the_bay() {
+    let d = dataset();
+    let mut f = fit();
+    f.drones.push(DroneStack { type_id: DRONE, count: 5, active: true, launched: Some(2) });
+    let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    assert_eq!(c.drones.active, 2);
+    let mut all = f.clone();
+    all.drones[0].launched = None;
+    let c5 = crate::stats::compute(&d, &all, &SkillSet::all_v(), &Env::default());
+    assert_eq!(c5.drones.active, 5);
+    assert!((c.drones.bay_used - c5.drones.bay_used).abs() < 1e-9, "the bay holds all five either way");
+    let dps = |c: &crate::stats::Computed| c.weapons.iter().filter(|w| w.kind == crate::stats::WeaponKind::Drone).map(|w| w.dps).sum::<f64>();
+    assert!((dps(&c) * 2.5 - dps(&c5)).abs() < 1e-6, "two of five deal two fifths");
+}
+
+#[test]
+fn a_switched_off_implant_or_booster_counts_for_nothing() {
+    let d = dataset();
+    let mut f = fit();
+    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false });
+    let on = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).items().iter().any(|i| i.kind == ItemKind::Booster);
+    f.disabled.push(BOOSTER);
+    let off = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).items().iter().any(|i| i.kind == ItemKind::Booster);
+    assert!(on && !off);
+}
+
+#[test]
+fn an_unpublished_skill_is_never_trained() {
+    let mut d = dataset();
+    let gun_skill = d.types.iter_mut().find(|t| t.id == SKILL_MF).unwrap();
+    gun_skill.published = false;
+    let d = d.finish();
+    let c = Calc::new(&d, &fit(), &SkillSet::all_v(), &Env::default());
+    let gun = c.module(Slot::High, 0).unwrap();
+    assert!(close(c.value(gun, attr::FALLOFF), 6000.0), "its bonus does not exist in the game");
+}
+
+#[test]
+fn weather_reaches_the_ship_and_several_webs_each_apply() {
+    let d = dataset();
+    let mut f = fit();
+    f.projected.push(Projected { type_id: BEACON, ..Projected::default() });
+    let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    assert!(close(c.ship(attr::MAX_VELOCITY), 365.0 * 1.1), "a beacon's system effect reaches the ship");
+    f.projected[0].state = State::Offline;
+    let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    assert!(close(c.ship(attr::MAX_VELOCITY), 365.0), "and switched off it does not");
+    let mut f = fit();
+    f.projected.push(Projected { type_id: WEB, count: 2, ..Projected::default() });
+    let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let want = 365.0 * 0.4 * (1.0 - 0.6 * PENALTY_FACTOR);
+    assert!(close(c.ship(attr::MAX_VELOCITY), want), "{} vs {want}", c.ship(attr::MAX_VELOCITY));
 }
 
 #[test]

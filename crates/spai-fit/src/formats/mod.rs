@@ -63,7 +63,7 @@ pub fn add_item(dogma: &Dogma, fit: &mut Fit, type_id: TypeId, quantity: u32) ->
         Place::Charge => fit.cargo.push(CargoItem { type_id, quantity: quantity.max(1) }),
         Place::Drone => match fit.drones.iter_mut().find(|d| d.type_id == type_id) {
             Some(d) => d.count += quantity.max(1),
-            None => fit.drones.push(DroneStack { type_id, count: quantity.max(1), active: true }),
+            None => fit.drones.push(DroneStack { type_id, count: quantity.max(1), active: true, launched: None }),
         },
         Place::Fighter => fit.fighters.push(FighterSquad { type_id, count: quantity.max(1), active: true }),
         Place::Implant => fit.implants.push(type_id),

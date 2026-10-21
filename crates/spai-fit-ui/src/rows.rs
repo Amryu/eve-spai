@@ -49,6 +49,10 @@ pub fn uneven_lists(log: &[(egui::Id, egui::Rect)]) -> Vec<String> {
     out
 }
 
+/// A fitted module being dragged to another slot of its rack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragModule(pub spai_fit::fit::Slot, pub u8);
+
 /// What is being dragged from the browser or a list: one type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragItem(pub TypeId);

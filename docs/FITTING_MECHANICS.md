@@ -137,6 +137,23 @@ Tests: `calc::value::tests::*` (operator order, aggregation, the published curve
 hardeners = +65.8%, bonuses and maluses apart, strongest first, separate operator groups),
 `resistance_modules_stack_as_in_eve`, `fleet_buffs_apply_penalised_and_the_strongest_wins`.
 
+**Explanation.** `Calc::explain(item, attr)` lists every modifier that reached the attribute as a
+`Step`: the source item and attribute, the operator, the resolved modifying value, its effect as
+a fraction or amount, and the share the penalty left it (`penalty_weights`, the same ranking
+`combine` uses, so the steps multiply back to the value). The details window shows these per
+attribute. Tests: `calc::explain::tests::*`.
+
+**Projected and the environment.** A fit's `projected` list holds what acts on it from outside.
+Modules and drones apply only their `Target`-domain modifiers, once per count, so several webs
+are penalised against each other. Effect beacons (group 920: wormhole and abyssal weather,
+incursions) become `Environment` items whose `System`-category effects run on the ship as if
+fitted; an offline beacon is switched off. Fleet boosts stay in `Env`. Unpublished skills are
+never trained, so "All V" leaves their bonuses out. Implants and boosters in `disabled` are left
+out of the item tree, and a drone stack's `launched` count splits it into an active item and an
+item in the bay. Tests: `weather_reaches_the_ship_and_several_webs_each_apply`,
+`an_unpublished_skill_is_never_trained`, `a_switched_off_implant_or_booster_counts_for_nothing`,
+`part_of_a_drone_stack_can_be_out_while_the_rest_waits_in_the_bay`.
+
 ## 6. Fleet buffs (`Env`)
 
 A command burst's charge sets `warfareBuffNID` and `warfareBuffNValue` on the burst module

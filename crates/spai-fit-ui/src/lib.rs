@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use spai_fit::calc::{Calc, Env};
-use spai_fit::fit::Fit;
+use spai_fit::fit::{Fit, Slot};
 use spai_fit::history::{EditKind, History};
 use spai_fit::ids::TypeId;
 use spai_fit::skills::{MissingSkill, SkillSet};
@@ -15,6 +15,7 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod browser;
+pub mod details;
 pub mod dock;
 pub mod editor;
 pub mod fleet_panel;
@@ -106,6 +107,8 @@ pub enum HostRequest {
     DeleteFit(String),
     FetchSkills,
     CopyText(String),
+    /// The clipboard's text, for the Import button; answered with `HostEvent::Clipboard`.
+    ReadClipboard,
     /// The doctrine presets and what the signed-in character may do with them.
     FetchDoctrines,
     PublishDoctrine { id: String, side: DoctrineSide, name: String, tags: Vec<String>, refit_keys: Vec<String>, doc: String },
@@ -132,6 +135,7 @@ pub enum HostEvent {
     Profiles(Vec<Profile>),
     Saved(String),
     Status(String),
+    Clipboard(String),
     Doctrines(Vec<Doctrine>),
     /// Whether the character is signed in with the server, in the Imperium, and a doctrine admin.
     Access { signed_in: bool, imperium: bool, admin: bool },
@@ -155,11 +159,23 @@ pub struct Session {
     /// Each fitted module's own draw and damage, for the table's columns.
     pub module_stats: Vec<spai_fit::stats::ModuleStat>,
     pub dirty: bool,
+    /// When the fit last changed, so the autosave waits for a pause in the editing.
+    pub edited_at: u64,
+    /// A save of the current change has gone to the host and has not come back yet.
+    pub save_sent: bool,
 }
 
+/// How long a fit sits unchanged before it is saved.
+pub const AUTOSAVE_MS: u64 = 1500;
+
 impl Session {
+    /// Bumped by every change, so caches keyed on it know when to rebuild.
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
     pub fn new(id: String, fit: Fit) -> Self {
-        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false }
+        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false }
     }
 
     fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet) {
@@ -221,6 +237,17 @@ pub struct ImportDialog {
     pub error: Option<String>,
 }
 
+/// An imported fit close to one already here: the same hull with most of the rack in common.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportAsk {
+    pub fit: Fit,
+    pub base_id: String,
+    pub base_name: String,
+}
+
+/// A fit is offered as a variation of another when this much of the rack is shared.
+pub const VARIATION_LIKENESS: f64 = 0.6;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Access {
     pub signed_in: bool,
@@ -240,7 +267,8 @@ pub struct SimUi {
     pub dogma: Option<Arc<Dogma>>,
     pub dogma_error: Option<String>,
     dogma_requested: bool,
-    pub session: Option<Session>,
+    sessions: Vec<Session>,
+    active: usize,
     pub library: Vec<FitSummary>,
     pub profiles: Vec<Profile>,
     pub profile: usize,
@@ -252,14 +280,30 @@ pub struct SimUi {
     pub browser: browser::Browser,
     pub dock: dock::DockState,
     pub warnings_expanded: bool,
+    /// The modules picked in the racks, for a menu that acts on all of them at once.
+    pub selection: Vec<(Slot, u8)>,
+    /// Where a shift-click's range starts.
+    pub sel_anchor: Option<(Slot, u8)>,
+    pub details: Vec<details::DetailsWindow>,
     /// The width the user dragged the left column to; read from egui's memory on first use.
     left_w: Option<f32>,
     pub skills_window: bool,
     pub traits_window: bool,
     pub graph_window: bool,
     pub import: Option<ImportDialog>,
+    /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
+    pub import_ask: Option<ImportAsk>,
+    /// Set by the Import button; the clipboard's text goes through the dialog when it is not a fit.
+    import_from_button: bool,
+    /// The clock of the last frame, for what the host answers between frames.
+    now_ms: u64,
     pub graph: spai_fit::graphs::GraphKind,
     pub graph_drones: bool,
+    /// Other open fits drawn beside the one on screen, by session id.
+    pub graph_attackers: Vec<String>,
+    /// Open fits taken as targets, by session id: their signature and speed stand in for the
+    /// target profile. Empty is the profile alone.
+    pub graph_targets: Vec<String>,
     /// The fit as it was when a variation recording started.
     pub recording: Option<Fit>,
     pub editing_variation: Option<u32>,
@@ -285,7 +329,8 @@ impl Default for SimUi {
             dogma: None,
             dogma_error: None,
             dogma_requested: false,
-            session: None,
+            sessions: Vec::new(),
+            active: 0,
             library: Vec::new(),
             profiles: vec![Profile::all_v()],
             profile: 0,
@@ -297,13 +342,21 @@ impl Default for SimUi {
             browser: browser::Browser::default(),
             dock: dock::DockState::default(),
             warnings_expanded: false,
+            selection: Vec::new(),
+            sel_anchor: None,
+            details: Vec::new(),
             left_w: None,
             skills_window: false,
             traits_window: false,
             graph_window: false,
             import: None,
+            import_ask: None,
+            import_from_button: false,
+            now_ms: 0,
             graph: spai_fit::graphs::GraphKind::DamageVsDistance,
             graph_drones: true,
+            graph_attackers: Vec::new(),
+            graph_targets: Vec::new(),
             recording: None,
             editing_variation: None,
             doctrines: Vec::new(),
@@ -333,7 +386,7 @@ impl SimUi {
             HostEvent::Dogma(d) => {
                 self.dogma = Some(d);
                 self.dogma_error = None;
-                if let Some(s) = &mut self.session {
+                for s in &mut self.sessions {
                     s.computed_for = None;
                 }
             }
@@ -341,30 +394,34 @@ impl SimUi {
                 self.dogma_error = Some(e);
                 self.dogma_requested = false;
             }
-            HostEvent::Fits(list) => self.library = list,
+            HostEvent::Fits(list) => {
+                self.library = list;
+                let ids: Vec<String> = self.library.iter().map(|e| e.id.clone()).collect();
+                self.want_fit_docs(ids.into_iter());
+            }
             HostEvent::Fit { id, doc } => match spai_fit::doc::from_json(&doc) {
-                Ok(fit) => self.session = Some(Session::new(id, fit)),
+                Ok(fit) => self.open_session(Session::new(id, fit)),
                 Err(e) => self.status(trf!("Could not read the fit: {e}", e = e)),
             },
             HostEvent::Profiles(p) => {
                 let current = self.profiles.get(self.profile).map(|p| p.id.clone());
                 self.profiles = std::iter::once(Profile::all_v()).chain(p).collect();
                 self.profile = current.and_then(|id| self.profiles.iter().position(|p| p.id == id)).unwrap_or(0);
-                if let Some(s) = &mut self.session {
+                for s in &mut self.sessions {
                     s.computed_for = None;
                 }
             }
             HostEvent::Saved(id) => {
-                if let Some(s) = &mut self.session {
-                    if s.id == id {
-                        s.dirty = false;
-                        self.fit_docs.insert(id.clone(), s.fit.clone());
-                    }
+                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+                    s.dirty = false;
+                    s.save_sent = false;
+                    self.fit_docs.insert(id.clone(), s.fit.clone());
                 }
                 self.requests.push(HostRequest::ListFits);
                 self.status(tr!("Saved").to_owned());
             }
             HostEvent::Status(s) => self.status(s),
+            HostEvent::Clipboard(text) => self.import_clipboard(&text),
             HostEvent::Doctrines(d) => {
                 for doc in &d {
                     if let Ok(fit) = spai_fit::doc::from_json(&doc.doc.to_string()) {
@@ -420,6 +477,10 @@ impl SimUi {
             Ok(mut fit) => {
                 fit.name = d.name.clone();
                 self.open_fit(fit, now_ms);
+                // A copy to look at is not a library entry; the first edit makes it one.
+                if let Some(s) = self.session_mut() {
+                    s.dirty = false;
+                }
             }
             Err(e) => self.status(trf!("Could not read the fit: {e}", e = e)),
         }
@@ -427,7 +488,7 @@ impl SimUi {
 
     /// Starts publishing the open fit; the dialog takes the name, side and tags.
     pub fn start_publish(&mut self) {
-        let Some(s) = &self.session else { return };
+        let Some(s) = self.session() else { return };
         let existing = self.doctrines.iter().find(|d| d.id == s.id);
         self.publish = Some(PublishDialog {
             id: s.id.clone(),
@@ -466,7 +527,7 @@ impl SimUi {
             }
         });
         if go {
-            if let (Some(d), Some(s)) = (self.publish.take(), self.session.as_ref()) {
+            if let (Some(d), Some(s)) = (self.publish.take(), self.session()) {
                 let refit_keys: Vec<String> = s.fit.variations.iter().filter_map(|v| v.refit_key.clone()).collect();
                 let tags: Vec<String> = d.tags.split(',').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
                 let mut fit = s.fit.clone();
@@ -501,10 +562,7 @@ impl SimUi {
     pub fn new_fit(&mut self, ship: TypeId, now_ms: u64) {
         let name = self.dogma.as_ref().and_then(|d| d.type_(ship)).map_or_else(|| tr!("New fit").to_owned(), |t| t.name.clone());
         let id = self.new_id(now_ms);
-        let mut s = Session::new(id, Fit::new(ship, name));
-        s.dirty = true;
-        self.session = Some(s);
-        self.pane = Pane::Fit;
+        self.open_session(Session::new(id, Fit::new(ship, name)));
     }
 
     /// Opens an imported fit as a new library entry.
@@ -512,45 +570,273 @@ impl SimUi {
         let id = self.new_id(now_ms);
         let mut s = Session::new(id, fit);
         s.dirty = true;
-        self.session = Some(s);
+        s.edited_at = now_ms;
+        self.open_session(s);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn import_from_button_for_test(&mut self) {
+        self.import_from_button = true;
+    }
+
+    /// Imports EFT text; `false` when it is not a fit. Unknown names are noted, not refused.
+    pub fn import_text(&mut self, text: &str, now_ms: u64) -> bool {
+        let Some(dogma) = self.dogma.clone() else { return false };
+        let Some(imp) = spai_fit::formats::eft::import(&dogma, text).filter(|i| i.fit.ship != 0) else { return false };
+        if !imp.unknown.is_empty() {
+            self.status(trf!("Unknown: {names}", names = imp.unknown.join(", ")));
+        }
+        self.place_import(imp.fit, now_ms);
+        true
+    }
+
+    /// What the host read off the clipboard for the Import button: a fit is imported, anything
+    /// else goes into the paste dialog, which also says what was wrong with it.
+    fn import_clipboard(&mut self, text: &str) {
+        let from_button = std::mem::take(&mut self.import_from_button);
+        if self.import_text(text, self.now_ms) {
+            return;
+        }
+        if from_button {
+            let error = if text.trim().is_empty() { None } else { Some(tr!("That is not an EFT fit: the first line must be [Ship, Name].").to_owned()) };
+            self.import = Some(ImportDialog { text: text.to_owned(), error });
+        }
+    }
+
+    /// Where an imported fit goes: to the tab or library fit that already holds the same fitting,
+    /// to a question when it is a near copy of one, into an untouched tab, else into a new one.
+    pub fn place_import(&mut self, fit: Fit, now_ms: u64) {
+        if let Some(i) = self.sessions.iter().position(|s| s.fit.same_fitting(&fit)) {
+            self.activate(i);
+            self.status(tr!("Already open: the same fit").to_owned());
+            return;
+        }
+        let in_library: Option<(String, String)> = self.library.iter().find(|e| self.fit_docs.get(&e.id).is_some_and(|d| d.same_fitting(&fit))).map(|e| (e.id.clone(), e.name.clone()));
+        if let Some((id, name)) = in_library {
+            self.requests.push(HostRequest::LoadFit(id));
+            self.status(trf!("Already in the library as {name}", name = name));
+            return;
+        }
+        let likeness = |other: &Fit| other.rack_similarity(&fit);
+        let open_like = self.sessions.iter().filter(|s| likeness(&s.fit) >= VARIATION_LIKENESS).map(|s| (likeness(&s.fit), s.id.clone(), s.fit.name.clone()));
+        let saved_like = self.library.iter().filter_map(|e| self.fit_docs.get(&e.id).map(|d| (likeness(d), e.id.clone(), e.name.clone()))).filter(|(l, _, _)| *l >= VARIATION_LIKENESS);
+        if let Some((_, base_id, base_name)) = open_like.chain(saved_like).max_by(|a, b| a.0.total_cmp(&b.0)) {
+            self.import_ask = Some(ImportAsk { fit, base_id, base_name });
+            return;
+        }
+        self.open_imported(fit, now_ms);
+    }
+
+    /// Into the tab on screen when nothing has been put in it yet, else into a new tab.
+    fn open_imported(&mut self, fit: Fit, now_ms: u64) {
+        let untouched = self.session().is_some_and(|s| !s.dirty && s.fit.modules.is_empty() && s.fit.drones.is_empty() && s.fit.fighters.is_empty() && s.fit.implants.is_empty() && s.fit.boosters.is_empty() && s.fit.cargo.is_empty());
+        if untouched {
+            if let Some(s) = self.session_mut() {
+                s.fit = fit;
+                s.rev += 1;
+                s.dirty = true;
+                s.save_sent = false;
+                s.edited_at = now_ms;
+                s.computed_for = None;
+            }
+            self.selection.clear();
+            self.pane = Pane::Fit;
+        } else {
+            self.open_fit(fit, now_ms);
+        }
+    }
+
+    /// Adds the fit waiting in `import_ask` to its base fit as a variation holding the difference.
+    pub fn import_as_variation(&mut self, now_ms: u64) {
+        let Some(ask) = self.import_ask.take() else { return };
+        if let Some(i) = self.sessions.iter().position(|s| s.id == ask.base_id) {
+            self.activate(i);
+        } else if let Some(doc) = self.fit_docs.get(&ask.base_id).cloned() {
+            self.open_session(Session::new(ask.base_id.clone(), doc));
+        } else {
+            return;
+        }
+        let Some(dogma) = self.dogma.clone() else { return };
+        let Some(s) = self.session() else { return };
+        let mut plain = s.fit.clone();
+        plain.active_variations.clear();
+        let imported = ask.fit;
+        let ops = spai_fit::variations::diff(&spai_fit::variations::resolve(&dogma, &plain), &imported);
+        let id = spai_fit::variations::next_id(&s.fit);
+        let kind = variations_panel::guess_kind(&ops);
+        let name = if imported.name.trim().is_empty() || imported.name == plain.name { trf!("{kind} {n}", kind = variations_panel::kind_name(kind), n = id) } else { imported.name.clone() };
+        self.edit(EditKind::Variation, now_ms, move |f| {
+            f.variations.push(spai_fit::variations::Variation { id, name, kind, refit_key: None, ops });
+            spai_fit::variations::activate(f, id);
+        });
+    }
+
+    fn import_ask_window(&mut self, ctx: &egui::Context, now_ms: u64) {
+        let Some(ask) = self.import_ask.clone() else { return };
+        let mut decided: Option<u8> = None;
+        egui::Modal::new(egui::Id::new("sim_import_ask")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(trf!("{name} looks like a variation of {base}", name = ask.fit.name, base = ask.base_name));
+            ui.label(egui::RichText::new(tr!("Same hull, most of the rack in common. Keep it as a variation of that fit, or open it as a fit of its own.")).weak());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("Cancel")).clicked() {
+                    decided = Some(0);
+                }
+                if ui.button(tr!("Own fit")).clicked() {
+                    decided = Some(1);
+                }
+                if ui.button(tr!("Add as a variation")).clicked() {
+                    decided = Some(2);
+                }
+            });
+        });
+        match decided {
+            Some(0) => self.import_ask = None,
+            Some(1) => {
+                self.import_ask = None;
+                self.open_imported(ask.fit, now_ms);
+            }
+            Some(2) => self.import_as_variation(now_ms),
+            _ => {}
+        }
+    }
+
+    /// What an open fit computes to, by session id, refreshed when stale.
+    pub fn computed_of(&mut self, id: &str) -> Option<Arc<Computed>> {
+        let dogma = self.dogma.clone()?;
+        let profile = self.profile;
+        let skills = self.skills().clone();
+        let s = self.sessions.iter_mut().find(|s| s.id == id)?;
+        s.refresh(&dogma, profile, &skills);
+        s.computed.clone()
+    }
+
+    /// The fit on screen.
+    pub fn session(&self) -> Option<&Session> {
+        self.sessions.get(self.active)
+    }
+
+    pub fn session_mut(&mut self) -> Option<&mut Session> {
+        self.sessions.get_mut(self.active)
+    }
+
+    /// Every open fit, in tab order.
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
+    pub fn activate(&mut self, i: usize) {
+        if i < self.sessions.len() {
+            self.active = i;
+            self.pane = Pane::Fit;
+            self.selection.clear();
+            self.sel_anchor = None;
+        }
+    }
+
+    /// Shows the fit in a tab: the one already holding this fit, else a new one at the end.
+    pub fn open_session(&mut self, s: Session) {
+        match self.sessions.iter().position(|x| x.id == s.id) {
+            Some(i) => {
+                self.sessions[i] = s;
+                self.active = i;
+            }
+            None => {
+                self.sessions.push(s);
+                self.active = self.sessions.len() - 1;
+            }
+        }
+        self.selection.clear();
+        self.sel_anchor = None;
         self.pane = Pane::Fit;
+    }
+
+    /// Closes a tab; what it changed is saved first.
+    pub fn close_tab(&mut self, i: usize) {
+        if i >= self.sessions.len() {
+            return;
+        }
+        if self.sessions[i].dirty {
+            self.save_session(i);
+        }
+        self.sessions.remove(i);
+        if self.active >= self.sessions.len() {
+            self.active = self.sessions.len().saturating_sub(1);
+        } else if i < self.active {
+            self.active -= 1;
+        }
+    }
+
+    /// Drops the tab holding this fit without saving: the fit is gone from the library.
+    pub fn close_id(&mut self, id: &str) {
+        if let Some(i) = self.sessions.iter().position(|s| s.id == id) {
+            self.sessions.remove(i);
+            if self.active >= self.sessions.len() {
+                self.active = self.sessions.len().saturating_sub(1);
+            } else if i < self.active {
+                self.active -= 1;
+            }
+        }
+    }
+
+    /// Hands every fit that has sat unchanged for a moment to the host, once per change.
+    pub fn autosave(&mut self, now_ms: u64) {
+        let due: Vec<usize> = (0..self.sessions.len()).filter(|&i| { let s = &self.sessions[i]; s.dirty && !s.save_sent && now_ms >= s.edited_at + AUTOSAVE_MS }).collect();
+        for i in due {
+            self.save_session(i);
+        }
+    }
+
+    fn save_session(&mut self, i: usize) {
+        let s = &mut self.sessions[i];
+        s.save_sent = true;
+        self.requests.push(HostRequest::SaveFit { id: s.id.clone(), name: s.fit.name.clone(), ship: s.fit.ship, doc: spai_fit::doc::to_json(&s.fit) });
     }
 
     /// Changes the fit on screen, recording the state before for undo.
     pub fn edit(&mut self, kind: EditKind, now_ms: u64, f: impl FnOnce(&mut Fit)) {
-        let Some(s) = &mut self.session else { return };
+        let Some(s) = self.session_mut() else { return };
         let before = s.fit.clone();
         f(&mut s.fit);
         if s.fit != before {
             s.history.record(kind, &before, now_ms);
             s.rev += 1;
             s.dirty = true;
+            s.save_sent = false;
+            s.edited_at = now_ms;
         }
     }
 
     pub fn undo(&mut self) {
-        if let Some(s) = &mut self.session {
+        if let Some(s) = self.session_mut() {
             if let Some(fit) = s.history.undo(&s.fit) {
                 s.fit = fit;
                 s.rev += 1;
                 s.dirty = true;
+                s.save_sent = false;
             }
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(s) = &mut self.session {
+        if let Some(s) = self.session_mut() {
             if let Some(fit) = s.history.redo(&s.fit) {
                 s.fit = fit;
                 s.rev += 1;
                 s.dirty = true;
+                s.save_sent = false;
             }
         }
     }
 
     pub fn save(&mut self) {
-        if let Some(s) = &self.session {
-            self.requests.push(HostRequest::SaveFit { id: s.id.clone(), name: s.fit.name.clone(), ship: s.fit.ship, doc: spai_fit::doc::to_json(&s.fit) });
+        if self.session().is_some() {
+            self.save_session(self.active);
         }
     }
 
@@ -563,14 +849,14 @@ impl SimUi {
         let dogma = self.dogma.clone()?;
         let profile = self.profile;
         let skills = self.skills().clone();
-        let s = self.session.as_mut()?;
+        let s = self.session_mut()?;
         s.refresh(&dogma, profile, &skills);
         s.computed.clone()
     }
 
     /// What the capacitor graph needs beyond the computed numbers.
     pub fn cap_inputs(&self) -> Option<spai_fit::graphs::CapInputs> {
-        let (dogma, s) = (self.dogma.as_ref()?, self.session.as_ref()?);
+        let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
         let resolved = spai_fit::variations::resolve(dogma, &s.fit);
         let calc = Calc::new(dogma, &resolved, self.skills(), &Env::default());
         Some(spai_fit::graphs::CapInputs { users: spai_fit::stats::cap_users(&calc) })
@@ -583,7 +869,18 @@ impl SimUi {
             return;
         }
         let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
+        self.now_ms = now_ms;
         rows::clear_log(ui.ctx());
+        // Ctrl+V with no text box focused imports what was pasted.
+        if self.mode == Mode::Fits && ui.ctx().memory(|m| m.focused().is_none()) {
+            let pasted: Option<String> = ui.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None }));
+            if let Some(text) = pasted {
+                if !self.import_text(&text, now_ms) {
+                    self.status(tr!("The clipboard holds no EFT fit").to_owned());
+                }
+            }
+        }
+        self.autosave(now_ms);
         self.computed();
         let narrow = ui.available_width() < NARROW;
         self.top_bar(ui, now_ms, narrow);
@@ -664,6 +961,8 @@ impl SimUi {
         self.publish_window(ctx);
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
+        details::windows(self, ctx);
+        self.import_ask_window(ctx, now_ms);
     }
 
     /// The left column, as wide as the user dragged it and no wider: egui lets content that
@@ -741,7 +1040,7 @@ impl SimUi {
                 }
                 {
                     use spai_ui::widgets::SteadySelect as _;
-                    let w = egui::vec2(if narrow { 52.0 } else { 64.0 }, 22.0);
+                    let w = egui::vec2(if narrow { 52.0 } else { 64.0 }, 24.0);
                     if ui.menu_label_sized(w, self.mode == Mode::Fits, tr!("Fits")).clicked() {
                         self.mode = Mode::Fits;
                     }
@@ -751,7 +1050,7 @@ impl SimUi {
                     }
                 }
                 ui.separator();
-                let (can_undo, can_redo) = self.session.as_ref().map_or((false, false), |s| (s.history.can_undo(), s.history.can_redo()));
+                let (can_undo, can_redo) = self.session().map_or((false, false), |s| (s.history.can_undo(), s.history.can_redo()));
                 if ui.add_enabled(can_undo, egui::Button::new(icon::ARROW_U_UP_LEFT)).on_hover_text(tr!("Undo")).clicked() {
                     self.undo();
                 }
@@ -759,7 +1058,7 @@ impl SimUi {
                     self.redo();
                 }
                 ui.separator();
-                let has_fit = if self.mode == Mode::Fleets { self.fleet.is_some() } else { self.session.is_some() };
+                let has_fit = if self.mode == Mode::Fleets { self.fleet.is_some() } else { self.session().is_some() };
                 // Icons alone when the window is narrow; the words are on hover either way.
                 let labelled = |glyph: &str, word: &str| if narrow { glyph.to_owned() } else { format!("{glyph} {word}") };
                 if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
@@ -769,11 +1068,12 @@ impl SimUi {
                         self.save();
                     }
                 }
-                if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import EFT"))).on_hover_text(tr!("Import EFT")).clicked() {
-                    self.import = Some(ImportDialog::default());
+                if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import EFT"))).on_hover_text(tr!("Import the fit on the clipboard, or paste one")).clicked() {
+                    self.import_from_button = true;
+                    self.requests.push(HostRequest::ReadClipboard);
                 }
                 if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::COPY, tr!("Copy EFT")))).on_hover_text(tr!("Copy EFT")).clicked() {
-                    if let (Some(d), Some(s)) = (&self.dogma, &self.session) {
+                    if let (Some(d), Some(s)) = (&self.dogma, self.session()) {
                         let text = spai_fit::formats::eft::export(d, &s.fit);
                         self.requests.push(HostRequest::CopyText(text));
                         self.status(tr!("EFT copied").to_owned());
@@ -801,7 +1101,7 @@ impl SimUi {
                 if self.mode == Mode::Fits && !narrow {
                     ui.separator();
                     use spai_ui::widgets::SteadySelect as _;
-                    let w = egui::vec2(64.0, 22.0);
+                    let w = egui::vec2(64.0, 24.0);
                     if ui.menu_label_sized(w, self.center == Center::Fit, tr!("Fit")).clicked() {
                         self.center = Center::Fit;
                     }
@@ -865,7 +1165,7 @@ impl SimUi {
             Some(Ok(fit)) => {
                 let note = self.import.as_ref().and_then(|d| d.error.clone());
                 self.import = None;
-                self.open_fit(fit, now_ms);
+                self.place_import(fit, now_ms);
                 if let Some(n) = note {
                     self.status(n);
                 }

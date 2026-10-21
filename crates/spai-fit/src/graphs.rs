@@ -12,6 +12,10 @@ pub enum GraphKind {
     DamageVsDistance,
     DamageVsTargetSpeed,
     DamageVsTargetSignature,
+    /// One round of every weapon, as the damage graphs but per shot rather than per second.
+    VolleyVsDistance,
+    VolleyVsTargetSpeed,
+    VolleyVsTargetSignature,
     CapacitorOverTime,
     ShieldOverTime,
     VelocityOverTime,
@@ -22,10 +26,22 @@ pub enum GraphKind {
 }
 
 impl GraphKind {
-    pub const ALL: [GraphKind; 10] = [
+    /// A damage graph of either kind: per second or per shot.
+    pub fn is_damage(self) -> bool {
+        matches!(self, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature) || self.is_volley()
+    }
+
+    pub fn is_volley(self) -> bool {
+        matches!(self, GraphKind::VolleyVsDistance | GraphKind::VolleyVsTargetSpeed | GraphKind::VolleyVsTargetSignature)
+    }
+
+    pub const ALL: [GraphKind; 13] = [
         GraphKind::DamageVsDistance,
         GraphKind::DamageVsTargetSpeed,
         GraphKind::DamageVsTargetSignature,
+        GraphKind::VolleyVsDistance,
+        GraphKind::VolleyVsTargetSpeed,
+        GraphKind::VolleyVsTargetSignature,
         GraphKind::CapacitorOverTime,
         GraphKind::ShieldOverTime,
         GraphKind::VelocityOverTime,
@@ -68,7 +84,7 @@ pub struct GraphSpec {
 
 impl GraphSpec {
     pub fn new(kind: GraphKind, target: TargetProfile) -> Self {
-        GraphSpec { kind, x_to: None, points: 120, target, include_drones: true }
+        GraphSpec { kind, x_to: None, points: 400, target, include_drones: true }
     }
 }
 
@@ -107,6 +123,45 @@ fn grid(from: f64, to: f64, n: usize) -> impl Iterator<Item = f64> {
     (0..n).map(move |i| from + (to - from) * i as f64 / (n - 1) as f64)
 }
 
+/// How far either side of a cutoff the curve is sampled, so the drop draws as a wall.
+const EDGE: f64 = 0.5;
+
+/// The grid plus a sample just before, at and just after each `edge` inside it: where a curve
+/// ends outright (a missile's flight, a smartbomb's reach, a module's last falloff) the line is
+/// then vertical rather than a slope between two grid points.
+fn with_edges(xs: impl Iterator<Item = f64>, edges: &[f64]) -> Vec<f64> {
+    let mut v: Vec<f64> = xs.collect();
+    let (Some(&lo), Some(&hi)) = (v.first(), v.last()) else { return v };
+    for &e in edges {
+        for x in [e - EDGE, e, e + EDGE] {
+            if x > lo && x < hi {
+                v.push(x);
+            }
+        }
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    v.dedup();
+    v
+}
+
+/// Where each weapon's damage ends outright along the distance axis.
+fn damage_edges(c: &Computed, include_drones: bool) -> Vec<f64> {
+    use crate::stats::WeaponKind;
+    let mut edges: Vec<f64> = c
+        .weapons
+        .iter()
+        .filter(|w| include_drones || w.kind != WeaponKind::Drone)
+        .filter_map(|w| match w.kind {
+            WeaponKind::Missile => w.missile.as_ref().map(|m| m.range),
+            WeaponKind::Drone => Some(c.drones.control_range),
+            WeaponKind::Smartbomb => Some(w.optimal),
+            _ => (w.falloff > 0.0).then_some(w.optimal + 3.0 * w.falloff),
+        })
+        .collect();
+    edges.retain(|e| e.is_finite() && *e > 0.0);
+    edges
+}
+
 /// The damage curves of a fit at each `x`, `x` being distance, target speed or signature.
 fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, at: impl Fn(f64) -> (f64, TargetProfile)) -> Vec<Series> {
     let xs: Vec<f64> = xs.collect();
@@ -118,12 +173,13 @@ fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, 
             continue;
         }
         let drone_v = if w.kind == crate::stats::WeaponKind::Drone { c.drone_speed.unwrap_or(drone_speed) } else { 0.0 };
+        let full = if spec.kind.is_volley() { w.volley.total() } else { w.dps };
         let points: Vec<[f64; 2]> = xs
             .iter()
             .enumerate()
             .map(|(i, &x)| {
                 let (distance, target) = at(x);
-                let y = w.dps * applied_factor(w, distance, &target, drone_v, c.drones.control_range);
+                let y = full * applied_factor(w, distance, &target, drone_v, c.drones.control_range);
                 total[i] += y;
                 [x, y]
             })
@@ -140,18 +196,18 @@ fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, 
 pub fn sample(c: &Computed, spec: &GraphSpec, cap: Option<&CapInputs>) -> Vec<Series> {
     let n = spec.points.max(2);
     match spec.kind {
-        GraphKind::DamageVsDistance => {
+        GraphKind::DamageVsDistance | GraphKind::VolleyVsDistance => {
             let reach = c.weapons.iter().map(|w| w.missile.as_ref().map_or(w.optimal + 3.0 * w.falloff, |m| m.range)).fold(10_000.0, f64::max);
             let to = spec.x_to.unwrap_or(reach * 1.1);
             let t = spec.target.clone();
-            damage_series(c, spec, grid(0.0, to, n), move |x| (x, t.clone()))
+            damage_series(c, spec, with_edges(grid(0.0, to, n), &damage_edges(c, spec.include_drones)).into_iter(), move |x| (x, t.clone()))
         }
-        GraphKind::DamageVsTargetSpeed => {
+        GraphKind::DamageVsTargetSpeed | GraphKind::VolleyVsTargetSpeed => {
             let to = spec.x_to.unwrap_or(3000.0);
             let base = spec.target.clone();
             damage_series(c, spec, grid(0.0, to, n), move |x| (f64::from(base.distance), TargetProfile { velocity: x as f32, transversal: x as f32, ..base.clone() }))
         }
-        GraphKind::DamageVsTargetSignature => {
+        GraphKind::DamageVsTargetSignature | GraphKind::VolleyVsTargetSignature => {
             let to = spec.x_to.unwrap_or(2000.0);
             let base = spec.target.clone();
             damage_series(c, spec, grid(1.0, to, n), move |x| (f64::from(base.distance), TargetProfile { signature: x as f32, ..base.clone() }))
@@ -192,7 +248,9 @@ fn remote_series(c: &Computed, spec: &GraphSpec, n: usize, reps: bool) -> Vec<Se
         return Vec::new();
     }
     let reach = mods.iter().map(|m| m.optimal + 3.0 * m.falloff).fold(1000.0, f64::max);
-    let xs: Vec<f64> = grid(0.0, spec.x_to.unwrap_or(reach * 1.1), n).collect();
+    // A module without falloff stops dead at its optimal; one with falloff at three of them.
+    let edges: Vec<f64> = mods.iter().map(|m| if m.falloff > 0.0 { m.optimal + 3.0 * m.falloff } else { m.optimal }).collect();
+    let xs: Vec<f64> = with_edges(grid(0.0, spec.x_to.unwrap_or(reach * 1.1), n), &edges);
     let mut out: Vec<Series> = Vec::new();
     let mut total = vec![0.0; xs.len()];
     for m in mods {
@@ -227,7 +285,7 @@ mod tests {
         let mut f = Fit::new(ids::SHIP, "t");
         f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
         f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 1).with_charge(ids::MISSILE).with_state(State::Active));
-        f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true });
+        f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None });
         f
     }
 
@@ -248,6 +306,13 @@ mod tests {
         let within = missiles.points.iter().filter(|p| p[0] < missile_group.missile.as_ref().unwrap().range).last().unwrap();
         assert!((within[1] - missile_group.dps).abs() < 1e-6, "a still 400 m target takes full missile damage up to the range");
         assert_eq!(missiles.points.last().unwrap()[1], 0.0);
+        let volley = sample(&c, &GraphSpec::new(GraphKind::VolleyVsDistance, spec.target.clone()), None);
+        let gun_v = volley.iter().find(|s| matches!(s.label, SeriesLabel::Weapon(id, _) if id == ids::GUN)).unwrap();
+        assert!((gun_v.points[0][1] / gun.points[0][1] - gun_group.volley.total() / gun_group.dps).abs() < 1e-9, "a volley graph is the damage graph scaled to one shot");
+        let range = missile_group.missile.as_ref().unwrap().range;
+        let wall: Vec<&[f64; 2]> = missiles.points.iter().filter(|p| (p[0] - range).abs() <= EDGE + 1e-9).collect();
+        assert_eq!(wall.len(), 3, "sampled just before, at and just after the flight range: {wall:?}");
+        assert!(wall[0][1] > 0.0 && wall[1][1] > 0.0 && wall[2][1] == 0.0, "the drop is a wall half a metre wide");
         let total = series.iter().find(|s| s.label == SeriesLabel::Total).unwrap();
         let sum: f64 = series.iter().filter(|s| s.label != SeriesLabel::Total).map(|s| s.points[0][1]).sum();
         assert!((total.points[0][1] - sum).abs() < 1e-9);

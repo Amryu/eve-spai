@@ -29,16 +29,16 @@ fn edits_recompute_and_undo_restores_the_numbers() {
     s.new_fit(ids::SHIP, 1000);
     let base = s.computed().unwrap().mobility.max_velocity;
     apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::MWD, 1100);
-    assert_eq!(s.session.as_ref().unwrap().fit.module(Slot::Mid, 0).unwrap().state, State::Active, "a propulsion module comes in active");
+    assert_eq!(s.session().unwrap().fit.module(Slot::Mid, 0).unwrap().state, State::Active, "a propulsion module comes in active");
     let boosted = s.computed().unwrap().mobility.max_velocity;
     assert!(boosted > base * 3.0, "{boosted} vs {base}");
-    assert!(s.session.as_ref().unwrap().dirty);
+    assert!(s.session().unwrap().dirty);
     s.undo();
     assert_eq!(s.computed().unwrap().mobility.max_velocity, base);
     s.redo();
     assert_eq!(s.computed().unwrap().mobility.max_velocity, boosted);
     s.edit(EditKind::Other, 1200, |_| {});
-    assert_eq!(s.session.as_ref().unwrap().history.len(), 1, "an edit that changes nothing records nothing");
+    assert_eq!(s.session().unwrap().history.len(), 1, "an edit that changes nothing records nothing");
 }
 
 #[test]
@@ -69,14 +69,14 @@ fn picking_places_charges_and_bay_items_and_swaps_hulls() {
     apply(&mut s, PickTarget::Drone, ids::DRONE, 4);
     apply(&mut s, PickTarget::Implant, ids::IMPLANT, 5);
     apply(&mut s, PickTarget::Cargo, ids::AMMO_LONG, 6);
-    let f = &s.session.as_ref().unwrap().fit;
+    let f = &s.session().unwrap().fit;
     assert_eq!(f.module(Slot::High, 2).unwrap().charge, Some(ids::AMMO));
     assert_eq!(f.drones[0].count, 2);
     assert_eq!(f.implants, vec![ids::IMPLANT]);
     assert_eq!(f.cargo[0].type_id, ids::AMMO_LONG);
     assert_eq!(s.computed().unwrap().weapons.len(), 2, "the gun and the drones");
     apply(&mut s, PickTarget::Ship, ids::SHIP, 7);
-    assert_eq!(s.session.as_ref().unwrap().history.len(), 6, "the same hull again is no edit");
+    assert_eq!(s.session().unwrap().history.len(), 6, "the same hull again is no edit");
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn profiles_change_the_numbers_and_survive_a_refresh() {
     s.profile = 1;
     let newbro = s.computed().unwrap().dps();
     assert!(newbro < all_v, "{newbro} vs {all_v}");
-    assert!(!s.session.as_ref().unwrap().missing.is_empty());
-    assert!(s.session.as_ref().unwrap().warnings.iter().any(|w| matches!(w.kind, spai_fit::warnings::WarningKind::MissingSkills { .. })));
+    assert!(!s.session().unwrap().missing.is_empty());
+    assert!(s.session().unwrap().warnings.iter().any(|w| matches!(w.kind, spai_fit::warnings::WarningKind::MissingSkills { .. })));
     s.handle(HostEvent::Profiles(vec![Profile { id: "c1".into(), name: "Newbro".into(), skills: SkillSet::none() }, Profile { id: "c2".into(), name: "Vet".into(), skills: SkillSet::all_v() }]));
     assert_eq!(s.profile, 1, "the chosen profile is kept by id across a refresh");
 }
@@ -107,14 +107,14 @@ fn saving_loading_and_the_library_go_through_the_host() {
     assert_eq!((name.as_str(), *ship), ("Rifter", ids::SHIP));
     assert!(doc.starts_with("{\"v\":1"));
     s.handle(HostEvent::Saved(id.clone()));
-    assert!(!s.session.as_ref().unwrap().dirty);
+    assert!(!s.session().unwrap().dirty);
     assert_eq!(s.take_requests(), vec![HostRequest::ListFits]);
     s.handle(HostEvent::Fits(vec![FitSummary { id: id.clone(), name: "Rifter".into(), ship: ids::SHIP, updated_at: 0 }]));
     assert_eq!(s.library.len(), 1);
     s.handle(HostEvent::Fit { id: "other".into(), doc: doc.replace("\"name\":\"Rifter\"", "\"name\":\"Other\"") });
-    assert_eq!(s.session.as_ref().unwrap().fit.name, "Other");
+    assert_eq!(s.session().unwrap().fit.name, "Other");
     s.handle(HostEvent::Fit { id: "bad".into(), doc: "not json".into() });
-    assert_eq!(s.session.as_ref().unwrap().fit.name, "Other", "a broken document leaves the fit alone");
+    assert_eq!(s.session().unwrap().fit.name, "Other", "a broken document leaves the fit alone");
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn recording_a_variation_keeps_the_difference_and_switches_it_on() {
     apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO_LONG, 4);
     s.keep_recording(5);
     assert!(s.recording.is_none());
-    let f = &s.session.as_ref().unwrap().fit;
+    let f = &s.session().unwrap().fit;
     assert_eq!(f.variations.len(), 1);
     assert_eq!(f.variations[0].kind, spai_fit::variations::VariationKind::Ammo);
     assert_eq!(f.active_variations, vec![1]);
@@ -162,10 +162,10 @@ fn recording_a_variation_keeps_the_difference_and_switches_it_on() {
     assert_eq!(s.computed().unwrap().weapons[0].optimal, short);
     s.start_recording(7);
     s.discard_recording(8);
-    assert_eq!(s.session.as_ref().unwrap().fit.variations.len(), 1);
+    assert_eq!(s.session().unwrap().fit.variations.len(), 1);
     s.start_recording(9);
     s.keep_recording(10);
-    assert_eq!(s.session.as_ref().unwrap().fit.variations.len(), 1, "no change, no variation");
+    assert_eq!(s.session().unwrap().fit.variations.len(), 1, "no change, no variation");
 }
 
 #[test]
@@ -177,11 +177,13 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     let doc: serde_json::Value = serde_json::from_str(&spai_fit::doc::to_json(&fit)).unwrap();
     s.handle(HostEvent::Doctrines(vec![Doctrine { id: "d1".into(), side: DoctrineSide::Imperium, name: "Alpha Rifter".into(), ship: ids::SHIP, tags: vec!["alpha".into()], refit_keys: vec!["prop:ab".into()], rev: 1, doc }]));
     s.open_doctrine("d1", 5);
-    let open = s.session.as_ref().unwrap();
+    let open = s.session().unwrap();
     assert_eq!(open.fit.name, "Alpha Rifter");
     assert_ne!(open.id, "d1", "a copy with its own id");
     assert_eq!(open.fit.modules.len(), 1);
-    assert!(open.dirty);
+    assert!(!open.dirty, "a copy to look at is not a library entry until it is edited");
+    s.edit(EditKind::Other, 6, |f| f.name.push('!'));
+    assert!(s.session().unwrap().dirty);
     s.handle(HostEvent::Access { signed_in: true, imperium: true, admin: true });
     s.start_publish();
     let d = s.publish.as_mut().unwrap();
@@ -189,7 +191,7 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     d.side = DoctrineSide::Enemy;
     d.tags = "alpha, kiting".into();
     let (id, name, side, tags, keys, doc) = {
-        let (Some(d), Some(sess)) = (s.publish.take(), s.session.as_ref()) else { panic!() };
+        let (Some(d), Some(sess)) = (s.publish.take(), s.session()) else { panic!() };
         (d.id, d.name, d.side, d.tags, sess.fit.variations.iter().filter_map(|v| v.refit_key.clone()).collect::<Vec<_>>(), spai_fit::doc::to_json(&sess.fit))
     };
     s.request(HostRequest::PublishDoctrine { id: id.clone(), side, name: name.clone(), tags: tags.split(',').map(|t| t.trim().to_owned()).collect(), refit_keys: keys.clone(), doc });
@@ -249,9 +251,9 @@ fn a_double_click_puts_each_kind_where_it_belongs() {
     let mut s = sim();
     assert!(!quick_add(&mut s, ids::GUN, 1), "no hull yet: a module has nowhere to go");
     assert!(quick_add(&mut s, ids::SHIP, 1));
-    assert!(s.session.is_some());
+    assert!(s.session().is_some());
     assert!(quick_add(&mut s, ids::GUN, 2) && quick_add(&mut s, ids::GUN, 3));
-    let fit = |s: &SimUi| s.session.as_ref().unwrap().fit.clone();
+    let fit = |s: &SimUi| s.session().unwrap().fit.clone();
     assert_eq!(fit(&s).rack(Slot::High).map(|m| m.index).collect::<Vec<_>>(), vec![0, 1], "the first free slots");
     quick_add(&mut s, ids::AMMO_LONG, 4);
     assert!(fit(&s).rack(Slot::High).all(|m| m.charge == Some(ids::AMMO_LONG)), "a charge loads every weapon that takes it");
@@ -282,7 +284,7 @@ fn a_drop_lands_only_where_it_makes_sense() {
     assert!(drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::AMMO, 3), "a charge on the gun that takes it");
     assert!(!drop_on(&mut s, DropTarget::Module(Slot::High, 0), ids::AMMO, 4), "no module there");
     assert!(!drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::PASTE, 5), "paste does not go in a gun");
-    let fit = |s: &SimUi| s.session.as_ref().unwrap().fit.clone();
+    let fit = |s: &SimUi| s.session().unwrap().fit.clone();
     assert_eq!(fit(&s).module(Slot::High, 1).unwrap().charge, Some(ids::AMMO));
     assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::IMPLANT, 6));
     assert_eq!((fit(&s).implants.len(), fit(&s).cargo.len()), (1, 0), "an implant dropped on the cargo is worn, not carried");
@@ -331,7 +333,7 @@ fn the_dock_shows_as_many_panels_as_fit_from_the_chosen_tab() {
     assert_eq!(visible(PANEL_W * 10.0, &tabs, 2), tabs.to_vec());
     let mut s = sim();
     s.new_fit(ids::SHIP, 0);
-    assert_eq!(crate::dock::tabs(&s), vec![DockTab::Drones, DockTab::Implants, DockTab::Boosters, DockTab::Cargo], "a frigate has no fighter bay");
+    assert_eq!(crate::dock::tabs(&s), vec![DockTab::Drones, DockTab::Implants, DockTab::Boosters, DockTab::Cargo, DockTab::Projected], "a frigate has no fighter bay");
     s.edit(EditKind::Drones, 1, |f| f.fighters.push(spai_fit::fit::FighterSquad { type_id: ids::FIGHTER, count: 1, active: true }));
     assert!(crate::dock::tabs(&s).contains(&DockTab::Fighters));
 }
@@ -343,7 +345,7 @@ fn module_rows_carry_their_own_draw_and_the_states_they_can_take() {
     apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
     apply(&mut s, PickTarget::Module(Slot::Low, 0), ids::DC, 2);
     s.computed();
-    let stats = s.session.as_ref().unwrap().module_stats.clone();
+    let stats = s.session().unwrap().module_stats.clone();
     assert_eq!(stats.len(), 2);
     assert!(stats.iter().any(|m| m.slot == Slot::High && m.cpu > 0.0));
     let d = dataset();
@@ -364,4 +366,188 @@ fn rows_of_a_list_must_share_one_height_and_pitch() {
     assert_eq!(uneven_lists(&[(id, r(0.0, 24.0)), (id, r(26.0, 24.0)), (id, r(60.0, 24.0))]).len(), 1, "a gap");
     let other = egui::Id::new("other");
     assert!(uneven_lists(&[(id, r(0.0, 24.0)), (other, r(0.0, 30.0))]).is_empty(), "lists are judged apart");
+}
+
+#[test]
+fn fits_open_in_tabs_and_save_themselves_after_a_pause() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.new_fit(ids::SHIP, 1);
+    assert_eq!(s.sessions().len(), 2);
+    assert_eq!(s.active_tab(), 1);
+    s.activate(0);
+    s.edit(EditKind::Other, 100, |f| f.name = "First".into());
+    s.autosave(100 + AUTOSAVE_MS - 1);
+    assert!(s.take_requests().is_empty(), "nothing goes out while the user is still typing");
+    s.autosave(100 + AUTOSAVE_MS);
+    let reqs = s.take_requests();
+    let [HostRequest::SaveFit { id, name, .. }] = reqs.as_slice() else { panic!("{reqs:?}") };
+    assert_eq!(name, "First");
+    s.autosave(100 + 10 * AUTOSAVE_MS);
+    assert!(s.take_requests().is_empty(), "one save per change, until the host answers");
+    s.handle(HostEvent::Saved(id.clone()));
+    assert!(!s.session().unwrap().dirty);
+    assert_eq!(s.take_requests(), vec![HostRequest::ListFits]);
+    // A fit already open comes to the front instead of opening twice.
+    let doc = spai_fit::doc::to_json(&s.session().unwrap().fit);
+    s.activate(1);
+    s.handle(HostEvent::Fit { id: id.clone(), doc });
+    assert_eq!(s.sessions().len(), 2);
+    assert_eq!(s.active_tab(), 0);
+    // Closing a changed tab saves it first; closing the other leaves the right one showing.
+    s.edit(EditKind::Other, 200, |f| f.name = "First again".into());
+    s.close_tab(0);
+    assert!(matches!(s.take_requests().as_slice(), [HostRequest::SaveFit { name, .. }] if name == "First again"));
+    assert_eq!(s.sessions().len(), 1);
+    assert_eq!(s.active_tab(), 0);
+    s.close_id(&s.sessions()[0].id.clone());
+    assert!(s.session().is_none());
+}
+
+#[test]
+fn clicks_pick_rows_alone_toggle_with_ctrl_and_stretch_with_shift() {
+    use crate::editor::pick;
+    let order = vec![(Slot::High, 0), (Slot::High, 1), (Slot::High, 2), (Slot::Mid, 0)];
+    let (mut sel, mut anchor) = (Vec::new(), None);
+    pick(&mut sel, &mut anchor, &order, (Slot::High, 1), false, false);
+    assert_eq!(sel, vec![(Slot::High, 1)]);
+    pick(&mut sel, &mut anchor, &order, (Slot::Mid, 0), true, false);
+    assert_eq!(sel, vec![(Slot::High, 1), (Slot::Mid, 0)], "ctrl adds");
+    pick(&mut sel, &mut anchor, &order, (Slot::Mid, 0), true, false);
+    assert_eq!(sel, vec![(Slot::High, 1)], "ctrl again takes it out");
+    pick(&mut sel, &mut anchor, &order, (Slot::High, 0), false, false);
+    pick(&mut sel, &mut anchor, &order, (Slot::High, 2), false, true);
+    assert_eq!(sel, vec![(Slot::High, 0), (Slot::High, 1), (Slot::High, 2)], "shift takes the stretch from the anchor");
+    pick(&mut sel, &mut anchor, &order, (Slot::Mid, 0), false, false);
+    assert_eq!(sel, vec![(Slot::Mid, 0)], "a plain click starts over");
+}
+
+#[test]
+fn a_shared_menu_offers_only_what_every_picked_module_can_do() {
+    use crate::editor::{common_charges, common_states};
+    let d = dataset();
+    assert_eq!(common_states(&d, &[ids::GUN, ids::GUN]), crate::editor::states_of(&d, ids::GUN));
+    assert_eq!(common_states(&d, &[ids::GUN, ids::DC]), vec![State::Offline, State::Online], "a damage control never activates");
+    assert_eq!(common_charges(&d, &[ids::GUN, ids::GUN]), crate::picker::compatible_charges(&d, ids::GUN));
+    assert!(common_charges(&d, &[ids::GUN, ids::DC]).is_empty(), "no charge fits both");
+    let any = crate::editor::any_charges(&d, &[ids::GUN, ids::LAUNCHER]);
+    assert!(any.contains(&ids::AMMO) && any.contains(&ids::MISSILE), "a mixed selection lists what either takes");
+    assert!(common_states(&d, &[]).is_empty());
+}
+
+#[test]
+fn details_list_the_raw_and_fitted_numbers_with_who_changed_them() {
+    use crate::details::{rows_for_item, rows_for_type, DetailsTarget};
+    use spai_fit::calc::{Calc, Env};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    let d = s.dogma.clone().unwrap();
+    let fit = s.session().unwrap().fit.clone();
+    let calc = Calc::new(&d, &fit, s.skills(), &Env::default());
+    let gun = calc.module(Slot::High, 0).unwrap();
+    let rows = rows_for_item(&d, &calc, gun, true);
+    let falloff = rows.iter().find(|r| r.attr == spai_fit::dogma::attr::FALLOFF).expect("falloff is listed");
+    assert!(falloff.changed && falloff.fitted.is_some());
+    assert!(!falloff.steps.is_empty(), "the skills that raise it are named");
+    assert!(falloff.steps.iter().all(|st| st.good == Some(true) && st.who.contains("skill") || st.who.contains("hull")), "{:?}", falloff.steps);
+    let cpu = rows.iter().find(|r| r.attr == spai_fit::dogma::attr::CPU).unwrap();
+    assert!(!cpu.changed && cpu.steps.is_empty());
+    let raw = rows_for_type(&d, ids::GUN, true);
+    assert!(raw.iter().all(|r| r.fitted.is_none()) && raw.len() <= rows.len());
+    s.open_details(DetailsTarget::Module(Slot::High, 0));
+    s.open_details(DetailsTarget::Module(Slot::High, 0));
+    assert_eq!(s.details.len(), 1, "one window per item");
+}
+
+#[test]
+fn a_full_rack_takes_no_more_from_a_double_click() {
+    use crate::browser::quick_add;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let total = s.computed().unwrap().fitting.slots[0].1;
+    for i in 0..total {
+        assert!(quick_add(&mut s, ids::GUN, 10 + u64::from(i)));
+    }
+    assert!(!quick_add(&mut s, ids::GUN, 99), "nothing hangs past the last slot");
+    assert_eq!(s.session().unwrap().fit.rack(Slot::High).count(), total as usize);
+}
+
+#[test]
+fn an_import_lands_where_it_belongs() {
+    let mut s = sim();
+    let eft = |name: &str, extra: &str| format!("[Rifter, {name}]\nDamage Control II\n\n1MN Microwarpdrive II\n\n200mm AutoCannon II\n200mm AutoCannon II{extra}");
+    // Into the untouched tab on screen rather than a new one.
+    s.new_fit(ids::SHIP, 0);
+    assert!(s.import_text(&eft("Brawler", ""), 1));
+    assert_eq!(s.sessions().len(), 1);
+    assert_eq!(s.session().unwrap().fit.name, "Brawler");
+    assert!(s.session().unwrap().dirty, "an import is worth keeping");
+    // The same fitting again brings the open tab forward instead of a copy.
+    s.new_fit(ids::SHIP, 2);
+    assert!(s.import_text(&eft("Brawler copy", ""), 3));
+    assert_eq!(s.sessions().len(), 2);
+    assert_eq!(s.active_tab(), 0);
+    // A near copy of the hull asks instead of opening blind.
+    s.activate(1);
+    let one_module_off = "[Rifter, Kite]\nDamage Control II\n\n1MN Microwarpdrive II\n\n200mm AutoCannon II\nSmall Armor Repairer II";
+    assert!(s.import_text(one_module_off, 5));
+    let ask = s.import_ask.clone().expect("a question");
+    assert_eq!(ask.base_name, "Brawler");
+    s.import_as_variation(6);
+    assert!(s.import_ask.is_none());
+    let base = s.session().unwrap();
+    assert_eq!(base.fit.name, "Brawler");
+    assert_eq!(base.fit.variations.len(), 1);
+    assert_eq!(base.fit.variations[0].name, "Kite");
+    assert!(!base.fit.variations[0].ops.is_empty());
+    // Not a fit at all: refused, nothing opened.
+    let before = s.sessions().len();
+    assert!(!s.import_text("hello", 7));
+    assert_eq!(s.sessions().len(), before);
+    // The Import button's clipboard read: a fit imports, anything else lands in the paste box.
+    s.handle(HostEvent::Clipboard("junk".into()));
+    assert!(s.import.is_none(), "an unasked paste does not open the dialog");
+    s.request(HostRequest::ReadClipboard);
+    let _ = s.take_requests();
+    s.import_from_button_for_test();
+    s.handle(HostEvent::Clipboard("junk".into()));
+    assert!(s.import.as_ref().is_some_and(|d| d.text == "junk" && d.error.is_some()));
+}
+
+#[test]
+fn a_dragged_module_moves_or_with_shift_copies_within_its_rack() {
+    use crate::editor::move_module;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Module(Slot::High, 1), ids::LAUNCHER, 2);
+    let at = |s: &SimUi, i: u8| s.session().unwrap().fit.module(Slot::High, i).map(|m| m.type_id);
+    move_module(&mut s, Slot::High, 0, 1, false, 3);
+    assert_eq!((at(&s, 0), at(&s, 1)), (Some(ids::LAUNCHER), Some(ids::GUN)), "a move onto a fitted slot trades places");
+    move_module(&mut s, Slot::High, 1, 2, true, 4);
+    assert_eq!((at(&s, 1), at(&s, 2)), (Some(ids::GUN), Some(ids::GUN)), "shift copies");
+    assert_eq!(s.session().unwrap().fit.rack(Slot::High).count(), 3);
+    move_module(&mut s, Slot::High, 0, 3, false, 5);
+    assert_eq!((at(&s, 0), at(&s, 3)), (None, Some(ids::LAUNCHER)), "onto an empty slot it simply moves");
+}
+
+#[test]
+fn what_acts_from_outside_goes_to_projected() {
+    use crate::browser::{add_projected, drop_on, DropTarget};
+    use crate::DockTab;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    assert!(add_projected(&mut s, ids::WEB, 1));
+    assert!(add_projected(&mut s, ids::WEB, 2));
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Projected), ids::BEACON, 3));
+    assert!(add_projected(&mut s, ids::BEACON, 4));
+    let p = &s.session().unwrap().fit.projected;
+    assert_eq!(p.len(), 2);
+    assert_eq!(p[0].count, 2, "a second web is one more of it");
+    assert_eq!(p[1].count, 1, "one weather at a time");
+    assert!(!add_projected(&mut s, ids::DC, 5), "a damage control acts on nothing outside its own ship");
+    let slow = s.computed().unwrap().mobility.max_velocity;
+    s.edit(EditKind::Other, 6, |f| f.projected.clear());
+    assert!(s.computed().unwrap().mobility.max_velocity > slow);
 }

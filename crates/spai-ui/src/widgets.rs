@@ -140,3 +140,69 @@ pub fn copy_item(ui: &mut egui::Ui, text: &str) {
 pub fn copy_menu(resp: &egui::Response, text: &str) {
     resp.context_menu(|ui| copy_item(ui, text));
 }
+
+/// Height of a tab strip's tabs.
+pub const TAB_H: f32 = 24.0;
+const TAB_PAD_X: f32 = 8.0;
+const TAB_GAP: f32 = 6.0;
+const TAB_CLOSE_W: f32 = 16.0;
+
+/// What a tab reported this frame; `resp` hosts the context menu.
+pub struct TabHit {
+    pub select: bool,
+    pub close: bool,
+    pub resp: egui::Response,
+}
+
+/// One compact, flush tab in the Jabber style: fixed height, the name, and on hover or when
+/// selected a close X at its right end, where an unsaved tab otherwise shows a dot. Call it in
+/// a horizontal row with zero item spacing.
+pub fn tab_box(ui: &mut egui::Ui, id: egui::Id, selected: bool, label: &str, marked: bool) -> TabHit {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), body.clone(), egui::Color32::WHITE).size().x;
+    let w = TAB_PAD_X + text_w + TAB_GAP + TAB_CLOSE_W + TAB_PAD_X;
+    let (_, rect) = ui.allocate_space(egui::vec2(w, TAB_H));
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    // Geometric, not `hovered()`: the X is a second widget inside the rect and would otherwise
+    // take the hover away and flicker.
+    let hovered = resp.contains_pointer();
+    let (fill, text_color, accent, sep_col, weak_col, strong_col) = {
+        let v = ui.visuals();
+        (
+            if selected {
+                v.selection.bg_fill
+            } else if hovered {
+                v.widgets.hovered.weak_bg_fill
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            if selected { v.strong_text_color() } else { v.text_color() },
+            v.selection.stroke.color,
+            v.widgets.noninteractive.bg_stroke.color,
+            v.weak_text_color(),
+            v.strong_text_color(),
+        )
+    };
+    let painter = ui.painter().clone();
+    if fill != egui::Color32::TRANSPARENT {
+        painter.rect_filled(rect, 0.0, fill);
+    }
+    if selected {
+        painter.hline(rect.x_range(), rect.top() + 1.0, egui::Stroke::new(2.0, accent));
+    }
+    painter.vline(rect.right(), rect.y_range(), egui::Stroke::new(1.0, sep_col));
+    let cy = rect.center().y;
+    let galley = painter.layout_no_wrap(label.to_owned(), body, text_color);
+    painter.galley(egui::pos2(rect.left() + TAB_PAD_X, cy - galley.size().y / 2.0), galley, text_color);
+    let slot = egui::Rect::from_center_size(egui::pos2(rect.right() - TAB_PAD_X - TAB_CLOSE_W / 2.0, cy), egui::vec2(TAB_CLOSE_W, TAB_CLOSE_W));
+    let mut close = false;
+    if hovered || selected {
+        let x = ui.interact(slot, id.with("close"), egui::Sense::click());
+        let col = if x.hovered() { strong_col } else { weak_col };
+        painter.text(slot.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, egui::FontId::proportional(13.0), col);
+        close = x.clicked();
+    } else if marked {
+        painter.circle_filled(slot.center(), 3.0, weak_col);
+    }
+    TabHit { select: resp.clicked() && !close, close: close || resp.middle_clicked(), resp }
+}

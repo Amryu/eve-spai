@@ -11,10 +11,12 @@ use crate::fit::{Fit, Slot, State};
 use crate::ids::{AttrId, BuffId, CategoryId, EffectId, GroupId, TypeId, CHARACTER_TYPE};
 use crate::skills::SkillSet;
 
+mod explain;
 mod patch;
 mod value;
 
-pub use value::{combine, Modification, Source, PENALTY_FACTOR};
+pub use explain::{Explanation, Step};
+pub use value::{combine, fraction, penalty_weights, Modification, Source, PENALTY_FACTOR};
 
 pub type ItemIdx = usize;
 
@@ -31,6 +33,8 @@ pub enum ItemKind {
     Booster,
     /// Another ship's module acting on this one.
     Projected { count: u32 },
+    /// A system effect: wormhole or abyssal weather, an incursion, a beacon.
+    Environment,
 }
 
 #[derive(Clone, Debug)]
@@ -179,9 +183,11 @@ impl<'d> Calc<'d> {
         self.items[self.ship].owner = Some(self.char);
         let (ship, char) = (self.ship, self.char);
 
-        let skill_types: Vec<TypeId> = self.dogma.types.iter().filter(|t| t.category == crate::ids::category::SKILL).map(|t| t.id).collect();
-        for s in skill_types {
-            let level = f64::from(skills.level(s));
+        let skill_types: Vec<(TypeId, bool)> = self.dogma.types.iter().filter(|t| t.category == crate::ids::category::SKILL).map(|t| (t.id, t.published)).collect();
+        for (s, published) in skill_types {
+            // An unpublished skill cannot be trained, so "All V" leaves it untrained; it stays an
+            // item because modules may still name it as required.
+            let level = if published { f64::from(skills.level(s)) } else { 0.0 };
             if let Some(i) = self.item_for(s, ItemKind::Skill, State::Online) {
                 self.items[i].owner = Some(char);
                 self.items[i].location = Some(char);
@@ -205,10 +211,17 @@ impl<'d> Calc<'d> {
             }
         }
         for d in &fit.drones {
-            let state = if d.active { State::Active } else { State::Offline };
-            if let Some(i) = self.item_for(d.type_id, ItemKind::Drone { count: d.count }, state) {
-                self.items[i].location = Some(ship);
-                self.items[i].owner = Some(char);
+            // The launched ones and the rest of the stack in the bay are two items: only the first
+            // fights, both take bay room.
+            let out = d.in_space();
+            for (n, state) in [(out, State::Active), (d.count.saturating_sub(out), State::Offline)] {
+                if n == 0 {
+                    continue;
+                }
+                if let Some(i) = self.item_for(d.type_id, ItemKind::Drone { count: n }, state) {
+                    self.items[i].location = Some(ship);
+                    self.items[i].owner = Some(char);
+                }
             }
         }
         for f in &fit.fighters {
@@ -218,13 +231,13 @@ impl<'d> Calc<'d> {
                 self.items[i].owner = Some(char);
             }
         }
-        for &imp in &fit.implants {
+        for &imp in fit.implants.iter().filter(|t| !fit.disabled.contains(t)) {
             if let Some(i) = self.item_for(imp, ItemKind::Implant, State::Online) {
                 self.items[i].location = Some(char);
                 self.items[i].owner = Some(char);
             }
         }
-        for b in &fit.boosters {
+        for b in fit.boosters.iter().filter(|b| !fit.disabled.contains(&b.type_id)) {
             if let Some(i) = self.item_for(b.type_id, ItemKind::Booster, State::Online) {
                 self.items[i].location = Some(char);
                 self.items[i].owner = Some(char);
@@ -232,6 +245,17 @@ impl<'d> Calc<'d> {
             }
         }
         for p in &fit.projected {
+            let beacon = self.dogma.type_(p.type_id).is_some_and(|t| t.group == crate::ids::group::EFFECT_BEACON);
+            if beacon {
+                // Its effects reach the ship as if fitted to the system; off is its only other state.
+                if p.state == State::Offline {
+                    continue;
+                }
+                if let Some(i) = self.item_for(p.type_id, ItemKind::Environment, State::Online) {
+                    self.items[i].location = Some(ship);
+                }
+                continue;
+            }
             let Some(i) = self.item_for(p.type_id, ItemKind::Projected { count: p.count }, p.state) else { continue };
             if let Some(c) = p.charge {
                 if let Some(ci) = self.item_for(c, ItemKind::Charge, p.state) {
@@ -262,7 +286,13 @@ impl<'d> Calc<'d> {
                 if SKIPPED_EFFECTS.contains(&effect.name.as_str()) {
                     continue;
                 }
-                let Some(needed) = Self::required_state(effect.category) else { continue };
+                let environment = self.items[src].kind == ItemKind::Environment;
+                let needed = match Self::required_state(effect.category) {
+                    Some(s) => s,
+                    // System effects are what a beacon is for.
+                    None if environment && effect.category == EffectCategory::System => State::Online,
+                    None => continue,
+                };
                 if self.items[src].state < needed {
                     continue;
                 }
@@ -277,8 +307,15 @@ impl<'d> Calc<'d> {
                     if !projected && m.domain == Domain::Target {
                         continue;
                     }
+                    // Several of one projected module each apply, penalised against each other.
+                    let times = match self.items[src].kind {
+                        ItemKind::Projected { count } if projected => count.max(1),
+                        _ => 1,
+                    };
                     for target in self.targets(src, m.domain, m.func, m.group, m.skill) {
-                        self.add_mod(target, m.modified, m.op, src, m.modifying);
+                        for _ in 0..times {
+                            self.add_mod(target, m.modified, m.op, src, m.modifying);
+                        }
                     }
                 }
             }

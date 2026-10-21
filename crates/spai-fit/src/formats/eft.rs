@@ -24,7 +24,7 @@
 //! the rack is taken from the type, not the position, so any order reads.
 
 use crate::dogma::Dogma;
-use crate::fit::{Fit, Slot, State};
+use crate::fit::{CargoItem, Fit, Slot, State};
 use crate::ids::TypeId;
 
 use super::{add_item, name_of, place_of, Place};
@@ -42,6 +42,8 @@ struct Line<'a> {
     charge: Option<&'a str>,
     offline: bool,
     quantity: u32,
+    /// The line said `xN`: it is a bay or cargo line, whatever the type.
+    counted: bool,
 }
 
 /// `Name[, Charge][ /OFFLINE][ xN][ [mutation]]`; `None` for an empty-slot marker.
@@ -61,10 +63,12 @@ fn parse_line(raw: &str) -> Option<Line<'_>> {
         }
     }
     let mut quantity = 1;
+    let mut counted = false;
     if let Some(x) = s.rfind(" x") {
         let digits = &s[x + 2..];
         if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
             quantity = digits.parse().unwrap_or(1);
+            counted = true;
             s = s[..x].trim_end();
         }
     }
@@ -75,7 +79,7 @@ fn parse_line(raw: &str) -> Option<Line<'_>> {
     if name.is_empty() {
         return None;
     }
-    Some(Line { name, charge, offline, quantity })
+    Some(Line { name, charge, offline, quantity, counted })
 }
 
 pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
@@ -103,6 +107,9 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
             }
         });
         match place_of(dogma, t) {
+            // Spare modules travel in the cargo, written `Name xN` like everything else there;
+            // fitting them would overrun the racks.
+            Place::Module(_) if line.counted => out.fit.cargo.push(CargoItem { type_id: t.id, quantity: line.quantity.max(1) }),
             Place::Module(slot) => {
                 for _ in 0..line.quantity.max(1) {
                     let index = out.fit.add_module(t.id, slot);
@@ -177,12 +184,25 @@ mod tests {
 
     #[test]
     fn lines_parse_every_decoration() {
-        assert_eq!(parse_line("200mm AutoCannon II, Republic Fleet EMP S /OFFLINE"), Some(Line { name: "200mm AutoCannon II", charge: Some("Republic Fleet EMP S"), offline: true, quantity: 1 }));
-        assert_eq!(parse_line("Warrior II x2"), Some(Line { name: "Warrior II", charge: None, offline: false, quantity: 2 }));
-        assert_eq!(parse_line("Gyrostabilizer II /offline"), Some(Line { name: "Gyrostabilizer II", charge: None, offline: true, quantity: 1 }));
-        assert_eq!(parse_line("Abyssal Stasis Webifier [12]"), Some(Line { name: "Abyssal Stasis Webifier", charge: None, offline: false, quantity: 1 }));
+        assert_eq!(parse_line("200mm AutoCannon II, Republic Fleet EMP S /OFFLINE"), Some(Line { name: "200mm AutoCannon II", charge: Some("Republic Fleet EMP S"), offline: true, quantity: 1, counted: false }));
+        assert_eq!(parse_line("Warrior II x2"), Some(Line { name: "Warrior II", charge: None, offline: false, quantity: 2, counted: true }));
+        assert_eq!(parse_line("Gyrostabilizer II /offline"), Some(Line { name: "Gyrostabilizer II", charge: None, offline: true, quantity: 1, counted: false }));
+        assert_eq!(parse_line("Abyssal Stasis Webifier [12]"), Some(Line { name: "Abyssal Stasis Webifier", charge: None, offline: false, quantity: 1, counted: false }));
         assert_eq!(parse_line("[Empty Low slot]"), None);
-        assert_eq!(parse_line("Mjolnir Fury Light Missile x1,000"), Some(Line { name: "Mjolnir Fury Light Missile x1", charge: Some("000"), offline: false, quantity: 1 }), "a thousands separator reads as a charge, which the lookup then rejects by name");
+        assert_eq!(parse_line("Mjolnir Fury Light Missile x1,000"), Some(Line { name: "Mjolnir Fury Light Missile x1", charge: Some("000"), offline: false, quantity: 1, counted: false }), "a thousands separator reads as a charge, which the lookup then rejects by name");
         assert_eq!(parse_line("   "), None);
+    }
+
+    #[test]
+    fn spare_modules_in_the_cargo_section_stay_in_the_cargo() {
+        let d = crate::test_support::dataset();
+        let text = "[Rifter, Spares]\nDamage Control II\n\n\n\n\n\nWarrior II x2\n\n200mm AutoCannon II x3\nDamage Control II x1";
+        let imp = import(&d, text).expect("a fit");
+        assert_eq!(imp.fit.modules.len(), 1, "only the rack line is fitted");
+        assert_eq!(imp.fit.drones.len(), 1);
+        assert_eq!(imp.fit.cargo.len(), 2, "counted module lines are cargo: {:?}", imp.fit.cargo);
+        assert!(imp.fit.cargo.iter().any(|c| c.quantity == 3));
+        let again = import(&d, &export(&d, &imp.fit)).unwrap();
+        assert!(again.fit.same_fitting(&imp.fit), "and they survive a round trip");
     }
 }

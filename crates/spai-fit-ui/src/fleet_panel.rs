@@ -47,7 +47,7 @@ fn rule_name(rule: CountRule) -> &'static str {
 
 impl SimUi {
     /// Fit documents the fleets need that are not here yet; the host is asked for them once.
-    fn want_fit_docs(&mut self, ids: impl Iterator<Item = String>) {
+    pub(crate) fn want_fit_docs(&mut self, ids: impl Iterator<Item = String>) {
         let missing: Vec<String> = ids.filter(|id| !self.fit_docs.contains_key(id) && !self.fit_docs_asked.contains(id)).collect();
         if !missing.is_empty() {
             self.fit_docs_asked.extend(missing.iter().cloned());

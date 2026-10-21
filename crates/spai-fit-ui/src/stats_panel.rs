@@ -14,7 +14,6 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new(tr!("No fit open.")).weak());
         return;
     };
-    let target_sig = sim.session.as_ref().map_or(100.0, |s| f64::from(s.fit.target.signature));
     egui::ScrollArea::vertical().id_salt("sim_stats_scroll").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.add_space(2.0);
@@ -23,7 +22,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
         offense(ui, &dogma, &computed);
         capacitor(ui, &computed);
         navigation(ui, &computed);
-        targeting(ui, &computed, target_sig);
+        targeting(ui, &computed);
         drones(ui, &computed);
         remote(ui, &computed);
     });
@@ -185,7 +184,7 @@ fn navigation(ui: &mut egui::Ui, c: &Computed) {
     line(ui, tr!("Mass"), trf!("{v} kg", v = text::num(m.mass)));
 }
 
-fn targeting(ui: &mut egui::Ui, c: &Computed, target_sig: f64) {
+fn targeting(ui: &mut egui::Ui, c: &Computed) {
     let s = &c.sensors;
     section(ui, tr!("Targeting"));
     line(ui, tr!("Lock range"), text::metres(s.lock_range));
@@ -198,7 +197,6 @@ fn targeting(ui: &mut egui::Ui, c: &Computed, target_sig: f64) {
         spai_fit::stats::SensorKind::Gravimetric => tr!("Gravimetric"),
     };
     line(ui, tr!("Sensor strength"), trf!("{v} {kind}", v = text::num(s.strength), kind = kind));
-    line(ui, tr!("Lock time"), trf!("{t} at {sig} m", t = text::secs(s.lock_time_s(target_sig)), sig = text::num(target_sig)));
 }
 
 fn drones(ui: &mut egui::Ui, c: &Computed) {

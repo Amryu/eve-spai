@@ -366,7 +366,8 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         let r: TypeRec = record(l)?;
         let Some((_, cat)) = group_recs.get(&r.group_id) else { return Ok(()) };
         let cat = u8::try_from(*cat).unwrap_or(u8::MAX);
-        let wanted = r.key == CHARACTER_TYPE || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
+        let beacon = u16::try_from(r.group_id).is_ok_and(|g| g == crate::ids::group::EFFECT_BEACON);
+        let wanted = r.key == CHARACTER_TYPE || beacon || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
         if !wanted {
             return Ok(());
         }

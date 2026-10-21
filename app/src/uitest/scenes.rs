@@ -521,7 +521,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
             fit.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
             fit.modules.push(Module::new(ids::DC, Slot::Low, 0));
             fit.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
-            fit.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true });
+            fit.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None });
             if extreme {
                 fit.modules.push(Module::new(ids::GUN, Slot::High, 2).with_charge(ids::AMMO).with_state(State::Overload));
                 fit.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active));
@@ -531,7 +531,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
                 for i in 0..3 {
                     fit.modules.push(Module::new(ids::RIG, Slot::Rig, i));
                 }
-                fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false });
+                fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false, launched: None });
                 fit.implants.push(ids::IMPLANT);
                 fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true });
                 for q in [1, 500, 12_345, 1_000_000] {
@@ -566,6 +566,8 @@ fn imperium_dialog_scene(name: &'static str, size: [f32; 2], open: impl Fn(&mut 
             open(&mut s);
             s
         });
+        // The row log is per frame; a window's sizing pass lays its rows out twice.
+        spai_fit_ui::rows::clear_log(ctx);
         sim.show_dialogs(ctx, 0);
     })
 }
@@ -2651,6 +2653,21 @@ pub(crate) fn all() -> Vec<Scene> {
             spai_fit_ui::Doctrine { id: "d4".into(), side: spai_fit_ui::DoctrineSide::Public, name: "Starter Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Starter") },
         ]));
     }));
+    v.push(imperium_dialog_scene("imperium_details", [560.0, 520.0], |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        sim.edit(spai_fit::history::EditKind::AddModule, 1, |f| f.modules.push(Module::new(spai_fit::test_support::ids::GUN, Slot::High, 0).with_state(State::Active)));
+        sim.open_details(spai_fit_ui::details::DetailsTarget::Module(Slot::High, 0));
+        sim.details[0].all = true;
+    }));
+    v.push(imperium_scene_with("imperium_fit_selected", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::fit::Slot;
+        sim.selection = vec![(Slot::High, 0), (Slot::High, 1)];
+    }));
+    v.push(imperium_scene_with("imperium_fit_tabs", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.new_fit(spai_fit::test_support::ids::SHIP, 2);
+        sim.new_fit(spai_fit::test_support::ids::SHIP, 3);
+        sim.activate(0);
+    }));
     v.push(imperium_dialog_scene("imperium_publish", [460.0, 280.0], |sim| {
         sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
         sim.start_publish();
@@ -2666,6 +2683,31 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene_with("imperium_graphs_center", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.center = spai_fit_ui::Center::Graphs;
     }));
+    v.push(imperium_scene_with("imperium_fit_projected", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::test_support::ids;
+        spai_fit_ui::browser::add_projected(sim, ids::WEB, 5);
+        spai_fit_ui::browser::add_projected(sim, ids::WEB, 6);
+        spai_fit_ui::browser::add_projected(sim, ids::BEACON, 7);
+        sim.dock.first = 3;
+    }));
+    for (name, size) in [("imperium_graphs_compare", [1440.0, 900.0]), ("imperium_graphs_compare_narrow", [720.0, 900.0])] {
+        v.push(imperium_scene_with(name, size, false, spai_fit_ui::Pane::Graphs, |sim| {
+            use spai_fit::fit::{Module, Slot, State};
+            use spai_fit::test_support::ids;
+            sim.center = spai_fit_ui::Center::Graphs;
+            let first = sim.sessions()[0].id.clone();
+            sim.new_fit(ids::SHIP, 5);
+            sim.edit(spai_fit::history::EditKind::AddModule, 6, |f| {
+                f.name = "A second Rifter with a long name to clip".into();
+                f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO_LONG).with_state(State::Active));
+            });
+            let second = sim.sessions()[1].id.clone();
+            sim.activate(0);
+            sim.pane = spai_fit_ui::Pane::Graphs;
+            sim.graph_attackers = vec![second.clone()];
+            sim.graph_targets = vec![first, second];
+        }));
+    }
     v.push(imperium_dialog_scene("imperium_graph_window", [820.0, 560.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;

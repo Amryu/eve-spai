@@ -291,6 +291,17 @@ impl SimWebApp {
             }
             HostRequest::FetchSkills => self.fetch_skills(ctx),
             HostRequest::CopyText(t) => ctx.copy_text(t),
+            HostRequest::ReadClipboard => {
+                let (events, ctx) = (self.events.clone(), ctx.clone());
+                wasm_bindgen_futures::spawn_local(async move {
+                    let text = match web_sys::window().map(|w| w.navigator().clipboard()) {
+                        Some(c) => wasm_bindgen_futures::JsFuture::from(c.read_text()).await.ok().and_then(|v| v.as_string()).unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    events.lock().unwrap().push(HostEvent::Clipboard(text));
+                    ctx.request_repaint();
+                });
+            }
             HostRequest::FetchDoctrines => self.fetch_doctrines(ctx),
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.delete_doctrine(ctx, id),
