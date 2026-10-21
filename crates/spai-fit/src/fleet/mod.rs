@@ -123,6 +123,9 @@ pub struct Fleet {
     pub slots: Vec<FleetSlot>,
     /// One booster fit per burst kind; its bursts reach the whole fleet.
     pub boosters: Vec<(BurstKind, String)>,
+    /// Generic boosters in place of a fit, at most one per kind: everyone gets their bursts, but
+    /// they fly in no slot, so the enemy has nothing to shoot.
+    pub boost_shortcuts: Vec<crate::fit::BoostShortcut>,
     /// Which slot is the main damage dealer, for the enemy's alpha and critical mass; the first
     /// slot when unset.
     pub main: Option<usize>,
@@ -161,6 +164,7 @@ impl Default for Fleet {
             size: 50,
             slots: Vec::new(),
             boosters: Vec::new(),
+            boost_shortcuts: Vec::new(),
             main: None,
             range: 30_000.0,
             volley_efficiency: 0.85,
@@ -320,6 +324,11 @@ pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<
     Some((fit, skills))
 }
 
+/// Whether the fit carries a burst module of the kind.
+pub fn fit_has_burst(dogma: &Dogma, fit: &Fit, kind: BurstKind) -> bool {
+    fit.modules.iter().any(|m| dogma.type_(m.type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == kind.effect()))))
+}
+
 /// A hull that gives the kind no bonus, for a shortcut without one: a battlecruiser or bigger
 /// that is not among the boosting hulls.
 fn plain_hull(dogma: &Dogma, kind: BurstKind) -> Option<crate::ids::TypeId> {
@@ -356,6 +365,13 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
 /// The fleet's environment: the strongest of every buff its boosters give.
 pub fn env_of(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, skills: &dyn Fn(Option<&str>) -> SkillSet) -> Env {
     let mut env = Env::default();
+    for b in fleet.boost_shortcuts.iter().filter(|b| b.active) {
+        if let Some((fit, sk)) = shortcut_booster(dogma, b) {
+            for (id, value) in bursts_of(dogma, &fit, &sk) {
+                env.offer(dogma, id, value);
+            }
+        }
+    }
     for (_, fit_id) in &fleet.boosters {
         let Some(fit) = fits(fit_id) else { continue };
         let profile = fleet.slots.iter().find(|s| &s.fit_id == fit_id).and_then(|s| s.profile.clone());

@@ -235,3 +235,19 @@ fn the_bigger_fleet_wins_the_race_and_logi_keep_a_fleet_standing_longer() {
     assert!(!r.verdicts[1].is_empty(), "every target slot gets a verdict");
     let _ = bare;
 }
+
+#[test]
+fn a_generic_booster_boosts_everyone_without_flying_in_the_fleet() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let plain = Fleet { size: 10, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let mut boosted = plain.clone();
+    boosted.boost_shortcuts.push(crate::fit::BoostShortcut { kind: BurstKind::Shield, ..Default::default() });
+    let (a, b) = (stats(&d, &plain, &lookup(&lib), &skills), stats(&d, &boosted, &lookup(&lib), &skills));
+    assert_eq!(a.ships, b.ships, "the generic booster is no ship of the fleet");
+    assert!(crate::fleet::shortcut_booster(&d, &boosted.boost_shortcuts[0]).is_some());
+    assert_ne!(a.env, b.env, "its bursts reach every ship");
+    boosted.boost_shortcuts[0].active = false;
+    assert_eq!(stats(&d, &boosted, &lookup(&lib), &skills).env, a.env, "switched off it gives nothing");
+}

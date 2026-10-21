@@ -970,6 +970,8 @@
   "Gemini (Google API)": "Gemini (API Google)",
   "General": "Général",
   "Generate and compute battle reports from the zKill feed. While off, no battles are clustered or computed.": "Générer et calculer les rapports de bataille depuis le flux zKill. Désactivé, aucune bataille n'est regroupée ni calculée.",
+  "Generic booster · {hull}": "Booster générique · {hull}",
+  "Generic booster, in no slot": "Booster générique, dans aucun emplacement",
   "Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again.": "Lance le flux d'intel. Tout peut être modifié dans Paramètres, où cette configuration peut aussi être relancée.",
   "Go back to what the channel says": "Revenir à ce que dit le canal",
   "Go there in the app": "Y aller dans l'app",

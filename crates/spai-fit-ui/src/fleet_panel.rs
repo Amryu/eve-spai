@@ -262,6 +262,16 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let my_id = sim.fleet.as_ref().map(|f| f.id.clone()).unwrap_or_default();
     let projected = sim.fleet_stats().map(|(mine, _)| mine.projected).unwrap_or_default();
     let doctrine_fits: Vec<(String, String)> = sim.doctrines.iter().map(|d| (d.id.clone(), trf!("{name} (doctrine)", name = d.name))).collect();
+    let dogma = sim.dogma.clone();
+    // Per burst kind, the fits that carry its module, among those loaded.
+    let boosting: Vec<(BurstKind, Vec<(String, String)>)> = BurstKind::ALL
+        .iter()
+        .map(|&kind| {
+            let fits = library.iter().map(|x| (x.id.clone(), x.name.clone())).chain(doctrine_fits.iter().cloned()).filter(|(id, _)| dogma.as_ref().zip(sim.fit_docs.get(id)).is_some_and(|(d, f)| fleet::fit_has_burst(d, f, kind))).collect();
+            (kind, fits)
+        })
+        .collect();
+    let mut want_all_docs = false;
     let Some(session) = sim.fleet.as_mut() else { return };
     let f = &mut session.fleet;
     let mut changed = false;
@@ -357,32 +367,79 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         }
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!("Boosters")).strong());
-        for kind in BurstKind::ALL {
+        for (kind, fits) in &boosting {
+            let kind = *kind;
             ui.horizontal(|ui| {
                 ui.set_height(24.0);
                 ui.add_sized([90.0, 22.0], egui::Label::new(kind_name(kind)));
                 let current = f.boosters.iter().find(|(k, _)| *k == kind).map(|(_, id)| id.clone());
-                let name = current.as_ref().and_then(|id| library.iter().find(|x| &x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| d == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| tr!("none").to_owned());
-                let mut pick: Option<Option<String>> = None;
-                egui::ComboBox::from_id_salt(("sim_fleet_booster", kind_name(kind))).selected_text(text::clip(&name, 28)).width((ui.available_width() - 8.0).min(260.0)).show_ui(ui, |ui| {
-                    if ui.menu_label(current.is_none(), tr!("none")).clicked() {
+                let shortcut = f.boost_shortcuts.iter().position(|b| b.kind == kind);
+                let name = if let Some(i) = shortcut {
+                    let hull = f.boost_shortcuts[i].hull.zip(dogma.as_ref()).map_or_else(|| tr!("no hull bonus").to_owned(), |(h, d)| spai_fit::formats::name_of(d, h));
+                    trf!("Generic booster · {hull}", hull = hull)
+                } else {
+                    current.as_ref().and_then(|id| library.iter().find(|x| &x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| d == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| tr!("none").to_owned())
+                };
+                // None clears both; Some(Ok(fit)) a fit; Some(Err(hull)) a generic booster.
+                let mut pick: Option<Option<Result<String, Option<spai_fit::ids::TypeId>>>> = None;
+                let combo_w = (ui.available_width() - 8.0 - if shortcut.is_some() { 4.0 * 26.0 } else { 0.0 }).clamp(120.0, 260.0);
+                egui::ComboBox::from_id_salt(("sim_fleet_booster", kind_name(kind))).selected_text(text::clip(&name, 36)).width(combo_w).show_ui(ui, |ui| {
+                    want_all_docs = true;
+                    if ui.menu_label(current.is_none() && shortcut.is_none(), tr!("none")).clicked() {
                         pick = Some(None);
                     }
-                    for x in &library {
-                        if ui.menu_label(current.as_deref() == Some(x.id.as_str()), x.name.clone()).clicked() {
-                            pick = Some(Some(x.id.clone()));
+                    for (id, n) in fits {
+                        if ui.menu_label(current.as_deref() == Some(id.as_str()), n.clone()).clicked() {
+                            pick = Some(Some(Ok(id.clone())));
                         }
                     }
-                    for (id, name) in &doctrine_fits {
-                        if ui.menu_label(current.as_deref() == Some(id.as_str()), name.clone()).clicked() {
-                            pick = Some(Some(id.clone()));
+                    if let Some(d) = &dogma {
+                        ui.separator();
+                        ui.label(egui::RichText::new(tr!("Generic booster, in no slot")).weak());
+                        let on_hull = |h: Option<spai_fit::ids::TypeId>| shortcut.is_some_and(|i| f.boost_shortcuts[i].hull == h);
+                        if ui.menu_label(on_hull(None), tr!("A hull without burst bonuses")).clicked() {
+                            pick = Some(Some(Err(None)));
+                        }
+                        for hull in fleet::boosting_hulls(d, kind) {
+                            if ui.menu_label(on_hull(Some(hull)), spai_fit::formats::name_of(d, hull)).clicked() {
+                                pick = Some(Some(Err(Some(hull))));
+                            }
                         }
                     }
                 });
+                // The generic booster's buttons, as on a fit's projected tab.
+                if let (Some(i), Some(d)) = (shortcut, &dogma) {
+                    let b = f.boost_shortcuts[i].clone();
+                    let mut next = b.clone();
+                    let module = b.module.or_else(|| d.type_named(b.kind.module_name()).map(|t| t.id)).unwrap_or(0);
+                    let skills_btn = spai_ui::widgets::icon_button(ui, icon::GRADUATION_CAP).on_hover_text(tr!("The booster's skills"));
+                    crate::dock::shortcut_skills_popup(&skills_btn, d, &b, &mut next, ("sim_fleet_boost_skills", i));
+                    if spai_ui::widgets::icon_button(ui, crate::dock::mindlink_glyph(ui, b.mindlink)).on_hover_text(crate::dock::mindlink_hint(b.mindlink)).clicked() {
+                        next.mindlink = !next.mindlink;
+                    }
+                    let charges_btn = spai_ui::widgets::icon_button(ui, icon::LIST_CHECKS).on_hover_text(tr!("The burst module and its charges"));
+                    crate::dock::shortcut_charges_popup(&charges_btn, d, &b, &mut next, module);
+                    if spai_ui::widgets::icon_button(ui, crate::dock::switch_glyph(ui, b.active)).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                        next.active = !next.active;
+                    }
+                    if next != b {
+                        f.boost_shortcuts[i] = next;
+                        changed = true;
+                    }
+                }
                 if let Some(p) = pick {
                     f.boosters.retain(|(k, _)| *k != kind);
-                    if let Some(id) = p {
-                        f.boosters.push((kind, id));
+                    match p {
+                        Some(Err(hull)) => match f.boost_shortcuts.iter_mut().find(|b| b.kind == kind) {
+                            // Another hull keeps the skills, mindlink and charges set.
+                            Some(b) => b.hull = hull,
+                            None => f.boost_shortcuts.push(spai_fit::fit::BoostShortcut { kind, hull, ..Default::default() }),
+                        },
+                        Some(Ok(id)) => {
+                            f.boost_shortcuts.retain(|b| b.kind != kind);
+                            f.boosters.push((kind, id));
+                        }
+                        None => f.boost_shortcuts.retain(|b| b.kind != kind),
                     }
                     changed = true;
                 }
@@ -503,6 +560,10 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     });
     if changed {
         session.dirty = true;
+    }
+    if want_all_docs {
+        let all: Vec<String> = sim.library.iter().map(|x| x.id.clone()).chain(sim.doctrines.iter().map(|d| d.id.clone())).collect();
+        sim.want_fit_docs(all.into_iter());
     }
     if let Some(enemy) = sim.fleet.as_ref().and_then(|f| f.enemy.clone()) {
         if !sim.fleet_docs.contains_key(&enemy) {

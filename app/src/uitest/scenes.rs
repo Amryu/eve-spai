@@ -2833,6 +2833,7 @@ pub(crate) fn all() -> Vec<Scene> {
                     FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None },
                 ],
                 boosters: vec![(BurstKind::Shield, "f-boost".into())],
+                boost_shortcuts: vec![spai_fit::fit::BoostShortcut { kind: BurstKind::Armor, mindlink: true, ..Default::default() }],
                 main: Some(0),
                 ..Fleet::default()
             };

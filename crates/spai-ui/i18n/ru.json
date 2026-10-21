@@ -970,6 +970,8 @@
   "Gemini (Google API)": "Gemini (Google API)",
   "General": "Общие",
   "Generate and compute battle reports from the zKill feed. While off, no battles are clustered or computed.": "Создавать и рассчитывать боевые отчёты из ленты zKill. Когда выключено, бои не группируются и не считаются.",
+  "Generic booster · {hull}": "Обычный бустер · {hull}",
+  "Generic booster, in no slot": "Обычный бустер, вне слотов флота",
   "Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again.": "Запускает поток интела. Всё можно изменить в Настройках, там же эту настройку можно пройти снова.",
   "Go back to what the channel says": "Вернуться к данным канала",
   "Go there in the app": "Перейти в приложении",

@@ -970,6 +970,8 @@
   "Gemini (Google API)": "Gemini（Google API）",
   "General": "常规",
   "Generate and compute battle reports from the zKill feed. While off, no battles are clustered or computed.": "从 zKill 动态生成并计算战斗报告。关闭时不聚合或计算任何战斗。",
+  "Generic booster · {hull}": "通用增援 · {hull}",
+  "Generic booster, in no slot": "通用增援，不占舰队位置",
   "Gets intel flowing. All of it can be changed in Settings, where this setup can also be run again.": "让情报流动起来。所有内容都可以在设置中更改，也可以在那里重新运行此设置。",
   "Go back to what the channel says": "恢复为频道所述内容",
   "Go there in the app": "在程序中前往",

@@ -258,7 +258,7 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
 }
 
 /// A switch's glyph: on, the toggle in green; off, the plain one.
-fn switch_glyph(ui: &egui::Ui, on: bool) -> egui::RichText {
+pub(crate) fn switch_glyph(ui: &egui::Ui, on: bool) -> egui::RichText {
     if on {
         egui::RichText::new(icon::TOGGLE_RIGHT).color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A))
     } else {
@@ -296,51 +296,13 @@ fn boost_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             rows::cell(ui, w.max(40.0), label, &format!("{}\n{}", spai_fit::formats::name_of(dogma, module), tr!("The strongest of each boost applies.")));
             // The booster's skills, all V until set.
             let skills_btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::GRADUATION_CAP)).on_hover_text(tr!("The booster's skills"));
-            egui::Popup::menu(&skills_btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                ui.set_min_width(260.0);
-                egui::Grid::new(("sim_boost_skills", i)).num_columns(2).show(ui, |ui| {
-                    for skill in spai_fit::fleet::shortcut_skills(dogma, &b) {
-                        let mut level = next.skills.iter().find(|(s, _)| *s == skill).map_or(5, |(_, l)| *l);
-                        ui.label(spai_fit::formats::name_of(dogma, skill));
-                        if ui.add(egui::DragValue::new(&mut level).range(0..=5)).changed() {
-                            next.skills.retain(|(s, _)| *s != skill);
-                            if level < 5 {
-                                next.skills.push((skill, level));
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
-            });
-            let link = if b.mindlink { egui::RichText::new(icon::BRAIN).color(ui.visuals().hyperlink_color) } else { egui::RichText::new(icon::BRAIN).weak() };
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, link)).on_hover_text(if b.mindlink { tr!("With its mindlink: stronger and longer bursts") } else { tr!("Without a mindlink") }).clicked() {
+            shortcut_skills_popup(&skills_btn, dogma, &b, &mut next, ("sim_boost_skills", i));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, mindlink_glyph(ui, b.mindlink))).on_hover_text(mindlink_hint(b.mindlink)).clicked() {
                 next.mindlink = !next.mindlink;
             }
             // The module it runs and which of its charges.
             let charges_btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::LIST_CHECKS)).on_hover_text(tr!("The burst module and its charges"));
-            egui::Popup::menu(&charges_btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                use spai_ui::widgets::SteadySelect as _;
-                ui.set_min_width(260.0);
-                ui.label(egui::RichText::new(tr!("Module")).weak());
-                for m in spai_fit::fleet::burst_modules(dogma, b.kind) {
-                    if ui.menu_label(m == module, spai_fit::formats::name_of(dogma, m)).clicked() {
-                        next.module = Some(m);
-                        next.charges_off.clear();
-                    }
-                }
-                ui.separator();
-                ui.label(egui::RichText::new(tr!("Charges")).weak());
-                for c in spai_fit::fleet::burst_charges(dogma, module) {
-                    let mut on = !next.charges_off.contains(&c);
-                    if ui.checkbox(&mut on, spai_fit::formats::name_of(dogma, c)).changed() {
-                        if on {
-                            next.charges_off.retain(|x| *x != c);
-                        } else {
-                            next.charges_off.push(c);
-                        }
-                    }
-                }
-            });
+            shortcut_charges_popup(&charges_btn, dogma, &b, &mut next, module);
             if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, b.active))).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 next.active = !next.active;
             }
@@ -1090,4 +1052,67 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             });
         }
     }
+}
+
+/// The booster's skills, all V until set.
+pub(crate) fn shortcut_skills_popup(button: &egui::Response, dogma: &Dogma, b: &spai_fit::fit::BoostShortcut, next: &mut spai_fit::fit::BoostShortcut, salt: impl std::hash::Hash) {
+    egui::Popup::menu(button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(260.0);
+        egui::Grid::new(salt).num_columns(2).show(ui, |ui| {
+            for skill in spai_fit::fleet::shortcut_skills(dogma, b) {
+                let mut level = next.skills.iter().find(|(s, _)| *s == skill).map_or(5, |(_, l)| *l);
+                ui.label(spai_fit::formats::name_of(dogma, skill));
+                if ui.add(egui::DragValue::new(&mut level).range(0..=5)).changed() {
+                    next.skills.retain(|(s, _)| *s != skill);
+                    if level < 5 {
+                        next.skills.push((skill, level));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+pub(crate) fn mindlink_glyph(ui: &egui::Ui, on: bool) -> egui::RichText {
+    if on {
+        egui::RichText::new(icon::BRAIN).color(ui.visuals().hyperlink_color)
+    } else {
+        egui::RichText::new(icon::BRAIN).weak()
+    }
+}
+
+pub(crate) fn mindlink_hint(on: bool) -> &'static str {
+    if on {
+        tr!("With its mindlink: stronger and longer bursts")
+    } else {
+        tr!("Without a mindlink")
+    }
+}
+
+/// The burst module a shortcut runs and which of its charges.
+pub(crate) fn shortcut_charges_popup(button: &egui::Response, dogma: &Dogma, b: &spai_fit::fit::BoostShortcut, next: &mut spai_fit::fit::BoostShortcut, module: spai_fit::ids::TypeId) {
+    egui::Popup::menu(button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        use spai_ui::widgets::SteadySelect as _;
+        ui.set_min_width(260.0);
+        ui.label(egui::RichText::new(tr!("Module")).weak());
+        for m in spai_fit::fleet::burst_modules(dogma, b.kind) {
+            if ui.menu_label(m == module, spai_fit::formats::name_of(dogma, m)).clicked() {
+                next.module = Some(m);
+                next.charges_off.clear();
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new(tr!("Charges")).weak());
+        for c in spai_fit::fleet::burst_charges(dogma, module) {
+            let mut on = !next.charges_off.contains(&c);
+            if ui.checkbox(&mut on, spai_fit::formats::name_of(dogma, c)).changed() {
+                if on {
+                    next.charges_off.retain(|x| *x != c);
+                } else {
+                    next.charges_off.push(c);
+                }
+            }
+        }
+    });
 }
