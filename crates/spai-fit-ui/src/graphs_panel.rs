@@ -410,12 +410,29 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
             control(ui, label, value, range, log, fmt, parse)
         }
     };
-    if x != GraphX::TargetSignature {
-        ctl(ui, tr!("Target signature"), &mut target.signature, 25.0..=2000.0, true, &|v| format!("{v:.0} m"), &leading_number);
+    let heading = |ui: &mut egui::Ui, title: &str, note: &str| {
+        if stacked {
+            ui.label(egui::RichText::new(title).strong());
+            ui.add(egui::Label::new(egui::RichText::new(note).weak()).wrap());
+            ui.add_space(2.0);
+        }
+    };
+    // The test target: a made-up ship whose signature and speed are set here. Fits on the list
+    // bring their own and are not changed by any of it.
+    let test_target = sim.graph_ideal && (x != GraphX::TargetSignature || x != GraphX::TargetSpeed);
+    if test_target {
+        heading(ui, tr!("Test target"), tr!("A made-up ship to test against. Fits added as targets use their own signature and speed."));
+        if x != GraphX::TargetSignature {
+            ctl(ui, tr!("Signature"), &mut target.signature, 25.0..=2000.0, true, &|v| format!("{v:.0} m"), &leading_number);
+        }
+        if x != GraphX::TargetSpeed {
+            ctl(ui, tr!("Speed"), &mut target.velocity, 0.0..=5000.0, false, &|v| format!("{v:.0} m/s"), &leading_number);
+        }
+        if stacked {
+            ui.add_space(8.0);
+        }
     }
-    if x != GraphX::TargetSpeed {
-        ctl(ui, tr!("Target speed"), &mut target.velocity, 0.0..=5000.0, false, &|v| format!("{v:.0} m/s"), &leading_number);
-    }
+    heading(ui, tr!("Engagement"), tr!("How far apart and how every attacker and target move, for all of them."));
     if x != GraphX::Distance {
         ctl(ui, tr!("Distance"), &mut target.distance, 0.0..=250_000.0, false, &metres, &parse_metres);
     }
@@ -570,7 +587,7 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                 }
                 ui.add_space(10.0);
                 ui.label(egui::RichText::new(tr!("Targets")).strong());
-                if sim.graph_ideal && row(ui, tr!("Target profile").to_owned()) {
+                if sim.graph_ideal && row(ui, tr!("Test target").to_owned()) {
                     sim.graph_ideal = false;
                 }
                 for id in sim.graph_targets.clone() {
@@ -580,7 +597,7 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                 }
                 ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add a target")), |ui| {
                     ui.set_min_width(240.0);
-                    if !sim.graph_ideal && ui.button(tr!("Target profile")).clicked() {
+                    if !sim.graph_ideal && ui.button(tr!("Test target")).clicked() {
                         sim.graph_ideal = true;
                         ui.close();
                     }
@@ -611,7 +628,7 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile)> = Vec::new();
     if damage && !sim.graph_targets.is_empty() {
         if sim.graph_ideal {
-            targets.push((Some(tr!("Target profile").to_owned()), raw.clone()));
+            targets.push((Some(tr!("Test target").to_owned()), raw.clone()));
         }
         for id in sim.graph_targets.clone() {
             if let Some(c) = sim.computed_of(&id) {
