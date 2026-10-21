@@ -1094,6 +1094,7 @@ impl SimUi {
     pub fn open_session(&mut self, mut s: Session) {
         if let Some(d) = &self.dogma {
             spai_fit::formats::clamp_states(d, &mut s.fit);
+            spai_fit::formats::sync_boosters(d, &mut s.fit, None);
         }
         // Five drones out at most, as a pilot with the skill at V; edits cap it to the profile's.
         s.fit.cap_drones_out(5);
@@ -1162,10 +1163,14 @@ impl SimUi {
 
     pub fn edit(&mut self, kind: EditKind, now_ms: u64, f: impl FnOnce(&mut Fit)) {
         let limit = if self.has_hull() { self.drone_limit() } else { 5 };
+        let dogma = self.dogma.clone();
         let Some(s) = self.session_mut() else { return };
         let before = s.fit.clone();
         f(&mut s.fit);
         s.fit.cap_drones_out(limit);
+        if let Some(d) = &dogma {
+            spai_fit::formats::sync_boosters(d, &mut s.fit, Some(&before));
+        }
         if s.fit != before {
             s.history.record(kind, &before, now_ms);
             s.rev += 1;

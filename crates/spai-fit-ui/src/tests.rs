@@ -268,7 +268,8 @@ fn a_double_click_puts_each_kind_where_it_belongs() {
     assert_eq!(fit(&s).implants, vec![ids::IMPLANT], "one implant per slot: the second replaces the first");
     quick_add(&mut s, ids::BOOSTER, 10);
     assert_eq!(fit(&s).boosters.len(), 1);
-    assert!(fit(&s).cargo.iter().all(|c| c.type_id != ids::IMPLANT && c.type_id != ids::BOOSTER), "worn things never land in the cargo");
+    assert!(fit(&s).cargo.iter().all(|c| c.type_id != ids::IMPLANT), "an implant is worn, never carried");
+    assert_eq!(fit(&s).cargo.iter().find(|c| c.type_id == ids::BOOSTER).map(|c| c.quantity), Some(1), "a booster in use comes from the cargo");
     quick_add(&mut s, ids::SHIP, 11);
     assert_eq!(fit(&s).ship, ids::SHIP);
 }
@@ -292,7 +293,7 @@ fn a_drop_lands_only_where_it_makes_sense() {
     assert_eq!(fit(&s).boosters.len(), 1);
     assert!(!drop_on(&mut s, DropTarget::Dock(DockTab::Drones), ids::AMMO, 8));
     assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::AMMO, 9));
-    assert_eq!(fit(&s).cargo.len(), 1);
+    assert_eq!(fit(&s).cargo.iter().map(|c| c.type_id).collect::<Vec<_>>(), vec![ids::BOOSTER, ids::AMMO], "the booster in use and the ammo dropped");
     assert!(!drop_on(&mut s, DropTarget::Hull, ids::GUN, 10));
     assert!(drop_on(&mut s, DropTarget::Hull, ids::SHIP, 11));
     assert!(drop_on(&mut s, DropTarget::Module(Slot::High, 1), ids::GUN, 12), "a module on a full slot replaces what is there");

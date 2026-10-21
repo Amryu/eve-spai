@@ -710,8 +710,13 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
         empty_note(ui, if implants { tr!("No implants. Drag some here; one per slot.") } else { tr!("No boosters. Drag some here; one per slot.") });
     }
     let disabled: Vec<TypeId> = sim.session().map(|s| s.fit.disabled.clone()).unwrap_or_default();
+    let fit = sim.session().map(|s| s.fit.clone()).unwrap_or_default();
     for (type_id, slot, side_effects) in list {
+        // A booster comes from the cargo: how many it carries, and the others for the same slot.
+        let carried: u32 = fit.cargo.iter().filter(|c| c.type_id == type_id).map(|c| c.quantity).sum();
+        let others: Vec<TypeId> = if implants { Vec::new() } else { slot.map(|sl| spai_fit::formats::boosters_for_slot(dogma, &fit, sl)).unwrap_or_default() };
         let name = spai_fit::formats::name_of(dogma, type_id);
+        let name = if implants { name } else { format!("{name} ×{carried}") };
         let mut remove = false;
         let mut toggle_side = false;
         let mut toggle_on = false;
@@ -744,6 +749,22 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
         });
         if r.double_clicked() {
             toggle_on = true;
+        }
+        // Several boosters carried for the slot: a click uses the next.
+        let mut use_next: Option<TypeId> = None;
+        if others.len() > 1 {
+            let r = r.clone().on_hover_text(trf!("Click to use another booster for this slot: {names}", names = others.iter().filter(|t| **t != type_id).map(|t| spai_fit::formats::name_of(dogma, *t)).collect::<Vec<_>>().join(", ")));
+            if r.clicked() {
+                let at = others.iter().position(|t| *t == type_id).unwrap_or(0);
+                use_next = Some(others[(at + 1) % others.len()]);
+            }
+        }
+        if let Some(next) = use_next {
+            sim.edit(EditKind::Boosters, now_ms, |f| {
+                if let Some(b) = f.boosters.iter_mut().find(|b| b.type_id == type_id) {
+                    *b = spai_fit::fit::Booster { type_id: next, side_effects: false, side_on: None };
+                }
+            });
         }
         let mut details = false;
         r.context_menu(|ui| {
@@ -787,7 +808,9 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                 if implants {
                     f.implants.retain(|t| *t != type_id);
                 } else if remove {
+                    // Out of use and out of the cargo, every hold.
                     f.boosters.retain(|b| b.type_id != type_id);
+                    f.cargo.retain(|c| c.type_id != type_id);
                 }
             });
         }

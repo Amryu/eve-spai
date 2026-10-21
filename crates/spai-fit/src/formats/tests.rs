@@ -175,3 +175,30 @@ fn a_fit_document_comes_back_whole_with_its_variations() {
     assert_eq!(back[0].fit.variations.len(), 1, "the variation travels");
     assert_eq!(contents(&back[0].fit), contents(&f));
 }
+
+#[test]
+fn boosters_in_use_follow_the_cargo() {
+    let mut d = dataset();
+    let mut other = d.type_(ids::BOOSTER).unwrap().clone();
+    other.id = 99_001;
+    other.name = "Aaa Booster".into();
+    d.types.push(other);
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "b");
+    f.boosters.push(crate::fit::Booster { type_id: ids::BOOSTER, side_effects: false, side_on: None });
+    sync_boosters(&d, &mut f, None);
+    assert_eq!(f.cargo.iter().find(|c| c.type_id == ids::BOOSTER).map(|c| c.quantity), Some(1), "a booster in use is carried");
+    let before = f.clone();
+    f.cargo.retain(|c| c.type_id != ids::BOOSTER);
+    sync_boosters(&d, &mut f, Some(&before));
+    assert!(f.boosters.is_empty(), "taken out of the cargo, it is no longer in use");
+    f.cargo.push(CargoItem { type_id: ids::BOOSTER, quantity: 3, hold: None });
+    f.cargo.push(CargoItem { type_id: 99_001, quantity: 1, hold: None });
+    sync_boosters(&d, &mut f, None);
+    assert_eq!(f.boosters.iter().map(|b| b.type_id).collect::<Vec<_>>(), vec![99_001], "one per slot, the first carried by name");
+    let slot = d.type_(ids::BOOSTER).unwrap().attr(crate::dogma::attr::BOOSTERNESS).unwrap() as u8;
+    assert_eq!(boosters_for_slot(&d, &f, slot), vec![99_001, ids::BOOSTER]);
+    f.boosters.push(crate::fit::Booster { type_id: ids::BOOSTER, side_effects: false, side_on: None });
+    sync_boosters(&d, &mut f, None);
+    assert_eq!(f.boosters.iter().map(|b| b.type_id).collect::<Vec<_>>(), vec![ids::BOOSTER], "the latest picked for the slot is the one used");
+}

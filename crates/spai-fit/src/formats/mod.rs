@@ -73,6 +73,46 @@ pub fn clamp_states(dogma: &Dogma, fit: &mut Fit) {
     }
 }
 
+/// Boosters live in the cargo: the booster used in each slot is one the cargo carries. After an
+/// edit (`before` the fit it started from): a booster in use that the edit took out of the cargo
+/// is no longer used; one in use that the cargo never had is put in it. One booster per slot, the
+/// latest picked; a slot with boosters carried and none in use uses the first of them by name.
+pub fn sync_boosters(dogma: &Dogma, fit: &mut Fit, before: Option<&Fit>) {
+    let slot = |t: TypeId| dogma.type_(t).and_then(|d| d.attr(attr::BOOSTERNESS)).map(|v| v as u8);
+    // Any hold counts; a booster that has to be put in goes to the hull's booster bay if it has one.
+    let carried = |f: &Fit, t: TypeId| f.cargo.iter().any(|c| c.type_id == t && c.quantity > 0);
+    let bay = dogma.attr_named("specialBoosterHoldCapacity").map(|a| a.id).filter(|a| dogma.type_(fit.ship).and_then(|t| t.attr(*a)).is_some_and(|v| v > 0.0));
+    let mut used: Vec<Booster> = Vec::new();
+    for b in std::mem::take(&mut fit.boosters) {
+        if !carried(fit, b.type_id) {
+            if before.is_some_and(|f| carried(f, b.type_id)) {
+                continue;
+            }
+            fit.cargo.push(CargoItem { type_id: b.type_id, quantity: 1, hold: bay });
+        }
+        // The latest picked for a slot wins.
+        used.retain(|u| slot(u.type_id).is_none() || slot(u.type_id) != slot(b.type_id));
+        used.push(b);
+    }
+    let mut spare: Vec<(String, TypeId)> = fit.cargo.iter().filter(|c| c.quantity > 0).map(|c| c.type_id).filter_map(|t| dogma.type_(t).filter(|d| place_of(dogma, d) == Place::Booster).map(|d| (d.name.clone(), t))).collect();
+    spare.sort();
+    spare.dedup();
+    for (_, t) in spare {
+        if slot(t).is_some() && !used.iter().any(|u| slot(u.type_id) == slot(t)) {
+            used.push(Booster { type_id: t, side_effects: false, side_on: None });
+        }
+    }
+    fit.boosters = used;
+}
+
+/// The boosters the cargo carries for the slot, by name.
+pub fn boosters_for_slot(dogma: &Dogma, fit: &Fit, slot: u8) -> Vec<TypeId> {
+    let mut v: Vec<(String, TypeId)> = fit.cargo.iter().filter(|c| c.quantity > 0).filter_map(|c| dogma.type_(c.type_id)).filter(|d| place_of(dogma, d) == Place::Booster && d.attr(attr::BOOSTERNESS).map(|v| v as u8) == Some(slot)).map(|d| (d.name.clone(), d.id)).collect();
+    v.sort();
+    v.dedup();
+    v.into_iter().map(|(_, t)| t).collect()
+}
+
 /// Puts an item of the type into the fit where it belongs; `false` when there is no place.
 pub fn add_item(dogma: &Dogma, fit: &mut Fit, type_id: TypeId, quantity: u32) -> bool {
     let Some(t) = dogma.type_(type_id) else { return false };
