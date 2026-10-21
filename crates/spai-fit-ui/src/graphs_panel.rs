@@ -24,6 +24,7 @@ pub fn kind_name(kind: GraphKind) -> &'static str {
         GraphKind::LockTime => tr!("Lock time vs signature"),
         GraphKind::RemoteRepVsDistance => tr!("Remote repair vs distance"),
         GraphKind::EwarVsDistance => tr!("Ewar vs distance"),
+        GraphKind::DamageOverTime => tr!("Damage over time"),
     }
 }
 
@@ -72,6 +73,7 @@ fn axes(kind: GraphKind) -> (&'static str, &'static str, Fmt, Fmt) {
         GraphKind::LockTime => (tr!("Target signature (m)"), tr!("Seconds"), plain, plain),
         GraphKind::RemoteRepVsDistance => (tr!("Distance"), tr!("Per second"), km, plain),
         GraphKind::EwarVsDistance => (tr!("Distance"), tr!("Strength"), km, plain),
+        GraphKind::DamageOverTime => (tr!("Time"), tr!("DPS"), s, plain),
     }
 }
 
@@ -615,6 +617,17 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
     }
 }
 
+/// The layer a fit is shot through for damage taken: its armor when it runs a reactive hardener,
+/// else the layer holding most of its effective hit points.
+fn tank_of(c: &spai_fit::stats::Computed) -> graphs::TargetTank {
+    let t = &c.tank;
+    if let Some(r) = t.rah {
+        return graphs::TargetTank { resonance: r.armor_before, rah: Some(r) };
+    }
+    let layer = [&t.shield, &t.armor, &t.hull].into_iter().max_by(|a, b| a.ehp.total_cmp(&b.ehp)).unwrap_or(&t.armor);
+    graphs::TargetTank { resonance: std::array::from_fn(|i| 1.0 - layer.resist(i)), rah: None }
+}
+
 /// One line per attacker (and per target, for damage), each the total of that fit's weapons.
 fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit::fit::TargetProfile, motion: Motion, open: &[(String, String)], current: &str, computed: &std::sync::Arc<spai_fit::stats::Computed>, damage: bool) -> Option<Plot> {
     let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
@@ -625,25 +638,26 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
             attackers.push((name_of(&id), c));
         }
     }
-    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile)> = Vec::new();
+    // A fit as target brings its tank too, for the damage it takes over time.
+    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile, Option<graphs::TargetTank>)> = Vec::new();
     if damage && !sim.graph_targets.is_empty() {
         if sim.graph_ideal {
-            targets.push((Some(tr!("Test target").to_owned()), raw.clone()));
+            targets.push((Some(tr!("Test target").to_owned()), raw.clone(), None));
         }
         for id in sim.graph_targets.clone() {
             if let Some(c) = sim.computed_of(&id) {
                 let t = spai_fit::fit::TargetProfile { signature: c.mobility.signature as f32, velocity: c.mobility.max_velocity as f32, ..raw.clone() };
-                targets.push((Some(name_of(&id)), t));
+                targets.push((Some(name_of(&id)), t, Some(tank_of(&c))));
             }
         }
     } else {
-        targets.push((None, raw.clone()));
+        targets.push((None, raw.clone(), None));
     }
     let mut lines: Vec<PlotSeries> = Vec::new();
     for (a_name, c) in &attackers {
-        for (t_name, t) in &targets {
+        for (t_name, t, tank) in &targets {
             let one = GraphSpec { target: motion.apply(t, c.mobility.max_velocity), ..spec.clone() };
-            let series = graphs::sample(c, &one, None);
+            let series = if spec.kind == GraphKind::DamageOverTime { graphs::damage_over_time(c, &one, tank.as_ref()) } else { graphs::sample(c, &one, None) };
             let total = series.iter().find(|s| s.label == SeriesLabel::Total).or_else(|| series.first());
             let Some(total) = total else { continue };
             let label = match t_name {

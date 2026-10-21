@@ -23,19 +23,22 @@ pub enum GraphKind {
     LockTime,
     RemoteRepVsDistance,
     EwarVsDistance,
+    /// Damage per second from opening fire: spooling weapons build up cycle by cycle, and against
+    /// a fit, a reactive hardener shifts from its even split.
+    DamageOverTime,
 }
 
 impl GraphKind {
     /// A damage graph of either kind: per second or per shot.
     pub fn is_damage(self) -> bool {
-        matches!(self, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature) || self.is_volley()
+        matches!(self, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature | GraphKind::DamageOverTime) || self.is_volley()
     }
 
     pub fn is_volley(self) -> bool {
         matches!(self, GraphKind::VolleyVsDistance | GraphKind::VolleyVsTargetSpeed | GraphKind::VolleyVsTargetSignature)
     }
 
-    pub const ALL: [GraphKind; 13] = [
+    pub const ALL: [GraphKind; 14] = [
         GraphKind::DamageVsDistance,
         GraphKind::DamageVsTargetSpeed,
         GraphKind::DamageVsTargetSignature,
@@ -49,6 +52,7 @@ impl GraphKind {
         GraphKind::LockTime,
         GraphKind::RemoteRepVsDistance,
         GraphKind::EwarVsDistance,
+        GraphKind::DamageOverTime,
     ];
 
     /// What the graph plots, up the side and along the bottom.
@@ -68,6 +72,7 @@ impl GraphKind {
             K::LockTime => (Y::LockTime, X::TargetSignature),
             K::RemoteRepVsDistance => (Y::RemoteRep, X::Distance),
             K::EwarVsDistance => (Y::Ewar, X::Distance),
+            K::DamageOverTime => (Y::Dps, X::Time),
         }
     }
 
@@ -305,6 +310,7 @@ pub fn sample(c: &Computed, spec: &GraphSpec, cap: Option<&CapInputs>) -> Vec<Se
         }
         GraphKind::RemoteRepVsDistance => remote_series(c, spec, n, true),
         GraphKind::EwarVsDistance => remote_series(c, spec, n, false),
+        GraphKind::DamageOverTime => damage_over_time(c, spec, None),
     }
 }
 
@@ -464,7 +470,7 @@ mod axes_tests {
             assert_eq!(GraphKind::from_axes(y, x), Some(k));
         }
         assert_eq!(GraphKind::from_axes(GraphY::Capacitor, GraphX::Distance), None, "capacitor runs over time only");
-        assert_eq!(GraphY::Dps.xs(), vec![GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature]);
+        assert_eq!(GraphY::Dps.xs(), vec![GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature, GraphX::Time]);
         assert_eq!(GraphY::LockTime.xs(), vec![GraphX::TargetSignature]);
         for y in GraphY::ALL {
             assert!(!y.xs().is_empty(), "{y:?} has a bottom");
@@ -477,6 +483,38 @@ mod speed_bump {
     use super::*;
     use crate::test_support::{dataset, ids};
     use crate::fit::{DroneStack, Fit, Module, Slot, State};
+
+    #[test]
+    fn spooling_damage_climbs_a_step_a_cycle_and_a_hardener_eats_into_it() {
+        let d = dataset();
+        let mut f = Fit::new(ids::SHIP, "x");
+        f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+        let mut c = crate::stats::compute(&d, &f, &crate::skills::SkillSet::all_v(), &crate::calc::Env::default());
+        let target = TargetProfile { signature: 400.0, distance: 0.0, ..Default::default() };
+        // A disintegrator's spool on the gun: +100% at most, 10% a cycle, figures set full.
+        let w = &mut c.weapons[0];
+        let cold = w.dps;
+        w.spool_max = 1.0;
+        w.spool_per_cycle = 0.1;
+        w.spool_frac = 1.0;
+        w.dps = cold * 2.0;
+        let spec = GraphSpec { x_to: Some(120.0), ..GraphSpec::new(GraphKind::DamageOverTime, target.clone()) };
+        let line = &damage_over_time(&c, &spec, None)[0].points;
+        let first = line[0][1];
+        let last = line.last().unwrap()[1];
+        assert!(line.windows(2).all(|p| p[1][1] >= p[0][1] - 1e-9), "never falls while spooling");
+        assert!((last / first - 2.0).abs() < 1e-6, "from cold to twice that: {first} to {last}");
+        // Against a reactive hardener that starts even, the damage taken falls as it adapts.
+        let rah = crate::calc::Rah { armor_before: [1.0; 4], start: [0.15; 4], shift: 0.06, cycle_s: 10.0 };
+        c.weapons[0].spool_max = 0.0;
+        c.weapons[0].dps = cold;
+        let tank = TargetTank { resonance: [1.0; 4], rah: Some(rah) };
+        let taken = &damage_over_time(&c, &spec, Some(&tank))[0].points;
+        let (start, end) = (taken[0][1], taken.last().unwrap()[1]);
+        let bare = damage_over_time(&c, &spec, None)[0].points[0][1];
+        assert!((start - bare * 0.85).abs() < 1e-6, "even at first: 15% off everything");
+        assert!(end < start * 0.95, "adapted, it lets less through: {start} to {end}");
+    }
 
     #[test]
     fn damage_never_rises_with_target_speed() {
@@ -506,4 +544,103 @@ pub(crate) fn value_at_for_test(points: &[[f64; 2]], x: f64) -> f64 {
     }
     let (a, b) = (points[i - 1], points[i]);
     if b[0] == a[0] { b[1] } else { a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) }
+}
+
+/// A target's tank for damage taken over time: the resonances of the layer being shot, and its
+/// reactive hardener if it runs one (the resonances then are the armor's without it).
+#[derive(Clone, Copy, Debug)]
+pub struct TargetTank {
+    pub resonance: [f64; 4],
+    pub rah: Option<crate::calc::Rah>,
+}
+
+/// Damage per second from the moment fire opens, at the spec's target and distance. Each weapon's
+/// spool builds up a step a cycle from cold. With a target tank, one line of the damage it takes,
+/// its reactive hardener starting even and shifting each of its cycles towards what hits it.
+pub fn damage_over_time(c: &Computed, spec: &GraphSpec, tank: Option<&TargetTank>) -> Vec<Series> {
+    use crate::stats::WeaponKind;
+    let weapons: Vec<&crate::stats::WeaponGroup> = c.weapons.iter().filter(|w| spec.include_drones || w.kind != WeaponKind::Drone).collect();
+    if weapons.is_empty() {
+        return Vec::new();
+    }
+    let spool_end = weapons.iter().filter_map(|w| w.spool_cycles().map(|n| f64::from(n) * w.cycle_s)).fold(0.0, f64::max);
+    let rah_end = tank.and_then(|t| t.rah).filter(|r| r.shift > 0.0).map_or(0.0, |r| r.cycle_s * 12.0);
+    let horizon = spec.x_to.unwrap_or_else(|| (spool_end.max(rah_end) * 1.25).max(60.0));
+    // The steps: every cycle boundary of a spooling weapon until full, every hardener cycle.
+    let mut steps: Vec<f64> = Vec::new();
+    for w in &weapons {
+        if let Some(n) = w.spool_cycles() {
+            steps.extend((1..=n).map(|k| f64::from(k) * w.cycle_s));
+        }
+    }
+    if let Some(r) = tank.and_then(|t| t.rah).filter(|r| r.shift > 0.0 && r.cycle_s > 0.0) {
+        let mut t = r.cycle_s;
+        while t < horizon {
+            steps.push(t);
+            t += r.cycle_s;
+        }
+    }
+    let mut ts: Vec<f64> = grid(0.0, horizon, spec.points.max(2)).collect();
+    for s in steps.iter().filter(|s| **s < horizon) {
+        ts.push(s - 1e-3);
+        ts.push(*s);
+    }
+    ts.sort_by(|a, b| a.total_cmp(b));
+    ts.dedup();
+    let target = &spec.target;
+    let distance = f64::from(target.distance);
+    let drone_v = c.drone_speed.unwrap_or(0.0);
+    // Each weapon's damage per second by type, cold, as it lands on the target.
+    let landed: Vec<[f64; 4]> = weapons
+        .iter()
+        .map(|w| {
+            let v = &w.volley;
+            let total = v.total().max(1e-9);
+            let f = w.cold_dps() * applied_factor(w, distance, target, drone_v, c.drones.control_range) / total;
+            [v.em * f, v.thermal * f, v.kinetic * f, v.explosive * f]
+        })
+        .collect();
+    let at = |t: f64| -> Vec<[f64; 4]> { weapons.iter().zip(&landed).map(|(w, d)| d.map(|x| x * w.spool_at(t))).collect() };
+    let Some(tank) = tank else {
+        let mut out: Vec<Series> = weapons.iter().map(|w| Series { label: SeriesLabel::Weapon(w.type_id, w.charge), points: Vec::new() }).collect();
+        let mut total = Vec::new();
+        for &t in &ts {
+            let per = at(t);
+            let mut sum = 0.0;
+            for (k, d) in per.iter().enumerate() {
+                let y: f64 = d.iter().sum();
+                out[k].points.push([t, y]);
+                sum += y;
+            }
+            total.push([t, sum]);
+        }
+        if out.len() > 1 {
+            out.push(Series { label: SeriesLabel::Total, points: total });
+        }
+        return out;
+    };
+    // Against a tank: the hardener's split for each of its cycles, from what hit it in the last.
+    let resonance_at = |t: f64| -> [f64; 4] {
+        let Some(r) = tank.rah else { return tank.resonance };
+        let cycles = if r.cycle_s > 0.0 && r.shift > 0.0 { (t / r.cycle_s).floor() as usize } else { 0 };
+        let mut res = r.start;
+        for k in 0..cycles {
+            let incoming = at(k as f64 * r.cycle_s).iter().fold([0.0; 4], |a, d| std::array::from_fn(|i| a[i] + d[i]));
+            let sum: f64 = incoming.iter().sum();
+            if sum <= 0.0 {
+                break;
+            }
+            res = crate::calc::patch::adapt_step(res, r.armor_before, incoming.map(|x| x / sum), r.shift);
+        }
+        std::array::from_fn(|i| r.armor_before[i] * (1.0 - res[i]))
+    };
+    let points = ts
+        .iter()
+        .map(|&t| {
+            let res = resonance_at(t);
+            let y: f64 = at(t).iter().map(|d| (0..4).map(|i| d[i] * res[i]).sum::<f64>()).sum();
+            [t, y]
+        })
+        .collect();
+    vec![Series { label: SeriesLabel::Total, points }]
 }

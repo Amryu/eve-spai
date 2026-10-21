@@ -113,6 +113,18 @@ pub struct Calc<'d> {
     pub(crate) incoming: [f64; 4],
     /// Reactive hardeners kept at their even split.
     pub(crate) fixed: Vec<ItemIdx>,
+    /// The first running reactive hardener, for damage taken over time.
+    pub rah: Option<Rah>,
+}
+
+/// A running reactive hardener: the armor resonances it adapts against, its starting resistances,
+/// how much it shifts a cycle (zero kept even) and how long a cycle lasts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rah {
+    pub armor_before: [f64; 4],
+    pub start: [f64; 4],
+    pub shift: f64,
+    pub cycle_s: f64,
 }
 
 /// Source item categories whose modifiers are never stacking-penalised.
@@ -134,6 +146,7 @@ impl<'d> Calc<'d> {
             unknown_types: Vec::new(),
             incoming: fit.damage_profile.weights(),
             fixed: Vec::new(),
+            rah: None,
         };
         c.build(fit, skills);
         c.collect();

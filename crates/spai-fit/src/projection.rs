@@ -616,3 +616,17 @@ fn real_data_reactive_hardener() {
         assert!((kin - (1.0 - 0.6 * (1.0 - 4.0 * each))).abs() < 0.005, "all of its {:.0}% moved to kinetic", 4.0 * each * 100.0);
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_disintegrator_spool() {
+    use crate::fit::{Module, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let mut f = Fit::new(d.type_named("Vedmak").unwrap().id, "v");
+    f.modules.push(Module::new(d.type_named("Heavy Entropic Disintegrator II").unwrap().id, Slot::High, 0).with_charge(d.type_named("Occult M").unwrap().id).with_state(State::Active));
+    let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    let w = &c.weapons[0];
+    println!("spool max {:.3} per cycle {:.3} cycles {:?} cycle {:.2}s cold {:.1} full {:.1}", w.spool_max, w.spool_per_cycle, w.spool_cycles(), w.cycle_s, w.cold_dps(), w.cold_dps() * (1.0 + w.spool_max));
+    assert!(w.spool_max > 0.0 && w.spool_per_cycle > 0.0 && w.spool_cycles().is_some_and(|n| n > 1));
+}

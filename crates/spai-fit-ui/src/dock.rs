@@ -729,15 +729,24 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
         let mut remove = false;
         let mut toggle_side = false;
         let mut toggle_on = false;
+        let mut swap_clicked = false;
         let on = !disabled.contains(&type_id);
         let has_side = dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.usage_chance_attr.is_some())));
         let r = rows::row(ui, if implants { "dock/implants" } else { "dock/boosters" }, ("sim_worn", implants, type_id), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
             rows::num_cell(ui, 18.0, slot.map_or(String::new(), |s| s.to_string()), true);
-            let w = rows::name_w(ui, if implants { 2.0 } else { 3.0 });
+            let w = rows::name_w(ui, if implants { 2.0 } else { 4.0 });
             let label = if on { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
             rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&if implants { crate::details::DetailsTarget::Implant(type_id) } else { crate::details::DetailsTarget::Booster(type_id) })));
             if !implants {
+                // Several boosters carried for the slot: a button to use the next one.
+                if others.len() > 1 {
+                    if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::SWAP)).on_hover_text(trf!("Use another booster for this slot: {names}", names = others.iter().filter(|t| **t != type_id).map(|t| spai_fit::formats::name_of(dogma, *t)).collect::<Vec<_>>().join(", "))).clicked() {
+                        swap_clicked = true;
+                    }
+                } else {
+                    rows::no_slot(ui);
+                }
                 // Only boosters that have side effects get the button; the rest keep the column.
                 if has_side {
                     let tint = if side_effects { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
@@ -759,14 +768,12 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
         if r.double_clicked() {
             toggle_on = true;
         }
-        // Several boosters carried for the slot: a click uses the next.
+        // Several boosters carried for the slot: the swap button uses the next; clicks on the row
+        // stay for selecting and the double-click switch.
         let mut use_next: Option<TypeId> = None;
-        if others.len() > 1 {
-            let r = r.clone().on_hover_text(trf!("Click to use another booster for this slot: {names}", names = others.iter().filter(|t| **t != type_id).map(|t| spai_fit::formats::name_of(dogma, *t)).collect::<Vec<_>>().join(", ")));
-            if r.clicked() {
-                let at = others.iter().position(|t| *t == type_id).unwrap_or(0);
-                use_next = Some(others[(at + 1) % others.len()]);
-            }
+        if others.len() > 1 && swap_clicked {
+            let at = others.iter().position(|t| *t == type_id).unwrap_or(0);
+            use_next = Some(others[(at + 1) % others.len()]);
         }
         if let Some(next) = use_next {
             sim.edit(EditKind::Boosters, now_ms, |f| {
@@ -1015,7 +1022,7 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             if capacity > 0.0 {
                 let share = (dogma.type_(type_id).map_or(0.0, |t| f64::from(t.cargo_volume())) * f64::from(qty) / capacity).clamp(0.0, 1.0) as f32;
                 let rect = ui.max_rect();
-                ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * share, rect.height())), 3.0, ui.visuals().hyperlink_color.gamma_multiply(0.10));
+                ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * share, rect.height())), 3.0, ui.visuals().hyperlink_color.gamma_multiply(0.20));
             }
             crate::icons::type_icon(ui, type_id, 18.0);
             let w = rows::name_w(ui, 4.0);

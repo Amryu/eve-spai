@@ -94,6 +94,8 @@ pub struct Tank {
     /// A PANIC core is running: the shield's near total resistances come from a calibrated factor
     /// (`calc::patch::PANIC_SHIELD_RESONANCE`), not from the data.
     pub invulnerable: bool,
+    /// A running reactive hardener, to replay its shifting cycle by cycle.
+    pub rah: Option<crate::calc::Rah>,
     pub shield: Layer,
     pub armor: Layer,
     pub hull: Layer,
@@ -176,6 +178,10 @@ pub struct WeaponGroup {
     /// Overheated and still cold damage multipliers are already in `volley`; this is the extra a
     /// fully spooled disintegrator reaches over its cold shot.
     pub spool_max: f64,
+    /// What each cycle adds to a disintegrator's bonus, up to `spool_max`.
+    pub spool_per_cycle: f64,
+    /// How far spooled the figures above are, 0..1 of `spool_max`.
+    pub spool_frac: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -514,7 +520,7 @@ fn tank(calc: &Calc, fit: &Fit) -> Tank {
     let shield_peak_regen = if recharge_s > 0.0 { 2.5 * shield.hp / recharge_s } else { 0.0 };
     let reps = reps(calc);
     let invulnerable = calc.modules().any(|(i, it)| it.state >= State::Active && calc.effect_names(i).any(|n| n == PANIC_EFFECT));
-    Tank { invulnerable, ehp: shield.ehp + armor.ehp + hull.ehp, shield, armor, hull, shield_peak_regen, shield_recharge_s: recharge_s, reps }
+    Tank { invulnerable, rah: calc.rah, ehp: shield.ehp + armor.ehp + hull.ehp, shield, armor, hull, shield_peak_regen, shield_recharge_s: recharge_s, reps }
 }
 
 /// Local repairs per second from the active repairers. An ancillary armour repairer with Nanite
@@ -704,6 +710,8 @@ fn fighter_weapons(calc: &Calc, i: ItemIdx, count: u32) -> Vec<Weapon> {
                 damage_reduction_factor: v(drf),
             }),
             spool_max: 0.0,
+            spool_per_cycle: 0.0,
+            spool_frac: 0.0,
         });
     }
     out
@@ -736,6 +744,8 @@ struct Weapon {
     signature_resolution: f64,
     missile: Option<MissileProfile>,
     spool_max: f64,
+    spool_per_cycle: f64,
+    spool_frac: f64,
 }
 
 fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
@@ -762,15 +772,21 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
                 signature_resolution: calc.value(i, attr::OPTIMAL_SIG_RADIUS),
                 missile: None,
                 spool_max: 0.0,
+                spool_per_cycle: 0.0,
+                spool_frac: 0.0,
             })
         }
         ItemKind::Module { .. } if names.iter().any(|n| TURRET_EFFECTS.contains(n) || *n == DISINTEGRATOR_EFFECT) => {
             let c = charge?;
             let mut mult = calc.value(i, attr::DAMAGE_MULTIPLIER);
             let spool_max = if names.contains(&DISINTEGRATOR_EFFECT) { calc.value(i, attr::DAMAGE_MULTIPLIER_BONUS_MAX) } else { 0.0 };
+            let spool_per_cycle = calc.dogma.attr_named("damageMultiplierBonusPerCycle").map(|a| a.id).filter(|a| calc.has(i, *a)).map_or(0.0, |a| calc.value(i, a));
+            let mut spool_frac = 0.0;
             if spool_max > 0.0 {
+                // Fully spooled unless set lower: what it settles at on one target.
                 let fraction = fit.modules.iter().find(|m| matches!(it.kind, ItemKind::Module { slot, index } if m.slot == slot && m.index == index)).and_then(|m| m.spool).unwrap_or(1.0);
-                mult *= 1.0 + spool_max * f64::from(fraction.clamp(0.0, 1.0));
+                spool_frac = f64::from(fraction.clamp(0.0, 1.0));
+                mult *= 1.0 + spool_max * spool_frac;
             }
             Some(Weapon {
                 kind: WeaponKind::Turret,
@@ -785,6 +801,8 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
                 signature_resolution: calc.value(i, attr::OPTIMAL_SIG_RADIUS),
                 missile: None,
                 spool_max,
+                spool_per_cycle,
+                spool_frac,
             })
         }
         ItemKind::Module { .. } if names.contains(&"useMissiles") => {
@@ -815,6 +833,8 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
                     damage_reduction_factor: calc.value(c, attr::AOE_DAMAGE_REDUCTION_FACTOR),
                 }),
                 spool_max: 0.0,
+                spool_per_cycle: 0.0,
+                spool_frac: 0.0,
             })
         }
         ItemKind::Module { .. } if names.contains(&"empWave") => Some(Weapon {
@@ -830,6 +850,8 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
             signature_resolution: 0.0,
             missile: None,
             spool_max: 0.0,
+            spool_per_cycle: 0.0,
+            spool_frac: 0.0,
         }),
         _ => None,
     }
@@ -875,6 +897,8 @@ fn weapons(calc: &Calc, fit: &Fit) -> Vec<WeaponGroup> {
             missile: w.missile,
             cap_per_s: if w.cycle_s > 0.0 { w.cap_per_cycle / w.cycle_s } else { 0.0 },
             spool_max: w.spool_max,
+            spool_per_cycle: w.spool_per_cycle,
+            spool_frac: w.spool_frac,
         });
         }
     }
@@ -984,6 +1008,28 @@ pub enum ModuleRange {
     Optimal { optimal: f64, falloff: f64 },
     /// A missile's whole seconds of flight and one more.
     Flight { sure: f64, longest: f64 },
+}
+
+impl WeaponGroup {
+    /// Cycles from cold to fully spooled.
+    pub fn spool_cycles(&self) -> Option<u32> {
+        (self.spool_max > 0.0 && self.spool_per_cycle > 0.0).then(|| (self.spool_max / self.spool_per_cycle).ceil() as u32)
+    }
+
+    /// The damage multiplier `t` seconds after opening fire from cold, over the cold one: each
+    /// finished cycle adds its step, up to the maximum.
+    pub fn spool_at(&self, t: f64) -> f64 {
+        if self.spool_max <= 0.0 || self.cycle_s <= 0.0 {
+            return 1.0;
+        }
+        let cycles = (t / self.cycle_s).floor().max(0.0);
+        1.0 + (cycles * self.spool_per_cycle).min(self.spool_max)
+    }
+
+    /// The damage per second it would do cold, whatever spool the figures are set at.
+    pub fn cold_dps(&self) -> f64 {
+        self.dps / (1.0 + self.spool_max * self.spool_frac)
+    }
 }
 
 /// The module's reach: its weapon group's figures for a weapon, its own range attributes else.

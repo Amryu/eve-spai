@@ -330,6 +330,14 @@ a 1% chance; missiles against big slow and small fast targets).
 
 Tests: `graphs::tests::*`, `stats::cap_sim::tests::a_trace_follows_the_run_and_hits_zero_when_dry`.
 
+- Damage over time: damage per second from the moment fire opens, at the graph's target and
+  distance. A disintegrator starts cold and each finished cycle adds `damageMultiplierBonusPerCycle`
+  to its multiplier, up to `damageMultiplierBonusMax`, so the line climbs in steps until full.
+  Against a fit as target, the line is the damage it takes through the layer it is shot in (its
+  armor when it runs a reactive hardener, else the layer with most effective hit points): the
+  hardener starts at its even split and takes one shifting step at the end of each of its cycles,
+  weighted by the damage that reached it.
+
 ## 16. Variations (`variations`)
 
 A fit carries named variations, each a list of operations: put a type in a position or empty it,

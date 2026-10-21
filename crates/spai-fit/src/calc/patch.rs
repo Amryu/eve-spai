@@ -186,9 +186,13 @@ fn reactive_hardener(c: &mut Calc) {
     // The ship's armor before any reactive hardener: what it adapts against.
     let before: [f64; 4] = ARMOR_RESONANCES.map(|a| c.value(ship, a));
     for &rah in &rahs {
+        let shift = c.dogma.attr_named("resistanceShiftAmount").map(|a| a.id).filter(|a| c.has(rah, *a)).map_or(6.0, |a| c.value(rah, a)) / 100.0;
+        let start = ARMOR_RESONANCES.map(|a| 1.0 - c.value(rah, a));
+        if c.rah.is_none() {
+            let cycle_s = c.value(rah, attr::DURATION) / 1000.0;
+            c.rah = Some(crate::calc::Rah { armor_before: before, start, shift: if c.fixed.contains(&rah) { 0.0 } else { shift }, cycle_s });
+        }
         if !c.fixed.contains(&rah) {
-            let shift = c.dogma.attr_named("resistanceShiftAmount").map(|a| a.id).filter(|a| c.has(rah, *a)).map_or(6.0, |a| c.value(rah, a)) / 100.0;
-            let start = ARMOR_RESONANCES.map(|a| 1.0 - c.value(rah, a));
             let adapted = adapt(start, before, c.incoming, shift);
             for (k, a) in ARMOR_RESONANCES.into_iter().enumerate() {
                 c.set_override(rah, a, 1.0 - adapted[k]);
@@ -219,24 +223,35 @@ pub(crate) fn adapt(start: [f64; 4], ship: [f64; 4], incoming: [f64; 4], shift: 
             return avg;
         }
         seen.push(key);
-        let taken: [f64; 4] = std::array::from_fn(|k| incoming[k] * ship[k] * (1.0 - res[k]));
-        let mut order: Vec<usize> = (0..4).collect();
-        order.sort_by(|a, b| taken[*a].total_cmp(&taken[*b]).then(a.cmp(b)));
-        let hit = taken.iter().filter(|t| **t > 0.0).count();
-        // Nothing taken, or every type hurting alike: nothing to shift towards.
-        if hit == 0 || taken.iter().all(|t| (t - taken[0]).abs() < 1e-12) {
+        let next = adapt_step(res, ship, incoming, shift);
+        if next == res {
             return res;
         }
-        let (donors, takers): (Vec<usize>, Vec<usize>) = if hit == 1 { (order[..3].to_vec(), order[3..].to_vec()) } else { (order[..2].to_vec(), order[2..].to_vec()) };
-        let mut pool = 0.0;
-        for d in donors {
-            let give = shift.min(res[d]);
-            res[d] -= give;
-            pool += give;
-        }
-        for t in &takers {
-            res[*t] += pool / takers.len() as f64;
-        }
+        res = next;
+    }
+    res
+}
+
+/// One cycle of a reactive hardener: the two types hurting the ship least give up to `shift`
+/// each, shared between the two hurting most (a single type coming in takes from the other
+/// three); every type hurting alike, or nothing coming in, shifts nothing.
+pub fn adapt_step(mut res: [f64; 4], ship: [f64; 4], incoming: [f64; 4], shift: f64) -> [f64; 4] {
+    let taken: [f64; 4] = std::array::from_fn(|k| incoming[k] * ship[k] * (1.0 - res[k]));
+    let mut order: Vec<usize> = (0..4).collect();
+    order.sort_by(|a, b| taken[*a].total_cmp(&taken[*b]).then(a.cmp(b)));
+    let hit = taken.iter().filter(|t| **t > 0.0).count();
+    if hit == 0 || taken.iter().all(|t| (t - taken[0]).abs() < 1e-12) {
+        return res;
+    }
+    let (donors, takers): (Vec<usize>, Vec<usize>) = if hit == 1 { (order[..3].to_vec(), order[3..].to_vec()) } else { (order[..2].to_vec(), order[2..].to_vec()) };
+    let mut pool = 0.0;
+    for d in donors {
+        let give = shift.min(res[d]);
+        res[d] -= give;
+        pool += give;
+    }
+    for t in &takers {
+        res[*t] += pool / takers.len() as f64;
     }
     res
 }

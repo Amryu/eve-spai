@@ -336,7 +336,10 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
 
 fn offense(ui: &mut egui::Ui, dogma: &Dogma, c: &Computed) {
     section(ui, tr!("Offense"));
-    line(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(c.dps()), volley = text::num(c.volley())));
+    // A total only where there is more than one weapon to add up; one alone shows its own below.
+    if c.weapons.len() > 1 {
+        line(ui, tr!("Total DPS / volley"), trf!("{dps} / {volley}", dps = text::num(c.dps()), volley = text::num(c.volley())));
+    }
     for w in &c.weapons {
         let name = spai_fit::formats::name_of(dogma, w.type_id);
         let charge = w.charge.map(|c| spai_fit::formats::name_of(dogma, c));
@@ -363,7 +366,12 @@ fn offense(ui: &mut egui::Ui, dogma: &Dogma, c: &Computed) {
             }
         }
         if w.spool_max > 0.0 {
-            line(ui, tr!("Spool-up"), trf!("up to +{p}%", p = text::num(w.spool_max * 100.0)));
+            // Spooled as set, the most it reaches, and how long it takes from cold.
+            line(ui, tr!("Spool"), trf!("+{now}% of +{max}%", now = text::num(w.spool_max * w.spool_frac * 100.0), max = text::num(w.spool_max * 100.0)));
+            if let Some(n) = w.spool_cycles() {
+                line(ui, tr!("Full after"), trf!("{n} cycles, {s}", n = n, s = text::secs(f64::from(n) * w.cycle_s)));
+            }
+            line(ui, tr!("DPS cold / full"), format!("{} / {}", text::num(w.cold_dps()), text::num(w.cold_dps() * (1.0 + w.spool_max))));
         }
     }
 }
