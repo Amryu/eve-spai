@@ -222,6 +222,24 @@ pub fn head_cell_colored(ui: &mut egui::Ui, width: f32, text: &str, right: bool,
     head_cell_rich(ui, width, egui::RichText::new(text).color(color), right);
 }
 
+/// A column header cell in a colour, centred over a bar.
+pub fn head_cell_centered(ui: &mut egui::Ui, width: f32, text: &str, color: egui::Color32) {
+    ui.allocate_ui_with_layout(egui::vec2(width, 18.0), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate().selectable(false));
+    });
+}
+
+/// A centred number cell in a colour, under a centred header.
+pub fn num_cell_centered(ui: &mut egui::Ui, width: f32, text: impl Into<String>, color: egui::Color32) {
+    ui.allocate_ui_with_layout(egui::vec2(width, ROW_H - 4.0), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        ui.add(egui::Label::new(egui::RichText::new(text.into()).monospace().color(color)).truncate().selectable(false));
+    });
+}
+
 fn head_cell_rich(ui: &mut egui::Ui, width: f32, t: egui::RichText, right: bool) {
     let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
     ui.allocate_ui_with_layout(egui::vec2(width, 18.0), layout, |ui| {

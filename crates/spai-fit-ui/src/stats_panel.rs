@@ -240,7 +240,7 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
         rows::head_cell(ui, name_w, "", false);
         rows::head_cell(ui, hp_w, "HP", true);
         for (i, h) in ["EM", "TH", "KIN", "EXP"].into_iter().enumerate() {
-            rows::head_cell_colored(ui, res_w, h, true, spai_ui::colors::DAMAGE[i]);
+            rows::head_cell_centered(ui, res_w, h, spai_ui::colors::DAMAGE[i]);
         }
     });
     for (name, layer) in [(tr!("Shield"), &t.shield), (tr!("Armor"), &t.armor), (tr!("Hull"), &t.hull)] {
@@ -261,7 +261,7 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
         // The caret says the row opens a menu, as a dropdown would.
         ui.add_sized([name_w + hp_w, 18.0], egui::Label::new(egui::RichText::new(format!("{} {}", tr!("Incoming"), egui_phosphor::regular::CARET_DOWN))).halign(egui::Align::LEFT).selectable(false));
         for (i, w) in weights.iter().enumerate() {
-            rows::num_cell_colored(ui, res_w, format!("{:.0}%", w * 100.0), spai_ui::colors::DAMAGE[i]);
+            rows::num_cell_centered(ui, res_w, format!("{:.0}%", w * 100.0), spai_ui::colors::DAMAGE[i]);
         }
     });
     let r = ui.interact(row.response.rect, egui::Id::new("sim_damage_profile"), egui::Sense::click());

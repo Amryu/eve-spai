@@ -4,7 +4,8 @@
 //! Each side shoots one primary at a time, chosen by its target order; its logi repair their own
 //! primary once locked; a ship made primary switches on its assault damage control if it has
 //! one and the fleet allows it; a reactive hardener shifts each of its cycles; disintegrators
-//! spool up again on every new target. Volleys land at each weapon's cycle.
+//! spool up again on every new target. Volleys land at each weapon's cycle, with a reload after
+//! each load.
 
 use super::sweep::{weapons_on, Side};
 use super::{Role, SlotStats};
@@ -187,10 +188,11 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     let mut since = [0.0f64; 2];
     let mut verdict_open: [Option<(usize, f64)>; 2] = [primary[0].map(|p| (p, 0.0)), primary[1].map(|p| (p, 0.0))];
     // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
-    let mut next_fire: [Vec<Vec<f64>>; 2] = [0, 1].map(|side| {
+    // With the volleys fired since the last reload.
+    let mut next_fire: [Vec<Vec<(f64, u32)>>; 2] = [0, 1].map(|side| {
         guns[side].groups.iter().map(|(k, _, _)| {
             let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
-            (0..n).map(|i| reaction(i, n)).collect()
+            (0..n).map(|i| (reaction(i, n), 0)).collect()
         }).collect()
     });
     for side in 0..2 {
@@ -216,10 +218,15 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 let next = &mut next_fire[side][g];
                 next.truncate(alive);
                 let mut firing = 0.0;
-                for at in next.iter_mut() {
+                for (at, fired) in next.iter_mut() {
                     if *at <= t {
                         firing += 1.0;
                         *at += w.cycle_s;
+                        *fired += 1;
+                        if w.shots.is_some_and(|n| n > 0 && *fired >= n) {
+                            *at += w.reload_s;
+                            *fired = 0;
+                        }
                     }
                 }
                 if firing == 0.0 {
@@ -292,7 +299,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 // A new call: no ship fires before it reacts, nor before its guns have cycled.
                 for next in next_fire[side].iter_mut() {
                     let n = next.len();
-                    for (i, at) in next.iter_mut().enumerate() {
+                    for (i, (at, _)) in next.iter_mut().enumerate() {
                         *at = at.max(since[side] + reaction(i, n));
                     }
                 }

@@ -7,7 +7,7 @@ fn fleet(size: u32, slots: Vec<FleetSlot>) -> Fleet {
 }
 
 fn slot(fit: &str, rule: CountRule) -> FleetSlot {
-    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None }
+    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None }
 }
 
 #[test]
@@ -250,4 +250,35 @@ fn a_generic_booster_boosts_everyone_without_flying_in_the_fleet() {
     assert_ne!(a.env, b.env, "its bursts reach every ship");
     boosted.boost_shortcuts[0].active = false;
     assert_eq!(stats(&d, &boosted, &lookup(&lib), &skills).env, a.env, "switched off it gives nothing");
+}
+
+#[test]
+fn drones_add_damage_per_second_but_no_alpha_and_switch_off() {
+    let d = dataset();
+    let mut f = gun_fit("dronie", 1);
+    f.drones.push(crate::fit::DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, ..Default::default() });
+    let lib = vec![f.clone(), gun_fit("plain", 1)];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let with = Fleet { size: 10, slots: vec![slot("dronie", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let plain = Fleet { size: 10, slots: vec![slot("plain", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sw, sp) = (stats(&d, &with, &lookup(&lib), &skills), stats(&d, &plain, &lookup(&lib), &skills));
+    assert!(sw.dps > sp.dps, "drones add damage per second");
+    assert!((sw.volley - sp.volley).abs() < 1e-9, "but no alpha: {} against {}", sw.volley, sp.volley);
+    let off = Fleet { drones: false, ..with };
+    assert!((stats(&d, &off, &lookup(&lib), &skills).dps - sp.dps).abs() < 1e-9, "switched off, no drone damage");
+}
+
+#[test]
+fn a_slot_flies_its_picked_variation_or_its_base() {
+    use crate::variations::{RefitOp, Variation};
+    let d = dataset();
+    let mut f = gun_fit("v", 3);
+    f.variations.push(Variation { id: 7, name: "no guns".into(), ops: (0..3).map(|i| RefitOp::Replace { slot: Slot::High, index: i, with: None }).collect(), ..Default::default() });
+    f.active_variations = vec![7];
+    let lib = vec![f];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let mut fl = Fleet { size: 1, slots: vec![slot("v", CountRule::Fixed(1))], ..Fleet::default() };
+    assert!(stats(&d, &fl, &lookup(&lib), &skills).dps > 0.0, "the base, whatever is switched on in the editor");
+    fl.slots[0].variation = Some(7);
+    assert_eq!(stats(&d, &fl, &lookup(&lib), &skills).dps, 0.0, "the picked variation");
 }

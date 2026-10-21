@@ -37,11 +37,13 @@ pub struct FleetSlot {
     pub override_count: Option<u32>,
     /// The skills profile the fit flies with; `None` for the fleet's default.
     pub profile: Option<String>,
+    /// The variation it flies with; none is its base fit.
+    pub variation: Option<u32>,
 }
 
 impl Default for FleetSlot {
     fn default() -> Self {
-        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None }
+        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None }
     }
 }
 
@@ -145,6 +147,9 @@ pub struct Fleet {
     pub motion: (f32, f32),
     /// The order it shoots the enemy's ships in, by role.
     pub target_order: Vec<Role>,
+    /// Drones and fighters launched: counted in damage per second, never in a volley.
+    #[serde(default = "default_true")]
+    pub drones: bool,
     /// Pilots switch their assault damage controls on when primaried.
     #[serde(default = "default_true")]
     pub adc: bool,
@@ -175,6 +180,7 @@ impl Default for Fleet {
             motion: (0.0, 90.0),
             target_order: Role::DEFAULT_ORDER.to_vec(),
             adc: true,
+            drones: true,
             enemy: None,
         }
     }
@@ -324,6 +330,14 @@ pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<
     Some((fit, skills))
 }
 
+/// The fit as a slot flies it: the variation picked, or its base, whatever was last switched on
+/// in the editor.
+pub fn flown(dogma: &Dogma, fit: &Fit, variation: Option<u32>) -> Fit {
+    let mut f = fit.clone();
+    f.active_variations = variation.filter(|v| f.variations.iter().any(|x| x.id == *v)).into_iter().collect();
+    crate::variations::resolve(dogma, &f)
+}
+
 /// Whether the fit carries a burst module of the kind.
 pub fn fit_has_burst(dogma: &Dogma, fit: &Fit, kind: BurstKind) -> bool {
     fit.modules.iter().any(|m| dogma.type_(m.type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == kind.effect()))))
@@ -374,6 +388,7 @@ pub fn env_of(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, 
     }
     for (_, fit_id) in &fleet.boosters {
         let Some(fit) = fits(fit_id) else { continue };
+        let fit = flown(dogma, &fit, fleet.slots.iter().find(|s| &s.fit_id == fit_id).and_then(|s| s.variation));
         let profile = fleet.slots.iter().find(|s| &s.fit_id == fit_id).and_then(|s| s.profile.clone());
         for (id, value) in bursts_of(dogma, &fit, &skills(profile.as_deref())) {
             env.offer(dogma, id, value);
@@ -434,13 +449,16 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
     let mut out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, env: env.clone(), ..FleetStats::default() };
     for (index, (slot, count)) in fleet.slots.iter().zip(counts).enumerate() {
         let Some(fit) = fits(&slot.fit_id) else { continue };
-        let fit = crate::variations::resolve(dogma, &fit);
+        let fit = flown(dogma, &fit, slot.variation);
         let pilot = skills(slot.profile.as_deref());
         let calc = Calc::new(dogma, &fit, &pilot, &env);
-        let computed = compute_with(&calc, &fit);
+        let mut computed = compute_with(&calc, &fit);
+        if !fleet.drones {
+            computed.weapons.retain(|w| w.alpha());
+        }
         let n = f64::from(count);
         out.dps += computed.dps() * n;
-        out.volley += computed.volley() * n;
+        out.volley += computed.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total()).sum::<f64>() * n;
         for m in &computed.remote.modules {
             let slot = match m.kind {
                 RemoteKind::Web => &mut out.projected.webs,
@@ -533,7 +551,9 @@ pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stat
             }
             let f = applied_factor(&w, f64::from(a.range), &profile, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range);
             dps += w.dps * f;
-            volley += w.volley.total() * f;
+            if w.alpha() {
+                volley += w.volley.total() * f;
+            }
         }
         out.applied_dps += dps * n;
         out.applied_volley += volley * n;
@@ -600,7 +620,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
         if fleet.main.is_none() && matches!(rule, CountRule::Fill { .. }) {
             fleet.main = Some(fleet.slots.len());
         }
-        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None });
+        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None });
         let calc = Calc::new(dogma, fit, skills, &Env::default());
         for (i, it) in calc.modules() {
             if it.state < State::Active {

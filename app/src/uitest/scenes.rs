@@ -2819,7 +2819,9 @@ pub(crate) fn all() -> Vec<Scene> {
                 }
                 f
             };
-            let docs: Vec<(String, String)> = [("f-dps", fit("Alpha Rifter with a long doctrine name", 3)), ("f-logi", fit("Logi Rifter", 0)), ("f-boost", fit("Booster Rifter", 1)), ("e-dps", fit("Hostile kiter", 1))].into_iter().map(|(id, f)| (id.to_owned(), spai_fit::doc::to_json(&f))).collect();
+            let mut dps = fit("Alpha Rifter with a long doctrine name", 3);
+            dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Brawl refit with a long name".into(), ..Default::default() });
+            let docs: Vec<(String, String)> = [("f-dps", dps), ("f-logi", fit("Logi Rifter", 0)), ("f-boost", fit("Booster Rifter", 1)), ("e-dps", fit("Hostile kiter", 1))].into_iter().map(|(id, f)| (id.to_owned(), spai_fit::doc::to_json(&f))).collect();
             sim.handle(spai_fit_ui::HostEvent::Fits(docs.iter().map(|(id, _)| spai_fit_ui::FitSummary { id: id.clone(), name: id.clone(), ship: ids::SHIP, updated_at: 0 }).collect()));
             sim.handle(spai_fit_ui::HostEvent::FitDocs(docs));
             sim.mode = spai_fit_ui::Mode::Fleets;
@@ -2828,16 +2830,16 @@ pub(crate) fn all() -> Vec<Scene> {
                 name: "Alpha fleet".into(),
                 size: 120,
                 slots: vec![
-                    FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None },
-                    FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None },
-                    FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None },
+                    FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None, variation: Some(1) },
+                    FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None, variation: None },
+                    FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None, variation: None },
                 ],
                 boosters: vec![(BurstKind::Shield, "f-boost".into())],
                 boost_shortcuts: vec![spai_fit::fit::BoostShortcut { kind: BurstKind::Armor, mindlink: true, ..Default::default() }],
                 main: Some(0),
                 ..Fleet::default()
             };
-            let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None }], ..Fleet::default() };
+            let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
             sim.handle(spai_fit_ui::HostEvent::Fleets(vec![spai_fit_ui::FleetSummary { id: "fl-1".into(), name: mine.name.clone(), updated_at: 0 }, spai_fit_ui::FleetSummary { id: "fl-2".into(), name: enemy.name.clone(), updated_at: 0 }]));
             sim.handle(spai_fit_ui::HostEvent::FleetDoc { id: "fl-2".into(), doc: serde_json::to_string(&enemy).unwrap() });
             sim.handle(spai_fit_ui::HostEvent::Fleet { id: "fl-1".into(), doc: serde_json::to_string(&mine).unwrap() });

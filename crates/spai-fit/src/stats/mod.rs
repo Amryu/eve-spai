@@ -1027,6 +1027,12 @@ pub enum ModuleRange {
 }
 
 impl WeaponGroup {
+    /// Whether it lands in a volley: drones and fighters attack on their own time, so they are
+    /// no alpha to kill a ship before its logi react.
+    pub fn alpha(&self) -> bool {
+        !matches!(self.kind, WeaponKind::Drone | WeaponKind::Fighter)
+    }
+
     /// Cycles from cold to fully spooled.
     pub fn spool_cycles(&self) -> Option<u32> {
         (self.spool_max > 0.0 && self.spool_per_cycle > 0.0).then(|| (self.spool_max / self.spool_per_cycle).ceil() as u32)

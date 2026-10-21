@@ -272,6 +272,8 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         })
         .collect();
     let mut want_all_docs = false;
+    // Each fit's variations, to fly a slot with one of them.
+    let variations: HashMap<String, Vec<(u32, String)>> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), f.variations.iter().map(|v| (v.id, v.name.clone())).collect())).collect();
     let Some(session) = sim.fleet.as_mut() else { return };
     let f = &mut session.fleet;
     let mut changed = false;
@@ -323,6 +325,26 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                     }
                 }
             };
+            let variation_box = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
+                let list = variations.get(&slot.fit_id).cloned().unwrap_or_default();
+                let flying = slot.variation.and_then(|v| list.iter().find(|(x, _)| *x == v)).map_or_else(|| tr!("Base").to_owned(), |(_, n)| n.clone());
+                ui.add_enabled_ui(!list.is_empty(), |ui| {
+                    egui::ComboBox::from_id_salt(("sim_fleet_variation", i)).selected_text(text::clip(&flying, 14)).width(120.0).show_ui(ui, |ui| {
+                        if ui.menu_label(slot.variation.is_none(), tr!("Base")).clicked() {
+                            slot.variation = None;
+                            *changed = true;
+                        }
+                        for (v, n) in &list {
+                            if ui.menu_label(slot.variation == Some(*v), n.clone()).clicked() {
+                                slot.variation = Some(*v);
+                                *changed = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr!("The variation this slot flies"));
+                });
+            };
             ui.horizontal(|ui| {
                 ui.set_height(26.0);
                 let is_main = f.main.unwrap_or(0) == i;
@@ -332,17 +354,23 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 }
                 let slot = &mut f.slots[i];
                 let fit_name = library.iter().find(|x| x.id == slot.fit_id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(id, _)| *id == slot.fit_id).map(|(_, n)| n.clone())).unwrap_or_else(|| tr!("Choose a fit").to_owned());
-                let rest = if narrow { 40.0 } else { 360.0 };
+                let rest = if narrow { 40.0 } else { 490.0 };
                 let fit_w = (ui.available_width() - rest).max(100.0);
                 egui::ComboBox::from_id_salt(("sim_fleet_fit", i)).selected_text(text::clip(&fit_name, 28)).width(fit_w).show_ui(ui, |ui| {
+                    let before = slot.fit_id.clone();
                     for x in &library {
                         changed |= ui.menu_value(&mut slot.fit_id, x.id.clone(), x.name.clone()).changed();
                     }
                     for (id, name) in &doctrine_fits {
                         changed |= ui.menu_value(&mut slot.fit_id, id.clone(), name.clone()).changed();
                     }
+                    // Another fit has other variations.
+                    if slot.fit_id != before {
+                        slot.variation = None;
+                    }
                 });
                 if !narrow {
+                    variation_box(ui, slot, &mut changed);
                     rule_row(ui, slot, &mut changed);
                 }
                 if icon_button(ui, icon::X).clicked() {
@@ -353,6 +381,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 ui.horizontal(|ui| {
                     ui.set_height(26.0);
                     ui.add_space(28.0);
+                    variation_box(ui, &mut f.slots[i], &mut changed);
                     rule_row(ui, &mut f.slots[i], &mut changed);
                 });
             }
@@ -486,6 +515,9 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             let before = f.motion;
             crate::graphs_panel::motion_dial(ui, "", &mut f.motion);
             changed |= f.motion != before;
+            ui.end_row();
+            ui.label(tr!("Drones"));
+            changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
             ui.end_row();
             ui.label(tr!("Assault damage controls"));
             changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();

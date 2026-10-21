@@ -671,7 +671,7 @@ fn real_data_fleet_race_with_assault_damage_controls() {
     let lib = [ferox, cane];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None }], ..Fleet::default() };
+    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
     let (fa, fb) = (fleet("ferox"), fleet("cane"));
     let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
     let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &[] }, sweep::Side { fleet: &fb, stats: &sb, ammo: &[] });
