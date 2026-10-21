@@ -162,6 +162,13 @@ collection's operation, penalised like a module.
 
 Test: `fleet_buffs_apply_penalised_and_the_strongest_wins`.
 
+Command burst shortcuts stand in for a booster fit: the kind's burst module (Tech II unless
+picked) loaded once with each charge left on, on the chosen hull or on a battlecruiser or
+battleship without burst strength bonuses, its pilot at all V except the levels set, and the
+kind's mindlink when switched on. Their buffs go through the same strongest-wins rule as every
+other booster's. A hull counts as boosting a kind when one of its trait lines speaks of burst
+strength and names the kind's command, or no kind at all.
+
 ## 7. The patch table (`calc::patch`)
 
 What the data leaves out of `modifierInfo`, written by hand. Each entry exists because the effect

@@ -193,6 +193,30 @@ impl Default for Projected {
     }
 }
 
+/// A command burst standing in for a booster fit: every charge of its kind, run from a hull (or
+/// one without burst bonuses) by a pilot with these skills, with a mindlink or without.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BoostShortcut {
+    pub kind: crate::fleet::BurstKind,
+    /// The burst module; none is the kind's Tech II.
+    pub module: Option<TypeId>,
+    /// The boosting hull; none is one without burst bonuses.
+    pub hull: Option<TypeId>,
+    /// Skill levels over all V.
+    pub skills: Vec<(TypeId, u8)>,
+    pub mindlink: bool,
+    /// Charges switched off; all run otherwise.
+    pub charges_off: Vec<TypeId>,
+    pub active: bool,
+}
+
+impl Default for BoostShortcut {
+    fn default() -> Self {
+        BoostShortcut { kind: crate::fleet::BurstKind::Shield, module: None, hull: None, skills: Vec::new(), mindlink: false, charges_off: Vec::new(), active: true }
+    }
+}
+
 /// A fit carried in a ship bay, by library id, with its hull for the room it takes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -273,6 +297,8 @@ pub struct Fit {
     pub projected_fits: Vec<ProjectedFit>,
     /// Other fits carried assembled: a frigate in the escape bay, ships in the maintenance bay.
     pub carried: Vec<Carried>,
+    /// Command bursts on the fit without a booster fit of their own: a kind, a hull, skills.
+    pub boosts: Vec<BoostShortcut>,
     pub variations: Vec<crate::variations::Variation>,
     /// Switched-on variations, applied in this order.
     pub active_variations: Vec<u32>,

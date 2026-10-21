@@ -2725,6 +2725,13 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene_with("imperium_fit_empty_tab", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.new_empty_tab(5);
     }));
+    v.push(imperium_scene_with("imperium_fit_boosts", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.edit(spai_fit::history::EditKind::Other, 3, |f| {
+            f.boosts.push(spai_fit::fit::BoostShortcut::default());
+            f.boosts.push(spai_fit::fit::BoostShortcut { kind: spai_fit::fleet::BurstKind::Information, hull: Some(spai_fit::test_support::ids::SHIP), mindlink: true, active: false, ..Default::default() });
+        });
+        sim.dock.first = 4;
+    }));
     v.push(imperium_scene_with("imperium_fit_projected", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         use spai_fit::test_support::ids;
         spai_fit_ui::browser::add_projected(sim, ids::WEB, 5);

@@ -141,6 +141,127 @@ pub fn resolve_counts(fleet: &Fleet) -> Vec<u32> {
     counts
 }
 
+impl BurstKind {
+    /// The Tech II burst module of the kind, by name.
+    pub fn module_name(self) -> &'static str {
+        match self {
+            BurstKind::Shield => "Shield Command Burst II",
+            BurstKind::Armor => "Armor Command Burst II",
+            BurstKind::Skirmish => "Skirmish Command Burst II",
+            BurstKind::Information => "Information Command Burst II",
+            BurstKind::Mining => "Mining Foreman Burst II",
+        }
+    }
+
+    pub fn mindlink_name(self) -> &'static str {
+        match self {
+            BurstKind::Shield => "Shield Command Mindlink",
+            BurstKind::Armor => "Armored Command Mindlink",
+            BurstKind::Skirmish => "Skirmish Command Mindlink",
+            BurstKind::Information => "Information Command Mindlink",
+            BurstKind::Mining => "Mining Foreman Mindlink",
+        }
+    }
+
+    /// How hull traits and skills name the kind: "Shield Command", "Armored Command".
+    pub fn command_name(self) -> &'static str {
+        match self {
+            BurstKind::Shield => "Shield Command",
+            BurstKind::Armor => "Armored Command",
+            BurstKind::Skirmish => "Skirmish Command",
+            BurstKind::Information => "Information Command",
+            BurstKind::Mining => "Mining Foreman",
+        }
+    }
+
+    /// The skills that change the kind's bursts, by name: its own command skills and the general
+    /// ones. A hull's own skill comes on top, from its traits.
+    pub fn skill_names(self) -> Vec<String> {
+        let mut v = vec![self.command_name().to_owned()];
+        if self != BurstKind::Mining {
+            v.push(format!("{} Specialist", self.command_name()));
+        }
+        v.extend(["Leadership", "Wing Command", "Fleet Command", "Command Burst Specialist"].map(str::to_owned));
+        v
+    }
+}
+
+/// The burst modules of the kind, by meta level: Tech I, Tech II, then the faction ones.
+pub fn burst_modules(dogma: &Dogma, kind: BurstKind) -> Vec<crate::ids::TypeId> {
+    let mut v: Vec<&crate::dogma::TypeDef> = dogma.types.iter().filter(|t| t.published && t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == kind.effect()))).collect();
+    v.sort_by_key(|t| (t.meta_level.unwrap_or(0), t.name.clone()));
+    v.into_iter().map(|t| t.id).collect()
+}
+
+/// The charges a burst module loads.
+pub fn burst_charges(dogma: &Dogma, module: crate::ids::TypeId) -> Vec<crate::ids::TypeId> {
+    let Some(m) = dogma.type_(module) else { return Vec::new() };
+    let groups: Vec<u32> = m.attrs.iter().filter(|(a, _)| dogma.attr(*a).is_some_and(|x| x.name.starts_with("chargeGroup"))).map(|(_, v)| *v as u32).collect();
+    let mut out: Vec<(String, crate::ids::TypeId)> = dogma.types.iter().filter(|t| t.published && groups.contains(&u32::from(t.group))).map(|t| (t.name.clone(), t.id)).collect();
+    out.sort();
+    out.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Whether a hull's traits strengthen the kind's bursts: a line on burst strength naming the kind's
+/// command, or no kind at all.
+pub fn hull_boosts(dogma: &Dogma, hull: crate::ids::TypeId, kind: BurstKind) -> bool {
+    let Some(t) = dogma.traits_of(hull) else { return false };
+    let lines = t.role.iter().chain(t.misc.iter()).chain(t.per_skill.iter().flat_map(|(_, b)| b.iter()));
+    let named = BurstKind::ALL.map(|k| k.command_name().to_lowercase());
+    lines.into_iter().any(|b| {
+        let text = b.text.to_lowercase();
+        // Strength, not range or how many fit: "bonus to Shield Command burst strength and duration".
+        text.contains("burst") && text.contains("strength") && (text.contains(&kind.command_name().to_lowercase()) || !named.iter().any(|n| text.contains(n.as_str())))
+    })
+}
+
+/// The hulls that strengthen the kind's bursts, by name.
+pub fn boosting_hulls(dogma: &Dogma, kind: BurstKind) -> Vec<crate::ids::TypeId> {
+    let mut v: Vec<&crate::dogma::TypeDef> = dogma.traits.iter().filter(|t| hull_boosts(dogma, t.type_id, kind)).filter_map(|t| dogma.type_(t.type_id)).filter(|t| t.published && t.category == crate::ids::category::SHIP).collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v.into_iter().map(|t| t.id).collect()
+}
+
+/// The skills the shortcut's pilot has that matter to it: the kind's and the hull's own.
+pub fn shortcut_skills(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<crate::ids::TypeId> {
+    let mut v: Vec<crate::ids::TypeId> = b.kind.skill_names().iter().filter_map(|n| dogma.type_named(n)).map(|t| t.id).collect();
+    if let Some(t) = b.hull.and_then(|h| dogma.traits_of(h)) {
+        for (skill, lines) in &t.per_skill {
+            if lines.iter().any(|l| { let t = l.text.to_lowercase(); t.contains("burst") && t.contains("strength") }) && !v.contains(skill) {
+                v.push(*skill);
+            }
+        }
+    }
+    v
+}
+
+/// The booster the shortcut stands for: the kind's Tech II burst once per charge switched on, on
+/// its hull (or a hull without burst bonuses), with the mindlink if it has one, and its pilot.
+pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<(Fit, SkillSet)> {
+    use crate::fit::{Module, Slot};
+    let module = b.module.or_else(|| dogma.type_named(b.kind.module_name()).map(|t| t.id))?;
+    let hull = b.hull.or_else(|| plain_hull(dogma, b.kind))?;
+    let mut fit = Fit::new(hull, "boost");
+    for (i, charge) in burst_charges(dogma, module).into_iter().filter(|c| !b.charges_off.contains(c)).enumerate() {
+        fit.modules.push(Module::new(module, Slot::High, i as u8).with_charge(charge).with_state(State::Active));
+    }
+    if b.mindlink {
+        fit.implants.extend(dogma.type_named(b.kind.mindlink_name()).map(|t| t.id));
+    }
+    let mut skills = SkillSet::all_v();
+    for (s, l) in &b.skills {
+        skills.set(*s, *l);
+    }
+    Some((fit, skills))
+}
+
+/// A hull that gives the kind no bonus, for a shortcut without one: a battlecruiser or bigger
+/// that is not among the boosting hulls.
+fn plain_hull(dogma: &Dogma, kind: BurstKind) -> Option<crate::ids::TypeId> {
+    let groups: Vec<&str> = vec!["Battlecruiser", "Attack Battlecruiser", "Battleship"];
+    dogma.types.iter().filter(|t| t.published && t.category == crate::ids::category::SHIP).filter(|t| dogma.groups.iter().any(|g| g.id == t.group && groups.contains(&g.name.as_str()))).find(|t| !hull_boosts(dogma, t.id, kind)).map(|t| t.id).or_else(|| dogma.types.iter().find(|t| t.category == crate::ids::category::SHIP && !hull_boosts(dogma, t.id, kind)).map(|t| t.id))
+}
+
 /// The bursts a booster fit gives: every active burst module's charge names up to four buffs.
 pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f64)> {
     let calc = Calc::new(dogma, fit, skills, &Env::default());

@@ -61,6 +61,14 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         }
     }
     out.projected.retain(|p| !is_generator(dogma, p.type_id));
+    // Boost shortcuts: their bursts as any booster's, the strongest of each buff kept.
+    for b in fit.boosts.iter().filter(|b| b.active) {
+        if let Some((booster, pilot)) = crate::fleet::shortcut_booster(dogma, b) {
+            for (id, value) in crate::fleet::bursts_of(dogma, &booster, &pilot) {
+                env.offer(dogma, id, value);
+            }
+        }
+    }
     for pf in fit.projected_fits.iter().filter(|p| p.active && p.count > 0) {
         let Some(mut src) = lookup(&pf.fit_id) else { continue };
         // The variation picked for it, or its base fit: not whatever was last switched on there.
@@ -387,4 +395,69 @@ fn real_data_start_online_effects() {
     for (n, active, starts) in [("Gyrostabilizer II", false, State::Online), ("Damage Control II", false, State::Online), ("5MN Microwarpdrive II", true, State::Active), ("Covert Ops Cloaking Device II", true, State::Online), ("Jump Portal Generator I", true, State::Online), ("Assault Damage Control I", true, State::Online), ("Large Micro Jump Drive", true, State::Online), ("Siege Module II", true, State::Active)] {
         assert_eq!((can_activate(&d, id(n)), default_state(&d, id(n))), (active, starts), "{n}");
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_burst_shortcut_parts() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for k in crate::fleet::BurstKind::ALL {
+        let mods: Vec<&str> = d.types.iter().filter(|t| t.published && t.effects.iter().any(|(e, _)| d.effect(*e).is_some_and(|x| x.name == k.effect()))).map(|t| t.name.as_str()).collect();
+        println!("{k:?}: {mods:?}");
+    }
+    let skills: Vec<&str> = d.types.iter().filter(|t| t.published && t.category == crate::ids::category::SKILL && { let n = t.name.to_lowercase(); n.contains("command") || n.contains("leadership") || n.contains("burst") || n.contains("foreman") }).map(|t| t.name.as_str()).collect();
+    println!("skills {skills:?}");
+    let links: Vec<&str> = d.types.iter().filter(|t| t.published && t.name.contains("Mindlink")).map(|t| t.name.as_str()).collect();
+    println!("mindlinks {links:?}");
+    let mut hulls = Vec::new();
+    for tr in &d.traits {
+        let all = tr.role.iter().chain(tr.misc.iter()).chain(tr.per_skill.iter().flat_map(|(_, b)| b.iter()));
+        if all.into_iter().any(|b| b.text.contains("Command Burst") || b.text.contains("Mining Foreman Burst")) {
+            if let Some(t) = d.type_(tr.type_id) { hulls.push(t.name.as_str()); }
+        }
+    }
+    println!("{} bonused hulls e.g. {:?}", hulls.len(), &hulls[..hulls.len().min(40)]);
+    let shield = d.types.iter().find(|t| t.name == "Shield Command Burst II").unwrap();
+    let cg: Vec<f32> = shield.attrs.iter().filter(|(a, _)| d.attr(*a).is_some_and(|x| x.name.starts_with("chargeGroup"))).map(|(_, v)| *v).collect();
+    let charges: Vec<&str> = d.types.iter().filter(|t| t.published && cg.contains(&(f32::from(t.group)))).map(|t| t.name.as_str()).collect();
+    println!("shield charges {charges:?}");
+    for tr in d.traits.iter().filter(|t| d.type_(t.type_id).is_some_and(|x| x.name == "Vulture" || x.name == "Erebus" || x.name == "Orca")) {
+        let n = d.type_(tr.type_id).unwrap().name.clone();
+        for x in tr.role.iter().chain(tr.misc.iter()) { if x.text.to_lowercase().contains("burst") { println!("ROLE {n} {:?}", x.text); } }
+        for (s, b) in &tr.per_skill { for x in b { if x.text.to_lowercase().contains("burst") { println!("SKILL {n} {} {:?}", d.type_(*s).map(|t| t.name.as_str()).unwrap_or("?"), x.text); } } }
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_boost_shortcuts() {
+    use crate::fit::BoostShortcut;
+    use crate::fleet::BurstKind;
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let vulture = d.type_named("Vulture").unwrap().id;
+    let hulls = crate::fleet::boosting_hulls(&d, BurstKind::Shield);
+    assert!(hulls.contains(&vulture) && !hulls.contains(&d.type_named("Rifter").unwrap().id));
+    assert!(!crate::fleet::boosting_hulls(&d, BurstKind::Armor).contains(&vulture), "the Vulture boosts shield and information only");
+    let strength = |b: BoostShortcut| {
+        let mut me = Fit::new(d.type_named("Rifter").unwrap().id, "me");
+        me.boosts.push(b);
+        let (_, env) = expand(&d, &me, &|_| None, &SkillSet::all_v());
+        let mut v: Vec<(u32, f64)> = env.buffs.iter().map(|b| (u32::from(b.id), b.value)).collect();
+        v.sort_by_key(|(id, _)| *id);
+        v
+    };
+    let plain = strength(BoostShortcut::default());
+    let hull = strength(BoostShortcut { hull: Some(vulture), ..Default::default() });
+    let linked = strength(BoostShortcut { hull: Some(vulture), mindlink: true, ..Default::default() });
+    println!("plain {plain:?}\nvulture {hull:?}\nlinked {linked:?}");
+    assert_eq!(plain.len(), hull.len());
+    assert!(hull.iter().zip(&plain).all(|(h, p)| h.1.abs() > p.1.abs()), "the hull's bonus strengthens every buff");
+    assert!(linked.iter().zip(&hull).all(|(l, h)| l.1.abs() > h.1.abs()), "and the mindlink on top");
+    let charges = crate::fleet::burst_charges(&d, d.type_named("Shield Command Burst II").unwrap().id);
+    let fewer = strength(BoostShortcut { charges_off: vec![charges[0]], ..Default::default() });
+    assert!(fewer.len() < plain.len(), "a charge switched off gives its buffs no more");
+    let low = strength(BoostShortcut { skills: vec![(d.type_named("Shield Command Specialist").unwrap().id, 0)], ..Default::default() });
+    assert!(low.iter().zip(&plain).any(|(l, p)| l.1.abs() < p.1.abs()), "fewer skills, weaker bursts");
 }

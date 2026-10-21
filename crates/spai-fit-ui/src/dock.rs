@@ -91,7 +91,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                 (DockTab::Implants, Some(s)) => s.fit.implants.len(),
                 (DockTab::Boosters, Some(s)) => s.fit.boosters.len(),
                 (DockTab::Cargo, Some(s)) => s.fit.cargo.len(),
-                (DockTab::Projected, Some(s)) => s.fit.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.projected_fits.iter().map(|p| p.count.max(1)).sum::<u32>() as usize,
+                (DockTab::Projected, Some(s)) => s.fit.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.projected_fits.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.boosts.len(),
                 _ => 0,
             };
             let label = if count > 0 { format!("{} ({count})", t.name()) } else { t.name().to_owned() };
@@ -200,9 +200,11 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
 /// What acts on the fit from outside: modules and drones pointed at it, and system effects.
 /// What the Projected tab can take, by kind: another fit (its remote modules, drones and boosts),
 /// one module or drone, or a system effect.
-fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
+fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let mut target: Option<PickTarget> = None;
     let mut fits = false;
+    let mut boost: Option<(spai_fit::fleet::BurstKind, Option<TypeId>)> = None;
+    let dogma = sim.dogma.clone();
     // A small button like the other tabs' Add, opening the menu of kinds.
     egui::containers::menu::MenuButton::from_button(egui::Button::new(trf!("{icon} Add", icon = icon::PLUS)).small()).ui(ui, |ui| {
         ui.set_min_width(240.0);
@@ -218,12 +220,138 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             target = Some(PickTarget::Environment);
             ui.close();
         }
+        // A burst without a booster fit: its kind, then the hull running it.
+        if let Some(d) = &dogma {
+            ui.menu_button(trf!("{icon}  Command bursts", icon = icon::BROADCAST), |ui| {
+                ui.set_min_width(200.0);
+                for kind in spai_fit::fleet::BurstKind::ALL {
+                    ui.menu_button(burst_kind_name(kind), |ui| {
+                        ui.set_min_width(240.0);
+                        if ui.button(tr!("A hull without burst bonuses")).clicked() {
+                            boost = Some((kind, None));
+                            ui.close();
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                            for hull in spai_fit::fleet::boosting_hulls(d, kind) {
+                                let item = egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(hull)).fit_to_exact_size(egui::vec2(16.0, 16.0)), spai_fit::formats::name_of(d, hull)).frame_when_inactive(false);
+                                if ui.add(item).clicked() {
+                                    boost = Some((kind, Some(hull)));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                }
+            });
+        }
     });
+    if let Some((kind, hull)) = boost {
+        sim.edit(EditKind::Other, now_ms, |f| f.boosts.push(spai_fit::fit::BoostShortcut { kind, hull, ..Default::default() }));
+    }
     if fits {
         sim.project_picker = Some(Default::default());
     }
     if let Some(t) = target {
         picker::open(sim, t);
+    }
+}
+
+pub fn burst_kind_name(kind: spai_fit::fleet::BurstKind) -> &'static str {
+    use spai_fit::fleet::BurstKind as K;
+    match kind {
+        K::Shield => tr!("Shield bursts"),
+        K::Armor => tr!("Armor bursts"),
+        K::Skirmish => tr!("Skirmish bursts"),
+        K::Information => tr!("Information bursts"),
+        K::Mining => tr!("Mining bursts"),
+    }
+}
+
+/// Command burst shortcuts: a kind run from a hull, with buttons for the booster's skills, its
+/// mindlink, and the module and charges it runs; on or off, removable. The strongest of each buff
+/// applies, among these and the projected fits' bursts.
+fn boost_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let Some(s) = sim.session() else { return };
+    let list: Vec<spai_fit::fit::BoostShortcut> = s.fit.boosts.clone();
+    for (i, b) in list.into_iter().enumerate() {
+        let module = b.module.or_else(|| dogma.type_named(b.kind.module_name()).map(|t| t.id)).unwrap_or(0);
+        let hull = b.hull.map_or_else(|| tr!("no hull bonus").to_owned(), |h| spai_fit::formats::name_of(dogma, h));
+        let name = format!("{} · {hull}", burst_kind_name(b.kind));
+        let mut next = b.clone();
+        let mut remove = false;
+        rows::row(ui, "dock/projected", ("sim_boost", i), ROW_H, false, |ui| {
+            crate::icons::type_icon(ui, module, 18.0);
+            let w = rows::name_w(ui, 5.0);
+            let label = if b.active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
+            rows::cell(ui, w.max(40.0), label, &format!("{}\n{}", spai_fit::formats::name_of(dogma, module), tr!("The strongest of each boost applies.")));
+            // The booster's skills, all V until set.
+            let skills_btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::GRADUATION_CAP)).on_hover_text(tr!("The booster's skills"));
+            egui::Popup::menu(&skills_btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                ui.set_min_width(260.0);
+                egui::Grid::new(("sim_boost_skills", i)).num_columns(2).show(ui, |ui| {
+                    for skill in spai_fit::fleet::shortcut_skills(dogma, &b) {
+                        let mut level = next.skills.iter().find(|(s, _)| *s == skill).map_or(5, |(_, l)| *l);
+                        ui.label(spai_fit::formats::name_of(dogma, skill));
+                        if ui.add(egui::DragValue::new(&mut level).range(0..=5)).changed() {
+                            next.skills.retain(|(s, _)| *s != skill);
+                            if level < 5 {
+                                next.skills.push((skill, level));
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            let link = if b.mindlink { egui::RichText::new(icon::BRAIN).color(ui.visuals().hyperlink_color) } else { egui::RichText::new(icon::BRAIN).weak() };
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, link)).on_hover_text(if b.mindlink { tr!("With its mindlink: stronger and longer bursts") } else { tr!("Without a mindlink") }).clicked() {
+                next.mindlink = !next.mindlink;
+            }
+            // The module it runs and which of its charges.
+            let charges_btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::LIST_CHECKS)).on_hover_text(tr!("The burst module and its charges"));
+            egui::Popup::menu(&charges_btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                use spai_ui::widgets::SteadySelect as _;
+                ui.set_min_width(260.0);
+                ui.label(egui::RichText::new(tr!("Module")).weak());
+                for m in spai_fit::fleet::burst_modules(dogma, b.kind) {
+                    if ui.menu_label(m == module, spai_fit::formats::name_of(dogma, m)).clicked() {
+                        next.module = Some(m);
+                        next.charges_off.clear();
+                    }
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(tr!("Charges")).weak());
+                for c in spai_fit::fleet::burst_charges(dogma, module) {
+                    let mut on = !next.charges_off.contains(&c);
+                    if ui.checkbox(&mut on, spai_fit::formats::name_of(dogma, c)).changed() {
+                        if on {
+                            next.charges_off.retain(|x| *x != c);
+                        } else {
+                            next.charges_off.push(c);
+                        }
+                    }
+                }
+            });
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, if b.active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                next.active = !next.active;
+            }
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
+                remove = true;
+            }
+        });
+        if remove {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if i < f.boosts.len() {
+                    f.boosts.remove(i);
+                }
+            });
+        } else if next != b {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(x) = f.boosts.get_mut(i) {
+                    *x = next;
+                }
+            });
+        }
     }
 }
 
@@ -324,9 +452,10 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
 
 fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     projected_fits(sim, ui, dogma, now_ms);
+    boost_rows(sim, ui, dogma, now_ms);
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, spai_fit::fit::State)> = s.fit.projected.iter().map(|p| (p.type_id, p.count, p.state)).collect();
-    if list.is_empty() && s.fit.projected_fits.is_empty() {
+    if list.is_empty() && s.fit.projected_fits.is_empty() && s.fit.boosts.is_empty() {
         empty_note(ui, tr!("Other fits with their webs, reps and boosts, single modules or drones, and wormhole or abyssal weather."));
     }
     for (i, (type_id, count, state)) in list.into_iter().enumerate() {
