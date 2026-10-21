@@ -144,7 +144,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     use spai_ui::widgets::SteadySelect as _;
     rows::heading(ui, tr!("Fits"), None, |ui| {
         if ui.small_button(trf!("{icon} New", icon = icon::PLUS)).on_hover_text(tr!("Start a fit from a hull")).clicked() {
-            picker::open(sim, PickTarget::Ship);
+            picker::open(sim, PickTarget::NewFit);
         }
     });
     ui.horizontal(|ui| {

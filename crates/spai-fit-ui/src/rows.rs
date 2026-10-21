@@ -85,15 +85,17 @@ pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, sele
     resp
 }
 
-/// A cell of fixed width holding a truncated label, the whole text on hover.
+/// A cell of fixed width holding a truncated label, the whole text on hover. The response is the
+/// whole cell's, so a tooltip shows anywhere over it, not only over the letters.
 pub fn cell(ui: &mut egui::Ui, width: f32, text: egui::RichText, full: &str) -> egui::Response {
     let r = ui
         .allocate_ui_with_layout(egui::vec2(width, ROW_H - 4.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_min_width(width);
             ui.set_max_width(width);
-            ui.add(egui::Label::new(text).truncate().selectable(false))
+            // The cell carries the one tooltip; the label's own for elided text would be a second.
+            ui.add(egui::Label::new(text).truncate().selectable(false).show_tooltip_when_elided(false));
         })
-        .inner;
+        .response;
     if full.is_empty() {
         r
     } else {

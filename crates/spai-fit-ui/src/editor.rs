@@ -155,18 +155,27 @@ pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
 
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
-    if sim.session().is_none() {
+    if !sim.has_hull() {
+        // An empty tab keeps the tab row, so it can be closed or left like any other.
+        let empty_tab = sim.session().is_some();
+        if empty_tab {
+            ui.add_space(4.0);
+            fit_tabs(sim, ui);
+        }
+        let area = ui.max_rect();
+        let drop = ui.interact(area, egui::Id::new("sim_empty_drop"), egui::Sense::hover());
+        browser::accept_drop(sim, &drop, DropTarget::Hull, now_ms);
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.label(tr!("No fit open."));
+            ui.label(if empty_tab { tr!("An empty tab.") } else { tr!("No fit open.") });
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(tr!("Double-click a hull in the browser, open a saved fit, or paste one.")).weak());
+            ui.label(egui::RichText::new(tr!("Double-click or drop a hull from the browser, open a saved fit, or paste one.")).weak());
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let w = 2.0 * 120.0 + ui.spacing().item_spacing.x;
                 ui.add_space((ui.available_width() - w) / 2.0);
-                if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("New fit"))).clicked() {
-                    picker::open(sim, PickTarget::Ship);
+                if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("Pick a hull"))).clicked() {
+                    picker::open(sim, if empty_tab { PickTarget::Ship } else { PickTarget::NewFit });
                 }
                 if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("Import EFT"))).clicked() {
                     sim.import = Some(crate::ImportDialog::default());
@@ -244,7 +253,7 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
         }
     }
     if add {
-        picker::open(sim, PickTarget::Ship);
+        sim.new_empty_tab((ui.input(|i| i.time) * 1000.0) as u64);
     }
 }
 

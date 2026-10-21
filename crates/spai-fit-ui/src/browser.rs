@@ -172,7 +172,15 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
         return false;
     }
     match place {
-        Place::Ship => sim.edit(EditKind::Other, now_ms, |f| f.ship = type_id),
+        Place::Ship => {
+            let name = t.name.clone();
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if f.ship == 0 {
+                    f.name = name;
+                }
+                f.ship = type_id;
+            });
+        }
         Place::Module(slot) => {
             let total = sim.computed().map_or(0, |c| c.fitting.slots[Slot::ALL.iter().position(|s| *s == slot).unwrap_or(0)].1);
             let view = sim.view_fit();

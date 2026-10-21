@@ -14,7 +14,10 @@ use crate::SimUi;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickTarget {
+    /// The hull of the fit on screen.
     Ship,
+    /// The hull of a fit of its own, in a new tab.
+    NewFit,
     Module(Slot, u8),
     Charge(Slot, u8),
     Drone,
@@ -44,6 +47,7 @@ impl Picker {
     pub fn title(&self) -> String {
         match self.target {
             PickTarget::Ship => tr!("Choose a ship").to_owned(),
+            PickTarget::NewFit => tr!("Choose a hull for the new fit").to_owned(),
             PickTarget::Module(slot, _) => trf!("Choose a {slot} module", slot = slot_name(slot)),
             PickTarget::Charge(..) => tr!("Choose a charge").to_owned(),
             PickTarget::Drone => tr!("Choose a drone").to_owned(),
@@ -108,7 +112,7 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
             // Beacons are not on the market and not published; they are still what weather is.
             .filter(|t| (t.published || (target == PickTarget::Projected && t.group == spai_fit::ids::group::EFFECT_BEACON)) && matches(&t.name))
             .filter(|t| match target {
-                PickTarget::Ship => t.category == category::SHIP,
+                PickTarget::Ship | PickTarget::NewFit => t.category == category::SHIP,
                 PickTarget::Module(slot, _) => (t.category == category::MODULE || t.category == category::SUBSYSTEM) && dogma.slot_of(t.id) == Some(slot),
                 PickTarget::Charge(..) => false,
                 PickTarget::Drone => t.category == category::DRONE,
@@ -133,9 +137,16 @@ pub fn open(sim: &mut SimUi, target: PickTarget) {
 pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
     match target {
+        PickTarget::NewFit => sim.new_fit(type_id, now_ms),
         PickTarget::Ship => {
             if sim.session().is_some() {
-                sim.edit(EditKind::Other, now_ms, |f| f.ship = type_id);
+                let name = dogma.type_(type_id).map(|t| t.name.clone()).unwrap_or_default();
+                sim.edit(EditKind::Other, now_ms, |f| {
+                    if f.ship == 0 {
+                        f.name = name;
+                    }
+                    f.ship = type_id;
+                });
             } else {
                 sim.new_fit(type_id, now_ms);
             }

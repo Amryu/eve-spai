@@ -116,6 +116,9 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             panel(sim, ui, &dogma, t, h, now_ms);
         });
     }
+    // The padding is laid out too: a resizable panel takes what its contents fill as its new
+    // height, so leaving the strip empty would shrink the dock by that much every frame.
+    ui.allocate_space(egui::vec2(ui.available_width(), BOTTOM_PAD.min(ui.available_height().max(0.0))));
 }
 
 fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height: f32, now_ms: u64) {

@@ -585,3 +585,31 @@ fn fits_group_by_hull_or_tag_with_the_doctrines_among_them() {
     s.set_fit_tags("a", vec!["solo".into()], 9);
     assert!(matches!(s.take_requests().iter().find(|r| matches!(r, HostRequest::SaveFit { .. })), Some(HostRequest::SaveFit { id, doc, .. }) if id == "a" && doc.contains("solo")));
 }
+
+#[test]
+fn the_new_fit_picker_opens_a_tab_and_the_hull_picker_changes_the_hull() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::NewFit, ids::SHIP, 1);
+    assert_eq!(s.sessions().len(), 2, "the plus opens another tab");
+    assert_eq!(s.active_tab(), 1);
+    apply(&mut s, PickTarget::Ship, ids::SHIP, 2);
+    assert_eq!(s.sessions().len(), 2, "the hull picker changes the fit on screen");
+}
+
+#[test]
+fn the_plus_opens_an_empty_tab_that_a_hull_or_an_import_fills() {
+    use crate::browser::quick_add;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.new_empty_tab(1);
+    assert_eq!(s.sessions().len(), 2);
+    assert!(!s.has_hull() && s.computed().is_none(), "nothing to compute without a hull");
+    assert!(quick_add(&mut s, ids::SHIP, 2));
+    assert_eq!(s.sessions().len(), 2, "the hull goes into the empty tab");
+    assert!(s.has_hull() && s.session().unwrap().fit.name == "Rifter", "named after its hull");
+    s.new_empty_tab(3);
+    assert!(s.import_text("[Rifter, Pasted]\nDamage Control II", 4));
+    assert_eq!(s.sessions().len(), 3);
+    assert_eq!(s.session().unwrap().fit.name, "Pasted", "an import fills the empty tab");
+}

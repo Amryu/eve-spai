@@ -2710,6 +2710,9 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene_with("imperium_graphs_center", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.center = spai_fit_ui::Center::Graphs;
     }));
+    v.push(imperium_scene_with("imperium_fit_empty_tab", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.new_empty_tab(5);
+    }));
     v.push(imperium_scene_with("imperium_fit_projected", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         use spai_fit::test_support::ids;
         spai_fit_ui::browser::add_projected(sim, ids::WEB, 5);
@@ -9596,4 +9599,19 @@ fn uitest_sim_left_column_holds_its_width() {
     h.ctx.data_mut(|d| d.insert_persisted(id, st));
     h.run_steps(3);
     assert!((width(&h) - w).abs() < 0.5, "the column grew on its own: {} from {w}", width(&h));
+}
+
+/// The dock keeps the height it was given. Its contents once ended short of its bottom, and a
+/// resizable panel takes what its contents fill as its next height, so it shrank every frame.
+#[test]
+fn uitest_sim_dock_holds_its_height() {
+    let mut scene = imperium_scene("sim_dock_height", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let id = egui::Id::new("sim_dock");
+    let height = |h: &egui_kittest::Harness<'_>| h.ctx.data_mut(|d| d.get_persisted::<egui::PanelState>(id)).map(|s| s.rect.height()).expect("the dock is a panel");
+    let first = height(&h);
+    assert!((first - spai_fit_ui::dock::DOCK_H).abs() < 0.5, "the dock is {first} high, not the {} it was given", spai_fit_ui::dock::DOCK_H);
+    h.run_steps(30);
+    assert!((height(&h) - first).abs() < 0.5, "the dock went from {first} to {}", height(&h));
 }

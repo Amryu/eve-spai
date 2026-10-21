@@ -56,12 +56,19 @@ impl SteadySelect for egui::Ui {
         selected: bool,
         text: impl egui::IntoAtoms<'a>,
     ) -> egui::Response {
-        self.add_sized(
-            size,
+        // At the row's top edge in a rect of exactly `size`. Left to the row, each label is centred
+        // on the row's height so far, and a row of them steps down a pixel per label.
+        let size: egui::Vec2 = size.into();
+        let rect = egui::Rect::from_min_size(self.cursor().min, size);
+        self.advance_cursor_after_rect(rect);
+        self.place(
+            rect,
             egui::Button::new(text)
                 .selected(selected)
                 .frame_when_inactive(selected)
-                .stroke(egui::Stroke::NONE),
+                .stroke(egui::Stroke::NONE)
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .min_size(rect.size()),
         )
     }
 

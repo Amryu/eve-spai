@@ -632,7 +632,7 @@ impl SimUi {
 
     /// Into the tab on screen when nothing has been put in it yet, else into a new tab.
     fn open_imported(&mut self, fit: Fit, now_ms: u64) {
-        let untouched = self.session().is_some_and(|s| !s.dirty && s.fit.modules.is_empty() && s.fit.drones.is_empty() && s.fit.fighters.is_empty() && s.fit.implants.is_empty() && s.fit.boosters.is_empty() && s.fit.cargo.is_empty());
+        let untouched = self.session().is_some_and(|s| s.fit.ship == 0 || !s.dirty && s.fit.modules.is_empty() && s.fit.drones.is_empty() && s.fit.fighters.is_empty() && s.fit.implants.is_empty() && s.fit.boosters.is_empty() && s.fit.cargo.is_empty());
         if untouched {
             if let Some(s) = self.session_mut() {
                 s.fit = fit;
@@ -847,8 +847,22 @@ impl SimUi {
         self.requests.push(r);
     }
 
+    /// A tab with no hull yet, waiting for one.
+    pub fn new_empty_tab(&mut self, now_ms: u64) {
+        let id = self.new_id(now_ms);
+        self.open_session(Session::new(id, Fit::new(0, tr!("New fit"))));
+    }
+
+    /// The tab on screen has a hull to show.
+    pub fn has_hull(&self) -> bool {
+        self.session().is_some_and(|s| s.fit.ship != 0)
+    }
+
     /// Recomputes what is stale and returns the current numbers.
     pub fn computed(&mut self) -> Option<Arc<Computed>> {
+        if !self.has_hull() {
+            return None;
+        }
         let dogma = self.dogma.clone()?;
         let profile = self.profile;
         let skills = self.skills().clone();
@@ -1065,12 +1079,9 @@ impl SimUi {
                 let has_fit = if self.mode == Mode::Fleets { self.fleet.is_some() } else { self.session().is_some() };
                 // Icons alone when the window is narrow; the words are on hover either way.
                 let labelled = |glyph: &str, word: &str| if narrow { glyph.to_owned() } else { format!("{glyph} {word}") };
-                if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
-                    if self.mode == Mode::Fleets {
-                        self.save_fleet();
-                    } else {
-                        self.save();
-                    }
+                // Fits save themselves; fleets still wait for the button.
+                if self.mode == Mode::Fleets && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
+                    self.save_fleet();
                 }
                 if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import EFT"))).on_hover_text(tr!("Import the fit on the clipboard, or paste one")).clicked() {
                     self.import_from_button = true;
