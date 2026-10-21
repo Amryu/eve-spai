@@ -597,7 +597,13 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let rolled = sim.view_fit().and_then(|v| v.module(slot, index).and_then(|m| m.mutation.clone()));
     let can_roll = !dogma.mutaplasmids_for(type_id).is_empty();
     let mut roll_it = false;
-    let r = rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
+    // Overloaded: a light red under the row and the state button's flame in red; active: a light green.
+    let heat = match state {
+        State::Overload => Some(ui.visuals().error_fg_color),
+        State::Active => Some(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)),
+        _ => None,
+    };
+    let r = rows::row_tinted(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, heat, |ui| {
         if by_variation {
             ui.disable();
         }
@@ -672,7 +678,8 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 }
             }
         }
-        if icon_button(ui, state_icon(state)).on_hover_text(state_name(state)).clicked() {
+        let glyph = if state == State::Overload { egui::RichText::new(state_icon(state)).color(ui.visuals().error_fg_color) } else { egui::RichText::new(state_icon(state)) };
+        if icon_button(ui, glyph).on_hover_text(state_name(state)).clicked() {
             set_state = Some(next_state(dogma, type_id, state));
         }
         if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {

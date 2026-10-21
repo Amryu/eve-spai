@@ -328,21 +328,31 @@ fn a_module_that_heats_tells_how_long_it_lasts_overloaded() {
     use crate::test_support::attr_def;
     let mut d = dataset();
     d.attributes.push(attr_def(attr::HEAT_DAMAGE, "heatDamage", true, false, 0.0));
+    d.attributes.push(attr_def(9001, "heatAbsorbtionRateModifier", true, false, 0.0));
+    d.attributes.push(attr_def(9002, "heatAttenuationHi", true, false, 0.0));
     let gun = d.types.iter_mut().find(|t| t.id == ids::GUN).unwrap();
-    gun.attrs.push((attr::HEAT_DAMAGE, 10.0));
-    gun.attrs.push((attr::HP, 40.0));
+    gun.attrs.extend([(attr::HEAT_DAMAGE, 10.0), (attr::HP, 40.0), (9001, 0.02)]);
     gun.attrs.sort_by_key(|(a, _)| *a);
+    let ship = d.types.iter_mut().find(|t| t.id == ids::SHIP).unwrap();
+    ship.attrs.push((9002, 0.5));
+    ship.attrs.sort_by_key(|(a, _)| *a);
     let d = d.finish();
-    let mut f = Fit::new(ids::SHIP, "t");
-    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
-    f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Online));
-    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
-    let c = compute_with(&calc, &f);
-    let stats = module_stats(&calc, &c);
-    let gun = stats.iter().find(|m| m.slot == Slot::High).unwrap();
-    let cycle = gun.cycle_s.unwrap();
-    assert!((gun.burnout_s.unwrap() - 4.0 * cycle).abs() < 1e-9, "40 HP at 10 a cycle: four cycles");
-    assert!(stats.iter().find(|m| m.slot == Slot::Low).unwrap().burnout_s.is_none(), "a module that takes no heat never burns out");
+    let burnout = |second: State| {
+        let mut f = Fit::new(ids::SHIP, "t");
+        f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Overload));
+        f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO).with_state(second));
+        f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Online));
+        let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+        let c = compute_with(&calc, &f);
+        let stats = module_stats(&calc, &c);
+        assert!(stats.iter().find(|m| m.slot == Slot::Low).unwrap().burnout_s.is_none(), "a module that takes no heat never burns out");
+        let gun = stats.iter().find(|m| m.slot == Slot::High && m.index == 0).unwrap();
+        (gun.burnout_s.unwrap(), gun.cycle_s.unwrap())
+    };
+    let (alone, cycle) = burnout(State::Active);
+    assert!(alone > 4.0 * cycle, "40 HP at 10 a hit takes longer than four cycles: the rack warms first and not every cycle hits");
+    let (beside, _) = burnout(State::Overload);
+    assert!(beside < alone, "a second overloaded gun beside it heats the rack and hits it too: {beside} against {alone}");
 }
 
 #[test]
@@ -363,4 +373,16 @@ fn an_empty_hold_holds_a_plain_zero() {
     for h in &c.holds {
         assert!(h.used == 0.0 && h.used.is_sign_positive(), "{} uses {:?}", h.name, h.used);
     }
+}
+
+#[test]
+fn burnout_waits_for_the_rack_to_heat() {
+    use crate::stats::burn_time;
+    // A rack that heats at once: hp over the full rate.
+    assert!((burn_time(2.0, 1e6, 40.0).unwrap() - 20.0).abs() < 1e-3);
+    // A slow rack: a full second of the rate is lost to every 1/k of warming up.
+    let t = burn_time(2.0, 0.05, 40.0).unwrap();
+    let dealt = 2.0 * (t - (1.0 - (-0.05 * t).exp()) / 0.05);
+    assert!((dealt - 40.0).abs() < 1e-6 && t > 20.0 + 10.0, "{t}");
+    assert_eq!(burn_time(0.0, 0.05, 40.0), None, "no damage, no burnout");
 }

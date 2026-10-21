@@ -1470,13 +1470,20 @@ impl SimUi {
                         item(ui, tr!("Fitting XML"), &|| spai_fit::formats::xml::export(&d, &[&fit]));
                         item(ui, tr!("DNA"), &|| spai_fit::formats::dna::export(&fit));
                         item(ui, tr!("Multibuy"), &|| spai_fit::formats::multibuy::export(&d, &fit));
-                        if let Some(base) = self.link_base.clone() {
-                            item(ui, tr!("Link"), &|| format!("{base}#fit={}", spai_fit::formats::link::encode(&spai_fit::formats::eft::export(&d, &fit))));
-                        }
+
                     })
                     .response
                     .on_hover_text(tr!("Copy the fit on screen, with its active variations, in a format of your choice"));
                 });
+                // The fit on screen as a link to the web simulator, the fit whole: every variation, the
+                // ones switched on still on.
+                if let (Some(base), true) = (self.link_base.clone(), self.mode != Mode::Fleets) {
+                    if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::LINK, tr!("Copy link")))).on_hover_text(tr!("A link that opens this fit, with all its variations, in the web simulator")).clicked() {
+                        if let Some(s) = self.session() {
+                            copy = Some((format!("{base}#fit={}", spai_fit::formats::link::encode(&spai_fit::doc::to_json(&s.fit))), tr!("Link")));
+                        }
+                    }
+                }
                 if let Some((text, what)) = copy {
                     self.requests.push(HostRequest::CopyText(text));
                     self.status(trf!("{what} copied", what = what));

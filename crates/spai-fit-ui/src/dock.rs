@@ -636,6 +636,9 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
 
 /// How full a hold is, as the dropdown and the bar print it: "123 / 400 m³ · 31%".
 fn fill_text(h: &spai_fit::stats::Hold) -> String {
+    if h.ships {
+        return trf!("{used} / {total} ship", used = text::num(h.used), total = text::num(h.capacity));
+    }
     let pct = if h.fraction().is_finite() { format!("{:.0}%", (h.fraction() * 100.0).max(0.0)) } else { "—".to_owned() };
     trf!("{used} / {total} m³ · {pct}", used = text::num(h.used.max(0.0)), total = text::num(h.capacity.max(0.0)), pct = pct)
 }
@@ -683,6 +686,74 @@ fn hold_footer(sim: &mut SimUi, ui: &mut egui::Ui, holds: &[spai_fit::stats::Hol
     });
 }
 
+/// A bay carrying other fits, assembled: the frigate escape bay takes one frigate that cannot fit a
+/// nullifier, the maintenance bay any ships whose assembled volume fits what is left of it.
+fn ship_bay(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, bay: &spai_fit::stats::Hold, now_ms: u64) {
+    let Some(bay_attr) = bay.attr else { return };
+    let Some(s) = sim.session() else { return };
+    let own = s.id.clone();
+    let carried: Vec<(usize, spai_fit::fit::Carried)> = s.fit.carried.iter().cloned().enumerate().filter(|(_, c)| c.bay == bay_attr).collect();
+    let mut remove: Option<usize> = None;
+    let mut add: Option<(String, TypeId)> = None;
+    for (i, c) in &carried {
+        let name = sim.library.iter().find(|e| e.id == c.fit_id).map_or_else(|| tr!("A fit no longer saved").to_owned(), |e| e.name.clone());
+        let hull = spai_fit::formats::name_of(dogma, c.ship);
+        rows::row(ui, "dock/cargo", ("sim_bay", *i), ROW_H, false, |ui| {
+            crate::icons::type_icon(ui, c.ship, 18.0);
+            let w = rows::name_w(ui, if bay.ships { 1.0 } else { 3.0 });
+            rows::cell(ui, w, egui::RichText::new(&name), &hull);
+            if !bay.ships {
+                let m3 = dogma.type_(c.ship).map_or(0.0, |t| f64::from(t.volume()));
+                rows::slot(ui, 2.0, |ui| rows::num_cell(ui, rows::slots_w(2.0), format!("{} m³", text::num(m3)), true));
+            }
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Take it out")).clicked() {
+                remove = Some(*i);
+            }
+        });
+    }
+    if carried.is_empty() {
+        empty_note(ui, if bay.ships { tr!("Room for one frigate, carried as a fit of its own. Frigates that can fit an interdiction nullifier do not go in.") } else { tr!("Ships carried assembled, each a fit of its own, by their assembled volume.") });
+    }
+    let free = bay.capacity - bay.used;
+    let fits_in = |ship: TypeId| {
+        if bay.ships {
+            bay.used < bay.capacity && spai_fit::stats::fits_escape_bay(dogma, ship)
+        } else {
+            dogma.type_(ship).is_some_and(|t| f64::from(t.volume()) <= free)
+        }
+    };
+    let choices: Vec<(String, String, TypeId)> = sim.library.iter().filter(|e| e.id != own && fits_in(e.ship)).map(|e| (e.id.clone(), e.name.clone(), e.ship)).collect();
+    ui.horizontal(|ui| {
+        ui.add_space(rows::GAP);
+        ui.menu_button(trf!("{icon} Put a fit in the bay", icon = icon::ROCKET), |ui| {
+            ui.set_min_width(260.0);
+            if choices.is_empty() {
+                ui.label(egui::RichText::new(if bay.ships { tr!("No saved fit goes in: it takes one frigate, and only one.") } else { tr!("No saved fit fits in the room left.") }).weak());
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (id, name, ship) in &choices {
+                    let label = format!("{name}  ·  {}", spai_fit::formats::name_of(dogma, *ship));
+                    let item = egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(*ship)).fit_to_exact_size(egui::vec2(16.0, 16.0)), label).frame_when_inactive(false);
+                    if ui.add(item).clicked() {
+                        add = Some((id.clone(), *ship));
+                        ui.close();
+                    }
+                }
+            });
+        });
+    });
+    if let Some(i) = remove {
+        sim.edit(EditKind::Cargo, now_ms, move |f| {
+            if i < f.carried.len() {
+                f.carried.remove(i);
+            }
+        });
+    }
+    if let Some((fit_id, ship)) = add {
+        sim.edit(EditKind::Cargo, now_ms, move |f| f.carried.push(spai_fit::fit::Carried { fit_id, ship, bay: bay_attr }));
+    }
+}
+
 /// The cargo panel's foot: the hold's fill and the switch.
 const FOOTER_H: f32 = 24.0;
 
@@ -692,6 +763,10 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         sim.dock.hold = first.attr;
     }
     let hold = sim.dock.hold;
+    if let Some(bay) = holds.iter().find(|h| h.attr == hold && h.fits).cloned() {
+        ship_bay(sim, ui, dogma, &bay, now_ms);
+        return;
+    }
     let Some(s) = sim.session() else { return };
     let list: Vec<(usize, TypeId, u32)> = s.fit.cargo.iter().enumerate().filter(|(_, c)| c.hold == hold).map(|(i, c)| (i, c.type_id, c.quantity)).collect();
     if list.is_empty() {

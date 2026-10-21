@@ -51,6 +51,8 @@ impl SpaiApp {
     pub(crate) fn imperium_view(&mut self, ui: &mut egui::Ui) {
         if !self.sim_opened {
             self.sim_opened = true;
+            // Links from the desktop open in the web simulator.
+            self.sim.link_base = Some("https://eve-spai.com/sim/".to_owned());
             if !self.settings.sim_layout.is_empty() {
                 let layout = self.settings.sim_layout.clone();
                 self.sim.handle(HostEvent::Layout(layout));

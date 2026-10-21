@@ -163,3 +163,15 @@ fn a_link_carries_a_fit_packed_or_plain() {
     assert_eq!(link::param("#fit=z:abc&x=1"), Some("z:abc"));
     assert_eq!(link::param("?a=1&fit=hello"), Some("hello"));
 }
+
+#[test]
+fn a_fit_document_comes_back_whole_with_its_variations() {
+    let d = dataset();
+    let mut f = eft::import(&d, TEXT).unwrap().fit;
+    f.variations.push(crate::variations::Variation { id: 4, name: "Long range".into(), ..Default::default() });
+    let text = link::decode(&link::encode(&crate::doc::to_json(&f))).unwrap();
+    let back = import_any(&d, &text);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].fit.variations.len(), 1, "the variation travels");
+    assert_eq!(contents(&back[0].fit), contents(&f));
+}

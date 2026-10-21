@@ -163,7 +163,8 @@ fn wear_slot(dogma: &Dogma, type_id: TypeId) -> Option<u8> {
     t.attr(attr::IMPLANTNESS).or_else(|| t.attr(attr::BOOSTERNESS)).map(|v| v as u8)
 }
 
-/// Puts the type where a double click sends it: a ship becomes the hull, a module takes the first
+/// Puts the type where a double click sends it: a ship becomes the hull of a tab without one and
+/// goes into the cargo otherwise, a module takes the first
 /// free slot of its kind, a charge loads every module that takes it, drones and fighters go to
 /// their bays, an implant or booster replaces the one in its slot. `false` when it has no place.
 pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
@@ -178,12 +179,12 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
         return false;
     }
     match place {
+        // A hull for a tab without one; next to a hull, another ship rides in the cargo, packaged.
+        Place::Ship if sim.has_hull() => add_cargo(sim, type_id, now_ms),
         Place::Ship => {
             let name = t.name.clone();
             sim.edit(EditKind::Other, now_ms, |f| {
-                if f.ship == 0 {
-                    f.name = name;
-                }
+                f.name = name;
                 f.ship = type_id;
             });
         }
@@ -249,7 +250,15 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
     let Some(t) = dogma.type_(type_id) else { return false };
     let place = place_of(&dogma, t);
     match (target, place) {
-        (DropTarget::Hull, Place::Ship) => quick_add(sim, type_id, now_ms),
+        // Dropped on the hull itself: the fit changes hull, on purpose.
+        (DropTarget::Hull, Place::Ship) => {
+            if sim.session().is_none() {
+                sim.new_fit(type_id, now_ms);
+            } else {
+                sim.edit(EditKind::Other, now_ms, |f| f.ship = type_id);
+            }
+            true
+        }
         (DropTarget::Module(slot, index), Place::Module(kind)) if kind == slot => {
             sim.edit(EditKind::AddModule, now_ms, |f| {
                 f.remove_module(slot, index);
@@ -293,8 +302,9 @@ pub fn projectable(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
 
 /// Puts one of the type in the cargo, whatever it is, onto a stack of it if there is one.
 pub fn add_cargo(sim: &mut SimUi, type_id: TypeId, now_ms: u64) {
-    // Into the hold the Cargo tab shows.
-    let hold = sim.dock.hold;
+    // Into the hold the Cargo tab shows, unless that bay carries fits rather than items.
+    let bays: Vec<spai_fit::ids::AttrId> = [spai_fit::stats::ESCAPE_BAY, spai_fit::stats::MAINTENANCE_BAY].iter().filter_map(|n| sim.dogma.as_ref().and_then(|d| d.attr_named(n)).map(|a| a.id)).collect();
+    let hold = sim.dock.hold.filter(|h| !bays.contains(h));
     sim.edit(EditKind::Cargo, now_ms, |f| match f.cargo.iter_mut().find(|c| c.type_id == type_id && c.hold == hold) {
         Some(c) => c.quantity += 1,
         None => f.cargo.push(spai_fit::fit::CargoItem { type_id, quantity: 1, hold }),
@@ -386,7 +396,7 @@ fn group_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tree: &Tree, g:
     let indent = depth as f32 * 14.0;
     let r = rows::row(ui, "browser", ("sim_mg", g), ROW_H, false, |ui| {
         ui.add_space(indent);
-        ui.label(egui::RichText::new(if open { icon::CARET_DOWN } else { icon::CARET_RIGHT }).weak());
+        ui.add(egui::Label::new(egui::RichText::new(if open { icon::CARET_DOWN } else { icon::CARET_RIGHT }).weak()).selectable(false));
         let w = ui.available_width();
         rows::cell(ui, w, egui::RichText::new(tree.name(g)), "");
     });

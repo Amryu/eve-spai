@@ -301,3 +301,68 @@ fn real_data_empty_target_effects() {
         println!("{n}: {k} types, e.g. {ex}");
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_escape_bay() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let a = d.attr_named("frigateEscapeBayCapacity").unwrap();
+    println!("unit {:?} default {}", a.unit, a.default);
+    for t in d.types.iter().filter(|t| t.attr(a.id).is_some_and(|v| v > 0.0)).take(5) {
+        println!("{} = {:?}", t.name, t.attr(a.id));
+    }
+    for n in ["nullifier", "warp core", "interdiction nullifier"] {
+        for x in d.attributes.iter().filter(|x| x.name.to_lowercase().contains(&n.replace(' ', ""))).take(5) {
+            println!("attr {} {}", x.id, x.name);
+        }
+    }
+    for x in d.attributes.iter().filter(|x| { let n = x.name.to_lowercase(); n.contains("escape") || n.contains("canfitship") || n.contains("fitsto") }) {
+        let n = d.types.iter().filter(|t| t.attr(x.id).is_some()).count();
+        println!("attr {} {} on {n} types", x.id, x.name);
+    }
+    let null = d.types.iter().find(|t| t.group == 4117 && t.published).unwrap();
+    println!("nullifier {}: {:?}", null.name, null.attrs.iter().filter(|(a, _)| d.attr(*a).is_some_and(|x| x.name.to_lowercase().contains("canfit"))).map(|(a, v)| (d.attr(*a).unwrap().name.clone(), *v)).collect::<Vec<_>>());
+    for g in d.groups.iter().filter(|g| g.name.to_lowercase().contains("nullifier")) {
+        println!("group {} {}", g.id, g.name);
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_escape_bay_hulls() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap().id;
+    for (hull, fits) in [("Rifter", true), ("Wolf", true), ("Hound", true), ("Hawk", true), ("Kestrel", true), ("Malediction", false), ("Helios", false), ("Thrasher", false), ("Sabre", false), ("Raven", false), ("Hecate", false)] {
+        assert_eq!(crate::stats::fits_escape_bay(&d, id(hull)), fits, "{hull}");
+    }
+    let n = d.types.iter().filter(|t| t.published && crate::stats::fits_escape_bay(&d, t.id)).count();
+    println!("{n} hulls fit an escape bay");
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_burnout_depends_on_the_rack() {
+    use crate::fit::{Module, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for n in ["heatAbsorbtionRateModifier", "heatGenerationMultiplier", "heatAttenuationHi", "heatAttenuationMed", "heatAttenuationLow", "hp", "heatDamage", "hiSlots", "rigSlots"] {
+        assert!(d.attr_named(n).is_some(), "{n}");
+    }
+    let rifter = d.type_named("Rifter").unwrap().id;
+    let gun = d.type_named("200mm AutoCannon II").unwrap().id;
+    let emp = d.type_named("EMP S").unwrap().id;
+    let burn = |overloaded: usize| {
+        let mut f = Fit::new(rifter, "x");
+        for i in 0..3 {
+            f.modules.push(Module::new(gun, Slot::High, i).with_charge(emp).with_state(if (i as usize) < overloaded { State::Overload } else { State::Active }));
+        }
+        let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+        crate::stats::module_stats(&calc, &c).into_iter().find(|m| m.slot == Slot::High && m.index == 0).and_then(|m| m.burnout_s).unwrap()
+    };
+    let (one, three) = (burn(1), burn(3));
+    println!("one overloaded {one:.0}s, all three {three:.0}s");
+    assert!(three < one * 0.6, "three heating the rack burn it much sooner: {one} against {three}");
+}

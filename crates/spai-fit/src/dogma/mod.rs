@@ -222,6 +222,9 @@ pub struct TypeDef {
     /// `(effect, is_default)`.
     pub effects: Vec<(EffectId, bool)>,
     pub required_skills: Vec<(TypeId, u8)>,
+    /// Its volume packaged, where that differs: a ship folded up for a hold.
+    #[serde(default)]
+    pub packaged: Option<f32>,
 }
 
 impl TypeDef {
@@ -239,6 +242,11 @@ impl TypeDef {
 
     pub fn volume(&self) -> f32 {
         self.attr(attr::VOLUME).unwrap_or(0.0)
+    }
+
+    /// The room it takes in a hold: packaged.
+    pub fn cargo_volume(&self) -> f32 {
+        self.packaged.unwrap_or_else(|| self.volume())
     }
 
     pub fn capacity(&self) -> f32 {
@@ -547,6 +555,7 @@ pub(crate) mod test_data {
                     attrs: vec![(37, 365.0), (4, 1_067_000.0), (161, 27_289.0), (38, 140.0), (162, 35.0)],
                     effects: vec![],
                     required_skills: vec![(3329, 1)],
+                    packaged: None,
                 },
                 TypeDef {
                     id: 3329,
@@ -562,6 +571,7 @@ pub(crate) mod test_data {
                     attrs: vec![(4, 0.0), (38, 0.0), (161, 0.01), (162, 0.0)],
                     effects: vec![],
                     required_skills: vec![],
+                    packaged: None,
                 },
                 TypeDef {
                     id: 2048,
@@ -577,6 +587,7 @@ pub(crate) mod test_data {
                     attrs: vec![(4, 0.0), (38, 0.0), (161, 5.0), (162, 0.0), (50, 30.0)],
                     effects: vec![(16, false)],
                     required_skills: vec![(3392, 4)],
+                    packaged: None,
                 },
             ],
             attributes: vec![

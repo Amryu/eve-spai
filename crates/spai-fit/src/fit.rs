@@ -193,6 +193,16 @@ impl Default for Projected {
     }
 }
 
+/// A fit carried in a ship bay, by library id, with its hull for the room it takes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Carried {
+    pub fit_id: String,
+    pub ship: TypeId,
+    /// The bay: the ship attribute giving its capacity.
+    pub bay: AttrId,
+}
+
 /// The damage split expected to come in, for effective hit points.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -261,6 +271,8 @@ pub struct Fit {
     pub projected: Vec<Projected>,
     /// Other fits acting on this one: their remote modules and drones, and their boosts.
     pub projected_fits: Vec<ProjectedFit>,
+    /// Other fits carried assembled: a frigate in the escape bay, ships in the maintenance bay.
+    pub carried: Vec<Carried>,
     pub variations: Vec<crate::variations::Variation>,
     /// Switched-on variations, applied in this order.
     pub active_variations: Vec<u32>,

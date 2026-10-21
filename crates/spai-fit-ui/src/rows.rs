@@ -127,6 +127,13 @@ pub struct DragItem(pub TypeId);
 /// The whole width at `h`, highlighted while the pointer is over it or its menu is open; the
 /// response is the row's own (clicks between the cells, right clicks, drops).
 pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, selected: bool, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    row_tinted(ui, list, id, h, selected, None, add)
+}
+
+/// A row in a state that should show at a glance (an active or overloaded module): a faint wash
+/// of `tint`, or, selected, the selection's own colour with a bar of the tint at its left edge,
+/// so neither hides the other.
+pub fn row_tinted(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, selected: bool, tint: Option<egui::Color32>, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     let w = ui.available_width();
     // Drag too, so a row can be carried by its name; `drag_from` decides which rows carry anything.
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
@@ -143,10 +150,16 @@ pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, sele
     }
     let over = ui.rect_contains_pointer(rect) && ui.ctx().dragged_id().is_none();
     let dropping = ui.rect_contains_pointer(rect) && egui::DragAndDrop::has_payload_of_type::<DragItem>(ui.ctx());
+    if let Some(t) = tint.filter(|_| !selected) {
+        ui.painter().rect_filled(rect, 3.0, t.gamma_multiply(0.12));
+    }
     if dropping {
         ui.painter().rect_filled(rect, 3.0, ui.visuals().selection.bg_fill.gamma_multiply(0.5));
     } else if selected {
         ui.painter().rect_filled(rect, 3.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35));
+        if let Some(t) = tint {
+            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 1.5, t);
+        }
     } else if over || resp.context_menu_opened() {
         ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }

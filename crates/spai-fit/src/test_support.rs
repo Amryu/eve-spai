@@ -56,6 +56,7 @@ pub fn type_def(id: TypeId, name: &str, group: GroupId, category: CategoryId, at
         attrs,
         effects: effects.iter().map(|e| (*e, false)).collect(),
         required_skills: skills.to_vec(),
+        packaged: None,
     }
 }
 

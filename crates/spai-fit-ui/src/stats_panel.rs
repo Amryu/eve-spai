@@ -68,9 +68,20 @@ fn line_colored(ui: &mut egui::Ui, label: &str, value: String, color: Option<egu
 }
 
 /// A used-of-total line with a thin bar under it in the resource's colour, red past the total.
-fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str, color: egui::Color32) {
+/// Used and total as the bar prints them: two decimals once the two are within 1% or one unit of
+/// each other, where rounding could hide whether the fit still fits.
+pub(crate) fn resource_text(used: f64, total: f64, close_call: bool) -> (String, String) {
+    if close_call && (used - total).abs() <= (total.abs() * 0.01).max(1.0) {
+        (format!("{used:.2}"), format!("{total:.2}"))
+    } else {
+        (text::num(used), text::num(total))
+    }
+}
+
+fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str, color: egui::Color32, close_call: bool) {
     let over = used > total + 1e-6;
-    let txt = trf!("{used} / {total} {unit}", used = text::num(used), total = text::num(total), unit = unit);
+    let (u, t) = resource_text(used, total, close_call);
+    let txt = trf!("{used} / {total} {unit}", used = u, total = t, unit = unit);
     line_colored(ui, label, txt, over.then(|| ui.visuals().error_fg_color));
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 2.0 * rows::GAP, 3.0), egui::Sense::hover());
     let rect = rect.translate(egui::vec2(rows::GAP, 0.0));
@@ -85,10 +96,10 @@ fn bar(ui: &mut egui::Ui, label: &str, used: f64, total: f64, unit: &str, color:
 fn fitting(ui: &mut egui::Ui, c: &Computed) {
     let f = &c.fitting;
     section(ui, tr!("Fitting"));
-    bar(ui, tr!("CPU"), f.cpu_used, f.cpu_total, "tf", spai_ui::colors::CPU);
-    bar(ui, tr!("Powergrid"), f.power_used, f.power_total, "MW", spai_ui::colors::POWERGRID);
+    bar(ui, tr!("CPU"), f.cpu_used, f.cpu_total, "tf", spai_ui::colors::CPU, true);
+    bar(ui, tr!("Powergrid"), f.power_used, f.power_total, "MW", spai_ui::colors::POWERGRID, true);
     if f.calibration_total > 0.0 {
-        bar(ui, tr!("Calibration"), f.calibration_used, f.calibration_total, "", spai_ui::colors::CALIBRATION);
+        bar(ui, tr!("Calibration"), f.calibration_used, f.calibration_total, "", spai_ui::colors::CALIBRATION, false);
     }
     line(ui, tr!("Turrets / launchers"), trf!("{t1}/{t2}  {l1}/{l2}", t1 = f.turrets_used, t2 = f.turrets_total, l1 = f.launchers_used, l2 = f.launchers_total));
 }
@@ -379,8 +390,8 @@ fn drones(ui: &mut egui::Ui, c: &Computed) {
     }
     section(ui, tr!("Drones"));
     let c = ui.visuals().hyperlink_color;
-    bar(ui, tr!("Bandwidth"), d.bandwidth_used, d.bandwidth_total, "Mbit/s", c);
-    bar(ui, tr!("Drone bay"), d.bay_used, d.bay_total, "m³", c);
+    bar(ui, tr!("Bandwidth"), d.bandwidth_used, d.bandwidth_total, "Mbit/s", c, false);
+    bar(ui, tr!("Drone bay"), d.bay_used, d.bay_total, "m³", c, false);
     line(ui, tr!("In space"), trf!("{n} of {max}", n = d.active, max = d.max_active));
     line(ui, tr!("Control range"), text::metres(d.control_range));
 }

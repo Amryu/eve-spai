@@ -9811,3 +9811,18 @@ fn uitest_sim_columns_line_up_with_and_without_charges() {
         assert!(gun.iter().any(|g| (g - x).abs() < 0.5), "a number of the damage control's row at {x} has no match in the gun's row {gun:?}");
     }
 }
+
+/// A market group in the browse tree opens from its chevron as well as from its name.
+#[test]
+fn uitest_sim_browse_chevron_toggles() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_browse_chevron", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let rows_in = |h: &egui_kittest::Harness<'_>| spai_fit_ui::rows::log(&h.ctx).iter().filter(|(id, _)| *id == egui::Id::new("browser")).count();
+    let before = rows_in(&h);
+    let name = h.query_all_by_label_contains("Ship Equipment").map(|n| n.rect()).next().expect("a market group");
+    harness::click_at(&h, egui::pos2(name.min.x - 10.0, name.center().y));
+    h.run_steps(3);
+    assert!(rows_in(&h) > before, "the chevron opened the group: {before} rows before, {} after", rows_in(&h));
+}

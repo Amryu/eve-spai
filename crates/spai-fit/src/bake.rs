@@ -69,6 +69,8 @@ struct TypeRec {
     variation_parent_type_id: Option<u32>,
     mass: Option<f64>,
     volume: Option<f64>,
+    #[serde(rename = "packagedVolume")]
+    packaged_volume: Option<f64>,
     capacity: Option<f64>,
     radius: Option<f64>,
 }
@@ -435,6 +437,7 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
                 attrs: Vec::new(),
                 effects: Vec::new(),
                 required_skills: Vec::new(),
+                packaged: r.packaged_volume.filter(|p| Some(*p) != r.volume).map(|p| p as f32),
             },
         );
         Ok(())
@@ -708,7 +711,7 @@ pub(crate) mod tests {
             ("categories.jsonl", "{\"_key\": 1, \"name\": {\"en\": \"Owner\"}}\n{\"_key\": 6, \"name\": {\"en\": \"Ship\"}}\n{\"_key\": 7, \"name\": {\"en\": \"Module\"}}\n{\"_key\": 16, \"name\": {\"en\": \"Skill\"}}\n{\"_key\": 2, \"name\": {\"en\": \"Celestial\"}}"),
             ("groups.jsonl", "{\"_key\": 1, \"categoryID\": 1, \"name\": {\"en\": \"Character\"}}\n{\"_key\": 25, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}}\n{\"_key\": 60, \"categoryID\": 7, \"name\": {\"en\": \"Damage Control\"}}\n{\"_key\": 257, \"categoryID\": 16, \"name\": {\"en\": \"Spaceship Command\"}}\n{\"_key\": 5, \"categoryID\": 2, \"name\": {\"en\": \"Solar System\"}}\n{\"_key\": 55, \"categoryID\": 7, \"name\": {\"en\": \"Projectile Weapon\"}}"),
             ("types.jsonl", concat!(
-                "{\"_key\": 587, \"groupID\": 25, \"name\": {\"de\": \"Rifter\", \"en\": \"Rifter\"}, \"published\": true, \"marketGroupID\": 64, \"metaGroupID\": 1, \"metaLevel\": 0, \"techLevel\": 1, \"mass\": 1067000.0, \"volume\": 27289.0, \"capacity\": 140.0, \"radius\": 35.0, \"description\": {\"en\": \"long\"}}\n",
+                "{\"_key\": 587, \"groupID\": 25, \"name\": {\"de\": \"Rifter\", \"en\": \"Rifter\"}, \"published\": true, \"marketGroupID\": 64, \"metaGroupID\": 1, \"metaLevel\": 0, \"techLevel\": 1, \"mass\": 1067000.0, \"volume\": 27289.0, \"packagedVolume\": 2500.0, \"capacity\": 140.0, \"radius\": 35.0, \"description\": {\"en\": \"long\"}}\n",
                 "{\"_key\": 2048, \"groupID\": 60, \"name\": {\"en\": \"Damage Control II\"}, \"published\": true, \"marketGroupID\": 1, \"metaGroupID\": 2, \"metaLevel\": 5, \"techLevel\": 2, \"variationParentTypeID\": 2046, \"volume\": 5.0}\n",
                 "{\"_key\": 2046, \"groupID\": 60, \"name\": {\"en\": \"Damage Control I\"}, \"published\": true, \"marketGroupID\": 1, \"metaGroupID\": 1, \"volume\": 5.0}\n",
                 "{\"_key\": 3329, \"groupID\": 257, \"name\": {\"en\": \"Minmatar Frigate\"}, \"published\": false, \"volume\": 0.01}\n",
@@ -773,6 +776,7 @@ pub(crate) mod tests {
         assert_eq!(dc.variation_parent, Some(2046));
         assert_eq!(d.variants_of(2048), &[2046, 2048]);
         assert_eq!(d.type_(2046).unwrap().volume(), 5.0, "a type without dogma still has its base attributes");
+        assert_eq!((d.type_(587).unwrap().volume(), d.type_(587).unwrap().cargo_volume()), (27289.0, 2500.0), "a ship assembled, and packaged for a hold");
         assert_eq!(d.type_(3329).unwrap().attr(275), Some(2.0));
     }
 

@@ -1065,3 +1065,26 @@ fn rolled_items_are_not_offered_on_their_own() {
     }
     assert!(listed.contains(&ids::MWD) && !listed.contains(&ids::ABYSSAL_MWD), "the base item is offered, its abyssal version is not");
 }
+
+#[test]
+fn cpu_and_grid_show_decimals_only_when_close_to_the_limit() {
+    use crate::stats_panel::resource_text;
+    assert_eq!(resource_text(399.6, 400.0, true), ("399.60".to_owned(), "400.00".to_owned()), "within 1%");
+    assert_eq!(resource_text(40.4, 40.0, true), ("40.40".to_owned(), "40.00".to_owned()), "within one unit");
+    assert_eq!(resource_text(300.0, 400.0, true), (crate::text::num(300.0), crate::text::num(400.0)), "far from it");
+    assert_eq!(resource_text(399.6, 400.0, false), (crate::text::num(399.6), crate::text::num(400.0)), "only where asked");
+}
+
+#[test]
+fn another_ship_added_to_a_fit_rides_in_the_cargo() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let hull = s.session().unwrap().fit.ship;
+    assert!(crate::browser::quick_add(&mut s, ids::SHIP, 1));
+    let f = &s.session().unwrap().fit;
+    assert_eq!(f.ship, hull, "the hull stays");
+    assert!(f.cargo.iter().any(|c| c.type_id == ids::SHIP && c.hold.is_none()), "{:?}", f.cargo);
+    s.new_empty_tab(2);
+    assert!(crate::browser::quick_add(&mut s, ids::SHIP, 3));
+    assert_eq!(s.session().unwrap().fit.ship, ids::SHIP, "a tab without a hull takes it as the hull");
+}

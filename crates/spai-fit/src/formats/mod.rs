@@ -81,13 +81,19 @@ pub fn name_of(dogma: &Dogma, type_id: TypeId) -> String {
     dogma.type_(type_id).map_or_else(|| format!("Type {type_id}"), |t| t.name.clone())
 }
 
-/// Every fit in the text, whatever it is written in: EFT (one or several), ESI's JSON (one or a
+/// Every fit in the text, whatever it is written in: the simulator's own document, EFT (one or
+/// several), ESI's JSON (one or a
 /// list, numeric or named inventory flags), the fitting XML, or a DNA string, bare, as
 /// `fitting:...` or inside a game link. Empty when it is none of them.
 pub fn import_any(dogma: &Dogma, text: &str) -> Vec<eft::Imported> {
     let t = text.trim();
     if t.contains("<fitting ") {
         return xml::import(dogma, t);
+    }
+    // The simulator's own document first: a link made here carries the fit whole, variations and
+    // all. ESI's JSON reads as a document without a hull and falls through.
+    if let Some(fit) = t.starts_with('{').then(|| crate::doc::from_json(t).ok()).flatten().filter(|f| f.ship != 0) {
+        return vec![eft::Imported { fit, unknown: Vec::new() }];
     }
     if t.starts_with('{') || (t.starts_with('[') && t[1..].trim_start().starts_with('{')) {
         return esi_any(dogma, t);

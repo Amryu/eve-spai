@@ -359,6 +359,42 @@ pub struct Hold {
     pub name: String,
     pub capacity: f64,
     pub used: f64,
+    /// Counted in ships, not m³: the frigate escape bay.
+    pub ships: bool,
+    /// Carries other fits rather than items: the escape and maintenance bays.
+    pub fits: bool,
+}
+
+/// The battleships' bay for one frigate.
+pub const ESCAPE_BAY: &str = "frigateEscapeBayCapacity";
+/// Carriers' and haulers' bay for assembled ships, by their assembled volume.
+pub const MAINTENANCE_BAY: &str = "shipMaintenanceBayCapacity";
+
+/// Whether a hull goes into a frigate escape bay: a frigate-sized hull (rig size 1, no destroyer)
+/// that cannot fit an interdiction nullifier.
+pub fn fits_escape_bay(dogma: &crate::Dogma, ship: TypeId) -> bool {
+    let Some(t) = dogma.type_(ship) else { return false };
+    if t.category != crate::ids::category::SHIP {
+        return false;
+    }
+    let rig_size = dogma.attr_named("rigSize").and_then(|a| t.attr(a.id));
+    let group = dogma.groups.iter().find(|g| g.id == t.group).map(|g| g.name.to_lowercase()).unwrap_or_default();
+    if rig_size != Some(1.0) || group.contains("destroyer") || group.contains("interdictor") {
+        return false;
+    }
+    !takes_nullifier(dogma, t)
+}
+
+/// Whether any interdiction nullifier lists the hull or its group among those it fits on.
+fn takes_nullifier(dogma: &crate::Dogma, ship: &crate::dogma::TypeDef) -> bool {
+    const NULLIFIER_GROUP: crate::ids::GroupId = 4117;
+    let limits: Vec<crate::ids::AttrId> = dogma.attributes.iter().filter(|a| a.name.starts_with("canFitShipGroup") || a.name.starts_with("canFitShipType")).map(|a| a.id).collect();
+    dogma.types.iter().filter(|m| m.group == NULLIFIER_GROUP).any(|m| {
+        limits.iter().filter_map(|a| m.attr(*a)).any(|v| {
+            let v = v as u32;
+            v == u32::from(ship.group) || v == ship.id
+        })
+    })
 }
 
 impl Hold {
@@ -387,16 +423,20 @@ pub fn is_hold_attr(a: &crate::dogma::AttrDef) -> bool {
 /// The cargo hold and the hull's other holds, with what the fit carries in each.
 pub fn holds(calc: &Calc, fit: &Fit) -> Vec<Hold> {
     let dogma = calc.dogma;
-    let volume = |t: TypeId| dogma.type_(t).and_then(|d| d.attr(attr::VOLUME)).map_or(0.0, f64::from);
+    let volume = |t: TypeId| dogma.type_(t).map_or(0.0, |d| f64::from(d.cargo_volume()));
+    let assembled = |t: TypeId| dogma.type_(t).map_or(0.0, |d| f64::from(d.volume()));
     // Adding 0.0: an empty sum of floats is -0.0, which prints as "-0".
     let used = |hold: Option<AttrId>| fit.cargo.iter().filter(|c| c.hold == hold).map(|c| volume(c.type_id) * f64::from(c.quantity)).sum::<f64>() + 0.0;
-    let mut out = vec![Hold { attr: None, name: "Cargo hold".into(), capacity: calc.ship(attr::CAPACITY), used: used(None) }];
+    let mut out = vec![Hold { attr: None, name: "Cargo hold".into(), capacity: calc.ship(attr::CAPACITY), used: used(None), ships: false, fits: false }];
     for a in dogma.attributes.iter().filter(|a| is_hold_attr(a)) {
         let capacity = calc.ship(a.id);
-        let carried = used(Some(a.id));
+        let ships = a.name == ESCAPE_BAY;
+        let fits = ships || a.name == MAINTENANCE_BAY;
+        let in_bay = fit.carried.iter().filter(|c| c.bay == a.id);
+        let carried = if ships { in_bay.count() as f64 } else if fits { in_bay.map(|c| assembled(c.ship)).sum::<f64>() + 0.0 } else { used(Some(a.id)) };
         // A hold the hull has, or one something was put in before the hull changed.
         if capacity > 0.0 || carried > 0.0 {
-            out.push(Hold { attr: Some(a.id), name: a.display.clone(), capacity, used: carried });
+            out.push(Hold { attr: Some(a.id), name: a.display.clone(), capacity, used: carried, ships, fits });
         }
     }
     out
@@ -1015,24 +1055,77 @@ pub fn module_info(calc: &Calc, i: ItemIdx) -> Option<ModuleInfo> {
 /// Seconds of overload before it burns out, if every overloaded cycle damages it: its hit points
 /// over its heat damage per cycle, at the overloaded cycle time. A cooler rack damages it less
 /// often, so this is how long it lasts at the worst.
+/// How long the module lasts overloaded, at the expected rate of heat damage, beside what else in
+/// its rack is overloaded now (counting itself as overloaded if it is not yet).
+///
+/// The rack's heat climbs as `H(t) = 1 − e^(−k t)`, `k = heatGenerationMultiplier × Σ
+/// heatAbsorbtionRateModifier` over the overloaded modules. Each cycle of an overloaded module
+/// damages each module of the rack with the chance `H × online share × heatAttenuation^distance`
+/// (the online share: online high, mid and low modules over high, mid, low and rig slots), by the
+/// overloaded module's `heatDamage`. The module burns out when the expected damage reaches its
+/// `hp`: `A × (T − (1 − e^(−k T)) / k) = hp`, `A` the share times each source's damage over its
+/// cycle, weighted by distance.
 fn burnout_of(calc: &Calc, i: ItemIdx) -> Option<f64> {
     let dogma = calc.dogma;
     let id = |n: &str| dogma.attr_named(n).map(|a| a.id);
-    let heat = id("heatDamage").filter(|a| calc.has(i, *a)).map(|a| calc.value(i, a)).filter(|h| *h > 0.0)?;
-    let hp = id("hp").map_or(0.0, |a| calc.value(i, a));
-    if hp <= 0.0 {
-        return None;
-    }
-    let mut cycle = cycle_of(calc, i)?;
-    // Not overloaded now: the cycle it would run at overloaded.
-    if calc.items()[i].state != State::Overload {
-        for bonus in ["overloadSelfDurationBonus", "overloadRofBonus"] {
-            if let Some(a) = id(bonus).filter(|a| calc.has(i, *a)) {
-                cycle *= 1.0 + calc.value(i, a) / 100.0;
+    let get = |item: ItemIdx, n: &str| id(n).filter(|a| calc.has(item, *a)).map(|a| calc.value(item, a));
+    let ItemKind::Module { slot, index } = calc.items()[i].kind else { return None };
+    get(i, "heatDamage").filter(|h| *h > 0.0)?;
+    let hp = get(i, "hp").filter(|h| *h > 0.0)?;
+    let rack_attr = match slot {
+        crate::fit::Slot::High => "heatAttenuationHi",
+        crate::fit::Slot::Mid => "heatAttenuationMed",
+        crate::fit::Slot::Low => "heatAttenuationLow",
+        _ => return None,
+    };
+    let ship = calc.ship_idx();
+    let attenuation = get(ship, rack_attr).unwrap_or(0.0);
+    let generation = get(ship, "heatGenerationMultiplier").unwrap_or(1.0);
+    let slots: f64 = ["hiSlots", "medSlots", "lowSlots", "rigSlots"].iter().filter_map(|n| get(ship, n)).sum();
+    let online = calc.modules().filter(|(_, it)| matches!(it.kind, ItemKind::Module { slot: crate::fit::Slot::High | crate::fit::Slot::Mid | crate::fit::Slot::Low, .. }) && it.state >= State::Online).count() as f64;
+    let share = if slots > 0.0 { (online / slots).min(1.0) } else { 1.0 };
+    // The rack's overloaded modules, with this one among them.
+    let mut k = 0.0;
+    let mut a = 0.0;
+    for (j, it) in calc.modules() {
+        let ItemKind::Module { slot: s, index: x } = it.kind else { continue };
+        if s != slot || (it.state != State::Overload && j != i) {
+            continue;
+        }
+        let (Some(damage), Some(mut cycle)) = (get(j, "heatDamage"), cycle_of(calc, j)) else { continue };
+        if it.state != State::Overload {
+            for bonus in ["overloadSelfDurationBonus", "overloadRofBonus"] {
+                if let Some(b) = get(j, bonus) {
+                    cycle *= 1.0 + b / 100.0;
+                }
             }
         }
+        k += generation * get(j, "heatAbsorbtionRateModifier").unwrap_or(0.0);
+        let distance = (i32::from(x) - i32::from(index)).unsigned_abs() as i32;
+        let weight = if distance == 0 { 1.0 } else { attenuation.powi(distance) };
+        a += share * weight * damage / cycle;
     }
-    Some((hp / heat).ceil() * cycle)
+    burn_time(a, k, hp)
+}
+
+/// `T` with `a × (T − (1 − e^(−k T)) / k) = hp`: the time the expected damage, growing with the
+/// rack's heat, takes to reach the module's hit points.
+pub fn burn_time(a: f64, k: f64, hp: f64) -> Option<f64> {
+    if a <= 0.0 || k <= 0.0 || hp <= 0.0 {
+        return None;
+    }
+    let dealt = |t: f64| a * (t - (1.0 - (-k * t).exp()) / k);
+    // Past full heat it is at most `a` per second, so the answer lies before hp / a + 1 / k.
+    let (mut lo, mut hi) = (0.0, hp / a + 1.0 / k + 1.0);
+    for _ in 0..80 {
+        let mid = (lo + hi) / 2.0;
+        if dealt(mid) < hp {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(hi)
 }
 
 /// Seconds per cycle: the module's duration, or for a weapon its rate of fire.
