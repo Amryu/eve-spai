@@ -402,3 +402,20 @@ fn remote_repairs_lose_effect_as_they_pile_up_as_the_game_does() {
     let (a, b, c) = (rep_landing(&n(20, 400.0)), rep_landing(&n(40, 400.0)), rep_landing(&n(60, 400.0)));
     assert!(a < b && b < c && (c - b) < (b - a));
 }
+
+#[test]
+fn smartbombs_count_only_on_a_ship_with_nothing_else() {
+    let d = dataset();
+    let mut gunner = gun_fit("gunner", 2);
+    gunner.modules.push(Module::new(ids::SMARTBOMB, Slot::High, 5).with_state(State::Active));
+    let mut bomber = Fit::new(ids::SHIP, "bomber");
+    bomber.modules.push(Module::new(ids::SMARTBOMB, Slot::High, 0).with_state(State::Active));
+    let lib = vec![gunner, bomber];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let one = |id: &str| stats(&d, &Fleet { size: 1, slots: vec![slot(id, CountRule::Fixed(1))], ..Fleet::default() }, &lookup(&lib), &skills);
+    let g = one("gunner");
+    assert!(g.slots[0].computed.weapons.iter().all(|w| w.kind != crate::stats::WeaponKind::Smartbomb), "beside guns a smartbomb is drone defence");
+    assert!(!g.slots[0].computed.weapons.is_empty());
+    let b = one("bomber");
+    assert!(b.slots[0].computed.weapons.iter().any(|w| w.kind == crate::stats::WeaponKind::Smartbomb), "a smartbomb boat fights with them");
+}

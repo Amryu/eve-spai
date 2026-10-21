@@ -469,6 +469,11 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
         if !fleet.drones {
             computed.weapons.retain(|w| w.alpha());
         }
+        // Smartbombs beside other weapons are there against drones, not the enemy fleet; only a
+        // ship with nothing else fights with them.
+        if computed.weapons.iter().any(|w| w.kind != WeaponKind::Smartbomb) {
+            computed.weapons.retain(|w| w.kind != WeaponKind::Smartbomb);
+        }
         let n = f64::from(count);
         out.dps += computed.dps() * n;
         out.volley += computed.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total()).sum::<f64>() * n;

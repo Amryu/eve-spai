@@ -426,7 +426,8 @@ ship of the fleet is computed with them (`fleet::env_of`).
 **Fleet numbers** (`fleet::stats`): each slot computed with the fleet's buffs and its own skills
 profile, scaled by its count: DPS, volley, logistics (section 17), neuts, the slowest and fastest
 hull. Drones and fighters count in DPS but never in a volley: they attack on their own time, so
-they are no alpha that kills a ship before its logistics react. With `Fleet.drones` off they are
+they are no alpha that kills a ship before its logistics react. Smartbombs beside other weapons are left out:
+they are there against drones; a ship with nothing else keeps them. With `Fleet.drones` off they are
 left out entirely.
 
 **Formation and motion** (`fleet::geometry`). The two anchors sit `d` apart on one axis. A
