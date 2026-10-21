@@ -126,7 +126,7 @@ pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64
             let probe = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: distance as f32, transversal: velocity as f32, radius: 0.0 };
             let w = choices
                 .and_then(|cs| cs.iter().find(|c| c.weapon == w.type_id))
-                .and_then(|c| ammo::best_at(c, distance, &probe).and_then(|((charge, _), _)| c.options.iter().find(|(x, _, _)| *x == charge).map(|(_, _, g)| g)))
+                .and_then(|c| ammo::best_with(c, distance, &probe, &|w| disrupted(w, &on_a)).and_then(|((charge, _), _)| c.options.iter().find(|(x, _, _)| *x == charge).map(|(_, _, g)| g)))
                 .unwrap_or(w);
             let w = disrupted(w, &on_a);
             let shares = pairs
@@ -310,4 +310,29 @@ pub fn ehp_against(t: &crate::stats::Tank, d: &crate::stats::Damage) -> f64 {
         let through: f64 = (0..4).map(|i| w[i] * l.resonance[i]).sum();
         if through > 0.0 { l.hp / through } else { f64::INFINITY }
     }).sum()
+}
+
+/// Each charged weapon of `a`'s slot `k` with its best carried charge over `ranges` against
+/// `target`, as the fight leaves it at each range: the target slowed by `a`'s webs and grown by
+/// its painters, crossing at its fleet's speed, the options under `b`'s disruptors.
+pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f64]) -> Vec<(crate::ids::TypeId, Vec<ammo::Band>)> {
+    let Some(choices) = a.ammo.get(k) else { return Vec::new() };
+    // The ewar each way per range, worked out once for every weapon.
+    let at: Vec<(f64, TargetProfile, EwarOn)> = ranges
+        .iter()
+        .map(|&d| {
+            let on_target = ewar_on(&a.ships(), d, 1.0, Some(&target.computed));
+            let on_a = ewar_at(&b.ships(), d, f64::from(a.stats.ships.max(1)));
+            let velocity = b.speed() * on_target.speed;
+            let probe = TargetProfile { signature: (target.computed.mobility.signature * on_target.signature) as f32, velocity: velocity as f32, distance: d as f32, transversal: velocity as f32, radius: 0.0 };
+            (d, probe, on_a)
+        })
+        .collect();
+    choices
+        .iter()
+        .map(|c| {
+            let pick = |d: f64| at.iter().find(|(x, _, _)| *x == d).and_then(|(_, probe, on_a)| ammo::best_with(c, d, probe, &|w| disrupted(w, on_a)));
+            (c.weapon, ammo::bands_by(ranges, &pick))
+        })
+        .collect()
 }

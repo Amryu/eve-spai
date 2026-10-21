@@ -463,9 +463,11 @@ module is at half strength (`optimal + falloff`; tackle to its optimal only); no
 −60% speed, each painter +30% signature, each tracking disruptor −17.19% turret optimal,
 falloff and tracking, penalised.
 
-**Ammo by range** (`fleet::ammo`). Each weapon is recomputed with every compatible charge
+**Ammo by range** (`fleet::ammo`, `sweep::ammo_bands`). Each weapon is recomputed with every compatible charge
 (`Dogma::compatible_charges`); carried are the loaded charge and those in the cargo. At each
-range the carried charge landing the most on the target is used; a charge not carried that
+range the carried charge landing the most on the target is used, the target as the fight leaves
+it there (slowed by the shooter's webs, grown by its painters, crossing at its fleet's speed) and
+every option under the other side's disruptors; a charge not carried that
 would land more is a suggestion, its gain averaged over the stretch where the carried one is
 best.
 
@@ -495,9 +497,13 @@ best range is the farthest where it still lands 90% of its most.
 - An assault damage control goes on when its ship is called primary, for its `duration`,
   multiplying every resonance by its `resistanceMultiplier`, once per fight (its reactivation
   delay outlasts the fight).
-- Logistics repair only once the primary has taken damage: each logi ship after its own reaction
-  delay (the same spread as the guns'), its lock time on the primary's signature, and for armor
-  or hull repairs a whole cycle (they land at its end; shield repairs at its start). Every
+- Missile volleys land after their flight, distance over missile velocity; on a primary already
+  dead they are lost.
+- Logistics repair only once the primary has taken damage: each logi ship after its reaction
+  (spread log-normally about `logi_reaction_s`, 1.5 s by default), its lock time on the
+  primary's signature unless it is among the `logi_prelock` share holding it locked already, its
+  place in the arrival spread (`logi_spread_s`, 3 s by default, shuffled against the reactions),
+  and for armor or hull repairs a whole cycle (they land at its end; shield repairs at its start). Every
   repair is times the fleet's logistics efficiency (75% by default: late locks, the wrong ship,
   cycles landing on full health) and the primary's `remoteRepairImpedance` where it has one, and
   heals no more than the damage there: what overreps is lost.
@@ -509,7 +515,8 @@ best range is the farthest where it still lands 90% of its most.
   four 85 HP/s repairs on one ship land about 81%. The break point counts it too.
 - Critical mass is lost when the damage landing on the primary, through the resistances of the
   layer being worn, no longer beats the repairs on it.
-- Per target slot a verdict: one volley, dead before any repair landed, dead with the
+- Per target slot a verdict (never called when the fight ended or stalled before its turn): one
+  volley, dead before any repair landed, dead with the
   damage outpacing the repairs by so much, or held.
 
 **Against** (`fleet::against`, `fleet::against_slot`), the summary at the set range on B's main hull, or on any slot of B picked: applied DPS and

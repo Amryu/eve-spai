@@ -419,3 +419,37 @@ fn smartbombs_count_only_on_a_ship_with_nothing_else() {
     let b = one("bomber");
     assert!(b.slots[0].computed.weapons.iter().any(|w| w.kind == crate::stats::WeaponKind::Smartbomb), "a smartbomb boat fights with them");
 }
+
+#[test]
+fn prelocked_logi_repair_sooner_missiles_land_after_their_flight_and_uncalled_ships_say_so() {
+    let lib = library();
+    let tight = Formation::Ball { radius_m: 0.0 };
+    let big = Fleet { size: 30, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let logi = |prelock: f32| Fleet { size: 8, formation: tight, logi_prelock: prelock, logi_spread_s: 0.0, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(4))], ..Fleet::default() };
+    let reps_from = |r: &race::Race| r.timeline.len();
+    let (cold, warm) = (race_between(&big, &logi(0.0), &lib, 500.0), race_between(&big, &logi(1.0), &lib, 500.0));
+    let lost = |r: &race::Race| r.events.iter().filter(|(_, e)| matches!(e, race::Event::Kill { side: 1, .. })).count();
+    assert!(lost(&warm) <= lost(&cold) && reps_from(&warm) >= reps_from(&cold), "pre-locked logi skip the lock and hold at least as long");
+    // The logi were never called while damage dealers stood: not a survivor's verdict.
+    let few = Fleet { size: 10, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let r = race_between(&few, &logi(0.0), &lib, 500.0);
+    if let Some((_, v)) = r.verdicts[1].iter().find(|(k, _)| *k == 1) {
+        assert!(matches!(v, race::Verdict::NotCalled | race::Verdict::Outpaced { .. } | race::Verdict::BeforeReps { .. } | race::Verdict::OneVolley), "{v:?}");
+    }
+    assert!(!r.verdicts[1].iter().any(|(k, v)| *k == 1 && *v == race::Verdict::Held), "never called is not held");
+
+    // Missiles: the first damage lands a flight after the first launch.
+    let d = dataset();
+    let mut launcher = Fit::new(ids::SHIP, "launcher");
+    launcher.modules.push(Module::new(ids::LAUNCHER, Slot::High, 0).with_charge(ids::MISSILE).with_state(State::Active));
+    let mut lib2 = library();
+    lib2.push(launcher);
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let shooters = Fleet { size: 30, formation: tight, slots: vec![slot("launcher", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let sa = stats(&d, &shooters, &lookup(&lib2), &skills);
+    let m = sa.slots[0].computed.weapons.iter().find_map(|w| w.missile.clone()).expect("a missile");
+    let distance = (m.velocity * 3.0).min(m.range * 0.9);
+    let r = race_between(&shooters, &few, &lib2, distance);
+    let first = r.timeline.iter().find(|x| x.2 < 10).map(|x| x.0).unwrap_or(f64::MAX);
+    assert!(first >= distance / m.velocity, "no kill before the missiles arrive: {first} against {}", distance / m.velocity);
+}

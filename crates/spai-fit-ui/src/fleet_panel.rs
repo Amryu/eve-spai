@@ -289,6 +289,9 @@ pub struct Analysis {
     pub ammo: [Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>>; 2],
     pub sweep: spai_fit::fleet::sweep::Sweep,
     pub race: spai_fit::fleet::race::Race,
+    /// Per side, per slot and charged weapon, its best carried charge by range against the other
+    /// side's first target, ewar counted.
+    pub ammo_bands: [Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)>; 2],
 }
 
 impl SimUi {
@@ -343,7 +346,13 @@ impl SimUi {
         ranges.dedup();
         let sweep = spai_fit::fleet::sweep::sweep(&a, &b, &ranges);
         let race = spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(f.fleet.range), 1800.0);
-        let out = Arc::new(Analysis { fleet: f.fleet.clone(), range: f.fleet.range, mine: mine.clone(), theirs: theirs.clone(), enemy, ammo, sweep, race });
+        let ranges: Vec<f64> = sweep.points.iter().map(|p| p.distance).collect();
+        let bands_of = |x: &spai_fit::fleet::sweep::Side, y: &spai_fit::fleet::sweep::Side| -> Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)> {
+            let Some(t) = spai_fit::fleet::sweep::primary(x.fleet, y.stats) else { return Vec::new() };
+            (0..x.stats.slots.len()).filter(|k| x.stats.slots[*k].count > 0).flat_map(|k| spai_fit::fleet::sweep::ammo_bands(x, y, k, t, &ranges).into_iter().map(move |(w, b)| (k, w, b))).collect()
+        };
+        let ammo_bands = [bands_of(&a, &b), bands_of(&b, &a)];
+        let out = Arc::new(Analysis { fleet: f.fleet.clone(), range: f.fleet.range, mine: mine.clone(), theirs: theirs.clone(), enemy, ammo, sweep, race, ammo_bands });
         self.fleet_analysis = Some((key, out.clone()));
         Some(out)
     }
@@ -705,6 +714,15 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             ui.end_row();
             ui.label(tr!("Logistics efficiency")).on_hover_text(tr!("The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health"));
             changed |= ui.add(egui::Slider::new(&mut f.logi_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+            ui.end_row();
+            ui.label(tr!("Logi pre-locked")).on_hover_text(tr!("The share of the logistics already holding the primary locked when it is first hurt: they skip the lock"));
+            changed |= ui.add(egui::Slider::new(&mut f.logi_prelock, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+            ui.end_row();
+            ui.label(tr!("Logi reaction")).on_hover_text(tr!("Seconds until the logistics see a ship hurt, at the median; some quicker, a few slower"));
+            changed |= ui.add(egui::Slider::new(&mut f.logi_reaction_s, 0.0..=10.0).suffix(" s").step_by(0.1)).changed();
+            ui.end_row();
+            ui.label(tr!("Logi arrival spread")).on_hover_text(tr!("Seconds over which the logistics' first repairs arrive, one after another, on top of their reactions"));
+            changed |= ui.add(egui::Slider::new(&mut f.logi_spread_s, 0.0..=15.0).suffix(" s").step_by(0.5)).changed();
             ui.end_row();
             ui.label(tr!("Drones"));
             changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
@@ -1106,7 +1124,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
     };
     tline(ui, tr!("Outcome"), outcome, |ui| {
         let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
-        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its own reaction, its lock and its first cycle, at the fleet's logistics efficiency, and heal no more than the damage there; assault damage controls go on when their ship is called."));
+        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; missiles land after their flight; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its reaction, its lock unless pre-locked, its place in the arrival spread and its first cycle, at the fleet's logistics efficiency, lessened as repairs pile up, and heal no more than the damage there; assault damage controls go on when their ship is called."));
     });
     // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
     // side loses its critical mass).
@@ -1140,33 +1158,29 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
                 Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(target) => trf!("dies in {s}, {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
                 Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
                 Verdict::Held => tr!("holds").to_owned(),
+                Verdict::NotCalled => tr!("never called").to_owned(),
             };
-            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before any repair landed on it, dead with the damage outpacing the repairs, or still standing.")));
+            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before any repair landed on it, dead with the damage outpacing the repairs, still standing at the end, or never called because the fight stalled or ended first.")));
         }
     }
-    // The shooter's ammo by range, against its first target.
-    let Some(t) = primary else { return };
-    let ranges: Vec<f64> = sw.points.iter().map(|p| p.distance).collect();
-    let profile = spai_fit::fit::TargetProfile { signature: t.computed.mobility.signature as f32, velocity: 0.0, distance: 0.0, transversal: 0.0, radius: 0.0 };
+    // The shooter's ammo by range, against its first target as the fight leaves it.
     let mut shown = false;
-    for (k, slot) in shooter.slots.iter().enumerate() {
-        for c in an.ammo[dir].get(k).into_iter().flatten() {
-            let bands = spai_fit::fleet::ammo::bands(c, &ranges, &profile);
-            if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
-                continue;
-            }
-            if !shown {
-                title(ui, tr!("Ammo by range"), true);
-                shown = true;
-            }
-            let gun = dogma.type_(c.weapon).map_or("?", |t| t.name.as_str());
-            ui.add_space(3.0);
-            subhead(ui, &format!("{} · {}", slot_name(slot), gun));
-            for band in bands {
-                ammo_line(ui, dogma, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), band.charge, None);
-                if let Some((id, share)) = band.better {
-                    ammo_line(ui, dogma, &trf!("not carried, +{p}%", p = format!("{:.0}", share * 100.0)), id, Some(tr!("A charge not carried that would land this much more over the stretch, on average.")));
-                }
+    for (k, weapon, bands) in &an.ammo_bands[dir] {
+        if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
+            continue;
+        }
+        let Some(slot) = shooter.slots.get(*k) else { continue };
+        if !shown {
+            title(ui, tr!("Ammo by range"), true);
+            shown = true;
+        }
+        let gun = dogma.type_(*weapon).map_or("?", |t| t.name.as_str());
+        ui.add_space(3.0);
+        subhead(ui, &format!("{} · {}", slot_name(slot), gun));
+        for band in bands {
+            ammo_line(ui, dogma, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), band.charge, Some(tr!("The carried charge landing most over this stretch on the first target, its speed after this fleet's webs, its signature after the painters, the weapons under the other side's disruptors.")));
+            if let Some((id, share)) = band.better {
+                ammo_line(ui, dogma, &trf!("not carried, +{p}%", p = format!("{:.0}", share * 100.0)), id, Some(tr!("A charge not carried that would land this much more over the stretch, on average.")));
             }
         }
     }

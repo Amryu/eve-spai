@@ -151,6 +151,15 @@ pub struct Fleet {
     /// cycles landing on full health.
     #[serde(default = "default_logi_efficiency")]
     pub logi_efficiency: f32,
+    /// The share of each logi slot holding the primary locked before it is hurt: they skip the
+    /// lock.
+    pub logi_prelock: f32,
+    /// Seconds the logi take to see a ship hurt, at the median; spread like the guns' reactions.
+    #[serde(default = "default_logi_reaction")]
+    pub logi_reaction_s: f32,
+    /// Seconds over which the logi's first repairs arrive, one after another, on top of that.
+    #[serde(default = "default_logi_spread")]
+    pub logi_spread_s: f32,
     /// Drones and fighters launched: counted in damage per second, never in a volley.
     #[serde(default = "default_true")]
     pub drones: bool,
@@ -170,6 +179,14 @@ fn default_true() -> bool {
 
 fn default_logi_efficiency() -> f32 {
     0.75
+}
+
+fn default_logi_reaction() -> f32 {
+    1.5
+}
+
+fn default_logi_spread() -> f32 {
+    3.0
 }
 
 impl Default for Fleet {
@@ -193,6 +210,9 @@ impl Default for Fleet {
             adc: true,
             drones: true,
             logi_efficiency: 0.75,
+            logi_prelock: 0.0,
+            logi_reaction_s: 1.5,
+            logi_spread_s: 3.0,
             enemy: None,
             scene: None,
         }

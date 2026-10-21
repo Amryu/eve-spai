@@ -56,8 +56,13 @@ pub fn applied(w: &WeaponGroup, distance: f64, target: &TargetProfile) -> f64 {
 /// The best charge at one range: (charge, applied per second), among the carried ones, and the
 /// best of all when it beats that.
 pub fn best_at(choice: &AmmoChoice, distance: f64, target: &TargetProfile) -> Option<((TypeId, f64), Option<(TypeId, f64)>)> {
+    best_with(choice, distance, target, &|w| w.clone())
+}
+
+/// As `best_at`, each option first changed by `adjust`: the other side's disruptors on it.
+pub fn best_with(choice: &AmmoChoice, distance: f64, target: &TargetProfile, adjust: &dyn Fn(&WeaponGroup) -> WeaponGroup) -> Option<((TypeId, f64), Option<(TypeId, f64)>)> {
     let best = |carried_only: bool| {
-        choice.options.iter().filter(|(_, carried, _)| !carried_only || *carried).map(|(c, _, w)| (*c, applied(w, distance, target))).max_by(|a, b| a.1.total_cmp(&b.1))
+        choice.options.iter().filter(|(_, carried, _)| !carried_only || *carried).map(|(c, _, w)| (*c, applied(&adjust(w), distance, target))).max_by(|a, b| a.1.total_cmp(&b.1))
     };
     let carried = best(true)?;
     let any = best(false).filter(|(c, v)| *c != carried.0 && *v > carried.1 * 1.0001);
@@ -77,11 +82,16 @@ pub struct Band {
 
 /// The best carried charge over `ranges` (ascending), merged into stretches.
 pub fn bands(choice: &AmmoChoice, ranges: &[f64], target: &TargetProfile) -> Vec<Band> {
+    bands_by(ranges, &|d| best_at(choice, d, target))
+}
+
+/// Bands from a pick per range: (the best carried charge and what it lands, a better one).
+pub fn bands_by(ranges: &[f64], pick: &dyn Fn(f64) -> Option<((TypeId, f64), Option<(TypeId, f64)>)>) -> Vec<Band> {
     let mut out: Vec<Band> = Vec::new();
     // Per band: its points, and per uncarried charge its summed gain.
     let mut gains: Vec<(f64, Vec<(TypeId, f64)>)> = Vec::new();
     for &d in ranges {
-        let Some(((charge, v), any)) = best_at(choice, d, target) else { continue };
+        let Some(((charge, v), any)) = pick(d) else { continue };
         if v <= 0.0 {
             continue;
         }
@@ -133,5 +143,15 @@ mod tests {
         let b = bands(gun, &ranges, &target);
         assert!(b.len() >= 2, "the best charge changes with range: {b:?}");
         assert_eq!((b.first().unwrap().charge, b.last().unwrap().charge), (ids::AMMO, ids::AMMO_LONG), "hard-hitting close, long-reaching far");
+        // Disrupted to half the reach, the long-reaching charge wins sooner.
+        let halved = |w: &WeaponGroup| {
+            let mut w = w.clone();
+            w.optimal *= 0.5;
+            w.falloff *= 0.5;
+            w
+        };
+        let disrupted = bands_by(&ranges, &|d| best_with(gun, d, &target, &halved));
+        let switch = |b: &[Band]| b.iter().find(|x| x.charge == ids::AMMO_LONG).map(|x| x.from).unwrap_or(f64::MAX);
+        assert!(switch(&disrupted) < switch(&b), "{} against {}", switch(&disrupted), switch(&b));
     }
 }

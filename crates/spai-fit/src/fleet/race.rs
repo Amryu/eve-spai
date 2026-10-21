@@ -21,9 +21,24 @@ pub const REACTION_SPREAD: f64 = 0.6;
 /// The reaction delay of the `i`-th of `n` ships: the log-normal's quantiles laid out evenly, so
 /// the same fleet always fires the same way.
 pub fn reaction(i: usize, n: usize) -> f64 {
+    reaction_around(i, n, REACTION_MEDIAN_S)
+}
+
+/// `reaction` about another median.
+pub fn reaction_around(i: usize, n: usize, median: f64) -> f64 {
     let p = (i as f64 + 0.5) / n.max(1) as f64;
     let z = std::f64::consts::SQRT_2 * super::geometry::erf_inv(2.0 * p - 1.0);
-    REACTION_MEDIAN_S * (REACTION_SPREAD * z).exp()
+    median * (REACTION_SPREAD * z).exp()
+}
+
+/// When the `i`-th of `n` logi ships of a slot lands its first repair, from the primary's first
+/// damage: its reaction about the fleet's median, its lock unless it held the primary locked
+/// already (the first `prelock` share of the slot), its place in the spread of arrivals (shuffled
+/// against the reaction order), and the cycle an armor repair waits for.
+pub fn logi_start(i: usize, n: usize, fleet: &super::Fleet, lock: f64, land: f64) -> f64 {
+    let prelocked = (i as f64) < (f64::from(fleet.logi_prelock.clamp(0.0, 1.0)) * n as f64).round();
+    let spread = f64::from(fleet.logi_spread_s.max(0.0)) * ((i as f64 * 0.618_033_988_75) + 0.5).fract();
+    reaction_around(i, n, f64::from(fleet.logi_reaction_s.max(0.0))) + if prelocked { 0.0 } else { lock } + spread + land
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -58,8 +73,10 @@ pub enum Verdict {
     BeforeReps { seconds: f64 },
     /// Dead with reps on it: the damage outpaced them by this much a second.
     Outpaced { seconds: f64, by: f64 },
-    /// Never died while primary.
+    /// Called primary and still standing at the end.
     Held,
+    /// Never called primary: the fight ended or stalled before its turn.
+    NotCalled,
 }
 
 /// One ship in the fight.
@@ -192,6 +209,11 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     let mut since = [0.0f64; 2];
     // On each side's current primary: when it first took damage, and when repairs first landed.
     let mut first_hit: [Option<f64>; 2] = [None; 2];
+    // Volleys on their way, per side: when they land, on which ship, by damage type. Missiles
+    // fly for distance over velocity; the rest land as they are fired.
+    let mut in_flight: [Vec<(f64, usize, [f64; 4])>; 2] = [Vec::new(), Vec::new()];
+    // Per side, the slots of it that have been called primary.
+    let mut called: [Vec<bool>; 2] = [vec![false; a.stats.slots.len()], vec![false; b.stats.slots.len()]];
     let mut reps_landed: [Option<f64>; 2] = [None; 2];
     let mut verdict_open: [Option<(usize, f64)>; 2] = [primary[0].map(|p| (p, 0.0)), primary[1].map(|p| (p, 0.0))];
     // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
@@ -215,7 +237,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
         for side in 0..2 {
             let Some(p) = primary[side] else { continue };
             let target_slot = fleets[1 - side][p].slot;
-            let mut damage = [0.0f64; 4];
+            called[1 - side][target_slot] = true;
             for (g, (k, w, shares)) in guns[side].groups.iter().enumerate() {
                 let alive = alive_at[side].get(*k).copied().unwrap_or(0);
                 if alive == 0 || w.cycle_s <= 0.0 {
@@ -246,11 +268,22 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 let spool = w.spool_at(elapsed) / (1.0 + w.spool_max * w.spool_frac);
                 let v = &w.volley;
                 let scale = firing * eff * share * spool;
-                damage[0] += v.em * scale;
-                damage[1] += v.thermal * scale;
-                damage[2] += v.kinetic * scale;
-                damage[3] += v.explosive * scale;
+                let flight = w.missile.as_ref().filter(|m| m.velocity > 0.0).map_or(0.0, |m| distance / m.velocity);
+                in_flight[side].push((t + flight, p, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
             }
+            // What lands now on the primary; on a ship already dead it is lost.
+            let mut damage = [0.0f64; 4];
+            in_flight[side].retain(|(at, ship, d)| {
+                if *at > t + 1e-9 {
+                    return true;
+                }
+                if *ship == p {
+                    for i in 0..4 {
+                        damage[i] += d[i];
+                    }
+                }
+                false
+            });
             // The timeline carries what lands per second sustained, not one step's volley.
             landed[side] = guns[side].groups.iter().map(|(k, w, shares)| {
                 let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
@@ -277,7 +310,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                     let Some((_, _, land)) = logis[1 - side].iter().find(|(x, _, _)| *x == k) else { return 0 };
                     let n = alive_at[1 - side].get(k).copied().unwrap_or(0);
                     let lock = sides[1 - side].stats.slots[k].computed.sensors.lock_time_s(signature);
-                    (0..n).filter(|i| t >= hit + reaction(*i, n) + lock + land).count() as u32
+                    (0..n).filter(|i| t >= hit + logi_start(*i, n, sides[1 - side].fleet, lock, *land)).count() as u32
                 }).collect();
                 if active.iter().any(|n| *n > 0) {
                     let landing = super::reps_on_one(sides[1 - side].stats, &|k, _| active[k]);
@@ -364,7 +397,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     for side in 0..2 {
         for (k, s) in sides[side].stats.slots.iter().enumerate() {
             if s.count > 0 && !out.verdicts[side].iter().any(|(x, _)| *x == k) && fleets[side].iter().any(|x| x.slot == k && x.alive) {
-                out.verdicts[side].push((k, Verdict::Held));
+                out.verdicts[side].push((k, if called[side][k] { Verdict::Held } else { Verdict::NotCalled }));
             }
         }
     }
