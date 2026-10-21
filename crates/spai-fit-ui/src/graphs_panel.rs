@@ -627,7 +627,8 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
             let total = series.iter().find(|s| s.label == SeriesLabel::Total).or_else(|| series.first());
             let Some(total) = total else { continue };
             let label = match t_name {
-                Some(t) => format!("{} → {}", text::clip(a_name, 22), text::clip(t, 22)),
+                // Plain words: an arrow glyph is missing from the web build's font and shows as a box.
+                Some(t) => trf!("{shooter} vs {target}", shooter = text::clip(a_name, 22), target = text::clip(t, 22)),
                 None => text::clip(a_name, 40),
             };
             lines.push(PlotSeries { label, color: series_color(lines.len()), points: total.points.clone() });

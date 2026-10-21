@@ -147,7 +147,7 @@ pub fn skills_window(sim: &mut SimUi, ctx: &egui::Context) {
                 rows::row(ui, "skills", ("sim_skill", skill), rows::ROW_H, false, |ui| {
                     let w = ui.available_width() - 70.0 - rows::GAP;
                     rows::cell(ui, w, egui::RichText::new(&name), &name);
-                    rows::num_cell(ui, 70.0, trf!("{have} → {needed}", have = have, needed = needed), false);
+                    rows::num_cell(ui, 70.0, trf!("{have} to {needed}", have = have, needed = needed), false);
                 });
             }
         });
