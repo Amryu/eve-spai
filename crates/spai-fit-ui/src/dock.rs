@@ -158,36 +158,16 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
 /// What acts on the fit from outside: modules and drones pointed at it, and system effects.
 /// What the Projected tab can take, by kind: another fit (its remote modules, drones and boosts),
 /// one module or drone, or a system effect.
-fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
-    let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
-    let mut fits: Vec<(String, String)> = sim.sessions().iter().filter(|s| s.id != current && s.fit.ship != 0).map(|s| (s.id.clone(), s.fit.name.clone())).collect();
-    for e in &sim.library {
-        if e.id != current && !fits.iter().any(|(id, _)| *id == e.id) {
-            fits.push((e.id.clone(), e.name.clone()));
-        }
-    }
-    fits.sort_by_key(|(_, n)| n.to_lowercase());
-    let mut pick_fit: Option<String> = None;
+fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let mut target: Option<PickTarget> = None;
+    let mut fits = false;
     // A small button like the other tabs' Add, opening the menu of kinds.
     egui::containers::menu::MenuButton::from_button(egui::Button::new(trf!("{icon} Add", icon = icon::PLUS)).small()).ui(ui, |ui| {
         ui.set_min_width(240.0);
-        ui.menu_button(trf!("{icon}  Another fit", icon = icon::ROCKET), |ui| {
-            ui.set_min_width(260.0);
-            if fits.is_empty() {
-                ui.label(egui::RichText::new(tr!("No other fit: open or save one first.")).weak());
-            }
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for (id, name) in &fits {
-                    if ui.button(text::clip(name, 40)).clicked() {
-                        pick_fit = Some(id.clone());
-                        ui.close();
-                    }
-                }
-            });
-        })
-        .response
-        .on_hover_text(tr!("Its webs, paints, neuts, reps and drones act on this fit, and its command bursts boost it"));
+        if ui.button(trf!("{icon}  Another fit…", icon = icon::ROCKET)).on_hover_text(tr!("Its webs, paints, neuts, reps and drones act on this fit, and its command bursts boost it")).clicked() {
+            fits = true;
+            ui.close();
+        }
         if ui.button(trf!("{icon}  A module or drone…", icon = icon::CROSSHAIR)).clicked() {
             target = Some(PickTarget::Projected);
             ui.close();
@@ -197,11 +177,8 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             ui.close();
         }
     });
-    if let Some(id) = pick_fit {
-        sim.edit(EditKind::Other, now_ms, |f| match f.projected_fits.iter_mut().find(|p| p.fit_id == id) {
-            Some(p) => p.count += 1,
-            None => f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }),
-        });
+    if fits {
+        sim.project_picker = Some(Default::default());
     }
     if let Some(t) = target {
         picker::open(sim, t);
@@ -220,7 +197,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
         let mut remove = false;
         let r = rows::row(ui, "dock/projected", ("sim_projected_fit", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, ship, 18.0);
-            let w = ui.available_width() - 5.0 * 26.0 - 5.0 * rows::GAP;
+            let w = rows::name_w(ui, 5.0);
             let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
             let hull = dogma.type_(ship).map(|t| t.name.clone()).unwrap_or_default();
             rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| {
@@ -228,17 +205,17 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                 ui.label(egui::RichText::new(hull).weak());
                 ui.label(tr!("Its remote modules and drones act on this fit, and its command bursts boost it."));
             });
-            if icon_button(ui, icon::MINUS).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                 delta = -1;
             }
-            rows::num_cell(ui, 22.0, count.to_string(), false);
-            if icon_button(ui, icon::PLUS).clicked() {
+            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
                 delta = 1;
             }
-            if icon_button(ui, if active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT }).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle = true;
             }
-            if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
                 remove = true;
             }
         });
@@ -284,29 +261,31 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut remove = false;
         let r = rows::row(ui, "dock/projected", ("sim_projected", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
-            // The count between minus and plus is one more cell than the buttons.
-            let cells = if beacon { 2.0 } else { 5.0 };
-            let w = ui.available_width() - cells * 26.0 - cells * rows::GAP;
+            let w = rows::name_w(ui, 5.0);
             let on = if beacon { state != spai_fit::fit::State::Offline } else { state >= spai_fit::fit::State::Active };
             let label = if on { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
             rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
             if beacon {
-                if icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT }).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                // One of a kind: no count, the switch where the others have their state.
+                for _ in 0..3 {
+                    rows::no_slot(ui);
+                }
+                if rows::slot(ui, 1.0, |ui| icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                     toggle = true;
                 }
             } else {
-                if icon_button(ui, icon::MINUS).clicked() {
+                if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                     delta = -1;
                 }
-                rows::num_cell(ui, 22.0, count.to_string(), false);
-                if icon_button(ui, icon::PLUS).clicked() {
+                rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
+                if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
                     delta = 1;
                 }
-                if icon_button(ui, crate::editor::state_icon(state)).on_hover_text(crate::editor::state_name(state)).clicked() {
+                if rows::slot(ui, 1.0, |ui| icon_button(ui, crate::editor::state_icon(state))).on_hover_text(crate::editor::state_name(state)).clicked() {
                     toggle = true;
                 }
             }
-            if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
                 remove = true;
             }
         });
@@ -373,24 +352,27 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut launch: Option<u32> = None;
         let r = rows::row(ui, "dock/drones", ("sim_drone", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
-            const OUT_W: f32 = 58.0;
-            let w = ui.available_width() - 4.0 * 26.0 - OUT_W - 5.0 * rows::GAP;
+            let w = rows::name_w(ui, 6.0);
             let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
-            rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
-            if icon_button(ui, icon::MINUS).clicked() {
+            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).on_hover_text(tr!("One fewer in the bay")).clicked() {
                 delta = -1;
             }
-            rows::num_cell(ui, 22.0, count.to_string(), false);
-            if icon_button(ui, icon::PLUS).clicked() {
+            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).on_hover_text(tr!("One more in the bay")).clicked() {
                 delta = 1;
             }
-            // How many of the stack are out; the rest stay in the bay.
-            let mut n = if active { out } else { count };
-            let field = ui.add_enabled(active, egui::DragValue::new(&mut n).range(1..=count.max(1)).suffix(tr!(" out")));
-            if field.on_hover_text(tr!("How many of these are in space")).changed() {
+            // How many of the stack are out, read as a share of the bay: "3/5".
+            let mut n = if active { out } else { 0 };
+            let field = rows::slot(ui, 2.0, |ui| {
+                ui.spacing_mut().interact_size.y = ROW_H - 8.0;
+                ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+                ui.add_enabled(active, egui::DragValue::new(&mut n).range(1..=count.max(1)).custom_formatter(move |v, _| format!("{v:.0}/{count}")).custom_parser(|t| t.split('/').next().and_then(|x| x.trim().parse().ok())))
+            });
+            if field.on_hover_text(trf!("In space: {n} of {count}. Drag or type to launch fewer.", n = n, count = count)).changed() {
                 launch = Some(n);
             }
-            if icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE }).on_hover_text(if active { tr!("In space") } else { tr!("In the bay") }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE })).on_hover_text(if active { tr!("In space") } else { tr!("In the bay") }).clicked() {
                 toggle = true;
             }
         });
@@ -453,16 +435,16 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut remove = false;
         let r = rows::row(ui, "dock/fighters", ("sim_fighter", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
-            let w = ui.available_width() - 4.0 * 26.0 - 4.0 * rows::GAP;
-            rows::cell(ui, w.max(40.0), egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
-            if icon_button(ui, icon::MINUS).clicked() {
+            let w = rows::name_w(ui, 4.0);
+            rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                 delta = -1;
             }
-            rows::num_cell(ui, 22.0, count.to_string(), false);
-            if icon_button(ui, icon::PLUS).clicked() {
+            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
                 delta = 1;
             }
-            if icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE }).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE })).on_hover_text(if active { tr!("In space") } else { tr!("In the bay") }).clicked() {
                 toggle = true;
             }
         });
@@ -500,7 +482,8 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
     let mut list: Vec<(TypeId, Option<u8>, bool)> = if implants {
         s.fit.implants.iter().map(|t| (*t, dogma.type_(*t).and_then(|d| d.attr(spai_fit::dogma::attr::IMPLANTNESS)).map(|v| v as u8), false)).collect()
     } else {
-        s.fit.boosters.iter().map(|b| (b.type_id, dogma.type_(b.type_id).and_then(|d| d.attr(spai_fit::dogma::attr::BOOSTERNESS)).map(|v| v as u8), b.side_effects)).collect()
+        // On when any side effect is counted, picked one by one or all at once.
+        s.fit.boosters.iter().map(|b| (b.type_id, dogma.type_(b.type_id).and_then(|d| d.attr(spai_fit::dogma::attr::BOOSTERNESS)).map(|v| v as u8), b.side_on.as_ref().map_or(b.side_effects, |l| !l.is_empty()))).collect()
     };
     list.sort_by_key(|(_, slot, _)| slot.unwrap_or(99));
     if list.is_empty() {
@@ -513,20 +496,29 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
         let mut toggle_side = false;
         let mut toggle_on = false;
         let on = !disabled.contains(&type_id);
+        let has_side = dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.usage_chance_attr.is_some())));
         let r = rows::row(ui, if implants { "dock/implants" } else { "dock/boosters" }, ("sim_worn", implants, type_id), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
             rows::num_cell(ui, 18.0, slot.map_or(String::new(), |s| s.to_string()), true);
-            let extra = if implants { 52.0 } else { 78.0 };
-            let w = ui.available_width() - extra - 3.0 * rows::GAP;
+            let w = rows::name_w(ui, if implants { 2.0 } else { 3.0 });
             let label = if on { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
-            rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
-            if icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT }).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            if !implants {
+                // Only boosters that have side effects get the button; the rest keep the column.
+                if has_side {
+                    let tint = if side_effects { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
+                    let hover = if side_effects { tr!("Side effects counted: pick which") } else { tr!("No side effects counted: pick which") };
+                    if rows::slot(ui, 1.0, |ui| icon_button(ui, egui::RichText::new(icon::WARNING).color(tint))).on_hover_text(hover).clicked() {
+                        toggle_side = true;
+                    }
+                } else {
+                    rows::no_slot(ui);
+                }
+            }
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, if on { icon::TOGGLE_RIGHT } else { icon::TOGGLE_LEFT })).on_hover_text(if on { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle_on = true;
             }
-            if !implants && icon_button(ui, if side_effects { icon::WARNING } else { icon::WARNING_DIAMOND }).on_hover_text(if side_effects { tr!("Side effects on") } else { tr!("Side effects off") }).clicked() {
-                toggle_side = true;
-            }
-            if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
                 remove = true;
             }
         });
@@ -539,7 +531,7 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                 toggle_on = true;
                 ui.close();
             }
-            if !implants && ui.button(if side_effects { tr!("Side effects off") } else { tr!("Side effects on") }).clicked() {
+            if !implants && ui.button(tr!("Side effects…")).clicked() {
                 toggle_side = true;
                 ui.close();
             }
@@ -564,7 +556,10 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                 }
             });
         }
-        if remove || toggle_side {
+        if toggle_side {
+            sim.side_window = Some(type_id);
+        }
+        if remove {
             sim.edit(if implants { EditKind::Implants } else { EditKind::Boosters }, now_ms, |f| {
                 if remove {
                     f.disabled.retain(|t| *t != type_id);
@@ -573,8 +568,6 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                     f.implants.retain(|t| *t != type_id);
                 } else if remove {
                     f.boosters.retain(|b| b.type_id != type_id);
-                } else if let Some(b) = f.boosters.iter_mut().find(|b| b.type_id == type_id) {
-                    b.side_effects = !b.side_effects;
                 }
             });
         }
@@ -593,13 +586,17 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut set: Option<u32> = None;
         let r = rows::row(ui, "dock/cargo", ("sim_cargo", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
-            let w = ui.available_width() - 70.0 - 26.0 - 2.0 * rows::GAP;
-            rows::cell(ui, w.max(40.0), egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            let w = rows::name_w(ui, 4.0);
+            rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
             let mut q = qty;
-            if ui.add_sized([70.0, ROW_H - 4.0], egui::DragValue::new(&mut q).range(1..=1_000_000).prefix("x")).changed() {
+            let r = rows::slot(ui, 3.0, |ui| {
+                ui.spacing_mut().interact_size.y = ROW_H - 8.0;
+                ui.add_sized([rows::slots_w(3.0), ROW_H - 8.0], egui::DragValue::new(&mut q).range(1..=1_000_000).prefix("x"))
+            });
+            if r.changed() {
                 set = Some(q);
             }
-            if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Remove")).clicked() {
                 remove = true;
             }
         });

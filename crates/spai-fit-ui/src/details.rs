@@ -412,3 +412,117 @@ fn breakdown(ui: &mut egui::Ui, row: &AttrRow) {
         ui.label(egui::RichText::new(trf!("= {v}", v = f)).strong());
     }
 }
+
+/// One side effect of a booster as the dialog shows it, its numbers after skills and implants.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SideRow {
+    pub effect: spai_fit::ids::EffectId,
+    /// What it does: "Maximum Velocity −10.0%".
+    pub label: String,
+    /// The chance it rolls, `None` when the data has none.
+    pub chance: Option<f64>,
+    pub on: bool,
+}
+
+/// The side effects of a booster on the fit on screen.
+pub fn side_rows(sim: &SimUi, type_id: TypeId) -> Vec<SideRow> {
+    let (Some(dogma), Some(s)) = (sim.dogma.as_ref(), sim.session()) else { return Vec::new() };
+    let Some(booster) = s.fit.boosters.iter().find(|b| b.type_id == type_id).cloned() else { return Vec::new() };
+    let (fit, env) = sim.outside().apply(dogma, &s.fit, sim.skills());
+    let calc = Calc::new(dogma, &fit, sim.skills(), &env);
+    let item = calc.items().iter().position(|i| i.type_id == type_id && i.kind == ItemKind::Booster);
+    let Some(t) = dogma.type_(type_id) else { return Vec::new() };
+    t.effects
+        .iter()
+        .filter_map(|(e, _)| dogma.effect(*e).map(|d| (*e, d)))
+        .filter(|(_, d)| d.usage_chance_attr.is_some())
+        .map(|(e, d)| {
+            let value = |a: AttrId| item.map_or_else(|| f64::from(t.attr(a).unwrap_or(0.0)), |i| calc.value(i, a));
+            let parts: Vec<String> = d
+                .modifiers
+                .iter()
+                .map(|m| {
+                    let v = value(m.modifying);
+                    let what = match m.op {
+                        Op::PostPercent => format!("{v:+.1}%"),
+                        _ => text::num(v),
+                    };
+                    format!("{} {what}", label_of(dogma, m.modified))
+                })
+                .collect();
+            let label = if parts.is_empty() { d.name.clone() } else { parts.join(", ") };
+            SideRow { effect: e, label, chance: d.usage_chance_attr.map(value), on: booster.side_effect_on(e) }
+        })
+        .collect()
+}
+
+impl SimUi {
+    /// Takes or drops one side effect of a booster; the first pick turns the all-or-nothing switch
+    /// into a choice per effect.
+    pub fn set_side_effect(&mut self, type_id: TypeId, effect: Option<spai_fit::ids::EffectId>, on: bool, now_ms: u64) {
+        let Some(dogma) = self.dogma.clone() else { return };
+        let all: Vec<spai_fit::ids::EffectId> = dogma.type_(type_id).map(|t| t.effects.iter().filter(|(e, _)| dogma.effect(*e).is_some_and(|d| d.usage_chance_attr.is_some())).map(|(e, _)| *e).collect()).unwrap_or_default();
+        self.edit(spai_fit::history::EditKind::Boosters, now_ms, move |f| {
+            let Some(b) = f.boosters.iter_mut().find(|b| b.type_id == type_id) else { return };
+            let mut list: Vec<spai_fit::ids::EffectId> = b.side_on.clone().unwrap_or_else(|| if b.side_effects { all.clone() } else { Vec::new() });
+            match effect {
+                Some(e) => {
+                    list.retain(|x| *x != e);
+                    if on {
+                        list.push(e);
+                    }
+                }
+                None => list = if on { all.clone() } else { Vec::new() },
+            }
+            b.side_effects = !list.is_empty();
+            b.side_on = Some(list);
+        });
+    }
+}
+
+/// The side effects of the booster in `side_window`, each on or off with its chance.
+pub fn side_effects_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
+    let Some(type_id) = sim.side_window else { return };
+    let rows = side_rows(sim, type_id);
+    let name = sim.dogma.as_ref().and_then(|d| d.type_(type_id)).map_or(String::new(), |t| t.name.clone());
+    let mut open = true;
+    let mut set: Option<(Option<spai_fit::ids::EffectId>, bool)> = None;
+    egui::Window::new(trf!("{name}: side effects", name = name)).id(egui::Id::new("sim_side_effects")).open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ctx, |ui| {
+        ui.label(egui::RichText::new(tr!("Each side effect rolls on its own when the booster is taken. Tick the ones to count; the figures are after your skills and implants.")).weak());
+        ui.add_space(4.0);
+        if rows.is_empty() {
+            ui.label(egui::RichText::new(tr!("This booster has no side effects.")).weak());
+        }
+        egui::Grid::new("sim_side_grid").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+            for r in &rows {
+                let mut on = r.on;
+                if ui.checkbox(&mut on, egui::RichText::new(&r.label).color(BAD)).changed() {
+                    set = Some((Some(r.effect), on));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(c) = r.chance {
+                        ui.label(egui::RichText::new(trf!("{pct}% chance", pct = format!("{:.0}", c * 100.0))).weak());
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        if !rows.is_empty() {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("All")).clicked() {
+                    set = Some((None, true));
+                }
+                if ui.button(tr!("None")).clicked() {
+                    set = Some((None, false));
+                }
+            });
+        }
+    });
+    if let Some((e, on)) = set {
+        sim.set_side_effect(type_id, e, on, now_ms);
+    }
+    if !open {
+        sim.side_window = None;
+    }
+}

@@ -86,7 +86,7 @@ fn implants_are_exempt_from_the_penalty_and_booster_side_effects_are_opt_in() {
     let mods = c.modifiers_of(c.ship_idx(), attr::MAX_VELOCITY);
     assert_eq!(mods.iter().filter(|(_, _, p)| !*p).count(), 1, "the implant's 5% is unpenalised");
     assert_eq!(mods.iter().filter(|(_, _, p)| *p).count(), 1, "the MWD's bonus is penalised");
-    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false });
+    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     assert_eq!(c.modifiers_of(c.ship_idx(), attr::MAX_VELOCITY).len(), 2);
     f.boosters[0].side_effects = true;
@@ -99,7 +99,7 @@ fn owner_required_skill_modifiers_reach_drones_and_location_group_modifiers_thei
     let d = dataset();
     let mut f = fit();
     f.drones.push(DroneStack { type_id: DRONE, count: 3, active: true, launched: None });
-    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false });
+    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     let (drone, _) = c.drones().next().unwrap();
     assert!(close(c.value(drone, attr::DAMAGE_MULTIPLIER), 1.1), "Drones skill: +10% through the owner");
@@ -136,10 +136,24 @@ fn part_of_a_drone_stack_can_be_out_while_the_rest_waits_in_the_bay() {
 }
 
 #[test]
+fn booster_side_effects_are_taken_one_by_one() {
+    let d = dataset();
+    let speed = |b: Booster| {
+        let mut f = fit();
+        f.boosters.push(b);
+        Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).ship(attr::MAX_VELOCITY)
+    };
+    let clean = speed(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
+    assert!(speed(Booster { type_id: BOOSTER, side_effects: true, side_on: None }) < clean, "all of them, as before");
+    assert!(close(speed(Booster { type_id: BOOSTER, side_effects: true, side_on: Some(vec![]) }), clean), "picked one by one, none picked");
+    assert!(speed(Booster { type_id: BOOSTER, side_effects: false, side_on: Some(vec![310]) }) < clean, "just this one");
+}
+
+#[test]
 fn a_switched_off_implant_or_booster_counts_for_nothing() {
     let d = dataset();
     let mut f = fit();
-    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false });
+    f.boosters.push(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
     let on = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).items().iter().any(|i| i.kind == ItemKind::Booster);
     f.disabled.push(BOOSTER);
     let off = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).items().iter().any(|i| i.kind == ItemKind::Booster);

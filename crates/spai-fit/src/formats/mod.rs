@@ -67,7 +67,7 @@ pub fn add_item(dogma: &Dogma, fit: &mut Fit, type_id: TypeId, quantity: u32) ->
         },
         Place::Fighter => fit.fighters.push(FighterSquad { type_id, count: quantity.max(1), active: true }),
         Place::Implant => fit.implants.push(type_id),
-        Place::Booster => fit.boosters.push(Booster { type_id, side_effects: false }),
+        Place::Booster => fit.boosters.push(Booster { type_id, side_effects: false, side_on: None }),
         Place::Other => return false,
     }
     true

@@ -533,7 +533,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
                 }
                 fit.drones.push(DroneStack { type_id: ids::DRONE, count: 25, active: false, launched: None });
                 fit.implants.push(ids::IMPLANT);
-                fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true });
+                fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true, side_on: None });
                 for q in [1, 500, 12_345, 1_000_000] {
                     fit.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: q });
                 }
@@ -2814,6 +2814,27 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.fleet.as_mut().unwrap().enemy = Some("fl-2".into());
         }));
     }
+    v.push(imperium_dialog_scene("imperium_side_effects", [520.0, 320.0], |sim| {
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::Boosters, 1, |f| f.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: false, side_on: None }));
+        sim.set_side_effect(ids::BOOSTER, Some(310), true, 2);
+        sim.side_window = Some(ids::BOOSTER);
+    }));
+    v.push(imperium_dialog_scene("imperium_project_picker", [460.0, 520.0], |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        let me = sim.sessions()[0].id.clone();
+        sim.new_fit(ids::SHIP, 1);
+        sim.edit(spai_fit::history::EditKind::AddModule, 2, |f| {
+            f.name = "Web support".into();
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+        });
+        sim.new_fit(ids::SHIP, 3);
+        sim.edit(spai_fit::history::EditKind::Other, 4, |f| f.name = "Plain, offers nothing".into());
+        let i = sim.sessions().iter().position(|s| s.id == me).unwrap();
+        sim.activate(i);
+        sim.project_picker = Some(Default::default());
+    }));
     v.push(imperium_dialog_scene("imperium_picker_tree", [460.0, 520.0], |sim| {
         spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Drone);
         if let Some(p) = sim.picker.as_mut() {

@@ -587,12 +587,16 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let mut remove = false;
     let mut details: Option<DetailsTarget> = None;
     let selected = sim.selection.contains(&(slot, index));
-    let drag = ui.dnd_drag_source(egui::Id::new(("sim_mod_drag", slot, index)), rows::DragModule(slot, index), |ui| rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
+    let mut handle: Option<egui::Response> = None;
+    let r = rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
         if by_variation {
             ui.disable();
         }
         let inner = ui.available_width();
-        crate::icons::type_icon(ui, type_id, 18.0);
+        // The icon is the handle: dragging it moves the module, with Shift copies it. The rest of
+        // the row stays for clicks, menus and the charge button.
+        let icon = crate::icons::type_icon(ui, type_id, 18.0).interact(egui::Sense::drag()).on_hover_text(tr!("Drag to another slot to move it, with Shift to copy it"));
+        handle = Some(icon);
         let name_w = cols.name_width(inner);
         let label = egui::RichText::new(&name);
         let label = if state == State::Offline { label.weak() } else { label };
@@ -634,8 +638,12 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
             remove = true;
         }
-    }));
-    let r = drag.inner;
+    });
+    if let Some(h) = &handle {
+        if !by_variation {
+            rows::drag_from(ui, h, rows::DragModule(slot, index), &name);
+        }
+    }
     if !by_variation {
         accept_module_drop(sim, ui, &r, slot, index, now_ms);
         if r.clicked() {

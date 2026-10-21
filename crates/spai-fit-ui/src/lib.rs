@@ -211,6 +211,11 @@ impl Outside {
         spai_fit::projection::expand(dogma, &resolved, &|id| self.fits.get(id).cloned(), skills)
     }
 
+    /// A fit by library id.
+    pub fn fit(&self, id: &str) -> Option<&Fit> {
+        self.fits.get(id)
+    }
+
     /// Changes when a fit projected onto `fit` changes, so its numbers are figured again.
     fn key(&self, fit: &Fit) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -308,6 +313,8 @@ pub struct SimUi {
     pub show_library: bool,
     pub browser: browser::Browser,
     pub library_state: library_panel::LibraryState,
+    /// The window that picks a fit to project, with its own grouping and search.
+    pub project_picker: Option<library_panel::LibraryState>,
     pub dock: dock::DockState,
     pub warnings_expanded: bool,
     /// The modules picked in the racks, for a menu that acts on all of them at once.
@@ -315,6 +322,8 @@ pub struct SimUi {
     /// Where a shift-click's range starts.
     pub sel_anchor: Option<(Slot, u8)>,
     pub details: Vec<details::DetailsWindow>,
+    /// The booster whose side effects are being picked.
+    pub side_window: Option<TypeId>,
     /// The width the user dragged the left column to; read from egui's memory on first use.
     left_w: Option<f32>,
     pub skills_window: bool,
@@ -371,11 +380,13 @@ impl Default for SimUi {
             show_library: true,
             browser: browser::Browser::default(),
             library_state: Default::default(),
+            project_picker: None,
             dock: dock::DockState::default(),
             warnings_expanded: false,
             selection: Vec::new(),
             sel_anchor: None,
             details: Vec::new(),
+            side_window: None,
             left_w: None,
             skills_window: false,
             traits_window: false,
@@ -1019,7 +1030,10 @@ impl SimUi {
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
         details::windows(self, ctx);
+        details::side_effects_window(self, ctx, now_ms);
+        library_panel::project_picker(self, ctx, now_ms);
         self.import_ask_window(ctx, now_ms);
+        rows::drag_ghost(ctx);
     }
 
     /// The left column, as wide as the user dragged it and no wider: egui lets content that

@@ -226,7 +226,7 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
             let slot = wear_slot(&dogma, type_id);
             sim.edit(EditKind::Boosters, now_ms, |f| {
                 f.boosters.retain(|b| slot.is_none() || wear_slot(&dogma, b.type_id) != slot);
-                f.boosters.push(spai_fit::fit::Booster { type_id, side_effects: false });
+                f.boosters.push(spai_fit::fit::Booster { type_id, side_effects: false, side_on: None });
             });
         }
         Place::Other => return false,
@@ -408,16 +408,16 @@ fn group_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tree: &Tree, g:
 fn type_row(ui: &mut egui::Ui, dogma: &Dogma, id: TypeId, indent: f32, note: &str, details: &mut Option<TypeId>) -> bool {
     let Some(t) = dogma.type_(id) else { return false };
     let name = t.name.clone();
-    let r = ui.dnd_drag_source(egui::Id::new(("sim_drag", id, note.len())), DragItem(id), |ui| {
-        rows::row(ui, "browser", ("sim_type", id, note.len()), ROW_H, false, |ui| {
-            ui.add_space(indent);
-            crate::icons::type_icon(ui, id, 18.0);
-            let w = ui.available_width();
-            rows::cell(ui, w, egui::RichText::new(text::clip(&name, 40)), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, id, note));
-        })
+    let row = rows::row(ui, "browser", ("sim_type", id, note.len()), ROW_H, false, |ui| {
+        ui.add_space(indent);
+        crate::icons::type_icon(ui, id, 18.0);
+        let w = ui.available_width();
+        rows::cell(ui, w, egui::RichText::new(text::clip(&name, 40)), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, id, note));
     });
-    let mut add = r.response.double_clicked();
-    r.inner.context_menu(|ui| {
+    let row = row.interact(egui::Sense::drag());
+    rows::drag_from(ui, &row, DragItem(id), &name);
+    let mut add = row.double_clicked();
+    row.context_menu(|ui| {
         if ui.button(tr!("Add to the fit")).clicked() {
             add = true;
             ui.close();

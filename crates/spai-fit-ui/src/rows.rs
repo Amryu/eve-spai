@@ -53,6 +53,51 @@ pub fn uneven_lists(log: &[(egui::Id, egui::Rect)]) -> Vec<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragModule(pub spai_fit::fit::Slot, pub u8);
 
+/// Starts carrying `payload` when the primary button drags `resp`, and remembers what to show by
+/// the pointer meanwhile. A right click never starts one, so context menus keep working, and
+/// nothing on the page moves with the pointer, so the buttons under it stay where they are. The
+/// cursor changes only once something is being carried.
+pub fn drag_from<P: std::any::Any + Send + Sync>(ui: &egui::Ui, resp: &egui::Response, payload: P, label: &str) {
+    if resp.dragged_by(egui::PointerButton::Primary) && !egui::DragAndDrop::has_any_payload(ui.ctx()) && is_a_drag(ui.ctx()) {
+        egui::DragAndDrop::set_payload(ui.ctx(), payload);
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(GHOST), label.to_owned()));
+    }
+}
+
+const GHOST: &str = "sim_drag_label";
+
+/// How far the pointer has to travel, and how long the button be held, before a press is a drag:
+/// a click that slips a few pixels stays a click.
+pub const DRAG_DISTANCE: f32 = 6.0;
+pub const DRAG_DELAY_S: f64 = 0.15;
+
+/// Whether the press going on is a drag by those measures.
+pub fn is_drag(origin: egui::Pos2, now: egui::Pos2, held_s: f64) -> bool {
+    origin.distance(now) >= DRAG_DISTANCE && held_s >= DRAG_DELAY_S
+}
+
+fn is_a_drag(ctx: &egui::Context) -> bool {
+    ctx.input(|i| match (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.press_start_time()) {
+        (Some(o), Some(p), Some(t)) => is_drag(o, p, i.time - t),
+        _ => false,
+    })
+}
+
+/// The name of what is being carried, by the pointer, while a drag is on.
+pub fn drag_ghost(ctx: &egui::Context) {
+    let carrying = egui::DragAndDrop::has_payload_of_type::<DragItem>(ctx) || egui::DragAndDrop::has_payload_of_type::<DragModule>(ctx);
+    if !carrying {
+        return;
+    }
+    let (Some(label), Some(pos)) = (ctx.data(|d| d.get_temp::<String>(egui::Id::new(GHOST))), ctx.pointer_latest_pos()) else { return };
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    egui::Area::new(egui::Id::new("sim_drag_ghost")).order(egui::Order::Tooltip).fixed_pos(pos + egui::vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.label(label);
+        });
+    });
+}
+
 /// What is being dragged from the browser or a list: one type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragItem(pub TypeId);
@@ -154,4 +199,34 @@ pub fn heading(ui: &mut egui::Ui, title: &str, note: Option<egui::RichText>, rig
             right(ui);
         });
     });
+}
+
+/// Width of one trailing control slot: an icon button, or a short number.
+pub const SLOT: f32 = 22.0;
+
+/// The width of `n` slots side by side, the gaps between them included.
+pub fn slots_w(n: f32) -> f32 {
+    n * SLOT + (n - 1.0).max(0.0) * GAP
+}
+
+/// A control in a slot of fixed width, `n` slots wide, its contents centred. Rows that end in
+/// slots end at the same right edge whatever sits in them, and a slot left empty keeps the column.
+pub fn slot<R>(ui: &mut egui::Ui, n: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let w = slots_w(n);
+    ui.allocate_ui_with_layout(egui::vec2(w, ROW_H - 4.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+        ui.set_min_width(w);
+        ui.set_max_width(w);
+        add(ui)
+    })
+    .inner
+}
+
+/// An empty slot, keeping the column for a control this row does not have.
+pub fn no_slot(ui: &mut egui::Ui) {
+    ui.allocate_exact_size(egui::vec2(SLOT, ROW_H - 4.0), egui::Sense::hover());
+}
+
+/// What the name cell may take when `slots` slots follow it.
+pub fn name_w(ui: &egui::Ui, slots: f32) -> f32 {
+    (ui.available_width() - slots_w(slots) - GAP).max(40.0)
 }

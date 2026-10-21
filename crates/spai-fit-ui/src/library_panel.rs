@@ -274,6 +274,95 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
 }
 
+/// The window that picks a fit to project onto the one on screen: only fits that act on others,
+/// grouped and searchable like the Fits tab.
+pub fn project_picker(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
+    use spai_ui::widgets::SteadySelect as _;
+    if sim.project_picker.is_none() {
+        return;
+    }
+    let Some(dogma) = sim.dogma.clone() else { return };
+    let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
+    let outside = sim.outside();
+    let mut all: Vec<Entry> = entries(sim).into_iter().filter(|e| e.id != current).collect();
+    for s in sim.sessions() {
+        if s.id != current && s.fit.ship != 0 && !all.iter().any(|e| e.id == s.id) {
+            all.push(Entry { id: s.id.clone(), name: s.fit.name.clone(), ship: s.fit.ship, tags: s.fit.tags.clone(), doctrine: None });
+        }
+    }
+    all.retain(|e| outside.fit(&e.id).is_some_and(|f| spai_fit::projection::acts_on_others(&dogma, f)));
+    let hull_name = |t: TypeId| dogma.type_(t).map_or_else(|| trf!("Type {id}", id = t), |d| d.name.clone());
+    let mut open = true;
+    let mut chosen: Option<String> = None;
+    let mut toggle: Option<String> = None;
+    let state = sim.project_picker.as_mut().expect("checked above");
+    let shown = lines(&all, &hull_name, state.grouping, &state.query, &state.folded);
+    let size = egui::vec2(420.0, 480.0);
+    egui::Window::new(tr!("Project a fit")).id(egui::Id::new("sim_project_picker")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        ui.label(egui::RichText::new(tr!("Fits whose remote modules, drones, command bursts or phenomena generator act on others.")).weak());
+        ui.horizontal(|ui| {
+            let w = egui::vec2(((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(40.0), 22.0);
+            for (g, label) in [(Grouping::Hull, tr!("Hull")), (Grouping::Tag, tr!("Tag")), (Grouping::Flat, tr!("A–Z"))] {
+                if ui.menu_label_sized(w, state.grouping == g, label).clicked() {
+                    state.grouping = g;
+                }
+            }
+        });
+        ui.add_sized([ui.available_width(), 22.0], egui::TextEdit::singleline(&mut state.query).hint_text(trf!("{icon} Name, hull or tag", icon = icon::MAGNIFYING_GLASS)));
+        ui.add_space(2.0);
+        egui::ScrollArea::vertical().id_salt("sim_project_list").auto_shrink([false, false]).show_rows(ui, ROW_H, shown.len().max(1), |ui, range| {
+            if shown.is_empty() {
+                ui.label(egui::RichText::new(if all.is_empty() { tr!("No fit acts on others yet: give one a web, a rep, a burst or a generator and switch it on.") } else { tr!("Nothing matches.") }).weak());
+            }
+            for line in shown.iter().skip(range.start).take(range.end - range.start) {
+                match line {
+                    Line::Group { key, title, n } => {
+                        let shut = state.folded.contains(key);
+                        let r = rows::row(ui, "project", ("sim_project_group", key), ROW_H, false, |ui| {
+                            ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
+                            let w = ui.available_width();
+                            rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
+                        });
+                        if r.clicked() {
+                            toggle = Some(key.clone());
+                        }
+                    }
+                    Line::Fit(e) => {
+                        let r = rows::row(ui, "project", ("sim_project", &e.id), ROW_H, false, |ui| {
+                            ui.add_space(12.0);
+                            crate::icons::type_icon(ui, e.ship, 18.0);
+                            let w = ui.available_width() - if e.doctrine.is_some() { 22.0 } else { 0.0 };
+                            rows::cell(ui, w.max(40.0), egui::RichText::new(&e.name), "").on_hover_ui(|ui| entry_tip(ui, e, &hull_name(e.ship)));
+                            if e.doctrine.is_some() {
+                                ui.add(egui::Label::new(egui::RichText::new(icon::SEAL_CHECK).color(ui.visuals().hyperlink_color)).selectable(false));
+                            }
+                        });
+                        if r.clicked() {
+                            chosen = Some(e.id.clone());
+                        }
+                    }
+                }
+            }
+        });
+    });
+    if let Some(k) = toggle {
+        if let Some(st) = sim.project_picker.as_mut() {
+            if !st.folded.remove(&k) {
+                st.folded.insert(k);
+            }
+        }
+    }
+    if let Some(id) = chosen {
+        sim.edit(spai_fit::history::EditKind::Other, now_ms, |f| match f.projected_fits.iter_mut().find(|p| p.fit_id == id) {
+            Some(p) => p.count += 1,
+            None => f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }),
+        });
+    }
+    if !open {
+        sim.project_picker = None;
+    }
+}
+
 /// A fit's tooltip in the list: its name, hull and tags.
 fn entry_tip(ui: &mut egui::Ui, e: &Entry, hull: &str) {
     ui.set_max_width(320.0);

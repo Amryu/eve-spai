@@ -54,6 +54,8 @@ pub struct Item {
     /// Values standing in for the type's: skill levels, mutations.
     pub overrides: Vec<(AttrId, f64)>,
     pub side_effects: bool,
+    /// A booster's side effects picked one by one; none follows `side_effects`.
+    pub side_on: Option<Vec<EffectId>>,
     pub effects: Vec<EffectId>,
     pub required_skills: Vec<TypeId>,
 }
@@ -144,6 +146,7 @@ impl<'d> Calc<'d> {
             module: None,
             overrides: Vec::new(),
             side_effects: false,
+            side_on: None,
             effects,
             required_skills,
         });
@@ -167,6 +170,7 @@ impl<'d> Calc<'d> {
                     module: None,
                     overrides: Vec::new(),
                     side_effects: false,
+                    side_on: None,
                     effects: Vec::new(),
                     required_skills: Vec::new(),
                 });
@@ -242,6 +246,7 @@ impl<'d> Calc<'d> {
                 self.items[i].location = Some(char);
                 self.items[i].owner = Some(char);
                 self.items[i].side_effects = b.side_effects;
+                self.items[i].side_on = b.side_on.clone();
             }
         }
         for p in &fit.projected {
@@ -296,8 +301,14 @@ impl<'d> Calc<'d> {
                 if self.items[src].state < needed {
                     continue;
                 }
-                if effect.usage_chance_attr.is_some() && !self.items[src].side_effects {
-                    continue;
+                if effect.usage_chance_attr.is_some() {
+                    let on = match &self.items[src].side_on {
+                        Some(list) => list.contains(&eid),
+                        None => self.items[src].side_effects,
+                    };
+                    if !on {
+                        continue;
+                    }
                 }
                 let projected = matches!(self.items[src].kind, ItemKind::Projected { .. }) || self.items[src].module.is_some_and(|m| matches!(self.items[m].kind, ItemKind::Projected { .. }));
                 for m in &effect.modifiers {

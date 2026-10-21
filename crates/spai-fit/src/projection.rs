@@ -40,6 +40,15 @@ fn reaches_out(dogma: &Dogma, type_id: TypeId) -> bool {
     dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.category == EffectCategory::Target)))
 }
 
+/// Whether projecting the fit would do anything: a running remote module or generator, a launched
+/// drone that reaches out, or a command burst with a charge.
+pub fn acts_on_others(dogma: &Dogma, fit: &Fit) -> bool {
+    let fit = crate::variations::resolve(dogma, fit);
+    fit.modules.iter().any(|m| m.state >= State::Active && (reaches_out(dogma, m.type_id) || is_generator(dogma, m.type_id)))
+        || fit.drones.iter().any(|d| d.in_space() > 0 && reaches_out(dogma, d.type_id))
+        || !crate::fleet::bursts_of(dogma, &fit, &SkillSet::all_v()).is_empty()
+}
+
 /// The fit with every switched-on projected fit folded into its `projected` list, and the buffs
 /// their bursts give. `lookup` finds a fit by library id.
 pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, skills: &SkillSet) -> (Fit, Env) {
@@ -104,6 +113,8 @@ mod tests {
         me.projected_fits[0].active = false;
         let (off, env) = expand(&d, &me, &lookup, &SkillSet::all_v());
         assert!(off.projected.is_empty() && env.buffs.is_empty());
+        assert!(acts_on_others(&d, &support));
+        assert!(!acts_on_others(&d, &Fit::new(ids::SHIP, "plain")), "a fit with nothing that reaches out is not offered");
     }
 
     #[test]

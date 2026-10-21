@@ -121,11 +121,24 @@ pub struct Booster {
     pub type_id: TypeId,
     /// Whether its side effects are taken as rolled.
     pub side_effects: bool,
+    /// Which side effects are taken, by effect, when they are picked one by one; none follows
+    /// `side_effects` for all of them. A booster rolls each one on its own.
+    pub side_on: Option<Vec<crate::ids::EffectId>>,
+}
+
+impl Booster {
+    /// Whether this one side effect applies.
+    pub fn side_effect_on(&self, effect: crate::ids::EffectId) -> bool {
+        match &self.side_on {
+            Some(on) => on.contains(&effect),
+            None => self.side_effects,
+        }
+    }
 }
 
 impl Default for Booster {
     fn default() -> Self {
-        Booster { type_id: 0, side_effects: false }
+        Booster { type_id: 0, side_effects: false, side_on: None }
     }
 }
 

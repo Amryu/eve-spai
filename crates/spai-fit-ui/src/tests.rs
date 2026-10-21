@@ -656,3 +656,12 @@ fn bay_pickers_stay_open_for_more_and_slot_pickers_close() {
     assert!(stays_open(PickTarget::Drone) && stays_open(PickTarget::Cargo) && stays_open(PickTarget::Projected) && stays_open(PickTarget::Environment));
     assert!(!stays_open(PickTarget::Module(Slot::High, 0)) && !stays_open(PickTarget::Ship) && !stays_open(PickTarget::NewFit) && !stays_open(PickTarget::Charge(Slot::High, 0)));
 }
+
+#[test]
+fn a_press_is_a_drag_only_once_it_travels_and_lasts() {
+    use crate::rows::is_drag;
+    let o = egui::pos2(100.0, 100.0);
+    assert!(!is_drag(o, egui::pos2(103.0, 101.0), 1.0), "a slipping click stays a click");
+    assert!(!is_drag(o, egui::pos2(140.0, 100.0), 0.05), "a flick too quick to mean it");
+    assert!(is_drag(o, egui::pos2(110.0, 104.0), 0.2));
+}
