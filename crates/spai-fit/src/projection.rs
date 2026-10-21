@@ -498,3 +498,36 @@ fn real_data_panic_module() {
     };
     assert!(!tank(State::Online) && tank(State::Active), "running, the PANIC marks the ship invulnerable");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB and SPAI_EFT"]
+fn real_data_panic_back_solve() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let text = std::fs::read_to_string(std::env::var("SPAI_EFT").unwrap()).unwrap();
+    let fit = crate::formats::eft::import(&d, &text).unwrap().fit;
+    let game = 4_905_113_104.0f64;
+    for core in [State::Online, State::Active] {
+        let mut f = fit.clone();
+        for m in &mut f.modules {
+            let n = d.type_(m.type_id).map(|t| t.name.clone()).unwrap_or_default();
+            if n.contains("Industrial Core") { m.state = core; }
+            if n.contains("Nexus") { m.state = State::Online; }
+        }
+        let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let t = &c.tank;
+        let below = t.armor.ehp + t.hull.ehp;
+        let k = t.shield.ehp / (game - below);
+        println!("core {core:?}: shield hp {:.0} res {:?} shield ehp {:.0} armor+hull ehp {:.0} -> PANIC multiplies shield resonance by {k:.6} ({:.4}% resist on top)", t.shield.hp, (0..4).map(|i| (t.shield.resist(i) * 1000.0).round() / 10.0).collect::<Vec<_>>(), t.shield.ehp, below, (1.0 - k) * 100.0);
+    }
+    // With the core running, the fit comes out at the game's figure.
+    let mut f = fit.clone();
+    for m in &mut f.modules {
+        if d.type_(m.type_id).is_some_and(|t| t.name.contains("Nexus")) {
+            m.state = State::Active;
+        }
+    }
+    let ehp = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default()).tank.ehp;
+    println!("with PANIC: {ehp:.0}");
+    assert!((ehp / game - 1.0).abs() < 0.001, "{ehp} against the game's {game}");
+}

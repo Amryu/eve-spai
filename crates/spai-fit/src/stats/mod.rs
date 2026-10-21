@@ -91,9 +91,8 @@ pub struct Reps {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tank {
-    /// A PANIC core is running: the game gives the shield near total resistances for its
-    /// duration, by strengths the server applies and the data does not give. Armor and hull are
-    /// untouched.
+    /// A PANIC core is running: the shield's near total resistances come from a calibrated factor
+    /// (`calc::patch::PANIC_SHIELD_RESONANCE`), not from the data.
     pub invulnerable: bool,
     pub shield: Layer,
     pub armor: Layer,

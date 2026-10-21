@@ -229,12 +229,9 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
     let mut picked = None;
     let t = &c.tank;
     section(ui, tr!("Defense"));
+    line(ui, tr!("Effective HP"), text::num(t.ehp));
     if t.invulnerable {
-        // The shield is all but untouchable; what can be counted is what lies beneath it.
-        line_colored(ui, tr!("Effective HP"), trf!("{n} beneath the shield", n = text::num(t.armor.ehp + t.hull.ehp)), Some(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)));
-        ui.add(egui::Label::new(egui::RichText::new(tr!("The PANIC core runs: the shield has near total resistances while it lasts, by figures the game does not publish. Armor and hull are as they are.")).weak()).wrap());
-    } else {
-        line(ui, tr!("Effective HP"), text::num(t.ehp));
+        ui.add(egui::Label::new(egui::RichText::new(tr!("The PANIC core runs: near total shield resistances, worked out from an in-game figure since the game data gives none.")).weak()).wrap());
     }
     let w = ui.available_width() - 2.0 * rows::GAP;
     let (name_w, hp_w) = (52.0, 54.0);
@@ -254,10 +251,8 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
             ui.add_space(rows::GAP);
             ui.add_sized([name_w, 18.0], egui::Label::new(name).halign(egui::Align::LEFT).selectable(false));
             rows::num_cell(ui, hp_w, text::num(layer.hp), false);
-            let panic_shield = t.invulnerable && std::ptr::eq(layer, &t.shield);
             for i in 0..4 {
-                let text = if panic_shield { "~100%".to_owned() } else { format!("{:.0}%", layer.resist(i) * 100.0) };
-                rows::num_cell_colored(ui, res_w, text, spai_ui::colors::DAMAGE[i]);
+                rows::num_cell_colored(ui, res_w, format!("{:.0}%", layer.resist(i) * 100.0), spai_ui::colors::DAMAGE[i]);
             }
         });
     }

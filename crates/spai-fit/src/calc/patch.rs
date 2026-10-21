@@ -61,8 +61,15 @@ enum Remote {
 const GUNNERY: crate::ids::TypeId = 3300;
 const MISSILE_LAUNCHER_OPERATION: crate::ids::TypeId = 3319;
 
+/// The Rorqual's PANIC core: its effect is empty and its buffs carry no values, the server applies
+/// them. While it runs the shield's resonances are multiplied by this, worked back from one in-game
+/// reading (a fitted Rorqual at 4,905,113,104 EHP); armor and hull are left alone.
+pub const PANIC_SHIELD_RESONANCE: f64 = 0.000_137_055;
+const PANIC_EFFECT: &str = "moduleBonusIndustrialInvulnerability";
+
 pub(super) fn apply(c: &mut Calc) {
     remote_effects(c);
+    panic_core(c);
     prop_mods(c);
     skill_bonuses(c);
     subsystem_slots(c);
@@ -146,5 +153,16 @@ fn remote_effects(c: &mut Calc) {
                 }
             }
         }
+    }
+}
+
+fn panic_core(c: &mut Calc) {
+    let ship = c.ship_idx();
+    let running = c.modules().any(|(i, it)| it.state >= State::Active && c.effect_names(i).any(|n| n == PANIC_EFFECT));
+    if !running {
+        return;
+    }
+    for a in [attr::SHIELD_EM_RESONANCE, attr::SHIELD_THERMAL_RESONANCE, attr::SHIELD_KINETIC_RESONANCE, attr::SHIELD_EXPLOSIVE_RESONANCE] {
+        c.add_source_mod(ship, a, Op::PostMul, Source::Const(PANIC_SHIELD_RESONANCE), false);
     }
 }
