@@ -313,3 +313,24 @@ fn a_mirror_match_races_even() {
     assert_eq!(lost(0), lost(1), "neither side shoots first: {:?}", r.winner);
     assert_eq!(r.winner, None);
 }
+
+#[test]
+fn the_summary_can_aim_at_any_slot_of_the_target() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 10, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 10, main: Some(0), slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(2))], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    assert_eq!(against(&d, &a, &sa, &b, &sb), against_slot(&d, &a, &sa, &b, &sb, 0), "the main hull by default");
+    let on_logi = against_slot(&d, &a, &sa, &b, &sb, 1);
+    let ehp = |k: usize| sb.slots[k].computed.tank.ehp;
+    assert!((on_logi.kills_per_volley * ehp(1) - against_slot(&d, &a, &sa, &b, &sb, 0).kills_per_volley * ehp(0)).abs() < 1e-6, "the same volley over the other ship's hit points");
+}
+
+#[test]
+fn hulls_fall_in_size_classes_by_group() {
+    let d = dataset();
+    assert_eq!(hull_class(&d, ids::SHIP), HullClass::Frigate, "the fixture's frigate");
+    assert_eq!(hull_class(&d, 0), HullClass::Industrial, "anything unknown");
+}

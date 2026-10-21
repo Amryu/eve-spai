@@ -533,8 +533,14 @@ pub fn ewar_of(fleet: &Fleet, stats: &FleetStats) -> Ewar {
 
 /// `a` shooting at `b`'s main hull at `a.range`, with `a`'s ewar on it and `b`'s on `a`'s guns.
 pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stats: &FleetStats) -> Against {
+    let main = b_stats.slots.iter().position(|s| s.role == Role::Main).unwrap_or(0);
+    against_slot(dogma, a, a_stats, b, b_stats, main)
+}
+
+/// As `against`, on a ship of B's `slot` instead of its main hull.
+pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stats: &FleetStats, slot: usize) -> Against {
     let mut out = Against::default();
-    let Some(target) = b_stats.main() else { return out };
+    let Some(target) = b_stats.slots.get(slot).or_else(|| b_stats.main()) else { return out };
     let t = &target.computed;
     let a_ewar = ewar_of(a, a_stats);
     let b_ewar = ewar_of(b, b_stats);
@@ -595,6 +601,31 @@ const LOGI_GROUPS: [GroupId; 3] = [832, 1527, 1538];
 const COMMAND_GROUPS: [GroupId; 2] = [540, 1534];
 const TACKLE_GROUPS: [GroupId; 2] = [541, 894];
 const EWAR_GROUPS: [GroupId; 3] = [833, 906, 893];
+
+/// A hull's size class, as the overview's ship symbols show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HullClass {
+    Frigate,
+    Destroyer,
+    Cruiser,
+    Battlecruiser,
+    Battleship,
+    Capital,
+    Industrial,
+}
+
+pub fn hull_class(dogma: &Dogma, ship: TypeId) -> HullClass {
+    let group = dogma.type_(ship).and_then(|t| dogma.groups.iter().find(|g| g.id == t.group)).map_or("", |g| g.name.as_str());
+    match group {
+        "Frigate" | "Assault Frigate" | "Interceptor" | "Covert Ops" | "Electronic Attack Ship" | "Logistics Frigate" | "Stealth Bomber" | "Expedition Frigate" | "Prototype Exploration Ship" | "Corvette" | "Shuttle" | "Capsule" => HullClass::Frigate,
+        "Destroyer" | "Interdictor" | "Command Destroyer" | "Tactical Destroyer" => HullClass::Destroyer,
+        "Cruiser" | "Heavy Assault Cruiser" | "Heavy Interdiction Cruiser" | "Logistics" | "Force Recon Ship" | "Combat Recon Ship" | "Strategic Cruiser" | "Flag Cruiser" => HullClass::Cruiser,
+        "Combat Battlecruiser" | "Attack Battlecruiser" | "Command Ship" => HullClass::Battlecruiser,
+        "Battleship" | "Black Ops" | "Marauder" => HullClass::Battleship,
+        "Carrier" | "Dreadnought" | "Lancer Dreadnought" | "Force Auxiliary" | "Supercarrier" | "Titan" | "Command Carrier" | "Capital Industrial Ship" | "Freighter" | "Jump Freighter" => HullClass::Capital,
+        _ => HullClass::Industrial,
+    }
+}
 
 /// A slot's role: the main slot, logi, command, tackle and ewar by hull group, damage dealers
 /// (fill slots) as mainline, the rest support.

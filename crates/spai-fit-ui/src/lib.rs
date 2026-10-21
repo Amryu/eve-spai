@@ -420,6 +420,10 @@ pub struct SimUi {
     pub traits_window: bool,
     pub graph_window: bool,
     pub fleet_graph: fleet_graphs::FleetGraph,
+    /// Which way the fleet results look: 0 the open fleet shooting, 1 its opponent.
+    pub fleet_view: usize,
+    /// Per direction, the slot of the other fleet the summary aims at; its main hull when unset.
+    pub fleet_aim: [Option<usize>; 2],
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -507,6 +511,8 @@ impl Default for SimUi {
             traits_window: false,
             graph_window: false,
             fleet_graph: fleet_graphs::FleetGraph::default(),
+            fleet_view: 0,
+            fleet_aim: [None; 2],
             import: None,
             import_ask: None,
             import_from_button: false,

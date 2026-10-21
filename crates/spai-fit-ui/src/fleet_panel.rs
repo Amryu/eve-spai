@@ -669,7 +669,8 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     }
 }
 
-/// The numbers: the fleet, and both directions against the enemy.
+/// The numbers: one direction of the fight at a time, picked at the top, then the shooting
+/// fleet's own figures.
 pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
     let Some(dogma) = sim.dogma.clone() else { return };
     let Some((mine, enemy)) = sim.fleet_stats() else {
@@ -678,32 +679,115 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
     };
     let names: HashMap<String, String> = sim.library.iter().map(|f| (f.id.clone(), f.name.clone())).collect();
     let analysis = sim.fleet_analysis();
+    if let Some((theirs, _, _)) = &enemy {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            use spai_ui::widgets::SteadySelect as _;
+            ui.add_space(crate::rows::GAP);
+            let w = egui::vec2(((ui.available_width() - crate::rows::GAP * 2.0 - ui.spacing().item_spacing.x) / 2.0).max(60.0), 24.0);
+            // One name a button, the shooter's: two would not fit the column.
+            let chars = ((w.x / 7.5) as usize).saturating_sub(7).max(6);
+            for (dir, (a, b)) in [(0, (&mine.name, &theirs.name)), (1, (&theirs.name, &mine.name))] {
+                let label = trf!("{a} shoots", a = text::clip(a, chars));
+                if ui.menu_label_sized(w, sim.fleet_view == dir, label).on_hover_text(trf!("{a} shooting {b}", a = a, b = b)).clicked() {
+                    sim.fleet_view = dir;
+                }
+            }
+        });
+        ui.separator();
+    }
+    let dir = sim.fleet_view.min(1);
+    // The ship the summary aims at in the target fleet, the main hull until picked.
+    let mut aim = sim.fleet_aim[dir];
     egui::ScrollArea::vertical().id_salt("sim_fleet_results").auto_shrink([false, false]).show(ui, |ui| {
+        // Room on the right for the scroll bar.
+        ui.set_max_width(ui.available_width() - 12.0);
         ui.spacing_mut().item_spacing.y = 1.0;
-        if let Some(an) = &analysis {
-            engagement_card(ui, &dogma, an, &names);
-            ui.add_space(4.0);
-            ui.separator();
-        }
-        fleet_card(ui, &dogma, &mine, &names);
-        if let Some((theirs, a, b)) = &enemy {
-            ui.add_space(4.0);
-            ui.separator();
-            fleet_card(ui, &dogma, theirs, &names);
-            against_card(ui, &trf!("{a} against {b}", a = mine.name, b = theirs.name), a);
-            against_card(ui, &trf!("{a} against {b}", a = theirs.name, b = mine.name), b);
-        } else {
+        let Some((theirs, a, b)) = &enemy else {
+            fleet_card(ui, &dogma, &mine, &names);
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add_space(crate::rows::GAP);
-                ui.add(egui::Label::new(egui::RichText::new(tr!("Pick a fleet under Against to compare.")).weak()).wrap());
-            });
+            note(ui, tr!("Pick a fleet under Against to compare."));
+            return;
+        };
+        let (shooter, target, against) = if dir == 0 { (&mine, theirs, a) } else { (theirs, &mine, b) };
+        if let Some(an) = &analysis {
+            engagement_card(ui, &dogma, an, dir, &names);
         }
+        let main = target.slots.iter().position(|x| x.role == spai_fit::fleet::Role::Main).unwrap_or(0);
+        let slot = aim.filter(|k| target.slots.get(*k).is_some_and(|x| x.count > 0)).unwrap_or(main);
+        let aimed = match &analysis {
+            Some(an) if slot != main => {
+                let (fa, fb) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
+                fleet::against_slot(&dogma, fa, shooter, fb, target, slot)
+            }
+            _ => against.clone(),
+        };
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(crate::rows::GAP);
+            ui.label(egui::RichText::new(trf!("{a} volleys", a = text::clip(&shooter.name, 22))).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(crate::rows::GAP);
+                let slot_label = |k: usize| target.slots.get(k).map_or_else(String::new, |x| format!("{} x {}", x.count, names.get(&x.fit_id).unwrap_or(&x.name)));
+                egui::ComboBox::from_id_salt(("sim_fleet_aim", dir)).selected_text(text::clip(&slot_label(slot), 22)).width(170.0).show_ui(ui, |ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    for (k, _) in target.slots.iter().enumerate().filter(|(_, x)| x.count > 0) {
+                        if ui.menu_label(k == slot, slot_label(k)).clicked() {
+                            aim = Some(k);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tr!("The ship of the other fleet these figures aim at"));
+                ui.label(tr!("on"));
+            });
+        });
+        against_card(ui, &aimed, shooter, target, slot);
+        ui.add_space(4.0);
+        ui.separator();
+        fleet_card(ui, &dogma, shooter, &names);
     });
+    sim.fleet_aim[dir] = aim;
 }
 
 fn line(ui: &mut egui::Ui, label: &str, value: String) {
     crate::stats_panel::line(ui, label, value);
+}
+
+/// A line whose breakdown shows on hover.
+fn tline(ui: &mut egui::Ui, label: &str, value: String, tip: impl FnOnce(&mut egui::Ui)) {
+    let r = ui.scope(|ui| line(ui, label, value)).response.interact(egui::Sense::hover());
+    r.on_hover_ui(|ui| {
+        ui.set_max_width(360.0);
+        tip(ui);
+    });
+}
+
+/// A breakdown: a heading, rows of a name and a right-aligned figure, and a note under them.
+fn tip(ui: &mut egui::Ui, head: &str, rows: &[(String, String)], note_text: &str) {
+    ui.label(egui::RichText::new(head).strong());
+    if !rows.is_empty() {
+        egui::Grid::new(ui.next_auto_id()).num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
+            for (k, v) in rows {
+                ui.label(k);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(egui::RichText::new(v).monospace()));
+                ui.end_row();
+            }
+        });
+    }
+    if !note_text.is_empty() {
+        ui.add_space(2.0);
+        ui.add(egui::Label::new(egui::RichText::new(note_text).weak()).wrap());
+    }
+}
+
+/// Wrapped text across the column, indented like the lines.
+fn note(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(crate::rows::GAP as i8, 0)).show(ui, |ui| {
+        ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
+    });
 }
 
 fn title(ui: &mut egui::Ui, text: &str, weak: bool) {
@@ -715,99 +799,124 @@ fn title(ui: &mut egui::Ui, text: &str, weak: bool) {
     });
 }
 
-/// Where each fleet wants to fight, what holds it there, which ammo for which range, and how the
-/// fight at the set range goes.
-fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, names: &HashMap<String, String>) {
+fn stretches(v: &[(f64, f64)]) -> String {
+    if v.is_empty() {
+        return tr!("nowhere").to_owned();
+    }
+    v.iter().map(|(f, t)| format!("{} - {}", text::metres(*f), text::metres(*t))).collect::<Vec<_>>().join(", ")
+}
+
+/// One direction of the fight: where the shooter wants to be, what holds it, the race, how the
+/// target's ships fare when primaried, and the shooter's ammo by range.
+fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, dir: usize, names: &HashMap<String, String>) {
     use spai_fit::fleet::race::{Event, Verdict};
-    let (a, b) = (&an.mine.name, &an.theirs.name);
+    use spai_fit::fleet::sweep::{self, Side};
+    let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
+    let (shooter_fleet, target_fleet) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
+    let (sa, sb) = (Side { fleet: shooter_fleet, stats: shooter, ammo: &an.ammo[dir] }, Side { fleet: target_fleet, stats: target, ammo: &an.ammo[1 - dir] });
     let slot_name = |s: &spai_fit::fleet::SlotStats| names.get(&s.fit_id).cloned().unwrap_or_else(|| s.fit_id.clone());
-    title(ui, tr!("Engagement"), false);
+    let primary = sweep::primary(shooter_fleet, target);
+    let primary_name = primary.map_or_else(|| tr!("none").to_owned(), |p| slot_name(p));
     let sw = &an.sweep;
-    line(ui, &trf!("{a} best range", a = a), text::metres(sw.a_best));
-    line(ui, &trf!("{a} best range", a = b), text::metres(sw.b_best));
-    let bands: Vec<String> = sw.a_favoured.iter().map(|(f, t)| format!("{} - {}", text::metres(*f), text::metres(*t))).collect();
-    line(ui, &trf!("{a} favoured", a = a), if bands.is_empty() { tr!("nowhere").to_owned() } else { bands.join(", ") });
-    line(ui, &trf!("{a} favoured", a = b), {
-        let v: Vec<String> = sw.b_favoured.iter().map(|(f, t)| format!("{} - {}", text::metres(*f), text::metres(*t))).collect();
-        if v.is_empty() { tr!("nowhere").to_owned() } else { v.join(", ") }
+    let (best, favoured, own_cuts, their_cuts) = if dir == 0 { (sw.a_best, &sw.a_favoured, &sw.a_cutoffs, &sw.b_cutoffs) } else { (sw.b_best, &sw.b_favoured, &sw.b_cutoffs, &sw.a_cutoffs) };
+    title(ui, tr!("Engagement"), false);
+    tline(ui, tr!("Best range"), text::metres(best), |ui| tip(ui, tr!("Best range"), &[], &trf!("The farthest range where {a} still lands 90% of its most on {b}'s first target ({p}).", a = shooter.name, b = target.name, p = primary_name)));
+    tline(ui, tr!("Favoured"), stretches(favoured), |ui| {
+        tip(ui, tr!("Favoured"), &[(tr!("Webbed").to_owned(), "-15%".into()), (tr!("Scrambled or disrupted").to_owned(), "-20%".into()), (tr!("Neutralised, at full").to_owned(), "-30%".into())], tr!("Where its score leads the other's by 5% or more. The score is the enemy's first targets killed per minute, less these penalties when the other side's ewar reaches it."))
     });
-    for (side, name, cuts) in [(0, a, &sw.a_cutoffs), (1, b, &sw.b_cutoffs)] {
+    let at = sw.points.iter().min_by(|x, y| (x.distance - f64::from(an.range)).abs().total_cmp(&(y.distance - f64::from(an.range)).abs()));
+    if let Some(p) = at {
+        let f = if dir == 0 { &p.a } else { &p.b };
+        title(ui, &trf!("At {r}", r = text::metres(p.distance)), true);
+        tline(ui, &trf!("On {p}", p = text::clip(&primary_name, 24)), trf!("{d} DPS", d = text::num(f.applied_dps)), |ui| {
+            let rows: Vec<(String, String)> = primary
+                .map(|t| shooter.slots.iter().enumerate().filter(|(_, s)| s.count > 0).map(|(k, s)| (format!("{} x {}", s.count, slot_name(s)), text::num(sweep::weapons_on(&sa, &sb, k, t, p.distance).iter().map(|(w, f)| w.dps * f).sum::<f64>() * f64::from(s.count)))).collect())
+                .unwrap_or_default();
+            tip(ui, tr!("Damage landing on the first target"), &rows, tr!("Each weapon with its best carried charge, under the other side's disruptors, averaged over every shooter and target pair of the formations as they move."));
+        });
+        let mut holds = Vec::new();
+        if f.webbed {
+            holds.push(tr!("webbed").to_owned());
+        }
+        if f.tackled {
+            holds.push(tr!("tackled").to_owned());
+        }
+        if f.neut_pressure > 0.05 {
+            holds.push(trf!("neuts {p}% of recharge", p = format!("{:.0}", f.neut_pressure * 100.0)));
+        }
+        if !holds.is_empty() {
+            line(ui, tr!("Held by"), holds.join(", "));
+        }
+    }
+    for (head, cuts) in [(trf!("{a} ewar reach", a = shooter.name), own_cuts), (trf!("{a} ewar reach", a = target.name), their_cuts)] {
         if cuts.is_empty() {
             continue;
         }
-        title(ui, &trf!("{a} ewar reach", a = name), true);
+        title(ui, &head, true);
         for (kind, optimal, edge) in cuts {
             let Some(label) = crate::stats_panel::ewar_name(*kind) else { continue };
-            line(ui, label, trf!("{o}, gone past {e}", o = text::metres(*optimal), e = text::metres(*edge)));
-        }
-        // Neutralisers are counted against recharge in the score; the pilots still watch them.
-        let neut = cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
-        if neut > 0.0 && f64::from(an.range) <= neut * 1.2 {
-            let victim = if side == 0 { b } else { a };
-            warn(ui, &trf!("{v} sits in or near neutraliser range ({r})", v = victim, r = text::metres(neut)));
+            tline(ui, label, trf!("{o}, gone past {e}", o = text::metres(*optimal), e = text::metres(*edge)), |ui| tip(ui, label, &[(tr!("Full strength to").to_owned(), text::metres(*optimal)), (tr!("Nothing past").to_owned(), text::metres(*edge))], tr!("Its strength halves at one falloff past optimal and fades to nothing at three; tackle holds within optimal only.")));
         }
     }
-    let at = |d: f64| sw.points.iter().min_by(|x, y| (x.distance - d).abs().total_cmp(&(y.distance - d).abs()));
-    if let Some(p) = at(f64::from(an.range)) {
-        title(ui, &trf!("At {r}", r = text::metres(p.distance)), true);
-        for (name, f) in [(a, &p.a), (b, &p.b)] {
-            let mut holds = Vec::new();
-            if f.webbed {
-                holds.push(tr!("webbed").to_owned());
-            }
-            if f.tackled {
-                holds.push(tr!("tackled").to_owned());
-            }
-            if f.neut_pressure > 0.05 {
-                holds.push(trf!("neuts {p}% of recharge", p = format!("{:.0}", f.neut_pressure * 100.0)));
-            }
-            let extra = if holds.is_empty() { String::new() } else { format!(", {}", holds.join(", ")) };
-            line(ui, name, trf!("{d} DPS on the primary{x}", d = text::num(f.applied_dps), x = extra));
-        }
+    let neut = their_cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
+    if neut > 0.0 && f64::from(an.range) <= neut * 1.2 {
+        warn(ui, &trf!("{v} sits in or near neutraliser range ({r})", v = shooter.name, r = text::metres(neut)));
     }
     let r = &an.race;
     title(ui, tr!("Race at this range"), true);
-    let winner = match r.winner {
-        Some(0) => trf!("{a} wins in {s}", a = a, s = text::secs(r.seconds)),
-        Some(_) => trf!("{a} wins in {s}", a = b, s = text::secs(r.seconds)),
+    let name_of = |side: usize| if side == 0 { &an.mine.name } else { &an.theirs.name };
+    let outcome = match r.winner {
+        Some(w) => trf!("{a} wins in {s}", a = name_of(w), s = text::secs(r.seconds)),
         None if r.timeline.last().is_some_and(|x| x.1 == 0 && x.2 == 0) => trf!("both destroyed after {s}", s = text::secs(r.seconds)),
         None => trf!("both stand after {s}", s = text::secs(r.seconds)),
     };
-    line(ui, tr!("Outcome"), winner);
-    for (side, name) in [(0, a), (1, b)] {
-        if let Some(t) = r.critical_mass_lost[side] {
-            let alive = r.timeline.iter().find(|x| x.0 >= t).map_or(0, |x| if side == 0 { x.1 } else { x.2 });
-            line(ui, &trf!("{a} loses critical mass", a = name), trf!("at {s}, {n} ships left", s = text::secs(t), n = alive));
-        }
+    tline(ui, tr!("Outcome"), outcome, |ui| {
+        let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
+        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; logistics repair once locked; assault damage controls go on when their ship is called."));
+    });
+    // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
+    // side loses its critical mass).
+    let (start, end) = (r.timeline.first(), r.timeline.last());
+    for side in [dir, 1 - dir] {
+        let count = |x: Option<&(f64, u32, u32, f64, f64)>| x.map_or(0, |x| if side == 0 { x.1 } else { x.2 });
+        let name = text::clip(name_of(side), 20);
+        tline(ui, &trf!("{a} ships left", a = name), trf!("{n} of {m}", n = count(end), m = count(start)), |ui| {
+            let rows: Vec<(String, String)> = r.timeline.iter().step_by((r.timeline.len() / 6).max(1)).map(|x| (text::secs(x.0), if side == 0 { x.1 } else { x.2 }.to_string())).collect();
+            tip(ui, tr!("Ships left over the fight"), &rows, "");
+        });
+        let first_loss = r.events.iter().find(|(_, e)| matches!(e, Event::Kill { side: s, .. } if *s == side)).map(|(t, _)| *t);
+        line(ui, &trf!("{a} first loss", a = name), first_loss.map_or_else(|| tr!("none").to_owned(), text::secs));
+        let other = 1 - side;
+        tline(ui, &trf!("{a} reps catch up", a = name), match r.critical_mass_lost[other] {
+            Some(t) => {
+                let left = r.timeline.iter().find(|x| x.0 >= t).map_or(0, |x| if other == 0 { x.1 } else { x.2 });
+                trf!("at {s}, {n} enemies left", s = text::secs(t), n = left)
+            }
+            None => tr!("never").to_owned(),
+        }, |ui| tip(ui, tr!("Reps catch up"), &[], tr!("From here the other side's damage on its primary, through the resistances of the layer being worn, no longer beats the repairs on it: it has lost its critical mass.")));
     }
-    let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
-    if adcs > 0 {
-        line(ui, tr!("Assault damage controls"), trf!("{n} switched on", n = adcs));
-    }
-    for (side, stats) in [(0, &an.mine), (1, &an.theirs)] {
-        if r.verdicts[side].is_empty() {
-            continue;
-        }
-        title(ui, &trf!("{a} when primaried", a = stats.name), true);
-        for (k, v) in &r.verdicts[side] {
-            let Some(s) = stats.slots.get(*k) else { continue };
+    let target_side = 1 - dir;
+    if !r.verdicts[target_side].is_empty() {
+        title(ui, &trf!("{a} when primaried", a = target.name), true);
+        for (k, v) in &r.verdicts[target_side] {
+            let Some(s) = target.slots.get(*k) else { continue };
             let text = match v {
                 Verdict::OneVolley => tr!("dies in one volley").to_owned(),
                 Verdict::BeforeReps { seconds } => trf!("dies in {s}, before reps land", s = text::secs(*seconds)),
-                Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(stats) => trf!("dies in {s}, damage {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
+                Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(target) => trf!("dies in {s}, {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
                 Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
                 Verdict::Held => tr!("holds").to_owned(),
             };
-            line(ui, &slot_name(s), text);
+            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before its logistics locked it, dead with the damage outpacing the repairs, or still standing.")));
         }
     }
-    // Ammo per range for the open fleet, against the enemy's first target.
+    // The shooter's ammo by range, against its first target.
+    let Some(t) = primary else { return };
     let ranges: Vec<f64> = sw.points.iter().map(|p| p.distance).collect();
-    let Some(target) = spai_fit::fleet::sweep::primary(&an.fleet, &an.theirs) else { return };
-    let profile = spai_fit::fit::TargetProfile { signature: target.computed.mobility.signature as f32, velocity: 0.0, distance: 0.0, transversal: 0.0, radius: 0.0 };
+    let profile = spai_fit::fit::TargetProfile { signature: t.computed.mobility.signature as f32, velocity: 0.0, distance: 0.0, transversal: 0.0, radius: 0.0 };
     let mut shown = false;
-    for (k, slot) in an.mine.slots.iter().enumerate() {
-        for c in an.ammo[0].get(k).into_iter().flatten() {
+    for (k, slot) in shooter.slots.iter().enumerate() {
+        for c in an.ammo[dir].get(k).into_iter().flatten() {
             let bands = spai_fit::fleet::ammo::bands(c, &ranges, &profile);
             if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
                 continue;
@@ -817,12 +926,16 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, na
                 shown = true;
             }
             let gun = dogma.type_(c.weapon).map_or("?", |t| t.name.as_str());
-            line(ui, &format!("{} · {}", slot_name(slot), gun), String::new());
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                ui.add_space(crate::rows::GAP);
+                ui.add(egui::Label::new(egui::RichText::new(format!("{} · {}", slot_name(slot), gun)).strong()).truncate());
+            });
             for band in bands {
                 let charge = dogma.type_(band.charge).map_or("?", |t| t.name.as_str());
-                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), charge.to_owned());
-                if let Some(t) = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| (t.name.clone(), share))) {
-                    line(ui, "", trf!("better, not carried: {c} +{p}%", c = t.0, p = format!("{:.0}", t.1 * 100.0)));
+                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), text::clip(charge, 26));
+                if let Some((name, share)) = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| (t.name.clone(), share))) {
+                    note(ui, &trf!("Not carried: {c} lands {p}% more here", c = name, p = format!("{:.0}", share * 100.0)));
                 }
             }
         }
@@ -836,54 +949,101 @@ fn has_logi(s: &FleetStats) -> bool {
 fn warn(ui: &mut egui::Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(crate::rows::GAP);
+        ui.set_max_width(ui.available_width() - crate::rows::GAP);
         ui.add(egui::Label::new(egui::RichText::new(format!("{} {text}", egui_phosphor::regular::WARNING)).color(ui.visuals().warn_fg_color)).wrap());
     });
 }
 
-fn fleet_card(ui: &mut egui::Ui, _dogma: &spai_fit::Dogma, s: &FleetStats, names: &HashMap<String, String>) {
+fn weapon_label(dogma: &spai_fit::Dogma, w: &spai_fit::stats::WeaponGroup) -> String {
+    let name = dogma.type_(w.type_id).map_or("?", |t| t.name.as_str());
+    match w.charge.and_then(|c| dogma.type_(c)) {
+        Some(c) => format!("{} x {} ({})", w.count, text::clip(name, 24), text::clip(&c.name, 16)),
+        None => format!("{} x {}", w.count, text::clip(name, 30)),
+    }
+}
+
+fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names: &HashMap<String, String>) {
+    let name = |slot: &spai_fit::fleet::SlotStats| names.get(&slot.fit_id).cloned().unwrap_or_else(|| slot.name.clone());
+    let per_slot = |f: &dyn Fn(&spai_fit::fleet::SlotStats) -> String| s.slots.iter().filter(|x| x.count > 0).map(|x| (format!("{} x {}", x.count, name(x)), f(x))).collect::<Vec<_>>();
     title(ui, &s.name, false);
-    line(ui, tr!("Ships"), s.ships.to_string());
-    line(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(s.dps), volley = text::num(s.volley)));
-    line(ui, tr!("Logistics"), trf!("{v}/s", v = text::num(s.logi_rep)));
+    tline(ui, tr!("Ships"), s.ships.to_string(), |ui| tip(ui, tr!("Ships"), &per_slot(&|x| x.count.to_string()), ""));
+    tline(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(s.dps), volley = text::num(s.volley)), |ui| {
+        let rows = per_slot(&|x| {
+            let n = f64::from(x.count);
+            let volley: f64 = x.computed.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total()).sum();
+            format!("{} / {}", text::num(x.computed.dps() * n), text::num(volley * n))
+        });
+        tip(ui, tr!("Damage per second / volley"), &rows, tr!("Listed figures, reloads counted. Drones and fighters add to damage per second, never to a volley."));
+    });
+    tline(ui, tr!("Logistics"), trf!("{v}/s", v = text::num(s.logi_rep)), |ui| {
+        let rows: Vec<(String, String)> = per_slot(&|x| {
+            let r = &x.computed.remote;
+            trf!("{v}/s", v = text::num((r.shield_rep + r.armor_rep + r.hull_rep) * f64::from(x.count)))
+        })
+        .into_iter()
+        .filter(|(_, v)| !v.starts_with("0"))
+        .collect();
+        tip(ui, tr!("Remote repairs"), &rows, tr!("Shield, armor and hull repairs per second the fleet's logistics give, all together."));
+    });
     if s.neut > 0.0 {
         line(ui, tr!("Neuts"), trf!("{v} GJ/s", v = text::num(s.neut)));
     }
-    line(ui, tr!("Speed"), trf!("{min} to {max} m/s", min = text::num(s.speed_min), max = text::num(s.speed_max)));
+    tline(ui, tr!("Speed"), trf!("{min} to {max} m/s", min = text::num(s.speed_min), max = text::num(s.speed_max)), |ui| {
+        tip(ui, tr!("Top speed"), &per_slot(&|x| trf!("{v} m/s", v = text::num(x.computed.mobility.max_velocity))), tr!("The fleet moves at its share of the slowest ship's top speed."));
+    });
     let p = s.projected;
     if p.webs + p.painters + p.tracking_disruptors > 0 {
         line(ui, tr!("Projects"), trf!("{w} webs, {p} painters, {t} TDs", w = p.webs, p = p.painters, t = p.tracking_disruptors));
     }
     for (i, slot) in s.slots.iter().enumerate() {
         let c = &slot.computed;
-        title(ui, &format!("{} x {}{}", slot.count, names.get(&slot.fit_id).unwrap_or(&slot.name), if i == s.main { " *" } else { "" }), true);
-        line(ui, tr!("DPS / volley each"), trf!("{dps} / {volley}", dps = text::num(c.dps()), volley = text::num(c.volley())));
-        line(ui, tr!("Effective HP"), text::num(c.tank.ehp));
+        title(ui, &format!("{} x {}{}", slot.count, name(slot), if i == s.main { " *" } else { "" }), true);
+        tline(ui, tr!("DPS / volley each"), trf!("{dps} / {volley}", dps = text::num(c.dps()), volley = text::num(c.volley())), |ui| {
+            let rows: Vec<(String, String)> = c.weapons.iter().map(|w| (weapon_label(dogma, w), format!("{} / {}", text::num(w.dps), text::num(w.volley.total())))).collect();
+            tip(ui, tr!("By weapon"), &rows, "");
+        });
+        tline(ui, tr!("Effective HP"), text::num(c.tank.ehp), |ui| {
+            let t = &c.tank;
+            let res = |l: &spai_fit::stats::Layer| format!("{} HP, {:.0}%", text::num(l.hp), 100.0 * (1.0 - l.resonance.iter().sum::<f64>() / 4.0));
+            tip(ui, tr!("Hit points and average resistance"), &[(tr!("Shield").to_owned(), res(&t.shield)), (tr!("Armor").to_owned(), res(&t.armor)), (tr!("Hull").to_owned(), res(&t.hull))], tr!("Effective hit points against the incoming damage profile of the fit."));
+        });
         if let Some(w) = c.weapons.first() {
-            line(ui, tr!("Range"), match &w.missile {
+            tline(ui, tr!("Range"), match &w.missile {
                 Some(m) => text::metres(m.range),
                 None => trf!("{o} + {f}", o = text::metres(w.optimal), f = text::metres(w.falloff)),
+            }, |ui| {
+                let rows: Vec<(String, String)> = c.weapons.iter().map(|w| (weapon_label(dogma, w), match &w.missile {
+                    Some(m) => text::metres(m.range),
+                    None => format!("{} + {}", text::metres(w.optimal), text::metres(w.falloff)),
+                })).collect();
+                tip(ui, tr!("By weapon"), &rows, tr!("Optimal plus falloff for turrets, flight range for missiles."));
             });
         }
         line(ui, tr!("Speed"), trf!("{v} m/s", v = text::num(c.mobility.max_velocity)));
     }
 }
 
-fn against_card(ui: &mut egui::Ui, head: &str, a: &Against) {
-    ui.add_space(4.0);
-    ui.separator();
-    title(ui, head, false);
-    line(ui, tr!("Applied DPS / volley"), trf!("{dps} / {volley}", dps = text::num(a.applied_dps), volley = text::num(a.applied_volley)));
-    line(ui, tr!("Target speed / signature"), trf!("{v} m/s, {s} m", v = text::num(a.target_velocity), s = text::num(a.target_signature)));
-    line(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships per volley kill", n = n)));
-    line(ui, tr!("Kills per volley"), text::num(a.kills_per_volley));
-    line(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)));
-    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.add_space(crate::rows::GAP);
-        ui.label(tr!("Margin"));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(crate::rows::GAP);
-            let color = if a.margin >= 0.0 { ui.visuals().hyperlink_color } else { ui.visuals().error_fg_color };
-            ui.label(egui::RichText::new(trf!("{v}/s", v = text::num(a.margin))).monospace().color(color));
-        });
+fn against_card(ui: &mut egui::Ui, a: &Against, shooter: &FleetStats, target: &FleetStats, slot: usize) {
+    let main = target.slots.get(slot);
+    tline(ui, tr!("Applied DPS / volley"), trf!("{dps} / {volley}", dps = text::num(a.applied_dps), volley = text::num(a.applied_volley)), |ui| {
+        tip(ui, tr!("Applied damage"), &[(tr!("Listed").to_owned(), format!("{} / {}", text::num(shooter.dps), text::num(shooter.volley))), (tr!("Landing").to_owned(), format!("{} / {}", text::num(a.applied_dps), text::num(a.applied_volley)))], tr!("On the picked ship at the set range, crossing at its speed after this fleet's webs, its signature after the painters, through the other side's disruptors."));
+    });
+    tline(ui, tr!("Target speed / signature"), trf!("{v} m/s, {s} m", v = text::num(a.target_velocity), s = text::num(a.target_signature)), |ui| {
+        let rows = main.map(|m| vec![(tr!("Speed").to_owned(), trf!("{a} to {b} m/s", a = text::num(m.computed.mobility.max_velocity), b = text::num(a.target_velocity))), (tr!("Signature").to_owned(), trf!("{a} to {b} m", a = text::num(m.computed.mobility.signature), b = text::num(a.target_signature)))]).unwrap_or_default();
+        tip(ui, tr!("Under this fleet's ewar"), &rows, "");
+    });
+    let ehp = main.map_or(0.0, |m| m.computed.tank.ehp);
+    tline(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships per volley kill", n = n)), |ui| {
+        tip(ui, tr!("Critical mass"), &[(tr!("Target effective HP").to_owned(), text::num(ehp))], tr!("Ships of this fleet's main slot that must volley together to kill one: its effective hit points over one main ship's applied volley times the volley efficiency, rounded up."));
+    });
+    tline(ui, tr!("Kills per volley"), text::num(a.kills_per_volley), |ui| tip(ui, tr!("Kills per volley"), &[], tr!("The whole fleet's applied volley times the volley efficiency, over the picked ship's effective hit points.")));
+    tline(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)), |ui| {
+        tip(ui, tr!("Break point"), &[(tr!("Their logistics").to_owned(), trf!("{v}/s", v = text::num(target.logi_rep)))], tr!("The repairs the enemy can put on one ship: its logistics plus the hull's own repairs. Below it, nothing dies."));
+    });
+    let color = if a.margin >= 0.0 { ui.visuals().hyperlink_color } else { ui.visuals().error_fg_color };
+    let r = ui.scope(|ui| crate::stats_panel::line_colored(ui, tr!("Margin"), trf!("{v}/s", v = text::num(a.margin)), Some(color))).response.interact(egui::Sense::hover());
+    r.on_hover_ui(|ui| {
+        ui.set_max_width(360.0);
+        tip(ui, tr!("Margin"), &[], tr!("Applied damage per second times the volley efficiency, less the break point; negative when they out-repair this fleet."));
     });
 }

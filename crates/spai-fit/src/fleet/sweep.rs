@@ -50,6 +50,8 @@ pub fn primary<'a>(shooter: &Fleet, other: &'a FleetStats) -> Option<&'a SlotSta
 pub struct Facing {
     /// Damage per second landing on the other's primary, the whole fleet, best carried ammo.
     pub applied_dps: f64,
+    /// One volley of the whole fleet on it, drones and fighters left out.
+    pub applied_volley: f64,
     /// The other side's ewar on this fleet, shared over its ships.
     pub webbed: bool,
     pub tackled: bool,
@@ -133,10 +135,19 @@ pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f6
         .collect()
 }
 
-/// Damage per second `a` lands on `b`'s primary at `distance`.
-fn landed(a: &Side, b: &Side, distance: f64) -> f64 {
-    let Some(target) = primary(a.fleet, b.stats) else { return 0.0 };
-    a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0).map(|(k, s)| weapons_on(a, b, k, target, distance).iter().map(|(w, f)| w.dps * f).sum::<f64>() * f64::from(s.count)).sum()
+/// Damage per second and one volley `a` lands on `b`'s primary at `distance`.
+fn landed(a: &Side, b: &Side, distance: f64) -> (f64, f64) {
+    let Some(target) = primary(a.fleet, b.stats) else { return (0.0, 0.0) };
+    let mut out = (0.0, 0.0);
+    for (k, s) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
+        for (w, f) in weapons_on(a, b, k, target, distance) {
+            out.0 += w.dps * f * f64::from(s.count);
+            if w.alpha() {
+                out.1 += w.volley.total() * f * f64::from(s.count);
+            }
+        }
+    }
+    out
 }
 
 /// The other side's hold on this one at `distance`: webs, tackle, neutralising against recharge.
@@ -155,10 +166,11 @@ pub fn sweep(a: &Side, b: &Side, ranges: &[f64]) -> Sweep {
         .map(|&d| {
             let (aw, at, an) = held(a, b, d);
             let (bw, bt, bn) = held(b, a, d);
+            let ((ad, av), (bd, bv)) = (landed(a, b, d), landed(b, a, d));
             RangePoint {
                 distance: d,
-                a: Facing { applied_dps: landed(a, b, d), webbed: aw, tackled: at, neut_pressure: an, score: 0.0 },
-                b: Facing { applied_dps: landed(b, a, d), webbed: bw, tackled: bt, neut_pressure: bn, score: 0.0 },
+                a: Facing { applied_dps: ad, applied_volley: av, webbed: aw, tackled: at, neut_pressure: an, score: 0.0 },
+                b: Facing { applied_dps: bd, applied_volley: bv, webbed: bw, tackled: bt, neut_pressure: bn, score: 0.0 },
             }
         })
         .collect();

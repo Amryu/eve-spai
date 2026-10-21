@@ -494,19 +494,19 @@ best range is the farthest where it still lands 90% of its most.
 - Per target slot a verdict: one volley, dead before its logistics locked, dead with the
   damage outpacing the repairs by so much, or held.
 
-**Against** (`fleet::against`), the summary at the set range on B's main hull: applied DPS and
+**Against** (`fleet::against`, `fleet::against_slot`), the summary at the set range on B's main hull, or on any slot of B picked: applied DPS and
 volley with the ewar by range above (or typed by hand), critical mass
 `ceil(EHP / (applied volley of one A main ship × efficiency))`, kills per volley
 `applied volley × efficiency / EHP`, break point (B's logistics plus the main hull's own repairs)
 and the margin above it.
 
-**Graphs.** Damage by range (both sweeps, favoured stretches shaded, markers at the set range,
+**Graphs.** Damage by range and volley by range (the volley with the other's first target's effective HP across: above it one volley kills; both sweeps, favoured stretches shaded, markers at the set range,
 best ranges and ewar optimals), the race's ships left and damage landing over time with
 critical mass markers, and the angular velocities of every shooter and target pair sorted, with
 each turret group's half-hit angular `tracking × signature / signature resolution`.
 
 **Scene** (`fleet::scene`). The fight can be placed in 3D: both fleets' anchors, the way each
-heads in 3D (its arrow, as long as its speed share), and bubbles that only set the scene, drawn at
+heads in 3D (its arrow, as long as its speed share, labelled with the share and the speed), every ship drawn by its hull-size symbol where its formation puts it (`fleet::hull_class` by hull group; at most 300 a fleet, in proportion), and bubbles that only set the scene, drawn at
 their radius: interdictor probe 20 km, surgical probe 10 km, heavy interdictor field 20 km
 (unscripted), mobile warp disruptors small 5 / 7.5 km, medium 11.5 / 17.5 km, large 26.5 / 40 km
 (Tech I / II). Placed, the anchors' distance is the range, the angle between a fleet's arrow

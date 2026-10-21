@@ -699,3 +699,14 @@ fn real_data_bubbles() {
         println!("{} [{}] pub={} {}", t.name, g, t.published, attrs.join(" "));
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_ship_groups() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let mut seen: Vec<&str> = d.types.iter().filter(|t| t.published && t.category == crate::ids::category::SHIP).filter_map(|t| d.groups.iter().find(|g| g.id == t.group).map(|g| g.name.as_str())).collect();
+    seen.sort();
+    seen.dedup();
+    println!("GROUPS {}", seen.join(" | "));
+}

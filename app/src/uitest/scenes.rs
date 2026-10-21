@@ -2816,6 +2816,7 @@ pub(crate) fn all() -> Vec<Scene> {
         ("imperium_fleet_engagement", [720.0, 1500.0], spai_fit_ui::Pane::Stats, None),
         ("imperium_fleet_graphs_range", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageByRange)),
         ("imperium_fleet_graphs_race", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::ShipsOverTime)),
+        ("imperium_fleet_graphs_volley", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::VolleyByRange)),
         ("imperium_fleet_graphs_damage", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageOverTime)),
         ("imperium_fleet_graphs_angular_narrow", [720.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::Angular)),
         ("imperium_fleet_scene", [1440.0, 900.0], spai_fit_ui::Pane::Scene, None),

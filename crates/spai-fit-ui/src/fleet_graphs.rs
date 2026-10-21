@@ -12,17 +12,19 @@ use crate::{text, SimUi};
 pub enum FleetGraph {
     #[default]
     DamageByRange,
+    VolleyByRange,
     ShipsOverTime,
     DamageOverTime,
     Angular,
 }
 
 impl FleetGraph {
-    pub const ALL: [FleetGraph; 4] = [FleetGraph::DamageByRange, FleetGraph::ShipsOverTime, FleetGraph::DamageOverTime, FleetGraph::Angular];
+    pub const ALL: [FleetGraph; 5] = [FleetGraph::DamageByRange, FleetGraph::VolleyByRange, FleetGraph::ShipsOverTime, FleetGraph::DamageOverTime, FleetGraph::Angular];
 
     pub fn name(self) -> &'static str {
         match self {
             FleetGraph::DamageByRange => tr!("Damage by range"),
+            FleetGraph::VolleyByRange => tr!("Volley by range"),
             FleetGraph::ShipsOverTime => tr!("Ships left in the race"),
             FleetGraph::DamageOverTime => tr!("Damage landing in the race"),
             FleetGraph::Angular => tr!("Angular velocity across the formations"),
@@ -58,6 +60,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
     };
     let plot = match sim.fleet_graph {
         FleetGraph::DamageByRange => by_range(ui, &an),
+        FleetGraph::VolleyByRange => volley_by_range(ui, &an),
         FleetGraph::ShipsOverTime => over_time(&an, true),
         FleetGraph::DamageOverTime => over_time(&an, false),
         FleetGraph::Angular => angular(&an),
@@ -101,6 +104,32 @@ fn by_range(ui: &egui::Ui, an: &Analysis) -> Plot {
         ],
         bands,
         markers,
+        ..plain()
+    }
+}
+
+/// One volley of each fleet on the other's first target over range, with that target's effective
+/// hit points flat across: above it, one volley kills.
+fn volley_by_range(ui: &egui::Ui, an: &Analysis) -> Plot {
+    let sw = &an.sweep;
+    let (a, b) = (series_color(0), series_color(1));
+    let mut series = vec![
+        PlotSeries { label: an.mine.name.clone(), color: a, points: sw.points.iter().map(|p| [p.distance, p.a.applied_volley]).collect() },
+        PlotSeries { label: an.theirs.name.clone(), color: b, points: sw.points.iter().map(|p| [p.distance, p.b.applied_volley]).collect() },
+    ];
+    let far = sw.points.last().map_or(1.0, |p| p.distance);
+    for (fleet, other, color) in [(&an.fleet, &an.theirs, a), (&an.enemy, &an.mine, b)] {
+        if let Some(t) = sweep::primary(fleet, other) {
+            let ehp = t.computed.tank.ehp;
+            series.push(PlotSeries { label: trf!("{a} effective HP", a = text::clip(&t.name, 22)), color: color.gamma_multiply(0.55), points: vec![[0.0, ehp], [far, ehp]] });
+        }
+    }
+    Plot {
+        x_label: tr!("Distance").to_owned(),
+        y_label: tr!("Volley on the primary").to_owned(),
+        fmt_x: text::metres,
+        series,
+        markers: vec![PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color() }],
         ..plain()
     }
 }

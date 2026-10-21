@@ -51,7 +51,7 @@ pub fn line(ui: &mut egui::Ui, label: &str, value: String) {
     line_colored(ui, label, value, None);
 }
 
-fn line_colored(ui: &mut egui::Ui, label: &str, value: String, color: Option<egui::Color32>) {
+pub(crate) fn line_colored(ui: &mut egui::Ui, label: &str, value: String, color: Option<egui::Color32>) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(rows::GAP);
         ui.add(egui::Label::new(label).selectable(false));
