@@ -267,10 +267,8 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
         }
         (DropTarget::Dock(DockTab::Drones), Place::Drone) | (DropTarget::Dock(DockTab::Fighters), Place::Fighter) | (DropTarget::Dock(_), Place::Implant | Place::Booster) => quick_add(sim, type_id, now_ms),
         (DropTarget::Dock(DockTab::Projected), _) => add_projected(sim, type_id, now_ms),
-        (DropTarget::Dock(DockTab::Cargo), Place::Charge) => {
-            sim.edit(EditKind::Cargo, now_ms, |f| {
-                formats::add_item(&dogma, f, type_id, 1);
-            });
+        (DropTarget::Dock(DockTab::Cargo), _) => {
+            add_cargo(sim, type_id, now_ms);
             true
         }
         _ => false,
@@ -282,8 +280,23 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
 pub fn projectable(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
     use spai_fit::dogma::EffectCategory;
     t.group == spai_fit::ids::group::EFFECT_BEACON
+        || spai_fit::projection::is_generator(dogma, t.id)
         || t.category == category::DRONE
         || (t.category == category::MODULE && t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.category == EffectCategory::Target)))
+}
+
+/// Puts one of the type in the cargo, whatever it is, onto a stack of it if there is one.
+pub fn add_cargo(sim: &mut SimUi, type_id: TypeId, now_ms: u64) {
+    sim.edit(EditKind::Cargo, now_ms, |f| match f.cargo.iter_mut().find(|c| c.type_id == type_id) {
+        Some(c) => c.quantity += 1,
+        None => f.cargo.push(spai_fit::fit::CargoItem { type_id, quantity: 1 }),
+    });
+}
+
+/// A system-wide effect rather than one ship's module: weather, an incursion, a phenomena
+/// generator. One of a kind, on or off, never counted.
+pub fn environment(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
+    t.group == spai_fit::ids::group::EFFECT_BEACON || spai_fit::projection::is_generator(dogma, t.id)
 }
 
 /// Puts a module, drone or system effect on the fit from outside; one more of it if it is there.
@@ -293,7 +306,7 @@ pub fn add_projected(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
     if sim.session().is_none() || !projectable(&dogma, t) {
         return false;
     }
-    let beacon = t.group == spai_fit::ids::group::EFFECT_BEACON;
+    let beacon = environment(&dogma, t);
     sim.edit(EditKind::Other, now_ms, |f| match f.projected.iter_mut().find(|p| p.type_id == type_id) {
         Some(_) if beacon => {}
         Some(p) => p.count += 1,

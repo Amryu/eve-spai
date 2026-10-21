@@ -169,7 +169,8 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     fits.sort_by_key(|(_, n)| n.to_lowercase());
     let mut pick_fit: Option<String> = None;
     let mut target: Option<PickTarget> = None;
-    ui.menu_button(trf!("{icon} Add", icon = icon::PLUS), |ui| {
+    // A small button like the other tabs' Add, opening the menu of kinds.
+    egui::containers::menu::MenuButton::from_button(egui::Button::new(trf!("{icon} Add", icon = icon::PLUS)).small()).ui(ui, |ui| {
         ui.set_min_width(240.0);
         ui.menu_button(trf!("{icon}  Another fit", icon = icon::ROCKET), |ui| {
             ui.set_min_width(260.0);
@@ -191,7 +192,7 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             target = Some(PickTarget::Projected);
             ui.close();
         }
-        if ui.button(trf!("{icon}  Weather or a system effect…", icon = icon::CLOUD)).clicked() {
+        if ui.button(trf!("{icon}  Weather, phenomena or a system effect…", icon = icon::CLOUD)).clicked() {
             target = Some(PickTarget::Environment);
             ui.close();
         }
@@ -277,7 +278,7 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     }
     for (i, (type_id, count, state)) in list.into_iter().enumerate() {
         let name = spai_fit::formats::name_of(dogma, type_id);
-        let beacon = dogma.type_(type_id).is_some_and(|t| t.group == spai_fit::ids::group::EFFECT_BEACON);
+        let beacon = dogma.type_(type_id).is_some_and(|t| crate::browser::environment(dogma, t));
         let mut delta: i32 = 0;
         let mut toggle = false;
         let mut remove = false;
@@ -584,7 +585,7 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32)> = s.fit.cargo.iter().map(|c| (c.type_id, c.quantity)).collect();
     if list.is_empty() {
-        empty_note(ui, tr!("Spare ammo, paste and cap charges go here; the warnings read it."));
+        empty_note(ui, tr!("Anything carried: spare ammo, paste, cap charges, refits. The warnings read it."));
     }
     for (i, (type_id, qty)) in list.into_iter().enumerate() {
         let name = spai_fit::formats::name_of(dogma, type_id);

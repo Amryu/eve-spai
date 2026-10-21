@@ -42,13 +42,15 @@ pub struct Picker {
     takes: Option<std::collections::HashSet<TypeId>>,
     /// Market groups opened in that tree.
     pub expanded: std::collections::BTreeSet<spai_fit::ids::MarketGroupId>,
+    /// What this picker added so far, for a window that stays open between picks.
+    pub added: Vec<TypeId>,
 }
 
 pub const MAX_RESULTS: usize = 250;
 
 impl Picker {
     pub fn new(target: PickTarget) -> Self {
-        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default() }
+        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default(), added: Vec::new() }
     }
 
     pub fn title(&self) -> String {
@@ -63,7 +65,7 @@ impl Picker {
             PickTarget::Booster => tr!("Choose a booster").to_owned(),
             PickTarget::Cargo => tr!("Add cargo").to_owned(),
             PickTarget::Projected => tr!("A module or drone acting on this fit").to_owned(),
-            PickTarget::Environment => tr!("Weather or a system effect").to_owned(),
+            PickTarget::Environment => tr!("Weather, phenomena or a system effect").to_owned(),
         }
     }
 }
@@ -127,9 +129,11 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
                 PickTarget::Fighter => t.category == category::FIGHTER,
                 PickTarget::Implant => place_of(dogma, t) == Place::Implant,
                 PickTarget::Booster => place_of(dogma, t) == Place::Booster,
-                PickTarget::Cargo => t.category == category::CHARGE,
-                PickTarget::Projected => t.group != spai_fit::ids::group::EFFECT_BEACON && crate::browser::projectable(dogma, t),
-                PickTarget::Environment => t.group == spai_fit::ids::group::EFFECT_BEACON,
+                // Anything can be carried: spare modules, ships in a bay, loot.
+                PickTarget::Cargo => t.category != category::SKILL,
+                PickTarget::Projected => !crate::browser::environment(dogma, t) && crate::browser::projectable(dogma, t),
+                // A beacon with no effects changes nothing and is not offered.
+                PickTarget::Environment => (t.group == spai_fit::ids::group::EFFECT_BEACON && !t.effects.is_empty()) || spai_fit::projection::is_generator(dogma, t.id),
             })
             .map(|t| (t.name.to_lowercase(), t.id))
             .collect(),
@@ -140,6 +144,12 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
 
 /// Whether the picker shows market categories while nothing is typed: not for one weapon's
 /// charges, a short list already, nor for system effects, which are not on the market.
+/// Whether the picker stays open after a pick: for the bays and lists that take many of a kind,
+/// not for one slot, one charge or the hull.
+pub fn stays_open(target: PickTarget) -> bool {
+    matches!(target, PickTarget::Drone | PickTarget::Fighter | PickTarget::Implant | PickTarget::Booster | PickTarget::Cargo | PickTarget::Projected | PickTarget::Environment)
+}
+
 fn has_tree(target: PickTarget) -> bool {
     !matches!(target, PickTarget::Charge(..) | PickTarget::Environment)
 }
@@ -224,9 +234,10 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
                 m.charge = Some(type_id);
             }
         }),
-        PickTarget::Drone | PickTarget::Fighter | PickTarget::Cargo => sim.edit(EditKind::Drones, now_ms, |f| {
+        PickTarget::Drone | PickTarget::Fighter => sim.edit(EditKind::Drones, now_ms, |f| {
             spai_fit::formats::add_item(&dogma, f, type_id, 1);
         }),
+        PickTarget::Cargo => crate::browser::add_cargo(sim, type_id, now_ms),
         PickTarget::Implant | PickTarget::Booster => {
             crate::browser::quick_add(sim, type_id, now_ms);
         }
@@ -268,6 +279,11 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             chosen = picker.results.first().copied();
         }
+        if !picker.added.is_empty() {
+            let last = picker.added.last().and_then(|t| dogma.type_(*t)).map_or(String::new(), |t| t.name.clone());
+            let line = trf!("{icon} Added {n}, last {name}. Pick more, or close.", icon = egui_phosphor::regular::CHECK, n = picker.added.len(), name = crate::text::clip(&last, 30));
+            ui.add(egui::Label::new(egui::RichText::new(line).color(ui.visuals().hyperlink_color)).truncate());
+        }
         if let (Some(tree), Some(takes)) = (&tree, &picker.takes) {
             egui::ScrollArea::vertical().id_salt("sim_picker_tree").auto_shrink([false, false]).show(ui, |ui| {
                 for g in tree.roots().to_vec() {
@@ -301,7 +317,13 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         });
     });
     if let Some(id) = chosen {
-        sim.picker = None;
+        if stays_open(target) {
+            if let Some(p) = sim.picker.as_mut() {
+                p.added.push(id);
+            }
+        } else {
+            sim.picker = None;
+        }
         apply(sim, target, id, now_ms);
     } else if !open {
         sim.picker = None;

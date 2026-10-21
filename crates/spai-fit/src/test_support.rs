@@ -80,6 +80,8 @@ pub mod ids {
     /// A wormhole weather beacon in the synthetic data.
     pub const BEACON: TypeId = 30_844;
     pub const BEACON_SPEED: AttrId = 9001;
+    /// A titan's phenomena generator in the synthetic data.
+    pub const GENERATOR: TypeId = 43_658;
     pub const DRONE: TypeId = 2454;
     pub const WEB: TypeId = 526;
     pub const RIG: TypeId = 31055;
@@ -210,6 +212,7 @@ pub fn dataset() -> Dogma {
             &[],
         ),
         type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0), (attr::IMPLANTNESS, 6.0)], &[308], &[]),
+        type_def(GENERATOR, "Amarr Phenomena Generator", 1815, 7, &[(attr::WARFARE_BUFF_1_ID, 12.0), (attr::WARFARE_BUFF_1_VALUE, 15.0), (attr::CPU, 100.0)], &[9002], &[]),
         type_def(BEACON, "Pulsar Effect Beacon Class 1", crate::ids::group::EFFECT_BEACON, 2, &[(BEACON_SPEED, 10.0)], &[9001], &[]),
         type_def(BOOSTER, "Synth Exile Booster", 303, 20, &[(attr::ARMOR_DAMAGE_AMOUNT, 3.0), (BOOSTER_SIDE, -10.0), (USAGE_CHANCE, 0.3), (attr::BOOSTERNESS, 1.0)], &[309, 310], &[]),
         type_def(DRONE, "Warrior II", 100, 18, &[(attr::DAMAGE_MULTIPLIER, 1.0), (attr::THERMAL_DAMAGE, 20.0), (attr::SPEED, 4000.0), (attr::VOLUME, 5.0), (attr::DRONE_BANDWIDTH_USED, 5.0), (attr::MAX_RANGE, 2000.0), (attr::FALLOFF, 1000.0), (attr::TRACKING_SPEED, 2.0), (attr::OPTIMAL_SIG_RADIUS, 25.0)], &[301], &[(SKILL_DRONES, 5)]),
@@ -252,6 +255,7 @@ pub fn dataset() -> Dogma {
         effect(308, "implantVelocity", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, attr::MAX_VELOCITY, Op::PostPercent)]),
         effect(309, "boosterArmorRep", EffectCategory::Passive, vec![Modifier { group: Some(62), ..modifier(Domain::Ship, Func::LocationGroup, attr::ARMOR_DAMAGE_AMOUNT, attr::ARMOR_DAMAGE_AMOUNT, Op::PostPercent) }]),
         EffectDef { usage_chance_attr: Some(USAGE_CHANCE), ..effect(310, "boosterSideEffect", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, BOOSTER_SIDE, Op::PostPercent)]) },
+        effect(9002, "moduleTitanEffectGenerator", EffectCategory::Active, vec![]),
         effect(9001, "systemMaxVelocity", EffectCategory::System, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, BEACON_SPEED, Op::PostPercent)]),
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(311, "remoteWebifierFalloff", EffectCategory::Target, vec![modifier(Domain::Target, Func::Item, attr::MAX_VELOCITY, WEB_SPEED_FACTOR, Op::PostPercent)]) },
         effect(312, "rigArmorHp", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_HP, attr::ARMOR_HP, Op::PostPercent)]),
@@ -393,6 +397,7 @@ pub fn dataset() -> Dogma {
         GroupDef { id: 1, name: "Character".into(), category: 1 },
         GroupDef { id: 25, name: "Frigate".into(), category: 6 },
         GroupDef { id: crate::ids::group::EFFECT_BEACON, name: "Effect Beacon".into(), category: 2 },
+        GroupDef { id: 1815, name: "Titan Phenomena Generator".into(), category: 7 },
         GroupDef { id: 46, name: "Propulsion Module".into(), category: 7 },
         GroupDef { id: 62, name: "Armor Repair Unit".into(), category: 7 },
         GroupDef { id: 55, name: "Projectile Weapon".into(), category: 7 },

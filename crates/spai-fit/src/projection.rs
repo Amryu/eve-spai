@@ -10,6 +10,31 @@ use crate::fit::{Fit, Projected, State};
 use crate::ids::TypeId;
 use crate::skills::SkillSet;
 
+/// A titan's phenomena generator: no charge, its buffs written on the module itself.
+const GENERATOR: &str = "moduleTitanEffectGenerator";
+
+pub fn is_generator(dogma: &Dogma, type_id: TypeId) -> bool {
+    dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.name == GENERATOR)))
+}
+
+/// The buffs a phenomena generator gives, as the module carries them.
+pub fn generator_buffs(dogma: &Dogma, type_id: TypeId) -> Vec<(crate::ids::BuffId, f64)> {
+    use crate::dogma::attr;
+    let Some(t) = dogma.type_(type_id) else { return Vec::new() };
+    [
+        (attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_VALUE),
+        (attr::WARFARE_BUFF_2_ID, attr::WARFARE_BUFF_2_VALUE),
+        (attr::WARFARE_BUFF_3_ID, attr::WARFARE_BUFF_3_VALUE),
+        (attr::WARFARE_BUFF_4_ID, attr::WARFARE_BUFF_4_VALUE),
+    ]
+    .into_iter()
+    .filter_map(|(id, value)| {
+        let id = t.attr(id).filter(|v| *v > 0.0)?;
+        Some((id as crate::ids::BuffId, f64::from(t.attr(value).unwrap_or(0.0))))
+    })
+    .collect()
+}
+
 /// Whether the type has an effect that reaches another ship.
 fn reaches_out(dogma: &Dogma, type_id: TypeId) -> bool {
     dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.category == EffectCategory::Target)))
@@ -20,6 +45,13 @@ fn reaches_out(dogma: &Dogma, type_id: TypeId) -> bool {
 pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, skills: &SkillSet) -> (Fit, Env) {
     let mut out = fit.clone();
     let mut env = Env::default();
+    // A generator acts through the system's buffs, not as a module on the ship; off is off.
+    for p in fit.projected.iter().filter(|p| p.state != State::Offline && is_generator(dogma, p.type_id)) {
+        for (id, value) in generator_buffs(dogma, p.type_id) {
+            env.offer(dogma, id, value);
+        }
+    }
+    out.projected.retain(|p| !is_generator(dogma, p.type_id));
     for pf in fit.projected_fits.iter().filter(|p| p.active && p.count > 0) {
         let Some(src) = lookup(&pf.fit_id) else { continue };
         let src = crate::variations::resolve(dogma, &src);
@@ -31,6 +63,11 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         }
         for (id, value) in crate::fleet::bursts_of(dogma, &src, skills) {
             env.offer(dogma, id, value);
+        }
+        for m in src.modules.iter().filter(|m| m.state >= State::Active && is_generator(dogma, m.type_id)) {
+            for (id, value) in generator_buffs(dogma, m.type_id) {
+                env.offer(dogma, id, value);
+            }
         }
     }
     (out, env)
@@ -68,4 +105,44 @@ mod tests {
         let (off, env) = expand(&d, &me, &lookup, &SkillSet::all_v());
         assert!(off.projected.is_empty() && env.buffs.is_empty());
     }
+
+    #[test]
+    fn a_phenomena_generator_gives_its_buffs_alone_or_from_a_titan_fit() {
+        let mut d = dataset();
+        d.buffs.push(crate::dogma::BuffDef { id: 12, name: "Armor HP".into(), aggregate: crate::dogma::Aggregate::Max, op: crate::dogma::Op::PostPercent, item: vec![attr::ARMOR_HP], location: vec![], location_group: vec![], location_skill: vec![] });
+        let d = d.finish();
+        let mut me = Fit::new(ids::SHIP, "me");
+        me.projected.push(crate::fit::Projected { type_id: ids::GENERATOR, ..Default::default() });
+        let (fit, env) = expand(&d, &me, &|_| None, &SkillSet::all_v());
+        assert!(fit.projected.is_empty(), "the generator is a buff, not an item on the ship");
+        assert_eq!(env.buffs.len(), 1);
+        let plain = Calc::new(&d, &Fit::new(ids::SHIP, "x"), &SkillSet::all_v(), &Env::default());
+        let boosted = Calc::new(&d, &fit, &SkillSet::all_v(), &env);
+        assert!(close(boosted.ship(attr::ARMOR_HP), plain.ship(attr::ARMOR_HP) * 1.15));
+        me.projected[0].state = State::Offline;
+        assert!(expand(&d, &me, &|_| None, &SkillSet::all_v()).1.buffs.is_empty(), "switched off");
+        let mut titan = Fit::new(ids::SHIP, "titan");
+        titan.modules.push(Module::new(ids::GENERATOR, Slot::High, 0).with_state(State::Active));
+        let mut me = Fit::new(ids::SHIP, "me");
+        me.projected_fits.push(ProjectedFit { fit_id: "titan".into(), count: 1, active: true });
+        let (_, env) = expand(&d, &me, &|id| (id == "titan").then(|| titan.clone()), &SkillSet::all_v());
+        assert_eq!(env.buffs.len(), 1, "the titan's running generator reaches the fit it is projected onto");
+    }
+}
+
+/// What the real data offers as projected effects. `SPAI_DOGMA_BLOB=<path> cargo test -p spai-fit
+/// real_data_has_weather -- --ignored --nocapture`
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_has_weather_and_generators() {
+    let path = std::env::var("SPAI_DOGMA_BLOB").expect("SPAI_DOGMA_BLOB");
+    let d = crate::dogma::blob::decode(&std::fs::read(path).unwrap()).unwrap();
+    let beacons: Vec<&str> = d.types.iter().filter(|t| t.group == crate::ids::group::EFFECT_BEACON).map(|t| t.name.as_str()).collect();
+    let generators: Vec<&str> = d.types.iter().filter(|t| is_generator(&d, t.id)).map(|t| t.name.as_str()).collect();
+    println!("{} beacons, e.g. {:?}", beacons.len(), &beacons[..beacons.len().min(8)]);
+    println!("{} generators: {:?}", generators.len(), generators);
+    let with_effects = d.types.iter().filter(|t| t.group == crate::ids::group::EFFECT_BEACON && !t.effects.is_empty()).count();
+    println!("{with_effects} beacons carry effects");
+    assert!(!beacons.is_empty() && !generators.is_empty());
 }

@@ -633,3 +633,26 @@ fn a_projected_fit_slows_this_one_and_follows_its_edits() {
     s.activate(1);
     assert!((s.computed().unwrap().mobility.max_velocity - free).abs() < 1e-6, "the numbers follow the projected fit");
 }
+
+#[test]
+fn the_cargo_takes_anything_without_fitting_it() {
+    use crate::browser::{drop_on, DropTarget};
+    use crate::DockTab;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::GUN, 1));
+    assert!(drop_on(&mut s, DropTarget::Dock(DockTab::Cargo), ids::GUN, 2));
+    apply(&mut s, PickTarget::Cargo, ids::SHIP, 3);
+    let f = &s.session().unwrap().fit;
+    assert!(f.modules.is_empty(), "a module dropped on the cargo is carried, not fitted");
+    assert_eq!(f.cargo.iter().find(|c| c.type_id == ids::GUN).map(|c| c.quantity), Some(2));
+    assert!(f.cargo.iter().any(|c| c.type_id == ids::SHIP));
+    assert!(results(&s.dogma.clone().unwrap(), PickTarget::Cargo, None, "").contains(&ids::DC));
+}
+
+#[test]
+fn bay_pickers_stay_open_for_more_and_slot_pickers_close() {
+    use crate::picker::stays_open;
+    assert!(stays_open(PickTarget::Drone) && stays_open(PickTarget::Cargo) && stays_open(PickTarget::Projected) && stays_open(PickTarget::Environment));
+    assert!(!stays_open(PickTarget::Module(Slot::High, 0)) && !stays_open(PickTarget::Ship) && !stays_open(PickTarget::NewFit) && !stays_open(PickTarget::Charge(Slot::High, 0)));
+}
