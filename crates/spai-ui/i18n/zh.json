@@ -1033,7 +1033,7 @@
   "In other folders": "在其他文件夹中",
   "In range of both": "同时在两者范围内",
   "In space": "已释放",
-  "In space: {n} of {count}. Drag or type to launch fewer.": "太空中：{count} 中的 {n} 个。拖动或输入以少放一些。",
+  "In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.": "在太空中：{n} / {count}。拖动或输入出动数量；0 表示全部留在舱内。",
   "In the bay": "在舱内",
   "In titan range, {ly} ly from {staging_name}": "在泰坦范围内，距 {staging_name} {ly} 光年",
   "In-app report": "应用内报告",

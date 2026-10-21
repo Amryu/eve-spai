@@ -1033,7 +1033,7 @@
   "In other folders": "En otras carpetas",
   "In range of both": "En rango de ambos",
   "In space": "En el espacio",
-  "In space: {n} of {count}. Drag or type to launch fewer.": "En el espacio: {n} de {count}. Arrastra o escribe para lanzar menos.",
+  "In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.": "En el espacio: {n} de {count}. Arrastra o escribe cuántas se lanzan; 0 las deja todas en la bahía.",
   "In the bay": "En la bodega",
   "In titan range, {ly} ly from {staging_name}": "En rango de titán, a {ly} AL de {staging_name}",
   "In-app report": "Informe en la app",

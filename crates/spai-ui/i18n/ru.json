@@ -1033,7 +1033,7 @@
   "In other folders": "В других папках",
   "In range of both": "В радиусе обоих",
   "In space": "В космосе",
-  "In space: {n} of {count}. Drag or type to launch fewer.": "В космосе: {n} из {count}. Перетащите или введите, чтобы выпустить меньше.",
+  "In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.": "В космосе: {n} из {count}. Перетащите или введите, сколько выпущено; 0 оставляет все в отсеке.",
   "In the bay": "В отсеке",
   "In titan range, {ly} ly from {staging_name}": "В дальности титана, {ly} св. лет от {staging_name}",
   "In-app report": "Отчёт в приложении",

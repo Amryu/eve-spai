@@ -386,25 +386,24 @@ fn empty_note(ui: &mut egui::Ui, text: &str) {
 fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
-    let list: Vec<(TypeId, u32, bool, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.active, d.in_space())).collect();
+    let list: Vec<(TypeId, u32, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.in_space())).collect();
     let rolls: Vec<Option<spai_fit::fit::Mutation>> = s.fit.drones.iter().map(|d| d.mutation.clone()).collect();
     if list.is_empty() {
         empty_note(ui, tr!("Drag drones here or double-click them in the browser."));
     }
-    for (i, (type_id, count, active, out)) in list.into_iter().enumerate() {
+    for (i, (type_id, count, out)) in list.into_iter().enumerate() {
         let name = spai_fit::formats::name_of(dogma, type_id);
         let mut delta: i32 = 0;
-        let mut toggle = false;
         let mut remove = false;
         let mut launch: Option<u32> = None;
         let mut sim_roll = false;
         let rolled = rolls.get(i).cloned().flatten();
         let r = rows::row(ui, "dock/drones", ("sim_drone", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, crate::mutation::icon_of(dogma, type_id, rolled.as_ref()), 18.0);
-            let w = rows::name_w(ui, 6.0);
+            let w = rows::name_w(ui, 5.0);
             let label = egui::RichText::new(&name);
             let label = if rolled.is_some() { label.color(crate::mutation::ROLLED) } else { label };
-            let label = if active { label } else { label.weak() };
+            let label = if out > 0 { label } else { label.weak() };
             rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Drone(type_id))));
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).on_hover_text(tr!("One fewer in the bay")).clicked() {
                 delta = -1;
@@ -413,22 +412,20 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).on_hover_text(tr!("One more in the bay")).clicked() {
                 delta = 1;
             }
-            // How many of the stack are out, read as a share of the bay: "3/5".
-            let mut n = if active { out } else { 0 };
+            // How many of the stack are out, read as a share of the bay: "3/5", "0/5" all in the bay.
+            let mut n = out;
             let field = rows::slot(ui, 2.0, |ui| {
                 ui.spacing_mut().interact_size.y = ROW_H - 8.0;
                 ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
-                ui.add_enabled(active, egui::DragValue::new(&mut n).range(1..=count.max(1)).custom_formatter(move |v, _| format!("{v:.0}/{count}")).custom_parser(|t| t.split('/').next().and_then(|x| x.trim().parse().ok())))
+                ui.add(egui::DragValue::new(&mut n).range(0..=count).custom_formatter(move |v, _| format!("{v:.0}/{count}")).custom_parser(|t| t.split('/').next().and_then(|x| x.trim().parse().ok())))
             });
-            if field.on_hover_text(trf!("In space: {n} of {count}. Drag or type to launch fewer.", n = n, count = count)).changed() {
+            if field.on_hover_text(trf!("In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.", n = n, count = count)).changed() {
                 launch = Some(n);
             }
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE })).on_hover_text(if active { tr!("In space") } else { tr!("In the bay") }).clicked() {
-                toggle = true;
-            }
         });
+        // All out, or all back in the bay.
         if r.double_clicked() {
-            toggle = true;
+            launch = Some(if out > 0 { 0 } else { count });
         }
         let mut details = false;
         r.context_menu(|ui| {
@@ -436,8 +433,8 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 sim_roll = true;
                 ui.close();
             }
-            if ui.button(if active { tr!("Keep in the bay") } else { tr!("Launch") }).clicked() {
-                toggle = true;
+            if ui.button(if out > 0 { tr!("Keep in the bay") } else { tr!("Launch") }).clicked() {
+                launch = Some(if out > 0 { 0 } else { count });
                 ui.close();
             }
             if ui.button(tr!("Details…")).clicked() {
@@ -455,18 +452,17 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         if sim_roll {
             sim.mutation_window = Some(crate::mutation::MutTarget::Drone(i));
         }
-        if delta != 0 || toggle || remove || launch.is_some() {
+        if delta != 0 || remove || launch.is_some() {
             sim.edit(EditKind::Drones, now_ms, |f| {
                 if let Some(d) = f.drones.get_mut(i) {
                     if remove {
                         d.count = 0;
                     } else {
                         d.count = (d.count as i32 + delta).max(0) as u32;
-                        if toggle {
-                            d.active = !d.active;
-                        }
+                        // None launched is a stack kept in the bay.
                         if let Some(n) = launch {
-                            d.launched = (n < d.count).then_some(n);
+                            d.active = n > 0;
+                            d.launched = (n > 0 && n < d.count).then_some(n);
                         }
                         // Fewer in the bay than were out: those left are all out.
                         if d.launched.is_some_and(|n| n >= d.count) {

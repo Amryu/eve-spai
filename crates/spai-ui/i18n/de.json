@@ -1033,7 +1033,7 @@
   "In other folders": "In anderen Ordnern",
   "In range of both": "In Reichweite beider",
   "In space": "Im All",
-  "In space: {n} of {count}. Drag or type to launch fewer.": "Im All: {n} von {count}. Ziehen oder tippen, um weniger zu starten.",
+  "In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.": "Im All: {n} von {count}. Ziehen oder eintippen, wie viele gestartet sind; 0 lässt alle im Hangar.",
   "In the bay": "Im Hangar",
   "In titan range, {ly} ly from {staging_name}": "In Titan-Reichweite, {ly} Lj von {staging_name}",
   "In-app report": "Report in der App",
