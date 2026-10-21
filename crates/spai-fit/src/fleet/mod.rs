@@ -78,6 +78,42 @@ pub struct Ewar {
     pub tracking_disruptors: u32,
 }
 
+/// How a fleet's ships sit around its anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Formation {
+    /// On a sphere of this radius: a tight ball at 0.
+    Ball { radius_m: f32 },
+    /// Following the anchor as a swarm: each ship's distance to it bell-curve distributed with
+    /// this spread (σ).
+    Flock { sigma_m: f32 },
+}
+
+impl Default for Formation {
+    fn default() -> Self {
+        Formation::Ball { radius_m: 5_000.0 }
+    }
+}
+
+/// What a ship is for in a fight, for the order an enemy shoots a fleet in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Role {
+    /// The fleet's main damage dealer.
+    Main,
+    /// Other damage dealers.
+    Mainline,
+    Logi,
+    /// Anything else that is not a damage dealer: neuts, utility.
+    Support,
+    Tackle,
+    Ewar,
+    Command,
+}
+
+impl Role {
+    /// The order a fleet shoots the enemy in by default: damage first.
+    pub const DEFAULT_ORDER: [Role; 7] = [Role::Main, Role::Mainline, Role::Logi, Role::Support, Role::Tackle, Role::Ewar, Role::Command];
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Fleet {
@@ -99,6 +135,18 @@ pub struct Fleet {
     #[serde(default = "default_true")]
     pub ewar_auto: bool,
     pub notes: String,
+    /// How the ships sit around the anchor.
+    pub formation: Formation,
+    /// How the fleet moves: its share of the slowest ship's top speed and its heading against
+    /// the line to the enemy (0 straight at it, 90 across, 180 away).
+    pub motion: (f32, f32),
+    /// The order it shoots the enemy's ships in, by role.
+    pub target_order: Vec<Role>,
+    /// Pilots switch their assault damage controls on when primaried.
+    #[serde(default = "default_true")]
+    pub adc: bool,
+    /// The fleet it is compared with, by library id.
+    pub enemy: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -107,7 +155,24 @@ fn default_true() -> bool {
 
 impl Default for Fleet {
     fn default() -> Self {
-        Fleet { id: String::new(), name: String::new(), size: 50, slots: Vec::new(), boosters: Vec::new(), main: None, range: 30_000.0, volley_efficiency: 0.85, ewar: Ewar::default(), ewar_auto: true, notes: String::new() }
+        Fleet {
+            id: String::new(),
+            name: String::new(),
+            size: 50,
+            slots: Vec::new(),
+            boosters: Vec::new(),
+            main: None,
+            range: 30_000.0,
+            volley_efficiency: 0.85,
+            ewar: Ewar::default(),
+            ewar_auto: true,
+            notes: String::new(),
+            formation: Formation::default(),
+            motion: (0.0, 90.0),
+            target_order: Role::DEFAULT_ORDER.to_vec(),
+            adc: true,
+            enemy: None,
+        }
     }
 }
 
@@ -308,6 +373,13 @@ pub struct SlotStats {
     pub name: String,
     pub count: u32,
     pub computed: Computed,
+    /// The fleet slot it is, its hull and what it does.
+    pub slot: usize,
+    pub ship: TypeId,
+    pub role: Role,
+    /// The fit as it flies (variations applied) and its pilot, for working it out again.
+    pub fit: Fit,
+    pub skills: SkillSet,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -328,11 +400,14 @@ pub struct FleetStats {
     pub speed_max: f64,
     /// Which slot is the main damage dealer.
     pub main: usize,
+    /// The boosters' buffs every ship flies with.
+    pub env: Env,
 }
 
 impl FleetStats {
+    /// The main slot: by its role, so a slot left out (its fit missing) does not shift it.
     pub fn main(&self) -> Option<&SlotStats> {
-        self.slots.get(self.main)
+        self.slots.iter().find(|s| s.role == Role::Main).or_else(|| self.slots.first())
     }
 }
 
@@ -340,11 +415,12 @@ impl FleetStats {
 pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, skills: &dyn Fn(Option<&str>) -> SkillSet) -> FleetStats {
     let env = env_of(dogma, fleet, fits, skills);
     let counts = resolve_counts(fleet);
-    let mut out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, ..FleetStats::default() };
-    for (slot, count) in fleet.slots.iter().zip(counts) {
+    let mut out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, env: env.clone(), ..FleetStats::default() };
+    for (index, (slot, count)) in fleet.slots.iter().zip(counts).enumerate() {
         let Some(fit) = fits(&slot.fit_id) else { continue };
         let fit = crate::variations::resolve(dogma, &fit);
-        let calc = Calc::new(dogma, &fit, &skills(slot.profile.as_deref()), &env);
+        let pilot = skills(slot.profile.as_deref());
+        let calc = Calc::new(dogma, &fit, &pilot, &env);
         let computed = compute_with(&calc, &fit);
         let n = f64::from(count);
         out.dps += computed.dps() * n;
@@ -365,7 +441,8 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
             out.speed_max = out.speed_max.max(computed.mobility.max_velocity);
         }
         out.ships += count;
-        out.slots.push(SlotStats { fit_id: slot.fit_id.clone(), name: fit.name.clone(), count, computed });
+        let role = role_of(dogma, fleet, index, fit.ship);
+        out.slots.push(SlotStats { fit_id: slot.fit_id.clone(), name: fit.name.clone(), count, computed, slot: index, ship: fit.ship, role, fit, skills: pilot });
     }
     if !out.speed_min.is_finite() {
         out.speed_min = 0.0;
@@ -458,20 +535,40 @@ pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stat
     out
 }
 
+/// Hull groups by what they do in a fleet.
+const LOGI_GROUPS: [GroupId; 3] = [832, 1527, 1538];
+const COMMAND_GROUPS: [GroupId; 2] = [540, 1534];
+const TACKLE_GROUPS: [GroupId; 2] = [541, 894];
+const EWAR_GROUPS: [GroupId; 3] = [833, 906, 893];
+
+/// A slot's role: the main slot, logi, command, tackle and ewar by hull group, damage dealers
+/// (fill slots) as mainline, the rest support.
+pub fn role_of(dogma: &Dogma, fleet: &Fleet, slot: usize, ship: TypeId) -> Role {
+    if fleet.main.unwrap_or(0) == slot {
+        return Role::Main;
+    }
+    let Some(s) = fleet.slots.get(slot) else { return Role::Support };
+    let group = dogma.type_(ship).map(|t| t.group);
+    match group {
+        Some(g) if LOGI_GROUPS.contains(&g) => Role::Logi,
+        Some(g) if COMMAND_GROUPS.contains(&g) => Role::Command,
+        Some(g) if TACKLE_GROUPS.contains(&g) => Role::Tackle,
+        Some(g) if EWAR_GROUPS.contains(&g) => Role::Ewar,
+        _ if matches!(s.rule, CountRule::Fill { .. }) => Role::Mainline,
+        _ => Role::Support,
+    }
+}
+
 /// What a hull does in a fleet, by its group: the rule a doctrine preset gets as a slot.
 pub fn role_rule(dogma: &Dogma, ship: TypeId) -> CountRule {
-    const LOGI: [GroupId; 3] = [832, 1527, 1538];
-    const COMMAND: [GroupId; 2] = [540, 1534];
-    const TACKLE: [GroupId; 2] = [541, 894];
-    const EWAR: [GroupId; 3] = [833, 906, 893];
     let Some(group) = dogma.type_(ship).map(|t| t.group) else { return CountRule::Fill { min: 0, max: 1000 } };
-    if LOGI.contains(&group) {
+    if LOGI_GROUPS.contains(&group) {
         CountRule::Percent(15.0)
-    } else if COMMAND.contains(&group) {
+    } else if COMMAND_GROUPS.contains(&group) {
         CountRule::Fixed(2)
-    } else if TACKLE.contains(&group) {
+    } else if TACKLE_GROUPS.contains(&group) {
         CountRule::Fixed(3)
-    } else if EWAR.contains(&group) {
+    } else if EWAR_GROUPS.contains(&group) {
         CountRule::Fixed(2)
     } else {
         CountRule::Fill { min: 0, max: 1000 }
@@ -502,6 +599,11 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
     }
     fleet
 }
+
+pub mod ammo;
+pub mod ewar;
+pub mod geometry;
+pub mod sweep;
 
 #[cfg(test)]
 mod tests;

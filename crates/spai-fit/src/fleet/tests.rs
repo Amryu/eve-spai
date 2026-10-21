@@ -164,3 +164,45 @@ fn a_fleet_from_a_doctrine_takes_roles_from_the_hulls_and_boosters_from_the_burs
     assert!(f.ewar_auto);
     assert_eq!(role_rule(&d, 0), CountRule::Fill { min: 0, max: 1000 });
 }
+
+#[test]
+fn a_long_range_fleet_is_favoured_far_out_and_a_webbing_brawler_up_close() {
+    let d = dataset();
+    let mut sniper = gun_fit("sniper", 3);
+    for m in &mut sniper.modules {
+        if m.type_id == ids::GUN {
+            m.charge = Some(ids::AMMO_LONG);
+        }
+    }
+    let mut brawler = gun_fit("brawler", 3);
+    brawler.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+    let lib = vec![sniper, brawler];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 10, slots: vec![slot("sniper", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 10, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let side_a = sweep::Side { fleet: &a, stats: &sa, ammo: &[] };
+    let side_b = sweep::Side { fleet: &b, stats: &sb, ammo: &[] };
+    let ranges = sweep::ranges(&sa, &sb);
+    let s = sweep::sweep(&side_a, &side_b, &ranges);
+    assert!(s.a_best > s.b_best, "the long-range fleet peaks farther out: {} against {}", s.a_best, s.b_best);
+    let close = s.points.iter().find(|p| p.distance > 0.0).unwrap();
+    assert!(close.a.webbed, "up close the brawlers' webs reach");
+    let far = s.points.last().unwrap();
+    assert!(!far.a.webbed);
+    assert!(s.a_favoured.iter().any(|(_, to)| *to >= far.distance - 1.0), "far out is the sniper's: {:?}", s.a_favoured);
+    assert!(s.b_cutoffs.iter().any(|(k, _, _)| *k == RemoteKind::Web));
+}
+
+#[test]
+fn the_primary_is_the_first_role_of_the_order_present() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let enemy = Fleet { size: 10, main: Some(0), slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(2))], ..Fleet::default() };
+    let se = stats(&d, &enemy, &lookup(&lib), &skills);
+    let dps_first = Fleet::default();
+    assert_eq!(sweep::primary(&dps_first, &se).map(|s| s.role), Some(Role::Main), "damage first by default");
+    let logi_first = Fleet { target_order: vec![Role::Support, Role::Main], ..Fleet::default() };
+    assert_eq!(sweep::primary(&logi_first, &se).map(|s| s.fit_id.as_str()), Some("logi"), "a non-damage slot without a logi hull is support");
+}

@@ -383,6 +383,40 @@ impl Dogma {
         out
     }
 
+    /// The charge groups a module loads and the charge size it takes.
+    pub fn charge_filter(&self, module: TypeId) -> (Vec<GroupId>, Option<f32>) {
+        let Some(t) = self.type_(module) else { return (Vec::new(), None) };
+        let groups = [attr::CHARGE_GROUP_1, attr::CHARGE_GROUP_2, attr::CHARGE_GROUP_3, attr::CHARGE_GROUP_4, attr::CHARGE_GROUP_5]
+            .iter()
+            .filter_map(|a| t.attr(*a))
+            .filter(|g| *g > 0.0)
+            .map(|g| g as GroupId)
+            .collect();
+        (groups, t.attr(attr::CHARGE_SIZE))
+    }
+
+    /// The charges a module can load, by name.
+    pub fn compatible_charges(&self, module: TypeId) -> Vec<TypeId> {
+        let (groups, size) = self.charge_filter(module);
+        let capacity = self.type_(module).and_then(|t| t.attr(attr::CAPACITY)).filter(|c| *c > 0.0);
+        let mut out: Vec<TypeId> = groups
+            .iter()
+            .flat_map(|g| self.types_in_group(*g).iter().copied())
+            .filter(|c| {
+                self.type_(*c).is_some_and(|t| {
+                    // A sized module takes its own size only: Cap Booster 25 has no size at all and
+                    // does not go into an ancillary shield booster. Nor does anything bigger than it holds.
+                    let sized = size.is_none() || t.attr(attr::CHARGE_SIZE) == size;
+                    let fits = capacity.is_none_or(|cap| t.attr(attr::VOLUME).is_none_or(|v| v <= cap));
+                    t.published && sized && fits
+                })
+            })
+            .collect();
+        out.sort_by_cached_key(|c| self.type_(*c).map(|t| t.name.to_lowercase()).unwrap_or_default());
+        out.dedup();
+        out
+    }
+
     pub fn mutaplasmid(&self, id: TypeId) -> Option<&Mutaplasmid> {
         self.mutaplasmids.iter().find(|m| m.id == id)
     }

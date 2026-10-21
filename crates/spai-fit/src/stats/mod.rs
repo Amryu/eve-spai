@@ -282,6 +282,11 @@ pub struct RemoteModule {
     pub amount: f64,
     pub optimal: f64,
     pub falloff: f64,
+    /// Each attribute it changes, in percent, in a fixed order per kind: a web's speed; a
+    /// painter's signature; a damp's lock range and scan resolution; a tracking disruptor's
+    /// tracking, optimal and falloff; a guidance disruptor's explosion radius, explosion velocity,
+    /// missile velocity and flight time.
+    pub parts: [f64; 4],
 }
 
 /// What the fit does to others per second: repairs, capacitor and neuts.
@@ -639,7 +644,16 @@ fn remote(calc: &Calc) -> Remote {
         if kind.is_rep() {
             r.rep_range = r.rep_range.max(optimal + falloff);
         }
-        r.modules.push(RemoteModule { type_id: it.type_id, kind, amount, optimal, falloff });
+        let pct = |a: crate::ids::AttrId| if calc.has(i, a) { calc.value(i, a) } else { 0.0 };
+        let parts = match kind {
+            RemoteKind::Web => [pct(attr::SPEED_FACTOR), 0.0, 0.0, 0.0],
+            RemoteKind::Painter => [pct(attr::SIGNATURE_RADIUS_BONUS), 0.0, 0.0, 0.0],
+            RemoteKind::Damp => [pct(attr::MAX_TARGET_RANGE_BONUS), pct(attr::SCAN_RESOLUTION_BONUS), 0.0, 0.0],
+            RemoteKind::TrackingDisruptor => [pct(attr::TRACKING_SPEED_BONUS), pct(attr::MAX_RANGE_BONUS), pct(attr::FALLOFF_BONUS), 0.0],
+            RemoteKind::GuidanceDisruptor => [pct(attr::AOE_CLOUD_SIZE_BONUS), pct(attr::AOE_VELOCITY_BONUS), pct(attr::MISSILE_VELOCITY_BONUS), pct(attr::EXPLOSION_DELAY_BONUS)],
+            _ => [0.0; 4],
+        };
+        r.modules.push(RemoteModule { type_id: it.type_id, kind, amount, optimal, falloff, parts });
     }
     r
 }

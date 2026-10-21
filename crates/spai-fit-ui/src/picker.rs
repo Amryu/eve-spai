@@ -180,36 +180,12 @@ pub fn slot_name(slot: Slot) -> &'static str {
 
 /// The charge groups a module takes, from `chargeGroup1..5`, and its charge size.
 pub fn charge_filter(dogma: &Dogma, module: TypeId) -> (Vec<GroupId>, Option<f32>) {
-    let Some(t) = dogma.type_(module) else { return (Vec::new(), None) };
-    let groups = [attr::CHARGE_GROUP_1, attr::CHARGE_GROUP_2, attr::CHARGE_GROUP_3, attr::CHARGE_GROUP_4, attr::CHARGE_GROUP_5]
-        .iter()
-        .filter_map(|a| t.attr(*a))
-        .filter(|g| *g > 0.0)
-        .map(|g| g as GroupId)
-        .collect();
-    (groups, t.attr(attr::CHARGE_SIZE))
+    dogma.charge_filter(module)
 }
 
 /// Charges the module can load, by name.
 pub fn compatible_charges(dogma: &Dogma, module: TypeId) -> Vec<TypeId> {
-    let (groups, size) = charge_filter(dogma, module);
-    let capacity = dogma.type_(module).and_then(|t| t.attr(attr::CAPACITY)).filter(|c| *c > 0.0);
-    let mut out: Vec<TypeId> = groups
-        .iter()
-        .flat_map(|g| dogma.types_in_group(*g).iter().copied())
-        .filter(|c| {
-            dogma.type_(*c).is_some_and(|t| {
-                // A sized module takes its own size only: Cap Booster 25 has no size at all and
-                // does not go into an ancillary shield booster. Nor does anything bigger than it holds.
-                let sized = size.is_none() || t.attr(attr::CHARGE_SIZE) == size;
-                let fits = capacity.is_none_or(|cap| t.attr(attr::VOLUME).is_none_or(|v| v <= cap));
-                t.published && sized && fits
-            })
-        })
-        .collect();
-    out.sort_by_cached_key(|c| dogma.type_(*c).map(|t| t.name.to_lowercase()).unwrap_or_default());
-    out.dedup();
-    out
+    dogma.compatible_charges(module)
 }
 
 /// Everything the target accepts, those matching the query first by name, at most `MAX_RESULTS`.
