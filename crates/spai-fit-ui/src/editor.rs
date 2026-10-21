@@ -16,24 +16,29 @@ use crate::picker::{self, PickTarget};
 use crate::rows::{self, ROW_H};
 use crate::{text, SimUi};
 
-/// Fixed columns beside the name: charge, PG, CPU, cap/s, DPS, state, remove.
+/// Fixed columns beside the name: charge, PG, CPU, cap/s, DPS, cycle, effect, state, remove.
 struct Cols {
     charge: f32,
     num: f32,
     numbers: bool,
+    /// Cycle time and each module's own figure, once there is room for them as well.
+    extra: bool,
+    info: f32,
+    /// Price and time to burnout, wider still.
+    more: bool,
 }
 
 impl Cols {
     /// The numbers only when the table is wide enough to keep names readable.
     fn for_width(w: f32) -> Self {
         let numbers = w >= 640.0;
-        Cols { charge: if w >= 520.0 { 160.0 } else { 120.0 }, num: 58.0, numbers }
+        Cols { charge: if w >= 520.0 { 160.0 } else { 120.0 }, num: 58.0, numbers, extra: w >= 840.0, info: 90.0, more: w >= 1000.0 }
     }
 
     /// The name takes what the fixed cells leave of the row's inner width: icon, charge, the
     /// numbers, the two icon buttons and the gaps between them all.
     fn name_width(&self, inner: f32) -> f32 {
-        let fixed = 18.0 + self.charge + if self.numbers { 4.0 * self.num + 4.0 * rows::GAP } else { 0.0 } + 2.0 * 21.0 + 5.0 * rows::GAP;
+        let fixed = 18.0 + self.charge + if self.numbers { 4.0 * self.num + 4.0 * rows::GAP } else { 0.0 } + if self.extra { self.num + self.info + 2.0 * rows::GAP } else { 0.0 } + if self.more { 2.0 * self.num + 2.0 * rows::GAP } else { 0.0 } + 2.0 * 21.0 + 5.0 * rows::GAP;
         (inner - fixed).max(60.0)
     }
 }
@@ -79,6 +84,34 @@ pub fn states_of(dogma: &Dogma, type_id: TypeId) -> Vec<State> {
         }
     }
     v
+}
+
+/// A module's own figure as the Effect column prints it, and what it is.
+fn info_text(i: spai_fit::stats::ModuleInfo) -> (String, &'static str) {
+    use spai_fit::stats::InfoKind as K;
+    let v = i.value;
+    let hp = || format!("{} HP", text::num(v));
+    let gj = || format!("{} GJ", text::num(v.abs()));
+    let pct = || format!("{v:+.0}%");
+    match i.kind {
+        K::ShieldBoost => (hp(), tr!("Shield boosted per cycle")),
+        K::ArmorRepair => (hp(), tr!("Armor repaired per cycle")),
+        K::HullRepair => (hp(), tr!("Hull repaired per cycle")),
+        K::RemoteShield => (hp(), tr!("Shield given per cycle")),
+        K::RemoteArmor => (hp(), tr!("Armor given per cycle")),
+        K::RemoteHull => (hp(), tr!("Hull given per cycle")),
+        K::CapInjected => (gj(), tr!("Capacitor injected per charge")),
+        K::Neut => (gj(), tr!("Capacitor neutralized per cycle")),
+        K::Nos => (gj(), tr!("Capacitor drained per cycle")),
+        K::CapTransfer => (gj(), tr!("Capacitor sent per cycle")),
+        K::Speed => (pct(), tr!("Speed while running")),
+        K::Web => (pct(), tr!("Speed of the target")),
+        K::Paint => (pct(), tr!("Signature of the target")),
+        K::Damp => (pct(), tr!("The target's lock range or scan resolution")),
+        K::Disrupt => (pct(), tr!("The target's weapons, at their strongest")),
+        K::Ecm => (format!("{} pts", text::num(v)), tr!("Jam strength")),
+        K::Tackle => (format!("{} pts", text::num(v)), tr!("Warp disruption strength")),
+    }
 }
 
 /// The states every one of the types can take, lowest first.
@@ -184,7 +217,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         return;
     }
-    egui::Panel::bottom("sim_dock").resizable(true).default_size(crate::dock::DOCK_H).min_size(90.0).show_inside(ui, |ui| {
+    egui::Panel::bottom("sim_dock").resizable(true).default_size(sim.dock_h.unwrap_or(crate::dock::DOCK_H)).min_size(90.0).show_inside(ui, |ui| {
         crate::dock::show(sim, ui, now_ms);
     });
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
@@ -258,6 +291,7 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
 }
 
 fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let tips = sim.tip_values();
     let Some(s) = sim.session_mut() else { return };
     let ship = s.fit.ship;
     let ship_name = dogma.type_(ship).map_or_else(|| trf!("Unknown hull {id}", id = ship), |t| t.name.clone());
@@ -270,7 +304,7 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         .horizontal(|ui| {
             ui.add_space(rows::GAP);
             let r = ui.add(egui::Image::new(crate::icons::ship_render_uri(ship)).fit_to_exact_size(egui::vec2(56.0, 56.0)).corner_radius(4.0)).interact(egui::Sense::click());
-            let r = r.on_hover_ui(|ui| details::type_tip(ui, dogma, ship, tr!("Click to change the hull, or drop a ship here")));
+            let r = r.on_hover_ui(|ui| details::type_tip_with(ui, dogma, ship, tr!("Click to change the hull, or drop a ship here"), tips.get(&DetailsTarget::Ship)));
             if r.clicked() {
                 pick_ship = true;
             }
@@ -309,41 +343,50 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     }
     if sim.traits_window {
         let mut open = true;
-        egui::Window::new(trf!("{ship} traits", ship = ship_name)).open(&mut open).collapsible(false).default_width(420.0).show(ui.ctx(), |ui| {
-            if let Some(t) = dogma.traits_of(ship) {
-                for (skill, bonuses) in &t.per_skill {
-                    let skill_name = dogma.type_(*skill).map_or_else(|| format!("Skill {skill}"), |s| s.name.clone());
-                    ui.label(egui::RichText::new(trf!("{skill} bonuses (per skill level)", skill = skill_name)).strong());
+        egui::Window::new(trf!("{ship} traits", ship = ship_name)).open(&mut open).collapsible(false).default_width(440.0).show(ui.ctx(), |ui| {
+            let Some(t) = dogma.traits_of(ship) else {
+                ui.label(egui::RichText::new(tr!("This hull has no traits.")).weak());
+                return;
+            };
+            // Each section a heading with the skill's icon, its bonuses as an amount column in the
+            // bonus colour beside the sentence, the way the tooltips lay out values.
+            let section = |ui: &mut egui::Ui, icon: Option<spai_fit::ids::TypeId>, title: String, note: Option<&str>, bonuses: &[spai_fit::dogma::Bonus], id: (u8, u32)| {
+                ui.horizontal(|ui| {
+                    if let Some(i) = icon {
+                        crate::icons::type_icon(ui, i, 18.0);
+                    }
+                    ui.label(egui::RichText::new(title).strong());
+                    if let Some(n) = note {
+                        ui.label(egui::RichText::new(n).weak());
+                    }
+                });
+                egui::Grid::new(("sim_traits", id)).num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
                     for b in bonuses {
-                        ui.label(bonus_line(dogma, b));
+                        let amount = b.amount.map(|a| {
+                            let unit = b.unit.and_then(|u| dogma.unit(u)).map_or("", |u| u.display.as_str());
+                            format!("{}{unit}", text::num(f64::from(a)))
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            ui.label(egui::RichText::new(amount.unwrap_or_default()).monospace().color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)));
+                        });
+                        ui.add(egui::Label::new(&b.text).wrap());
+                        ui.end_row();
                     }
-                    ui.add_space(4.0);
-                }
-                if !t.role.is_empty() {
-                    ui.label(egui::RichText::new(tr!("Role bonus")).strong());
-                    for b in &t.role {
-                        ui.label(bonus_line(dogma, b));
-                    }
-                }
-                if !t.misc.is_empty() {
-                    ui.add_space(4.0);
-                    for b in &t.misc {
-                        ui.label(bonus_line(dogma, b));
-                    }
-                }
+                });
+                ui.add_space(6.0);
+            };
+            for (skill, bonuses) in &t.per_skill {
+                let skill_name = dogma.type_(*skill).map_or_else(|| format!("Skill {skill}"), |s| s.name.clone());
+                section(ui, Some(*skill), skill_name, Some(tr!("per skill level")), bonuses, (0, *skill));
+            }
+            if !t.role.is_empty() {
+                section(ui, None, tr!("Role bonus").to_owned(), None, &t.role, (1, 0));
+            }
+            if !t.misc.is_empty() {
+                section(ui, None, tr!("Also").to_owned(), None, &t.misc, (2, 0));
             }
         });
         sim.traits_window = open;
-    }
-}
-
-fn bonus_line(dogma: &Dogma, b: &spai_fit::dogma::Bonus) -> String {
-    match b.amount {
-        Some(a) => {
-            let unit = b.unit.and_then(|u| dogma.unit(u)).map_or("", |u| u.display.as_str());
-            format!("{}{unit} {}", text::num(f64::from(a)), b.text)
-        }
-        None => b.text.clone(),
     }
 }
 
@@ -488,6 +531,14 @@ fn racks(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             rows::head_cell(ui, cols.num, tr!("CPU"), true);
             rows::head_cell(ui, cols.num, tr!("Cap/s"), true);
             rows::head_cell(ui, cols.num, tr!("DPS"), true);
+            if cols.extra {
+                rows::head_cell(ui, cols.num, tr!("Cycle"), true);
+                rows::head_cell(ui, cols.info, tr!("Effect"), true);
+            }
+            if cols.more {
+                rows::head_cell(ui, cols.num, tr!("Cost"), true);
+                rows::head_cell(ui, cols.num, tr!("Burnout"), true);
+            }
         }
     });
     let fixed = sim.variation_positions();
@@ -588,6 +639,8 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let mut details: Option<DetailsTarget> = None;
     let selected = sim.selection.contains(&(slot, index));
     let mut handle: Option<egui::Response> = None;
+    let tips = sim.tip_values();
+    let price = sim.prices.get(&type_id).copied();
     let r = rows::row(ui, rack_list(slot), ("sim_mod", slot, index), ROW_H, selected, |ui| {
         if by_variation {
             ui.disable();
@@ -601,19 +654,21 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         let label = egui::RichText::new(&name);
         let label = if state == State::Offline { label.weak() } else { label };
         let note = if by_variation { tr!("Set by a variation") } else { "" };
-        rows::cell(ui, name_w, label, "").on_hover_ui(|ui| details::type_tip(ui, dogma, type_id, note));
+        let fitted = tips.get(&DetailsTarget::Module(slot, index));
+        rows::cell(ui, name_w, label, "").on_hover_ui(|ui| details::type_tip_with(ui, dogma, type_id, note, fitted));
         if takes_charges {
             let shown = charge_name.clone().unwrap_or_else(|| tr!("No charge").to_owned());
             let r = ui.scope(|ui| {
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 1.0);
                 let label = egui::RichText::new(text::clip(&shown, 22)).weak();
                 let button = match charge {
-                    Some(c) => egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0), label),
+                    Some(c) => egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(14.0, 14.0)).corner_radius(2.0), label),
                     None => egui::Button::new(label),
                 };
                 // Exactly the column's width whatever the label and icon want, so the number
                 // columns after it line up across the racks.
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 4.0), egui::Sense::hover());
+                // Two pixels clear of the row above and below, so its frame never touches the next row.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 6.0), egui::Sense::hover());
                 let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                 cell.add_sized(rect.size(), button.wrap_mode(egui::TextWrapMode::Truncate))
             })
@@ -631,6 +686,33 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             rows::num_cell(ui, cols.num, s.map_or(String::new(), |m| text::num(m.cpu)), off);
             rows::num_cell(ui, cols.num, s.filter(|m| m.cap_per_s != 0.0).map_or(String::new(), |m| text::num(m.cap_per_s)), off);
             rows::num_cell(ui, cols.num, s.filter(|m| m.dps > 0.0).map_or(String::new(), |m| text::num(m.dps)), off);
+            if cols.extra {
+                rows::num_cell(ui, cols.num, s.and_then(|m| m.cycle_s).map_or(String::new(), |c| format!("{}s", text::num(c))), off);
+                let info = s.and_then(|m| m.info);
+                let (shown, hover) = info.map_or((String::new(), ""), |i| info_text(i));
+                let r = ui.allocate_ui_with_layout(egui::vec2(cols.info, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.set_min_width(cols.info);
+                    ui.set_max_width(cols.info);
+                    let t = egui::RichText::new(shown).monospace();
+                    ui.add(egui::Label::new(if off { t.weak() } else { t }).truncate().selectable(false).show_tooltip_when_elided(false));
+                });
+                if !hover.is_empty() {
+                    r.response.on_hover_text(hover);
+                }
+            }
+            if cols.more {
+                rows::num_cell(ui, cols.num, price.map_or(String::new(), text::num), off);
+                let burn = s.and_then(|m| m.burnout_s);
+                let r = ui.allocate_ui_with_layout(egui::vec2(cols.num, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.set_min_width(cols.num);
+                    ui.set_max_width(cols.num);
+                    let t = egui::RichText::new(burn.map_or(String::new(), text::secs)).monospace();
+                    ui.add(egui::Label::new(if off { t.weak() } else { t }).truncate().selectable(false).show_tooltip_when_elided(false));
+                });
+                if burn.is_some() {
+                    r.response.on_hover_text(tr!("Overloaded, how long it lasts at worst: its hit points over the heat damage it takes each overloaded cycle. A cooler rack lasts longer."));
+                }
+            }
         }
         if icon_button(ui, state_icon(state)).on_hover_text(state_name(state)).clicked() {
             set_state = Some(next_state(dogma, type_id, state));
@@ -687,14 +769,24 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                         set_charge = Some(None);
                         ui.close();
                     }
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        for c in charges {
-                            if ui.radio(target_mods.iter().all(|m| m.2 == Some(c)), spai_fit::formats::name_of(dogma, c)).clicked() {
-                                set_charge = Some(Some(c));
-                                ui.close();
-                            }
-                        }
-                    });
+                    // One submenu per kind: Tech I, Tech II, each faction.
+                    for (title, list) in picker::charge_sections(dogma, &charges) {
+                        let current = list.iter().any(|c| target_mods.iter().any(|m| m.2 == Some(*c)));
+                        let label = if current { egui::RichText::new(&title).strong() } else { egui::RichText::new(&title) };
+                        ui.menu_button(label, |ui| {
+                            ui.set_min_width(240.0);
+                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                for c in list {
+                                    let icon = egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0);
+                                    let item = egui::Button::image_and_text(icon, spai_fit::formats::name_of(dogma, c)).selected(target_mods.iter().all(|m| m.2 == Some(c))).frame_when_inactive(false);
+                                    if ui.add(item).clicked() {
+                                        set_charge = Some(Some(c));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                    }
                 });
             }
             let same_type = types.iter().all(|t| *t == type_id);

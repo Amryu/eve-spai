@@ -16,6 +16,18 @@ const LOG: &str = "sim_row_log";
 
 pub fn clear_log(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(LOG), RowLog::default()));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(CUT), CutRows::default()));
+}
+
+/// Rows partly scrolled out of view this frame: the whole row, and the part that shows. What is
+/// inside them is clipped to that part, which the accessibility tree does not say.
+#[derive(Clone, Default)]
+pub struct CutRows(pub Vec<(egui::Rect, egui::Rect)>);
+
+const CUT: &str = "sim_cut_rows";
+
+pub fn cut_rows(ctx: &egui::Context) -> Vec<(egui::Rect, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<CutRows>(egui::Id::new(CUT)).map(|c| c.0).unwrap_or_default())
 }
 
 pub fn log(ctx: &egui::Context) -> Vec<(egui::Id, egui::Rect)> {
@@ -108,11 +120,15 @@ pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, sele
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<RowLog>(egui::Id::new(LOG)).0.push((egui::Id::new(list), rect)));
-    // Scrolled out of sight, or cut by the fold: the space is kept, the cells are not built, so
-    // nothing of them reaches under whatever sits below the list.
+    // Out of sight altogether: the space is kept, the cells are not built. A row partly in view
+    // is drawn, clipped at the edge, so it scrolls away smoothly instead of vanishing early.
     let clip = ui.clip_rect();
-    if rect.min.y < clip.min.y - 0.5 || rect.max.y > clip.max.y + 0.5 {
+    if !rect.intersects(clip) {
         return resp;
+    }
+    let visible = clip.intersect(rect);
+    if visible != rect {
+        ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<CutRows>(egui::Id::new(CUT)).0.push((rect, visible)));
     }
     let over = ui.rect_contains_pointer(rect) && ui.ctx().dragged_id().is_none();
     let dropping = ui.rect_contains_pointer(rect) && egui::DragAndDrop::has_payload_of_type::<DragItem>(ui.ctx());
@@ -125,6 +141,7 @@ pub fn row(ui: &mut egui::Ui, list: &str, id: impl std::hash::Hash, h: f32, sele
     }
     let inner = rect.shrink2(egui::vec2(GAP, 0.0));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.set_clip_rect(clip.intersect(rect));
     child.spacing_mut().item_spacing.x = GAP;
     add(&mut child);
     resp

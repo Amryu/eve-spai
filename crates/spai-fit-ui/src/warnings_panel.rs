@@ -31,6 +31,7 @@ pub fn describe(dogma: &Dogma, w: &Warning) -> String {
         WarningKind::LaunchersOver { used, total } => trf!("{used} launchers on {total} hardpoints", used = used, total = total),
         WarningKind::DroneBandwidthOver { used, total } => trf!("Drone bandwidth over ({used} of {total} Mbit/s)", used = text::num(*used), total = text::num(*total)),
         WarningKind::DroneBayOver { used, total } => trf!("Drone bay over ({used} of {total} m³)", used = text::num(*used), total = text::num(*total)),
+        WarningKind::HoldOver { hold, used, total } => trf!("{hold} overfilled ({used} of {total} m³)", hold = hold, used = text::num(*used), total = text::num(*total)),
         WarningKind::TooManyDronesOut { active, max } => trf!("{n} drones in space, the pilot controls {max}", n = active, max = max),
         WarningKind::EmptySlots { slot, free } => trf!("{n} empty {slot} slots", n = free, slot = picker::slot_name(*slot)),
         WarningKind::NoPropMod => tr!("No propulsion module").to_owned(),
@@ -51,49 +52,68 @@ pub fn describe(dogma: &Dogma, w: &Warning) -> String {
     }
 }
 
-const SHOWN: usize = 3;
 
 /// The warnings under the fit's name: the first few, the rest behind a click; the skills one
 /// opens the list.
+/// The warnings in one line of fixed height: the most serious one, and a count that opens all of
+/// them. With none it says so in the same space, so the racks below never move as they change.
 pub fn strip(sim: &mut SimUi, ui: &mut egui::Ui) {
     let Some(dogma) = sim.dogma.clone() else { return };
     let Some(s) = sim.session() else { return };
-    if s.warnings.is_empty() {
-        return;
-    }
-    let total = s.warnings.len();
-    let expanded = sim.warnings_expanded;
-    let lines: Vec<(Severity, bool, String)> = s.warnings.iter().take(if expanded { total } else { SHOWN }).map(|w| (w.severity, matches!(w.kind, WarningKind::MissingSkills { .. }), describe(&dogma, w))).collect();
+    let mut lines: Vec<(Severity, bool, String)> = s.warnings.iter().map(|w| (w.severity, matches!(w.kind, WarningKind::MissingSkills { .. }), describe(&dogma, w))).collect();
+    let rank = |s: Severity| match s {
+        Severity::Error => 0,
+        Severity::Warn => 1,
+        Severity::Info => 2,
+    };
+    lines.sort_by_key(|(s, _, _)| rank(*s));
+    let errors = lines.iter().filter(|(s, _, _)| *s == Severity::Error).count();
+    let others = lines.len() - errors;
+    let glyph_of = |ui: &egui::Ui, severity: Severity| match severity {
+        Severity::Error => (icon::WARNING_OCTAGON, ui.visuals().error_fg_color),
+        Severity::Warn => (icon::WARNING, ui.visuals().warn_fg_color),
+        Severity::Info => (icon::INFO, ui.visuals().weak_text_color()),
+    };
     let mut open_skills = false;
-    let mut toggle = false;
-    for (severity, skills, line) in lines {
-        let (glyph, color) = match severity {
-            Severity::Error => (icon::WARNING_OCTAGON, ui.visuals().error_fg_color),
-            Severity::Warn => (icon::WARNING, ui.visuals().warn_fg_color),
-            Severity::Info => (icon::INFO, ui.visuals().weak_text_color()),
+    let r = rows::row(ui, "warnings", "sim_warn_line", rows::ROW_H, false, |ui| {
+        let Some((severity, skills, line)) = lines.first().cloned() else {
+            ui.add(egui::Label::new(egui::RichText::new(trf!("{icon} No problems found", icon = icon::CHECK_CIRCLE)).weak()).selectable(false));
+            return;
         };
-        let r = rows::row(ui, "warnings", ("sim_warn", &line), 20.0, false, |ui| {
-            ui.label(egui::RichText::new(glyph).color(color));
-            let w = ui.available_width();
-            let text = if skills { egui::RichText::new(&line).underline() } else { egui::RichText::new(&line) };
-            rows::cell(ui, w, text, &line);
-        });
-        if skills && r.clicked() {
+        let (glyph, color) = glyph_of(ui, severity);
+        ui.add(egui::Label::new(egui::RichText::new(glyph).color(color)).selectable(false));
+        let count_w = if lines.len() > 1 { 150.0 } else { 0.0 };
+        let w = (ui.available_width() - count_w - rows::GAP).max(60.0);
+        let text = if skills { egui::RichText::new(&line).underline() } else { egui::RichText::new(&line) };
+        if rows::cell(ui, w, text, &line).interact(egui::Sense::click()).clicked() && skills {
             open_skills = true;
         }
-    }
-    if total > SHOWN {
-        let label = if expanded { tr!("Fewer").to_owned() } else { trf!("{n} more…", n = total - SHOWN) };
-        ui.horizontal(|ui| {
-            ui.add_space(rows::GAP + 20.0);
-            if ui.add(egui::Label::new(egui::RichText::new(label).weak().underline()).sense(egui::Sense::click())).clicked() {
-                toggle = true;
-            }
-        });
-    }
-    if toggle {
-        sim.warnings_expanded = !sim.warnings_expanded;
-    }
+        if lines.len() > 1 {
+            let label = match (errors, others) {
+                (0, n) => trf!("{n} warnings", n = n),
+                (1, 0) => tr!("1 error").to_owned(),
+                (e, 0) => trf!("{e} errors", e = e),
+                (1, n) => trf!("1 error, {n} more", n = n),
+                (e, n) => trf!("{e} errors, {n} more", e = e, n = n),
+            };
+            let button = ui.add_sized([150.0, rows::ROW_H - 6.0], egui::Button::new(trf!("{icon} {label}", icon = icon::CARET_DOWN, label = label)).small());
+            egui::Popup::menu(&button).show(|ui| {
+                ui.set_min_width(360.0);
+                for (severity, skills, line) in &lines {
+                    let (glyph, color) = glyph_of(ui, *severity);
+                    let r = ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(glyph).color(color));
+                        let text = if *skills { egui::RichText::new(line).underline() } else { egui::RichText::new(line) };
+                        ui.add(egui::Label::new(text).wrap().sense(egui::Sense::click()))
+                    });
+                    if *skills && r.inner.clicked() {
+                        open_skills = true;
+                    }
+                }
+            });
+        }
+    });
+    let _ = r;
     if open_skills {
         sim.skills_window = true;
     }

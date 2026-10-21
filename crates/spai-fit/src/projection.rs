@@ -157,3 +157,53 @@ fn real_data_has_weather_and_generators() {
     println!("{with_effects} beacons carry effects");
     assert!(!beacons.is_empty() && !generators.is_empty());
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_hold_attributes() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for a in &d.attributes {
+        let n = a.name.to_lowercase();
+        if (n.contains("hold") || n.contains("bay") || n.contains("hangar")) && n.contains("capacity") {
+            let ships = d.types.iter().filter(|t| t.category == crate::ids::category::SHIP && t.attr(a.id).is_some_and(|v| v > 0.0)).count();
+            println!("{} {} {:?} ships={ships}", a.id, a.name, a.display);
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_asb_charges() {
+    use crate::dogma::attr;
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for name in ["X-Large Ancillary Shield Booster", "Large Ancillary Shield Booster", "Medium Ancillary Shield Booster", "Heavy Capacitor Booster II"] {
+        let Some(m) = d.type_named(name) else { println!("no {name}"); continue };
+        println!("{name}: capacity {:?} chargeSize {:?} groups {:?}", m.attr(attr::CAPACITY), m.attr(128), [604, 605, 606, 609, 610].iter().map(|a| m.attr(*a)).collect::<Vec<_>>());
+    }
+    for t in d.types.iter().filter(|t| t.name.contains("Cap Booster") && t.published) {
+        println!("  {} group {} volume {:?} chargeSize {:?}", t.name, t.group, t.attr(attr::VOLUME), t.attr(128));
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_booster_side_effects() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for name in ["Strong Blue Pill Booster", "Strong Exile Booster", "Improved Crash Booster"] {
+        let Some(t) = d.type_named(name) else { println!("no {name}"); continue };
+        println!("{name}");
+        for (e, _) in &t.effects {
+            let Some(def) = d.effect(*e) else { continue };
+            if def.usage_chance_attr.is_none() {
+                continue;
+            }
+            println!("  effect {} {} chance attr {:?}", e, def.name, def.usage_chance_attr.and_then(|a| d.attr(a)).map(|a| a.name.clone()));
+            for m in &def.modifiers {
+                println!("    {:?} {:?} modified {} by {} ({:?}) group {:?} skill {:?}", m.domain, m.func, d.attr(m.modified).map_or("?".into(), |a| format!("{}|{}", a.name, a.display)), d.attr(m.modifying).map_or("?".into(), |a| a.name.clone()), t.attr(m.modifying), m.group, m.skill);
+            }
+        }
+    }
+}

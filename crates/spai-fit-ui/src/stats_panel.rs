@@ -25,6 +25,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
         targeting(ui, &computed);
         drones(ui, &computed);
         remote(ui, &computed);
+        cost(ui, sim.cost());
     });
 }
 
@@ -88,6 +89,16 @@ fn fitting(ui: &mut egui::Ui, c: &Computed) {
     line(ui, tr!("Turrets / launchers"), trf!("{t1}/{t2}  {l1}/{l2}", t1 = f.turrets_used, t2 = f.turrets_total, l1 = f.launchers_used, l2 = f.launchers_total));
 }
 
+/// A local repair as hit points per second while it runs (an ancillary booster on its charges, a
+/// repairer on paste), and, when reloading lowers it, the average with reloads in brackets.
+fn rep_text(sustained: f64, running: f64) -> String {
+    if (running - sustained).abs() > 1e-6 * sustained.abs().max(1.0) {
+        trf!("{burst}/s ({sustained}/s with reloads)", burst = text::num(running), sustained = text::num(sustained))
+    } else {
+        trf!("{v}/s", v = text::num(running))
+    }
+}
+
 fn defense(ui: &mut egui::Ui, c: &Computed) {
     let t = &c.tank;
     section(ui, tr!("Defense"));
@@ -116,15 +127,15 @@ fn defense(ui: &mut egui::Ui, c: &Computed) {
         });
     }
     if t.reps.shield > 0.0 || t.reps.shield_burst > 0.0 {
-        line(ui, tr!("Shield boost"), trf!("{sustained} / s ({burst} burst)", sustained = text::num(t.reps.shield), burst = text::num(t.reps.shield_burst)));
+        line(ui, tr!("Shield boost"), rep_text(t.reps.shield, t.reps.shield_burst));
     }
     if t.reps.armor > 0.0 || t.reps.armor_burst > 0.0 {
-        line(ui, tr!("Armor repair"), trf!("{sustained} / s ({burst} burst)", sustained = text::num(t.reps.armor), burst = text::num(t.reps.armor_burst)));
+        line(ui, tr!("Armor repair"), rep_text(t.reps.armor, t.reps.armor_burst));
     }
     if t.reps.hull > 0.0 {
-        line(ui, tr!("Hull repair"), trf!("{v} / s", v = text::num(t.reps.hull)));
+        line(ui, tr!("Hull repair"), trf!("{v}/s", v = text::num(t.reps.hull)));
     }
-    line(ui, tr!("Shield regen (peak)"), trf!("{v} / s", v = text::num(t.shield_peak_regen)));
+    line(ui, tr!("Shield regen (peak)"), trf!("{v}/s", v = text::num(t.shield_peak_regen)));
 }
 
 fn offense(ui: &mut egui::Ui, dogma: &Dogma, c: &Computed) {
@@ -212,6 +223,30 @@ fn drones(ui: &mut egui::Ui, c: &Computed) {
     line(ui, tr!("Control range"), text::metres(d.control_range));
 }
 
+/// What the fit costs at the market's average prices: the ship as it flies, and by part.
+fn cost(ui: &mut egui::Ui, c: Option<crate::Cost>) {
+    let Some(c) = c else { return };
+    section(ui, tr!("Cost"));
+    if c.total() <= 0.0 && c.missing > 0 {
+        line(ui, tr!("Prices"), tr!("loading…").to_owned());
+        return;
+    }
+    let isk = |v: f64| trf!("{v} ISK", v = text::num(v));
+    line(ui, tr!("Ship as fitted"), isk(c.fitted()));
+    for (label, v) in [(tr!("Hull"), c.hull), (tr!("Modules"), c.modules), (tr!("Charges loaded"), c.charges), (tr!("Drones and fighters"), c.drones), (tr!("Implants and boosters"), c.worn), (tr!("Cargo"), c.cargo)] {
+        if v > 0.0 {
+            line(ui, label, isk(v));
+        }
+    }
+    line(ui, tr!("Everything"), isk(c.total()));
+    if c.missing > 0 {
+        ui.horizontal(|ui| {
+            ui.add_space(rows::GAP);
+            ui.add(egui::Label::new(egui::RichText::new(trf!("{n} items have no market price", n = c.missing)).weak()).selectable(false));
+        });
+    }
+}
+
 fn remote(ui: &mut egui::Ui, c: &Computed) {
     let r = &c.remote;
     if r.modules.is_empty() {
@@ -219,13 +254,13 @@ fn remote(ui: &mut egui::Ui, c: &Computed) {
     }
     section(ui, tr!("Remote"));
     if r.armor_rep > 0.0 {
-        line(ui, tr!("Armor repair"), trf!("{v} / s", v = text::num(r.armor_rep)));
+        line(ui, tr!("Armor repair"), trf!("{v}/s", v = text::num(r.armor_rep)));
     }
     if r.shield_rep > 0.0 {
-        line(ui, tr!("Shield boost"), trf!("{v} / s", v = text::num(r.shield_rep)));
+        line(ui, tr!("Shield boost"), trf!("{v}/s", v = text::num(r.shield_rep)));
     }
     if r.hull_rep > 0.0 {
-        line(ui, tr!("Hull repair"), trf!("{v} / s", v = text::num(r.hull_rep)));
+        line(ui, tr!("Hull repair"), trf!("{v}/s", v = text::num(r.hull_rep)));
     }
     if r.cap_transfer > 0.0 {
         line(ui, tr!("Capacitor given"), trf!("{v} GJ/s", v = text::num(r.cap_transfer)));

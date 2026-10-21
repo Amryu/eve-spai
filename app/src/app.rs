@@ -7802,7 +7802,7 @@ fn eft_string(
     }
     for (tid, q) in fit_cargo(loss) {
         if let (Ok(type_id), Ok(quantity)) = (u32::try_from(tid), u32::try_from(q)) {
-            fit.cargo.push(spai_fit::fit::CargoItem { type_id, quantity });
+            fit.cargo.push(spai_fit::fit::CargoItem { type_id, quantity, hold: None });
         }
     }
     spai_fit::formats::eft::export_named(&fit, |id| {

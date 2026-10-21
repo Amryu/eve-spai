@@ -15,6 +15,9 @@ use spai_webkit::sso::{Pending, Session, ACCOUNTS_KEY, PENDING_KEY, SESSION_KEY}
 
 use crate::store::{Library, KEY};
 
+/// Where the panel sizes and tabs shown are kept between visits.
+const LAYOUT_KEY: &str = "spai.sim.layout";
+
 /// Where the fitting data is published, next to the mirrored static data.
 const BLOB_PATH: &str = "/sde/";
 
@@ -44,6 +47,9 @@ impl SimWebApp {
             fetching: Default::default(),
         };
         app.sim.handle(HostEvent::Fits(app.library.summaries()));
+        if let Some(layout) = page::load_raw(LAYOUT_KEY) {
+            app.sim.handle(HostEvent::Layout(layout));
+        }
         app.load_profiles();
         app.fetch_doctrines(&cc.egui_ctx);
         app.sync(&cc.egui_ctx);
@@ -291,6 +297,18 @@ impl SimWebApp {
             }
             HostRequest::FetchSkills => self.fetch_skills(ctx),
             HostRequest::CopyText(t) => ctx.copy_text(t),
+            HostRequest::SaveLayout(json) => page::save_raw(LAYOUT_KEY, &json),
+            HostRequest::FetchPrices => {
+                let (events, ctx) = (self.events.clone(), ctx.clone());
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(r) = ehttp::fetch_async(ehttp::Request::get(spai_fit_ui::PRICES_URL)).await {
+                        if r.ok {
+                            events.lock().unwrap().push(HostEvent::Prices(spai_fit_ui::parse_prices(&r.bytes)));
+                            ctx.request_repaint();
+                        }
+                    }
+                });
+            }
             HostRequest::ReadClipboard => {
                 let (events, ctx) = (self.events.clone(), ctx.clone());
                 wasm_bindgen_futures::spawn_local(async move {

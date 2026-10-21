@@ -51,6 +51,10 @@ impl SpaiApp {
     pub(crate) fn imperium_view(&mut self, ui: &mut egui::Ui) {
         if !self.sim_opened {
             self.sim_opened = true;
+            if !self.settings.sim_layout.is_empty() {
+                let layout = self.settings.sim_layout.clone();
+                self.sim.handle(HostEvent::Layout(layout));
+            }
             self.sim_list_fits();
             self.sim_load_profiles();
             self.sim_fetch_stale_skills(ui.ctx());
@@ -107,6 +111,22 @@ impl SpaiApp {
             }
             HostRequest::FetchSkills => self.sim_fetch_skills(ctx, true),
             HostRequest::CopyText(t) => ctx.copy_text(t),
+            HostRequest::FetchPrices => {
+                let (events, ctx) = (self.sim_events.clone(), ctx.clone());
+                let _ = std::thread::Builder::new().name("sim-prices".into()).spawn(move || {
+                    let Ok(client) = crate::http::client(30) else { return };
+                    let Ok(r) = client.get(spai_fit_ui::PRICES_URL).send() else { return };
+                    let Ok(bytes) = r.bytes() else { return };
+                    events.lock().unwrap().push(HostEvent::Prices(spai_fit_ui::parse_prices(&bytes)));
+                    ctx.request_repaint();
+                });
+            }
+            HostRequest::SaveLayout(json) => {
+                if self.settings.sim_layout != json {
+                    self.settings.sim_layout = json;
+                    self.needs_save = true;
+                }
+            }
             HostRequest::ReadClipboard => {
                 let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
                 self.sim.handle(HostEvent::Clipboard(text));

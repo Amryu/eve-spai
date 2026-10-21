@@ -48,6 +48,8 @@ const BOTTOM_PAD: f32 = 8.0;
 pub struct DockState {
     /// The leftmost panel shown.
     pub first: usize,
+    /// The hold the Cargo tab shows and adds to; none is the cargo hold.
+    pub hold: Option<spai_fit::ids::AttrId>,
 }
 
 /// The tabs the fit has: fighters only for a hull with a fighter bay or a fit carrying some.
@@ -339,6 +341,7 @@ fn empty_note(ui: &mut egui::Ui, text: &str) {
 }
 
 fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, bool, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.active, d.in_space())).collect();
     if list.is_empty() {
@@ -354,7 +357,7 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             crate::icons::type_icon(ui, type_id, 18.0);
             let w = rows::name_w(ui, 6.0);
             let label = if active { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
-            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Drone(type_id))));
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).on_hover_text(tr!("One fewer in the bay")).clicked() {
                 delta = -1;
             }
@@ -423,6 +426,7 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 }
 
 fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, bool)> = s.fit.fighters.iter().map(|d| (d.type_id, d.count, d.active)).collect();
     if list.is_empty() {
@@ -436,7 +440,7 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let r = rows::row(ui, "dock/fighters", ("sim_fighter", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
             let w = rows::name_w(ui, 4.0);
-            rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Fighter(type_id))));
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                 delta = -1;
             }
@@ -478,6 +482,7 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 
 /// Implants or boosters, each with the slot it takes.
 fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_ms: u64) {
+    let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
     let mut list: Vec<(TypeId, Option<u8>, bool)> = if implants {
         s.fit.implants.iter().map(|t| (*t, dogma.type_(*t).and_then(|d| d.attr(spai_fit::dogma::attr::IMPLANTNESS)).map(|v| v as u8), false)).collect()
@@ -502,7 +507,7 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
             rows::num_cell(ui, 18.0, slot.map_or(String::new(), |s| s.to_string()), true);
             let w = rows::name_w(ui, if implants { 2.0 } else { 3.0 });
             let label = if on { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
-            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
+            rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&if implants { crate::details::DetailsTarget::Implant(type_id) } else { crate::details::DetailsTarget::Booster(type_id) })));
             if !implants {
                 // Only boosters that have side effects get the button; the rest keep the column.
                 if has_side {
@@ -574,13 +579,62 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
     }
 }
 
+/// How full a hold is, as the dropdown and the bar print it: "123 / 400 m³ · 31%".
+fn fill_text(h: &spai_fit::stats::Hold) -> String {
+    let pct = if h.fraction().is_finite() { format!("{:.0}%", h.fraction() * 100.0) } else { "—".to_owned() };
+    trf!("{used} / {total} m³ · {pct}", used = text::num(h.used), total = text::num(h.capacity), pct = pct)
+}
+
+/// The hold the tab shows, a choice between them when the hull has several, and its fill.
+fn hold_header(sim: &mut SimUi, ui: &mut egui::Ui, holds: &[spai_fit::stats::Hold]) {
+    let Some(shown) = holds.iter().find(|h| h.attr == sim.dock.hold).or_else(|| holds.first()).cloned() else { return };
+    sim.dock.hold = shown.attr;
+    let over = shown.over();
+    ui.horizontal(|ui| {
+        ui.add_space(rows::GAP);
+        let w = ui.available_width() - rows::GAP;
+        if holds.len() > 1 {
+            egui::ComboBox::from_id_salt("sim_cargo_hold").width(w - 4.0).selected_text(text::clip(&format!("{}  {}", shown.name, fill_text(&shown)), 48)).show_ui(ui, |ui| {
+                for h in holds {
+                    let line = egui::RichText::new(format!("{}  {}", h.name, fill_text(h)));
+                    let line = if h.over() { line.color(ui.visuals().error_fg_color) } else { line };
+                    if ui.selectable_label(h.attr == shown.attr, line).clicked() {
+                        sim.dock.hold = h.attr;
+                    }
+                }
+            });
+        }
+    });
+    // The fill bar: the share used, red past full.
+    ui.horizontal(|ui| {
+        ui.add_space(rows::GAP);
+        let w = (ui.available_width() - rows::GAP).max(40.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 13.0), egui::vec2(rect.width(), 4.0));
+        painter.rect_filled(bar, 2.0, ui.visuals().extreme_bg_color);
+        let f = shown.fraction().clamp(0.0, 1.0) as f32;
+        let colour = if over { ui.visuals().error_fg_color } else { ui.visuals().hyperlink_color };
+        painter.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 2.0, colour);
+        let text = if holds.len() > 1 { fill_text(&shown) } else { format!("{}  {}", shown.name, fill_text(&shown)) };
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let tc = if over { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
+        painter.text(rect.left_top(), egui::Align2::LEFT_TOP, text, font, tc);
+    });
+    ui.add_space(2.0);
+}
+
 fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
+    let holds = sim.computed().map(|c| c.holds.clone()).unwrap_or_default();
+    hold_header(sim, ui, &holds);
+    let hold = sim.dock.hold;
     let Some(s) = sim.session() else { return };
-    let list: Vec<(TypeId, u32)> = s.fit.cargo.iter().map(|c| (c.type_id, c.quantity)).collect();
+    let list: Vec<(usize, TypeId, u32)> = s.fit.cargo.iter().enumerate().filter(|(_, c)| c.hold == hold).map(|(i, c)| (i, c.type_id, c.quantity)).collect();
     if list.is_empty() {
-        empty_note(ui, tr!("Anything carried: spare ammo, paste, cap charges, refits. The warnings read it."));
+        empty_note(ui, if hold.is_none() { tr!("Anything carried: spare ammo, paste, cap charges, refits. The warnings read it.") } else { tr!("Nothing in this hold yet. Add or drop items while it is shown.") });
     }
-    for (i, (type_id, qty)) in list.into_iter().enumerate() {
+    let others: Vec<(Option<spai_fit::ids::AttrId>, String)> = holds.iter().filter(|h| h.attr != hold).map(|h| (h.attr, h.name.clone())).collect();
+    for (i, type_id, qty) in list.into_iter() {
         let name = spai_fit::formats::name_of(dogma, type_id);
         let mut remove = false;
         let mut set: Option<u32> = None;
@@ -601,10 +655,21 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             }
         });
         let mut details = false;
+        let mut move_to: Option<Option<spai_fit::ids::AttrId>> = None;
         r.context_menu(|ui| {
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();
+            }
+            if !others.is_empty() {
+                ui.menu_button(tr!("Move to"), |ui| {
+                    for (a, name) in &others {
+                        if ui.button(name).clicked() {
+                            move_to = Some(*a);
+                            ui.close();
+                        }
+                    }
+                });
             }
             if ui.button(tr!("Remove")).clicked() {
                 remove = true;
@@ -613,6 +678,16 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         });
         if details {
             sim.open_details(crate::details::DetailsTarget::Type(type_id));
+        }
+        if let Some(to) = move_to {
+            sim.edit(EditKind::Cargo, now_ms, |f| {
+                let Some(c) = f.cargo.get(i).cloned() else { return };
+                f.cargo.remove(i);
+                match f.cargo.iter_mut().find(|x| x.type_id == c.type_id && x.hold == to) {
+                    Some(x) => x.quantity += c.quantity,
+                    None => f.cargo.push(spai_fit::fit::CargoItem { hold: to, ..c }),
+                }
+            });
         }
         if remove || set.is_some() {
             sim.edit(EditKind::Cargo, now_ms, |f| {
@@ -624,5 +699,4 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             });
         }
     }
-    let _ = text::num;
 }

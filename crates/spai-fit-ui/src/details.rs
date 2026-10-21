@@ -127,6 +127,47 @@ pub fn value_text(dogma: &Dogma, v: f64, unit: Option<u8>) -> String {
 /// An item's tooltip: its name, group and meta level, the first few attributes in two aligned
 /// columns, then `note` (where it sits, why it is locked) and the hint to the details window.
 pub fn type_tip(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &str) {
+    type_tip_with(ui, dogma, type_id, note, None);
+}
+
+/// Every fitted item's attributes as the fit makes them, for the tooltips of the fit's rows.
+pub type TipValues = std::collections::HashMap<DetailsTarget, std::collections::HashMap<AttrId, f64>>;
+
+impl SimUi {
+    /// The fitted values of every item of the fit on screen, figured once per change.
+    pub fn tip_values(&mut self) -> std::sync::Arc<TipValues> {
+        let key = (self.session().map_or(0, |s| s.rev()), self.profile);
+        if let Some((k, v)) = &self.tip_cache {
+            if *k == key {
+                return v.clone();
+            }
+        }
+        let mut out = TipValues::new();
+        if let (Some(dogma), Some(s)) = (self.dogma.clone(), self.session()) {
+            let (fit, env) = self.outside().apply(&dogma, &s.fit, self.skills());
+            let calc = Calc::new(&dogma, &fit, self.skills(), &env);
+            for (i, it) in calc.items().iter().enumerate() {
+                let target = match it.kind {
+                    ItemKind::Ship => DetailsTarget::Ship,
+                    ItemKind::Module { slot, index } => DetailsTarget::Module(slot, index),
+                    ItemKind::Drone { .. } => DetailsTarget::Drone(it.type_id),
+                    ItemKind::Fighter { .. } => DetailsTarget::Fighter(it.type_id),
+                    ItemKind::Implant => DetailsTarget::Implant(it.type_id),
+                    ItemKind::Booster => DetailsTarget::Booster(it.type_id),
+                    _ => continue,
+                };
+                out.entry(target).or_insert_with(|| calc.attrs(i).into_iter().map(|a| (a, calc.value(i, a))).collect());
+            }
+        }
+        let out = std::sync::Arc::new(out);
+        self.tip_cache = Some((key, out.clone()));
+        out
+    }
+}
+
+/// The tooltip with the fitted values in place of the data's, where there are any; a value the
+/// fit improved is tinted green, one it worsened red.
+pub fn type_tip_with(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &str, fitted: Option<&std::collections::HashMap<AttrId, f64>>) {
     ui.set_max_width(320.0);
     let Some(t) = dogma.type_(type_id) else {
         ui.label(format!("type {type_id}"));
@@ -138,6 +179,7 @@ pub fn type_tip(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &str) {
         Some(m) if !group.is_empty() => trf!("{group} · Meta {m}", group = group, m = m),
         _ => group,
     };
+    let line = if fitted.is_some() { if line.is_empty() { tr!("As fitted").to_owned() } else { trf!("{line} · as fitted", line = line) } } else { line };
     if !line.is_empty() {
         ui.label(egui::RichText::new(line).weak());
     }
@@ -147,10 +189,18 @@ pub fn type_tip(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &str) {
         ui.add_space(2.0);
         egui::Grid::new(("sim_tip", type_id)).num_columns(2).spacing([16.0, 1.0]).show(ui, |ui| {
             for a in shown {
-                let v = f64::from(t.attr(a).unwrap_or(0.0));
+                let base = f64::from(t.attr(a).unwrap_or(0.0));
+                let v = fitted.and_then(|f| f.get(&a)).copied().unwrap_or(base);
+                let def = dogma.attr(a);
+                let text = egui::RichText::new(value_text(dogma, v, def.and_then(|d| d.unit))).monospace();
+                let text = if (v - base).abs() > 1e-9 * base.abs().max(1.0) {
+                    if (v > base) == def.is_none_or(|d| d.high_is_good) { text.color(GOOD) } else { text.color(BAD) }
+                } else {
+                    text
+                };
                 ui.label(egui::RichText::new(label_of(dogma, a)).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(value_text(dogma, v, dogma.attr(a).and_then(|d| d.unit))).monospace());
+                    ui.label(text);
                 });
                 ui.end_row();
             }
@@ -438,19 +488,39 @@ pub fn side_rows(sim: &SimUi, type_id: TypeId) -> Vec<SideRow> {
         .filter(|(_, d)| d.usage_chance_attr.is_some())
         .map(|(e, d)| {
             let value = |a: AttrId| item.map_or_else(|| f64::from(t.attr(a).unwrap_or(0.0)), |i| calc.value(i, a));
-            let parts: Vec<String> = d
-                .modifiers
-                .iter()
-                .map(|m| {
-                    let v = value(m.modifying);
-                    let what = match m.op {
-                        Op::PostPercent => format!("{v:+.1}%"),
-                        _ => text::num(v),
-                    };
-                    format!("{} {what}", label_of(dogma, m.modified))
-                })
+            // One line per attribute and change, saying what it reaches: the same attribute is the
+            // ship's speed on one side effect and missile velocity on another, and one side effect
+            // can reach it twice through two skills.
+            let mut parts: Vec<(String, Vec<String>)> = Vec::new();
+            for m in &d.modifiers {
+                let v = value(m.modifying);
+                let what = match m.op {
+                    Op::PostPercent => format!("{v:+.1}%"),
+                    _ => text::num(v),
+                };
+                let head = format!("{} {what}", label_of(dogma, m.modified));
+                let pilot = m.domain == spai_fit::dogma::Domain::Char && m.skill.is_none();
+                let scope = match m.skill {
+                    Some(spai_fit::dogma::SkillRef::Of(sk)) => Some(spai_fit::formats::name_of(dogma, sk)),
+                    _ => None,
+                };
+                let head = if pilot { trf!("{what} on the pilot", what = head) } else { head };
+                match parts.iter_mut().find(|(h, _)| *h == head) {
+                    Some((_, scopes)) => {
+                        if let Some(sc) = scope {
+                            if !scopes.contains(&sc) {
+                                scopes.push(sc);
+                            }
+                        }
+                    }
+                    None => parts.push((head, scope.into_iter().collect())),
+                }
+            }
+            let lines: Vec<String> = parts
+                .into_iter()
+                .map(|(head, scopes)| if head.ends_with(tr!("on the pilot")) { head } else if scopes.is_empty() { trf!("{what} on the ship", what = head) } else { trf!("{what} for whatever needs {skills}", what = head, skills = scopes.join(tr!(" or "))) })
                 .collect();
-            let label = if parts.is_empty() { d.name.clone() } else { parts.join(", ") };
+            let label = if lines.is_empty() { d.name.clone() } else { lines.join("; ") };
             SideRow { effect: e, label, chance: d.usage_chance_attr.map(value), on: booster.side_effect_on(e) }
         })
         .collect()

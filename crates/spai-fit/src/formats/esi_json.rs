@@ -87,7 +87,7 @@ pub fn import(dogma: &Dogma, doc: &EsiFitting) -> Fit {
                     }
                 }
             }
-            None if it.flag == FLAG_CARGO => fit.cargo.push(CargoItem { type_id: it.type_id, quantity: it.quantity.max(1) }),
+            None if it.flag == FLAG_CARGO => fit.cargo.push(CargoItem { type_id: it.type_id, quantity: it.quantity.max(1), hold: None }),
             None => {
                 add_item(dogma, &mut fit, it.type_id, it.quantity);
             }

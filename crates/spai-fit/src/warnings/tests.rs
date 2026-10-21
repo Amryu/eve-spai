@@ -69,7 +69,7 @@ fn ammo_coverage_looks_at_what_is_carried_against_what_exists() {
     let k = kinds(&f, &[]);
     assert!(has(&k, |w| matches!(w, WarningKind::AmmoDamageGap { weapon, missing } if *weapon == ids::GUN && missing == &vec![DamageType::Explosive])), "{k:?}");
     assert!(has(&k, |w| matches!(w, WarningKind::AmmoRangeGap { weapon, short: false, long: true } if *weapon == ids::GUN)), "{k:?}");
-    f.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: 100 });
+    f.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: 100, hold: None });
     let k = kinds(&f, &[]);
     assert!(!has(&k, |w| matches!(w, WarningKind::AmmoDamageGap { .. } | WarningKind::AmmoRangeGap { .. })), "{k:?}");
     f.modules[0].charge = Some(ids::AMMO_LONG);

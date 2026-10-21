@@ -535,7 +535,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
                 fit.implants.push(ids::IMPLANT);
                 fit.boosters.push(spai_fit::fit::Booster { type_id: ids::BOOSTER, side_effects: true, side_on: None });
                 for q in [1, 500, 12_345, 1_000_000] {
-                    fit.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: q });
+                    fit.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: q, hold: None });
                 }
             }
             a.sim.open_fit(fit, 0);
@@ -2709,6 +2709,18 @@ pub(crate) fn all() -> Vec<Scene> {
     }));
     v.push(imperium_scene_with("imperium_graphs_center", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.center = spai_fit_ui::Center::Graphs;
+    }));
+    v.push(imperium_scene_with("imperium_fit_all_columns", [1920.0, 1000.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::test_support::ids;
+        sim.handle(spai_fit_ui::HostEvent::Prices(vec![(ids::SHIP, 450_000.0), (ids::GUN, 1_250_000.0), (ids::MWD, 3_400_000.0), (ids::DC, 900_000.0), (ids::AMMO, 12.5)]));
+    }));
+    v.push(imperium_scene_with("imperium_fit_cargo_over", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::Cargo, 1, |f| {
+            f.cargo.push(spai_fit::fit::CargoItem { type_id: ids::AMMO, quantity: 50_000, hold: None });
+            f.cargo.push(spai_fit::fit::CargoItem { type_id: ids::CAP_CHARGE, quantity: 3, hold: None });
+        });
+        sim.dock.first = 3;
     }));
     v.push(imperium_scene_with("imperium_fit_empty_tab", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         sim.new_empty_tab(5);
@@ -9647,4 +9659,34 @@ fn uitest_sim_dock_holds_its_height() {
     assert!((first - spai_fit_ui::dock::DOCK_H).abs() < 0.5, "the dock is {first} high, not the {} it was given", spai_fit_ui::dock::DOCK_H);
     h.run_steps(30);
     assert!((height(&h) - first).abs() < 0.5, "the dock went from {first} to {}", height(&h));
+}
+
+/// The racks start at the same height however many warnings a fit has. They sat under a list of
+/// warnings once, and every warning that came or went moved every module.
+#[test]
+fn uitest_warnings_never_move_the_racks() {
+    use spai_fit::fit::{Module, Slot, State};
+    use spai_fit::test_support::ids;
+    let top_of_rack = |many: bool| {
+        let mut scene = imperium_scene_with("sim_warn_rack", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, move |sim| {
+            sim.edit(spai_fit::history::EditKind::Other, 1, |f| {
+                if many {
+                    // Over on everything: CPU, grid, slots, offline modules.
+                    for i in 0..6 {
+                        f.modules.push(Module::new(ids::GUN, Slot::High, 3 + i).with_state(State::Offline));
+                    }
+                } else {
+                    f.modules.clear();
+                    f.drones.clear();
+                    f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Online));
+                }
+            });
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run_steps(3);
+        let log = spai_fit_ui::rows::log(&h.ctx);
+        log.iter().filter(|(id, _)| *id == egui::Id::new("rack/high")).map(|(_, r)| r.min.y).fold(f32::INFINITY, f32::min)
+    };
+    let (few, many) = (top_of_rack(false), top_of_rack(true));
+    assert!(few.is_finite() && (few - many).abs() < 0.5, "the racks start at {few} with few warnings and {many} with many");
 }

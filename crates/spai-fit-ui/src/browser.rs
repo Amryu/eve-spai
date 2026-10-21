@@ -287,9 +287,11 @@ pub fn projectable(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
 
 /// Puts one of the type in the cargo, whatever it is, onto a stack of it if there is one.
 pub fn add_cargo(sim: &mut SimUi, type_id: TypeId, now_ms: u64) {
-    sim.edit(EditKind::Cargo, now_ms, |f| match f.cargo.iter_mut().find(|c| c.type_id == type_id) {
+    // Into the hold the Cargo tab shows.
+    let hold = sim.dock.hold;
+    sim.edit(EditKind::Cargo, now_ms, |f| match f.cargo.iter_mut().find(|c| c.type_id == type_id && c.hold == hold) {
         Some(c) => c.quantity += 1,
-        None => f.cargo.push(spai_fit::fit::CargoItem { type_id, quantity: 1 }),
+        None => f.cargo.push(spai_fit::fit::CargoItem { type_id, quantity: 1, hold }),
     });
 }
 

@@ -147,11 +147,14 @@ impl Default for Booster {
 pub struct CargoItem {
     pub type_id: TypeId,
     pub quantity: u32,
+    /// The hold it sits in, by the ship attribute giving that hold's capacity; none is the cargo
+    /// hold itself.
+    pub hold: Option<crate::ids::AttrId>,
 }
 
 impl Default for CargoItem {
     fn default() -> Self {
-        CargoItem { type_id: 0, quantity: 1 }
+        CargoItem { type_id: 0, quantity: 1, hold: None }
     }
 }
 
@@ -361,7 +364,7 @@ mod tests {
         b.modules.swap(0, 1);
         b.modules[0].state = State::Offline;
         assert!(a.same_fitting(&b), "names, order and states do not count");
-        b.cargo.push(CargoItem { type_id: 5, quantity: 1 });
+        b.cargo.push(CargoItem { type_id: 5, quantity: 1, hold: None });
         assert!(!a.same_fitting(&b), "the cargo does");
         let mut c = Fit::new(587, "C");
         c.add_module(1, Slot::High);

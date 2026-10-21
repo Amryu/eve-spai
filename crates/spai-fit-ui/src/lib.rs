@@ -109,6 +109,10 @@ pub enum HostRequest {
     CopyText(String),
     /// The clipboard's text, for the Import button; answered with `HostEvent::Clipboard`.
     ReadClipboard,
+    /// Keep the layout (panel sizes, tabs shown) for the next start: a `SimLayout` as JSON.
+    SaveLayout(String),
+    /// The market's average prices, for what a fit costs; answered with `HostEvent::Prices`.
+    FetchPrices,
     /// The doctrine presets and what the signed-in character may do with them.
     FetchDoctrines,
     PublishDoctrine { id: String, side: DoctrineSide, name: String, tags: Vec<String>, refit_keys: Vec<String>, doc: String },
@@ -136,6 +140,10 @@ pub enum HostEvent {
     Saved(String),
     Status(String),
     Clipboard(String),
+    /// The layout kept from last time, as `SaveLayout` wrote it.
+    Layout(String),
+    /// Average market prices in ISK, by type.
+    Prices(Vec<(TypeId, f64)>),
     Doctrines(Vec<Doctrine>),
     /// Whether the character is signed in with the server, in the Imperium, and a doctrine admin.
     Access { signed_in: bool, imperium: bool, admin: bool },
@@ -238,6 +246,62 @@ pub enum Pane {
     Graphs,
 }
 
+/// What of the screen's arrangement is kept between starts. Plain fields, each optional, so an
+/// older or newer copy still reads.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SimLayout {
+    pub left_w: Option<f32>,
+    pub dock_h: Option<f32>,
+    pub show_library: Option<bool>,
+    /// 0 fits, 1 doctrines, 2 browse.
+    pub left: Option<u8>,
+    /// 0 fit, 1 graphs.
+    pub center: Option<u8>,
+    pub dock_first: Option<usize>,
+    /// 0 hull, 1 tag, 2 A to Z.
+    pub grouping: Option<u8>,
+}
+
+/// ESI's market price list: every type's average price across the market, public, no sign-in.
+pub const PRICES_URL: &str = "https://esi.evetech.net/latest/markets/prices/?datasource=tranquility";
+
+/// The price list as ESI sends it; a type without an average falls back to its adjusted price.
+pub fn parse_prices(bytes: &[u8]) -> Vec<(TypeId, f64)> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        type_id: TypeId,
+        average_price: Option<f64>,
+        adjusted_price: Option<f64>,
+    }
+    serde_json::from_slice::<Vec<Row>>(bytes).unwrap_or_default().into_iter().filter_map(|r| r.average_price.or(r.adjusted_price).filter(|p| *p > 0.0).map(|p| (r.type_id, p))).collect()
+}
+
+/// A fit's price, by part, in ISK.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cost {
+    pub hull: f64,
+    pub modules: f64,
+    pub charges: f64,
+    pub drones: f64,
+    /// Implants and boosters.
+    pub worn: f64,
+    pub cargo: f64,
+    /// Items the price list has no price for.
+    pub missing: usize,
+}
+
+impl Cost {
+    pub fn total(&self) -> f64 {
+        self.hull + self.modules + self.charges + self.drones + self.worn + self.cargo
+    }
+
+    /// The ship as it flies: what is lost with it, the cargo aside.
+    pub fn fitted(&self) -> f64 {
+        self.hull + self.modules + self.charges + self.drones
+    }
+}
+
 /// What the middle shows in a wide window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Center {
@@ -311,6 +375,10 @@ pub struct SimUi {
     pub center: Center,
     pub left: LeftTab,
     pub show_library: bool,
+    /// The dock's height, once dragged or read back.
+    pub dock_h: Option<f32>,
+    /// The layout last handed to the host, so it is sent again only when it changed.
+    layout_sent: Option<SimLayout>,
     pub browser: browser::Browser,
     pub library_state: library_panel::LibraryState,
     /// The window that picks a fit to project, with its own grouping and search.
@@ -324,6 +392,11 @@ pub struct SimUi {
     pub details: Vec<details::DetailsWindow>,
     /// The booster whose side effects are being picked.
     pub side_window: Option<TypeId>,
+    /// The fitted values behind the tooltips, for the revision and profile they were figured for.
+    tip_cache: Option<((u64, usize), std::sync::Arc<details::TipValues>)>,
+    /// Average market prices in ISK, by type, once the host has them.
+    pub prices: std::collections::HashMap<TypeId, f64>,
+    prices_asked: bool,
     /// The width the user dragged the left column to; read from egui's memory on first use.
     left_w: Option<f32>,
     pub skills_window: bool,
@@ -378,6 +451,8 @@ impl Default for SimUi {
             center: Center::Fit,
             left: LeftTab::Browse,
             show_library: true,
+            dock_h: None,
+            layout_sent: None,
             browser: browser::Browser::default(),
             library_state: Default::default(),
             project_picker: None,
@@ -387,6 +462,9 @@ impl Default for SimUi {
             sel_anchor: None,
             details: Vec::new(),
             side_window: None,
+            tip_cache: None,
+            prices: Default::default(),
+            prices_asked: false,
             left_w: None,
             skills_window: false,
             traits_window: false,
@@ -464,6 +542,11 @@ impl SimUi {
             }
             HostEvent::Status(s) => self.status(s),
             HostEvent::Clipboard(text) => self.import_clipboard(&text),
+            HostEvent::Layout(json) => self.apply_layout(&json),
+            HostEvent::Prices(list) => {
+                self.prices = list.into_iter().collect();
+                self.tip_cache = None;
+            }
             HostEvent::Doctrines(d) => {
                 for doc in &d {
                     if let Ok(fit) = spai_fit::doc::from_json(&doc.doc.to_string()) {
@@ -744,6 +827,128 @@ impl SimUi {
         }
     }
 
+    /// The arrangement as it stands, for the host to keep.
+    pub fn layout(&self) -> SimLayout {
+        SimLayout {
+            left_w: self.left_w,
+            dock_h: self.dock_h,
+            show_library: Some(self.show_library),
+            left: Some(match self.left {
+                LeftTab::Fits => 0,
+                LeftTab::Doctrines => 1,
+                LeftTab::Browse => 2,
+            }),
+            center: Some(match self.center {
+                Center::Fit => 0,
+                Center::Graphs => 1,
+            }),
+            dock_first: Some(self.dock.first),
+            grouping: Some(match self.library_state.grouping {
+                library_panel::Grouping::Hull => 0,
+                library_panel::Grouping::Tag => 1,
+                library_panel::Grouping::Flat => 2,
+            }),
+        }
+    }
+
+    /// Takes back a kept arrangement; what it does not say stays as it is.
+    pub fn apply_layout(&mut self, json: &str) {
+        let Ok(l) = serde_json::from_str::<SimLayout>(json) else { return };
+        if let Some(w) = l.left_w {
+            self.left_w = Some(w);
+        }
+        if let Some(h) = l.dock_h {
+            self.dock_h = Some(h);
+        }
+        if let Some(b) = l.show_library {
+            self.show_library = b;
+        }
+        if let Some(t) = l.left {
+            self.left = match t {
+                0 => LeftTab::Fits,
+                1 => LeftTab::Doctrines,
+                _ => LeftTab::Browse,
+            };
+        }
+        if let Some(c) = l.center {
+            self.center = if c == 1 { Center::Graphs } else { Center::Fit };
+        }
+        if let Some(f) = l.dock_first {
+            self.dock.first = f;
+        }
+        if let Some(g) = l.grouping {
+            self.library_state.grouping = match g {
+                1 => library_panel::Grouping::Tag,
+                2 => library_panel::Grouping::Flat,
+                _ => library_panel::Grouping::Hull,
+            };
+        }
+        self.layout_sent = Some(self.layout());
+    }
+
+    /// Hands the arrangement to the host once it settles: never mid-drag, and only when changed.
+    fn keep_layout(&mut self, ctx: &egui::Context) {
+        if let Some(st) = egui::PanelState::load(ctx, egui::Id::new("sim_dock")) {
+            self.dock_h = Some(st.rect.height());
+        }
+        if ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        let now = self.layout();
+        if self.layout_sent.as_ref() != Some(&now) {
+            if let Ok(json) = serde_json::to_string(&now) {
+                self.requests.push(HostRequest::SaveLayout(json));
+            }
+            self.layout_sent = Some(now);
+        }
+    }
+
+    /// What the fit on screen costs at the market's average prices, by part.
+    pub fn cost(&self) -> Option<Cost> {
+        let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
+        let price = |t: TypeId| self.prices.get(&t).copied();
+        let mut c = Cost::default();
+        let mut add = |part: &mut f64, t: TypeId, n: f64| match price(t) {
+            Some(p) => *part += p * n,
+            None => c.missing += 1,
+        };
+        let mut hull = 0.0;
+        add(&mut hull, s.fit.ship, 1.0);
+        let (mut modules, mut charges, mut drones, mut worn, mut cargo) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for m in &s.fit.modules {
+            add(&mut modules, m.type_id, 1.0);
+            if let Some(ch) = m.charge {
+                // A full load: what the module holds of the charge.
+                let cap = dogma.type_(m.type_id).and_then(|t| t.attr(spai_fit::dogma::attr::CAPACITY)).map_or(0.0, f64::from);
+                let vol = dogma.type_(ch).and_then(|t| t.attr(spai_fit::dogma::attr::VOLUME)).map_or(0.0, f64::from);
+                let n = if cap > 0.0 && vol > 0.0 { (cap / vol + 1e-6).floor().max(1.0) } else { 1.0 };
+                add(&mut charges, ch, n);
+            }
+        }
+        for d in &s.fit.drones {
+            add(&mut drones, d.type_id, f64::from(d.count));
+        }
+        for f in &s.fit.fighters {
+            add(&mut drones, f.type_id, f64::from(f.count));
+        }
+        for i in &s.fit.implants {
+            add(&mut worn, *i, 1.0);
+        }
+        for b in &s.fit.boosters {
+            add(&mut worn, b.type_id, 1.0);
+        }
+        for k in &s.fit.cargo {
+            add(&mut cargo, k.type_id, f64::from(k.quantity));
+        }
+        c.hull = hull;
+        c.modules = modules;
+        c.charges = charges;
+        c.drones = drones;
+        c.worn = worn;
+        c.cargo = cargo;
+        Some(c)
+    }
+
     /// What an open fit computes to, by session id, refreshed when stale.
     pub fn computed_of(&mut self, id: &str) -> Option<Arc<Computed>> {
         let dogma = self.dogma.clone()?;
@@ -937,6 +1142,10 @@ impl SimUi {
         }
         let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
         self.now_ms = now_ms;
+        if !self.prices_asked {
+            self.prices_asked = true;
+            self.requests.push(HostRequest::FetchPrices);
+        }
         rows::clear_log(ui.ctx());
         // Ctrl+V with no text box focused imports what was pasted.
         if self.mode == Mode::Fits && ui.ctx().memory(|m| m.focused().is_none()) {
@@ -1034,6 +1243,7 @@ impl SimUi {
         library_panel::project_picker(self, ctx, now_ms);
         self.import_ask_window(ctx, now_ms);
         rows::drag_ghost(ctx);
+        self.keep_layout(ctx);
     }
 
     /// The left column, as wide as the user dragged it and no wider: egui lets content that

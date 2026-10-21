@@ -44,13 +44,108 @@ pub struct Picker {
     pub expanded: std::collections::BTreeSet<spai_fit::ids::MarketGroupId>,
     /// What this picker added so far, for a window that stays open between picks.
     pub added: Vec<TypeId>,
+    /// For a module slot: which modules to offer, by what the hull can take.
+    pub filter: FitFilter,
+    /// The tree's first level has been opened once.
+    opened_roots: bool,
+}
+
+/// Which modules a slot's picker offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FitFilter {
+    All,
+    /// What the hull allows: ship and group restrictions, rig size, hardpoints it has.
+    Hull,
+    /// That, and within the hull's whole CPU and powergrid.
+    Totals,
+    /// That, and within what the rest of the fit leaves.
+    #[default]
+    Left,
+}
+
+/// What the hull and the rest of the fit leave for one slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FitRoom {
+    pub ship: TypeId,
+    pub ship_group: spai_fit::ids::GroupId,
+    pub rig_size: Option<f32>,
+    pub cpu_total: f64,
+    pub power_total: f64,
+    pub cpu_left: f64,
+    pub power_left: f64,
+    pub turrets_total: u32,
+    pub launchers_total: u32,
+    pub turrets_free: u32,
+    pub launchers_free: u32,
+}
+
+/// Whether the module may go in under the filter. CPU and powergrid are the module's own, before
+/// skills, so it errs on the side of leaving a module out that skills would let in.
+pub fn fits(dogma: &Dogma, t: &spai_fit::dogma::TypeDef, room: &FitRoom, filter: FitFilter) -> bool {
+    if filter == FitFilter::All {
+        return true;
+    }
+    let named = |prefix: &str| -> Vec<f32> { t.attrs.iter().filter(|(a, _)| dogma.attr(*a).is_some_and(|d| d.name.starts_with(prefix))).map(|(_, v)| *v).collect() };
+    let groups = named("canFitShipGroup");
+    let ships = named("canFitShipType");
+    if (!groups.is_empty() || !ships.is_empty()) && !groups.iter().any(|g| *g as u32 == u32::from(room.ship_group)) && !ships.iter().any(|s| *s as u32 == room.ship) {
+        return false;
+    }
+    if let (Some(size), Some(rig)) = (dogma.attr_named("rigSize").and_then(|a| t.attr(a.id)), room.rig_size) {
+        if size != rig {
+            return false;
+        }
+    }
+    let effect = |name: &str| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.name == name));
+    let (turret, launcher) = (effect("turretFitted"), effect("launcherFitted"));
+    if (turret && room.turrets_total == 0) || (launcher && room.launchers_total == 0) {
+        return false;
+    }
+    if filter == FitFilter::Hull {
+        return true;
+    }
+    let cpu = f64::from(t.attr(attr::CPU).unwrap_or(0.0));
+    let power = f64::from(t.attr(attr::POWER).unwrap_or(0.0));
+    if filter == FitFilter::Totals {
+        return cpu <= room.cpu_total + 1e-6 && power <= room.power_total + 1e-6;
+    }
+    cpu <= room.cpu_left + 1e-6 && power <= room.power_left + 1e-6 && !(turret && room.turrets_free == 0) && !(launcher && room.launchers_free == 0)
+}
+
+impl SimUi {
+    /// What the hull and the rest of the fit leave for the module in this slot, the module
+    /// already there not counted.
+    pub fn fit_room(&mut self, slot: Slot, index: u8) -> Option<FitRoom> {
+        let dogma = self.dogma.clone()?;
+        let c = self.computed()?;
+        let s = self.session()?;
+        let ship = dogma.type_(s.fit.ship)?;
+        let here = s.module_stats.iter().find(|m| m.slot == slot && m.index == index);
+        let (cpu_here, power_here) = here.map_or((0.0, 0.0), |m| (m.cpu, m.power));
+        let module_here = s.fit.module(slot, index).and_then(|m| dogma.type_(m.type_id));
+        let has = |t: Option<&spai_fit::dogma::TypeDef>, name: &str| t.is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|d| d.name == name)));
+        let f = &c.fitting;
+        Some(FitRoom {
+            ship: ship.id,
+            ship_group: ship.group,
+            rig_size: dogma.attr_named("rigSize").and_then(|a| ship.attr(a.id)),
+            cpu_total: f.cpu_total,
+            power_total: f.power_total,
+            cpu_left: f.cpu_total - f.cpu_used + cpu_here,
+            power_left: f.power_total - f.power_used + power_here,
+            turrets_total: f.turrets_total,
+            launchers_total: f.launchers_total,
+            turrets_free: (f.turrets_total + u32::from(has(module_here, "turretFitted"))).saturating_sub(f.turrets_used),
+            launchers_free: (f.launchers_total + u32::from(has(module_here, "launcherFitted"))).saturating_sub(f.launchers_used),
+        })
+    }
 }
 
 pub const MAX_RESULTS: usize = 250;
 
 impl Picker {
     pub fn new(target: PickTarget) -> Self {
-        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default(), added: Vec::new() }
+        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default(), added: Vec::new(), filter: FitFilter::default(), opened_roots: false }
     }
 
     pub fn title(&self) -> String {
@@ -96,10 +191,19 @@ pub fn charge_filter(dogma: &Dogma, module: TypeId) -> (Vec<GroupId>, Option<f32
 /// Charges the module can load, by name.
 pub fn compatible_charges(dogma: &Dogma, module: TypeId) -> Vec<TypeId> {
     let (groups, size) = charge_filter(dogma, module);
+    let capacity = dogma.type_(module).and_then(|t| t.attr(attr::CAPACITY)).filter(|c| *c > 0.0);
     let mut out: Vec<TypeId> = groups
         .iter()
         .flat_map(|g| dogma.types_in_group(*g).iter().copied())
-        .filter(|c| dogma.type_(*c).is_some_and(|t| t.published && (size.is_none() || t.attr(attr::CHARGE_SIZE).is_none() || t.attr(attr::CHARGE_SIZE) == size)))
+        .filter(|c| {
+            dogma.type_(*c).is_some_and(|t| {
+                // A sized module takes its own size only: Cap Booster 25 has no size at all and
+                // does not go into an ancillary shield booster. Nor does anything bigger than it holds.
+                let sized = size.is_none() || t.attr(attr::CHARGE_SIZE) == size;
+                let fits = capacity.is_none_or(|cap| t.attr(attr::VOLUME).is_none_or(|v| v <= cap));
+                t.published && sized && fits
+            })
+        })
         .collect();
     out.sort_by_cached_key(|c| dogma.type_(*c).map(|t| t.name.to_lowercase()).unwrap_or_default());
     out.dedup();
@@ -140,6 +244,52 @@ pub fn results(dogma: &Dogma, target: PickTarget, module_type: Option<TypeId>, q
     };
     out.sort();
     out.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Charges sorted the way a pilot looks for them: Tech I, Tech II, then each faction on its own,
+/// then the rest. A faction's name is what its charge adds to the Tech I one: "Republic Fleet"
+/// for Republic Fleet EMP S over EMP S.
+pub fn charge_sections(dogma: &Dogma, charges: &[TypeId]) -> Vec<(String, Vec<TypeId>)> {
+    let mut t1 = Vec::new();
+    let mut t2 = Vec::new();
+    let mut factions: Vec<(String, Vec<TypeId>)> = Vec::new();
+    let mut other = Vec::new();
+    for &c in charges {
+        let Some(t) = dogma.type_(c) else { continue };
+        match t.meta_group {
+            Some(2) => t2.push(c),
+            Some(4) => {
+                let parent = t.variation_parent.and_then(|p| dogma.type_(p)).map(|p| p.name.clone());
+                let faction = parent
+                    .as_deref()
+                    .and_then(|p| t.name.strip_suffix(p))
+                    .map(|f| f.trim().to_owned())
+                    .filter(|f| !f.is_empty())
+                    .unwrap_or_else(|| t.name.split_whitespace().take(2).collect::<Vec<_>>().join(" "));
+                match factions.iter_mut().find(|(n, _)| *n == faction) {
+                    Some((_, v)) => v.push(c),
+                    None => factions.push((faction, vec![c])),
+                }
+            }
+            Some(1) | None => t1.push(c),
+            _ => other.push(c),
+        }
+    }
+    factions.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = Vec::new();
+    if !t1.is_empty() {
+        out.push((tr!("Tech I").to_owned(), t1));
+    }
+    if !t2.is_empty() {
+        out.push((tr!("Tech II").to_owned(), t2));
+    }
+    for (name, v) in factions {
+        out.push((trf!("Faction: {name}", name = name), v));
+    }
+    if !other.is_empty() {
+        out.push((tr!("Other").to_owned(), other));
+    }
+    out
 }
 
 /// Whether the picker shows market categories while nothing is typed: not for one weapon's
@@ -229,11 +379,19 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
             m.state = spai_fit::formats::default_state(&dogma, type_id);
             f.modules.push(m);
         }),
-        PickTarget::Charge(slot, index) => sim.edit(EditKind::SetCharge, now_ms, |f| {
-            if let Some(m) = f.module_mut(slot, index) {
-                m.charge = Some(type_id);
-            }
-        }),
+        PickTarget::Charge(slot, index) => {
+            // A row of a multi-selection loads every picked module that takes the charge.
+            let targets: Vec<(Slot, u8)> = if sim.selection.len() > 1 && sim.selection.contains(&(slot, index)) { sim.selection.clone() } else { vec![(slot, index)] };
+            sim.edit(EditKind::SetCharge, now_ms, |f| {
+                for (s, i) in &targets {
+                    if let Some(m) = f.module_mut(*s, *i) {
+                        if compatible_charges(&dogma, m.type_id).contains(&type_id) {
+                            m.charge = Some(type_id);
+                        }
+                    }
+                }
+            });
+        }
         PickTarget::Drone | PickTarget::Fighter => sim.edit(EditKind::Drones, now_ms, |f| {
             spai_fit::formats::add_item(&dogma, f, type_id, 1);
         }),
@@ -253,9 +411,16 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         Some(PickTarget::Charge(slot, index)) => sim.session().and_then(|s| s.fit.module(slot, index)).map(|m| m.type_id),
         _ => None,
     };
+    let room = match sim.picker.as_ref().map(|p| p.target) {
+        Some(PickTarget::Module(slot, index)) => sim.fit_room(slot, index),
+        _ => None,
+    };
     let Some(picker) = &mut sim.picker else { return };
     if picker.last_query.as_deref() != Some(picker.query.as_str()) {
         let mut all = results(&dogma, picker.target, module_type, &picker.query);
+        if let Some(room) = &room {
+            all.retain(|id| dogma.type_(*id).is_some_and(|t| fits(&dogma, t, room, picker.filter)));
+        }
         if picker.query.trim().is_empty() && picker.takes.is_none() {
             picker.takes = Some(all.iter().copied().collect());
         }
@@ -265,6 +430,15 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     }
     let tree = (has_tree(picker.target) && picker.query.trim().is_empty()).then(|| sim.browser.tree(&dogma));
     let Some(picker) = &mut sim.picker else { return };
+    // The first level open from the start, those with something to offer.
+    if let (Some(tree), Some(takes), false) = (&tree, &picker.takes, picker.opened_roots) {
+        for g in tree.roots() {
+            if taken_under(tree, takes, *g) > 0 {
+                picker.expanded.insert(*g);
+            }
+        }
+        picker.opened_roots = true;
+    }
     let mut open = true;
     let mut chosen: Option<TypeId> = None;
     let target = picker.target;
@@ -279,10 +453,50 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             chosen = picker.results.first().copied();
         }
+        if room.is_some() {
+            use spai_ui::widgets::SteadySelect as _;
+            ui.horizontal(|ui| {
+                // What the hull cannot fit at all is never offered; the choice is only how much room counts.
+                let w = egui::vec2(((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0), 22.0);
+                for (f, label, hint) in [
+                    (FitFilter::Left, tr!("Fits now"), tr!("Within the CPU, powergrid and hardpoints the rest of the fit leaves")),
+                    (FitFilter::Totals, tr!("Fits empty"), tr!("Within the hull's whole CPU and powergrid")),
+                ] {
+                    if ui.menu_label_sized(w, picker.filter == f, label).on_hover_text(hint).clicked() && picker.filter != f {
+                        picker.filter = f;
+                        picker.last_query = None;
+                        picker.takes = None;
+                    }
+                }
+            });
+        }
         if !picker.added.is_empty() {
             let last = picker.added.last().and_then(|t| dogma.type_(*t)).map_or(String::new(), |t| t.name.clone());
             let line = trf!("{icon} Added {n}, last {name}. Pick more, or close.", icon = egui_phosphor::regular::CHECK, n = picker.added.len(), name = crate::text::clip(&last, 30));
             ui.add(egui::Label::new(egui::RichText::new(line).color(ui.visuals().hyperlink_color)).truncate());
+        }
+        if matches!(target, PickTarget::Charge(..)) && picker.query.trim().is_empty() {
+            let sections = charge_sections(&dogma, &picker.results);
+            egui::ScrollArea::vertical().id_salt("sim_picker_charges").auto_shrink([false, false]).show(ui, |ui| {
+                for (title, list) in &sections {
+                    crate::rows::row(ui, "picker", ("sim_pick_section", title.as_str()), 24.0, false, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
+                    });
+                    for &id in list {
+                        let Some(t) = dogma.type_(id) else { continue };
+                        let r = crate::rows::row(ui, "picker", ("sim_pick", id), 24.0, false, |ui| {
+                            ui.add_space(14.0);
+                            crate::icons::type_icon(ui, id, 18.0);
+                            let w = ui.available_width();
+                            crate::rows::cell(ui, w, egui::RichText::new(t.name.as_str()), "").on_hover_ui(|ui| crate::details::type_tip(ui, &dogma, id, ""));
+                        });
+                        if r.clicked() {
+                            chosen = Some(id);
+                        }
+                    }
+                }
+            });
+            return;
         }
         if let (Some(tree), Some(takes)) = (&tree, &picker.takes) {
             egui::ScrollArea::vertical().id_salt("sim_picker_tree").auto_shrink([false, false]).show(ui, |ui| {

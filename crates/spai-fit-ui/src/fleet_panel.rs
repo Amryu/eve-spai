@@ -436,7 +436,7 @@ fn fleet_card(ui: &mut egui::Ui, _dogma: &spai_fit::Dogma, s: &FleetStats, names
     title(ui, &s.name, false);
     line(ui, tr!("Ships"), s.ships.to_string());
     line(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(s.dps), volley = text::num(s.volley)));
-    line(ui, tr!("Logistics"), trf!("{v} / s", v = text::num(s.logi_rep)));
+    line(ui, tr!("Logistics"), trf!("{v}/s", v = text::num(s.logi_rep)));
     if s.neut > 0.0 {
         line(ui, tr!("Neuts"), trf!("{v} GJ/s", v = text::num(s.neut)));
     }
@@ -468,14 +468,14 @@ fn against_card(ui: &mut egui::Ui, head: &str, a: &Against) {
     line(ui, tr!("Target speed / signature"), trf!("{v} m/s, {s} m", v = text::num(a.target_velocity), s = text::num(a.target_signature)));
     line(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships per volley kill", n = n)));
     line(ui, tr!("Kills per volley"), text::num(a.kills_per_volley));
-    line(ui, tr!("Break point (their reps)"), trf!("{v} / s", v = text::num(a.break_point)));
+    line(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)));
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(crate::rows::GAP);
         ui.label(tr!("Margin"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(crate::rows::GAP);
             let color = if a.margin >= 0.0 { ui.visuals().hyperlink_color } else { ui.visuals().error_fg_color };
-            ui.label(egui::RichText::new(trf!("{v} / s", v = text::num(a.margin))).monospace().color(color));
+            ui.label(egui::RichText::new(trf!("{v}/s", v = text::num(a.margin))).monospace().color(color));
         });
     });
 }

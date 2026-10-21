@@ -109,7 +109,7 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
         match place_of(dogma, t) {
             // Spare modules travel in the cargo, written `Name xN` like everything else there;
             // fitting them would overrun the racks.
-            Place::Module(_) if line.counted => out.fit.cargo.push(CargoItem { type_id: t.id, quantity: line.quantity.max(1) }),
+            Place::Module(_) if line.counted => out.fit.cargo.push(CargoItem { type_id: t.id, quantity: line.quantity.max(1), hold: None }),
             Place::Module(slot) => {
                 for _ in 0..line.quantity.max(1) {
                     let index = out.fit.add_module(t.id, slot);

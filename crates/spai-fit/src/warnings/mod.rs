@@ -35,6 +35,8 @@ pub enum WarningKind {
     LaunchersOver { used: u32, total: u32 },
     DroneBandwidthOver { used: f64, total: f64 },
     DroneBayOver { used: f64, total: f64 },
+    /// More carried than a hold takes: the cargo hold, or another by name.
+    HoldOver { hold: String, used: f64, total: f64 },
     TooManyDronesOut { active: u32, max: u32 },
     EmptySlots { slot: Slot, free: u32 },
     NoPropMod,
@@ -137,6 +139,9 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
     }
     if d.bay_used > d.bay_total + 1e-6 {
         out.push(warn(Severity::Error, WarningKind::DroneBayOver { used: d.bay_used, total: d.bay_total }));
+    }
+    for h in computed.holds.iter().filter(|h| h.over()) {
+        out.push(warn(Severity::Error, WarningKind::HoldOver { hold: h.name.clone(), used: h.used, total: h.capacity }));
     }
     if d.active > d.max_active {
         out.push(warn(Severity::Error, WarningKind::TooManyDronesOut { active: d.active, max: d.max_active }));

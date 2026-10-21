@@ -665,3 +665,130 @@ fn a_press_is_a_drag_only_once_it_travels_and_lasts() {
     assert!(!is_drag(o, egui::pos2(140.0, 100.0), 0.05), "a flick too quick to mean it");
     assert!(is_drag(o, egui::pos2(110.0, 104.0), 0.2));
 }
+
+#[test]
+fn a_sized_module_takes_only_charges_of_its_size_that_fit_in_it() {
+    use crate::picker::compatible_charges;
+    use spai_fit::dogma::attr;
+    use spai_fit::test_support::type_def;
+    let mut d = dataset();
+    let asb = 90_001;
+    d.types.push(type_def(asb, "X-Large Ancillary Shield Booster", 40, 7, &[(attr::CHARGE_GROUP_1, 87.0), (attr::CHARGE_SIZE, 3.0), (attr::CAPACITY, 112.0)], &[], &[]));
+    let charge = |id: u32, name: &str, size: Option<f32>, volume: f32| {
+        let mut a = vec![(attr::VOLUME, volume)];
+        if let Some(s) = size {
+            a.push((attr::CHARGE_SIZE, s));
+        }
+        type_def(id, name, 87, 8, &a, &[], &[])
+    };
+    d.types.push(charge(90_002, "Cap Booster 25", None, 1.0));
+    d.types.push(charge(90_003, "Cap Booster 400", Some(3.0), 16.0));
+    d.types.push(charge(90_004, "Cap Booster 3200", Some(4.0), 128.0));
+    d.types.push(charge(90_005, "Cap Booster Huge", Some(3.0), 200.0));
+    d.groups.push(spai_fit::dogma::GroupDef { id: 87, name: "Capacitor Booster Charge".into(), category: 8 });
+    let d = d.finish();
+    assert_eq!(compatible_charges(&d, asb), vec![90_003], "size 3 only, and no bigger than the module holds");
+}
+
+#[test]
+fn charges_sort_into_tech_and_each_faction() {
+    use crate::picker::charge_sections;
+    use spai_fit::test_support::type_def;
+    let mut d = dataset();
+    let mut t1 = type_def(91_001, "EMP S", 83, 8, &[], &[], &[]);
+    t1.meta_group = Some(1);
+    let mut t2 = type_def(91_002, "Barrage S", 83, 8, &[], &[], &[]);
+    t2.meta_group = Some(2);
+    let mut rf = type_def(91_003, "Republic Fleet EMP S", 83, 8, &[], &[], &[]);
+    rf.meta_group = Some(4);
+    rf.variation_parent = Some(91_001);
+    let mut cn = type_def(91_004, "Caldari Navy EMP S", 83, 8, &[], &[], &[]);
+    cn.meta_group = Some(4);
+    cn.variation_parent = Some(91_001);
+    d.types.extend([t1, t2, rf, cn]);
+    let d = d.finish();
+    let s = charge_sections(&d, &[91_001, 91_002, 91_003, 91_004]);
+    let titles: Vec<&str> = s.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(titles, vec!["Tech I", "Tech II", "Faction: Caldari Navy", "Faction: Republic Fleet"]);
+}
+
+#[test]
+fn a_charge_picked_on_a_selected_row_loads_every_selected_module_that_takes_it() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Module(Slot::High, 1), ids::GUN, 2);
+    apply(&mut s, PickTarget::Module(Slot::Low, 0), ids::DC, 3);
+    s.selection = vec![(Slot::High, 0), (Slot::High, 1), (Slot::Low, 0)];
+    apply(&mut s, PickTarget::Charge(Slot::High, 1), ids::AMMO_LONG, 4);
+    let f = &s.session().unwrap().fit;
+    assert!(f.rack(Slot::High).all(|m| m.charge == Some(ids::AMMO_LONG)), "both guns");
+    assert_eq!(f.module(Slot::Low, 0).unwrap().charge, None, "the damage control takes none");
+}
+
+#[test]
+fn the_layout_is_handed_over_when_it_changes_and_read_back() {
+    let mut s = sim();
+    s.left = LeftTab::Doctrines;
+    s.dock_h = Some(240.0);
+    s.library_state.grouping = crate::library_panel::Grouping::Tag;
+    let json = serde_json::to_string(&s.layout()).unwrap();
+    let mut t = sim();
+    t.handle(HostEvent::Layout(json));
+    assert_eq!(t.left, LeftTab::Doctrines);
+    assert_eq!(t.dock_h, Some(240.0));
+    assert_eq!(t.library_state.grouping, crate::library_panel::Grouping::Tag);
+    t.handle(HostEvent::Layout("{\"left_w\": 333.0, \"something_new\": 1}".into()));
+    assert_eq!(t.layout().left_w, Some(333.0), "a newer copy with fields this build does not know still reads");
+    assert_eq!(t.left, LeftTab::Doctrines, "and what it leaves out stays");
+}
+
+#[test]
+fn fitted_tooltips_carry_the_values_the_fit_gives() {
+    use crate::details::DetailsTarget;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    let tips = s.tip_values();
+    let gun = tips.get(&DetailsTarget::Module(Slot::High, 0)).expect("the gun has fitted values");
+    let base = f64::from(s.dogma.as_ref().unwrap().type_(ids::GUN).unwrap().attr(spai_fit::dogma::attr::FALLOFF).unwrap());
+    assert!(gun[&spai_fit::dogma::attr::FALLOFF] > base, "skills lengthen the falloff in the tooltip too");
+    assert!(std::sync::Arc::ptr_eq(&tips, &s.tip_values()), "figured once per change");
+    apply(&mut s, PickTarget::Module(Slot::High, 1), ids::GUN, 2);
+    assert!(!std::sync::Arc::ptr_eq(&tips, &s.tip_values()), "and again after one");
+}
+
+#[test]
+fn the_slot_picker_offers_what_the_hull_and_the_fit_leave_room_for() {
+    use crate::picker::{fits, FitFilter, FitRoom};
+    let d = dataset();
+    let gun = d.type_(ids::GUN).unwrap();
+    let room = |turrets_free: u32, cpu_left: f64| FitRoom { ship: ids::SHIP, ship_group: 25, rig_size: None, cpu_total: 130.0, power_total: 40.0, cpu_left, power_left: 40.0, turrets_total: 3, launchers_total: 2, turrets_free, launchers_free: 2 };
+    assert!(fits(&d, gun, &room(1, 100.0), FitFilter::Left));
+    assert!(!fits(&d, gun, &room(0, 100.0), FitFilter::Left), "no turret hardpoint free");
+    assert!(fits(&d, gun, &room(0, 100.0), FitFilter::Totals), "but it fits an empty hull");
+    assert!(!fits(&d, gun, &room(1, 1.0), FitFilter::Left), "not enough CPU left");
+    let mut no_turrets = room(1, 100.0);
+    no_turrets.turrets_total = 0;
+    assert!(!fits(&d, gun, &no_turrets, FitFilter::Hull) && fits(&d, gun, &no_turrets, FitFilter::All), "a hull without turret hardpoints takes no gun at all");
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let r = s.fit_room(Slot::High, 0).expect("room on a fitted hull");
+    assert!(r.cpu_left <= r.cpu_total && r.turrets_free <= r.turrets_total);
+}
+
+#[test]
+fn a_fit_costs_what_its_parts_cost_at_the_market() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    let prices = br#"[{"type_id": 587, "average_price": 500000.0}, {"type_id": 2873, "average_price": 100000.0, "adjusted_price": 1.0}, {"type_id": 99999, "adjusted_price": 5.0}]"#;
+    let parsed = crate::parse_prices(prices);
+    assert!(parsed.contains(&(99_999, 5.0)), "the adjusted price stands in for a missing average");
+    s.handle(HostEvent::Prices(parsed));
+    let c = s.cost().unwrap();
+    assert_eq!(c.hull, if ids::SHIP == 587 { 500_000.0 } else { 0.0 });
+    assert!(c.missing > 0, "the ammo has no price in this list");
+    assert!((c.total() - c.hull - c.modules - c.charges - c.drones - c.worn - c.cargo).abs() < 1e-6);
+}

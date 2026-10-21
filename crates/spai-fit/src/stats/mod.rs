@@ -5,7 +5,7 @@
 use crate::calc::{Calc, Env, ItemIdx, ItemKind};
 use crate::dogma::{attr, Dogma, EffectCategory};
 use crate::fit::{DamageProfile, Fit, Slot, State};
-use crate::ids::{GroupId, TypeId};
+use crate::ids::{AttrId, GroupId, TypeId};
 use crate::skills::SkillSet;
 
 pub mod application;
@@ -289,6 +289,8 @@ pub struct Computed {
     pub cap: Capacitor,
     pub mobility: Mobility,
     pub sensors: Sensors,
+    /// The cargo hold first, then every other hold the hull has.
+    pub holds: Vec<Hold>,
     pub unknown_types: Vec<TypeId>,
 }
 
@@ -319,9 +321,60 @@ pub fn compute_with(calc: &Calc, fit: &Fit) -> Computed {
         cap: capacitor(calc, &weapons),
         mobility: mobility(calc),
         sensors: sensors(calc),
+        holds: holds(calc, fit),
         weapons,
         unknown_types: calc.unknown_types.clone(),
     }
+}
+
+/// A place things are carried: its capacity with skills and modules counted, and what fills it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hold {
+    /// The ship attribute giving its capacity; none is the cargo hold.
+    pub attr: Option<AttrId>,
+    pub name: String,
+    pub capacity: f64,
+    pub used: f64,
+}
+
+impl Hold {
+    pub fn fraction(&self) -> f64 {
+        if self.capacity > 0.0 {
+            self.used / self.capacity
+        } else if self.used > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        }
+    }
+
+    pub fn over(&self) -> bool {
+        self.used > self.capacity + 1e-9
+    }
+}
+
+/// Whether an attribute is a hold's capacity: named for a hold, bay or hangar, and shown to the
+/// pilot, which leaves out the bonuses to them. The drone and fighter bays have their own screens.
+pub fn is_hold_attr(a: &crate::dogma::AttrDef) -> bool {
+    let n = a.name.to_lowercase();
+    !a.display.is_empty() && n.ends_with("capacity") && (n.contains("hold") || n.contains("bay") || n.contains("hangar")) && !n.starts_with("drone") && !n.starts_with("fighter")
+}
+
+/// The cargo hold and the hull's other holds, with what the fit carries in each.
+pub fn holds(calc: &Calc, fit: &Fit) -> Vec<Hold> {
+    let dogma = calc.dogma;
+    let volume = |t: TypeId| dogma.type_(t).and_then(|d| d.attr(attr::VOLUME)).map_or(0.0, f64::from);
+    let used = |hold: Option<AttrId>| fit.cargo.iter().filter(|c| c.hold == hold).map(|c| volume(c.type_id) * f64::from(c.quantity)).sum::<f64>();
+    let mut out = vec![Hold { attr: None, name: "Cargo hold".into(), capacity: calc.ship(attr::CAPACITY), used: used(None) }];
+    for a in dogma.attributes.iter().filter(|a| is_hold_attr(a)) {
+        let capacity = calc.ship(a.id);
+        let carried = used(Some(a.id));
+        // A hold the hull has, or one something was put in before the hull changed.
+        if capacity > 0.0 || carried > 0.0 {
+            out.push(Hold { attr: Some(a.id), name: a.display.clone(), capacity, used: carried });
+        }
+    }
+    out
 }
 
 /// `min(40000 / (scanRes × asinh(sig)²), 1800)` seconds.
@@ -842,6 +895,124 @@ pub struct ModuleStat {
     /// Capacitor drawn per second while running, after boosters' injections.
     pub cap_per_s: f64,
     pub dps: f64,
+    /// Seconds per cycle, or per shot for a weapon; none for what does not cycle.
+    pub cycle_s: Option<f64>,
+    /// Seconds of overloading before heat burns it out, at worst: damaged every cycle.
+    pub burnout_s: Option<f64>,
+    /// What one cycle does, the figure the module is fitted for.
+    pub info: Option<ModuleInfo>,
+}
+
+/// What a module does in one cycle, in its own terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModuleInfo {
+    pub kind: InfoKind,
+    pub value: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfoKind {
+    /// Hit points repaired, here or on another ship.
+    ShieldBoost,
+    ArmorRepair,
+    HullRepair,
+    RemoteShield,
+    RemoteArmor,
+    RemoteHull,
+    /// Capacitor, in GJ: injected, drained, sent or drawn.
+    CapInjected,
+    Neut,
+    Nos,
+    CapTransfer,
+    /// Percent changes.
+    Speed,
+    Web,
+    Paint,
+    Damp,
+    Disrupt,
+    /// Points of jam strength or warp disruption.
+    Ecm,
+    Tackle,
+}
+
+/// The one figure a module is fitted for, whatever its state.
+pub fn module_info(calc: &Calc, i: ItemIdx) -> Option<ModuleInfo> {
+    let names: Vec<&str> = calc.effect_names(i).collect();
+    let has = |list: &[&str]| names.iter().any(|n| list.contains(n));
+    let v = |a: AttrId| calc.value(i, a);
+    let strongest = |attrs: &[AttrId]| attrs.iter().map(|&a| v(a)).fold(0.0, |m: f64, x| if x.abs() > m.abs() { x } else { m });
+    let charged = calc.items()[i].charge;
+    let (kind, value) = if has(&["shieldBoosting", "fueledShieldBoosting"]) {
+        (InfoKind::ShieldBoost, v(attr::SHIELD_BONUS))
+    } else if has(&["fueledArmorRepair"]) {
+        let paste = charged.is_some_and(|c| calc.items()[c].group == 916);
+        (InfoKind::ArmorRepair, v(attr::ARMOR_DAMAGE_AMOUNT) * if paste { v(attr::CHARGED_ARMOR_DAMAGE_MULTIPLIER).max(1.0) } else { 1.0 })
+    } else if has(&["armorRepair"]) {
+        (InfoKind::ArmorRepair, v(attr::ARMOR_DAMAGE_AMOUNT))
+    } else if has(&["structureRepair"]) {
+        (InfoKind::HullRepair, v(attr::STRUCTURE_DAMAGE_AMOUNT))
+    } else if has(&["shipModuleRemoteArmorRepairer", "shipModuleAncillaryRemoteArmorRepairer", "ShipModuleRemoteArmorMutadaptiveRepairer"]) {
+        (InfoKind::RemoteArmor, v(attr::ARMOR_DAMAGE_AMOUNT))
+    } else if has(&["shipModuleRemoteShieldBooster", "shipModuleAncillaryRemoteShieldBooster"]) {
+        (InfoKind::RemoteShield, v(attr::SHIELD_BONUS))
+    } else if has(&["shipModuleRemoteHullRepairer"]) {
+        (InfoKind::RemoteHull, v(attr::STRUCTURE_DAMAGE_AMOUNT))
+    } else if has(&["shipModuleRemoteCapacitorTransmitter"]) {
+        (InfoKind::CapTransfer, v(attr::POWER_TRANSFER_AMOUNT))
+    } else if has(&["energyNeutralizerFalloff"]) {
+        (InfoKind::Neut, v(attr::ENERGY_NEUTRALIZER_AMOUNT))
+    } else if has(&["energyNosferatuFalloff"]) {
+        (InfoKind::Nos, v(attr::POWER_TRANSFER_AMOUNT))
+    } else if has(&["powerBooster"]) {
+        (InfoKind::CapInjected, charged.map_or(0.0, |c| calc.value(c, attr::CAPACITOR_BONUS)))
+    } else if has(&["moduleBonusAfterburner", "moduleBonusMicrowarpdrive"]) {
+        (InfoKind::Speed, v(attr::SPEED_FACTOR))
+    } else if has(&["remoteWebifierFalloff"]) {
+        (InfoKind::Web, v(attr::SPEED_FACTOR))
+    } else if has(&["remoteTargetPaintFalloff"]) {
+        (InfoKind::Paint, v(attr::SIGNATURE_RADIUS_BONUS))
+    } else if has(&["remoteSensorDampFalloff"]) {
+        (InfoKind::Damp, strongest(&[attr::MAX_TARGET_RANGE_BONUS, attr::SCAN_RESOLUTION_BONUS]))
+    } else if has(&["shipModuleTrackingDisruptor"]) {
+        (InfoKind::Disrupt, strongest(&[attr::TRACKING_SPEED_BONUS, attr::MAX_RANGE_BONUS, attr::FALLOFF_BONUS]))
+    } else if has(&["shipModuleGuidanceDisruptor"]) {
+        (InfoKind::Disrupt, strongest(&[attr::AOE_CLOUD_SIZE_BONUS, attr::AOE_VELOCITY_BONUS]))
+    } else if has(&["remoteECMFalloff"]) {
+        (InfoKind::Ecm, strongest(&[attr::SCAN_GRAVIMETRIC_STRENGTH_BONUS, attr::SCAN_LADAR_STRENGTH_BONUS, attr::SCAN_MAGNETOMETRIC_STRENGTH_BONUS, attr::SCAN_RADAR_STRENGTH_BONUS]))
+    } else if names.iter().any(|n| n.starts_with("warpScramble")) || has(&["warpDisrupt"]) {
+        (InfoKind::Tackle, v(attr::WARP_SCRAMBLE_STRENGTH))
+    } else {
+        return None;
+    };
+    (value != 0.0).then_some(ModuleInfo { kind, value })
+}
+
+/// Seconds of overload before it burns out, if every overloaded cycle damages it: its hit points
+/// over its heat damage per cycle, at the overloaded cycle time. A cooler rack damages it less
+/// often, so this is how long it lasts at the worst.
+fn burnout_of(calc: &Calc, i: ItemIdx) -> Option<f64> {
+    let dogma = calc.dogma;
+    let id = |n: &str| dogma.attr_named(n).map(|a| a.id);
+    let heat = id("heatDamage").filter(|a| calc.has(i, *a)).map(|a| calc.value(i, a)).filter(|h| *h > 0.0)?;
+    let hp = id("hp").map_or(0.0, |a| calc.value(i, a));
+    if hp <= 0.0 {
+        return None;
+    }
+    let mut cycle = cycle_of(calc, i)?;
+    // Not overloaded now: the cycle it would run at overloaded.
+    if calc.items()[i].state != State::Overload {
+        for bonus in ["overloadSelfDurationBonus", "overloadRofBonus"] {
+            if let Some(a) = id(bonus).filter(|a| calc.has(i, *a)) {
+                cycle *= 1.0 + calc.value(i, a) / 100.0;
+            }
+        }
+    }
+    Some((hp / heat).ceil() * cycle)
+}
+
+/// Seconds per cycle: the module's duration, or for a weapon its rate of fire.
+fn cycle_of(calc: &Calc, i: ItemIdx) -> Option<f64> {
+    [attr::DURATION, attr::SPEED].into_iter().filter(|a| calc.has(i, *a)).map(|a| calc.value(i, a) / 1000.0).find(|s| *s > 0.0)
 }
 
 /// Every fitted module's CPU, powergrid, capacitor draw and damage, in the fit's order.
@@ -853,7 +1024,7 @@ pub fn module_stats(calc: &Calc, c: &Computed) -> Vec<ModuleStat> {
         let cap_per_s: f64 = cap.iter().filter(|(j, _)| *j == i).map(|(_, u)| u.average_per_s()).sum();
         let dps: f64 = c.weapons.iter().filter(|w| w.items.contains(&i)).map(|w| w.dps / w.items.len().max(1) as f64).sum();
         let (cpu, power) = if it.state >= State::Online { (calc.value(i, attr::CPU), calc.value(i, attr::POWER)) } else { (0.0, 0.0) };
-        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps });
+        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps, cycle_s: cycle_of(calc, i), burnout_s: burnout_of(calc, i), info: module_info(calc, i) });
     }
     out
 }

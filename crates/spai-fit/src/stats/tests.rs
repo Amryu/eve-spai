@@ -267,3 +267,80 @@ fn module_stats_give_each_module_its_fitting_draw_and_damage() {
     let total: f64 = m.iter().map(|x| x.cpu).sum();
     assert!((total - c.fitting.cpu_used).abs() < 1e-6);
 }
+
+#[test]
+fn holds_fill_from_the_cargo_and_overfill_warns() {
+    use crate::fit::CargoItem;
+    use crate::test_support::attr_def;
+    let mut d = dataset();
+    let mut fleet = attr_def(912, "fleetHangarCapacity", true, true, 0.0);
+    fleet.display = "Fleet Hangar Capacity".into();
+    d.attributes.push(fleet);
+    let mut bonus = attr_def(913, "shipBonusFleetHangarCapacity", true, true, 0.0);
+    bonus.display = String::new();
+    d.attributes.push(bonus);
+    let ship = d.types.iter_mut().find(|t| t.id == ids::SHIP).unwrap();
+    ship.attrs.push((912, 50.0));
+    ship.attrs.push((913, 5.0));
+    ship.attrs.sort_by_key(|(a, _)| *a);
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "t");
+    let ammo_volume = f64::from(d.type_(ids::AMMO).unwrap().attr(attr::VOLUME).unwrap_or(0.0));
+    f.cargo.push(CargoItem { type_id: ids::AMMO, quantity: 10, hold: None });
+    f.cargo.push(CargoItem { type_id: ids::AMMO, quantity: 4, hold: Some(912) });
+    let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    assert_eq!(c.holds.len(), 2, "the cargo hold and the fleet hangar, not the bonus to it: {:?}", c.holds);
+    assert!((c.holds[0].used - 10.0 * ammo_volume).abs() < 1e-9);
+    assert_eq!(c.holds[1].name, "Fleet Hangar Capacity");
+    assert!((c.holds[1].used - 4.0 * ammo_volume).abs() < 1e-9);
+    let cap = c.holds[0].capacity;
+    let mut over = f.clone();
+    over.cargo[0].quantity = (cap / ammo_volume.max(1e-9)) as u32 + 10;
+    let c = compute(&d, &over, &SkillSet::all_v(), &Env::default());
+    let w = crate::warnings::check(&d, &over, &c, &[]);
+    assert!(w.iter().any(|w| matches!(&w.kind, crate::warnings::WarningKind::HoldOver { hold, .. } if hold == "Cargo hold")), "{w:?}");
+}
+
+#[test]
+fn modules_tell_their_cycle_and_what_one_cycle_does() {
+    use crate::fit::{Module, Slot, State};
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::REPAIRER, Slot::Low, 0).with_state(State::Active));
+    f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+    f.modules.push(Module::new(ids::DC, Slot::Low, 1).with_state(State::Online));
+    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let c = compute_with(&calc, &f);
+    let stats = module_stats(&calc, &c);
+    let of = |slot, index| stats.iter().find(|m| m.slot == slot && m.index == index).unwrap();
+    let rep = of(Slot::Low, 0);
+    assert!(rep.cycle_s.is_some_and(|s| s > 0.0));
+    assert!(matches!(rep.info, Some(ModuleInfo { kind: InfoKind::ArmorRepair, value }) if value > 0.0));
+    assert!(matches!(of(Slot::Mid, 0).info, Some(ModuleInfo { kind: InfoKind::Web, value }) if value < 0.0));
+    assert!(of(Slot::High, 0).cycle_s.is_some(), "a gun's cycle is its rate of fire");
+    assert!(of(Slot::Low, 1).info.is_none() && of(Slot::Low, 1).cycle_s.is_none(), "a damage control does neither");
+}
+
+#[test]
+fn a_module_that_heats_tells_how_long_it_lasts_overloaded() {
+    use crate::fit::{Module, Slot, State};
+    use crate::test_support::attr_def;
+    let mut d = dataset();
+    d.attributes.push(attr_def(attr::HEAT_DAMAGE, "heatDamage", true, false, 0.0));
+    let gun = d.types.iter_mut().find(|t| t.id == ids::GUN).unwrap();
+    gun.attrs.push((attr::HEAT_DAMAGE, 10.0));
+    gun.attrs.push((attr::HP, 40.0));
+    gun.attrs.sort_by_key(|(a, _)| *a);
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+    f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Online));
+    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let c = compute_with(&calc, &f);
+    let stats = module_stats(&calc, &c);
+    let gun = stats.iter().find(|m| m.slot == Slot::High).unwrap();
+    let cycle = gun.cycle_s.unwrap();
+    assert!((gun.burnout_s.unwrap() - 4.0 * cycle).abs() < 1e-9, "40 HP at 10 a cycle: four cycles");
+    assert!(stats.iter().find(|m| m.slot == Slot::Low).unwrap().burnout_s.is_none(), "a module that takes no heat never burns out");
+}

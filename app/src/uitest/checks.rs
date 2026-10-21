@@ -90,6 +90,7 @@ impl Report {
 }
 
 fn collect(harness: &Harness<'_>) -> Vec<Widget> {
+    let cut = spai_fit_ui::rows::cut_rows(&harness.ctx);
     let root = harness.root();
     let mut out = Vec::new();
     for node in root.children_recursive() {
@@ -98,15 +99,21 @@ fn collect(harness: &Harness<'_>) -> Vec<Widget> {
             continue;
         }
         let Some(b) = n.bounding_box() else { continue };
+        let mut rect = egui::Rect { min: egui::pos2(b.x0 as f32, b.y0 as f32), max: egui::pos2(b.x1 as f32, b.y1 as f32) };
+        // Inside a list row partly scrolled away, egui clips the widget to what shows; the tree
+        // keeps its whole rect, so it is trimmed here the same way.
+        if let Some((_, visible)) = cut.iter().find(|(full, _)| full.expand(0.5).contains_rect(rect)) {
+            rect = rect.intersect(*visible);
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                continue;
+            }
+        }
         out.push(Widget {
             id: format!("{:?}", n.id()),
             parent: n.parent().map(|p| format!("{:?}", p.id())),
             role: n.role(),
             label: n.label().or_else(|| n.value()).unwrap_or_default(),
-            rect: egui::Rect {
-                min: egui::pos2(b.x0 as f32, b.y0 as f32),
-                max: egui::pos2(b.x1 as f32, b.y1 as f32),
-            },
+            rect,
             painted: node
                 .children()
                 .any(|c| c.accesskit_node().role() == egui::accesskit::Role::TextRun),

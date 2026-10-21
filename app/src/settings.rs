@@ -40,6 +40,9 @@ pub struct Settings {
     /// Leave pilots at +5 standing or better out of a looked-up local.
     #[serde(default)]
     pub lookup_hide_blues: bool,
+    /// The fitting simulator's panel sizes and tabs, as the simulator hands them over (JSON).
+    #[serde(default)]
+    pub sim_layout: String,
     /// Shows what is still being worked on: the fitting and fleet simulator tab.
     #[serde(default)]
     pub beta_features: bool,
@@ -1544,6 +1547,7 @@ impl Default for Settings {
             lookup_history: Vec::new(),
             lookup_hidden_columns: Vec::new(),
             lookup_hide_blues: false,
+            sim_layout: String::new(),
             beta_features: false,
             alert_enabled: true,
             alert_within_jumps: 5,
