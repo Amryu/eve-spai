@@ -424,6 +424,9 @@ pub struct SimUi {
     pub fleet_view: usize,
     /// Per direction, the slot of the other fleet the summary aims at; its main hull when unset.
     pub fleet_aim: [Option<usize>; 2],
+    /// The volley window open on (direction, target slot), and whether it lists carried charges only.
+    pub fleet_volley_window: Option<(usize, usize)>,
+    pub fleet_volley_carried: bool,
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -520,6 +523,8 @@ impl Default for SimUi {
             fleet_graph: fleet_graphs::FleetGraph::default(),
             fleet_view: 0,
             fleet_aim: [None; 2],
+            fleet_volley_window: None,
+            fleet_volley_carried: false,
             import: None,
             import_ask: None,
             import_from_button: false,
@@ -1420,6 +1425,7 @@ impl SimUi {
         self.publish_window(ctx);
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
+        fleet_panel::volley_window(self, ctx);
         details::windows(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
         mutation::window(self, ctx, now_ms);

@@ -453,3 +453,21 @@ fn prelocked_logi_repair_sooner_missiles_land_after_their_flight_and_uncalled_sh
     let first = r.timeline.iter().find(|x| x.2 < 10).map(|x| x.0).unwrap_or(f64::MAX);
     assert!(first >= distance / m.velocity, "no kill before the missiles arrive: {first} against {}", distance / m.velocity);
 }
+
+#[test]
+fn every_charge_option_is_worked_out_on_the_picked_ship() {
+    use crate::fit::CargoItem;
+    let d = dataset();
+    let mut f = gun_fit("two charges", 2);
+    f.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: 100, hold: None });
+    let lib = vec![f, gun_fit("kiter", 1)];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 10, slots: vec![slot("two charges", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 10, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let ammo: Vec<Vec<ammo::AmmoChoice>> = sa.slots.iter().map(|x| ammo::choices(&d, &x.fit, &x.skills, &sa.env)).collect();
+    let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &ammo }, sweep::Side { fleet: &b, stats: &sb, ammo: &[] });
+    let opts = sweep::charge_options(&side_a, &side_b, &sb.slots[0], 5_000.0);
+    assert!(opts.iter().any(|o| o.charge == ids::AMMO && o.carried) && opts.iter().any(|o| o.charge == ids::AMMO_LONG && o.carried), "the loaded and the cargo charge");
+    assert!(opts.iter().all(|o| o.low <= o.mean && o.mean <= o.high && o.target_ehp > 0.0));
+}

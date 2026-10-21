@@ -543,6 +543,9 @@ range, the charge it fires (its best carried one there), the target's effective 
 against that charge's damage split (`sweep::ehp_against`: each layer's hit points over the share
 of that damage its resistances let through), and the share of its raw damage that lands over
 every shooter and target pair: the average, and the values at the bottom and top 5%.
+The same for every charge each weapon group could fire (`sweep::charge_options`), with the
+ships one volley kill takes: the ship's hit points against that charge over one ship's applied
+volley times the volley efficiency, rounded up.
 
 **Performance.** A fleet's numbers are kept by what they depend on (slots, boosters, size, the
 fit documents and skills), each slot's ammo options by its fit, skills and boosts (every charge

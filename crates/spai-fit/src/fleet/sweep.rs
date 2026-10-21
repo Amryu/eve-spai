@@ -336,3 +336,52 @@ pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f6
         })
         .collect()
 }
+
+/// One charge a weapon group could fire at a ship, and how it would fare there.
+#[derive(Clone, Debug)]
+pub struct ChargeOption {
+    pub slot: usize,
+    pub weapon: crate::ids::TypeId,
+    pub charge: crate::ids::TypeId,
+    pub carried: bool,
+    /// The group with this charge, under the other side's disruptors.
+    pub group: WeaponGroup,
+    pub target_ehp: f64,
+    pub mean: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+/// Every charge option of every charged weapon of `a` on `target` at `distance`, the way
+/// `application` works one out: pair by pair over both formations, ewar on both.
+pub fn charge_options(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<ChargeOption> {
+    let on_target = ewar_on(&a.ships(), distance, 1.0, Some(&target.computed));
+    let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
+    let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_target.speed, f64::from(b.fleet.motion.1), distance);
+    let signature = target.computed.mobility.signature * on_target.signature;
+    let velocity = b.speed() * on_target.speed;
+    let mut out = Vec::new();
+    for (k, slot) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
+        for c in a.ammo.get(k).into_iter().flatten() {
+            for (charge, carried, w) in &c.options {
+                let w = disrupted(w, &on_a);
+                let mut f: Vec<f64> = pairs
+                    .iter()
+                    .flatten()
+                    .map(|p| {
+                        let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0 };
+                        applied_factor(&w, p.distance, &t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range)
+                    })
+                    .collect();
+                if f.is_empty() {
+                    continue;
+                }
+                f.sort_by(|x, y| x.total_cmp(y));
+                let at = |q: f64| f[((f.len() - 1) as f64 * q).round() as usize];
+                let mean = f.iter().sum::<f64>() / f.len() as f64;
+                out.push(ChargeOption { slot: k, weapon: c.weapon, charge: *charge, carried: *carried, target_ehp: ehp_against(&target.computed.tank, &w.volley), mean, low: at(0.05), high: at(0.95), group: w });
+            }
+        }
+    }
+    out
+}
