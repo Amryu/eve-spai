@@ -303,3 +303,13 @@ fn a_wider_ball_spreads_the_angular_velocities_the_guns_see() {
     let half = sweep::half_hit_angular(&side, &side, &s.slots[0], 20_000.0);
     assert!(!half.is_empty() && half.iter().all(|(_, _, a)| *a > 0.0));
 }
+
+#[test]
+fn a_mirror_match_races_even() {
+    let lib = library();
+    let f = Fleet { size: 10, formation: Formation::Ball { radius_m: 0.0 }, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let r = race_between(&f, &f, &lib, 500.0);
+    let lost = |side: usize| r.events.iter().filter(|(_, e)| matches!(e, race::Event::Kill { side: s, .. } if *s == side)).count();
+    assert_eq!(lost(0), lost(1), "neither side shoots first: {:?}", r.winner);
+    assert_eq!(r.winner, None);
+}

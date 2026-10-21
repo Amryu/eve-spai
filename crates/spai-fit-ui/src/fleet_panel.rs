@@ -29,6 +29,8 @@ pub struct FleetSession {
 
 /// Opens an opponent id naming an enemy doctrine group rather than a saved fleet.
 pub const ENEMY_DOCTRINE: &str = "doctrine:";
+/// The opponent id of a mirror match: the open fleet against itself.
+pub const MIRROR: &str = "mirror";
 
 pub fn role_name(role: spai_fit::fleet::Role) -> &'static str {
     use spai_fit::fleet::Role as R;
@@ -100,6 +102,14 @@ impl SimUi {
     /// The opponent by its id: a saved fleet, or an enemy doctrine group (`ENEMY_DOCTRINE` and its
     /// name) built into a fleet of the open one's size.
     pub(crate) fn enemy_fleet(&self, id: &str) -> Option<Fleet> {
+        if id == MIRROR {
+            // The fleet as it is being edited, not as last saved.
+            let mut fleet = self.fleet.as_ref()?.fleet.clone();
+            fleet.name = trf!("{name} (mirror)", name = fleet.name);
+            fleet.enemy = None;
+            fleet.scene = None;
+            return Some(fleet);
+        }
         let Some(group) = id.strip_prefix(ENEMY_DOCTRINE) else { return self.fleet_docs.get(id).cloned() };
         let dogma = self.dogma.as_ref()?;
         let (_, ids) = self.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().find(|(g, _)| g == group)?;
@@ -579,6 +589,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             ui.end_row();
             ui.label(tr!("Against"));
             let enemy_name = match session.enemy.as_deref() {
+                Some(MIRROR) => tr!("Itself (mirror match)").to_owned(),
                 Some(id) => id.strip_prefix(ENEMY_DOCTRINE).map(|g| trf!("{name} (enemy doctrine)", name = g)).or_else(|| fleets.iter().find(|x| x.id == id).map(|x| x.name.clone())).unwrap_or_else(|| tr!("none").to_owned()),
                 None => tr!("none").to_owned(),
             };
@@ -586,6 +597,11 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
                     session.enemy = None;
                     f.enemy = None;
+                    changed = true;
+                }
+                if ui.menu_label(session.enemy.as_deref() == Some(MIRROR), tr!("Itself (mirror match)")).clicked() {
+                    session.enemy = Some(MIRROR.to_owned());
+                    f.enemy = Some(MIRROR.to_owned());
                     changed = true;
                 }
                 for x in fleets.iter().filter(|x| x.id != my_id) {
@@ -645,7 +661,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         if let Some(group) = enemy.strip_prefix(ENEMY_DOCTRINE) {
             let ids = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().find(|(g, _)| g == group).map(|(_, ids)| ids).unwrap_or_default();
             sim.want_fit_docs(ids.into_iter());
-        } else if !sim.fleet_docs.contains_key(&enemy) {
+        } else if enemy != MIRROR && !sim.fleet_docs.contains_key(&enemy) {
             sim.request(HostRequest::LoadFleetDoc(enemy));
         }
         let wanted: Vec<String> = sim.fleet_docs.values().flat_map(|e| e.slots.iter().map(|s| s.fit_id.clone()).chain(e.boosters.iter().map(|(_, id)| id.clone()))).collect();
@@ -754,6 +770,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, na
     let winner = match r.winner {
         Some(0) => trf!("{a} wins in {s}", a = a, s = text::secs(r.seconds)),
         Some(_) => trf!("{a} wins in {s}", a = b, s = text::secs(r.seconds)),
+        None if r.timeline.last().is_some_and(|x| x.1 == 0 && x.2 == 0) => trf!("both destroyed after {s}", s = text::secs(r.seconds)),
         None => trf!("both stand after {s}", s = text::secs(r.seconds)),
     };
     line(ui, tr!("Outcome"), winner);

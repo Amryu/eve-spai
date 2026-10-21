@@ -203,12 +203,14 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     let mut t = 0.0;
     while t < limit {
         let mut landed = [0.0f64; 2];
+        // Both sides fire on the ships alive at the step's start: neither shoots first.
+        let alive_at: [Vec<usize>; 2] = [0, 1].map(|side| (0..sides[side].stats.slots.len()).map(|k| fleets[side].iter().filter(|s| s.alive && s.slot == k).count()).collect());
         for side in 0..2 {
             let Some(p) = primary[side] else { continue };
             let target_slot = fleets[1 - side][p].slot;
             let mut damage = [0.0f64; 4];
             for (g, (k, w, shares)) in guns[side].groups.iter().enumerate() {
-                let alive = fleets[side].iter().filter(|s| s.alive && s.slot == *k).count();
+                let alive = alive_at[side].get(*k).copied().unwrap_or(0);
                 if alive == 0 || w.cycle_s <= 0.0 {
                     continue;
                 }
@@ -244,7 +246,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             }
             // The timeline carries what lands per second sustained, not one step's volley.
             landed[side] = guns[side].groups.iter().map(|(k, w, shares)| {
-                let alive = fleets[side].iter().filter(|s| s.alive && s.slot == *k).count() as f64;
+                let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
                 let spool = w.spool_at(t - since[side]) / (1.0 + w.spool_max * w.spool_frac);
                 w.dps * spool * alive * shares.get(target_slot).copied().unwrap_or(0.0)
             }).sum::<f64>() * f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
@@ -255,7 +257,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             let mut reps_on = 0.0;
             if fleets[1 - side][p].alive && t - since[side] >= lock {
                 for (k, r, _) in &logis[1 - side] {
-                    let n = fleets[1 - side].iter().filter(|s| s.alive && s.slot == *k).count() as f64;
+                    let n = alive_at[1 - side].get(*k).copied().unwrap_or(0) as f64;
                     let ship = &mut fleets[1 - side][p];
                     for layer in 0..3 {
                         let add = r[layer] * n * STEP;
@@ -267,7 +269,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             // Critical mass: the damage landing no longer beats the reps on the primary.
             if out.critical_mass_lost[side].is_none() && t - since[side] > lock + 1.0 {
                 let sustained: f64 = guns[side].groups.iter().map(|(k, w, shares)| {
-                    let alive = fleets[side].iter().filter(|s| s.alive && s.slot == *k).count() as f64;
+                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
                     w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
                 }).sum::<f64>() * f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
                 // Through the layer now being worn down.

@@ -243,6 +243,16 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     assert!(a.critical_mass.is_some());
     s.handle(HostEvent::Fleet { id: "enemy".into(), doc: "nope".into() });
     assert_eq!(s.fleet.as_ref().unwrap().id, *id, "a broken fleet document changes nothing");
+    // A mirror match: the fleet as edited, unsaved changes too, against itself.
+    s.fleet.as_mut().unwrap().enemy = Some(crate::fleet_panel::MIRROR.into());
+    s.fleet.as_mut().unwrap().fleet.size = 30;
+    let (_, enemy) = s.fleet_stats().unwrap();
+    let (theirs, a, b) = enemy.expect("the mirror needs no document");
+    assert_eq!(theirs.ships, 30, "the copy follows the edits");
+    assert!((a.applied_dps - b.applied_dps).abs() < 1e-9);
+    let an = s.fleet_analysis().expect("the mirror is analysed");
+    assert_eq!(an.sweep.a_best, an.sweep.b_best);
+    assert!(an.sweep.a_favoured.is_empty() && an.sweep.b_favoured.is_empty(), "neither side is favoured against itself");
 }
 
 #[test]

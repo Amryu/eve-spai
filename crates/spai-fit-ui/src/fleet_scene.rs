@@ -1,6 +1,6 @@
 //! The fight in 3D: the two fleets and any bubbles over a grid, moved like probes. Dragging a
-//! fleet or a bubble moves it on the level (Shift raises or lowers it), dragging an arrow's tip
-//! steers a fleet and sets its speed, dragging empty space turns the view, scrolling zooms.
+//! fleet, a bubble or an arrow's tip moves it on the level (Shift raises or lowers it); an arrow
+//! steers its fleet in 3D and sets its speed; dragging empty space turns the view, scrolling zooms.
 //! Placing the fleets sets the range, the fleet's heading and the opponent's motion.
 
 use egui::{Color32, Pos2, Stroke};
@@ -144,7 +144,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         if ui.button(tr!("Reset view")).clicked() {
             reset = true;
         }
-        ui.add(egui::Label::new(egui::RichText::new(tr!("Drag a fleet or bubble to move it, with Shift to raise it; drag an arrow's tip to steer; drag space to turn, scroll to zoom; right-click a bubble to remove it.")).weak()).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(tr!("Drag a fleet, bubble or arrow tip to move it, with Shift up and down; an arrow sets heading and speed; drag space to turn, scroll to zoom; right-click a bubble to remove it.")).weak()).wrap());
     });
     // A first look, or a reset, frames both fleets.
     let framed = SceneCam { dist: (scene.range() * 2.2).max(20_000.0), ..SceneCam::default() };
@@ -269,19 +269,21 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
                 }
             }
             Grab::OwnTip | Grab::EnemyTip => {
+                // The tip moves like a fleet: on the level at its own height, or with Shift up
+                // and down, so the arrow points anywhere in 3D.
                 let own = grab == Some(Grab::OwnTip);
-                let at = if own { scene.own_at } else { scene.enemy_at };
-                if let Some(hit) = pointer.and_then(|p| cam.on_level(p, at[1])) {
-                    let v = sub(hit, at);
-                    if len(v) > 1.0 {
-                        let share = (len(v) / arrow_max).clamp(0.0, 1.0);
-                        if own {
-                            scene.own_dir = norm(v);
-                            f.motion.0 = share;
-                        } else {
-                            scene.enemy_dir = norm(v);
-                            scene.enemy_share = share;
-                        }
+                let (at, dir, share) = if own { (scene.own_at, scene.own_dir, f.motion.0) } else { (scene.enemy_at, scene.enemy_dir, scene.enemy_share) };
+                let mut tip = add(at, scale(norm(dir), share.clamp(0.1, 1.0) * arrow_max));
+                moved(&mut tip);
+                let v = sub(tip, at);
+                if len(v) > 1.0 {
+                    let share = (len(v) / arrow_max).clamp(0.0, 1.0);
+                    if own {
+                        scene.own_dir = norm(v);
+                        f.motion.0 = share;
+                    } else {
+                        scene.enemy_dir = norm(v);
+                        scene.enemy_share = share;
                     }
                 }
             }

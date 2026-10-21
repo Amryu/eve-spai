@@ -506,15 +506,16 @@ critical mass markers, and the angular velocities of every shooter and target pa
 each turret group's half-hit angular `tracking × signature / signature resolution`.
 
 **Scene** (`fleet::scene`). The fight can be placed in 3D: both fleets' anchors, the way each
-heads (its arrow, as long as its speed share), and bubbles that only set the scene, drawn at
+heads in 3D (its arrow, as long as its speed share), and bubbles that only set the scene, drawn at
 their radius: interdictor probe 20 km, surgical probe 10 km, heavy interdictor field 20 km
 (unscripted), mobile warp disruptors small 5 / 7.5 km, medium 11.5 / 17.5 km, large 26.5 / 40 km
 (Tech I / II). Placed, the anchors' distance is the range, the angle between a fleet's arrow
 and the line to the other its heading, and the opponent moves as placed there. Moving the range
 or heading knobs elsewhere moves the scene with them.
 
-**Opponents** are a saved fleet or an enemy doctrine group built as below at the open fleet's
-size. Fleets sync with the server like fits, by revision.
+**Opponents** are a saved fleet, an enemy doctrine group built as below at the open fleet's
+size, or the open fleet itself as edited (a mirror match; each race step both sides fire on the
+ships alive at its start, so neither shoots first). Fleets sync with the server like fits, by revision.
 
 **From a doctrine** (`fleet::from_doctrine`): every preset of a doctrine becomes a slot with a
 rule by its hull's group: logistics 15 %, command ships and command destroyers 2, interdictors
