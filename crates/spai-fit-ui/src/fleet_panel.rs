@@ -729,7 +729,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             ui.label(tr!("Drones"));
             changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
             ui.end_row();
-            ui.label(tr!("Assault damage controls"));
+            ui.label(tr!("ADCs and suppressors")).on_hover_text(tr!("Assault damage controls and signature suppressors: switched on, once, when their ship is called primary"));
             changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();
             ui.end_row();
             ui.label(tr!("Ewar on the enemy"));
@@ -886,12 +886,19 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
         }
         let main = target.slots.iter().position(|x| x.role == spai_fit::fleet::Role::Main).unwrap_or(0);
         let slot = aim.filter(|k| target.slots.get(*k).is_some_and(|x| x.count > 0)).unwrap_or(main);
+        // The sweep's own model when the analysis is at hand; the break point from the fleets.
         let aimed = match &analysis {
-            Some(an) if slot != main => {
+            Some(an) => {
                 let (fa, fb) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
-                fleet::against_slot(&dogma, fa, shooter, fb, target, slot)
+                let plain = if slot == main { against.clone() } else { fleet::against_slot(&dogma, fa, shooter, fb, target, slot) };
+                let apps = applications_cached(sim, an, dir, slot);
+                let (sa, sb) = (spai_fit::fleet::sweep::Side { fleet: fa, stats: shooter, ammo: &an.ammo[dir] }, spai_fit::fleet::sweep::Side { fleet: fb, stats: target, ammo: &an.ammo[1 - dir] });
+                let mut x = target.slots.get(slot).map_or_else(|| plain.clone(), |t| spai_fit::fleet::sweep::summary_from(&sa, &sb, t, f64::from(an.range), &apps));
+                x.break_point = plain.break_point;
+                x.margin = x.applied_dps * f64::from(fa.volley_efficiency.clamp(0.01, 1.0)) - x.break_point;
+                x
             }
-            _ => against.clone(),
+            None => against.clone(),
         };
         ui.add_space(4.0);
         ui.separator();
@@ -922,13 +929,7 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
         }
         against_card(ui, &aimed, shooter, target, slot, analysis.as_ref().map_or(0.75, |an| if dir == 0 { an.enemy.logi_efficiency } else { an.fleet.logi_efficiency }));
         if let Some(an) = &analysis {
-            // Worked out once per analysis, direction and target, not every frame.
-            let hit = sim.fleet_cache.borrow().apps.as_ref().filter(|(a, d, k, _)| Arc::ptr_eq(a, an) && *d == dir && *k == slot).map(|x| x.3.clone());
-            let apps = hit.unwrap_or_else(|| {
-                let v = Arc::new(applications(an, dir, slot));
-                sim.fleet_cache.borrow_mut().apps = Some((an.clone(), dir, slot, v.clone()));
-                v
-            });
+            let apps = applications_cached(sim, an, dir, slot);
             weapons_card(ui, &dogma, an, dir, slot, &apps, &names);
         }
         ui.add_space(4.0);
@@ -1133,7 +1134,8 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
     };
     tline(ui, tr!("Outcome"), outcome, |ui| {
         let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
-        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; missiles land after their flight; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its reaction, its lock unless pre-locked, its place in the arrival spread and its first cycle, at the fleet's logistics efficiency, lessened as repairs pile up, and heal no more than the damage there; assault damage controls go on when their ship is called."));
+        let sups = r.events.iter().filter(|(_, e)| matches!(e, Event::Suppressor { .. })).count();
+        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Signature suppressors on").to_owned(), sups.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; missiles land after their flight; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its reaction, its lock unless pre-locked, its place in the arrival spread and its first cycle, at the fleet's logistics efficiency, lessened as repairs pile up, and heal no more than the damage there; assault damage controls go on when their ship is called."));
     });
     // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
     // side loses its critical mass).
@@ -1283,6 +1285,16 @@ fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names:
 
 /// Each weapon group of the shooter on the picked ship at the set range: the charge it fires,
 /// the ship's effective hit points against that charge, and how much of the raw damage lands.
+/// `applications`, kept per analysis, direction and target slot.
+fn applications_cached(sim: &SimUi, an: &Arc<Analysis>, dir: usize, slot: usize) -> Arc<Vec<spai_fit::fleet::sweep::Application>> {
+    let hit = sim.fleet_cache.borrow().apps.as_ref().filter(|(a, d, k, _)| Arc::ptr_eq(a, an) && *d == dir && *k == slot).map(|x| x.3.clone());
+    hit.unwrap_or_else(|| {
+        let v = Arc::new(applications(an, dir, slot));
+        sim.fleet_cache.borrow_mut().apps = Some((an.clone(), dir, slot, v.clone()));
+        v
+    })
+}
+
 fn applications(an: &Analysis, dir: usize, slot: usize) -> Vec<spai_fit::fleet::sweep::Application> {
     use spai_fit::fleet::sweep::{self, Side};
     let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
@@ -1390,71 +1402,113 @@ pub fn volley_window(sim: &mut SimUi, ctx: &egui::Context) {
         sim.fleet_cache.borrow_mut().options = Some((an.clone(), dir, slot, v.clone()));
         v
     });
+    let best = applications_cached(sim, &an, dir, slot);
     let eff = f64::from(if dir == 0 { an.fleet.volley_efficiency } else { an.enemy.volley_efficiency }.clamp(0.01, 1.0));
     let hull = dogma.type_(t.ship).map_or("?", |x| x.name.as_str()).to_owned();
     let mut open = true;
     let mut carried_only = sim.fleet_volley_carried;
+    let mut sort = sim.fleet_volley_sort;
     egui::Window::new(trf!("{a} volleys on {b}", a = shooter.name, b = format!("{hull} · {}", name_of(t))))
         .id(egui::Id::new("sim_fleet_volley_window"))
         .open(&mut open)
         .resizable(true)
-        .default_size([900.0, 540.0])
-        .default_pos(ctx.content_rect().center() - egui::vec2(450.0, 270.0))
+        .default_size([960.0, 540.0])
+        .default_pos(ctx.content_rect().center() - egui::vec2(480.0, 270.0))
         .show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(trf!("At {r}; {e} effective HP against the fit's profile; volley efficiency {v}%", r = text::metres(f64::from(an.range)), e = text::num(t.computed.tank.ehp), v = format!("{:.0}", eff * 100.0)));
-                ui.checkbox(&mut carried_only, tr!("Carried charges only"));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let mut groups: Vec<(usize, spai_fit::ids::TypeId)> = options.iter().map(|o| (o.slot, o.weapon)).collect();
-                groups.dedup();
-                for (k, weapon) in groups {
-                    let Some(s) = shooter.slots.get(k) else { continue };
-                    let n = f64::from(s.count);
-                    let mut rows: Vec<&spai_fit::fleet::sweep::ChargeOption> = options.iter().filter(|o| o.slot == k && o.weapon == weapon && (!carried_only || o.carried)).collect();
-                    if rows.is_empty() {
-                        continue;
-                    }
-                    rows.sort_by(|x, y| (y.group.dps * y.mean).total_cmp(&(x.group.dps * x.mean)));
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(format!("{} x {} · {}", s.count, name_of(s), dogma.type_(weapon).map_or("?", |x| x.name.as_str()))).strong());
-                    // Each figure in a column of its own width, right-aligned under its heading.
-                    const COLS: [f32; 6] = [100.0, 110.0, 150.0, 70.0, 100.0, 140.0];
-                    egui::Grid::new(("sim_fleet_volley_grid", k, weapon)).striped(true).num_columns(7).spacing([12.0, 3.0]).show(ui, |ui| {
-                        ui.label(egui::RichText::new(tr!("Charge")).weak());
-                        for (h, w) in [tr!("Applied DPS"), tr!("Applied volley"), tr!("Target EHP against it"), tr!("Applied"), tr!("5% to 95%"), tr!("Ships per volley kill")].into_iter().zip(COLS) {
-                            crate::rows::head_cell(ui, w, h, true);
+            // Room either side, and for the scroll bar on the right.
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 18, top: 2, bottom: 2 }).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(trf!("At {r}; {e} effective HP against the fit's profile; volley efficiency {v}%", r = text::metres(f64::from(an.range)), e = text::num(t.computed.tank.ehp), v = format!("{:.0}", eff * 100.0)));
+                    ui.checkbox(&mut carried_only, tr!("Carried charges only"));
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.set_max_width(ui.available_width() - 12.0);
+                    let mut groups: Vec<(usize, spai_fit::ids::TypeId)> = options.iter().map(|o| (o.slot, o.weapon)).collect();
+                    groups.dedup();
+                    const HEADS: usize = 6;
+                    for (k, weapon) in groups {
+                        let Some(s) = shooter.slots.get(k) else { continue };
+                        let n = f64::from(s.count);
+                        // Per row its figures: (applied DPS, applied volley, EHP against it, applied, low, high, ships per kill).
+                        let mut rows: Vec<(&spai_fit::fleet::sweep::ChargeOption, [f64; 7])> = options
+                            .iter()
+                            .filter(|o| o.slot == k && o.weapon == weapon && (!carried_only || o.carried))
+                            .map(|o| {
+                                // The whole ship's volley with this charge in this group, the others at their best.
+                                let ship = spai_fit::fleet::sweep::ship_volley(&best, k, Some((weapon, &o.group, o.mean)));
+                                let kill = spai_fit::fleet::sweep::ships_per_kill(t, &ship, eff).map_or(f64::INFINITY, f64::from);
+                                (o, [o.group.dps * o.mean * n * eff, o.group.volley.total() * o.mean * n * eff, o.target_ehp, o.mean, o.low, o.high, kill])
+                            })
+                            .collect();
+                        if rows.is_empty() {
+                            continue;
                         }
-                        ui.end_row();
-                        for o in rows {
-                            let name = dogma.type_(o.charge).map_or("?", |x| x.name.as_str());
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Image::new(crate::icons::type_icon_uri(o.charge)).fit_to_exact_size(egui::vec2(16.0, 16.0)));
-                                let t = egui::RichText::new(short_charge(name));
-                                ui.label(if o.carried { t } else { t.weak() }).on_hover_text(if o.carried { name.to_owned() } else { trf!("{n}, not carried", n = name) });
-                            });
-                            let volley = o.group.volley.total() * o.mean;
-                            let cells = [
-                                text::num(o.group.dps * o.mean * n * eff),
-                                text::num(volley * n * eff),
-                                text::num(o.target_ehp),
-                                format!("{:.0}%", o.mean * 100.0),
-                                format!("{:.0}% - {:.0}%", o.low * 100.0, o.high * 100.0),
-                                if volley > 0.0 { ((o.target_ehp / (volley * eff)).ceil() as u64).to_string() } else { tr!("n/a").to_owned() },
-                            ];
-                            for (c, w) in cells.into_iter().zip(COLS) {
-                                crate::rows::num_cell(ui, w, c, !o.carried);
+                        let (col, desc) = sort;
+                        // Column 7 is the charge's name.
+                        let charge_name = |o: &spai_fit::fleet::sweep::ChargeOption| dogma.type_(o.charge).map_or(String::new(), |x| x.name.clone());
+                        rows.sort_by(|x, y| {
+                            let o = if col == 7 { charge_name(x.0).cmp(&charge_name(y.0)) } else { x.1[col].total_cmp(&y.1[col]) };
+                            if desc { o.reverse() } else { o }
+                        });
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!("{} x {} · {}", s.count, name_of(s), dogma.type_(weapon).map_or("?", |x| x.name.as_str()))).strong());
+                        // The figures in columns of their own width; the charge takes what is left.
+                        const COLS: [f32; HEADS + 1] = [100.0, 110.0, 150.0, 70.0, 100.0, 0.0, 140.0];
+                        let spacing = 12.0;
+                        let fixed: f32 = COLS.iter().sum::<f32>() + spacing * 7.0;
+                        let charge_w = (ui.available_width() - fixed).max(150.0);
+                        egui::Grid::new(("sim_fleet_volley_grid", k, weapon)).striped(true).num_columns(7).spacing([spacing, 3.0]).min_col_width(0.0).show(ui, |ui| {
+                            let mark = |c: usize| if col == c { if desc { format!(" {}", icon::CARET_DOWN) } else { format!(" {}", icon::CARET_UP) } } else { String::new() };
+                            let r = ui.allocate_ui_with_layout(egui::vec2(charge_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(charge_w);
+                                ui.add(egui::Button::new(egui::RichText::new(format!("{}{}", tr!("Charge"), mark(7))).weak()).frame(false)).on_hover_text(tr!("Sort by this"))
+                            }).inner;
+                            if r.clicked() {
+                                sort = if col == 7 { (7, !desc) } else { (7, false) };
+                            }
+                            // Headings sort; the arrow marks the column and its direction.
+                            for (c, (h, w)) in [(0usize, tr!("Applied DPS")), (1, tr!("Applied volley")), (2, tr!("Target EHP against it")), (3, tr!("Applied")), (4, tr!("5% to 95%")), (6, tr!("Ships per volley kill"))].into_iter().map(|(c, h)| (c, (h, COLS[c]))) {
+                                let mark = if col == c { if desc { format!(" {}", icon::CARET_DOWN) } else { format!(" {}", icon::CARET_UP) } } else { String::new() };
+                                let r = ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.set_min_width(w);
+                                    ui.add(egui::Button::new(egui::RichText::new(format!("{h}{mark}")).weak()).frame(false)).on_hover_text(tr!("Sort by this"))
+                                }).inner;
+                                if r.clicked() {
+                                    sort = if col == c { (c, !desc) } else { (c, c != 2 && c != 6) };
+                                }
                             }
                             ui.end_row();
-                        }
-                    });
-                }
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(egui::RichText::new(tr!("Applied figures are the whole slot's at the set range, averaged over every shooter and target pair of both formations, the ship slowed by this fleet's webs and grown by its painters, the weapons under the other side's disruptors, times the volley efficiency. Ships per volley kill: the ship's hit points against that charge over one ship's applied volley. Greyed: not carried.")).weak()).wrap());
+                            for (o, v) in rows {
+                                let name = dogma.type_(o.charge).map_or("?", |x| x.name.as_str());
+                                ui.allocate_ui_with_layout(egui::vec2(charge_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.set_min_width(charge_w);
+                                    ui.add(egui::Image::new(crate::icons::type_icon_uri(o.charge)).fit_to_exact_size(egui::vec2(16.0, 16.0)));
+                                    let t = egui::RichText::new(name);
+                                    ui.add(egui::Label::new(if o.carried { t } else { t.weak() }).truncate()).on_hover_text(if o.carried { name.to_owned() } else { trf!("{n}, not carried", n = name) });
+                                });
+                                let cells = [
+                                    (text::num(v[0]), COLS[0]),
+                                    (text::num(v[1]), COLS[1]),
+                                    (text::num(v[2]), COLS[2]),
+                                    (format!("{:.0}%", v[3] * 100.0), COLS[3]),
+                                    (format!("{:.0}% - {:.0}%", v[4] * 100.0, v[5] * 100.0), COLS[4]),
+                                    (if v[6].is_finite() { format!("{:.0}", v[6]) } else { tr!("n/a").to_owned() }, COLS[6]),
+                                ];
+                                for (c, w) in cells {
+                                    crate::rows::num_cell(ui, w, c, !o.carried);
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                    ui.add(egui::Label::new(egui::RichText::new(tr!("Applied figures are the whole slot's at the set range, averaged over every shooter and target pair of both formations, the ship slowed by this fleet's webs and grown by its painters, the weapons under the other side's disruptors, times the volley efficiency. Ships per volley kill: the ship's hit points against the damage mix of one ship's whole volley, this charge in this group and its other weapons at their best carried charges, over that volley. Greyed: not carried.")).weak()).wrap());
+                });
             });
         });
     sim.fleet_volley_carried = carried_only;
+    sim.fleet_volley_sort = sort;
     if !open {
         sim.fleet_volley_window = None;
     }

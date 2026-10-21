@@ -471,3 +471,26 @@ fn every_charge_option_is_worked_out_on_the_picked_ship() {
     assert!(opts.iter().any(|o| o.charge == ids::AMMO && o.carried) && opts.iter().any(|o| o.charge == ids::AMMO_LONG && o.carried), "the loaded and the cargo charge");
     assert!(opts.iter().all(|o| o.low <= o.mean && o.mean <= o.high && o.target_ehp > 0.0));
 }
+
+#[test]
+fn the_summary_and_the_charge_table_count_ships_per_kill_the_same_way() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 20, main: Some(0), slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 20, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let ammo: Vec<Vec<ammo::AmmoChoice>> = sa.slots.iter().map(|x| ammo::choices(&d, &x.fit, &x.skills, &sa.env)).collect();
+    let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &ammo }, sweep::Side { fleet: &b, stats: &sb, ammo: &[] });
+    let target = &sb.slots[0];
+    let apps = sweep::application(&side_a, &side_b, target, 3_000.0);
+    let summary = sweep::summary_from(&side_a, &side_b, target, 3_000.0, &apps);
+    // The table's row for the charge the summary uses gives the same number of ships.
+    let used = apps.iter().find(|x| x.slot == 0).unwrap();
+    let opts = sweep::charge_options(&side_a, &side_b, target, 3_000.0);
+    let row = opts.iter().find(|o| o.slot == 0 && o.weapon == used.weapon.type_id && Some(o.charge) == used.weapon.charge).expect("the charge in use is among the options");
+    let eff = f64::from(a.volley_efficiency);
+    let from_table = sweep::ships_per_kill(target, &sweep::ship_volley(&apps, 0, Some((used.weapon.type_id, &row.group, row.mean))), eff);
+    assert_eq!(summary.critical_mass, from_table);
+    assert!(summary.critical_mass.is_some());
+}

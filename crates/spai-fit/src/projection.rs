@@ -849,3 +849,37 @@ fn real_data_repair_attributes() {
         println!("EFFECT {}", d.effect(*e).map_or("?", |x| x.name.as_str()));
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_signature_suppressor() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for t in d.types.iter().filter(|t| t.name.to_lowercase().contains("suppress") || t.name.to_lowercase().contains("signature") && d.groups.iter().any(|g| g.id == t.group && g.name.to_lowercase().contains("signature"))) {
+        let g = d.groups.iter().find(|g| g.id == t.group).map_or("?", |g| g.name.as_str());
+        println!("SUP {} [{}]", t.name, g);
+        for (a, v) in &t.attrs {
+            println!("SUP   {} = {v}", d.attr(*a).map_or("?", |x| x.name.as_str()));
+        }
+        for (e, _) in &t.effects {
+            println!("SUP   effect {}", d.effect(*e).map_or("?", |x| x.name.as_str()));
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_signature_suppressor_online() {
+    use crate::fit::{Module, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap().id;
+    let sig = |with: bool| {
+        let mut f = Fit::new(id("Megathron"), "x");
+        if with {
+            f.modules.push(Module::new(id("Signature Radius Suppressor I"), Slot::Mid, 0).with_state(State::Online));
+        }
+        crate::stats::compute(&d, &f, &SkillSet::all_v(), &crate::calc::Env::default()).mobility.signature
+    };
+    println!("SIG {} -> {}", sig(false), sig(true));
+}

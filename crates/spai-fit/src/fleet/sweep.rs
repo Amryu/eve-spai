@@ -385,3 +385,62 @@ pub fn charge_options(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> 
     }
     out
 }
+
+/// One ship's applied volley by damage type: each of its alpha weapon groups' volley times the
+/// share landing, with `swap` putting another charge's group in place of the one it names.
+pub fn ship_volley(apps: &[Application], slot: usize, swap: Option<(crate::ids::TypeId, &WeaponGroup, f64)>) -> crate::stats::Damage {
+    let mut d = crate::stats::Damage::default();
+    for x in apps.iter().filter(|x| x.slot == slot && x.weapon.alpha()) {
+        let (w, share) = match swap {
+            Some((weapon, g, m)) if weapon == x.weapon.type_id => (g, m),
+            _ => (&x.weapon, x.mean),
+        };
+        d.em += w.volley.em * share;
+        d.thermal += w.volley.thermal * share;
+        d.kinetic += w.volley.kinetic * share;
+        d.explosive += w.volley.explosive * share;
+    }
+    d
+}
+
+/// Ships of `a`'s slot `k` that must volley together to kill `target`: its hit points against
+/// their applied damage mix over one ship's applied volley times the volley efficiency.
+pub fn ships_per_kill(target: &SlotStats, volley: &crate::stats::Damage, efficiency: f64) -> Option<u32> {
+    let v = volley.total() * efficiency;
+    (v > 0.0).then(|| (ehp_against(&target.computed.tank, volley) / v).ceil() as u32)
+}
+
+/// The summary of `a` on one ship of `b`, the way the sweep and the race see it: every weapon
+/// with its best carried charge, its share averaged over both formations' pairs, ewar both ways;
+/// critical mass by `a`'s main slot against the ship's hit points for the damage mix landing.
+pub fn summary(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> super::Against {
+    summary_from(a, b, target, distance, &application(a, b, target, distance))
+}
+
+/// `summary` from `application`'s figures already at hand.
+pub fn summary_from(a: &Side, b: &Side, target: &SlotStats, distance: f64, apps: &[Application]) -> super::Against {
+    let eff = f64::from(a.fleet.volley_efficiency.clamp(0.01, 1.0));
+    let count = |k: usize| f64::from(a.stats.slots.get(k).map_or(0, |s| s.count));
+    let applied_dps: f64 = apps.iter().map(|x| x.weapon.dps * x.mean * count(x.slot)).sum();
+    let mut fleet = crate::stats::Damage::default();
+    for k in 0..a.stats.slots.len() {
+        let v = ship_volley(apps, k, None);
+        let n = count(k);
+        fleet.em += v.em * n;
+        fleet.thermal += v.thermal * n;
+        fleet.kinetic += v.kinetic * n;
+        fleet.explosive += v.explosive * n;
+    }
+    let main = a.stats.slots.iter().position(|s| s.role == super::Role::Main).unwrap_or(0);
+    let on_target = ewar_on(&a.ships(), distance, 1.0, Some(&target.computed));
+    let ehp = ehp_against(&target.computed.tank, &fleet);
+    super::Against {
+        applied_dps,
+        applied_volley: fleet.total(),
+        critical_mass: ships_per_kill(target, &ship_volley(apps, main, None), eff),
+        kills_per_volley: if ehp > 0.0 { fleet.total() * eff / ehp } else { 0.0 },
+        target_velocity: b.speed() * on_target.speed,
+        target_signature: target.computed.mobility.signature * on_target.signature,
+        ..Default::default()
+    }
+}

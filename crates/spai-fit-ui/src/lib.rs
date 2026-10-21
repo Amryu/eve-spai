@@ -427,6 +427,8 @@ pub struct SimUi {
     /// The volley window open on (direction, target slot), and whether it lists carried charges only.
     pub fleet_volley_window: Option<(usize, usize)>,
     pub fleet_volley_carried: bool,
+    /// The volley window's sort: its column and whether high first.
+    pub fleet_volley_sort: (usize, bool),
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -525,6 +527,7 @@ impl Default for SimUi {
             fleet_aim: [None; 2],
             fleet_volley_window: None,
             fleet_volley_carried: false,
+            fleet_volley_sort: (0, true),
             import: None,
             import_ask: None,
             import_from_button: false,

@@ -496,7 +496,10 @@ best range is the farthest where it still lands 90% of its most.
   that reached it (section 7). The fleet's volley efficiency scales every volley.
 - An assault damage control goes on when its ship is called primary, for its `duration`,
   multiplying every resonance by its `resistanceMultiplier`, once per fight (its reactivation
-  delay outlasts the fight).
+  delay outlasts the fight). A signature suppressor goes on with it: for its
+  `durationHighisGood` the ship's signature is its active multiplier over its passive one of what
+  it is (0.3 over 0.9 on the Tech I: a third), and the shooters' share landing is worked out
+  against that signature.
 - Missile volleys land after their flight, distance over missile velocity; on a primary already
   dead they are lost.
 - Logistics repair only once the primary has taken damage: each logi ship after its reaction
@@ -519,7 +522,7 @@ best range is the farthest where it still lands 90% of its most.
   volley, dead before any repair landed, dead with the
   damage outpacing the repairs by so much, or held.
 
-**Against** (`fleet::against`, `fleet::against_slot`), the summary at the set range on B's main hull, or on any slot of B picked: applied DPS and
+**Against** (`fleet::against`, `fleet::against_slot`; with the analysis at hand `sweep::summary`, the sweep's own model: every weapon at its best carried charge, its share averaged over both formations' pairs, critical mass against the hit points for the damage mix landing), the summary at the set range on B's main hull, or on any slot of B picked: applied DPS and
 volley with the ewar by range above (or typed by hand), critical mass
 `ceil(EHP / (applied volley of one A main ship × efficiency))`, kills per volley
 `applied volley × efficiency / EHP`, break point (B's logistics plus the main hull's own repairs)

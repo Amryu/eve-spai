@@ -49,6 +49,8 @@ pub enum Event {
     CriticalMassLost { side: usize },
     /// A primary's assault damage control went on.
     Adc { side: usize, slot: usize },
+    /// A primary's signature suppressor went on.
+    Suppressor { side: usize, slot: usize },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,6 +95,9 @@ struct Ship {
     /// Seconds of assault damage control left, and its multiplier; none once used.
     adc: Option<(f64, f64)>,
     adc_until: f64,
+    /// A signature suppressor's duration while it runs; none once used.
+    sup: Option<f64>,
+    sup_until: f64,
     alive: bool,
     /// The damage by type that reached it last, for its hardener to adapt to.
     last_hit: [f64; 4],
@@ -112,14 +117,28 @@ fn adc_of(dogma: &crate::Dogma, s: &SlotStats) -> Option<(f64, f64)> {
     Some((f64::from(mult), duration))
 }
 
+/// A fitted signature suppressor: what running it does to the signature its online bonus leaves
+/// (its active multiplier over its passive one), and for how long.
+pub fn suppressor_of(dogma: &crate::Dogma, s: &SlotStats) -> Option<(f64, f64)> {
+    let named = |t: &crate::dogma::TypeDef, n: &str| dogma.attr_named(n).and_then(|a| t.attr(a.id)).map(f64::from);
+    s.fit.modules.iter().filter(|m| m.state >= crate::fit::State::Online).find_map(|m| {
+        let t = dogma.type_(m.type_id)?;
+        let active = named(t, "signatureSuppressorSignatureRadiusBonusActive")?;
+        let passive = named(t, "signatureSuppressorSignatureRadiusBonusPassive").filter(|p| *p > 0.0).unwrap_or(1.0);
+        let duration = named(t, "durationHighisGood").map_or(0.0, |d| d / 1000.0);
+        Some((active / passive, duration))
+    })
+}
+
 fn ships(dogma: &crate::Dogma, side: &Side, adc: bool) -> Vec<Ship> {
     let mut out = Vec::new();
     for (k, s) in side.stats.slots.iter().enumerate() {
         let (hp, resonance) = layers(s);
         let rah = s.computed.tank.rah.filter(|r| r.shift > 0.0).map(|r| (r.start, r));
+        let sup = if adc { suppressor_of(dogma, s) } else { None };
         let adc = if adc { adc_of(dogma, s) } else { None };
         for _ in 0..s.count {
-            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, alive: true, last_hit: [0.0; 4] });
+            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, sup: sup.map(|(_, d)| d), sup_until: 0.0, alive: true, last_hit: [0.0; 4] });
         }
     }
     out
@@ -157,22 +176,38 @@ fn hit(ship: &mut Ship, damage: [f64; 4], now: f64) {
     ship.alive = false;
 }
 
-/// One side's guns: per weapon group (slot, the group, its share landing on a target of each slot).
+/// One side's guns: per weapon group (slot, the group, its share landing on a target of each
+/// slot, and on one whose signature suppressor runs).
 struct Guns {
-    groups: Vec<(usize, WeaponGroup, Vec<f64>)>,
+    groups: Vec<(usize, WeaponGroup, Vec<f64>, Vec<f64>)>,
 }
 
-fn guns(own: &Side, other: &Side, distance: f64) -> Guns {
+fn guns(dogma: &crate::Dogma, own: &Side, other: &Side, distance: f64) -> Guns {
+    // Each target slot as it is, and shrunk by its running suppressor where it has one.
+    let shrunk: Vec<Option<SlotStats>> = other
+        .stats
+        .slots
+        .iter()
+        .map(|t| {
+            let (ratio, _) = suppressor_of(dogma, t)?;
+            let mut t = t.clone();
+            t.computed.mobility.signature *= ratio;
+            t.computed.signature_mods.push((crate::dogma::Op::PostMul, ratio, false));
+            Some(t)
+        })
+        .collect();
     let mut groups = Vec::new();
     for (k, s) in own.stats.slots.iter().enumerate() {
         if s.count == 0 {
             continue;
         }
         let per_target: Vec<Vec<(WeaponGroup, f64)>> = other.stats.slots.iter().map(|t| weapons_on(own, other, k, t, distance)).collect();
+        let per_shrunk: Vec<Option<Vec<(WeaponGroup, f64)>>> = shrunk.iter().map(|t| t.as_ref().map(|t| weapons_on(own, other, k, t, distance))).collect();
         for (g, w) in s.computed.weapons.iter().enumerate() {
             let shares: Vec<f64> = per_target.iter().map(|v| v.get(g).map_or(0.0, |(_, f)| *f)).collect();
+            let suppressed: Vec<f64> = per_shrunk.iter().zip(&shares).map(|(v, plain)| v.as_ref().and_then(|v| v.get(g)).map_or(*plain, |(_, f)| *f)).collect();
             let w = per_target.first().and_then(|v| v.get(g)).map_or_else(|| w.clone(), |(w, _)| w.clone());
-            groups.push((k, w, shares));
+            groups.push((k, w, shares, suppressed));
         }
     }
     Guns { groups }
@@ -201,7 +236,7 @@ fn logi(side: &Side) -> Vec<(usize, [f64; 3], f64)> {
 pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64) -> Race {
     let sides = [a, b];
     let mut fleets = [ships(dogma, a, a.fleet.adc), ships(dogma, b, b.fleet.adc)];
-    let guns = [guns(a, b, distance), guns(b, a, distance)];
+    let guns = [guns(dogma, a, b, distance), guns(dogma, b, a, distance)];
     let logis = [logi(a), logi(b)];
     let mut out = Race::default();
     let mut primary = [pick(&a.fleet.target_order, &fleets[1]), pick(&b.fleet.target_order, &fleets[0])];
@@ -219,7 +254,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
     // With the volleys fired since the last reload.
     let mut next_fire: [Vec<Vec<(f64, u32)>>; 2] = [0, 1].map(|side| {
-        guns[side].groups.iter().map(|(k, _, _)| {
+        guns[side].groups.iter().map(|(k, _, _, _)| {
             let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
             (0..n).map(|i| (reaction(i, n), 0)).collect()
         }).collect()
@@ -238,7 +273,9 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             let Some(p) = primary[side] else { continue };
             let target_slot = fleets[1 - side][p].slot;
             called[1 - side][target_slot] = true;
-            for (g, (k, w, shares)) in guns[side].groups.iter().enumerate() {
+            let suppressing = fleets[1 - side][p].sup_until > t;
+            for (g, (k, w, plain, suppressed)) in guns[side].groups.iter().enumerate() {
+                let shares = if suppressing { suppressed } else { plain };
                 let alive = alive_at[side].get(*k).copied().unwrap_or(0);
                 if alive == 0 || w.cycle_s <= 0.0 {
                     continue;
@@ -285,7 +322,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 false
             });
             // The timeline carries what lands per second sustained, not one step's volley.
-            landed[side] = guns[side].groups.iter().map(|(k, w, shares)| {
+            landed[side] = guns[side].groups.iter().map(|(k, w, plain, suppressed)| {
+                let shares = if suppressing { suppressed } else { plain };
                 let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
                 let spool = w.spool_at(t - since[side]) / (1.0 + w.spool_max * w.spool_frac);
                 w.dps * spool * alive * shares.get(target_slot).copied().unwrap_or(0.0)
@@ -327,7 +365,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             }
             // Critical mass: the damage landing no longer beats the reps on the primary.
             if out.critical_mass_lost[side].is_none() && reps_landed[side].is_some() {
-                let sustained: f64 = guns[side].groups.iter().map(|(k, w, shares)| {
+                let sustained: f64 = guns[side].groups.iter().map(|(k, w, plain, suppressed)| {
+                    let shares = if suppressing { suppressed } else { plain };
                     let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
                     w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
                 }).sum::<f64>() * f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
@@ -404,7 +443,13 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     out
 }
 
+/// A ship just called primary switches on its assault damage control and its signature
+/// suppressor, each once per fight: their reactivation delays outlast any fight here.
 fn start_adc(ship: &mut Ship, now: f64, out: &mut Race, side: usize) {
+    if let Some(duration) = ship.sup.take() {
+        ship.sup_until = now + duration;
+        out.events.push((now, Event::Suppressor { side, slot: ship.slot }));
+    }
     if let Some((_, duration)) = ship.adc {
         ship.adc_until = now + duration;
         out.events.push((now, Event::Adc { side, slot: ship.slot }));
