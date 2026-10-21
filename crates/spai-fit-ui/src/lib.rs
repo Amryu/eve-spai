@@ -429,6 +429,8 @@ pub struct SimUi {
     pub fleet_volley_carried: bool,
     /// The volley window's sort: its column and whether high first.
     pub fleet_volley_sort: (usize, bool),
+    /// The volley window's temporary overrides.
+    pub fleet_what_if: fleet_panel::WhatIf,
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -528,6 +530,7 @@ impl Default for SimUi {
             fleet_volley_window: None,
             fleet_volley_carried: false,
             fleet_volley_sort: (0, true),
+            fleet_what_if: Default::default(),
             import: None,
             import_ask: None,
             import_from_button: false,

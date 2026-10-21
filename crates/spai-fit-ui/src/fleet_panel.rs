@@ -272,8 +272,9 @@ pub struct FleetCache {
     doctrine: Vec<(u64, Fleet)>,
     /// An analysis asked for but not yet worked out, and since when.
     pending: Option<(u64, u64)>,
-    /// The volley window's charge options, by analysis, direction and target slot.
-    options: Option<(Arc<Analysis>, usize, usize, Arc<Vec<spai_fit::fleet::sweep::ChargeOption>>)>,
+    /// The volley window's figures under its what-if overrides: by analysis, direction, target
+    /// slot and the overrides, the charge options and the best charges' application.
+    what_if: Option<(Arc<Analysis>, usize, usize, String, Arc<Vec<spai_fit::fleet::sweep::ChargeOption>>, Arc<Vec<spai_fit::fleet::sweep::Application>>)>,
     /// The weapons section's figures, by analysis, direction and target slot.
     apps: Option<(Arc<Analysis>, usize, usize, Arc<Vec<spai_fit::fleet::sweep::Application>>)>,
     /// Per burst kind the fits carrying it, by the fits and documents at hand.
@@ -1385,26 +1386,62 @@ fn against_card(ui: &mut egui::Ui, a: &Against, shooter: &FleetStats, target: &F
 pub fn volley_window(sim: &mut SimUi, ctx: &egui::Context) {
     let Some((dir, slot)) = sim.fleet_volley_window else { return };
     let (Some(dogma), Some(an)) = (sim.dogma.clone(), sim.fleet_analysis()) else { return };
-    let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
+    // The fight as the what-if overrides change it, for this window only.
+    let wi = sim.fleet_what_if.clone();
+    let (sf0, tf0) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
+    let mut sf = sf0.clone();
+    let mut tf = tf0.clone();
+    if let Some(e) = wi.volley_efficiency {
+        sf.volley_efficiency = e;
+    }
+    if let Some(m) = wi.shooter_motion {
+        sf.motion = m;
+    }
+    if let Some(m) = wi.target_motion {
+        tf.motion = m;
+    }
+    for (f, off) in [(&mut sf, &wi.shooter_off), (&mut tf, &wi.target_off)] {
+        f.boosters.retain(|(k, _)| !off.contains(k));
+        f.boost_shortcuts.retain(|b| !off.contains(&b.kind));
+    }
+    let distance = f64::from(wi.distance.unwrap_or(an.range));
+    let boosts_changed = !wi.shooter_off.is_empty() || !wi.target_off.is_empty();
+    let (shooter, target) = if boosts_changed {
+        (sim.cached_stats(&sf), sim.cached_stats(&tf))
+    } else if dir == 0 {
+        (an.mine.clone(), an.theirs.clone())
+    } else {
+        (an.theirs.clone(), an.mine.clone())
+    };
     let Some(t) = target.slots.get(slot) else {
         sim.fleet_volley_window = None;
         return;
     };
     let names: HashMap<String, String> = sim.library.iter().map(|f| (f.id.clone(), f.name.clone())).collect();
     let name_of = |x: &spai_fit::fleet::SlotStats| names.get(&x.fit_id).cloned().unwrap_or_else(|| x.name.clone());
-    // Worked out once per analysis, direction and ship.
-    let hit = sim.fleet_cache.borrow().options.as_ref().filter(|(a, d, k, _)| Arc::ptr_eq(a, &an) && *d == dir && *k == slot).map(|x| x.3.clone());
-    let options = hit.unwrap_or_else(|| {
+    // Worked out once per analysis, direction, ship and overrides.
+    let key = serde_json::to_string(&wi).unwrap_or_default();
+    let hit = sim.fleet_cache.borrow().what_if.as_ref().filter(|w| Arc::ptr_eq(&w.0, &an) && w.1 == dir && w.2 == slot && w.3 == key).map(|w| (w.4.clone(), w.5.clone()));
+    let (options, best) = hit.unwrap_or_else(|| {
         use spai_fit::fleet::sweep::{self, Side};
-        let (sf, tf) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
-        let (a, b) = (Side { fleet: sf, stats: shooter, ammo: &an.ammo[dir] }, Side { fleet: tf, stats: target, ammo: &an.ammo[1 - dir] });
-        let v = Arc::new(sweep::charge_options(&a, &b, t, f64::from(an.range)));
-        sim.fleet_cache.borrow_mut().options = Some((an.clone(), dir, slot, v.clone()));
-        v
+        let ammo = if boosts_changed { [sim.cached_ammo(&shooter), sim.cached_ammo(&target)] } else { [an.ammo[dir].clone(), an.ammo[1 - dir].clone()] };
+        let (a, b) = (Side { fleet: &sf, stats: &shooter, ammo: &ammo[0] }, Side { fleet: &tf, stats: &target, ammo: &ammo[1] });
+        let options = Arc::new(sweep::charge_options(&a, &b, t, distance));
+        let best = Arc::new(sweep::application(&a, &b, t, distance));
+        sim.fleet_cache.borrow_mut().what_if = Some((an.clone(), dir, slot, key.clone(), options.clone(), best.clone()));
+        (options, best)
     });
-    let best = applications_cached(sim, &an, dir, slot);
-    let eff = f64::from(if dir == 0 { an.fleet.volley_efficiency } else { an.enemy.volley_efficiency }.clamp(0.01, 1.0));
+    let eff = f64::from(sf.volley_efficiency.clamp(0.01, 1.0));
     let hull = dogma.type_(t.ship).map_or("?", |x| x.name.as_str()).to_owned();
+    // The burst kinds each side flies, to switch off one by one.
+    let kinds = |f: &Fleet| {
+        let mut v: Vec<BurstKind> = f.boosters.iter().map(|(k, _)| *k).chain(f.boost_shortcuts.iter().filter(|b| b.active).map(|b| b.kind)).collect();
+        v.sort_by_key(|k| BurstKind::ALL.iter().position(|x| x == k));
+        v.dedup();
+        v
+    };
+    let (shooter_kinds, target_kinds) = (kinds(sf0), kinds(tf0));
+    let mut wi_next = wi.clone();
     let mut open = true;
     let mut carried_only = sim.fleet_volley_carried;
     let mut sort = sim.fleet_volley_sort;
@@ -1418,9 +1455,10 @@ pub fn volley_window(sim: &mut SimUi, ctx: &egui::Context) {
             // Room either side, and for the scroll bar on the right.
             egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 18, top: 2, bottom: 2 }).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(trf!("At {r}; {e} effective HP against the fit's profile; volley efficiency {v}%", r = text::metres(f64::from(an.range)), e = text::num(t.computed.tank.ehp), v = format!("{:.0}", eff * 100.0)));
+                    ui.label(trf!("At {r}; {e} effective HP against the fit's profile; volley efficiency {v}%", r = text::metres(distance), e = text::num(t.computed.tank.ehp), v = format!("{:.0}", eff * 100.0)));
                     ui.checkbox(&mut carried_only, tr!("Carried charges only"));
                 });
+                what_if_panel(ui, &mut wi_next, &an, sf0, tf0, &shooter_kinds, &target_kinds, &shooter.name, &target.name);
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.set_max_width(ui.available_width() - 12.0);
@@ -1509,7 +1547,81 @@ pub fn volley_window(sim: &mut SimUi, ctx: &egui::Context) {
         });
     sim.fleet_volley_carried = carried_only;
     sim.fleet_volley_sort = sort;
+    sim.fleet_what_if = wi_next;
     if !open {
         sim.fleet_volley_window = None;
     }
+}
+
+/// Overrides for the volley window only, none of them saved: each `None` or empty leaves the
+/// fight as set.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct WhatIf {
+    pub distance: Option<f32>,
+    pub volley_efficiency: Option<f32>,
+    pub shooter_motion: Option<(f32, f32)>,
+    pub target_motion: Option<(f32, f32)>,
+    /// Burst kinds switched off, on the shooting and the target side.
+    pub shooter_off: Vec<BurstKind>,
+    pub target_off: Vec<BurstKind>,
+}
+
+fn what_if_panel(ui: &mut egui::Ui, wi: &mut WhatIf, an: &Analysis, sf: &Fleet, tf: &Fleet, shooter_kinds: &[BurstKind], target_kinds: &[BurstKind], shooter: &str, target: &str) {
+    let changed = *wi != WhatIf::default();
+    let head = if changed { trf!("{t} (changed)", t = tr!("What if")) } else { tr!("What if").to_owned() };
+    egui::CollapsingHeader::new(head).id_salt("sim_fleet_what_if").default_open(changed).show(ui, |ui| {
+        egui::Grid::new("sim_fleet_what_if_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label(tr!("Distance"));
+            let mut km = wi.distance.unwrap_or(an.range) / 1000.0;
+            if ui.add(egui::Slider::new(&mut km, 0.0..=300.0).suffix(" km").step_by(0.5)).changed() {
+                wi.distance = Some(km * 1000.0);
+            }
+            ui.end_row();
+            ui.label(tr!("Volley efficiency"));
+            let mut e = wi.volley_efficiency.unwrap_or(sf.volley_efficiency);
+            if ui.add(egui::Slider::new(&mut e, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() {
+                wi.volley_efficiency = Some(e);
+            }
+            ui.end_row();
+        });
+        // Out of the grid: a grid row does not grow to two dials side by side.
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(tr!("Movement")).on_hover_text(tr!("Each fleet's share of its slowest ship's top speed and its heading against the line to the other: the speeds and angular velocities the weapons see"));
+            ui.add_space(12.0);
+            for (label, m, base) in [(shooter, &mut wi.shooter_motion, sf.motion), (target, &mut wi.target_motion, tf.motion)] {
+                let mut v = m.unwrap_or(base);
+                crate::graphs_panel::motion_dial(ui, &text::clip(label, 14), &mut v);
+                if v != m.unwrap_or(base) {
+                    *m = Some(v);
+                }
+                ui.add_space(12.0);
+            }
+        });
+        ui.add_space(4.0);
+        egui::Grid::new("sim_fleet_what_if_boosts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            for (label, kinds, off) in [(shooter, shooter_kinds, &mut wi.shooter_off), (target, target_kinds, &mut wi.target_off)] {
+                if kinds.is_empty() {
+                    continue;
+                }
+                ui.label(trf!("{a} boosts", a = text::clip(label, 20)));
+                ui.horizontal_wrapped(|ui| {
+                    for k in kinds {
+                        let mut on = !off.contains(k);
+                        if ui.checkbox(&mut on, kind_name(*k)).changed() {
+                            if on {
+                                off.retain(|x| x != k);
+                            } else {
+                                off.push(*k);
+                            }
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        if ui.add_enabled(changed, egui::Button::new(tr!("Back to the fleets' settings"))).clicked() {
+            *wi = WhatIf::default();
+        }
+    });
 }

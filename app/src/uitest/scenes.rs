@@ -2806,6 +2806,11 @@ pub(crate) fn all() -> Vec<Scene> {
         fleet_fixture(sim);
         sim.fleet_volley_window = Some((0, 0));
     }));
+    v.push(imperium_dialog_scene("imperium_fleet_volley_what_if", [1000.0, 760.0], |sim| {
+        fleet_fixture(sim);
+        sim.fleet_volley_window = Some((0, 0));
+        sim.fleet_what_if = spai_fit_ui::fleet_panel::WhatIf { distance: Some(12_000.0), volley_efficiency: Some(1.0), shooter_off: vec![spai_fit::fleet::BurstKind::Shield], ..Default::default() };
+    }));
     v.push(imperium_dialog_scene("imperium_graph_window", [1160.0, 700.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;
