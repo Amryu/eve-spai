@@ -883,3 +883,36 @@ fn real_data_signature_suppressor_online() {
     };
     println!("SIG {} -> {}", sig(false), sig(true));
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_cruise_reach() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let launcher = d.type_named("Cruise Missile Launcher II").unwrap().id;
+    for c in d.compatible_charges(launcher) {
+        let t = d.type_(c).unwrap();
+        let a = |id| t.attr(id).map_or(0.0, f64::from);
+        use crate::dogma::attr;
+        let dmg = a(attr::EM_DAMAGE) + a(attr::THERMAL_DAMAGE) + a(attr::KINETIC_DAMAGE) + a(attr::EXPLOSIVE_DAMAGE);
+        println!("CRUISE {:45} reach {:7.0} dmg {:5.0}", t.name, a(attr::MAX_VELOCITY) * a(attr::EXPLOSION_DELAY) / 1000.0, dmg);
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_fury_is_short_range_ammo() {
+    use crate::fit::{Module, Slot};
+    use crate::warnings::{check, WarningKind};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap().id;
+    let gap = |charge: &str| {
+        let mut f = Fit::new(id("Raven"), "x");
+        f.modules.push(Module::new(id("Cruise Missile Launcher II"), Slot::High, 0).with_charge(id(charge)).with_state(State::Active));
+        let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &crate::calc::Env::default());
+        check(&d, &f, &c, &[]).into_iter().find_map(|w| match w.kind { WarningKind::AmmoRangeGap { short, long, .. } => Some((short, long)), _ => None })
+    };
+    assert!(gap("Scourge Fury Cruise Missile").is_none_or(|(short, _)| !short), "Fury carried: no short-range gap");
+    assert_eq!(gap("Scourge Cruise Missile").map(|g| g.0), Some(true), "only T1 carried: Fury is the short-range ammo missing");
+}

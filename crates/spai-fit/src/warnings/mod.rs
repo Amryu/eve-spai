@@ -203,8 +203,13 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
             let max = r.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             (!r.is_empty()).then_some((min, max))
         };
-        if let (Some((pmin, pmax)), Some((cmin, cmax))) = (reaches(&possible), reaches(&carried)) {
-            let short = cmin > pmin * 1.01;
+        if let (Some((_, pmax)), Some((cmin, cmax))) = (reaches(&possible), reaches(&carried)) {
+            // Short-range ammo trades reach for damage: a charge reaching less and hitting harder
+            // than all carried. One reaching less for better application instead (precision
+            // missiles) is not it.
+            let hits = |c: TypeId| dogma.type_(c).map_or(0.0, |t| [attr::EM_DAMAGE, attr::THERMAL_DAMAGE, attr::KINETIC_DAMAGE, attr::EXPLOSIVE_DAMAGE].iter().map(|a| t.attr(*a).map_or(0.0, f64::from)).sum::<f64>());
+            let hardest = carried.iter().map(|c| hits(*c)).fold(0.0, f64::max);
+            let short = possible.iter().any(|c| reach(dogma, *c).is_some_and(|r| r < cmin * 0.99) && hits(*c) > hardest * 1.01);
             let long = cmax < pmax * 0.99;
             if short || long {
                 out.push(warn(Severity::Info, WarningKind::AmmoRangeGap { weapon: w.type_id, short, long }));

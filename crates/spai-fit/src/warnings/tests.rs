@@ -7,9 +7,12 @@ use crate::stats::compute;
 use crate::variations as spai_fit_variations;
 
 fn kinds(fit: &Fit, missing: &[MissingSkill]) -> Vec<WarningKind> {
-    let d = dataset();
-    let c = compute(&d, fit, &SkillSet::all_v(), &Env::default());
-    check(&d, fit, &c, missing).into_iter().map(|w| w.kind).collect()
+    kinds_in(&dataset(), fit, missing)
+}
+
+fn kinds_in(d: &crate::Dogma, fit: &Fit, missing: &[MissingSkill]) -> Vec<WarningKind> {
+    let c = compute(d, fit, &SkillSet::all_v(), &Env::default());
+    check(d, fit, &c, missing).into_iter().map(|w| w.kind).collect()
 }
 
 fn has(kinds: &[WarningKind], f: impl Fn(&WarningKind) -> bool) -> bool {
@@ -74,8 +77,18 @@ fn ammo_coverage_looks_at_what_is_carried_against_what_exists() {
     assert!(!has(&k, |w| matches!(w, WarningKind::AmmoDamageGap { .. } | WarningKind::AmmoRangeGap { .. })), "{k:?}");
     f.modules[0].charge = Some(ids::AMMO_LONG);
     f.cargo.clear();
-    let k = kinds(&f, &[]);
+    // Short-range ammo hits harder, as in the game; only then is its absence a gap.
+    let mut d = dataset();
+    let emp = d.types.iter_mut().find(|t| t.id == ids::AMMO).unwrap();
+    emp.attrs.retain(|(a, _)| *a != crate::dogma::attr::EM_DAMAGE);
+    emp.attrs.push((crate::dogma::attr::EM_DAMAGE, 30.0));
+    emp.attrs.sort_by_key(|(a, _)| *a);
+    let d = d.finish();
+    let k = kinds_in(&d, &f, &[]);
     assert!(has(&k, |w| matches!(w, WarningKind::AmmoRangeGap { short: true, long: false, .. })), "{k:?}");
+    // A charge reaching less without hitting harder (precision missiles) is no short-range ammo.
+    let k = kinds(&f, &[]);
+    assert!(!has(&k, |w| matches!(w, WarningKind::AmmoRangeGap { short: true, .. })), "{k:?}");
 }
 
 #[test]
