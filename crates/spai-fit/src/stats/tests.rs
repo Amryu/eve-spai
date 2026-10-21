@@ -378,6 +378,11 @@ fn a_neighbour_left_cool_outlasts_the_overloaded_module() {
     let stats = module_stats(&calc, &c);
     let at = |i: u8| stats.iter().find(|m| m.slot == Slot::High && m.index == i).unwrap().burnout_s.unwrap();
     assert!(at(1) > at(0), "the cool neighbour only takes the spill-over: {} against {}", at(1), at(0));
+    let mut cool = f.clone();
+    cool.modules[0].state = State::Active;
+    let calc = crate::calc::Calc::new(&d, &cool, &SkillSet::all_v(), &Env::default());
+    let c = compute_with(&calc, &cool);
+    assert!(module_stats(&calc, &c).iter().all(|m| m.burnout_s.is_none()), "nothing overloaded, no burnout figures");
 }
 
 #[test]
