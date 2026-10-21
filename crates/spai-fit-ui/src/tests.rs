@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use spai_fit::fit::{Slot, State};
+use spai_fit::fit::{DroneStack, Slot, State};
 use spai_fit::history::EditKind;
 use spai_fit::test_support::{dataset, ids};
 
@@ -1087,4 +1087,76 @@ fn another_ship_added_to_a_fit_rides_in_the_cargo() {
     s.new_empty_tab(2);
     assert!(crate::browser::quick_add(&mut s, ids::SHIP, 3));
     assert_eq!(s.session().unwrap().fit.ship, ids::SHIP, "a tab without a hull takes it as the hull");
+}
+
+#[test]
+fn a_module_state_set_by_hand_is_saved_and_comes_back() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::MWD, 1);
+    s.edit(EditKind::SetState, 2, |f| f.module_mut(Slot::Mid, 0).unwrap().state = State::Online);
+    s.autosave_for_test(100_000);
+    let (id, doc) = s.take_requests().into_iter().find_map(|r| if let HostRequest::SaveFit { id, doc, .. } = r { Some((id, doc)) } else { None }).expect("saved");
+    let mut back = sim();
+    back.handle(HostEvent::Fit { id, doc });
+    assert_eq!(back.session().unwrap().fit.module(Slot::Mid, 0).unwrap().state, State::Online, "the state as it was set, not the default");
+}
+
+#[test]
+fn clicks_on_the_state_button_toggle_overload_and_offline() {
+    use crate::editor::{gesture_state, Gesture};
+    let d = sim().dogma.clone().unwrap();
+    assert_eq!(gesture_state(&d, ids::MWD, State::Online, Gesture::Toggle), State::Active);
+    assert_eq!(gesture_state(&d, ids::MWD, State::Active, Gesture::Toggle), State::Online);
+    assert_eq!(gesture_state(&d, ids::MWD, State::Offline, Gesture::Toggle), State::Active, "from offline a click switches it on");
+    assert_eq!(gesture_state(&d, ids::GYRO, State::Online, Gesture::Toggle), State::Offline, "a passive module never goes active");
+    assert_eq!(gesture_state(&d, ids::MWD, State::Active, Gesture::Overload), State::Active, "no heat figure: no overload");
+    assert_eq!(gesture_state(&d, ids::MWD, State::Active, Gesture::Offline), State::Offline);
+    assert_eq!(gesture_state(&d, ids::MWD, State::Offline, Gesture::Offline), State::Online);
+}
+
+#[test]
+fn no_more_than_five_drones_are_ever_out_across_stacks() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::Drones, 1, |f| {
+        f.drones.push(DroneStack { type_id: ids::DRONE, count: 7, active: true, launched: None, mutation: None });
+        f.drones.push(DroneStack { type_id: ids::DRONE + 1, count: 3, active: true, launched: None, mutation: None });
+    });
+    let out: Vec<u32> = s.session().unwrap().fit.drones.iter().map(|d| d.in_space()).collect();
+    assert_eq!(out, vec![5, 0], "the first stack takes all five, the second waits in the bay");
+    s.edit(EditKind::Drones, 2, |f| f.drones[0].launched = Some(2));
+    s.edit(EditKind::Drones, 3, |f| {
+        f.drones[1].active = true;
+        f.drones[1].launched = None;
+    });
+    let out: Vec<u32> = s.session().unwrap().fit.drones.iter().map(|d| d.in_space()).collect();
+    assert_eq!(out, vec![2, 3], "with two out, three of the other stack may go");
+    assert_eq!(s.session().unwrap().fit.drones[0].count, 7, "the bay keeps all seven");
+}
+
+#[test]
+fn fit_tabs_fill_the_bar_and_the_one_on_screen_is_always_on_it() {
+    use crate::editor::tabs_that_fit;
+    let w = [100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(tabs_that_fit(&w, 320.0, 0), vec![0, 1, 2]);
+    assert_eq!(tabs_that_fit(&w, 320.0, 4), vec![0, 1, 4], "the active one takes the last place");
+    assert_eq!(tabs_that_fit(&w, 1000.0, 2), vec![0, 1, 2, 3, 4]);
+    assert_eq!(tabs_that_fit(&w, 50.0, 3), vec![3], "even when nothing fits, the active one shows");
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_consumables_cover_charges_paste_and_fuel() {
+    let d = spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap_or_else(|| panic!("{n}")).id;
+    let mut f = spai_fit::fit::Fit::new(id("Revelation"), "x");
+    f.modules.push(spai_fit::fit::Module::new(id("Siege Module II"), Slot::High, 0));
+    f.cargo.push(spai_fit::fit::CargoItem { type_id: id("200mm AutoCannon II"), quantity: 1, hold: None });
+    let c = crate::picker::consumables_for(&d, &f);
+    let names: Vec<&str> = c.iter().filter_map(|t| d.type_(*t)).map(|t| t.name.as_str()).filter(|n| !n.contains(" S")).collect();
+    println!("{} consumables, besides small ammo: {names:?}", c.len());
+    for want in ["Nanite Repair Paste", "Strontium Clathrates", "Helium Isotopes", "EMP S"] {
+        assert!(c.contains(&id(want)), "{want}");
+    }
 }

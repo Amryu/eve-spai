@@ -2765,6 +2765,13 @@ pub(crate) fn all() -> Vec<Scene> {
         });
         sim.graph_window = true;
     }));
+    v.push(imperium_scene_with("imperium_many_tabs", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        for i in 0..9 {
+            sim.new_fit(spai_fit::test_support::ids::SHIP, 10 + i);
+            sim.edit(spai_fit::history::EditKind::Other, 20 + i, |f| f.name = format!("Doctrine Rifter variant number {i}"));
+        }
+        sim.activate(7);
+    }));
     v.push(imperium_dialog_scene("imperium_traits", [520.0, 320.0], |sim| {
         sim.traits_window = true;
     }));
@@ -9825,4 +9832,48 @@ fn uitest_sim_browse_chevron_toggles() {
     harness::click_at(&h, egui::pos2(name.min.x - 10.0, name.center().y));
     h.run_steps(3);
     assert!(rows_in(&h) > before, "the chevron opened the group: {before} rows before, {} after", rows_in(&h));
+}
+
+fn drag_between(h: &mut egui_kittest::Harness<'_>, from: egui::Pos2, to: egui::Pos2) {
+    let press = |h: &mut egui_kittest::Harness<'_>, pos, pressed| h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() });
+    h.event(egui::Event::PointerMoved(from));
+    h.run_steps(1);
+    press(h, from, true);
+    h.run_steps(1);
+    for k in 1..=12 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 12.0)));
+        h.run_steps(1);
+    }
+    press(h, to, false);
+    h.run_steps(2);
+    h.event(egui::Event::PointerGone);
+    h.run_steps(3);
+}
+
+/// A module in the cargo dragged onto an empty slot is fitted, one less in the cargo; dragged back
+/// onto the cargo it comes off the rack. Never two of it.
+#[test]
+fn uitest_sim_modules_move_between_cargo_and_racks() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene_with("sim_cargo_drag", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::Cargo, 1, |f| f.cargo.push(spai_fit::fit::CargoItem { type_id: ids::GYRO, quantity: 1, hold: None }));
+        sim.dock.first = 3;
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let gyros = |h: &egui_kittest::Harness<'_>| h.query_all_by_label_contains("Gyrostabilizer II").count();
+    let cargo_rows = |h: &egui_kittest::Harness<'_>| spai_fit_ui::rows::log(&h.ctx).iter().filter(|(id, _)| *id == egui::Id::new("dock/cargo")).map(|(_, r)| *r).collect::<Vec<_>>();
+    assert_eq!(gyros(&h), 1);
+    let from = cargo_rows(&h)[0];
+    let empty = h.query_all_by_label_contains("Empty low slot").map(|n| n.rect().center()).next().expect("an empty low slot");
+    drag_between(&mut h, egui::pos2(from.min.x + 60.0, from.center().y), empty);
+    assert!(cargo_rows(&h).is_empty(), "the stack of one left the cargo");
+    assert_eq!(gyros(&h), 1, "and is on the rack, once");
+    let fitted = h.query_all_by_label_contains("Gyrostabilizer II").map(|n| n.rect()).next().unwrap();
+    let cargo_panel = h.query_all_by_label_contains("Anything carried").map(|n| n.rect().center()).next().expect("the empty cargo note");
+    drag_between(&mut h, egui::pos2(fitted.min.x + 20.0, fitted.center().y), cargo_panel);
+    assert_eq!(cargo_rows(&h).len(), 1, "back in the cargo");
+    assert_eq!(gyros(&h), 1, "and off the rack");
 }

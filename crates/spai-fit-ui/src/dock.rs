@@ -129,13 +129,29 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
     let frame = egui::Frame::NONE.fill(ui.visuals().faint_bg_color).corner_radius(4.0).inner_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 6 });
     // The frame's margins come on top of what is set inside it.
     let inner = (height - 8.0).max(24.0);
-    let (resp, _) = ui.dnd_drop_zone::<rows::DragItem, ()>(frame, |ui| {
+    // Styled as egui's drop zone, without it: its release takes whatever is carried, of any type,
+    // and a module dragged here for the cargo would be lost.
+    let accepts = egui::DragAndDrop::has_payload_of_type::<rows::DragItem>(ui.ctx()) || (tab == DockTab::Cargo && egui::DragAndDrop::has_payload_of_type::<rows::DragModule>(ui.ctx()));
+    let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
+    let id = egui::Id::new(("sim_dock_panel", tab.name()));
+    let over = ui.ctx().read_response(id).is_some_and(|r| r.contains_pointer());
+    let style = if dragging && accepts && over { ui.visuals().widgets.active } else { ui.visuals().widgets.inactive };
+    let (mut fill, mut stroke) = (style.bg_fill, style.bg_stroke);
+    if dragging && !accepts {
+        fill = ui.visuals().disable(fill);
+        stroke.color = ui.visuals().disable(stroke.color);
+    }
+    // Laid out before its stroke is set, as egui's own drop zone does, so the stroke adds no size.
+    let mut prepared = frame.begin(ui);
+    let mut content = |ui: &mut egui::Ui| {
         ui.set_min_height(inner);
         ui.set_max_height(inner);
         rows::heading(ui, tab.name(), None, |ui| {
+            // A bay of fitted ships takes fits through its own button, never loose items.
+            let ship_bay = tab == DockTab::Cargo && sim.computed().is_some_and(|c| c.holds.iter().any(|h| h.attr == sim.dock.hold && h.fits));
             if tab == DockTab::Projected {
                 add_projected_menu(sim, ui, now_ms);
-            } else if ui.small_button(trf!("{icon} Add", icon = icon::PLUS)).clicked() {
+            } else if !ship_bay && ui.small_button(trf!("{icon} Add", icon = icon::PLUS)).clicked() {
                 let target = match tab {
                     DockTab::Drones => PickTarget::Drone,
                     DockTab::Fighters => PickTarget::Fighter,
@@ -148,7 +164,7 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
             }
         });
         // The cargo tab keeps its hold's fill at its foot, the list scrolling above it.
-        let footer = if tab == DockTab::Cargo { FOOTER_H + ui.spacing().item_spacing.y } else { 0.0 };
+        let footer = if matches!(tab, DockTab::Cargo | DockTab::Drones) { FOOTER_H + ui.spacing().item_spacing.y } else { 0.0 };
         let list_h = (ui.available_height() - footer).max(0.0);
         egui::ScrollArea::vertical().id_salt(("sim_dock", tab.name())).auto_shrink([false, false]).max_height(list_h).min_scrolled_height(list_h).show(ui, |ui| match tab {
             DockTab::Drones => drones(sim, ui, dogma, now_ms),
@@ -162,8 +178,23 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
             let holds = sim.computed().map(|c| c.holds.clone()).unwrap_or_default();
             hold_footer(sim, ui, &holds);
         }
-    });
-    browser::accept_drop(sim, &resp.response, DropTarget::Dock(tab), now_ms);
+        if tab == DockTab::Drones {
+            drone_bay_footer(sim, ui);
+        }
+    };
+    content(&mut prepared.content_ui);
+    let frame_resp = prepared.allocate_space(ui);
+    prepared.frame.fill = fill;
+    prepared.frame.stroke = stroke;
+    prepared.paint(ui);
+    let resp = ui.interact(frame_resp.rect, id, egui::Sense::hover());
+    browser::accept_drop(sim, &resp, DropTarget::Dock(tab), now_ms);
+    // A fitted module dropped on the cargo comes off the rack into the hold shown.
+    if tab == DockTab::Cargo {
+        if let Some(m) = rows::released::<rows::DragModule>(&resp) {
+            crate::editor::unfit_to_cargo(sim, m.0, m.1, now_ms);
+        }
+    }
 }
 
 /// What acts on the fit from outside: modules and drones pointed at it, and system effects.
@@ -387,11 +418,15 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let tips = sim.tip_values();
     let Some(s) = sim.session() else { return };
     let list: Vec<(TypeId, u32, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.in_space())).collect();
+    let all_out: u32 = list.iter().map(|(_, _, o)| *o).sum();
     let rolls: Vec<Option<spai_fit::fit::Mutation>> = s.fit.drones.iter().map(|d| d.mutation.clone()).collect();
     if list.is_empty() {
         empty_note(ui, tr!("Drag drones here or double-click them in the browser."));
     }
+    let limit = sim.drone_limit();
     for (i, (type_id, count, out)) in list.into_iter().enumerate() {
+        // What this stack may launch: the pilot's limit less what the other stacks have out.
+        let may = count.min(limit.saturating_sub(all_out - out));
         let name = spai_fit::formats::name_of(dogma, type_id);
         let mut delta: i32 = 0;
         let mut remove = false;
@@ -417,15 +452,15 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             let field = rows::slot(ui, 2.0, |ui| {
                 ui.spacing_mut().interact_size.y = ROW_H - 8.0;
                 ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
-                ui.add(egui::DragValue::new(&mut n).range(0..=count).custom_formatter(move |v, _| format!("{v:.0}/{count}")).custom_parser(|t| t.split('/').next().and_then(|x| x.trim().parse().ok())))
+                ui.add(egui::DragValue::new(&mut n).range(0..=may).custom_formatter(move |v, _| format!("{v:.0}/{count}")).custom_parser(|t| t.split('/').next().and_then(|x| x.trim().parse().ok())))
             });
-            if field.on_hover_text(trf!("In space: {n} of {count}. Drag or type how many are launched; 0 keeps them all in the bay.", n = n, count = count)).changed() {
+            if field.on_hover_text(trf!("In space: {n} of {count}, at most {limit} drones out across every stack. Drag or type how many are launched; 0 keeps them all in the bay.", n = n, count = count, limit = limit)).changed() {
                 launch = Some(n);
             }
         });
         // All out, or all back in the bay.
         if r.double_clicked() {
-            launch = Some(if out > 0 { 0 } else { count });
+            launch = Some(if out > 0 { 0 } else { may });
         }
         let mut details = false;
         r.context_menu(|ui| {
@@ -434,7 +469,7 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 ui.close();
             }
             if ui.button(if out > 0 { tr!("Keep in the bay") } else { tr!("Launch") }).clicked() {
-                launch = Some(if out > 0 { 0 } else { count });
+                launch = Some(if out > 0 { 0 } else { may });
                 ui.close();
             }
             if ui.button(tr!("Details…")).clicked() {
@@ -646,39 +681,26 @@ fn hold_footer(sim: &mut SimUi, ui: &mut egui::Ui, holds: &[spai_fit::stats::Hol
     sim.dock.hold = shown.attr;
     let over = shown.over();
     let w = ui.available_width();
-    ui.allocate_ui_with_layout(egui::vec2(w, FOOTER_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    // From the right: the switch first, then the bar in what it leaves, so nothing runs past the edge.
+    ui.allocate_ui_with_layout(egui::vec2(w, FOOTER_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.set_height(FOOTER_H);
         ui.add_space(rows::GAP);
-        let button_w = if holds.len() > 1 { 22.0 + ui.spacing().item_spacing.x } else { 0.0 };
-        let bar_w = (ui.available_width() - rows::GAP - button_w).max(40.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 20.0), egui::Sense::hover());
-        let painter = ui.painter();
-        let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 15.0), egui::vec2(rect.width(), 4.0));
-        painter.rect_filled(bar, 2.0, ui.visuals().extreme_bg_color);
-        let f = shown.fraction().clamp(0.0, 1.0) as f32;
-        let colour = if over { ui.visuals().error_fg_color } else { ui.visuals().hyperlink_color };
-        painter.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 2.0, colour);
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let tc = if over { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
-        let galley = painter.layout(format!("{}  {}", shown.name, fill_text(&shown)), font, tc, rect.width());
-        painter.with_clip_rect(rect).galley(rect.left_top() + egui::vec2(0.0, -1.0), galley, tc);
         if holds.len() > 1 {
-            egui::containers::menu::MenuButton::from_button(egui::Button::new(icon::SWAP).frame_when_inactive(false).min_size(egui::vec2(22.0, 20.0)))
-                .ui(ui, |ui| {
-                    use spai_ui::widgets::SteadySelect as _;
-                    ui.set_min_width(260.0);
-                    for h in holds {
-                        let line = egui::RichText::new(format!("{}  {}", h.name, fill_text(h)));
-                        let line = if h.over() { line.color(ui.visuals().error_fg_color) } else { line };
-                        if ui.menu_label(h.attr == shown.attr, line).clicked() {
-                            sim.dock.hold = h.attr;
-                            ui.close();
-                        }
+            let button = icon_button(ui, icon::SWAP).on_hover_text(tr!("Show another hold"));
+            egui::Popup::menu(&button).show(|ui| {
+                use spai_ui::widgets::SteadySelect as _;
+                ui.set_min_width(260.0);
+                for h in holds {
+                    let line = egui::RichText::new(format!("{}  {}", h.name, fill_text(h)));
+                    let line = if h.over() { line.color(ui.visuals().error_fg_color) } else { line };
+                    if ui.menu_label(h.attr == shown.attr, line).clicked() {
+                        sim.dock.hold = h.attr;
+                        ui.close();
                     }
-                })
-                .0
-                .on_hover_text(tr!("Show another hold"));
+                }
+            });
         }
+        fill_bar(ui, &format!("{}  {}", shown.name, fill_text(&shown)), shown.fraction(), over);
     });
 }
 
@@ -691,16 +713,34 @@ fn ship_bay(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, bay: &spai_fit::s
     let carried: Vec<(usize, spai_fit::fit::Carried)> = s.fit.carried.iter().cloned().enumerate().filter(|(_, c)| c.bay == bay_attr).collect();
     let mut remove: Option<usize> = None;
     let mut add: Option<(String, TypeId)> = None;
+    let mut copy: Option<(String, &'static str)> = None;
+    let link_base = sim.link_base.clone();
     for (i, c) in &carried {
+        let doc = sim.fit_docs.get(&c.fit_id).cloned();
         let name = sim.library.iter().find(|e| e.id == c.fit_id).map_or_else(|| tr!("A fit no longer saved").to_owned(), |e| e.name.clone());
         let hull = spai_fit::formats::name_of(dogma, c.ship);
         rows::row(ui, "dock/cargo", ("sim_bay", *i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, c.ship, 18.0);
-            let w = rows::name_w(ui, if bay.ships { 1.0 } else { 3.0 });
+            let buttons = 1.0 + 1.0 + f32::from(u8::from(link_base.is_some()));
+            let w = rows::name_w(ui, if bay.ships { buttons } else { buttons + 3.0 });
             rows::cell(ui, w, egui::RichText::new(&name), &hull);
             if !bay.ships {
                 let m3 = dogma.type_(c.ship).map_or(0.0, |t| f64::from(t.volume()));
-                rows::slot(ui, 2.0, |ui| rows::num_cell(ui, rows::slots_w(2.0), format!("{} m³", text::num(m3)), true));
+                rows::slot(ui, 3.0, |ui| rows::num_cell(ui, rows::slots_w(3.0), format!("{} m³", text::num(m3)), true));
+            }
+            // The carried fit as text or a link, the way the fit on screen is copied.
+            let has = doc.is_some();
+            if rows::slot(ui, 1.0, |ui| ui.add_enabled_ui(has, |ui| icon_button(ui, icon::COPY)).inner).on_hover_text(tr!("Copy its EFT")).clicked() {
+                if let Some(f) = &doc {
+                    copy = Some((spai_fit::formats::eft::export(dogma, &spai_fit::variations::resolve(dogma, f)), tr!("EFT")));
+                }
+            }
+            if let Some(base) = &link_base {
+                if rows::slot(ui, 1.0, |ui| ui.add_enabled_ui(has, |ui| icon_button(ui, icon::LINK)).inner).on_hover_text(tr!("Copy a link to it, with its variations")).clicked() {
+                    if let Some(f) = &doc {
+                        copy = Some((format!("{base}#fit={}", spai_fit::formats::link::encode(&spai_fit::doc::to_json(f))), tr!("Link")));
+                    }
+                }
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::X)).on_hover_text(tr!("Take it out")).clicked() {
                 remove = Some(*i);
@@ -738,6 +778,10 @@ fn ship_bay(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, bay: &spai_fit::s
             });
         });
     });
+    if let Some((text, what)) = copy {
+        sim.request(crate::HostRequest::CopyText(text));
+        sim.status(trf!("{what} copied", what = what));
+    }
     if let Some(i) = remove {
         sim.edit(EditKind::Cargo, now_ms, move |f| {
             if i < f.carried.len() {
@@ -748,6 +792,37 @@ fn ship_bay(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, bay: &spai_fit::s
     if let Some((fit_id, ship)) = add {
         sim.edit(EditKind::Cargo, now_ms, move |f| f.carried.push(spai_fit::fit::Carried { fit_id, ship, bay: bay_attr }));
     }
+}
+
+/// A line of text over a thin bar of how full something is, red past full, in the width left.
+fn fill_bar(ui: &mut egui::Ui, text: &str, fraction: f64, over: bool) {
+    let bar_w = (ui.available_width() - rows::GAP).max(40.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 20.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 15.0), egui::vec2(rect.width(), 4.0));
+    painter.rect_filled(bar, 2.0, ui.visuals().extreme_bg_color);
+    let f = if fraction.is_finite() { fraction.clamp(0.0, 1.0) as f32 } else { 1.0 };
+    let colour = if over { ui.visuals().error_fg_color } else { ui.visuals().hyperlink_color };
+    painter.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 2.0, colour);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let tc = if over { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
+    let galley = painter.layout(text.to_owned(), font, tc, rect.width());
+    painter.with_clip_rect(rect).galley(rect.left_top() + egui::vec2(0.0, -1.0), galley, tc);
+}
+
+/// The drone panel's foot: the bay's fill, as the cargo shows its hold's.
+fn drone_bay_footer(sim: &mut SimUi, ui: &mut egui::Ui) {
+    let Some(c) = sim.computed() else { return };
+    let (used, total) = (c.drones.bay_used, c.drones.bay_total);
+    let pct = if total > 0.0 { format!("{:.0}%", (used / total * 100.0).max(0.0)) } else { "—".to_owned() };
+    let text = trf!("Drone bay  {used} / {total} m³ · {pct}", used = text::num(used.max(0.0)), total = text::num(total.max(0.0)), pct = pct);
+    let fraction = if total > 0.0 { used / total } else if used > 0.0 { f64::INFINITY } else { 0.0 };
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(egui::vec2(w, FOOTER_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_height(FOOTER_H);
+        ui.add_space(rows::GAP);
+        fill_bar(ui, &text, fraction, used > total + 1e-6);
+    });
 }
 
 /// The cargo panel's foot: the hold's fill and the switch.
@@ -769,17 +844,26 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         empty_note(ui, if hold.is_none() { tr!("Anything carried: spare ammo, paste, cap charges, refits. The warnings read it.") } else { tr!("Nothing in this hold yet. Add or drop items while it is shown.") });
     }
     let others: Vec<(Option<spai_fit::ids::AttrId>, String)> = holds.iter().filter(|h| h.attr != hold).map(|h| (h.attr, h.name.clone())).collect();
+    let capacity = holds.iter().find(|h| h.attr == hold).map_or(0.0, |h| h.capacity);
     for (i, type_id, qty) in list.into_iter() {
         let name = spai_fit::formats::name_of(dogma, type_id);
         let mut remove = false;
         let mut set: Option<u32> = None;
         let r = rows::row(ui, "dock/cargo", ("sim_cargo", i), ROW_H, false, |ui| {
+            // Behind the row, its stack's share of the hold.
+            if capacity > 0.0 {
+                let share = (dogma.type_(type_id).map_or(0.0, |t| f64::from(t.cargo_volume())) * f64::from(qty) / capacity).clamp(0.0, 1.0) as f32;
+                let rect = ui.max_rect();
+                ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * share, rect.height())), 3.0, ui.visuals().hyperlink_color.gamma_multiply(0.10));
+            }
             crate::icons::type_icon(ui, type_id, 18.0);
             let w = rows::name_w(ui, 4.0);
             rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
             let mut q = qty;
+            // No vertical padding: the theme's would make the box taller than the row.
             let r = rows::slot(ui, 3.0, |ui| {
                 ui.spacing_mut().interact_size.y = ROW_H - 8.0;
+                ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
                 ui.add_sized([rows::slots_w(3.0), ROW_H - 8.0], egui::DragValue::new(&mut q).range(1..=1_000_000).prefix("x"))
             });
             if r.changed() {
@@ -789,6 +873,10 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 remove = true;
             }
         });
+        // A module in the cargo can be carried onto a slot to fit one of the stack.
+        if dogma.slot_of(type_id).is_some() {
+            rows::drag_from(ui, &r, rows::DragCargo(i), &name);
+        }
         let mut details = false;
         let mut move_to: Option<Option<spai_fit::ids::AttrId>> = None;
         r.context_menu(|ui| {

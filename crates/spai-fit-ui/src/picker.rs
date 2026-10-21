@@ -48,6 +48,8 @@ pub struct Picker {
     pub filter: FitFilter,
     /// The tree's first level has been opened once.
     opened_roots: bool,
+    /// For the cargo: only what the fit uses up, its charges, paste and fuel.
+    pub consumables: bool,
 }
 
 /// Which modules a slot's picker offers.
@@ -145,7 +147,7 @@ pub const MAX_RESULTS: usize = 250;
 
 impl Picker {
     pub fn new(target: PickTarget) -> Self {
-        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default(), added: Vec::new(), filter: FitFilter::default(), opened_roots: false }
+        Picker { target, query: String::new(), results: Vec::new(), last_query: None, focus: true, takes: None, expanded: Default::default(), added: Vec::new(), filter: FitFilter::default(), opened_roots: false, consumables: false }
     }
 
     pub fn title(&self) -> String {
@@ -415,11 +417,18 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         Some(PickTarget::Module(slot, index)) => sim.fit_room(slot, index),
         _ => None,
     };
+    // The cargo hold and a fleet hangar can be narrowed to what the fit uses up.
+    let fleet_hangar = dogma.attr_named("fleetHangarCapacity").map(|a| a.id);
+    let consumable_hold = matches!(sim.picker.as_ref().map(|p| p.target), Some(PickTarget::Cargo)) && (sim.dock.hold.is_none() || sim.dock.hold == fleet_hangar);
+    let useful = if consumable_hold && sim.picker.as_ref().is_some_and(|p| p.consumables) { sim.session().map(|s| consumables_for(&dogma, &s.fit)) } else { None };
     let Some(picker) = &mut sim.picker else { return };
     if picker.last_query.as_deref() != Some(picker.query.as_str()) {
         let mut all = results(&dogma, picker.target, module_type, &picker.query);
         if let Some(room) = &room {
             all.retain(|id| dogma.type_(*id).is_some_and(|t| fits(&dogma, t, room, picker.filter)));
+        }
+        if let Some(useful) = &useful {
+            all.retain(|id| useful.contains(id));
         }
         if picker.query.trim().is_empty() && picker.takes.is_none() {
             picker.takes = Some(all.iter().copied().collect());
@@ -469,6 +478,14 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                     }
                 }
             });
+        }
+        if consumable_hold {
+            let r = ui.checkbox(&mut picker.consumables, tr!("Charges & consumables only")).on_hover_text(tr!("Charges for the modules fitted or carried, nanite repair paste, and the fuel the ship or its modules burn"));
+            if r.changed() {
+                picker.last_query = None;
+                picker.takes = None;
+                picker.opened_roots = false;
+            }
         }
         if !picker.added.is_empty() {
             let last = picker.added.last().and_then(|t| dogma.type_(*t)).map_or(String::new(), |t| t.name.clone());
@@ -542,4 +559,25 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     } else if !open {
         sim.picker = None;
     }
+}
+
+/// What the fit uses up: every charge a fitted or carried module takes, nanite repair paste, and the
+/// fuel its hull's jump drive or its modules (siege, cynos, jump portals) consume.
+pub fn consumables_for(dogma: &Dogma, fit: &spai_fit::fit::Fit) -> std::collections::HashSet<TypeId> {
+    let mut out = std::collections::HashSet::new();
+    let modules = fit.modules.iter().map(|m| m.type_id).chain(fit.cargo.iter().map(|c| c.type_id).filter(|t| dogma.slot_of(*t).is_some()));
+    let fuel = ["consumptionType", "jumpDriveConsumptionType"].iter().filter_map(|n| dogma.attr_named(n).map(|a| a.id)).collect::<Vec<_>>();
+    for m in modules {
+        out.extend(compatible_charges(dogma, m));
+        if let Some(t) = dogma.type_(m) {
+            out.extend(fuel.iter().filter_map(|a| t.attr(*a)).map(|v| v as TypeId));
+        }
+    }
+    if let Some(t) = dogma.type_(fit.ship) {
+        out.extend(fuel.iter().filter_map(|a| t.attr(*a)).map(|v| v as TypeId));
+    }
+    if let Some(paste) = dogma.type_named("Nanite Repair Paste") {
+        out.insert(paste.id);
+    }
+    out
 }

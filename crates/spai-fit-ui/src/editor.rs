@@ -74,7 +74,7 @@ pub fn state_name(state: State) -> &'static str {
 
 /// The states a module can take, lowest first.
 pub fn states_of(dogma: &Dogma, type_id: TypeId) -> Vec<State> {
-    let can_activate = spai_fit::formats::default_state(dogma, type_id) == State::Active;
+    let can_activate = spai_fit::formats::can_activate(dogma, type_id);
     let can_overload = dogma.type_(type_id).is_some_and(|t| t.attr(spai_fit::dogma::attr::HEAT_DAMAGE).is_some());
     let mut v = vec![State::Offline, State::Online];
     if can_activate {
@@ -180,6 +180,52 @@ pub fn any_charges(dogma: &Dogma, types: &[TypeId]) -> Vec<TypeId> {
 }
 
 /// The next state a click moves a module to, round the ones it can take.
+/// What a click on the state button (or a double click on the row) asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gesture {
+    /// Click: online and active in turn; a passive module online and offline.
+    Toggle,
+    /// Right click: overloaded, or back to active.
+    Overload,
+    /// Ctrl and click: offline, or back online.
+    Offline,
+}
+
+pub fn gesture_state(dogma: &Dogma, type_id: TypeId, state: State, g: Gesture) -> State {
+    let states = states_of(dogma, type_id);
+    match g {
+        Gesture::Toggle if states.contains(&State::Active) => {
+            if state >= State::Active {
+                State::Online
+            } else {
+                State::Active
+            }
+        }
+        Gesture::Toggle => {
+            if state == State::Offline {
+                State::Online
+            } else {
+                State::Offline
+            }
+        }
+        Gesture::Overload if states.contains(&State::Overload) => {
+            if state == State::Overload {
+                State::Active
+            } else {
+                State::Overload
+            }
+        }
+        Gesture::Overload => state,
+        Gesture::Offline => {
+            if state == State::Offline {
+                State::Online
+            } else {
+                State::Offline
+            }
+        }
+    }
+}
+
 pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
     let states = states_of(dogma, type_id);
     let i = states.iter().position(|s| *s == state).unwrap_or(0);
@@ -192,7 +238,6 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         // An empty tab keeps the tab row, so it can be closed or left like any other.
         let empty_tab = sim.session().is_some();
         if empty_tab {
-            ui.add_space(4.0);
             fit_tabs(sim, ui);
         }
         let area = ui.max_rect();
@@ -223,7 +268,6 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("sim_editor").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.add_space(4.0);
             fit_tabs(sim, ui);
             ui.add_space(4.0);
             header(sim, ui, &dogma, now_ms);
@@ -244,11 +288,22 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
     let mut add = false;
     let active = sim.active_tab();
     let names: Vec<(String, bool)> = sim.sessions().iter().map(|s| (s.fit.name.clone(), s.dirty)).collect();
-    ui.horizontal_wrapped(|ui| {
+    // One row, flush with the edges: as many tabs as fit, the one on screen always among them,
+    // the rest behind a caret pinned right before the add button, as on the chat bar.
+    let labels: Vec<String> = names.iter().map(|(n, _)| text::clip(n, 22)).collect();
+    let widths: Vec<f32> = labels.iter().map(|l| spai_ui::widgets::tab_box_width(ui, l)).collect();
+    let plus_w = 26.0;
+    let caret_w = 46.0;
+    // Clear of the scroll bar that the editor's scroll area lays over its right edge.
+    let edge = 6.0;
+    let room = ui.available_width() - plus_w - caret_w - edge;
+    let on_bar = tabs_that_fit(&widths, room, active);
+    let hidden: Vec<usize> = (0..names.len()).filter(|i| !on_bar.contains(i)).collect();
+    ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(rows::GAP);
-        for (i, (name, dirty)) in names.iter().enumerate() {
-            let hit = spai_ui::widgets::tab_box(ui, egui::Id::new(("sim_tab", i)), i == active, &text::clip(name, 22), *dirty);
+        for &i in &on_bar {
+            let (name, dirty) = &names[i];
+            let hit = spai_ui::widgets::tab_box(ui, egui::Id::new(("sim_tab", i)), i == active, &labels[i], *dirty);
             let r = hit.resp.on_hover_text(name);
             if hit.select {
                 activate = Some(i);
@@ -267,8 +322,33 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
                 }
             });
         }
-        ui.add_space(rows::GAP);
-        if icon_button(ui, icon::PLUS).on_hover_text(tr!("Another fit")).clicked() {
+        let pad = ui.available_width() - plus_w - caret_w - edge;
+        if pad > 0.0 {
+            ui.add_space(pad);
+        }
+        let caret = if hidden.is_empty() { icon::CARET_DOWN.to_owned() } else { format!("{} {}", icon::CARET_DOWN, hidden.len()) };
+        // Exactly its width, so a wider count never pushes the row past the edge.
+        ui.allocate_ui_with_layout(egui::vec2(caret_w, spai_ui::widgets::TAB_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_width(caret_w);
+            let button = egui::Button::new(caret).min_size(egui::vec2(caret_w, spai_ui::widgets::TAB_H)).wrap_mode(egui::TextWrapMode::Truncate).corner_radius(0.0);
+            if hidden.is_empty() {
+                ui.add_enabled(false, button).on_disabled_hover_text(tr!("Every tab fits on the bar"));
+            } else {
+                egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                        use spai_ui::widgets::SteadySelect as _;
+                        ui.set_min_width(220.0);
+                        for &i in &hidden {
+                            let (name, dirty) = &names[i];
+                            let label = if *dirty { format!("{name}*") } else { name.clone() };
+                            if ui.menu_label(false, label).clicked() {
+                                    activate = Some(i);
+                                    ui.close();
+                            }
+                        }
+                });
+            }
+        });
+        if ui.add_sized([plus_w, spai_ui::widgets::TAB_H], egui::Button::new(icon::PLUS).frame_when_inactive(false)).on_hover_text(tr!("Another fit")).clicked() {
             add = true;
         }
     });
@@ -546,6 +626,54 @@ fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: 
     });
     browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
     accept_module_drop(sim, ui, &r, slot, index, now_ms);
+    accept_cargo_drop(sim, &r, slot, index, now_ms);
+}
+
+/// One of a cargo stack dropped on a slot: fitted there, and what sat there goes into the cargo
+/// in its place, so nothing is gained or lost on the way.
+fn accept_cargo_drop(sim: &mut SimUi, r: &egui::Response, slot: Slot, index: u8, now_ms: u64) {
+    let Some(from) = rows::released::<rows::DragCargo>(r) else { return };
+    let Some(dogma) = sim.dogma.clone() else { return };
+    let Some(item) = sim.session().and_then(|s| s.fit.cargo.get(from.0).cloned()) else { return };
+    if dogma.slot_of(item.type_id) != Some(slot) {
+        sim.note(trf!("{name} does not go there", name = spai_fit::formats::name_of(&dogma, item.type_id)));
+        return;
+    }
+    let state = spai_fit::formats::default_state(&dogma, item.type_id);
+    sim.edit(EditKind::AddModule, now_ms, |f| {
+        let Some(c) = f.cargo.get_mut(from.0) else { return };
+        c.quantity -= 1;
+        let hold = c.hold;
+        if c.quantity == 0 {
+            f.cargo.remove(from.0);
+        }
+        if let Some(old) = f.remove_module(slot, index) {
+            put_in_cargo(f, old.type_id, hold);
+        }
+        let mut m = spai_fit::fit::Module::new(item.type_id, slot, index);
+        m.state = state;
+        f.modules.push(m);
+    });
+    sim.selection.clear();
+}
+
+fn put_in_cargo(f: &mut spai_fit::fit::Fit, type_id: TypeId, hold: Option<spai_fit::ids::AttrId>) {
+    match f.cargo.iter_mut().find(|c| c.type_id == type_id && c.hold == hold) {
+        Some(c) => c.quantity += 1,
+        None => f.cargo.push(spai_fit::fit::CargoItem { type_id, quantity: 1, hold }),
+    }
+}
+
+/// A fitted module taken off its rack into the cargo hold the tab shows.
+pub fn unfit_to_cargo(sim: &mut SimUi, slot: Slot, index: u8, now_ms: u64) {
+    let bays: Vec<spai_fit::ids::AttrId> = [spai_fit::stats::ESCAPE_BAY, spai_fit::stats::MAINTENANCE_BAY].iter().filter_map(|n| sim.dogma.as_ref().and_then(|d| d.attr_named(n)).map(|a| a.id)).collect();
+    let hold = sim.dock.hold.filter(|h| !bays.contains(h));
+    sim.edit(EditKind::Other, now_ms, |f| {
+        if let Some(m) = f.remove_module(slot, index) {
+            put_in_cargo(f, m.type_id, hold);
+        }
+    });
+    sim.selection.clear();
 }
 
 /// A fitted module dropped on a slot of its own rack: moved there, trading places with what sat
@@ -636,7 +764,21 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 cell.add(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0));
             }
             cell.add(egui::Label::new(label).truncate().selectable(false).show_tooltip_when_elided(false));
-            if r.on_hover_text(charge_name.clone().unwrap_or_default()).clicked() {
+            // What the module holds of it: as many as its capacity takes, and their room.
+            let loaded = charge.and_then(|c| {
+                let cap = f64::from(dogma.type_(type_id)?.attr(spai_fit::dogma::attr::CAPACITY)?);
+                let vol = f64::from(dogma.type_(c)?.volume());
+                (vol > 0.0 && cap > 0.0).then(|| {
+                    let n = (cap / vol + 1e-6).floor();
+                    (n, n * vol)
+                })
+            });
+            let hover = match (&charge_name, loaded) {
+                (Some(n), Some((count, m3))) => trf!("{name}: {count} loaded, {m3} m³", name = n, count = text::num(count), m3 = text::num(m3)),
+                (Some(n), None) => n.clone(),
+                (None, _) => tr!("Click to pick a charge").to_owned(),
+            };
+            if r.on_hover_text(hover).clicked() {
                 open_picker = Some(PickTarget::Charge(slot, index));
             }
         } else {
@@ -679,8 +821,13 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             }
         }
         let glyph = if state == State::Overload { egui::RichText::new(state_icon(state)).color(ui.visuals().error_fg_color) } else { egui::RichText::new(state_icon(state)) };
-        if icon_button(ui, glyph).on_hover_text(state_name(state)).clicked() {
-            set_state = Some(next_state(dogma, type_id, state));
+        let b = icon_button(ui, glyph).on_hover_text(trf!("{state}. Click: online or active. Right-click: overload. Ctrl-click: offline.", state = state_name(state)));
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if b.clicked() {
+            set_state = Some(gesture_state(dogma, type_id, state, if ctrl { Gesture::Offline } else { Gesture::Toggle }));
+        }
+        if b.secondary_clicked() {
+            set_state = Some(gesture_state(dogma, type_id, state, Gesture::Overload));
         }
         if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
             remove = true;
@@ -694,6 +841,7 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     }
     if !by_variation {
         accept_module_drop(sim, ui, &r, slot, index, now_ms);
+        accept_cargo_drop(sim, &r, slot, index, now_ms);
         if r.clicked() {
             let m = ui.input(|i| i.modifiers);
             let order: Vec<(Slot, u8)> = sim.view_fit().map(|v| Slot::ALL.iter().flat_map(|s| v.rack(*s).map(|m| (m.slot, m.index)).collect::<Vec<_>>()).collect()).unwrap_or_default();
@@ -702,7 +850,8 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             pick(&mut sim.selection, &mut sim.sel_anchor, &order, (slot, index), m.command, m.shift);
         }
         if r.double_clicked() {
-            set_state = Some(next_state(dogma, type_id, state));
+            let ctrl = ui.input(|i| i.modifiers.command);
+            set_state = Some(gesture_state(dogma, type_id, state, if ctrl { Gesture::Offline } else { Gesture::Toggle }));
         }
         // A right click on a row of the selection acts on the whole selection; on any other row
         // it picks that row alone first.
@@ -931,4 +1080,25 @@ pub fn traits_window(sim: &mut SimUi, ctx: &egui::Context) {
             }
         });
         sim.traits_window = open;
+}
+
+/// Which tabs go on a bar `room` wide, in order: from the first while they fit, the active one
+/// put in at the end in place of the last ones when it would be left off.
+pub fn tabs_that_fit(widths: &[f32], room: f32, active: usize) -> Vec<usize> {
+    let mut bar = Vec::new();
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        if used + w > room {
+            break;
+        }
+        used += w;
+        bar.push(i);
+    }
+    if active < widths.len() && !bar.contains(&active) {
+        while used + widths[active] > room && !bar.is_empty() {
+            used -= widths[bar.pop().expect("not empty")];
+        }
+        bar.push(active);
+    }
+    bar
 }

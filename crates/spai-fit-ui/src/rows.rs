@@ -65,6 +65,10 @@ pub fn uneven_lists(log: &[(egui::Id, egui::Rect)]) -> Vec<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragModule(pub spai_fit::fit::Slot, pub u8);
 
+/// A cargo stack being dragged, by its place in the cargo, to fit one of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragCargo(pub usize);
+
 /// Starts carrying `payload` when the primary button drags `resp`, and remembers what to show by
 /// the pointer meanwhile. A right click never starts one, so context menus keep working, and
 /// nothing on the page moves with the pointer, so the buttons under it stay where they are. The
@@ -107,7 +111,7 @@ fn is_a_drag(ctx: &egui::Context) -> bool {
 
 /// The name of what is being carried, by the pointer, while a drag is on.
 pub fn drag_ghost(ctx: &egui::Context) {
-    let carrying = egui::DragAndDrop::has_payload_of_type::<DragItem>(ctx) || egui::DragAndDrop::has_payload_of_type::<DragModule>(ctx);
+    let carrying = egui::DragAndDrop::has_payload_of_type::<DragItem>(ctx) || egui::DragAndDrop::has_payload_of_type::<DragModule>(ctx) || egui::DragAndDrop::has_payload_of_type::<DragCargo>(ctx);
     if !carrying {
         return;
     }

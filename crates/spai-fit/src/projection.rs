@@ -366,3 +366,25 @@ fn real_data_burnout_depends_on_the_rack() {
     println!("one overloaded {one:.0}s, all three {three:.0}s");
     assert!(three < one * 0.6, "three heating the rack burn it much sooner: {one} against {three}");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_start_online_effects() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for t in d.types.iter().filter(|t| t.published && t.name.contains("Assault Damage Control")).take(2) {
+        let e: Vec<String> = t.effects.iter().filter_map(|(e, _)| d.effect(*e)).map(|x| format!("{}:{:?}", x.name, x.category)).collect();
+        println!("{} [{}] {e:?}", t.name, d.groups.iter().find(|g| g.id == t.group).map(|g| g.name.clone()).unwrap_or_default());
+    }
+    for n in ["Covert Ops Cloaking Device II", "Improved Cloaking Device II", "Jump Portal Generator I", "Small Assault Damage Control I", "Gyrostabilizer II", "5MN Microwarpdrive II", "Siege Module II", "Bastion Module I", "Cynosural Field Generator I", "Interdiction Nullifier I", "500MN Microwarpdrive II", "Large Micro Jump Drive", "Damage Control II"] {
+        let Some(t) = d.type_named(n) else { println!("no {n}"); continue };
+        let g = d.groups.iter().find(|g| g.id == t.group).map(|g| g.name.clone()).unwrap_or_default();
+        let e: Vec<String> = t.effects.iter().filter_map(|(e, _)| d.effect(*e)).map(|x| format!("{}:{:?}", x.name, x.category)).collect();
+        println!("{n} [{g}] {e:?}");
+    }
+    use crate::formats::{can_activate, default_state};
+    let id = |n: &str| d.type_named(n).unwrap().id;
+    for (n, active, starts) in [("Gyrostabilizer II", false, State::Online), ("Damage Control II", false, State::Online), ("5MN Microwarpdrive II", true, State::Active), ("Covert Ops Cloaking Device II", true, State::Online), ("Jump Portal Generator I", true, State::Online), ("Assault Damage Control I", true, State::Online), ("Large Micro Jump Drive", true, State::Online), ("Siege Module II", true, State::Active)] {
+        assert_eq!((can_activate(&d, id(n)), default_state(&d, id(n))), (active, starts), "{n}");
+    }
+}

@@ -761,6 +761,11 @@ impl SimUi {
     }
 
     #[cfg(test)]
+    pub(crate) fn autosave_for_test(&mut self, now_ms: u64) {
+        self.autosave(now_ms);
+    }
+
+    #[cfg(test)]
     pub(crate) fn import_from_button_for_test(&mut self) {
         self.import_from_button = true;
     }
@@ -1086,7 +1091,12 @@ impl SimUi {
     }
 
     /// Shows the fit in a tab: the one already holding this fit, else a new one at the end.
-    pub fn open_session(&mut self, s: Session) {
+    pub fn open_session(&mut self, mut s: Session) {
+        if let Some(d) = &self.dogma {
+            spai_fit::formats::clamp_states(d, &mut s.fit);
+        }
+        // Five drones out at most, as a pilot with the skill at V; edits cap it to the profile's.
+        s.fit.cap_drones_out(5);
         match self.sessions.iter().position(|x| x.id == s.id) {
             Some(i) => {
                 self.sessions[i] = s;
@@ -1145,10 +1155,17 @@ impl SimUi {
     }
 
     /// Changes the fit on screen, recording the state before for undo.
+    /// How many drones the pilot can have in space at once.
+    pub fn drone_limit(&mut self) -> u32 {
+        self.computed().map_or(5, |c| c.drones.max_active)
+    }
+
     pub fn edit(&mut self, kind: EditKind, now_ms: u64, f: impl FnOnce(&mut Fit)) {
+        let limit = if self.has_hull() { self.drone_limit() } else { 5 };
         let Some(s) = self.session_mut() else { return };
         let before = s.fit.clone();
         f(&mut s.fit);
+        s.fit.cap_drones_out(limit);
         if s.fit != before {
             s.history.record(kind, &before, now_ms);
             s.rev += 1;

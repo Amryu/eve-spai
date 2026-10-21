@@ -164,10 +164,16 @@ pub struct TabHit {
 /// One compact, flush tab in the Jabber style: fixed height, the name, and on hover or when
 /// selected a close X at its right end, where an unsaved tab otherwise shows a dot. Call it in
 /// a horizontal row with zero item spacing.
+/// The width `tab_box` takes for the label, to plan a row of tabs before drawing them.
+pub fn tab_box_width(ui: &egui::Ui, label: &str) -> f32 {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), body, egui::Color32::WHITE).size().x;
+    TAB_PAD_X + text_w + TAB_GAP + TAB_CLOSE_W + TAB_PAD_X
+}
+
 pub fn tab_box(ui: &mut egui::Ui, id: egui::Id, selected: bool, label: &str, marked: bool) -> TabHit {
     let body = egui::TextStyle::Body.resolve(ui.style());
-    let text_w = ui.painter().layout_no_wrap(label.to_owned(), body.clone(), egui::Color32::WHITE).size().x;
-    let w = TAB_PAD_X + text_w + TAB_GAP + TAB_CLOSE_W + TAB_PAD_X;
+    let w = tab_box_width(ui, label);
     let (_, rect) = ui.allocate_space(egui::vec2(w, TAB_H));
     let resp = ui.interact(rect, id, egui::Sense::click());
     // Geometric, not `hovered()`: the X is a second widget inside the rect and would otherwise

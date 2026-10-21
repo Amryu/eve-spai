@@ -281,6 +281,20 @@ pub struct Fit {
 }
 
 impl Fit {
+    /// No more drones in space than the pilot controls, all stacks together: the first stacks keep
+    /// theirs, the later ones launch what is left, or stay in the bay.
+    pub fn cap_drones_out(&mut self, max: u32) {
+        let mut left = max;
+        for d in &mut self.drones {
+            let out = d.in_space().min(left);
+            left -= out;
+            if out != d.in_space() {
+                d.active = out > 0;
+                d.launched = (out > 0 && out < d.count).then_some(out);
+            }
+        }
+    }
+
     pub fn new(ship: TypeId, name: impl Into<String>) -> Self {
         Fit { ship, name: name.into(), ..Fit::default() }
     }

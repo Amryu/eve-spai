@@ -408,7 +408,9 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         let Some((_, cat)) = group_recs.get(&r.group_id) else { return Ok(()) };
         let cat = u8::try_from(*cat).unwrap_or(u8::MAX);
         let beacon = u16::try_from(r.group_id).is_ok_and(|g| g == crate::ids::group::EFFECT_BEACON);
-        let wanted = r.key == CHARACTER_TYPE || beacon || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
+        // Fuel: the isotopes, strontium, ozone and heavy water jump drives, siege and cynos burn.
+        let fuel = r.group_id == u32::from(crate::ids::group::ICE_PRODUCT) && r.published;
+        let wanted = r.key == CHARACTER_TYPE || beacon || fuel || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
         if !wanted {
             return Ok(());
         }

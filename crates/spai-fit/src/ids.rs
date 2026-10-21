@@ -20,6 +20,8 @@ pub mod group {
     /// Wormhole and abyssal weather, incursion and system effects: a celestial whose effects
     /// reach every ship in the system.
     pub const EFFECT_BEACON: GroupId = 920;
+    /// Ice products: the fuels.
+    pub const ICE_PRODUCT: GroupId = 423;
 }
 
 pub mod category {

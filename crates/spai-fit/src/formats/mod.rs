@@ -38,16 +38,38 @@ pub fn place_of(dogma: &Dogma, t: &TypeDef) -> Place {
     }
 }
 
-/// A module's state when it comes in without one: active when it can be, else online.
+/// Whether the module can be switched on at all: an active or targeted effect other than the
+/// `online` one every module carries in the Active category.
+pub fn can_activate(dogma: &Dogma, type_id: TypeId) -> bool {
+    dogma.type_(type_id).is_some_and(|t| {
+        t.effects.iter().filter_map(|(e, _)| dogma.effect(*e)).any(|e| e.name != "online" && matches!(e.category, crate::dogma::EffectCategory::Active | crate::dogma::EffectCategory::Target))
+    })
+}
+
+/// Active modules that wait online until used: cloaks, jump portals, cynos, micro jumps,
+/// nullifiers and assault damage controls.
+const STARTS_ONLINE: [&str; 6] = ["cloaking", "jumpPortalGeneration", "cynosural", "microJump", "interdictionNullifierBonus", "moduleBonusAssaultDamageControl"];
+
+/// A module's state when it comes in without one: active when it can be and is meant to run all
+/// the time, else online.
 pub fn default_state(dogma: &Dogma, type_id: TypeId) -> State {
-    let activatable = dogma.type_(type_id).is_some_and(|t| {
-        t.attr(attr::CAPACITOR_NEED).is_some()
-            || t.effects.iter().filter_map(|(e, _)| dogma.effect(*e)).any(|e| matches!(e.category, crate::dogma::EffectCategory::Active | crate::dogma::EffectCategory::Target))
-    });
-    if activatable {
+    let waits = dogma.type_(type_id).is_some_and(|t| t.effects.iter().filter_map(|(e, _)| dogma.effect(*e)).any(|e| STARTS_ONLINE.iter().any(|p| e.name.starts_with(p))));
+    if can_activate(dogma, type_id) && !waits {
         State::Active
     } else {
         State::Online
+    }
+}
+
+/// Each module's state no higher than it can go: a passive module saved as active comes back
+/// online, a module that cannot overheat comes back active.
+pub fn clamp_states(dogma: &Dogma, fit: &mut Fit) {
+    for m in &mut fit.modules {
+        let overheats = dogma.type_(m.type_id).is_some_and(|t| t.attr(attr::HEAT_DAMAGE).is_some());
+        let top = if !can_activate(dogma, m.type_id) { State::Online } else if overheats { State::Overload } else { State::Active };
+        if m.state > top {
+            m.state = top;
+        }
     }
 }
 
