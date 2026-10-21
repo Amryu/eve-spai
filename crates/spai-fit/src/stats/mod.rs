@@ -121,6 +121,30 @@ pub struct MissileProfile {
     pub damage_reduction_factor: f64,
 }
 
+impl MissileProfile {
+    /// How far a missile surely flies: the server moves it in whole seconds, so it flies the
+    /// whole seconds of its flight time.
+    pub fn short_range(&self) -> f64 {
+        self.velocity * self.flight_time_s.floor()
+    }
+
+    /// How far it may fly: one second more, as often as the flight time's fraction of a second.
+    pub fn long_range(&self) -> f64 {
+        self.velocity * self.flight_time_s.ceil()
+    }
+
+    /// The share of missiles that reach `distance`.
+    pub fn reach(&self, distance: f64) -> f64 {
+        if distance <= self.short_range() {
+            1.0
+        } else if distance <= self.long_range() {
+            self.flight_time_s.fract()
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Identical weapons with the same charge, counted together.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeaponGroup {

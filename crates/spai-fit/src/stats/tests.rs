@@ -344,3 +344,14 @@ fn a_module_that_heats_tells_how_long_it_lasts_overloaded() {
     assert!((gun.burnout_s.unwrap() - 4.0 * cycle).abs() < 1e-9, "40 HP at 10 a cycle: four cycles");
     assert!(stats.iter().find(|m| m.slot == Slot::Low).unwrap().burnout_s.is_none(), "a module that takes no heat never burns out");
 }
+
+#[test]
+fn missiles_fly_whole_seconds_and_one_more_by_chance() {
+    let m = crate::stats::MissileProfile { velocity: 1000.0, flight_time_s: 6.3, range: 6300.0, explosion_radius: 0.0, explosion_velocity: 0.0, damage_reduction_factor: 0.0 };
+    assert_eq!((m.short_range(), m.long_range()), (6000.0, 7000.0));
+    assert_eq!(m.reach(5999.0), 1.0);
+    assert!((m.reach(6500.0) - 0.3).abs() < 1e-9, "past the whole seconds, three in ten fly the extra one");
+    assert_eq!(m.reach(7001.0), 0.0);
+    let whole = crate::stats::MissileProfile { flight_time_s: 6.0, ..m };
+    assert_eq!((whole.reach(6000.0), whole.reach(6000.1)), (1.0, 0.0), "a whole flight time has a single wall");
+}

@@ -662,21 +662,21 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         rows::cell(ui, name_w, label, "").on_hover_ui(|ui| details::type_tip_with(ui, dogma, type_id, note, fitted));
         if takes_charges {
             let shown = charge_name.clone().unwrap_or_else(|| tr!("No charge").to_owned());
-            let r = ui.scope(|ui| {
-                ui.spacing_mut().button_padding = egui::vec2(6.0, 1.0);
-                let label = egui::RichText::new(text::clip(&shown, 22)).weak();
-                let button = match charge {
-                    Some(c) => egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(14.0, 14.0)).corner_radius(2.0), label),
-                    None => egui::Button::new(label),
-                };
-                // Exactly the column's width whatever the label and icon want, so the number
-                // columns after it line up across the racks.
-                // Two pixels clear of the row above and below, so its frame never touches the next row.
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 6.0), egui::Sense::hover());
-                let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                cell.add_sized(rect.size(), button.wrap_mode(egui::TextWrapMode::Truncate))
-            })
-            .inner;
+            // Drawn as the row's own text, no frame: only a hover shade says it can be clicked.
+            let (rect, r) = ui.allocate_exact_size(egui::vec2(cols.charge, ROW_H - 4.0), egui::Sense::click());
+            if r.hovered() {
+                ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let mut cell = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(4.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            cell.set_clip_rect(cell.clip_rect().intersect(rect));
+            cell.spacing_mut().item_spacing.x = 4.0;
+            let label = egui::RichText::new(&shown);
+            let label = if charge.is_some() { label } else { label.weak() };
+            if let Some(c) = charge {
+                cell.add(egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0));
+            }
+            cell.add(egui::Label::new(label).truncate().selectable(false).show_tooltip_when_elided(false));
             if r.on_hover_text(charge_name.clone().unwrap_or_default()).clicked() {
                 open_picker = Some(PickTarget::Charge(slot, index));
             }

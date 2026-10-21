@@ -50,6 +50,69 @@ impl GraphKind {
         GraphKind::RemoteRepVsDistance,
         GraphKind::EwarVsDistance,
     ];
+
+    /// What the graph plots, up the side and along the bottom.
+    pub fn axes(self) -> (GraphY, GraphX) {
+        use {GraphKind as K, GraphX as X, GraphY as Y};
+        match self {
+            K::DamageVsDistance => (Y::Dps, X::Distance),
+            K::DamageVsTargetSpeed => (Y::Dps, X::TargetSpeed),
+            K::DamageVsTargetSignature => (Y::Dps, X::TargetSignature),
+            K::VolleyVsDistance => (Y::Volley, X::Distance),
+            K::VolleyVsTargetSpeed => (Y::Volley, X::TargetSpeed),
+            K::VolleyVsTargetSignature => (Y::Volley, X::TargetSignature),
+            K::CapacitorOverTime => (Y::Capacitor, X::Time),
+            K::ShieldOverTime => (Y::Shield, X::Time),
+            K::VelocityOverTime => (Y::Speed, X::Time),
+            K::WarpTime => (Y::WarpTime, X::WarpDistance),
+            K::LockTime => (Y::LockTime, X::TargetSignature),
+            K::RemoteRepVsDistance => (Y::RemoteRep, X::Distance),
+            K::EwarVsDistance => (Y::Ewar, X::Distance),
+        }
+    }
+
+    /// The graph of that pair, if the two go together.
+    pub fn from_axes(y: GraphY, x: GraphX) -> Option<GraphKind> {
+        GraphKind::ALL.into_iter().find(|k| k.axes() == (y, x))
+    }
+}
+
+/// What a graph can plot up its side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GraphY {
+    Dps,
+    Volley,
+    Capacitor,
+    Shield,
+    Speed,
+    WarpTime,
+    LockTime,
+    RemoteRep,
+    Ewar,
+}
+
+/// What a graph can run along its bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GraphX {
+    Distance,
+    TargetSpeed,
+    TargetSignature,
+    Time,
+    /// Warp distance, in AU rather than metres.
+    WarpDistance,
+}
+
+impl GraphY {
+    pub const ALL: [GraphY; 9] = [GraphY::Dps, GraphY::Volley, GraphY::Capacitor, GraphY::Shield, GraphY::Speed, GraphY::WarpTime, GraphY::LockTime, GraphY::RemoteRep, GraphY::Ewar];
+
+    /// The bottoms this can be plotted against, in the order offered.
+    pub fn xs(self) -> Vec<GraphX> {
+        GraphX::ALL.into_iter().filter(|x| GraphKind::from_axes(self, *x).is_some()).collect()
+    }
+}
+
+impl GraphX {
+    pub const ALL: [GraphX; 5] = [GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature, GraphX::Time, GraphX::WarpDistance];
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,12 +214,16 @@ fn damage_edges(c: &Computed, include_drones: bool) -> Vec<f64> {
         .weapons
         .iter()
         .filter(|w| include_drones || w.kind != WeaponKind::Drone)
-        .filter_map(|w| match w.kind {
-            WeaponKind::Missile => w.missile.as_ref().map(|m| m.range),
+        .flat_map(|w| match (w.kind, w.missile.as_ref()) {
+            (WeaponKind::Missile, Some(m)) => vec![m.short_range(), m.long_range()],
+            _ => Vec::new(),
+        })
+        .chain(c.weapons.iter().filter(|w| include_drones || w.kind != WeaponKind::Drone).filter_map(|w| match w.kind {
+            WeaponKind::Missile => None,
             WeaponKind::Drone => Some(c.drones.control_range),
             WeaponKind::Smartbomb => Some(w.optimal),
             _ => (w.falloff > 0.0).then_some(w.optimal + 3.0 * w.falloff),
-        })
+        }))
         .collect();
     edges.retain(|e| e.is_finite() && *e > 0.0);
     edges
@@ -197,7 +264,7 @@ pub fn sample(c: &Computed, spec: &GraphSpec, cap: Option<&CapInputs>) -> Vec<Se
     let n = spec.points.max(2);
     match spec.kind {
         GraphKind::DamageVsDistance | GraphKind::VolleyVsDistance => {
-            let reach = c.weapons.iter().map(|w| w.missile.as_ref().map_or(w.optimal + 3.0 * w.falloff, |m| m.range)).fold(10_000.0, f64::max);
+            let reach = c.weapons.iter().map(|w| w.missile.as_ref().map_or(w.optimal + 3.0 * w.falloff, |m| m.long_range())).fold(10_000.0, f64::max);
             let to = spec.x_to.unwrap_or(reach * 1.1);
             let t = spec.target.clone();
             damage_series(c, spec, with_edges(grid(0.0, to, n), &damage_edges(c, spec.include_drones)).into_iter(), move |x| (x, t.clone()))
@@ -383,5 +450,24 @@ mod tests {
         assert!(ewar[0].points.last().unwrap()[0] > 25_000.0, "the axis reaches past three falloffs");
         let none = compute(&d, &Fit::new(ids::SHIP, "bare"), &SkillSet::all_v(), &Env::default());
         assert!(sample(&none, &GraphSpec::new(GraphKind::EwarVsDistance, TargetProfile::default()), None).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod axes_tests {
+    use super::*;
+
+    #[test]
+    fn every_graph_is_one_pair_of_axes_and_back() {
+        for k in GraphKind::ALL {
+            let (y, x) = k.axes();
+            assert_eq!(GraphKind::from_axes(y, x), Some(k));
+        }
+        assert_eq!(GraphKind::from_axes(GraphY::Capacitor, GraphX::Distance), None, "capacitor runs over time only");
+        assert_eq!(GraphY::Dps.xs(), vec![GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature]);
+        assert_eq!(GraphY::LockTime.xs(), vec![GraphX::TargetSignature]);
+        for y in GraphY::ALL {
+            assert!(!y.xs().is_empty(), "{y:?} has a bottom");
+        }
     }
 }

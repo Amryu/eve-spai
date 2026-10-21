@@ -423,6 +423,11 @@ pub struct SimUi {
     pub graph_current: bool,
     /// Whether the target profile is among the graph's targets.
     pub graph_ideal: bool,
+    /// How the shooter and the target move, for the damage graphs' transversal.
+    pub graph_motion: graphs_panel::Motion,
+    /// Where the bottom and the side of the graph end, per kind of axis; automatic without one.
+    pub graph_x_to: std::collections::HashMap<spai_fit::graphs::GraphX, f64>,
+    pub graph_y_to: std::collections::HashMap<spai_fit::graphs::GraphY, f64>,
     /// The fit as it was when a variation recording started.
     pub recording: Option<Fit>,
     pub editing_variation: Option<u32>,
@@ -487,6 +492,9 @@ impl Default for SimUi {
             graph_targets: Vec::new(),
             graph_current: true,
             graph_ideal: true,
+            graph_motion: graphs_panel::Motion::default(),
+            graph_x_to: Default::default(),
+            graph_y_to: Default::default(),
             recording: None,
             editing_variation: None,
             doctrines: Vec::new(),

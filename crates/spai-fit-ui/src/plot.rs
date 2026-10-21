@@ -16,6 +16,8 @@ pub struct Plot {
     /// Formats a value for ticks and the readout.
     pub fmt_x: fn(f64) -> String,
     pub fmt_y: fn(f64) -> String,
+    /// The top of the value axis when set; the data's own otherwise.
+    pub y_to: Option<f64>,
 }
 
 /// Eight colours apart in hue and legible on the dark and light themes.
@@ -60,10 +62,18 @@ fn ticks(from: f64, to: f64, want: usize) -> Vec<f64> {
     (first..=last).map(|i| i as f64 * step).collect()
 }
 
+/// Where the last plot was drawn, for tests that hold its size steady.
+pub const LAST_RECT: &str = "sim_plot_rect";
+
+pub fn last_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new(LAST_RECT)))
+}
+
 impl Plot {
     pub fn show(&self, ui: &mut egui::Ui, height: f32) {
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LAST_RECT), rect));
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals();
         let text = visuals.text_color();
@@ -86,8 +96,11 @@ impl Plot {
         if y_max <= 0.0 {
             y_max = 1.0;
         }
+        if let Some(top) = self.y_to.filter(|t| *t > 0.0) {
+            y_max = top;
+        }
         let y_step = nice_step(y_max, 5);
-        let y_top = (y_max / y_step).ceil() * y_step;
+        let y_top = if self.y_to.is_some_and(|t| t > 0.0) { y_max } else { (y_max / y_step).ceil() * y_step };
         // The legend flows across the width, entries of one size, so it takes a row or two
         // however many lines there are, not a row each.
         let entry_w = self.series.iter().map(|s| painter.layout_no_wrap(s.label.clone(), font.clone(), text).size().x).fold(0.0f32, f32::max) + 40.0;
@@ -120,7 +133,8 @@ impl Plot {
         for (i, s) in self.series.iter().enumerate() {
             let pts: Vec<Pos2> = s.points.iter().map(|p| to_screen(p[0], p[1])).collect();
             if pts.len() >= 2 {
-                painter.add(egui::Shape::line(pts, Stroke::new(1.5, s.color)));
+                // Clipped to the plot, for a value axis cut below the data.
+                ui.painter_at(inner.expand(1.0)).add(egui::Shape::line(pts, Stroke::new(1.5, s.color)));
             }
             let (row, col) = (i / per_row, i % per_row);
             let y = rect.min.y + 3.0 + row as f32 * line_h + line_h / 2.0;

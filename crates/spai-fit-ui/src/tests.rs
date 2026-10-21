@@ -916,3 +916,70 @@ fn resizing_the_dock_and_the_left_bar_is_kept() {
     assert!((l.dock_h.unwrap() - dock2.height()).abs() < 1.0, "kept dock {:?} against {}", l.dock_h, dock2.height());
     assert!((l.left_w.unwrap() - left2.width()).abs() < 1.0, "kept left {:?} against {}", l.left_w, left2.width());
 }
+
+/// The plot keeps its place and size whatever the controls hold: another kind of damage graph,
+/// another bottom, a dial turned, or a long list of ships.
+#[test]
+fn the_graph_keeps_its_size_whatever_the_controls() {
+    use spai_fit::graphs::GraphKind;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    s.edit(EditKind::SetState, 2, |f| {
+        let m = f.module_mut(Slot::High, 0).unwrap();
+        m.state = State::Active;
+        m.charge = Some(ids::AMMO);
+    });
+    s.center = crate::Center::Graphs;
+    s.pane = crate::Pane::Graphs;
+    for w in [1440.0f32, 760.0] {
+        let ctx = egui::Context::default();
+        let mut t = 0.0;
+        let mut rects = Vec::new();
+        for (i, kind) in [GraphKind::DamageVsDistance, GraphKind::DamageVsTargetSpeed, GraphKind::DamageVsTargetSignature, GraphKind::VolleyVsDistance].into_iter().enumerate() {
+            s.graph = kind;
+            s.graph_motion.target = (0.25 * i as f32, 30.0 * i as f32);
+            for _ in 0..3 {
+                t += 0.05;
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 900.0))), time: Some(t), ..Default::default() };
+                let _ = ctx.run_ui(input, |ui| s.show(ui));
+            }
+            rects.push(crate::plot::last_rect(&ctx).expect("a plot was drawn"));
+        }
+        assert!(rects.windows(2).all(|p| (p[0].min - p[1].min).length() < 0.5 && (p[0].size() - p[1].size()).length() < 0.5), "at {w}: {rects:?}");
+    }
+}
+
+#[test]
+fn the_motion_circles_and_the_angular_velocity_agree() {
+    use crate::graphs_panel::Motion;
+    let t = spai_fit::fit::TargetProfile { velocity: 1000.0, distance: 10_000.0, ..Default::default() };
+    let mut m = Motion::default();
+    assert!((f64::from(m.apply(&t, 500.0).transversal) - 1000.0).abs() < 1e-3, "still shooter, target across at full speed");
+    m.shooter = (1.0, 90.0);
+    assert!((f64::from(m.apply(&t, 500.0).transversal) - 500.0).abs() < 1e-3, "both across the same way: the difference");
+    m.solve_target_share(&t, 500.0, 0.02);
+    let back = f64::from(m.apply(&t, 500.0).transversal) / 10_000.0;
+    assert!((back - 0.02).abs() < 1e-6, "the share found gives the angular asked for: {back}");
+    m.target.1 = 0.0;
+    assert!((f64::from(m.apply(&t, 500.0).transversal) - 500.0).abs() < 1e-3, "a target heading straight away adds nothing across");
+}
+
+#[test]
+fn an_axis_end_set_by_hand_is_where_the_graph_stops() {
+    use spai_fit::graphs::{GraphKind, GraphSpec, GraphX};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    s.edit(EditKind::SetState, 2, |f| {
+        let m = f.module_mut(Slot::High, 0).unwrap();
+        m.state = State::Active;
+        m.charge = Some(ids::AMMO);
+    });
+    s.graph_x_to.insert(GraphX::Distance, 100_000.0);
+    let c = s.computed().unwrap();
+    let spec = GraphSpec { x_to: s.graph_x_to.get(&GraphKind::DamageVsDistance.axes().1).copied(), ..GraphSpec::new(GraphKind::DamageVsDistance, Default::default()) };
+    let series = spai_fit::graphs::sample(&c, &spec, None);
+    let last = series.iter().filter_map(|s| s.points.last()).map(|p| p[0]).fold(0.0, f64::max);
+    assert!((last - 100_000.0).abs() < 1.0, "the bottom ends at 100 km: {last}");
+}

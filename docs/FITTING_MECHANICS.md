@@ -7,11 +7,6 @@ Sources, by what they may be used for:
 
 - **EVE's static data** (`eve-online-static-data-latest-jsonl.zip` from developers.eveonline.com):
   the attributes, effects and modifiers themselves.
-- **EVEShipFit dogma-engine** (MIT, github.com/EVEShipFit/dogma-engine): the reference for how
-  the data is interpreted (operator order, normalisation, penalty exemptions, state gating). Read
-  and adapted, not copied.
-- **pyfa** (GPL-3, github.com/pyfa-org/Pyfa): formulas only (its numbers are the known answers
-  the tests compare against); no code.
 - **EVE University wiki**: the published game formulas (hit chance, missile application, capacitor,
   align, warp, lock time, heat).
 
@@ -57,7 +52,7 @@ mutated values as overrides.
 ## 3. Effects and states
 
 An effect on an item runs when the item's state reaches the state its category needs
-(dogma-engine `required_state`, with pyfa's rule that an offline module contributes nothing):
+(an offline module contributes nothing):
 
 | Effect category | Needs |
 |---|---|
@@ -80,7 +75,7 @@ Tests: `resistance_modules_stack_as_in_eve` (offline and online-only states),
 ## 4. Modifiers
 
 Each `modifierInfo` entry names a domain, a function, the modified and modifying attributes and an
-operation (dogma-engine `pass_2`):
+operation:
 
 | Domain | Root item |
 |---|---|
@@ -109,7 +104,7 @@ Tests: `a_charge_reaches_its_module_through_other_id`,
 
 ## 5. Operators, aggregation and the stacking penalty (`calc::value`)
 
-Operators apply in this order (dogma-engine `item.rs`; the data's numbers in brackets):
+Operators apply in this order (the data's numbers in brackets):
 PreAssign (−1), PreMul (0), PreDiv (1), ModAdd (2), ModSub (3), PostMul (4), PostDiv (5),
 PostPercent (6), PostAssign (7).
 
@@ -129,7 +124,7 @@ k-th (from 0) keeps
 
     1 + x · 0.8691199808003974^(k²)        (= exp(−(k / 2.67)²): 100%, 86.9%, 57.1%, 28.3%, 10.6%, 3.0%)
 
-Grouping by operator is the rule in the data and in dogma-engine; pyfa groups by hand per effect.
+Grouping by operator is the rule in the data.
 It is why a Damage Control, whose resistance modifiers are `PreMul`, never competes with hardeners'
 `PostPercent` modifiers: it sits in a penalty group of its own.
 
@@ -175,8 +170,8 @@ fitted types; everything there that changes an attribute must be listed here).
 
 | Effect(s) | Rule | Source |
 |---|---|---|
-| `moduleBonusAfterburner`, `moduleBonusMicrowarpdrive` | While active: ship `mass` += module `massAddition`; ship `signatureRadius` PostPercent `signatureRadiusBonus` (penalised); ship `maxVelocity` PostPercent `speedFactor × speedBoostFactor / mass` (penalised; the mass after the addition; an overloaded module's `speedFactor` already carries `overloadSpeedFactorBonus` through the data). | EVE Uni "Propulsion equipment"; EVEShipFit `velocityBoost` patch |
-| `missileEMDmgBonus`, `missileExplosiveDmgBonus`, `missileKineticDmgBonus2`, `missileThermalDmgBonus` on a skill | Items requiring the skill: that damage attribute PostPercent the skill's `damageMultiplierBonus` (292, already × level by `skillBoostDamageMultiplierBonus`). Unpenalised (skill source). | The skills' descriptions (5% per level); pyfa's effect code |
+| `moduleBonusAfterburner`, `moduleBonusMicrowarpdrive` | While active: ship `mass` += module `massAddition`; ship `signatureRadius` PostPercent `signatureRadiusBonus` (penalised); ship `maxVelocity` PostPercent `speedFactor × speedBoostFactor / mass` (penalised; the mass after the addition; an overloaded module's `speedFactor` already carries `overloadSpeedFactorBonus` through the data). | EVE Uni "Propulsion equipment" |
+| `missileEMDmgBonus`, `missileExplosiveDmgBonus`, `missileKineticDmgBonus2`, `missileThermalDmgBonus` on a skill | Items requiring the skill: that damage attribute PostPercent the skill's `damageMultiplierBonus` (292, already × level by `skillBoostDamageMultiplierBonus`). Unpenalised (skill source). | The skills' descriptions (5% per level) |
 | `droneDmgBonus` on a skill | Drones requiring the skill: `damageMultiplier` PostPercent the skill's `damageMultiplierBonus`. | same |
 | `selfRof` on a skill | Launchers requiring the skill: `speed` PostPercent the skill's `rofBonus` (293, × level by `rapidFiringSkillBoostRofBonus`). | same |
 | `slotModifier`, `hardPointModifierEffect` on a subsystem | Ship `hiSlots`/`medSlots`/`lowSlots` += `hiSlotModifier`/`medSlotModifier`/`lowSlotModifier`; `turretSlotsLeft`/`launcherSlotsLeft` += `turretHardPointModifier`/`launcherHardPointModifier`. | The subsystems' descriptions |
@@ -214,7 +209,7 @@ in the band fitting tools agree on.
 | CPU, power | Sum of `cpu` (50) / `power` (30) of every module that is at least online, against the ship's `cpuOutput` (48) / `powerOutput` (11). |
 | Calibration | Sum of rigs' `upgradeCost` (1153) against `upgradeCapacity` (1132). |
 | Slots, hardpoints | Fitted per rack against `hiSlots`/`medSlots`/`lowSlots`/`rigSlots`/`maxSubSystems`/`serviceSlots`; modules with the `turretFitted` / `launcherFitted` effect against `turretSlotsLeft` (102) / `launcherSlotsLeft` (101). |
-| EHP | Per layer `hp / Σ_t w_t · resonance_t` with the damage profile's weights normalised to 1 (pyfa `damagePattern.py`); shield 263 with 271–274, armour 265 with 267–270, hull 9 with 113/110/109/111. |
+| EHP | Per layer `hp / Σ_t w_t · resonance_t` with the damage profile's weights normalised to 1; shield 263 with 271–274, armour 265 with 267–270, hull 9 with 113/110/109/111. |
 | Shield regen | Peak `2.5 × shieldCapacity / (shieldRechargeRate / 1000)` per second, at 25% (same curve as the capacitor). |
 | Local reps | Active repairers only: `armorDamageAmount` (84) / `shieldBonus` (68) / `structureDamageAmount` (83) per `duration` (73) seconds, overload already in the attributes. An ancillary armour repairer with Nanite Repair Paste (group 916) repairs `chargedArmorDamageMultiplier` (1886) times as much for its load (cycles = `floor(capacity / paste volume / chargeRate)`), then reloads `reloadTime` (1795): the sustained figure counts the reload, the burst figure does not. An ancillary shield booster with charges runs its load, then reloads; without, it runs on capacitor. |
 | Turret volley | `damageMultiplier` (64) of the turret × the charge's four damage attributes (114, 118, 117, 116). No charge, no damage. Effects: `projectileFired`, `targetAttack`, `ChainLightning`, `targetDisintegratorAttack`. |
@@ -224,13 +219,13 @@ in the band fitting tools agree on.
 | Smartbomb | The module's own damage per `duration`, range `empFieldRange` (99). |
 | Cycle | `speed` (51) for weapons, plus `moduleReactivationDelay` (669). |
 | Load | `floor(floor(capacity / chargeVolume) / chargeRate)` cycles; crystals that wear (`crystalsGetDamaged` 786): `floor(hp / (crystalVolatilityDamage × crystalVolatilityChance))` per crystal carried; scripts and unworn crystals: unlimited. |
-| DPS | Burst `volley / cycle`; sustained `volley × shots / (shots × cycle + reloadTime)` (pyfa `module.py` cycle sequence). |
+| DPS | Burst `volley / cycle`; sustained `volley × shots / (shots × cycle + reloadTime)`. |
 | Weapon groups | Same type, same charge, same cycle: one group (so split ammo is two groups). |
-| Missile range | `maxVelocity (37) × explosionDelay (281) / 1000`, the charge's values after modifiers. (pyfa adds the launching ship's radius and the missile's acceleration; this build does not yet.) |
+| Missile range | `maxVelocity (37) × explosionDelay (281) / 1000`, the charge's values after modifiers. The launching ship's radius and the missile's acceleration are not counted yet. |
 | Capacitor | Peak `2.5 × capacitorCapacity (482) / (rechargeRate (55) / 1000)`; usage = every active effect's `dischargeAttributeID` per its `durationAttributeID`, reloads counted; capacitor boosters (`powerBooster`) give the charge's `capacitorBonus` (67); an ancillary shield booster with charges draws nothing. |
-| Align | `ln 2 × agility (70) × mass (4) / 500 000` seconds (pyfa, EVEShipFit). |
+| Align | `ln 2 × agility (70) × mass (4) / 500 000` seconds (EVE Uni). |
 | Warp | `warpSpeedMultiplier (600) × baseWarpSpeed (1281)` AU/s. |
-| Lock time | `min(40 000 / (scanResolution × asinh(signature)²), 1800)` seconds (pyfa `calc.py`, EVE Uni). |
+| Lock time | `min(40 000 / (scanResolution × asinh(signature)²), 1800)` seconds (EVE Uni). |
 | Sensors | Strength and kind: the largest of 208–211; locked targets: the lower of the ship's and the pilot's `maxLockedTargets` (192). |
 | Drones | Control range: the pilot's `droneControlDistance` (458); bandwidth: Σ `droneBandwidthUsed` (1272) of drones in space against the ship's 1271; bay: Σ volume against `droneCapacity` (283); in space at most the pilot's `maxActiveDrones` (352). |
 
@@ -241,18 +236,16 @@ fit table shows these beside the module.
 
 ## 10. Capacitor simulation (`stats::cap_sim`)
 
-Event-driven, as pyfa's `capSim.py`:
+Event-driven:
 
 - Between activations the capacitor recharges along
   `c(t + dt) = C × (1 + (√(c / C) − 1) × e^(−5 dt / τ))²`, τ = `rechargeRate` in seconds. The rate at
   fraction `p` is `10 C / τ × (√p − p)`, peaking at `p = 0.25` with `2.5 C / τ`.
 - Each user activates every `cycle`, drawing `need` and giving `give`; after `shots` activations it
   reloads for `reloadTime`. Identical users start staggered over one cycle.
-- A capacitor booster is held back while its charge would overfill the capacitor (pyfa's
-  injectors); when a module finds less capacitor than it needs, the ready booster that wastes the
+- A capacitor booster is held back while its charge would overfill the capacitor; when a module finds less capacitor than it needs, the ready booster that wastes the
   least fires first, and only when none can is the capacitor dry.
-- A capacitor booster waits while `cap + give > C` (pyfa holds injectors back from overfilling),
-  looking again a second later.
+- A capacitor booster waits while `cap + give > C`, looking again a second later.
 - The run stops when an activation finds less capacitor than it needs: `lasts_s`. Otherwise the
   capacitor is "stable at" the lowest level of the run's last fifth (horizon one hour).
 - The closed-form estimate, where a steady drain `D` meets the curve:
@@ -300,9 +293,9 @@ within 600 ms fold into one step; a new edit drops the redo branch. Test: `histo
 
 | Weapon | Share of listed damage that lands |
 |---|---|
-| Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / d` in rad/s, and 0 past `optimal + 3 × falloff` (pyfa). Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
-| Missile | `min(1, sig / aoeCloudSize, ((sig × aoeVelocity) / (aoeCloudSize × targetVelocity))^aoeDamageReductionFactor)` (EVE Uni "Missile mechanics"); nothing beyond the flight distance. |
-| Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and lands its listed damage; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation: pyfa models drone speed capping the attacker's). |
+| Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / d` in rad/s, and 0 past `optimal + 3 × falloff`. Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
+| Missile | `min(1, sig / aoeCloudSize, ((sig × aoeVelocity) / (aoeCloudSize × targetVelocity))^aoeDamageReductionFactor)` (EVE Uni "Missile mechanics"). The server moves missiles in whole seconds: every missile reaches `velocity × floor(flightTime)`, the share `fract(flightTime)` reaches one second further, none beyond. |
+| Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and lands its listed damage; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation). |
 | Smartbomb | All within `empFieldRange`, nothing beyond. |
 
 Tests: `stats::application::tests::*` (every shot hits in optimal, half at one falloff, cut-off at
@@ -316,8 +309,8 @@ a 1% chance; missiles against big slow and small fast targets).
 - Capacitor over time: the simulation's trace (section 10), the recharge curve between activations,
   zero once dry.
 - Shield over time: the same curve from empty, no users.
-- Speed over time: `v(t) = vmax × (1 − e^(−t / τ))`, `τ = agility × mass / 10⁶` (pyfa `fitMobility`).
-- Warp time vs distance (pyfa `fitWarpTime`): `k_a` = warp speed in AU/s, `k_d = min(k_a / 3, 2)`,
+- Speed over time: `v(t) = vmax × (1 − e^(−t / τ))`, `τ = agility × mass / 10⁶`.
+- Warp time vs distance: `k_a` = warp speed in AU/s, `k_d = min(k_a / 3, 2)`,
   `V = k_a × AU`, drop-out speed `min(sub-warp speed / 2, 100)`, `D_min = AU + V / k_d`; a warp
   shorter than `D_min` peaks at `d × k_a × k_d / (k_a + k_d)` and never cruises;
   `t = ln(V / k_a) / k_a + cruise + ln(V / v_drop) / k_d`. A 5 AU/s frigate warps 10 AU in about

@@ -1,13 +1,13 @@
 //! How much of a weapon's damage lands: turret hit chance and wrecking shots, missile damage
 //! reduction, drones keeping up. Formulas from EVE University's turret and missile mechanics
-//! pages, as pyfa applies them.
+//! pages.
 
 use crate::fit::TargetProfile;
 
 use super::{WeaponGroup, WeaponKind};
 
 /// The chance a turret hits: `0.5^((angular × sigRes / (tracking × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`,
-/// `angular` in radians per second. Beyond `optimal + 3 × falloff` the range term is 0 as in pyfa.
+/// `angular` in radians per second. Beyond `optimal + 3 × falloff` the range term is 0.
 pub fn turret_hit_chance(distance: f64, transversal: f64, target_sig: f64, optimal: f64, falloff: f64, tracking: f64, sig_res: f64) -> f64 {
     let angular = if distance > 1.0 { transversal.abs() / distance } else { 0.0 };
     let tracking_term = if tracking > 0.0 && target_sig > 0.0 { 0.5f64.powf((angular * sig_res / (tracking * target_sig)).powi(2)) } else if angular > 0.0 { 0.0 } else { 1.0 };
@@ -48,17 +48,15 @@ pub fn missile_damage_factor(target_sig: f64, target_velocity: f64, explosion_ra
 ///
 /// Drones that fly faster than the target keep up and hit as their listed damage; slower ones
 /// are treated as turrets whose transversal is the speed they lack, around their own orbit.
-/// Missiles reach their flight distance and no further.
+/// Missiles reach their whole seconds of flight surely and one second more by the flight time's
+/// fraction of a second.
 pub fn applied_factor(w: &WeaponGroup, distance: f64, target: &TargetProfile, drone_speed: f64, drone_control_range: f64) -> f64 {
     let sig = f64::from(target.signature);
     match w.kind {
         WeaponKind::Turret => turret_damage_factor(turret_hit_chance(distance, f64::from(target.transversal), sig, w.optimal, w.falloff, w.tracking, w.signature_resolution)),
         WeaponKind::Missile => {
             let Some(m) = &w.missile else { return 0.0 };
-            if distance > m.range {
-                return 0.0;
-            }
-            missile_damage_factor(sig, f64::from(target.velocity), m.explosion_radius, m.explosion_velocity, m.damage_reduction_factor)
+            m.reach(distance) * missile_damage_factor(sig, f64::from(target.velocity), m.explosion_radius, m.explosion_velocity, m.damage_reduction_factor)
         }
         WeaponKind::Drone => {
             if distance > drone_control_range {
@@ -97,7 +95,7 @@ mod tests {
     fn a_still_target_in_optimal_is_always_hit_and_falloff_halves_at_one_falloff() {
         assert!(close(turret_hit_chance(1000.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 1.0));
         assert!(close(turret_hit_chance(7200.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 0.5));
-        assert!(close(turret_hit_chance(1200.0 + 18_000.0 + 1.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 0.0), "pyfa cuts turrets off past three falloffs");
+        assert!(close(turret_hit_chance(1200.0 + 18_000.0 + 1.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 0.0), "turrets are cut off past three falloffs");
         assert!(close(turret_hit_chance(2000.0, 0.0, 100.0, 1200.0, 0.0, 0.5, 40_000.0), 0.0), "no falloff: nothing past optimal");
     }
 
