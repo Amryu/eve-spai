@@ -485,16 +485,19 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let f = &mut session.fleet;
     let mut changed = false;
     egui::ScrollArea::vertical().id_salt("sim_fleet_editor").auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            let w = (ui.available_width() - 260.0).max(120.0);
-            changed |= ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(w).hint_text(tr!("Fleet name"))).changed();
-            ui.label(tr!("Size"));
-            changed |= ui.add(egui::DragValue::new(&mut f.size).range(1..=2000)).changed();
-        });
         // The settings in cards; two columns where they fit, ships and boosters on the left.
         let two = ui.available_width() >= 1000.0;
         let mut part = |ui: &mut egui::Ui, which: usize| match which {
             0 => card(ui, tr!("Ships"), |ui| {
+                // The fleet's name and how many fly, at the head of its ships.
+                ui.horizontal(|ui| {
+                    ui.label(tr!("Name"));
+                    let w = (ui.available_width() - 130.0).max(100.0);
+                    changed |= ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(w).hint_text(tr!("Fleet name"))).changed();
+                    ui.label(tr!("Size"));
+                    changed |= ui.add(egui::DragValue::new(&mut f.size).range(1..=2000)).changed();
+                });
+                ui.add_space(6.0);
             let mut remove: Option<usize> = None;
             let counts = fleet::resolve_counts(f);
             // Below this width the count controls go on a second line under the fit.
@@ -835,6 +838,9 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 ui.end_row();
                 ui.label(tr!("ADCs and suppressors")).on_hover_text(tr!("Assault damage controls and signature suppressors: switched on, once, when their ship is called primary"));
                 changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();
+                ui.end_row();
+                ui.label(tr!("Split fire")).on_hover_text(tr!("Fire groups each calling its own primary, the ships of each slot shared out by turns; 1 for one primary for all"));
+                changed |= ui.add(egui::DragValue::new(&mut f.split_fire).range(1..=10).suffix(" ×")).changed();
                 ui.end_row();
             });
             }),
@@ -1456,6 +1462,26 @@ fn against_card(ui: &mut egui::Ui, a: &Against, shooter: &FleetStats, target: &F
     tline(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships", n = n)), |ui| {
         tip(ui, tr!("Ships to volley one off the field"), &[(tr!("Target effective HP").to_owned(), text::num(ehp))], "");
     });
+    // How many targets one volley could take at once: the main slot split in groups, the
+    // smallest still at critical mass.
+    if let (Some(n), Some(main)) = (a.critical_mass, shooter.slots.iter().find(|x| x.role == spai_fit::fleet::Role::Main)) {
+        let ships = main.count;
+        let most = if n > 0 { ships / n } else { 0 };
+        let value = if most >= 2 { trf!("up to {n} targets", n = most) } else { tr!("one target").to_owned() };
+        let color = (most >= 2).then(|| egui::Color32::from_rgb(0x7F, 0xC9, 0x8A));
+        let r = ui.scope(|ui| crate::stats_panel::line_colored(ui, tr!("Split fire"), value, color)).response.interact(egui::Sense::hover());
+        r.on_hover_ui(|ui| {
+            ui.set_max_width(360.0);
+            let rows: Vec<(String, String)> = (2..=(most + 1).clamp(2, 6))
+                .map(|g| {
+                    let small = ships / g;
+                    let groups = if ships % g == 0 { trf!("{g} groups of {s}", g = g, s = small) } else { trf!("{g} groups of {s} to {b}", g = g, s = small, b = small + 1) };
+                    (groups, if small >= n { tr!("each kills").to_owned() } else { trf!("needs {n}", n = n) })
+                })
+                .collect();
+            tip(ui, &trf!("{s} ships of the main slot, {n} to kill one", s = ships, n = n), &rows, tr!("Split, each group volleys its own target; an uneven split needs its smallest group at critical mass. Set it under Fire to race it."));
+        });
+    }
     tline(ui, tr!("Kills per volley"), text::num(a.kills_per_volley), |ui| tip(ui, tr!("Kills per volley"), &[], tr!("The whole fleet's applied volley times the volley efficiency, over the picked ship's effective hit points.")));
     tline(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)), |ui| {
         // From what all their logi give to what lands on the one ship.

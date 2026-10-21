@@ -497,3 +497,18 @@ fn the_summary_and_the_charge_table_count_ships_per_kill_the_same_way() {
     assert_eq!(summary.critical_mass, from_table);
     assert!(summary.critical_mass.is_some());
 }
+
+#[test]
+fn splitting_fire_kills_weak_targets_faster_when_one_volley_overkills() {
+    let lib = library();
+    let tight = Formation::Ball { radius_m: 0.0 };
+    // Forty brawlers on ten of them: one primary at a time throws most of each volley away.
+    let big = |split: u32| Fleet { size: 40, formation: tight, split_fire: split, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let few = Fleet { size: 10, formation: tight, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (one, two) = (race_between(&big(1), &few, &lib, 500.0), race_between(&big(2), &few, &lib, 500.0));
+    assert_eq!((one.winner, two.winner), (Some(0), Some(0)));
+    assert!(two.seconds < one.seconds, "two primaries at once clear them sooner: {} against {}", two.seconds, one.seconds);
+    // A split too fine for the volley to kill still runs.
+    let fine = race_between(&big(10), &few, &lib, 500.0);
+    assert!(fine.seconds > 0.0);
+}

@@ -486,7 +486,10 @@ best range is the farthest where it still lands 90% of its most.
 
 **Race** (`fleet::race`), at one range in steps of 0.25 s, for at most `race_length_s` (30 minutes by default):
 
-- Each side shoots one primary, picked by its target order, until it dies.
+- Each side shoots one primary, picked by its target order, until it dies; with `split_fire`
+  set, its ships split into that many fire groups (each slot's by turns), each on a primary of
+  its own, and its logi share out over their hurt primaries by turns. The summary shows how many
+  targets one volley could take: the main slot's ships over its critical mass, rounded down.
 - A ship's first volley on a new call comes after its reaction delay, spread log-normally over
   the side (median 1.5 s, σ of the log 0.6, quantiles laid out evenly), and never before its
   guns have cycled since its last; then a volley every cycle, a reload after each load.

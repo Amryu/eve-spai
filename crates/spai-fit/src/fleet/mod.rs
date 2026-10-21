@@ -154,6 +154,10 @@ pub struct Fleet {
     /// cycles landing on full health.
     #[serde(default = "default_logi_efficiency")]
     pub logi_efficiency: f32,
+    /// Fire groups the fleet's weapons split into in the race, each on its own primary; 1 for
+    /// one primary for all.
+    #[serde(default = "default_split")]
+    pub split_fire: u32,
     /// How long the race may run, in seconds.
     #[serde(default = "default_race_length")]
     pub race_length_s: f32,
@@ -190,6 +194,10 @@ fn default_logi_efficiency() -> f32 {
     0.75
 }
 
+fn default_split() -> u32 {
+    1
+}
+
 fn default_race_length() -> f32 {
     1800.0
 }
@@ -224,6 +232,7 @@ impl Default for Fleet {
             drones: true,
             logi_efficiency: 0.75,
             race_length_s: 1800.0,
+            split_fire: 1,
             mirror_size: None,
             mirror_counts: Vec::new(),
             logi_prelock: 0.0,
