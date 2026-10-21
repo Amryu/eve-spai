@@ -1161,3 +1161,35 @@ fn real_data_consumables_cover_charges_paste_and_fuel() {
         assert!(c.contains(&id(want)), "{want}");
     }
 }
+
+#[test]
+fn the_fit_on_screen_can_be_taken_off_the_graph() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    s.edit(EditKind::SetState, 2, |f| {
+        let m = f.module_mut(Slot::High, 0).unwrap();
+        m.state = State::Active;
+        m.charge = Some(ids::AMMO);
+    });
+    s.new_fit(ids::SHIP, 3);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 4);
+    s.edit(EditKind::SetState, 5, |f| {
+        let m = f.module_mut(Slot::High, 0).unwrap();
+        m.state = State::Active;
+        m.charge = Some(ids::AMMO);
+    });
+    let other = s.sessions()[0].id.clone();
+    s.graph_attackers = vec![other];
+    s.graph_current = false;
+    s.center = crate::Center::Graphs;
+    s.pane = crate::Pane::Graphs;
+    let ctx = egui::Context::default();
+    let mut legend = 0;
+    for t in 0..3 {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), time: Some(f64::from(t) * 0.05), ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+        legend = crate::graphs_panel::last_line_count(&ctx);
+    }
+    assert_eq!(legend, 1, "only the other fit is drawn");
+}

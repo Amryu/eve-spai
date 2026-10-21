@@ -495,6 +495,13 @@ fn motion_dial(ui: &mut egui::Ui, label: &str, v: &mut (f32, f32)) {
 
 const SHIPS_W: f32 = 230.0;
 
+const LINES: &str = "sim_compare_lines";
+
+/// How many lines the last comparison plot drew, for tests.
+pub fn last_line_count(ctx: &egui::Context) -> usize {
+    ctx.data(|d| d.get_temp(egui::Id::new(LINES))).unwrap_or(0)
+}
+
 /// The graph's ships, in a column of their own left of the plot: the shooters and, for damage, the
 /// targets, each with a button to add more. The graph belongs to no fit: it starts with the fit
 /// on screen against the target profile, and either can be taken out.
@@ -591,7 +598,8 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
 /// One line per attacker (and per target, for damage), each the total of that fit's weapons.
 fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit::fit::TargetProfile, motion: Motion, open: &[(String, String)], current: &str, computed: &std::sync::Arc<spai_fit::stats::Computed>, damage: bool) -> Option<Plot> {
     let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
-    let mut attackers: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>)> = vec![(name_of(current), computed.clone())];
+    // The fit on screen shoots only while it is on the list; it can be taken off like any other.
+    let mut attackers: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>)> = if sim.graph_current { vec![(name_of(current), computed.clone())] } else { Vec::new() };
     for id in sim.graph_attackers.clone() {
         if let Some(c) = sim.computed_of(&id) {
             attackers.push((name_of(&id), c));
@@ -630,6 +638,7 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     }
     let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let _ = ui;
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LINES), lines.len()));
     Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines })
 }
 
