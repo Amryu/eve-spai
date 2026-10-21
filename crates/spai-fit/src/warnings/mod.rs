@@ -157,7 +157,9 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
     }
     let has_prop = fit.modules.iter().any(|m| dogma.type_(m.type_id).is_some_and(|t| t.group == 46));
     if !has_prop && !fit.modules.is_empty() {
-        out.push(warn(Severity::Warn, WarningKind::NoPropMod));
+        // Battleships and bigger (large and capital rigs) often fly without one: a note, not a warning.
+        let big = dogma.type_(fit.ship).and_then(|t| t.attr(crate::dogma::attr::RIG_SIZE)).is_some_and(|r| r >= 3.0);
+        out.push(warn(if big { Severity::Info } else { Severity::Warn }, WarningKind::NoPropMod));
     }
     for m in &fit.modules {
         if m.state == State::Offline {

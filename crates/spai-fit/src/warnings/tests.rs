@@ -106,3 +106,22 @@ fn clashing_variations_are_pointed_out() {
     let k = kinds(&f, &[]);
     assert!(has(&k, |w| matches!(w, WarningKind::VariationConflict { first, second } if first == "Long" && second == "Short")), "{k:?}");
 }
+
+#[test]
+fn a_battleship_without_a_prop_module_is_only_a_note() {
+    use crate::dogma::attr;
+    let severity = |rig: f32| {
+        let mut d = dataset();
+        let ship = d.types.iter_mut().find(|t| t.id == ids::SHIP).unwrap();
+        ship.attrs.retain(|(a, _)| *a != attr::RIG_SIZE);
+        ship.attrs.push((attr::RIG_SIZE, rig));
+        ship.attrs.sort_by_key(|(a, _)| *a);
+        let d = d.finish();
+        let mut f = Fit::new(ids::SHIP, "x");
+        f.modules.push(crate::fit::Module::new(ids::DC, crate::fit::Slot::Low, 0));
+        let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        check(&d, &f, &c, &[]).into_iter().find(|w| matches!(w.kind, WarningKind::NoPropMod)).map(|w| w.severity)
+    };
+    assert_eq!(severity(1.0), Some(Severity::Warn), "a frigate");
+    assert_eq!(severity(3.0), Some(Severity::Info), "a battleship");
+}
