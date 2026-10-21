@@ -629,4 +629,11 @@ fn real_data_disintegrator_spool() {
     let w = &c.weapons[0];
     println!("spool max {:.3} per cycle {:.3} cycles {:?} cycle {:.2}s cold {:.1} full {:.1}", w.spool_max, w.spool_per_cycle, w.spool_cycles(), w.cycle_s, w.cold_dps(), w.cold_dps() * (1.0 + w.spool_max));
     assert!(w.spool_max > 0.0 && w.spool_per_cycle > 0.0 && w.spool_cycles().is_some_and(|n| n > 1));
+    // Set to ten cycles in: the module's own figures carry the step, the most and the setting.
+    f.modules[0].spool = Some((10.0 * w.spool_per_cycle / w.spool_max) as f32);
+    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let c = crate::stats::compute_with(&calc, &f);
+    let (per, max, frac) = crate::stats::module_stats(&calc, &c)[0].spool.unwrap();
+    assert!(((frac * max / per) - 10.0).abs() < 1e-3, "ten steps in");
+    assert!((c.weapons[0].dps / (c.weapons[0].cold_dps() * (1.0 + 10.0 * per)) - 1.0).abs() < 1e-5, "ten steps of damage");
 }

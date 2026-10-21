@@ -1095,7 +1095,7 @@
   "It needs a model service: an API key, a local model, or a Claude or ChatGPT subscription.": "Il lui faut un service de modèle : une clé API, un modèle local, ou un abonnement Claude ou ChatGPT.",
   "Items at": "Objets à",
   "Its C729 can open in": "Son C729 peut s'ouvrir dans",
-  "Its damage bonus as built up: click to set how far, 0% cold to 100% fully spooled": "Son bonus de dégâts accumulé : cliquez pour le régler, de 0 % à froid à 100 % au maximum",
+  "Its damage bonus as built up: click to set how many cycles it has been firing": "Son bonus de dégâts accumulé : cliquez pour régler depuis combien de cycles il tire",
   "Its holes are switched off for routes": "Ses trous sont désactivés pour les routes",
   "Its location is not known yet": "Sa position n'est pas encore connue",
   "Its remote modules and drones act on this fit, and its command bursts boost it.": "Ses modules à distance et ses drones agissent sur ce fit, et ses command bursts le boostent.",

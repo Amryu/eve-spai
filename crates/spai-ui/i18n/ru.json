@@ -1095,7 +1095,7 @@
   "It needs a model service: an API key, a local model, or a Claude or ChatGPT subscription.": "Нужен сервис модели: API-ключ, локальная модель или подписка Claude либо ChatGPT.",
   "Items at": "Предметы по",
   "Its C729 can open in": "Её C729 может открыться в",
-  "Its damage bonus as built up: click to set how far, 0% cold to 100% fully spooled": "Накопленный бонус урона: нажмите, чтобы задать, от 0% (холодный) до 100% (полный)",
+  "Its damage bonus as built up: click to set how many cycles it has been firing": "Накопленный бонус урона: нажмите, чтобы задать, сколько циклов он уже стреляет",
   "Its holes are switched off for routes": "Её червоточины отключены для маршрутов",
   "Its location is not known yet": "Местоположение пока неизвестно",
   "Its remote modules and drones act on this fit, and its command bursts boost it.": "Его удалённые модули и дроны действуют на этот фит, а командные импульсы бустят его.",

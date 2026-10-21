@@ -737,9 +737,7 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let reactive = dogma.type_(type_id).is_some_and(|t| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == "adaptiveArmorHardener")));
     let kept_even = sim.view_fit().and_then(|v| v.module(slot, index).map(|m| m.fixed)).unwrap_or(false);
     let mut toggle_even = false;
-    // A disintegrator's spool, set from its menu: how far along its bonus is.
-    let spools = dogma.type_(type_id).is_some_and(|t| t.attr(spai_fit::dogma::attr::DAMAGE_MULTIPLIER_BONUS_MAX).is_some_and(|v| v > 0.0));
-    let spool_now = sim.view_fit().and_then(|v| v.module(slot, index).map(|m| m.spool.unwrap_or(1.0))).unwrap_or(1.0);
+    // A disintegrator's spool, set from its Effect cell.
     let mut set_spool: Option<f32> = None;
     // Overloaded: a light red under the row and the state button's flame in red; active: a light green.
     let heat = match state {
@@ -840,26 +838,35 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 rows::num_cell(ui, cols.num, s.and_then(|m| m.cycle_s).map_or(String::new(), |c| format!("{}s", text::num(c))), off);
                 let info = s.and_then(|m| m.info);
                 let (shown, hover) = info.map_or((String::new(), ""), |i| info_text(i));
-                // A disintegrator's cell is its spool, set by clicking it.
-                let max = dogma.type_(type_id).and_then(|t| t.attr(spai_fit::dogma::attr::DAMAGE_MULTIPLIER_BONUS_MAX)).map_or(0.0, f64::from);
-                let shown = if spools { format!("+{:.0}% spool", f64::from(spool_now) * max * 100.0) } else { shown };
+                // A disintegrator's cell is its spool, set by clicking it, in whole cycles: the
+                // bonus only ever grows a step at a time.
+                let spool = s.and_then(|m| m.spool);
+                let shown = match spool {
+                    Some((_, max, frac)) => format!("+{:.0}% spool", frac * max * 100.0),
+                    None => shown,
+                };
                 let r = ui.allocate_ui_with_layout(egui::vec2(cols.info, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_min_width(cols.info);
                     ui.set_max_width(cols.info);
                     let t = egui::RichText::new(shown).monospace();
                     ui.add(egui::Label::new(if off { t.weak() } else { t }).truncate().selectable(false).show_tooltip_when_elided(false));
                 });
-                if spools {
+                if let Some((per, max, frac)) = spool.filter(|(per, max, _)| *per > 0.0 && *max > 0.0) {
                     let cell = ui.interact(r.response.rect, egui::Id::new(("sim_spool", slot, index)), egui::Sense::click());
                     if cell.hovered() {
                         ui.painter().rect_filled(r.response.rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    let cell = cell.on_hover_text(tr!("Its damage bonus as built up: click to set how far, 0% cold to 100% fully spooled"));
+                    let cell = cell.on_hover_text(tr!("Its damage bonus as built up: click to set how many cycles it has been firing"));
                     egui::Popup::menu(&cell).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                        let mut pct = spool_now * 100.0;
-                        if ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%").integer()).changed() {
-                            set_spool = Some(pct / 100.0);
+                        let full = (max / per).ceil() as u32;
+                        let mut cycles = ((frac * max / per).round() as u32).min(full);
+                        let r = ui.add(egui::Slider::new(&mut cycles, 0..=full).custom_formatter(|v, _| {
+                            let bonus = (v * per).min(max);
+                            format!("{v:.0} cycles, +{:.0}%", bonus * 100.0)
+                        }));
+                        if r.changed() {
+                            set_spool = Some(((f64::from(cycles) * per).min(max) / max) as f32);
                         }
                     });
                 } else if !hover.is_empty() {
