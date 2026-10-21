@@ -454,6 +454,8 @@ pub struct SimUi {
     fit_docs_asked: std::collections::HashSet<String>,
     /// Fleets by library id, for the one compared against.
     pub fleet_docs: std::collections::HashMap<String, spai_fit::fleet::Fleet>,
+    /// The engagement analysis of the open fleet against its opponent, with what it was for.
+    pub(crate) fleet_analysis: Option<(u64, std::sync::Arc<fleet_panel::Analysis>)>,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -523,6 +525,7 @@ impl Default for SimUi {
             fit_docs: std::collections::HashMap::new(),
             fit_docs_asked: std::collections::HashSet::new(),
             fleet_docs: std::collections::HashMap::new(),
+            fleet_analysis: None,
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -620,7 +623,9 @@ impl SimUi {
             HostEvent::Fleet { id, doc } => match serde_json::from_str::<spai_fit::fleet::Fleet>(&doc) {
                 Ok(fleet) => {
                     self.fleet_docs.insert(id.clone(), fleet.clone());
-                    self.fleet = Some(FleetSession { id, fleet, dirty: false, enemy: self.fleet.as_ref().and_then(|f| f.enemy.clone()) });
+                    // The opponent saved with the fleet, else the one already picked.
+                    let enemy = fleet.enemy.clone().or_else(|| self.fleet.as_ref().and_then(|f| f.enemy.clone()));
+                    self.fleet = Some(FleetSession { id, fleet, dirty: false, enemy });
                 }
                 Err(e) => self.status(trf!("Could not read the fleet: {e}", e = e)),
             },

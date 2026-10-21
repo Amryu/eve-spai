@@ -27,6 +27,19 @@ pub struct FleetSession {
     pub enemy: Option<String>,
 }
 
+pub fn role_name(role: spai_fit::fleet::Role) -> &'static str {
+    use spai_fit::fleet::Role as R;
+    match role {
+        R::Main => tr!("Main damage"),
+        R::Mainline => tr!("Other damage"),
+        R::Logi => tr!("Logistics"),
+        R::Support => tr!("Support"),
+        R::Tackle => tr!("Tackle"),
+        R::Ewar => tr!("Ewar"),
+        R::Command => tr!("Command"),
+    }
+}
+
 pub fn kind_name(kind: BurstKind) -> &'static str {
     match kind {
         BurstKind::Shield => tr!("Shield"),
@@ -112,6 +125,60 @@ impl SimUi {
             (theirs, a, b)
         });
         Some((mine, enemy))
+    }
+}
+
+/// The fight between the open fleet and its opponent: ammo per range, the sweep over ranges, and
+/// the race at the fleet's range.
+pub struct Analysis {
+    pub fleet: Fleet,
+    pub range: f32,
+    pub mine: FleetStats,
+    pub theirs: FleetStats,
+    pub enemy: Fleet,
+    pub ammo: [Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>; 2],
+    pub sweep: spai_fit::fleet::sweep::Sweep,
+    pub race: spai_fit::fleet::race::Race,
+}
+
+impl SimUi {
+    /// The engagement analysis, worked out again only when either fleet, the fits they fly or the
+    /// skills change.
+    pub(crate) fn fleet_analysis(&mut self) -> Option<std::sync::Arc<Analysis>> {
+        use std::hash::{Hash, Hasher};
+        let (dogma, f) = (self.dogma.clone()?, self.fleet.as_ref()?);
+        let enemy = f.enemy.as_ref().and_then(|id| self.fleet_docs.get(id))?.clone();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&f.fleet).unwrap_or_default().hash(&mut h);
+        serde_json::to_string(&enemy).unwrap_or_default().hash(&mut h);
+        let mut ids: Vec<&String> = self.fit_docs.keys().collect();
+        ids.sort();
+        ids.hash(&mut h);
+        self.profile.hash(&mut h);
+        let key = h.finish();
+        if let Some((k, a)) = &self.fleet_analysis {
+            if *k == key {
+                return Some(a.clone());
+            }
+        }
+        let docs = &self.fit_docs;
+        let fits = |id: &str| docs.get(id).cloned();
+        let skills = |p: Option<&str>| self.fleet_skills(p);
+        let mine = fleet::stats(&dogma, &f.fleet, &fits, &skills);
+        let theirs = fleet::stats(&dogma, &enemy, &fits, &skills);
+        let ammo_of = |s: &FleetStats| s.slots.iter().map(|x| spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &s.env)).collect::<Vec<_>>();
+        let ammo = [ammo_of(&mine), ammo_of(&theirs)];
+        let a = spai_fit::fleet::sweep::Side { fleet: &f.fleet, stats: &mine, ammo: &ammo[0] };
+        let b = spai_fit::fleet::sweep::Side { fleet: &enemy, stats: &theirs, ammo: &ammo[1] };
+        let mut ranges = spai_fit::fleet::sweep::ranges(&mine, &theirs);
+        ranges.push(f64::from(f.fleet.range));
+        ranges.sort_by(|x, y| x.total_cmp(y));
+        ranges.dedup();
+        let sweep = spai_fit::fleet::sweep::sweep(&a, &b, &ranges);
+        let race = spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(f.fleet.range), 1800.0);
+        let out = std::sync::Arc::new(Analysis { fleet: f.fleet.clone(), range: f.fleet.range, mine, theirs, enemy, ammo, sweep, race });
+        self.fleet_analysis = Some((key, out.clone()));
+        Some(out)
     }
 }
 
@@ -334,6 +401,38 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             ui.label(tr!("Volley efficiency"));
             changed |= ui.add(egui::Slider::new(&mut f.volley_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
             ui.end_row();
+            // How the ships sit: a ball of a radius, or a flock bell-curved around the anchor.
+            ui.label(tr!("Formation")).on_hover_text(tr!("Ball: every ship on a sphere of this radius around the anchor. Flock: ships follow the anchor, their distance to it spread like a bell curve of this width."));
+            ui.horizontal(|ui| {
+                use spai_ui::widgets::SteadySelect as _;
+                let (ball, mut metres) = match f.formation {
+                    spai_fit::fleet::Formation::Ball { radius_m } => (true, radius_m),
+                    spai_fit::fleet::Formation::Flock { sigma_m } => (false, sigma_m),
+                };
+                let mut pick_ball = ball;
+                if ui.menu_label_sized(egui::vec2(60.0, 22.0), ball, tr!("Ball")).clicked() {
+                    pick_ball = true;
+                }
+                if ui.menu_label_sized(egui::vec2(60.0, 22.0), !ball, tr!("Flock")).clicked() {
+                    pick_ball = false;
+                }
+                let mut km = metres / 1000.0;
+                let r = ui.add(egui::DragValue::new(&mut km).range(0.0..=100.0).speed(0.1).suffix(" km"));
+                if r.changed() || pick_ball != ball {
+                    metres = km * 1000.0;
+                    f.formation = if pick_ball { spai_fit::fleet::Formation::Ball { radius_m: metres } } else { spai_fit::fleet::Formation::Flock { sigma_m: metres } };
+                    changed = true;
+                }
+            });
+            ui.end_row();
+            ui.label(tr!("Movement")).on_hover_text(tr!("The fleet's share of its slowest ship's top speed and its heading against the line to the enemy: 0° straight at it, 90° across."));
+            let before = f.motion;
+            crate::graphs_panel::motion_dial(ui, "", &mut f.motion);
+            changed |= f.motion != before;
+            ui.end_row();
+            ui.label(tr!("Assault damage controls"));
+            changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();
+            ui.end_row();
             ui.label(tr!("Ewar on the enemy"));
             ui.vertical(|ui| {
                 let p = projected;
@@ -365,10 +464,14 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             egui::ComboBox::from_id_salt("sim_fleet_enemy").selected_text(text::clip(&enemy_name, 28)).width(220.0).show_ui(ui, |ui| {
                 if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
                     session.enemy = None;
+                    f.enemy = None;
+                    changed = true;
                 }
                 for x in fleets.iter().filter(|x| x.id != my_id) {
                     if ui.menu_label(session.enemy.as_deref() == Some(x.id.as_str()), x.name.clone()).clicked() {
                         session.enemy = Some(x.id.clone());
+                        f.enemy = Some(x.id.clone());
+                        changed = true;
                     }
                 }
             });
@@ -377,6 +480,24 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 ui.label(tr!("Skills"));
                 ui.label(egui::RichText::new(tr!("the profile chosen above")).weak());
                 ui.end_row();
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(tr!("Shoots first")).on_hover_text(tr!("The order this fleet calls the enemy's ships as primary, by role"));
+        ui.horizontal_wrapped(|ui| {
+            let mut up: Option<usize> = None;
+            // One widget per entry so the row wraps between entries.
+            for (i, role) in f.target_order.iter().enumerate() {
+                let name = format!("{}. {}", i + 1, role_name(*role));
+                if i == 0 {
+                    ui.label(name);
+                } else if ui.button(format!("{} {name}", egui_phosphor::regular::CARET_LEFT)).on_hover_text(tr!("Earlier")).clicked() {
+                    up = Some(i);
+                }
+            }
+            if let Some(i) = up {
+                f.target_order.swap(i, i - 1);
+                changed = true;
             }
         });
     });
@@ -400,8 +521,14 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
         return;
     };
     let names: HashMap<String, String> = sim.library.iter().map(|f| (f.id.clone(), f.name.clone())).collect();
+    let analysis = sim.fleet_analysis();
     egui::ScrollArea::vertical().id_salt("sim_fleet_results").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
+        if let Some(an) = &analysis {
+            engagement_card(ui, &dogma, an, &names);
+            ui.add_space(4.0);
+            ui.separator();
+        }
         fleet_card(ui, &dogma, &mine, &names);
         if let Some((theirs, a, b)) = &enemy {
             ui.add_space(4.0);
@@ -429,6 +556,128 @@ fn title(ui: &mut egui::Ui, text: &str, weak: bool) {
         ui.add_space(crate::rows::GAP);
         let t = egui::RichText::new(text);
         ui.add(egui::Label::new(if weak { t.weak() } else { t.strong() }).truncate());
+    });
+}
+
+/// Where each fleet wants to fight, what holds it there, which ammo for which range, and how the
+/// fight at the set range goes.
+fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, names: &HashMap<String, String>) {
+    use spai_fit::fleet::race::{Event, Verdict};
+    let (a, b) = (&an.mine.name, &an.theirs.name);
+    let slot_name = |s: &spai_fit::fleet::SlotStats| names.get(&s.fit_id).cloned().unwrap_or_else(|| s.fit_id.clone());
+    title(ui, tr!("Engagement"), false);
+    let sw = &an.sweep;
+    line(ui, &trf!("{a} best range", a = a), text::metres(sw.a_best));
+    line(ui, &trf!("{a} best range", a = b), text::metres(sw.b_best));
+    let bands: Vec<String> = sw.a_favoured.iter().map(|(f, t)| format!("{} - {}", text::metres(*f), text::metres(*t))).collect();
+    line(ui, &trf!("{a} favoured", a = a), if bands.is_empty() { tr!("nowhere").to_owned() } else { bands.join(", ") });
+    line(ui, &trf!("{a} favoured", a = b), {
+        let v: Vec<String> = sw.b_favoured.iter().map(|(f, t)| format!("{} - {}", text::metres(*f), text::metres(*t))).collect();
+        if v.is_empty() { tr!("nowhere").to_owned() } else { v.join(", ") }
+    });
+    for (side, name, cuts) in [(0, a, &sw.a_cutoffs), (1, b, &sw.b_cutoffs)] {
+        if cuts.is_empty() {
+            continue;
+        }
+        title(ui, &trf!("{a} ewar reach", a = name), true);
+        for (kind, optimal, edge) in cuts {
+            let Some(label) = crate::stats_panel::ewar_name(*kind) else { continue };
+            line(ui, label, trf!("{o}, gone past {e}", o = text::metres(*optimal), e = text::metres(*edge)));
+        }
+        // Neutralisers are counted against recharge in the score; the pilots still watch them.
+        let neut = cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
+        if neut > 0.0 && f64::from(an.range) <= neut * 1.2 {
+            let victim = if side == 0 { b } else { a };
+            warn(ui, &trf!("{v} sits in or near neutraliser range ({r})", v = victim, r = text::metres(neut)));
+        }
+    }
+    let at = |d: f64| sw.points.iter().min_by(|x, y| (x.distance - d).abs().total_cmp(&(y.distance - d).abs()));
+    if let Some(p) = at(f64::from(an.range)) {
+        title(ui, &trf!("At {r}", r = text::metres(p.distance)), true);
+        for (name, f) in [(a, &p.a), (b, &p.b)] {
+            let mut holds = Vec::new();
+            if f.webbed {
+                holds.push(tr!("webbed").to_owned());
+            }
+            if f.tackled {
+                holds.push(tr!("tackled").to_owned());
+            }
+            if f.neut_pressure > 0.05 {
+                holds.push(trf!("neuts {p}% of recharge", p = format!("{:.0}", f.neut_pressure * 100.0)));
+            }
+            let extra = if holds.is_empty() { String::new() } else { format!(", {}", holds.join(", ")) };
+            line(ui, name, trf!("{d} DPS on the primary{x}", d = text::num(f.applied_dps), x = extra));
+        }
+    }
+    let r = &an.race;
+    title(ui, tr!("Race at this range"), true);
+    let winner = match r.winner {
+        Some(0) => trf!("{a} wins in {s}", a = a, s = text::secs(r.seconds)),
+        Some(_) => trf!("{a} wins in {s}", a = b, s = text::secs(r.seconds)),
+        None => trf!("both stand after {s}", s = text::secs(r.seconds)),
+    };
+    line(ui, tr!("Outcome"), winner);
+    for (side, name) in [(0, a), (1, b)] {
+        if let Some(t) = r.critical_mass_lost[side] {
+            let alive = r.timeline.iter().find(|x| x.0 >= t).map_or(0, |x| if side == 0 { x.1 } else { x.2 });
+            line(ui, &trf!("{a} loses critical mass", a = name), trf!("at {s}, {n} ships left", s = text::secs(t), n = alive));
+        }
+    }
+    let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
+    if adcs > 0 {
+        line(ui, tr!("Assault damage controls"), trf!("{n} switched on", n = adcs));
+    }
+    for (side, stats) in [(0, &an.mine), (1, &an.theirs)] {
+        if r.verdicts[side].is_empty() {
+            continue;
+        }
+        title(ui, &trf!("{a} when primaried", a = stats.name), true);
+        for (k, v) in &r.verdicts[side] {
+            let Some(s) = stats.slots.get(*k) else { continue };
+            let text = match v {
+                Verdict::OneVolley => tr!("dies in one volley").to_owned(),
+                Verdict::BeforeReps { seconds } => trf!("dies in {s}, before reps land", s = text::secs(*seconds)),
+                Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(stats) => trf!("dies in {s}, damage {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
+                Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
+                Verdict::Held => tr!("holds").to_owned(),
+            };
+            line(ui, &slot_name(s), text);
+        }
+    }
+    // Ammo per range for the open fleet, against the enemy's first target.
+    let ranges: Vec<f64> = sw.points.iter().map(|p| p.distance).collect();
+    let Some(target) = spai_fit::fleet::sweep::primary(&an.fleet, &an.theirs) else { return };
+    let profile = spai_fit::fit::TargetProfile { signature: target.computed.mobility.signature as f32, velocity: 0.0, distance: 0.0, transversal: 0.0, radius: 0.0 };
+    let mut shown = false;
+    for (k, slot) in an.mine.slots.iter().enumerate() {
+        for c in an.ammo[0].get(k).into_iter().flatten() {
+            let bands = spai_fit::fleet::ammo::bands(c, &ranges, &profile);
+            if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
+                continue;
+            }
+            if !shown {
+                title(ui, tr!("Ammo by range"), true);
+                shown = true;
+            }
+            let gun = dogma.type_(c.weapon).map_or("?", |t| t.name.as_str());
+            line(ui, &format!("{} · {}", slot_name(slot), gun), String::new());
+            for band in bands {
+                let charge = dogma.type_(band.charge).map_or("?", |t| t.name.as_str());
+                let better = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| trf!(", carry {c} (+{p}%)", c = t.name.clone(), p = format!("{:.0}", share * 100.0)))).unwrap_or_default();
+                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), format!("{charge}{better}"));
+            }
+        }
+    }
+}
+
+fn has_logi(s: &FleetStats) -> bool {
+    s.slots.iter().any(|x| x.count > 0 && x.computed.remote.modules.iter().any(|m| m.kind.is_rep()))
+}
+
+fn warn(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(crate::rows::GAP);
+        ui.add(egui::Label::new(egui::RichText::new(format!("{} {text}", egui_phosphor::regular::WARNING)).color(ui.visuals().warn_fg_color)).wrap());
     });
 }
 

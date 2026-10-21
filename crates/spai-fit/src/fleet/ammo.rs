@@ -69,30 +69,38 @@ pub struct Band {
     pub from: f64,
     pub to: f64,
     pub charge: TypeId,
-    /// A charge not carried that would do more over this stretch, and by how much (share).
+    /// A charge not carried that would do more over this stretch, and by how much on average
+    /// over it (share).
     pub better: Option<(TypeId, f64)>,
 }
 
 /// The best carried charge over `ranges` (ascending), merged into stretches.
 pub fn bands(choice: &AmmoChoice, ranges: &[f64], target: &TargetProfile) -> Vec<Band> {
     let mut out: Vec<Band> = Vec::new();
+    // Per band: its points, and per uncarried charge its summed gain.
+    let mut gains: Vec<(f64, Vec<(TypeId, f64)>)> = Vec::new();
     for &d in ranges {
         let Some(((charge, v), any)) = best_at(choice, d, target) else { continue };
         if v <= 0.0 {
             continue;
         }
-        let better = any.map(|(c, a)| (c, a / v - 1.0));
-        match out.last_mut() {
-            Some(b) if b.charge == charge => {
-                b.to = d;
-                if let Some((c, gain)) = better {
-                    if b.better.is_none_or(|(_, g)| gain > g) {
-                        b.better = Some((c, gain));
-                    }
+        if out.last().is_none_or(|b| b.charge != charge) {
+            out.push(Band { from: d, to: d, charge, better: None });
+            gains.push((0.0, Vec::new()));
+        }
+        if let (Some(b), Some((n, sums))) = (out.last_mut(), gains.last_mut()) {
+            b.to = d;
+            *n += 1.0;
+            if let Some((c, a)) = any {
+                match sums.iter_mut().find(|(x, _)| *x == c) {
+                    Some((_, g)) => *g += a / v - 1.0,
+                    None => sums.push((c, a / v - 1.0)),
                 }
             }
-            _ => out.push(Band { from: d, to: d, charge, better }),
         }
+    }
+    for (b, (n, sums)) in out.iter_mut().zip(gains) {
+        b.better = sums.into_iter().map(|(c, g)| (c, g / n)).filter(|(_, g)| *g > 0.01).max_by(|x, y| x.1.total_cmp(&y.1));
     }
     out
 }

@@ -477,17 +477,24 @@ fn remote(ui: &mut egui::Ui, c: &Computed) {
     }
     let ewar: Vec<&spai_fit::stats::RemoteModule> = r.modules.iter().filter(|m| !m.kind.is_rep() && !matches!(m.kind, spai_fit::stats::RemoteKind::Neut | spai_fit::stats::RemoteKind::Nos)).collect();
     for m in ewar {
-        let label = match m.kind {
-            spai_fit::stats::RemoteKind::Web => tr!("Web"),
-            spai_fit::stats::RemoteKind::Painter => tr!("Painter"),
-            spai_fit::stats::RemoteKind::Damp => tr!("Damp"),
-            spai_fit::stats::RemoteKind::TrackingDisruptor => tr!("Tracking disruptor"),
-            spai_fit::stats::RemoteKind::GuidanceDisruptor => tr!("Guidance disruptor"),
-            spai_fit::stats::RemoteKind::Ecm => tr!("ECM"),
-            spai_fit::stats::RemoteKind::Scram => tr!("Scrambler"),
-            spai_fit::stats::RemoteKind::Point => tr!("Disruptor"),
-            _ => continue,
-        };
+        let Some(label) = ewar_name(m.kind) else { continue };
         line(ui, label, trf!("{v} at {o} + {f}", v = text::num(m.amount), o = text::metres(m.optimal), f = text::metres(m.falloff)));
     }
+}
+
+pub fn ewar_name(kind: spai_fit::stats::RemoteKind) -> Option<&'static str> {
+    use spai_fit::stats::RemoteKind as K;
+    Some(match kind {
+        K::Web => tr!("Web"),
+        K::Painter => tr!("Painter"),
+        K::Damp => tr!("Damp"),
+        K::TrackingDisruptor => tr!("Tracking disruptor"),
+        K::GuidanceDisruptor => tr!("Guidance disruptor"),
+        K::Ecm => tr!("ECM"),
+        K::Scram => tr!("Scrambler"),
+        K::Point => tr!("Disruptor"),
+        K::Neut => tr!("Neutraliser"),
+        K::Nos => tr!("Nosferatu"),
+        _ => return None,
+    })
 }

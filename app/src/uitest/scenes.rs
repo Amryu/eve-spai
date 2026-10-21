@@ -2808,7 +2808,7 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| f.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active)));
         sim.graph = spai_fit::graphs::GraphKind::EwarVsDistance;
     }));
-    for (name, size, narrow_pane) in [("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats)] {
+    for (name, size, narrow_pane) in [("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats), ("imperium_fleet_engagement", [720.0, 1500.0], spai_fit_ui::Pane::Stats)] {
         v.push(imperium_scene_with(name, size, false, narrow_pane, |sim| {
             use spai_fit::fleet::{BurstKind, CountRule, Fleet, FleetSlot};
             use spai_fit::test_support::ids;

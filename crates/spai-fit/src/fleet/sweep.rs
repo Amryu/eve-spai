@@ -55,7 +55,8 @@ pub struct Facing {
     pub tackled: bool,
     /// Neutralising per ship over the ships' peak recharge.
     pub neut_pressure: f64,
-    /// Applied damage over the best this side manages at any range, less the penalties.
+    /// The other side's primaries killed per minute (applied damage over its effective hit
+    /// points), less the penalties.
     pub score: f64,
 }
 
@@ -72,8 +73,9 @@ pub struct Sweep {
     /// The farthest range each side still lands `BEST_SHARE` of its most at.
     pub a_best: f64,
     pub b_best: f64,
-    /// Stretches of range where `a` scores above `b`.
+    /// Stretches of range where `a` scores clearly above `b`, and the other way round.
     pub a_favoured: Vec<(f64, f64)>,
+    pub b_favoured: Vec<(f64, f64)>,
     /// Each side's ewar and where it stops working: (kind, optimal, outer edge).
     pub a_cutoffs: Vec<(RemoteKind, f64, f64)>,
     pub b_cutoffs: Vec<(RemoteKind, f64, f64)>,
@@ -162,31 +164,43 @@ pub fn sweep(a: &Side, b: &Side, ranges: &[f64]) -> Sweep {
         .collect();
     let a_max = points.iter().map(|p| p.a.applied_dps).fold(0.0, f64::max);
     let b_max = points.iter().map(|p| p.b.applied_dps).fold(0.0, f64::max);
-    let score = |f: &Facing, max: f64| {
-        let base = if max > 0.0 { f.applied_dps / max } else { 0.0 };
+    let ehp = |shooter: &Side, other: &Side| primary(shooter.fleet, other.stats).map_or(0.0, |t| t.computed.tank.ehp);
+    let (a_ehp, b_ehp) = (ehp(a, b), ehp(b, a));
+    let score = |f: &Facing, target_ehp: f64| {
+        let base = if target_ehp > 0.0 { 60.0 * f.applied_dps / target_ehp } else { 0.0 };
         let penalty = if f.webbed { WEBBED_PENALTY } else { 0.0 } + if f.tackled { TACKLED_PENALTY } else { 0.0 } + NEUT_PENALTY * f.neut_pressure.min(1.0);
         base * (1.0 - penalty.min(0.9))
     };
     for p in &mut points {
-        p.a.score = score(&p.a, a_max);
-        p.b.score = score(&p.b, b_max);
+        p.a.score = score(&p.a, a_ehp);
+        p.b.score = score(&p.b, b_ehp);
     }
     // The farthest range a side still lands most of its best at: where it wants to be.
     let reach = |f: &dyn Fn(&RangePoint) -> f64, max: f64| points.iter().filter(|p| max > 0.0 && f(p) >= max * BEST_SHARE).map(|p| p.distance).fold(0.0, f64::max);
     let a_best = reach(&|p| p.a.applied_dps, a_max);
     let b_best = reach(&|p| p.b.applied_dps, b_max);
-    // Runs of consecutive ranges where `a` scores above `b`.
-    let mut a_favoured: Vec<(f64, f64)> = Vec::new();
+    let a_favoured = runs(&points, |p| p.a.score > p.b.score * (1.0 + MARGIN) && p.a.score > 0.0);
+    let b_favoured = runs(&points, |p| p.b.score > p.a.score * (1.0 + MARGIN) && p.b.score > 0.0);
+    Sweep { points, a_best, b_best, a_favoured, b_favoured, a_cutoffs: cutoffs(&a.ships()), b_cutoffs: cutoffs(&b.ships()) }
+}
+
+/// By what share one score must lead the other for a range to count as favouring it.
+pub const MARGIN: f64 = 0.05;
+
+/// Stretches of consecutive ranges that pass `keep`, single points dropped.
+fn runs(points: &[RangePoint], keep: impl Fn(&RangePoint) -> bool) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
     let mut run: Option<(f64, f64)> = None;
-    for p in &points {
-        if p.a.score > p.b.score {
+    for p in points {
+        if keep(p) {
             run = Some(run.map_or((p.distance, p.distance), |(from, _)| (from, p.distance)));
         } else if let Some(r) = run.take() {
-            a_favoured.push(r);
+            out.push(r);
         }
     }
-    a_favoured.extend(run);
-    Sweep { points, a_best, b_best, a_favoured, a_cutoffs: cutoffs(&a.ships()), b_cutoffs: cutoffs(&b.ships()) }
+    out.extend(run);
+    out.retain(|(f, t)| t > f);
+    out
 }
 
 /// The ranges to sweep: every kilometre out to the farthest reach on either side, and the

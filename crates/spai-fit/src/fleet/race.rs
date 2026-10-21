@@ -279,7 +279,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                         let seconds = t - at;
                         let v = if full && seconds < STEP * 2.0 {
                             Verdict::OneVolley
-                        } else if seconds < lock {
+                        } else if lock.is_finite() && seconds < lock {
                             Verdict::BeforeReps { seconds }
                         } else {
                             Verdict::Outpaced { seconds, by: (landed[side] - reps_on).max(0.0) }

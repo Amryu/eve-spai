@@ -485,7 +485,7 @@ fn control_stacked(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::
 
 /// A ship's motion: the circle is its top speed, the point how much of it it
 /// makes and in which direction, 90 degrees across the line to the other ship, upwards.
-fn motion_dial(ui: &mut egui::Ui, label: &str, v: &mut (f32, f32)) {
+pub(crate) fn motion_dial(ui: &mut egui::Ui, label: &str, v: &mut (f32, f32)) {
     const D: f32 = 100.0;
     ui.vertical(|ui| {
         ui.set_width(D + 4.0);
