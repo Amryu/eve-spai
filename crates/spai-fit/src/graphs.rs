@@ -496,3 +496,14 @@ mod speed_bump {
         }
     }
 }
+
+/// The series' value at `x`, read between its points.
+#[cfg(test)]
+pub(crate) fn value_at_for_test(points: &[[f64; 2]], x: f64) -> f64 {
+    let i = points.iter().position(|p| p[0] >= x).unwrap_or(points.len() - 1);
+    if i == 0 {
+        return points[0][1];
+    }
+    let (a, b) = (points[i - 1], points[i]);
+    if b[0] == a[0] { b[1] } else { a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) }
+}

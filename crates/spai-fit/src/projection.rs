@@ -531,3 +531,24 @@ fn real_data_panic_back_solve() {
     println!("with PANIC: {ehp:.0}");
     assert!((ehp / game - 1.0).abs() < 0.001, "{ehp} against the game's {game}");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_missile_step() {
+    use crate::fit::{Module, Slot};
+    use crate::graphs::{sample, GraphKind, GraphSpec};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let mut f = Fit::new(d.type_named("Drake").unwrap().id, "d");
+    f.modules.push(Module::new(d.type_named("Heavy Missile Launcher II").unwrap().id, Slot::High, 0).with_charge(d.type_named("Scourge Heavy Missile").unwrap().id).with_state(State::Active));
+    let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+    let m = c.weapons[0].missile.clone().unwrap();
+    println!("flight {} s, velocity {}, short {} long {}", m.flight_time_s, m.velocity, m.short_range(), m.long_range());
+    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }), None);
+    let w = &s[0];
+    let at = |x: f64| crate::graphs::value_at_for_test(&w.points, x);
+    let (full, step) = (at(m.short_range() - 100.0), at(m.short_range() + 100.0));
+    assert!(step > 0.0 && step < full, "between the whole seconds and one more, the share that flies on: {full} then {step}");
+    assert!(((step / full) - m.flight_time_s.fract()).abs() < 1e-6);
+    assert_eq!(at(m.long_range() + 100.0), 0.0);
+}
