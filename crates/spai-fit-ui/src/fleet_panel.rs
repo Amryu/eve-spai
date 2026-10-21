@@ -876,24 +876,22 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
+        subhead(ui, &trf!("{a} volleys on", a = shooter.name));
+        // Hull first, then the fit and how many fly it.
+        let slot_label = |k: usize| target.slots.get(k).map_or_else(String::new, |x| format!("{} · {} ({})", dogma.type_(x.ship).map_or("?", |t| t.name.as_str()), names.get(&x.fit_id).unwrap_or(&x.name), x.count));
         ui.horizontal(|ui| {
             ui.add_space(crate::rows::GAP);
-            ui.label(egui::RichText::new(trf!("{a} volleys", a = text::clip(&shooter.name, 22))).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(crate::rows::GAP);
-                let slot_label = |k: usize| target.slots.get(k).map_or_else(String::new, |x| format!("{} x {}", x.count, names.get(&x.fit_id).unwrap_or(&x.name)));
-                egui::ComboBox::from_id_salt(("sim_fleet_aim", dir)).selected_text(text::clip(&slot_label(slot), 22)).width(170.0).show_ui(ui, |ui| {
-                    use spai_ui::widgets::SteadySelect as _;
-                    for (k, _) in target.slots.iter().enumerate().filter(|(_, x)| x.count > 0) {
-                        if ui.menu_label(k == slot, slot_label(k)).clicked() {
-                            aim = Some(k);
-                        }
+            let w = ui.available_width() - crate::rows::GAP;
+            egui::ComboBox::from_id_salt(("sim_fleet_aim", dir)).selected_text(text::clip(&slot_label(slot), ((w / 7.5) as usize).max(12))).width(w).show_ui(ui, |ui| {
+                use spai_ui::widgets::SteadySelect as _;
+                for (k, _) in target.slots.iter().enumerate().filter(|(_, x)| x.count > 0) {
+                    if ui.menu_label(k == slot, slot_label(k)).clicked() {
+                        aim = Some(k);
                     }
-                })
-                .response
-                .on_hover_text(tr!("The ship of the other fleet these figures aim at"));
-                ui.label(tr!("on"));
-            });
+                }
+            })
+            .response
+            .on_hover_text(tr!("The ship of the other fleet these figures aim at"));
         });
         against_card(ui, &aimed, shooter, target, slot);
         if let Some(an) = &analysis {
@@ -948,6 +946,64 @@ fn tip(ui: &mut egui::Ui, head: &str, rows: &[(String, String)], note_text: &str
 fn note(ui: &mut egui::Ui, text: &str) {
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(crate::rows::GAP as i8, 0)).show(ui, |ui| {
         ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
+    });
+}
+
+/// A charge's name without its size and the words every charge of its kind shares, faction
+/// prefixes shortened: "Caldari Navy Antimatter Charge L" is "CN Antimatter".
+pub fn short_charge(name: &str) -> String {
+    const PREFIXES: [(&str, &str); 14] = [
+        ("Caldari Navy ", "CN "),
+        ("Federation Navy ", "FN "),
+        ("Imperial Navy ", "IN "),
+        ("Republic Fleet ", "RF "),
+        ("Khanid Navy ", "KN "),
+        ("Ammatar Navy ", "AN "),
+        ("Dread Guristas ", "DG "),
+        ("True Sansha ", "TS "),
+        ("Shadow Serpentis ", "SS "),
+        ("Dark Blood ", "DB "),
+        ("Domination ", "Dom "),
+        ("Guristas ", "Gur "),
+        ("Serpentis ", "Serp "),
+        ("Arch Angel ", "AA "),
+    ];
+    let mut s = name.to_owned();
+    for (long, short) in PREFIXES {
+        if let Some(rest) = s.strip_prefix(long) {
+            s = format!("{short}{rest}");
+            break;
+        }
+    }
+    let words: Vec<&str> = s.split(' ').collect();
+    let size = |w: &str| matches!(w, "S" | "M" | "L" | "XL");
+    let filler = |w: &str| matches!(w, "Charge" | "Missile" | "Torpedo" | "Rocket" | "Ammo");
+    let kept: Vec<&str> = words.iter().enumerate().filter(|(i, w)| !(size(w) && *i == words.len() - 1) && !filler(w)).map(|(_, w)| *w).collect();
+    if kept.is_empty() { name.to_owned() } else { kept.join(" ") }
+}
+
+/// A line with a charge on its right, its icon and short name; returns the row for a tooltip.
+fn ammo_row(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, label: &str, charge: spai_fit::ids::TypeId) -> egui::Response {
+    let name = dogma.type_(charge).map_or("?", |t| t.name.as_str());
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add_space(crate::rows::GAP);
+        ui.add(egui::Label::new(label).selectable(false));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(crate::rows::GAP);
+            ui.add(egui::Label::new(egui::RichText::new(short_charge(name)).monospace()).truncate().selectable(false));
+            ui.add(egui::Image::new(crate::icons::type_icon_uri(charge)).fit_to_exact_size(egui::vec2(16.0, 16.0)));
+        });
+    })
+    .response
+    .interact(egui::Sense::hover())
+}
+
+/// An ammo line whose tooltip names the charge in full, with a note under it if given.
+fn ammo_line(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, label: &str, charge: spai_fit::ids::TypeId, why: Option<&str>) {
+    let name = dogma.type_(charge).map_or_else(String::new, |t| t.name.clone());
+    ammo_row(ui, dogma, label, charge).on_hover_ui(|ui| {
+        ui.set_max_width(360.0);
+        tip(ui, &name, &[], why.unwrap_or(""));
     });
 }
 
@@ -1107,10 +1163,9 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
             ui.add_space(3.0);
             subhead(ui, &format!("{} · {}", slot_name(slot), gun));
             for band in bands {
-                let charge = dogma.type_(band.charge).map_or("?", |t| t.name.as_str());
-                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), text::clip(charge, 26));
-                if let Some((name, share)) = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| (t.name.clone(), share))) {
-                    note(ui, &trf!("Not carried: {c} lands {p}% more here", c = name, p = format!("{:.0}", share * 100.0)));
+                ammo_line(ui, dogma, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), band.charge, None);
+                if let Some((id, share)) = band.better {
+                    ammo_line(ui, dogma, &trf!("not carried, +{p}%", p = format!("{:.0}", share * 100.0)), id, Some(tr!("A charge not carried that would land this much more over the stretch, on average.")));
                 }
             }
         }
@@ -1226,11 +1281,18 @@ fn weapons_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, dir: 
         let gun = dogma.type_(x.weapon.type_id).map_or("?", |t| t.name.as_str());
         ui.add_space(3.0);
         subhead(ui, &format!("{} x {} · {}", s.count, names.get(&s.fit_id).unwrap_or(&s.name), gun));
-        let charge = x.weapon.charge.and_then(|c| dogma.type_(c)).map_or_else(|| tr!("none").to_owned(), |c| c.name.clone());
         let v = &x.weapon.volley;
-        tline(ui, tr!("Ammo"), text::clip(&charge, 28), |ui| {
-            tip(ui, &charge, &[(tr!("EM").to_owned(), text::num(v.em)), (tr!("Thermal").to_owned(), text::num(v.thermal)), (tr!("Kinetic").to_owned(), text::num(v.kinetic)), (tr!("Explosive").to_owned(), text::num(v.explosive))], tr!("Its best carried charge at this range against this ship, with the group's volley by damage type."));
-        });
+        match x.weapon.charge {
+            Some(c) => {
+                let name = dogma.type_(c).map_or_else(String::new, |t| t.name.clone());
+                let r = ammo_row(ui, dogma, tr!("Ammo"), c);
+                r.on_hover_ui(|ui| {
+                    ui.set_max_width(360.0);
+                    tip(ui, &name, &[(tr!("EM").to_owned(), text::num(v.em)), (tr!("Thermal").to_owned(), text::num(v.thermal)), (tr!("Kinetic").to_owned(), text::num(v.kinetic)), (tr!("Explosive").to_owned(), text::num(v.explosive))], tr!("Its best carried charge at this range against this ship, with the group's volley by damage type."));
+                });
+            }
+            None => line(ui, tr!("Ammo"), tr!("none").to_owned()),
+        }
         tline(ui, tr!("Target EHP against it"), text::num(x.target_ehp), |ui| {
             tip(ui, tr!("Effective hit points against this charge"), &[(tr!("Against the fit's damage profile").to_owned(), text::num(t.computed.tank.ehp))], tr!("Each layer's hit points over the share of this charge's damage its resistances let through."));
         });
@@ -1251,8 +1313,8 @@ fn against_card(ui: &mut egui::Ui, a: &Against, shooter: &FleetStats, target: &F
         tip(ui, tr!("Under this fleet's ewar"), &rows, "");
     });
     let ehp = main.map_or(0.0, |m| m.computed.tank.ehp);
-    tline(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships per volley kill", n = n)), |ui| {
-        tip(ui, tr!("Critical mass"), &[(tr!("Target effective HP").to_owned(), text::num(ehp))], tr!("Ships of this fleet's main slot that must volley together to kill one: its effective hit points over one main ship's applied volley times the volley efficiency, rounded up."));
+    tline(ui, tr!("Critical mass"), a.critical_mass.map_or_else(|| tr!("n/a").to_owned(), |n| trf!("{n} ships", n = n)), |ui| {
+        tip(ui, tr!("Ships to volley one off the field"), &[(tr!("Target effective HP").to_owned(), text::num(ehp))], "");
     });
     tline(ui, tr!("Kills per volley"), text::num(a.kills_per_volley), |ui| tip(ui, tr!("Kills per volley"), &[], tr!("The whole fleet's applied volley times the volley efficiency, over the picked ship's effective hit points.")));
     tline(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)), |ui| {

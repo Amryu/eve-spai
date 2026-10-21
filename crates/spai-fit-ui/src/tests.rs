@@ -1255,3 +1255,14 @@ fn a_fleet_autosaves_once_its_edits_rest_and_an_edit_after_sending_stays_unsaved
     s.handle(HostEvent::FleetSaved(id));
     assert!(!s.fleet.as_ref().unwrap().dirty);
 }
+
+#[test]
+fn charge_names_shorten_to_what_tells_them_apart() {
+    use crate::fleet_panel::short_charge;
+    assert_eq!(short_charge("Antimatter Charge L"), "Antimatter");
+    assert_eq!(short_charge("Caldari Navy Antimatter Charge L"), "CN Antimatter");
+    assert_eq!(short_charge("Scourge Heavy Missile"), "Scourge Heavy");
+    assert_eq!(short_charge("Hail M"), "Hail");
+    assert_eq!(short_charge("Republic Fleet EMP XL"), "RF EMP");
+    assert_eq!(short_charge("Multifrequency L"), "Multifrequency");
+}
