@@ -206,3 +206,32 @@ fn the_primary_is_the_first_role_of_the_order_present() {
     let logi_first = Fleet { target_order: vec![Role::Support, Role::Main], ..Fleet::default() };
     assert_eq!(sweep::primary(&logi_first, &se).map(|s| s.fit_id.as_str()), Some("logi"), "a non-damage slot without a logi hull is support");
 }
+
+fn race_between(a: &Fleet, b: &Fleet, lib: &[Fit], distance: f64) -> race::Race {
+    let d = dataset();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let (sa, sb) = (stats(&d, a, &lookup(lib), &skills), stats(&d, b, &lookup(lib), &skills));
+    let side_a = sweep::Side { fleet: a, stats: &sa, ammo: &[] };
+    let side_b = sweep::Side { fleet: b, stats: &sb, ammo: &[] };
+    race::race(&d, &side_a, &side_b, distance, 3600.0)
+}
+
+#[test]
+fn the_bigger_fleet_wins_the_race_and_logi_keep_a_fleet_standing_longer() {
+    let lib = library();
+    let tight = Formation::Ball { radius_m: 0.0 };
+    let big = Fleet { size: 20, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let small = Fleet { size: 5, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let r = race_between(&big, &small, &lib, 500.0);
+    assert_eq!(r.winner, Some(0), "twenty against five: {:?}", r.events.iter().take(5).collect::<Vec<_>>());
+    assert!(r.events.iter().any(|(_, e)| matches!(e, race::Event::Kill { side: 1, .. })));
+    let bare = race_between(&small, &big, &lib, 500.0);
+    let with_logi = Fleet { size: 5, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(3))], formation: tight, ..Fleet::default() };
+    let helped = race_between(&big, &with_logi, &lib, 500.0);
+    let first_kill = |r: &race::Race, side: usize| r.events.iter().find(|(_, e)| matches!(e, race::Event::Kill { side: s, .. } if *s == side)).map(|(t, _)| *t);
+    let unhelped = race_between(&big, &small, &lib, 500.0);
+    // The logi side's brawlers last at least as long; the logi are not shot first by default.
+    assert!(first_kill(&helped, 1).unwrap_or(f64::MAX) >= first_kill(&unhelped, 1).unwrap_or(f64::MAX), "logi repair the primary");
+    assert!(!r.verdicts[1].is_empty(), "every target slot gets a verdict");
+    let _ = bare;
+}

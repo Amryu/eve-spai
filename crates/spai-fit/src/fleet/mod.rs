@@ -603,6 +603,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
 pub mod ammo;
 pub mod ewar;
 pub mod geometry;
+pub mod race;
 pub mod sweep;
 
 #[cfg(test)]

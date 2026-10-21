@@ -637,3 +637,53 @@ fn real_data_disintegrator_spool() {
     assert!(((frac * max / per) - 10.0).abs() < 1e-3, "ten steps in");
     assert!((c.weapons[0].dps / (c.weapons[0].cold_dps() * (1.0 + 10.0 * per)) - 1.0).abs() < 1e-5, "ten steps of damage");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_assault_damage_control() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let adc = d.type_named("Assault Damage Control I").unwrap();
+    for (a, v) in &adc.attrs {
+        println!("  {} = {v}", d.attr(*a).map(|x| x.name.as_str()).unwrap_or("?"));
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_fleet_race_with_assault_damage_controls() {
+    use crate::fit::{Module, Slot};
+    use crate::fleet::{race, stats, sweep, CountRule, Fleet, FleetSlot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap_or_else(|| panic!("{n}")).id;
+    let mut ferox = Fit::new(id("Ferox"), "ferox");
+    for i in 0..7 {
+        ferox.modules.push(Module::new(id("250mm Railgun II"), Slot::High, i).with_charge(id("Antimatter Charge L")).with_state(State::Active));
+    }
+    ferox.modules.push(Module::new(id("Large Shield Extender II"), Slot::Mid, 0).with_state(State::Online));
+    ferox.modules.push(Module::new(id("Assault Damage Control I"), Slot::Low, 0).with_state(State::Online));
+    let mut cane = Fit::new(id("Hurricane"), "cane");
+    for i in 0..6 {
+        cane.modules.push(Module::new(id("425mm AutoCannon II"), Slot::High, i).with_charge(id("Hail M")).with_state(State::Active));
+    }
+    cane.modules.push(Module::new(id("1600mm Steel Plates II"), Slot::Low, 0).with_state(State::Online));
+    let lib = [ferox, cane];
+    let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None }], ..Fleet::default() };
+    let (fa, fb) = (fleet("ferox"), fleet("cane"));
+    let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
+    let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &[] }, sweep::Side { fleet: &fb, stats: &sb, ammo: &[] });
+    let s = sweep::sweep(&a, &b, &sweep::ranges(&sa, &sb));
+    println!("ferox best {:.0} m, cane best {:.0} m, ferox favoured {:?}", s.a_best, s.b_best, s.a_favoured.iter().map(|(x, y)| (x.round(), y.round())).collect::<Vec<_>>());
+    for range in [5_000.0, 30_000.0] {
+        let r = race::race(&d, &a, &b, range, 900.0);
+        let adcs = r.events.iter().filter(|(_, e)| matches!(e, race::Event::Adc { side: 0, .. })).count();
+        println!("at {range} m: winner {:?} after {:.0}s, adc on {adcs} primaried feroxes, crit {:?}", r.winner, r.seconds, r.critical_mass_lost);
+        let kills = |side: usize| r.events.iter().filter(|(_, e)| matches!(e, race::Event::Kill { side: x, .. } if *x == side)).count();
+        let peak = |i: usize| r.timeline.iter().map(|x| if i == 0 { x.3 } else { x.4 }).fold(0.0, f64::max);
+        println!("   ferox lost {}, cane lost {}; peak landed ferox {:.0} cane {:.0}", kills(0), kills(1), peak(0), peak(1));
+    }
+    assert!(s.a_best > s.b_best, "railguns out-reach autocannons");
+}

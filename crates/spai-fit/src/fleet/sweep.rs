@@ -95,23 +95,26 @@ fn disrupted(w: &WeaponGroup, e: &EwarOn) -> WeaponGroup {
     w
 }
 
-/// Damage per second `a` lands on `b`'s primary at `distance`.
-fn landed(a: &Side, b: &Side, distance: f64) -> f64 {
-    let Some(target) = primary(a.fleet, b.stats) else { return 0.0 };
-    // a's ewar all on the primary; b's spread over a's ships.
+/// Each weapon of `a`'s slot `k` as it fights `target` (a slot of `b`) at `distance`: with its
+/// best carried charge, disrupted by `b`'s ewar shared over `a`, and the share of its damage that
+/// lands, averaged over the formations' pairs.
+pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64) -> Vec<(WeaponGroup, f64)> {
+    let Some(slot) = a.stats.slots.get(k) else { return Vec::new() };
     let on_target = ewar_at(&a.ships(), distance, 1.0);
     let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
     let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_target.speed, f64::from(b.fleet.motion.1), distance);
     let signature = target.computed.mobility.signature * on_target.signature;
     let velocity = b.speed() * on_target.speed;
-    let mut total = 0.0;
-    for (k, slot) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
-        let choices = a.ammo.get(k);
-        for w in &slot.computed.weapons {
+    let choices = a.ammo.get(k);
+    slot.computed
+        .weapons
+        .iter()
+        .map(|w| {
             // The best carried charge for this weapon at this distance, else what it has loaded.
+            let probe = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: distance as f32, transversal: velocity as f32, radius: 0.0 };
             let w = choices
                 .and_then(|cs| cs.iter().find(|c| c.weapon == w.type_id))
-                .and_then(|c| ammo::best_at(c, distance, &TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: distance as f32, transversal: velocity as f32, radius: 0.0 }).map(|((charge, _), _)| charge).and_then(|charge| c.options.iter().find(|(x, _, _)| *x == charge).map(|(_, _, g)| g)))
+                .and_then(|c| ammo::best_at(c, distance, &probe).and_then(|((charge, _), _)| c.options.iter().find(|(x, _, _)| *x == charge).map(|(_, _, g)| g)))
                 .unwrap_or(w);
             let w = disrupted(w, &on_a);
             let mut factor = 0.0;
@@ -123,10 +126,15 @@ fn landed(a: &Side, b: &Side, distance: f64) -> f64 {
                     n += 1.0;
                 }
             }
-            total += w.dps * f64::from(slot.count) * factor / n.max(1.0);
-        }
-    }
-    total
+            (w, factor / n.max(1.0))
+        })
+        .collect()
+}
+
+/// Damage per second `a` lands on `b`'s primary at `distance`.
+fn landed(a: &Side, b: &Side, distance: f64) -> f64 {
+    let Some(target) = primary(a.fleet, b.stats) else { return 0.0 };
+    a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0).map(|(k, s)| weapons_on(a, b, k, target, distance).iter().map(|(w, f)| w.dps * f).sum::<f64>() * f64::from(s.count)).sum()
 }
 
 /// The other side's hold on this one at `distance`: webs, tackle, neutralising against recharge.
