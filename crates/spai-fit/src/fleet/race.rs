@@ -264,22 +264,26 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             }
             // Repairs from the target side's logi: none before the primary is hurt; then each logi
             // ship after its own reaction, its lock on the primary and its first cycle, times the
-            // logistics efficiency and what the primary takes in. Only damage present is healed,
-            // so what overreps is lost.
+            // logistics efficiency, lessened as they pile up on one ship as the game does it
+            // (`rep_landing`), times what the primary takes in. Only damage present is healed, so what overreps is lost.
             let mut reps_on = 0.0;
             if let (Some(hit), true) = (first_hit[side], fleets[1 - side][p].alive) {
-                let eff = f64::from(sides[1 - side].fleet.logi_efficiency.clamp(0.0, 1.0)) * sides[1 - side].stats.slots[target_slot].computed.rep_intake;
+                let eff = f64::from(sides[1 - side].fleet.logi_efficiency.clamp(0.0, 1.0));
+                let intake = sides[1 - side].stats.slots[target_slot].computed.rep_intake;
                 let signature = sides[1 - side].stats.slots[target_slot].computed.mobility.signature;
-                for (k, r, land) in &logis[1 - side] {
-                    let n = alive_at[1 - side].get(*k).copied().unwrap_or(0);
-                    let lock = sides[1 - side].stats.slots[*k].computed.sensors.lock_time_s(signature);
-                    let on = (0..n).filter(|i| t >= hit + reaction(*i, n) + lock + land).count() as f64;
-                    if on == 0.0 {
-                        continue;
-                    }
+                // The logi ships repairing now, each slot's by its reaction, lock and first cycle;
+                // what lands of all their repairs together, layer by layer.
+                let active: Vec<u32> = sides[1 - side].stats.slots.iter().enumerate().map(|(k, _)| {
+                    let Some((_, _, land)) = logis[1 - side].iter().find(|(x, _, _)| *x == k) else { return 0 };
+                    let n = alive_at[1 - side].get(k).copied().unwrap_or(0);
+                    let lock = sides[1 - side].stats.slots[k].computed.sensors.lock_time_s(signature);
+                    (0..n).filter(|i| t >= hit + reaction(*i, n) + lock + land).count() as u32
+                }).collect();
+                if active.iter().any(|n| *n > 0) {
+                    let landing = super::reps_on_one(sides[1 - side].stats, &|k, _| active[k]);
                     let ship = &mut fleets[1 - side][p];
                     for layer in 0..3 {
-                        let rate = r[layer] * on * eff;
+                        let rate = landing[layer] * eff * intake;
                         reps_on += rate;
                         ship.hp[layer] = (ship.hp[layer] + rate * STEP).min(ship.max[layer]);
                     }

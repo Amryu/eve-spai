@@ -499,8 +499,13 @@ best range is the farthest where it still lands 90% of its most.
   or hull repairs a whole cycle (they land at its end; shield repairs at its start). Every
   repair is times the fleet's logistics efficiency (75% by default: late locks, the wrong ship,
   cycles landing on full health) and the primary's `remoteRepairImpedance` where it has one, and
-  heals no more than the damage there: what overreps is lost. Remote repairs have no stacking
-  penalty in the game; their diminishing returns are these.
+  heals no more than the damage there: what overreps is lost.
+- Repairs piled on one ship lose effect as the game does it (since April 2019; `fleet::
+  rep_landing`): per layer, with `total` the sum of every repair's `amount / floor(cycle)` per
+  second, a repair of `rrps` lands at `1 - ((rrps + m) / (total + m) - 1)^2` of itself, `m =
+  7000 + 20·rrps` (the 20 was 10 until May 2025). With 10 it gives the 2019 announcement's
+  figures: fifteen 1600 HP/s repairs at 77% each, half at thirty-eight. Twenty logi cruisers of
+  four 85 HP/s repairs on one ship land about 81%. The break point counts it too.
 - Critical mass is lost when the damage landing on the primary, through the resistances of the
   layer being worn, no longer beats the repairs on it.
 - Per target slot a verdict: one volley, dead before any repair landed, dead with the

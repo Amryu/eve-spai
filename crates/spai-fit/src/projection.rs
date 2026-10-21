@@ -835,3 +835,17 @@ fn real_data_logi_fleet_race() {
         println!("RACE logi reps/s per basi {:.0}, ferox ehp {:.0}, volley per ferox {:.0}", sb.slots[1].computed.remote.shield_rep, sb.slots[0].computed.tank.ehp, sa.slots[0].computed.volley());
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_repair_attributes() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for a in d.attributes.iter().filter(|a| { let n = a.name.to_lowercase(); n.contains("diminish") || n.contains("impedance") || n.contains("dimin") || (n.contains("rep") && (n.contains("penal") || n.contains("stack") || n.contains("reduc") || n.contains("incoming"))) }) {
+        println!("ATTR {} {} default {}", a.id, a.name, a.default);
+    }
+    let rr = d.type_named("Large Remote Shield Booster II").unwrap();
+    for (e, _) in &rr.effects {
+        println!("EFFECT {}", d.effect(*e).map_or("?", |x| x.name.as_str()));
+    }
+}

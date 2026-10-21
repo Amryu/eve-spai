@@ -1158,7 +1158,12 @@ fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names:
         .into_iter()
         .filter(|(_, v)| !v.starts_with("0"))
         .collect();
-        tip(ui, tr!("Remote repairs"), &rows, tr!("Shield, armor and hull repairs per second the fleet's logistics give, all together."));
+        let mut rows = rows;
+        let landing: f64 = fleet::reps_on_one(s, &|_, x| x.count).iter().sum();
+        if landing > 0.0 {
+            rows.push((tr!("All on one ship, landing").to_owned(), trf!("{v}/s", v = text::num(landing))));
+        }
+        tip(ui, tr!("Remote repairs"), &rows, tr!("Shield, armor and hull repairs per second the fleet's logistics give, all together. Piled on one ship they land less, as the game lessens every repair by all the repairs a ship receives of that layer."));
     });
     if s.neut > 0.0 {
         line(ui, tr!("Neuts"), trf!("{v} GJ/s", v = text::num(s.neut)));

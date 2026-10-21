@@ -527,6 +527,51 @@ pub struct Against {
     pub target_signature: f64,
 }
 
+/// Remote repairs on one ship lose effect with all the repairs it receives of the same layer
+/// (since April 2019; the multiplier went from 10 to 20 in May 2025). With `total` the sum of
+/// every repair's `amount / floor(cycle)` per second, a repair of `rrps` lands at
+/// `1 - ((rrps + m) / (total + m) - 1)^2` of itself, `m = REP_ADDITION + REP_MULTIPLIER·rrps`.
+/// It gives the figures published in 2019 with the old multiplier: fifteen 1600 HP/s repairs
+/// at 77% each, half at thirty-eight.
+pub const REP_ADDITION: f64 = 7000.0;
+pub const REP_MULTIPLIER: f64 = 20.0;
+
+/// What lands per second of `reps` on one layer of one ship: each `(amount per cycle, cycle s)`.
+pub fn rep_landing(reps: &[(f64, f64)]) -> f64 {
+    // The game counts a repair's share by its cycle in whole seconds.
+    let rrps = |amount: f64, cycle: f64| amount / cycle.floor().max(1.0);
+    let total: f64 = reps.iter().map(|(a, c)| rrps(*a, *c)).sum();
+    reps.iter()
+        .map(|(a, c)| {
+            let r = rrps(*a, *c);
+            let m = REP_ADDITION + r * REP_MULTIPLIER;
+            let mult = 1.0 - ((r + m) / (total + m) - 1.0).powi(2);
+            mult.max(0.0) * a / c.max(1e-9)
+        })
+        .sum()
+}
+
+/// A fleet's remote repairs as they would land all on one ship, by layer (shield, armor, hull):
+/// every repair module of every ship, `n` ships of each slot (its count unless given).
+pub fn reps_on_one(stats: &FleetStats, ships: &dyn Fn(usize, &SlotStats) -> u32) -> [f64; 3] {
+    let mut lists: [Vec<(f64, f64)>; 3] = Default::default();
+    for (k, s) in stats.slots.iter().enumerate() {
+        let n = ships(k, s);
+        for m in &s.computed.remote.modules {
+            let layer = match m.kind {
+                RemoteKind::ShieldRep => 0,
+                RemoteKind::ArmorRep => 1,
+                RemoteKind::HullRep => 2,
+                _ => continue,
+            };
+            for _ in 0..n {
+                lists[layer].push((m.amount * m.cycle_s, m.cycle_s));
+            }
+        }
+    }
+    [rep_landing(&lists[0]), rep_landing(&lists[1]), rep_landing(&lists[2])]
+}
+
 fn ships(s: &FleetStats) -> Vec<(u32, &Computed)> {
     s.slots.iter().filter(|x| x.count > 0).map(|x| (x.count, &x.computed)).collect()
 }
@@ -599,7 +644,8 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let eff = f64::from(a.volley_efficiency.clamp(0.01, 1.0));
     out.critical_mass = (main_volley_per_ship > 0.0 && ehp > 0.0).then(|| (ehp / (main_volley_per_ship * eff)).ceil() as u32);
     out.kills_per_volley = if ehp > 0.0 { out.applied_volley * eff / ehp } else { 0.0 };
-    out.break_point = b_stats.logi_rep * f64::from(b.logi_efficiency.clamp(0.0, 1.0)) * t.rep_intake + t.tank.reps.armor + t.tank.reps.shield + t.tank.reps.hull;
+    let landing: f64 = reps_on_one(b_stats, &|_, s| s.count).iter().sum();
+    out.break_point = landing * f64::from(b.logi_efficiency.clamp(0.0, 1.0)) * t.rep_intake + t.tank.reps.armor + t.tank.reps.shield + t.tank.reps.hull;
     out.margin = out.applied_dps * eff - out.break_point;
     let _ = dogma;
     out

@@ -98,7 +98,9 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert!((close.applied_dps - sa.dps * 0.5 * (1.0 + 0.98 + 0.0501)).abs() < 1e-6, "still target in optimal: every shot hits");
     let eff = f64::from(a.volley_efficiency);
     assert_eq!(close.critical_mass, Some((sb.main().unwrap().computed.tank.ehp / (sa.slots[0].computed.volley() * eff)).ceil() as u32));
-    assert!((close.break_point - (sb.logi_rep * f64::from(b.logi_efficiency) + sb.main().unwrap().computed.tank.reps.armor)).abs() < 1e-9, "their logistics at their efficiency");
+    let landing: f64 = reps_on_one(&sb, &|_, s| s.count).iter().sum();
+    assert!(landing < sb.logi_rep, "five logi on one ship land less than their sum");
+    assert!((close.break_point - (landing * f64::from(b.logi_efficiency) + sb.main().unwrap().computed.tank.reps.armor)).abs() < 1e-9, "their logistics at their efficiency, lessened as they pile up");
     assert!((close.margin - (close.applied_dps * eff - close.break_point)).abs() < 1e-9);
     a.range = 20_000.0;
     let far = against(&d, &a, &sa, &b, &sb);
@@ -375,4 +377,28 @@ fn logi_repair_only_after_damage_reaction_lock_and_cycle_and_at_their_efficiency
     // The first primary dies before any repair lands: reps start only once it is hurt, then each
     // logi ship needs its reaction, its lock and, for armor, a whole cycle.
     assert!(matches!(usual.verdicts[1].iter().find(|(k, _)| *k == 0).map(|(_, v)| *v), Some(race::Verdict::BeforeReps { .. }) | Some(race::Verdict::OneVolley)), "{:?}", usual.verdicts[1]);
+}
+
+#[test]
+fn remote_repairs_lose_effect_as_they_pile_up_as_the_game_does() {
+    let n = |count: usize, per_s: f64| vec![(per_s * 5.0, 5.0); count];
+    // One repair alone lands whole.
+    assert!((rep_landing(&n(1, 400.0)) - 400.0).abs() < 1e-9);
+    // The 2019 figures, with the multiplier of then: fifteen 1600 HP/s repairs at about 80%,
+    // half at thirty-eight.
+    let then = |reps: &[(f64, f64)]| {
+        let total: f64 = reps.iter().map(|(a, c)| a / c.floor()).sum();
+        let (a, c) = reps[0];
+        let r = a / c.floor();
+        let m = REP_ADDITION + r * 10.0;
+        1.0 - ((r + m) / (total + m) - 1.0).powi(2)
+    };
+    assert!((then(&n(15, 1600.0)) - 0.77).abs() < 0.01);
+    assert!((then(&n(38, 1600.0)) - 0.50).abs() < 0.01);
+    // Today's: twenty logi cruisers of four 85 HP/s repairs on one ship land about 81%.
+    let cruisers = rep_landing(&n(80, 85.0)) / (80.0 * 85.0);
+    assert!((cruisers - 0.81).abs() < 0.01, "{cruisers}");
+    // More repairs, more landing, each worth less.
+    let (a, b, c) = (rep_landing(&n(20, 400.0)), rep_landing(&n(40, 400.0)), rep_landing(&n(60, 400.0)));
+    assert!(a < b && b < c && (c - b) < (b - a));
 }
