@@ -9884,3 +9884,36 @@ fn uitest_sim_modules_move_between_cargo_and_racks() {
     assert_eq!(cargo_rows(&h).len(), 1, "back in the cargo");
     assert_eq!(gyros(&h), 1, "and off the rack");
 }
+
+/// With two modules selected, the state button of one sets both, to the same state.
+#[test]
+fn uitest_sim_state_changes_reach_the_selection() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_state_selection", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let lightning = |h: &egui_kittest::Harness<'_>| h.query_all_by_label(egui_phosphor::regular::LIGHTNING).count();
+    let high: Vec<egui::Rect> = {
+        let mut v: Vec<egui::Rect> = spai_fit_ui::rows::log(&h.ctx).iter().filter(|(id, _)| *id == egui::Id::new("rack/high")).map(|(_, r)| *r).collect();
+        v.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+        v
+    };
+    let before = lightning(&h);
+    let click = |h: &mut egui_kittest::Harness<'_>, pos: egui::Pos2, modifiers: egui::Modifiers| {
+        h.input_mut().modifiers = modifiers;
+        h.event(egui::Event::PointerMoved(pos));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers });
+        }
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        h.input_mut().modifiers = egui::Modifiers::default();
+    };
+    click(&mut h, egui::pos2(high[0].min.x + 120.0, high[0].center().y), egui::Modifiers::default());
+    click(&mut h, egui::pos2(high[1].min.x + 120.0, high[1].center().y), egui::Modifiers::COMMAND);
+    click(&mut h, egui::pos2(high[0].min.x + spai_fit_ui::rows::GAP + 10.0, high[0].center().y), egui::Modifiers::default());
+    h.event(egui::Event::PointerGone);
+    h.run_steps(3);
+    assert_eq!(lightning(&h), before - 2, "both selected guns went online together");
+}

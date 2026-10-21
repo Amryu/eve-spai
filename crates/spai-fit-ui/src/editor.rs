@@ -855,6 +855,8 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         accept_module_drop(sim, ui, &r, slot, index, now_ms);
         accept_cargo_drop(sim, &r, slot, index, now_ms);
         if r.clicked() {
+            // Kept for a double click, whose first click would otherwise leave this row alone selected.
+            sim.sel_before_click = Some(sim.selection.clone());
             let m = ui.input(|i| i.modifiers);
             let order: Vec<(Slot, u8)> = sim.view_fit().map(|v| Slot::ALL.iter().flat_map(|s| v.rack(*s).map(|m| (m.slot, m.index)).collect::<Vec<_>>()).collect()).unwrap_or_default();
             let mut order = order;
@@ -864,6 +866,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         if r.double_clicked() {
             let ctrl = ui.input(|i| i.modifiers.command);
             set_state = Some(gesture_state(dogma, type_id, state, if ctrl { Gesture::Offline } else { Gesture::Toggle }));
+            if let Some(prev) = sim.sel_before_click.take().filter(|p| p.len() > 1 && p.contains(&(slot, index))) {
+                sim.selection = prev;
+            }
         }
         // A right click on a row of the selection acts on the whole selection; on any other row
         // it picks that row alone first.
@@ -958,11 +963,13 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         if let Some(t) = open_picker {
             picker::open(sim, t);
         }
+        // Every module of the selection takes the clicked one's new state, as far as it can go:
+        // they end up in step rather than each flipping its own way.
         if let Some(st) = set_state {
             sim.edit(EditKind::SetState, now_ms, |f| {
                 for (s, i) in &targets {
                     if let Some(m) = f.module_mut(*s, *i) {
-                        m.state = st;
+                        m.state = states_of(dogma, m.type_id).into_iter().filter(|x| *x <= st).max().unwrap_or(State::Offline);
                     }
                 }
             });

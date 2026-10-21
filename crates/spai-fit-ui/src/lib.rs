@@ -401,6 +401,8 @@ pub struct SimUi {
     pub side_window: Option<TypeId>,
     /// The item whose abyssal roll is being set.
     pub mutation_window: Option<mutation::MutTarget>,
+    /// The selection as it was before the last click on a module row, for a double click to act on.
+    pub sel_before_click: Option<Vec<(Slot, u8)>>,
     /// The fitted values behind the tooltips, for the revision and profile they were figured for.
     tip_cache: Option<((u64, usize), std::sync::Arc<details::TipValues>)>,
     /// Average market prices in ISK, by type, once the host has them.
@@ -487,6 +489,7 @@ impl Default for SimUi {
             details: Vec::new(),
             side_window: None,
             mutation_window: None,
+            sel_before_click: None,
             tip_cache: None,
             prices: Default::default(),
             prices_asked: false,
