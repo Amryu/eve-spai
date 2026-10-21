@@ -57,6 +57,9 @@ pub enum BurstKind {
 }
 
 impl BurstKind {
+    /// The kinds a fight uses: all but mining.
+    pub const COMBAT: [BurstKind; 4] = [BurstKind::Shield, BurstKind::Armor, BurstKind::Skirmish, BurstKind::Information];
+
     pub const ALL: [BurstKind; 5] = [BurstKind::Shield, BurstKind::Armor, BurstKind::Skirmish, BurstKind::Information, BurstKind::Mining];
 
     /// The burst module's effect in the data.
@@ -151,6 +154,12 @@ pub struct Fleet {
     /// cycles landing on full health.
     #[serde(default = "default_logi_efficiency")]
     pub logi_efficiency: f32,
+    /// How long the race may run, in seconds.
+    #[serde(default = "default_race_length")]
+    pub race_length_s: f32,
+    /// In a mirror match, the copy's own size and per slot its own typed counts.
+    pub mirror_size: Option<u32>,
+    pub mirror_counts: Vec<Option<u32>>,
     /// The share of each logi slot holding the primary locked before it is hurt: they skip the
     /// lock.
     pub logi_prelock: f32,
@@ -179,6 +188,10 @@ fn default_true() -> bool {
 
 fn default_logi_efficiency() -> f32 {
     0.75
+}
+
+fn default_race_length() -> f32 {
+    1800.0
 }
 
 fn default_logi_reaction() -> f32 {
@@ -210,6 +223,9 @@ impl Default for Fleet {
             adc: true,
             drones: true,
             logi_efficiency: 0.75,
+            race_length_s: 1800.0,
+            mirror_size: None,
+            mirror_counts: Vec::new(),
             logi_prelock: 0.0,
             logi_reaction_s: 1.5,
             logi_spread_s: 3.0,
@@ -489,9 +505,10 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
         if !fleet.drones {
             computed.weapons.retain(|w| w.alpha());
         }
-        // Smartbombs beside other weapons are there against drones, not the enemy fleet; only a
-        // ship with nothing else fights with them.
-        if computed.weapons.iter().any(|w| w.kind != WeaponKind::Smartbomb) {
+        // Smartbombs are there against drones, not the enemy fleet: only the main slot fights
+        // with them, and only when it has nothing else.
+        let main_slot = fleet.main.unwrap_or(0) == index;
+        if !main_slot || computed.weapons.iter().any(|w| w.kind != WeaponKind::Smartbomb) {
             computed.weapons.retain(|w| w.kind != WeaponKind::Smartbomb);
         }
         let n = f64::from(count);
@@ -756,7 +773,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
             if it.state < State::Active {
                 continue;
             }
-            for kind in BurstKind::ALL {
+            for kind in BurstKind::COMBAT {
                 if calc.effect_names(i).any(|n| n == kind.effect()) && !fleet.boosters.iter().any(|(k, _)| *k == kind) {
                     fleet.boosters.push((kind, id.clone()));
                 }

@@ -263,6 +263,12 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let fresh = s.fleet_analysis().unwrap();
     assert!(!std::sync::Arc::ptr_eq(&fresh, &an) && fresh.range == 9_000.0, "worked out once it rests");
     assert!(!s.fleet_analysis_pending());
+    // The copy at its own numbers.
+    s.fleet.as_mut().unwrap().fleet.mirror_size = Some(12);
+    assert_eq!(s.fleet_stats().unwrap().1.unwrap().0.ships, 12, "the mirror at its own size");
+    s.fleet.as_mut().unwrap().fleet.mirror_counts = vec![Some(5)];
+    let (mine, theirs) = s.fleet_stats().map(|(m, e)| (m, e.unwrap().0)).unwrap();
+    assert_eq!((theirs.ships, mine.ships), (5, 30), "a typed count for the copy, the fleet itself untouched");
 }
 
 #[test]

@@ -417,7 +417,10 @@ fn smartbombs_count_only_on_a_ship_with_nothing_else() {
     assert!(g.slots[0].computed.weapons.iter().all(|w| w.kind != crate::stats::WeaponKind::Smartbomb), "beside guns a smartbomb is drone defence");
     assert!(!g.slots[0].computed.weapons.is_empty());
     let b = one("bomber");
-    assert!(b.slots[0].computed.weapons.iter().any(|w| w.kind == crate::stats::WeaponKind::Smartbomb), "a smartbomb boat fights with them");
+    assert!(b.slots[0].computed.weapons.iter().any(|w| w.kind == crate::stats::WeaponKind::Smartbomb), "a smartbomb boat as the main slot fights with them");
+    // Anywhere but the main slot, even alone, a smartbomb is drone defence.
+    let support = stats(&d, &Fleet { size: 2, main: Some(0), slots: vec![slot("gunner", CountRule::Fixed(1)), slot("bomber", CountRule::Fixed(1))], ..Fleet::default() }, &lookup(&lib), &skills);
+    assert!(support.slots[1].computed.weapons.is_empty(), "{:?}", support.slots[1].computed.weapons.iter().map(|w| w.kind).collect::<Vec<_>>());
 }
 
 #[test]

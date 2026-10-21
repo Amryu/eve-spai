@@ -426,8 +426,8 @@ ship of the fleet is computed with them (`fleet::env_of`).
 **Fleet numbers** (`fleet::stats`): each slot computed with the fleet's buffs and its own skills
 profile, scaled by its count: DPS, volley, logistics (section 17), neuts, the slowest and fastest
 hull. Drones and fighters count in DPS but never in a volley: they attack on their own time, so
-they are no alpha that kills a ship before its logistics react. Smartbombs beside other weapons are left out:
-they are there against drones; a ship with nothing else keeps them. With `Fleet.drones` off they are
+they are no alpha that kills a ship before its logistics react. Smartbombs are left out:
+they are there against drones; only the main slot keeps them, when it has nothing else. With `Fleet.drones` off they are
 left out entirely.
 
 **Formation and motion** (`fleet::geometry`). The two anchors sit `d` apart on one axis. A
@@ -484,7 +484,7 @@ neutralising per ship over this fleet's peak recharge per ship, capped at 1). A 
 favoured where its score leads the other's by 5%; a stretch needs two ranges or more. A side's
 best range is the farthest where it still lands 90% of its most.
 
-**Race** (`fleet::race`), at one range in steps of 0.25 s, for at most 30 minutes:
+**Race** (`fleet::race`), at one range in steps of 0.25 s, for at most `race_length_s` (30 minutes by default):
 
 - Each side shoots one primary, picked by its target order, until it dies.
 - A ship's first volley on a new call comes after its reaction delay, spread log-normally over
@@ -557,7 +557,7 @@ from. The engagement analysis is worked out again once its inputs have rested fo
 then the last one stays on screen. The open fleet saves itself 1.5 s after its last edit.
 
 **Opponents** are a saved fleet, an enemy doctrine group built as below at the open fleet's
-size, or the open fleet itself as edited (a mirror match; each race step both sides fire on the
+size, or the open fleet itself as edited (a mirror match, at its own size and typed counts if set; each race step both sides fire on the
 ships alive at its start, so neither shoots first). Fleets sync with the server like fits, by revision.
 
 **From a doctrine** (`fleet::from_doctrine`): every preset of a doctrine becomes a slot with a

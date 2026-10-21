@@ -104,9 +104,17 @@ impl SimUi {
     /// name) built into a fleet of the open one's size.
     pub(crate) fn enemy_fleet(&self, id: &str) -> Option<Fleet> {
         if id == MIRROR {
-            // The fleet as it is being edited, not as last saved.
+            // The fleet as it is being edited, not as last saved, at the copy's own numbers.
             let mut fleet = self.fleet.as_ref()?.fleet.clone();
             fleet.name = trf!("{name} (mirror)", name = fleet.name);
+            if let Some(n) = fleet.mirror_size {
+                fleet.size = n;
+            }
+            for (slot, n) in fleet.slots.iter_mut().zip(fleet.mirror_counts.clone()) {
+                if n.is_some() {
+                    slot.override_count = n;
+                }
+            }
             fleet.enemy = None;
             fleet.scene = None;
             return Some(fleet);
@@ -348,7 +356,7 @@ impl SimUi {
         ranges.sort_by(|x, y| x.total_cmp(y));
         ranges.dedup();
         let sweep = spai_fit::fleet::sweep::sweep(&a, &b, &ranges);
-        let race = spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(f.fleet.range), 1800.0);
+        let race = spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(f.fleet.range), f64::from(f.fleet.race_length_s.max(60.0)));
         let ranges: Vec<f64> = sweep.points.iter().map(|p| p.distance).collect();
         let bands_of = |x: &spai_fit::fleet::sweep::Side, y: &spai_fit::fleet::sweep::Side| -> Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)> {
             let Some(t) = spai_fit::fleet::sweep::primary(x.fleet, y.stats) else { return Vec::new() };
@@ -458,7 +466,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         let key = h.finish();
         let hit = sim.fleet_cache.borrow().boosting.as_ref().filter(|(k, _)| *k == key).map(|(_, v)| v.clone());
         hit.unwrap_or_else(|| {
-            let v: Vec<(BurstKind, Vec<(String, String)>)> = BurstKind::ALL
+            let v: Vec<(BurstKind, Vec<(String, String)>)> = BurstKind::COMBAT
                 .iter()
                 .map(|&kind| {
                     let fits = library.iter().map(|x| (x.id.clone(), x.name.clone())).chain(doctrine_fits.iter().cloned()).filter(|(id, _)| dogma.as_ref().zip(sim.fit_docs.get(id)).is_some_and(|(d, f)| fleet::fit_has_burst(d, f, kind))).collect();
@@ -483,344 +491,418 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             ui.label(tr!("Size"));
             changed |= ui.add(egui::DragValue::new(&mut f.size).range(1..=2000)).changed();
         });
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(tr!("Ships")).strong());
-        let mut remove: Option<usize> = None;
-        let counts = fleet::resolve_counts(f);
-        // Below this width the count controls go on a second line under the fit.
-        let narrow = ui.available_width() < 720.0;
-        for i in 0..f.slots.len() {
-            let count = counts.get(i).copied().unwrap_or(0);
-            let rule_row = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
-                let mut rule = slot.rule;
-                egui::ComboBox::from_id_salt(("sim_fleet_rule", i)).selected_text(rule_name(rule)).width(84.0).show_ui(ui, |ui| {
-                    for r in [CountRule::Fixed(count.max(1)), CountRule::Percent(10.0), CountRule::Fill { min: 0, max: 1000 }] {
-                        if ui.menu_label(std::mem::discriminant(&rule) == std::mem::discriminant(&r), rule_name(r)).clicked() {
-                            rule = r;
-                        }
-                    }
-                });
-                if std::mem::discriminant(&rule) != std::mem::discriminant(&slot.rule) {
-                    slot.rule = rule;
-                    *changed = true;
-                }
-                match &mut slot.rule {
-                    CountRule::Fixed(n) => *changed |= ui.add(egui::DragValue::new(n).range(0..=2000)).changed(),
-                    CountRule::Percent(p) => *changed |= ui.add(egui::DragValue::new(p).range(0.0..=100.0).suffix("%")).changed(),
-                    CountRule::Fill { min, max } => {
-                        *changed |= ui.add(egui::DragValue::new(min).range(0..=2000).prefix(tr!("min "))).changed();
-                        *changed |= ui.add(egui::DragValue::new(max).range(0..=2000).prefix(tr!("max "))).changed();
-                    }
-                }
-                let mut typed = slot.override_count.is_some();
-                if ui.checkbox(&mut typed, "").on_hover_text(tr!("Type the number instead")).changed() {
-                    slot.override_count = typed.then_some(count);
-                    *changed = true;
-                }
-                match &mut slot.override_count {
-                    Some(n) => *changed |= ui.add(egui::DragValue::new(n).range(0..=2000)).changed(),
-                    None => {
-                        ui.add_sized([44.0, 22.0], egui::Label::new(egui::RichText::new(trf!("= {n}", n = count)).monospace()));
-                    }
-                }
-            };
-            let variation_box = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
-                let list = variations.get(&slot.fit_id).cloned().unwrap_or_default();
-                let flying = slot.variation.and_then(|v| list.iter().find(|(x, _)| *x == v)).map_or_else(|| tr!("Base").to_owned(), |(_, n)| n.clone());
-                ui.add_enabled_ui(!list.is_empty(), |ui| {
-                    egui::ComboBox::from_id_salt(("sim_fleet_variation", i)).selected_text(text::clip(&flying, 14)).width(120.0).show_ui(ui, |ui| {
-                        if ui.menu_label(slot.variation.is_none(), tr!("Base")).clicked() {
-                            slot.variation = None;
-                            *changed = true;
-                        }
-                        for (v, n) in &list {
-                            if ui.menu_label(slot.variation == Some(*v), n.clone()).clicked() {
-                                slot.variation = Some(*v);
-                                *changed = true;
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(tr!("The variation this slot flies"));
-                });
-            };
-            ui.horizontal(|ui| {
-                ui.set_height(26.0);
-                let is_main = f.main.unwrap_or(0) == i;
-                if ui.add(egui::RadioButton::new(is_main, "")).on_hover_text(tr!("Main damage dealer, for the enemy's critical mass")).clicked() {
-                    f.main = Some(i);
-                    changed = true;
-                }
-                let slot = &mut f.slots[i];
-                let fit_name = library.iter().find(|x| x.id == slot.fit_id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(id, _)| *id == slot.fit_id).map(|(_, n)| n.clone())).unwrap_or_else(|| tr!("Choose a fit").to_owned());
-                let rest = if narrow { 40.0 } else { 490.0 };
-                let fit_w = (ui.available_width() - rest).max(100.0);
-                egui::ComboBox::from_id_salt(("sim_fleet_fit", i)).selected_text(text::clip(&fit_name, 28)).width(fit_w).show_ui(ui, |ui| {
-                    let before = slot.fit_id.clone();
-                    for x in &library {
-                        changed |= ui.menu_value(&mut slot.fit_id, x.id.clone(), x.name.clone()).changed();
-                    }
-                    for (id, name) in &doctrine_fits {
-                        changed |= ui.menu_value(&mut slot.fit_id, id.clone(), name.clone()).changed();
-                    }
-                    // Another fit has other variations.
-                    if slot.fit_id != before {
-                        slot.variation = None;
-                    }
-                });
-                if !narrow {
-                    variation_box(ui, slot, &mut changed);
-                    rule_row(ui, slot, &mut changed);
-                }
-                if icon_button(ui, icon::X).clicked() {
-                    remove = Some(i);
-                }
-            });
-            if narrow {
-                ui.horizontal(|ui| {
-                    ui.set_height(26.0);
-                    ui.add_space(28.0);
-                    variation_box(ui, &mut f.slots[i], &mut changed);
-                    rule_row(ui, &mut f.slots[i], &mut changed);
-                });
-            }
-        }
-        if let Some(i) = remove {
-            f.slots.remove(i);
-            changed = true;
-        }
-        if ui.small_button(trf!("{icon} Add ship", icon = icon::PLUS)).clicked() {
-            f.slots.push(FleetSlot { rule: if f.slots.is_empty() { CountRule::Fill { min: 0, max: 1000 } } else { CountRule::Fixed(1) }, ..FleetSlot::default() });
-            changed = true;
-        }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tr!("Boosters")).strong());
-        for (kind, fits) in &boosting {
-            let kind = *kind;
-            ui.horizontal(|ui| {
-                ui.set_height(24.0);
-                ui.add_sized([90.0, 22.0], egui::Label::new(kind_name(kind)));
-                let current = f.boosters.iter().find(|(k, _)| *k == kind).map(|(_, id)| id.clone());
-                let shortcut = f.boost_shortcuts.iter().position(|b| b.kind == kind);
-                let name = if let Some(i) = shortcut {
-                    let hull = f.boost_shortcuts[i].hull.zip(dogma.as_ref()).map_or_else(|| tr!("no hull bonus").to_owned(), |(h, d)| spai_fit::formats::name_of(d, h));
-                    trf!("Generic booster · {hull}", hull = hull)
-                } else {
-                    current.as_ref().and_then(|id| library.iter().find(|x| &x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| d == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| tr!("none").to_owned())
-                };
-                // None clears both; Some(Ok(fit)) a fit; Some(Err(hull)) a generic booster.
-                let mut pick: Option<Option<Result<String, Option<spai_fit::ids::TypeId>>>> = None;
-                let combo_w = (ui.available_width() - 8.0 - if shortcut.is_some() { 4.0 * 26.0 } else { 0.0 }).clamp(120.0, 260.0);
-                egui::ComboBox::from_id_salt(("sim_fleet_booster", kind_name(kind))).selected_text(text::clip(&name, 36)).width(combo_w).show_ui(ui, |ui| {
-                    want_all_docs = true;
-                    if ui.menu_label(current.is_none() && shortcut.is_none(), tr!("none")).clicked() {
-                        pick = Some(None);
-                    }
-                    for (id, n) in fits {
-                        if ui.menu_label(current.as_deref() == Some(id.as_str()), n.clone()).clicked() {
-                            pick = Some(Some(Ok(id.clone())));
-                        }
-                    }
-                    if let Some(d) = &dogma {
-                        ui.separator();
-                        ui.label(egui::RichText::new(tr!("Generic booster, in no slot")).weak());
-                        let on_hull = |h: Option<spai_fit::ids::TypeId>| shortcut.is_some_and(|i| f.boost_shortcuts[i].hull == h);
-                        if ui.menu_label(on_hull(None), tr!("A hull without burst bonuses")).clicked() {
-                            pick = Some(Some(Err(None)));
-                        }
-                        for hull in fleet::boosting_hulls(d, kind) {
-                            if ui.menu_label(on_hull(Some(hull)), spai_fit::formats::name_of(d, hull)).clicked() {
-                                pick = Some(Some(Err(Some(hull))));
-                            }
-                        }
-                    }
-                });
-                // The generic booster's buttons, as on a fit's projected tab.
-                if let (Some(i), Some(d)) = (shortcut, &dogma) {
-                    let b = f.boost_shortcuts[i].clone();
-                    let mut next = b.clone();
-                    let module = b.module.or_else(|| d.type_named(b.kind.module_name()).map(|t| t.id)).unwrap_or(0);
-                    let skills_btn = spai_ui::widgets::icon_button(ui, icon::GRADUATION_CAP).on_hover_text(tr!("The booster's skills"));
-                    crate::dock::shortcut_skills_popup(&skills_btn, d, &b, &mut next, ("sim_fleet_boost_skills", i));
-                    if spai_ui::widgets::icon_button(ui, crate::dock::mindlink_glyph(ui, b.mindlink)).on_hover_text(crate::dock::mindlink_hint(b.mindlink)).clicked() {
-                        next.mindlink = !next.mindlink;
-                    }
-                    let charges_btn = spai_ui::widgets::icon_button(ui, icon::LIST_CHECKS).on_hover_text(tr!("The burst module and its charges"));
-                    crate::dock::shortcut_charges_popup(&charges_btn, d, &b, &mut next, module);
-                    if spai_ui::widgets::icon_button(ui, crate::dock::switch_glyph(ui, b.active)).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
-                        next.active = !next.active;
-                    }
-                    if next != b {
-                        f.boost_shortcuts[i] = next;
-                        changed = true;
-                    }
-                }
-                if let Some(p) = pick {
-                    f.boosters.retain(|(k, _)| *k != kind);
-                    match p {
-                        Some(Err(hull)) => match f.boost_shortcuts.iter_mut().find(|b| b.kind == kind) {
-                            // Another hull keeps the skills, mindlink and charges set.
-                            Some(b) => b.hull = hull,
-                            None => f.boost_shortcuts.push(spai_fit::fit::BoostShortcut { kind, hull, ..Default::default() }),
-                        },
-                        Some(Ok(id)) => {
-                            f.boost_shortcuts.retain(|b| b.kind != kind);
-                            f.boosters.push((kind, id));
-                        }
-                        None => f.boost_shortcuts.retain(|b| b.kind != kind),
-                    }
-                    changed = true;
-                }
-            });
-        }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tr!("Engagement")).strong());
-        egui::Grid::new("sim_fleet_engagement").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label(tr!("Range"));
-            let mut km = f.range / 1000.0;
-            if ui.add(egui::Slider::new(&mut km, 0.0..=300.0).suffix(" km").step_by(0.5)).changed() {
-                f.range = km * 1000.0;
-                changed = true;
-            }
-            ui.end_row();
-            ui.label(tr!("Volley efficiency"));
-            changed |= ui.add(egui::Slider::new(&mut f.volley_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
-            ui.end_row();
-            // How the ships sit: a ball of a radius, or a flock bell-curved around the anchor.
-            ui.label(tr!("Formation")).on_hover_text(tr!("Ball: every ship on a sphere of this radius around the anchor. Flock: a swarm strung out along the heading, densest in the middle; this is its spread along the line, less across it and up and down."));
-            ui.horizontal(|ui| {
-                use spai_ui::widgets::SteadySelect as _;
-                let (ball, mut metres) = match f.formation {
-                    spai_fit::fleet::Formation::Ball { radius_m } => (true, radius_m),
-                    spai_fit::fleet::Formation::Flock { sigma_m } => (false, sigma_m),
-                };
-                let mut pick_ball = ball;
-                if ui.menu_label_sized(egui::vec2(60.0, 22.0), ball, tr!("Ball")).clicked() {
-                    pick_ball = true;
-                }
-                if ui.menu_label_sized(egui::vec2(60.0, 22.0), !ball, tr!("Flock")).clicked() {
-                    pick_ball = false;
-                }
-                let mut km = metres / 1000.0;
-                let r = ui.add(egui::DragValue::new(&mut km).range(0.0..=100.0).speed(0.1).suffix(" km"));
-                if r.changed() || pick_ball != ball {
-                    metres = km * 1000.0;
-                    f.formation = if pick_ball { spai_fit::fleet::Formation::Ball { radius_m: metres } } else { spai_fit::fleet::Formation::Flock { sigma_m: metres } };
-                    changed = true;
-                }
-            });
-            ui.end_row();
-            ui.label(tr!("Movement")).on_hover_text(tr!("The fleet's share of its slowest ship's top speed and its heading against the line to the enemy: 0° straight at it, 90° across."));
-            let before = f.motion;
-            crate::graphs_panel::motion_dial(ui, "", &mut f.motion);
-            changed |= f.motion != before;
-            ui.end_row();
-            ui.label(tr!("Logistics efficiency")).on_hover_text(tr!("The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health"));
-            changed |= ui.add(egui::Slider::new(&mut f.logi_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
-            ui.end_row();
-            ui.label(tr!("Logi pre-locked")).on_hover_text(tr!("The share of the logistics already holding the primary locked when it is first hurt: they skip the lock"));
-            changed |= ui.add(egui::Slider::new(&mut f.logi_prelock, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
-            ui.end_row();
-            ui.label(tr!("Logi reaction")).on_hover_text(tr!("Seconds until the logistics see a ship hurt, at the median; some quicker, a few slower"));
-            changed |= ui.add(egui::Slider::new(&mut f.logi_reaction_s, 0.0..=10.0).suffix(" s").step_by(0.1)).changed();
-            ui.end_row();
-            ui.label(tr!("Logi arrival spread")).on_hover_text(tr!("Seconds over which the logistics' first repairs arrive, one after another, on top of their reactions"));
-            changed |= ui.add(egui::Slider::new(&mut f.logi_spread_s, 0.0..=15.0).suffix(" s").step_by(0.5)).changed();
-            ui.end_row();
-            ui.label(tr!("Drones"));
-            changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
-            ui.end_row();
-            ui.label(tr!("ADCs and suppressors")).on_hover_text(tr!("Assault damage controls and signature suppressors: switched on, once, when their ship is called primary"));
-            changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();
-            ui.end_row();
-            ui.label(tr!("Ewar on the enemy"));
-            ui.vertical(|ui| {
-                let p = projected;
-                let parts: Vec<String> = [(p.webs, tr!("webs")), (p.painters, tr!("painters")), (p.tracking_disruptors, tr!("tracking disruptors"))].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
-                let summary = if parts.is_empty() { tr!("none: no ship of the fleet projects any").to_owned() } else { trf!("{list}, from the ships", list = parts.join(", ")) };
-                ui.add(egui::Label::new(egui::RichText::new(summary).weak()).truncate());
-                let mut tune = !f.ewar_auto;
-                if ui.checkbox(&mut tune, tr!("Fine-tune")).on_hover_text(tr!("Type how many land on one target instead of counting every module fitted")).changed() {
-                    f.ewar_auto = !tune;
-                    if tune {
-                        f.ewar = p;
-                    }
-                    changed = true;
-                }
-                if tune {
-                    ui.horizontal(|ui| {
-                        for (n, label, have) in [(&mut f.ewar.webs, tr!("Webs"), p.webs > 0), (&mut f.ewar.painters, tr!("Painters"), p.painters > 0), (&mut f.ewar.tracking_disruptors, tr!("Tracking disruptors"), p.tracking_disruptors > 0)] {
-                            if have || *n > 0 {
-                                ui.label(label);
-                                changed |= ui.add(egui::DragValue::new(n).range(0..=50)).changed();
+        // The settings in cards; two columns where they fit, ships and boosters on the left.
+        let two = ui.available_width() >= 1000.0;
+        let mut part = |ui: &mut egui::Ui, which: usize| match which {
+            0 => card(ui, tr!("Ships"), |ui| {
+            let mut remove: Option<usize> = None;
+            let counts = fleet::resolve_counts(f);
+            // Below this width the count controls go on a second line under the fit.
+            let narrow = ui.available_width() < 720.0;
+            for i in 0..f.slots.len() {
+                let count = counts.get(i).copied().unwrap_or(0);
+                let rule_row = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
+                    let mut rule = slot.rule;
+                    egui::ComboBox::from_id_salt(("sim_fleet_rule", i)).selected_text(rule_name(rule)).width(84.0).show_ui(ui, |ui| {
+                        for r in [CountRule::Fixed(count.max(1)), CountRule::Percent(10.0), CountRule::Fill { min: 0, max: 1000 }] {
+                            if ui.menu_label(std::mem::discriminant(&rule) == std::mem::discriminant(&r), rule_name(r)).clicked() {
+                                rule = r;
                             }
                         }
                     });
-                }
-            });
-            ui.end_row();
-            ui.label(tr!("Against"));
-            let enemy_name = match session.enemy.as_deref() {
-                Some(MIRROR) => tr!("Itself (mirror match)").to_owned(),
-                Some(id) => id.strip_prefix(ENEMY_DOCTRINE).map(|g| trf!("{name} (enemy doctrine)", name = g)).or_else(|| fleets.iter().find(|x| x.id == id).map(|x| x.name.clone())).unwrap_or_else(|| tr!("none").to_owned()),
-                None => tr!("none").to_owned(),
-            };
-            egui::ComboBox::from_id_salt("sim_fleet_enemy").selected_text(text::clip(&enemy_name, 28)).width(220.0).show_ui(ui, |ui| {
-                if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
-                    session.enemy = None;
-                    f.enemy = None;
-                    changed = true;
-                }
-                if ui.menu_label(session.enemy.as_deref() == Some(MIRROR), tr!("Itself (mirror match)")).clicked() {
-                    session.enemy = Some(MIRROR.to_owned());
-                    f.enemy = Some(MIRROR.to_owned());
-                    changed = true;
-                }
-                for x in fleets.iter().filter(|x| x.id != my_id) {
-                    if ui.menu_label(session.enemy.as_deref() == Some(x.id.as_str()), x.name.clone()).clicked() {
-                        session.enemy = Some(x.id.clone());
-                        f.enemy = Some(x.id.clone());
+                    if std::mem::discriminant(&rule) != std::mem::discriminant(&slot.rule) {
+                        slot.rule = rule;
+                        *changed = true;
+                    }
+                    match &mut slot.rule {
+                        CountRule::Fixed(n) => *changed |= ui.add(egui::DragValue::new(n).range(0..=2000)).changed(),
+                        CountRule::Percent(p) => *changed |= ui.add(egui::DragValue::new(p).range(0.0..=100.0).suffix("%")).changed(),
+                        CountRule::Fill { min, max } => {
+                            *changed |= ui.add(egui::DragValue::new(min).range(0..=2000).prefix(tr!("min "))).changed();
+                            *changed |= ui.add(egui::DragValue::new(max).range(0..=2000).prefix(tr!("max "))).changed();
+                        }
+                    }
+                    let mut typed = slot.override_count.is_some();
+                    if ui.checkbox(&mut typed, "").on_hover_text(tr!("Type the number instead")).changed() {
+                        slot.override_count = typed.then_some(count);
+                        *changed = true;
+                    }
+                    match &mut slot.override_count {
+                        Some(n) => *changed |= ui.add(egui::DragValue::new(n).range(0..=2000)).changed(),
+                        None => {
+                            ui.add_sized([44.0, 22.0], egui::Label::new(egui::RichText::new(trf!("= {n}", n = count)).monospace()));
+                        }
+                    }
+                };
+                let variation_box = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
+                    let list = variations.get(&slot.fit_id).cloned().unwrap_or_default();
+                    let flying = slot.variation.and_then(|v| list.iter().find(|(x, _)| *x == v)).map_or_else(|| tr!("Base").to_owned(), |(_, n)| n.clone());
+                    ui.add_enabled_ui(!list.is_empty(), |ui| {
+                        egui::ComboBox::from_id_salt(("sim_fleet_variation", i)).selected_text(text::clip(&flying, 14)).width(120.0).show_ui(ui, |ui| {
+                            if ui.menu_label(slot.variation.is_none(), tr!("Base")).clicked() {
+                                slot.variation = None;
+                                *changed = true;
+                            }
+                            for (v, n) in &list {
+                                if ui.menu_label(slot.variation == Some(*v), n.clone()).clicked() {
+                                    slot.variation = Some(*v);
+                                    *changed = true;
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr!("The variation this slot flies"));
+                    });
+                };
+                ui.horizontal(|ui| {
+                    ui.set_height(26.0);
+                    let is_main = f.main.unwrap_or(0) == i;
+                    if ui.add(egui::RadioButton::new(is_main, "")).on_hover_text(tr!("Main damage dealer, for the enemy's critical mass")).clicked() {
+                        f.main = Some(i);
                         changed = true;
                     }
+                    let slot = &mut f.slots[i];
+                    let fit_name = library.iter().find(|x| x.id == slot.fit_id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(id, _)| *id == slot.fit_id).map(|(_, n)| n.clone())).unwrap_or_else(|| tr!("Choose a fit").to_owned());
+                    let rest = if narrow { 40.0 } else { 490.0 };
+                    let fit_w = (ui.available_width() - rest).max(100.0);
+                    egui::ComboBox::from_id_salt(("sim_fleet_fit", i)).selected_text(text::clip(&fit_name, 28)).width(fit_w).show_ui(ui, |ui| {
+                        let before = slot.fit_id.clone();
+                        for x in &library {
+                            changed |= ui.menu_value(&mut slot.fit_id, x.id.clone(), x.name.clone()).changed();
+                        }
+                        for (id, name) in &doctrine_fits {
+                            changed |= ui.menu_value(&mut slot.fit_id, id.clone(), name.clone()).changed();
+                        }
+                        // Another fit has other variations.
+                        if slot.fit_id != before {
+                            slot.variation = None;
+                        }
+                    });
+                    if !narrow {
+                        variation_box(ui, slot, &mut changed);
+                        rule_row(ui, slot, &mut changed);
+                    }
+                    if icon_button(ui, icon::X).clicked() {
+                        remove = Some(i);
+                    }
+                });
+                if narrow {
+                    ui.horizontal(|ui| {
+                        ui.set_height(26.0);
+                        ui.add_space(28.0);
+                        variation_box(ui, &mut f.slots[i], &mut changed);
+                        rule_row(ui, &mut f.slots[i], &mut changed);
+                    });
                 }
-                if !enemy_doctrines.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new(tr!("Enemy doctrines")).weak());
-                    for g in &enemy_doctrines {
-                        let id = format!("{ENEMY_DOCTRINE}{g}");
-                        if ui.menu_label(session.enemy.as_deref() == Some(id.as_str()), g.clone()).clicked() {
-                            session.enemy = Some(id.clone());
-                            f.enemy = Some(id);
+            }
+            if let Some(i) = remove {
+                f.slots.remove(i);
+                changed = true;
+            }
+            if ui.small_button(trf!("{icon} Add ship", icon = icon::PLUS)).clicked() {
+                f.slots.push(FleetSlot { rule: if f.slots.is_empty() { CountRule::Fill { min: 0, max: 1000 } } else { CountRule::Fixed(1) }, ..FleetSlot::default() });
+                changed = true;
+            }
+            }),
+            1 => card(ui, tr!("Boosters"), |ui| {
+            for (kind, fits) in &boosting {
+                let kind = *kind;
+                ui.horizontal(|ui| {
+                    ui.set_height(24.0);
+                    ui.add_sized([90.0, 22.0], egui::Label::new(kind_name(kind)));
+                    let current = f.boosters.iter().find(|(k, _)| *k == kind).map(|(_, id)| id.clone());
+                    let shortcut = f.boost_shortcuts.iter().position(|b| b.kind == kind);
+                    let name = if let Some(i) = shortcut {
+                        let hull = f.boost_shortcuts[i].hull.zip(dogma.as_ref()).map_or_else(|| tr!("no hull bonus").to_owned(), |(h, d)| spai_fit::formats::name_of(d, h));
+                        trf!("Generic booster · {hull}", hull = hull)
+                    } else {
+                        current.as_ref().and_then(|id| library.iter().find(|x| &x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| d == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| tr!("none").to_owned())
+                    };
+                    // None clears both; Some(Ok(fit)) a fit; Some(Err(hull)) a generic booster.
+                    let mut pick: Option<Option<Result<String, Option<spai_fit::ids::TypeId>>>> = None;
+                    let combo_w = (ui.available_width() - 8.0 - if shortcut.is_some() { 4.0 * 26.0 } else { 0.0 }).clamp(120.0, 260.0);
+                    egui::ComboBox::from_id_salt(("sim_fleet_booster", kind_name(kind))).selected_text(text::clip(&name, 36)).width(combo_w).show_ui(ui, |ui| {
+                        want_all_docs = true;
+                        if ui.menu_label(current.is_none() && shortcut.is_none(), tr!("none")).clicked() {
+                            pick = Some(None);
+                        }
+                        for (id, n) in fits {
+                            if ui.menu_label(current.as_deref() == Some(id.as_str()), n.clone()).clicked() {
+                                pick = Some(Some(Ok(id.clone())));
+                            }
+                        }
+                        if let Some(d) = &dogma {
+                            ui.separator();
+                            ui.label(egui::RichText::new(tr!("Generic booster, in no slot")).weak());
+                            let on_hull = |h: Option<spai_fit::ids::TypeId>| shortcut.is_some_and(|i| f.boost_shortcuts[i].hull == h);
+                            if ui.menu_label(on_hull(None), tr!("A hull without burst bonuses")).clicked() {
+                                pick = Some(Some(Err(None)));
+                            }
+                            for hull in fleet::boosting_hulls(d, kind) {
+                                if ui.menu_label(on_hull(Some(hull)), spai_fit::formats::name_of(d, hull)).clicked() {
+                                    pick = Some(Some(Err(Some(hull))));
+                                }
+                            }
+                        }
+                    });
+                    // The generic booster's buttons, as on a fit's projected tab.
+                    if let (Some(i), Some(d)) = (shortcut, &dogma) {
+                        let b = f.boost_shortcuts[i].clone();
+                        let mut next = b.clone();
+                        let module = b.module.or_else(|| d.type_named(b.kind.module_name()).map(|t| t.id)).unwrap_or(0);
+                        let skills_btn = spai_ui::widgets::icon_button(ui, icon::GRADUATION_CAP).on_hover_text(tr!("The booster's skills"));
+                        crate::dock::shortcut_skills_popup(&skills_btn, d, &b, &mut next, ("sim_fleet_boost_skills", i));
+                        if spai_ui::widgets::icon_button(ui, crate::dock::mindlink_glyph(ui, b.mindlink)).on_hover_text(crate::dock::mindlink_hint(b.mindlink)).clicked() {
+                            next.mindlink = !next.mindlink;
+                        }
+                        let charges_btn = spai_ui::widgets::icon_button(ui, icon::LIST_CHECKS).on_hover_text(tr!("The burst module and its charges"));
+                        crate::dock::shortcut_charges_popup(&charges_btn, d, &b, &mut next, module);
+                        if spai_ui::widgets::icon_button(ui, crate::dock::switch_glyph(ui, b.active)).on_hover_text(if b.active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
+                            next.active = !next.active;
+                        }
+                        if next != b {
+                            f.boost_shortcuts[i] = next;
                             changed = true;
                         }
                     }
+                    if let Some(p) = pick {
+                        f.boosters.retain(|(k, _)| *k != kind);
+                        match p {
+                            Some(Err(hull)) => match f.boost_shortcuts.iter_mut().find(|b| b.kind == kind) {
+                                // Another hull keeps the skills, mindlink and charges set.
+                                Some(b) => b.hull = hull,
+                                None => f.boost_shortcuts.push(spai_fit::fit::BoostShortcut { kind, hull, ..Default::default() }),
+                            },
+                            Some(Ok(id)) => {
+                                f.boost_shortcuts.retain(|b| b.kind != kind);
+                                f.boosters.push((kind, id));
+                            }
+                            None => f.boost_shortcuts.retain(|b| b.kind != kind),
+                        }
+                        changed = true;
+                    }
+                });
+            }
+            }),
+            2 => card(ui, tr!("Opponent"), |ui| {
+            egui::Grid::new("sim_fleet_opponent").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(tr!("Against"));
+                let enemy_name = match session.enemy.as_deref() {
+                    Some(MIRROR) => tr!("Itself (mirror match)").to_owned(),
+                    Some(id) => id.strip_prefix(ENEMY_DOCTRINE).map(|g| trf!("{name} (enemy doctrine)", name = g)).or_else(|| fleets.iter().find(|x| x.id == id).map(|x| x.name.clone())).unwrap_or_else(|| tr!("none").to_owned()),
+                    None => tr!("none").to_owned(),
+                };
+                egui::ComboBox::from_id_salt("sim_fleet_enemy").selected_text(text::clip(&enemy_name, 28)).width(220.0).show_ui(ui, |ui| {
+                    if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
+                        session.enemy = None;
+                        f.enemy = None;
+                        changed = true;
+                    }
+                    if ui.menu_label(session.enemy.as_deref() == Some(MIRROR), tr!("Itself (mirror match)")).clicked() {
+                        session.enemy = Some(MIRROR.to_owned());
+                        f.enemy = Some(MIRROR.to_owned());
+                        changed = true;
+                    }
+                    for x in fleets.iter().filter(|x| x.id != my_id) {
+                        if ui.menu_label(session.enemy.as_deref() == Some(x.id.as_str()), x.name.clone()).clicked() {
+                            session.enemy = Some(x.id.clone());
+                            f.enemy = Some(x.id.clone());
+                            changed = true;
+                        }
+                    }
+                    if !enemy_doctrines.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new(tr!("Enemy doctrines")).weak());
+                        for g in &enemy_doctrines {
+                            let id = format!("{ENEMY_DOCTRINE}{g}");
+                            if ui.menu_label(session.enemy.as_deref() == Some(id.as_str()), g.clone()).clicked() {
+                                session.enemy = Some(id.clone());
+                                f.enemy = Some(id);
+                                changed = true;
+                            }
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(tr!("Range"));
+                let mut km = f.range / 1000.0;
+                if ui.add(egui::Slider::new(&mut km, 0.0..=300.0).suffix(" km").step_by(0.5)).changed() {
+                    f.range = km * 1000.0;
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label(tr!("Race length")).on_hover_text(tr!("How long the race at this range may run before it stops"));
+                let mut min = f.race_length_s / 60.0;
+                if ui.add(egui::Slider::new(&mut min, 1.0..=240.0).logarithmic(true).suffix(" min").step_by(1.0)).changed() {
+                    f.race_length_s = min * 60.0;
+                    changed = true;
+                }
+                ui.end_row();
+                if session.enemy.as_deref() == Some(MIRROR) {
+                    ui.label(tr!("The copy's size")).on_hover_text(tr!("The mirror's own fleet size; its slots fill by the same rules"));
+                    ui.horizontal(|ui| {
+                        let mut on = f.mirror_size.is_some();
+                        if ui.checkbox(&mut on, "").changed() {
+                            f.mirror_size = on.then_some(f.size);
+                            changed = true;
+                        }
+                        if let Some(n) = &mut f.mirror_size {
+                            changed |= ui.add(egui::DragValue::new(n).range(1..=2000)).changed();
+                        } else {
+                            ui.label(egui::RichText::new(trf!("as this fleet, {n}", n = f.size)).weak());
+                        }
+                    });
+                    ui.end_row();
+                    f.mirror_counts.resize(f.slots.len(), None);
+                    for k in 0..f.slots.len() {
+                        let id = f.slots[k].fit_id.clone();
+                        let name = library.iter().find(|x| x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| *d == id).map(|(_, n)| n.clone())).unwrap_or_default();
+                        ui.label(egui::RichText::new(trf!("Their {n}", n = text::clip(&name, 22))).weak());
+                        ui.horizontal(|ui| {
+                            let mut on = f.mirror_counts[k].is_some();
+                            if ui.checkbox(&mut on, "").on_hover_text(tr!("Type the copy's number of this ship")).changed() {
+                                f.mirror_counts[k] = on.then_some(1);
+                                changed = true;
+                            }
+                            if let Some(n) = &mut f.mirror_counts[k] {
+                                changed |= ui.add(egui::DragValue::new(n).range(0..=2000)).changed();
+                            } else {
+                                ui.label(egui::RichText::new(tr!("by its rule")).weak());
+                            }
+                        });
+                        ui.end_row();
+                    }
                 }
             });
-            ui.end_row();
-            if !profiles.is_empty() {
-                ui.label(tr!("Skills"));
-                ui.label(egui::RichText::new(tr!("the profile chosen above")).weak());
-                ui.end_row();
-            }
-        });
-        ui.add_space(4.0);
-        ui.label(tr!("Shoots first")).on_hover_text(tr!("The order this fleet calls the enemy's ships as primary, by role"));
-        ui.horizontal_wrapped(|ui| {
-            let mut up: Option<usize> = None;
-            // One widget per entry so the row wraps between entries.
-            for (i, role) in f.target_order.iter().enumerate() {
-                let name = format!("{}. {}", i + 1, role_name(*role));
-                if i == 0 {
-                    ui.label(name);
-                } else if ui.button(format!("{} {name}", egui_phosphor::regular::CARET_LEFT)).on_hover_text(tr!("Earlier")).clicked() {
-                    up = Some(i);
+            ui.label(tr!("Shoots first")).on_hover_text(tr!("The order this fleet calls the enemy's ships as primary, by role"));
+            ui.horizontal_wrapped(|ui| {
+                let mut up: Option<usize> = None;
+                // One widget per entry so the row wraps between entries.
+                for (i, role) in f.target_order.iter().enumerate() {
+                    let name = format!("{}. {}", i + 1, role_name(*role));
+                    if i == 0 {
+                        ui.label(name);
+                    } else if ui.button(format!("{} {name}", egui_phosphor::regular::CARET_LEFT)).on_hover_text(tr!("Earlier")).clicked() {
+                        up = Some(i);
+                    }
                 }
+                if let Some(i) = up {
+                    f.target_order.swap(i, i - 1);
+                    changed = true;
+                }
+            });
+            }),
+            3 => card(ui, tr!("Formation and movement"), |ui| {
+            egui::Grid::new("sim_fleet_formation").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                // How the ships sit: a ball of a radius, or a flock bell-curved around the anchor.
+                ui.label(tr!("Formation")).on_hover_text(tr!("Ball: every ship on a sphere of this radius around the anchor. Flock: a swarm strung out along the heading, densest in the middle; this is its spread along the line, less across it and up and down."));
+                ui.horizontal(|ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    let (ball, mut metres) = match f.formation {
+                        spai_fit::fleet::Formation::Ball { radius_m } => (true, radius_m),
+                        spai_fit::fleet::Formation::Flock { sigma_m } => (false, sigma_m),
+                    };
+                    let mut pick_ball = ball;
+                    if ui.menu_label_sized(egui::vec2(60.0, 22.0), ball, tr!("Ball")).clicked() {
+                        pick_ball = true;
+                    }
+                    if ui.menu_label_sized(egui::vec2(60.0, 22.0), !ball, tr!("Flock")).clicked() {
+                        pick_ball = false;
+                    }
+                    let mut km = metres / 1000.0;
+                    let r = ui.add(egui::DragValue::new(&mut km).range(0.0..=100.0).speed(0.1).suffix(" km"));
+                    if r.changed() || pick_ball != ball {
+                        metres = km * 1000.0;
+                        f.formation = if pick_ball { spai_fit::fleet::Formation::Ball { radius_m: metres } } else { spai_fit::fleet::Formation::Flock { sigma_m: metres } };
+                        changed = true;
+                    }
+                });
+                ui.end_row();
+                ui.label(tr!("Movement")).on_hover_text(tr!("The fleet's share of its slowest ship's top speed and its heading against the line to the enemy: 0° straight at it, 90° across."));
+                let before = f.motion;
+                crate::graphs_panel::motion_dial(ui, "", &mut f.motion);
+                changed |= f.motion != before;
+                ui.end_row();
+            });
+            }),
+            4 => card(ui, tr!("Fire"), |ui| {
+            egui::Grid::new("sim_fleet_fire").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(tr!("Volley efficiency"));
+                changed |= ui.add(egui::Slider::new(&mut f.volley_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+                ui.end_row();
+                ui.label(tr!("Drones"));
+                changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
+                ui.end_row();
+                ui.label(tr!("ADCs and suppressors")).on_hover_text(tr!("Assault damage controls and signature suppressors: switched on, once, when their ship is called primary"));
+                changed |= ui.checkbox(&mut f.adc, tr!("Switched on when primaried")).changed();
+                ui.end_row();
+            });
+            }),
+            5 => card(ui, tr!("Logistics"), |ui| {
+            egui::Grid::new("sim_fleet_logi").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(tr!("Logistics efficiency")).on_hover_text(tr!("The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health"));
+                changed |= ui.add(egui::Slider::new(&mut f.logi_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+                ui.end_row();
+                ui.label(tr!("Logi pre-locked")).on_hover_text(tr!("The share of the logistics already holding the primary locked when it is first hurt: they skip the lock"));
+                changed |= ui.add(egui::Slider::new(&mut f.logi_prelock, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+                ui.end_row();
+                ui.label(tr!("Logi reaction")).on_hover_text(tr!("Seconds until the logistics see a ship hurt, at the median; some quicker, a few slower"));
+                changed |= ui.add(egui::Slider::new(&mut f.logi_reaction_s, 0.0..=10.0).suffix(" s").step_by(0.1)).changed();
+                ui.end_row();
+                ui.label(tr!("Logi arrival spread")).on_hover_text(tr!("Seconds over which the logistics' first repairs arrive, one after another, on top of their reactions"));
+                changed |= ui.add(egui::Slider::new(&mut f.logi_spread_s, 0.0..=15.0).suffix(" s").step_by(0.5)).changed();
+                ui.end_row();
+            });
+            }),
+            6 => card(ui, tr!("Ewar on the enemy"), |ui| {
+                ui.vertical(|ui| {
+                    let p = projected;
+                    let parts: Vec<String> = [(p.webs, tr!("webs")), (p.painters, tr!("painters")), (p.tracking_disruptors, tr!("tracking disruptors"))].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
+                    let summary = if parts.is_empty() { tr!("none: no ship of the fleet projects any").to_owned() } else { trf!("{list}, from the ships", list = parts.join(", ")) };
+                    ui.add(egui::Label::new(egui::RichText::new(summary).weak()).truncate());
+                    let mut tune = !f.ewar_auto;
+                    if ui.checkbox(&mut tune, tr!("Fine-tune")).on_hover_text(tr!("Type how many land on one target instead of counting every module fitted")).changed() {
+                        f.ewar_auto = !tune;
+                        if tune {
+                            f.ewar = p;
+                        }
+                        changed = true;
+                    }
+                    if tune {
+                        ui.horizontal(|ui| {
+                            for (n, label, have) in [(&mut f.ewar.webs, tr!("Webs"), p.webs > 0), (&mut f.ewar.painters, tr!("Painters"), p.painters > 0), (&mut f.ewar.tracking_disruptors, tr!("Tracking disruptors"), p.tracking_disruptors > 0)] {
+                                if have || *n > 0 {
+                                    ui.label(label);
+                                    changed |= ui.add(egui::DragValue::new(n).range(0..=50)).changed();
+                                }
+                            }
+                        });
+                    }
+                });
+            egui::Grid::new("sim_fleet_skills").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                if !profiles.is_empty() {
+                    ui.label(tr!("Skills"));
+                    ui.label(egui::RichText::new(tr!("the profile chosen above")).weak());
+                    ui.end_row();
+                }
+            });
+            }),
+            _ => {}
+        };
+        if two {
+            ui.columns(2, |cols| {
+                for w in [0, 1] {
+                    part(&mut cols[0], w);
+                }
+                for w in [2, 3, 4, 5, 6] {
+                    part(&mut cols[1], w);
+                }
+            });
+        } else {
+            for w in 0..7 {
+                part(ui, w);
             }
-            if let Some(i) = up {
-                f.target_order.swap(i, i - 1);
-                changed = true;
-            }
-        });
+        }
     });
     if changed {
         session.dirty = true;
@@ -839,6 +921,28 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         let wanted: Vec<String> = sim.fleet_docs.values().flat_map(|e| e.slots.iter().map(|s| s.fit_id.clone()).chain(e.boosters.iter().map(|(_, id)| id.clone()))).collect();
         sim.want_fit_docs(wanted.into_iter());
     }
+}
+
+/// A titled part of the results that opens and closes, remembered.
+fn section(ui: &mut egui::Ui, id: &str, title: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new(egui::RichText::new(title).strong()).id_salt(id).default_open(open).show_unindented(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        body(ui);
+    });
+    ui.add_space(2.0);
+    ui.separator();
+}
+
+/// A titled group of settings across the width given.
+fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(egui::RichText::new(title).strong());
+        ui.add_space(4.0);
+        body(ui);
+    });
+    ui.add_space(6.0);
 }
 
 /// The numbers: one direction of the fight at a time, picked at the top, then the shooting
@@ -901,41 +1005,37 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
             }
             None => against.clone(),
         };
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-        subhead(ui, &trf!("{a} volleys on", a = shooter.name));
-        // Hull first, then the fit and how many fly it.
-        let slot_label = |k: usize| target.slots.get(k).map_or_else(String::new, |x| format!("{} · {} ({})", dogma.type_(x.ship).map_or("?", |t| t.name.as_str()), names.get(&x.fit_id).unwrap_or(&x.name), x.count));
         let mut open_details = false;
-        ui.horizontal(|ui| {
-            ui.add_space(crate::rows::GAP);
-            let w = ui.available_width() - crate::rows::GAP - 30.0;
-            egui::ComboBox::from_id_salt(("sim_fleet_aim", dir)).selected_text(text::clip(&slot_label(slot), ((w / 7.5) as usize).max(12))).width(w).show_ui(ui, |ui| {
-                use spai_ui::widgets::SteadySelect as _;
-                for (k, _) in target.slots.iter().enumerate().filter(|(_, x)| x.count > 0) {
-                    if ui.menu_label(k == slot, slot_label(k)).clicked() {
-                        aim = Some(k);
+        section(ui, "sim_fleet_sec_volleys", &trf!("{a} volleys on", a = shooter.name), true, |ui| {
+            // Hull first, then the fit and how many fly it.
+            let slot_label = |k: usize| target.slots.get(k).map_or_else(String::new, |x| format!("{} · {} ({})", dogma.type_(x.ship).map_or("?", |t| t.name.as_str()), names.get(&x.fit_id).unwrap_or(&x.name), x.count));
+            ui.horizontal(|ui| {
+                ui.add_space(crate::rows::GAP);
+                let w = ui.available_width() - crate::rows::GAP - 30.0;
+                egui::ComboBox::from_id_salt(("sim_fleet_aim", dir)).selected_text(text::clip(&slot_label(slot), ((w / 7.5) as usize).max(12))).width(w).show_ui(ui, |ui| {
+                    use spai_ui::widgets::SteadySelect as _;
+                    for (k, _) in target.slots.iter().enumerate().filter(|(_, x)| x.count > 0) {
+                        if ui.menu_label(k == slot, slot_label(k)).clicked() {
+                            aim = Some(k);
+                        }
                     }
+                })
+                .response
+                .on_hover_text(tr!("The ship of the other fleet these figures aim at"));
+                if spai_ui::widgets::icon_button(ui, icon::TABLE).on_hover_text(tr!("Every charge on this ship, worked out")).clicked() {
+                    open_details = true;
                 }
-            })
-            .response
-            .on_hover_text(tr!("The ship of the other fleet these figures aim at"));
-            if spai_ui::widgets::icon_button(ui, icon::TABLE).on_hover_text(tr!("Every charge on this ship, worked out")).clicked() {
-                open_details = true;
+            });
+            if open_details {
+                sim.fleet_volley_window = Some((dir, slot));
+            }
+            against_card(ui, &aimed, shooter, target, slot, analysis.as_ref().map_or(0.75, |an| if dir == 0 { an.enemy.logi_efficiency } else { an.fleet.logi_efficiency }));
+            if let Some(an) = &analysis {
+                let apps = applications_cached(sim, an, dir, slot);
+                weapons_card(ui, &dogma, an, dir, slot, &apps, &names);
             }
         });
-        if open_details {
-            sim.fleet_volley_window = Some((dir, slot));
-        }
-        against_card(ui, &aimed, shooter, target, slot, analysis.as_ref().map_or(0.75, |an| if dir == 0 { an.enemy.logi_efficiency } else { an.fleet.logi_efficiency }));
-        if let Some(an) = &analysis {
-            let apps = applications_cached(sim, an, dir, slot);
-            weapons_card(ui, &dogma, an, dir, slot, &apps, &names);
-        }
-        ui.add_space(4.0);
-        ui.separator();
-        fleet_card(ui, &dogma, shooter, &names);
+        section(ui, "sim_fleet_sec_figures", &trf!("{a}: its figures", a = shooter.name), false, |ui| fleet_card(ui, &dogma, shooter, &names));
     });
     sim.fleet_aim[dir] = aim;
 }
@@ -1073,128 +1173,132 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
     let primary_name = primary.map_or_else(|| tr!("none").to_owned(), |p| slot_name(p));
     let sw = &an.sweep;
     let (best, favoured, own_cuts, their_cuts) = if dir == 0 { (sw.a_best, &sw.a_favoured, &sw.a_cutoffs, &sw.b_cutoffs) } else { (sw.b_best, &sw.b_favoured, &sw.b_cutoffs, &sw.a_cutoffs) };
-    title(ui, tr!("Engagement"), false);
-    tline(ui, tr!("Best range"), text::metres(best), |ui| tip(ui, tr!("Best range"), &[], &trf!("The farthest range where {a} still lands 90% of its most on {b}'s first target ({p}).", a = shooter.name, b = target.name, p = primary_name)));
-    tline(ui, tr!("Favoured"), stretches(favoured), |ui| {
-        tip(ui, tr!("Favoured"), &[(tr!("Webbed").to_owned(), "-15%".into()), (tr!("Scrambled or disrupted").to_owned(), "-20%".into()), (tr!("Neutralised, at full").to_owned(), "-30%".into())], tr!("Where its score leads the other's by 5% or more. The score is the enemy's first targets killed per minute, less these penalties when the other side's ewar reaches it."))
-    });
-    let at = sw.points.iter().min_by(|x, y| (x.distance - f64::from(an.range)).abs().total_cmp(&(y.distance - f64::from(an.range)).abs()));
-    if let Some(p) = at {
-        let f = if dir == 0 { &p.a } else { &p.b };
-        title(ui, &trf!("At {r}", r = text::metres(p.distance)), true);
-        tline(ui, &trf!("On {p}", p = text::clip(&primary_name, 24)), trf!("{d} DPS", d = text::num(f.applied_dps)), |ui| {
-            let rows: Vec<(String, String)> = primary
-                .map(|t| shooter.slots.iter().enumerate().filter(|(_, s)| s.count > 0).map(|(k, s)| (format!("{} x {}", s.count, slot_name(s)), text::num(sweep::weapons_on(&sa, &sb, k, t, p.distance).iter().map(|(w, f)| w.dps * f).sum::<f64>() * f64::from(s.count)))).collect())
-                .unwrap_or_default();
-            tip(ui, tr!("Damage landing on the first target"), &rows, tr!("Each weapon with its best carried charge, under the other side's disruptors, averaged over every shooter and target pair of the formations as they move."));
+    section(ui, "sim_fleet_sec_engagement", tr!("Engagement"), true, |ui| {
+        tline(ui, tr!("Best range"), text::metres(best), |ui| tip(ui, tr!("Best range"), &[], &trf!("The farthest range where {a} still lands 90% of its most on {b}'s first target ({p}).", a = shooter.name, b = target.name, p = primary_name)));
+        tline(ui, tr!("Favoured"), stretches(favoured), |ui| {
+            tip(ui, tr!("Favoured"), &[(tr!("Webbed").to_owned(), "-15%".into()), (tr!("Scrambled or disrupted").to_owned(), "-20%".into()), (tr!("Neutralised, at full").to_owned(), "-30%".into())], tr!("Where its score leads the other's by 5% or more. The score is the enemy's first targets killed per minute, less these penalties when the other side's ewar reaches it."))
         });
-        let mut holds = Vec::new();
-        if f.webbed {
-            holds.push(tr!("webbed").to_owned());
-        }
-        if f.tackled {
-            holds.push(tr!("tackled").to_owned());
-        }
-        if f.neut_pressure > 0.05 {
-            holds.push(trf!("neuts {p}% of recharge", p = format!("{:.0}", f.neut_pressure * 100.0)));
-        }
-        if !holds.is_empty() {
-            line(ui, tr!("Held by"), holds.join(", "));
-        }
-    }
-    for (head, cuts) in [(trf!("{a} ewar reach", a = shooter.name), own_cuts), (trf!("{a} ewar reach", a = target.name), their_cuts)] {
-        if cuts.is_empty() {
-            continue;
-        }
-        title(ui, &head, true);
-        for (kind, optimal, edge) in cuts {
-            let Some(label) = crate::stats_panel::ewar_name(*kind) else { continue };
-            let value = if edge > optimal { trf!("{o}, half at {h}", o = text::metres(*optimal), h = text::metres(*edge)) } else { text::metres(*optimal) };
-            tline(ui, label, value, |ui| {
-                let mut rows = vec![(tr!("Full strength to").to_owned(), text::metres(*optimal))];
-                if edge > optimal {
-                    rows.push((tr!("Half strength at").to_owned(), text::metres(*edge)));
-                    rows.push((tr!("A sixteenth at").to_owned(), text::metres(*optimal + 2.0 * (edge - optimal))));
-                    rows.push((tr!("Nothing past").to_owned(), text::metres(*optimal + 3.0 * (edge - optimal))));
-                }
-                tip(ui, label, &rows, tr!("The strongest module of the kind: its strength halves at one falloff past optimal, falls to a sixteenth at two and to nothing past three; tackle holds within optimal only. On a ship it stacks with the ship's own penalised modifiers and is cut by its resistances."));
+        let at = sw.points.iter().min_by(|x, y| (x.distance - f64::from(an.range)).abs().total_cmp(&(y.distance - f64::from(an.range)).abs()));
+        if let Some(p) = at {
+            let f = if dir == 0 { &p.a } else { &p.b };
+            title(ui, &trf!("At {r}", r = text::metres(p.distance)), true);
+            tline(ui, &trf!("On {p}", p = text::clip(&primary_name, 24)), trf!("{d} DPS", d = text::num(f.applied_dps)), |ui| {
+                let rows: Vec<(String, String)> = primary
+                    .map(|t| shooter.slots.iter().enumerate().filter(|(_, s)| s.count > 0).map(|(k, s)| (format!("{} x {}", s.count, slot_name(s)), text::num(sweep::weapons_on(&sa, &sb, k, t, p.distance).iter().map(|(w, f)| w.dps * f).sum::<f64>() * f64::from(s.count)))).collect())
+                    .unwrap_or_default();
+                tip(ui, tr!("Damage landing on the first target"), &rows, tr!("Each weapon with its best carried charge, under the other side's disruptors, averaged over every shooter and target pair of the formations as they move."));
             });
-        }
-    }
-    let neut = their_cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
-    if neut > 0.0 && f64::from(an.range) <= neut * 1.2 {
-        warn(ui, &trf!("{v} sits in or near neutraliser range ({r})", v = shooter.name, r = text::metres(neut)));
-    }
-    let r = &an.race;
-    title(ui, tr!("Race at this range"), true);
-    let name_of = |side: usize| if side == 0 { &an.mine.name } else { &an.theirs.name };
-    let outcome = match r.winner {
-        Some(w) => trf!("{a} wins in {s}", a = name_of(w), s = text::secs(r.seconds)),
-        None if r.timeline.last().is_some_and(|x| x.1 == 0 && x.2 == 0) => trf!("both destroyed after {s}", s = text::secs(r.seconds)),
-        None => trf!("both stand after {s}", s = text::secs(r.seconds)),
-    };
-    tline(ui, tr!("Outcome"), outcome, |ui| {
-        let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
-        let sups = r.events.iter().filter(|(_, e)| matches!(e, Event::Suppressor { .. })).count();
-        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Signature suppressors on").to_owned(), sups.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; missiles land after their flight; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its reaction, its lock unless pre-locked, its place in the arrival spread and its first cycle, at the fleet's logistics efficiency, lessened as repairs pile up, and heal no more than the damage there; assault damage controls go on when their ship is called."));
-    });
-    // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
-    // side loses its critical mass).
-    let (start, end) = (r.timeline.first(), r.timeline.last());
-    for side in [dir, 1 - dir] {
-        let count = |x: Option<&(f64, u32, u32, f64, f64)>| x.map_or(0, |x| if side == 0 { x.1 } else { x.2 });
-        let name = text::clip(name_of(side), 20);
-        tline(ui, &trf!("{a} ships left", a = name), trf!("{n} of {m}", n = count(end), m = count(start)), |ui| {
-            let rows: Vec<(String, String)> = r.timeline.iter().step_by((r.timeline.len() / 6).max(1)).map(|x| (text::secs(x.0), if side == 0 { x.1 } else { x.2 }.to_string())).collect();
-            tip(ui, tr!("Ships left over the fight"), &rows, "");
-        });
-        let first_loss = r.events.iter().find(|(_, e)| matches!(e, Event::Kill { side: s, .. } if *s == side)).map(|(t, _)| *t);
-        line(ui, &trf!("{a} first loss", a = name), first_loss.map_or_else(|| tr!("none").to_owned(), text::secs));
-        let other = 1 - side;
-        tline(ui, &trf!("{a} reps catch up", a = name), match r.critical_mass_lost[other] {
-            Some(t) => {
-                let left = r.timeline.iter().find(|x| x.0 >= t).map_or(0, |x| if other == 0 { x.1 } else { x.2 });
-                trf!("at {s}, {n} enemies left", s = text::secs(t), n = left)
+            let mut holds = Vec::new();
+            if f.webbed {
+                holds.push(tr!("webbed").to_owned());
             }
-            None => tr!("never").to_owned(),
-        }, |ui| tip(ui, tr!("Reps catch up"), &[], tr!("From here the other side's damage on its primary, through the resistances of the layer being worn, no longer beats the repairs on it: it has lost its critical mass.")));
-    }
+            if f.tackled {
+                holds.push(tr!("tackled").to_owned());
+            }
+            if f.neut_pressure > 0.05 {
+                holds.push(trf!("neuts {p}% of recharge", p = format!("{:.0}", f.neut_pressure * 100.0)));
+            }
+            if !holds.is_empty() {
+                line(ui, tr!("Held by"), holds.join(", "));
+            }
+        }
+        for (head, cuts) in [(trf!("{a} ewar reach", a = shooter.name), own_cuts), (trf!("{a} ewar reach", a = target.name), their_cuts)] {
+            if cuts.is_empty() {
+                continue;
+            }
+            title(ui, &head, true);
+            for (kind, optimal, edge) in cuts {
+                let Some(label) = crate::stats_panel::ewar_name(*kind) else { continue };
+                let value = if edge > optimal { trf!("{o}, half at {h}", o = text::metres(*optimal), h = text::metres(*edge)) } else { text::metres(*optimal) };
+                tline(ui, label, value, |ui| {
+                    let mut rows = vec![(tr!("Full strength to").to_owned(), text::metres(*optimal))];
+                    if edge > optimal {
+                        rows.push((tr!("Half strength at").to_owned(), text::metres(*edge)));
+                        rows.push((tr!("A sixteenth at").to_owned(), text::metres(*optimal + 2.0 * (edge - optimal))));
+                        rows.push((tr!("Nothing past").to_owned(), text::metres(*optimal + 3.0 * (edge - optimal))));
+                    }
+                    tip(ui, label, &rows, tr!("The strongest module of the kind: its strength halves at one falloff past optimal, falls to a sixteenth at two and to nothing past three; tackle holds within optimal only. On a ship it stacks with the ship's own penalised modifiers and is cut by its resistances."));
+                });
+            }
+        }
+        let neut = their_cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
+        if neut > 0.0 && f64::from(an.range) <= neut * 1.2 {
+            warn(ui, &trf!("{v} sits in or near neutraliser range ({r})", v = shooter.name, r = text::metres(neut)));
+        }
+    });
+    let r = &an.race;
+    section(ui, "sim_fleet_sec_race", tr!("Race at this range"), true, |ui| {
+        let name_of = |side: usize| if side == 0 { &an.mine.name } else { &an.theirs.name };
+        let outcome = match r.winner {
+            Some(w) => trf!("{a} wins in {s}", a = name_of(w), s = text::secs(r.seconds)),
+            None if r.timeline.last().is_some_and(|x| x.1 == 0 && x.2 == 0) => trf!("both destroyed after {s}", s = text::secs(r.seconds)),
+            None => trf!("both stand after {s}", s = text::secs(r.seconds)),
+        };
+        tline(ui, tr!("Outcome"), outcome, |ui| {
+            let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
+            let sups = r.events.iter().filter(|(_, e)| matches!(e, Event::Suppressor { .. })).count();
+            tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Signature suppressors on").to_owned(), sups.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; missiles land after their flight; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its reaction, its lock unless pre-locked, its place in the arrival spread and its first cycle, at the fleet's logistics efficiency, lessened as repairs pile up, and heal no more than the damage there; assault damage controls go on when their ship is called."));
+        });
+        // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
+        // side loses its critical mass).
+        let (start, end) = (r.timeline.first(), r.timeline.last());
+        for side in [dir, 1 - dir] {
+            let count = |x: Option<&(f64, u32, u32, f64, f64)>| x.map_or(0, |x| if side == 0 { x.1 } else { x.2 });
+            let name = text::clip(name_of(side), 20);
+            tline(ui, &trf!("{a} ships left", a = name), trf!("{n} of {m}", n = count(end), m = count(start)), |ui| {
+                let rows: Vec<(String, String)> = r.timeline.iter().step_by((r.timeline.len() / 6).max(1)).map(|x| (text::secs(x.0), if side == 0 { x.1 } else { x.2 }.to_string())).collect();
+                tip(ui, tr!("Ships left over the fight"), &rows, "");
+            });
+            let first_loss = r.events.iter().find(|(_, e)| matches!(e, Event::Kill { side: s, .. } if *s == side)).map(|(t, _)| *t);
+            line(ui, &trf!("{a} first loss", a = name), first_loss.map_or_else(|| tr!("none").to_owned(), text::secs));
+            let other = 1 - side;
+            tline(ui, &trf!("{a} reps catch up", a = name), match r.critical_mass_lost[other] {
+                Some(t) => {
+                    let left = r.timeline.iter().find(|x| x.0 >= t).map_or(0, |x| if other == 0 { x.1 } else { x.2 });
+                    trf!("at {s}, {n} enemies left", s = text::secs(t), n = left)
+                }
+                None => tr!("never").to_owned(),
+            }, |ui| tip(ui, tr!("Reps catch up"), &[], tr!("From here the other side's damage on its primary, through the resistances of the layer being worn, no longer beats the repairs on it: it has lost its critical mass.")));
+        }
+    });
     let target_side = 1 - dir;
     if !r.verdicts[target_side].is_empty() {
-        title(ui, &trf!("{a} when primaried", a = target.name), true);
-        for (k, v) in &r.verdicts[target_side] {
-            let Some(s) = target.slots.get(*k) else { continue };
-            let text = match v {
-                Verdict::OneVolley => tr!("dies in one volley").to_owned(),
-                Verdict::BeforeReps { seconds } => trf!("dies in {s}, before reps land", s = text::secs(*seconds)),
-                Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(target) => trf!("dies in {s}, {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
-                Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
-                Verdict::Held => tr!("holds").to_owned(),
-                Verdict::NotCalled => tr!("never called").to_owned(),
-            };
-            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before any repair landed on it, dead with the damage outpacing the repairs, still standing at the end, or never called because the fight stalled or ended first.")));
-        }
-    }
-    // The shooter's ammo by range, against its first target as the fight leaves it.
-    let mut shown = false;
-    for (k, weapon, bands) in &an.ammo_bands[dir] {
-        if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
-            continue;
-        }
-        let Some(slot) = shooter.slots.get(*k) else { continue };
-        if !shown {
-            title(ui, tr!("Ammo by range"), true);
-            shown = true;
-        }
-        let gun = dogma.type_(*weapon).map_or("?", |t| t.name.as_str());
-        ui.add_space(3.0);
-        subhead(ui, &format!("{} · {}", slot_name(slot), gun));
-        for band in bands {
-            ammo_line(ui, dogma, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), band.charge, Some(tr!("The carried charge landing most over this stretch on the first target, its speed after this fleet's webs, its signature after the painters, the weapons under the other side's disruptors.")));
-            if let Some((id, share)) = band.better {
-                ammo_line(ui, dogma, &trf!("not carried, +{p}%", p = format!("{:.0}", share * 100.0)), id, Some(tr!("A charge not carried that would land this much more over the stretch, on average.")));
+        section(ui, "sim_fleet_sec_verdicts", &trf!("{a} when primaried", a = target.name), false, |ui| {
+            if !r.verdicts[target_side].is_empty() {
+                for (k, v) in &r.verdicts[target_side] {
+                    let Some(s) = target.slots.get(*k) else { continue };
+                    let text = match v {
+                        Verdict::OneVolley => tr!("dies in one volley").to_owned(),
+                        Verdict::BeforeReps { seconds } => trf!("dies in {s}, before reps land", s = text::secs(*seconds)),
+                        Verdict::Outpaced { seconds, by } if *by > 0.0 && has_logi(target) => trf!("dies in {s}, {d}/s over reps", s = text::secs(*seconds), d = text::num(*by)),
+                        Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
+                        Verdict::Held => tr!("holds").to_owned(),
+                        Verdict::NotCalled => tr!("never called").to_owned(),
+                    };
+                    tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before any repair landed on it, dead with the damage outpacing the repairs, still standing at the end, or never called because the fight stalled or ended first.")));
+                }
             }
-        }
+        });
+    }
+    if an.ammo_bands[dir].iter().any(|(_, _, b)| b.len() >= 2 || b.iter().any(|x| x.better.is_some())) {
+        section(ui, "sim_fleet_sec_ammo", tr!("Ammo by range"), false, |ui| {
+            // The shooter's ammo by range, against its first target as the fight leaves it.
+            for (k, weapon, bands) in &an.ammo_bands[dir] {
+                if bands.len() < 2 && bands.iter().all(|b| b.better.is_none()) {
+                    continue;
+                }
+                let Some(slot) = shooter.slots.get(*k) else { continue };
+                let gun = dogma.type_(*weapon).map_or("?", |t| t.name.as_str());
+                ui.add_space(3.0);
+                subhead(ui, &format!("{} · {}", slot_name(slot), gun));
+                for band in bands {
+                    ammo_line(ui, dogma, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), band.charge, Some(tr!("The carried charge landing most over this stretch on the first target, its speed after this fleet's webs, its signature after the painters, the weapons under the other side's disruptors.")));
+                    if let Some((id, share)) = band.better {
+                        ammo_line(ui, dogma, &trf!("not carried, +{p}%", p = format!("{:.0}", share * 100.0)), id, Some(tr!("A charge not carried that would land this much more over the stretch, on average.")));
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -1435,7 +1539,7 @@ pub fn volley_window(sim: &mut SimUi, ctx: &egui::Context) {
     let hull = dogma.type_(t.ship).map_or("?", |x| x.name.as_str()).to_owned();
     // The burst kinds each side flies, to switch off one by one.
     let kinds = |f: &Fleet| {
-        let mut v: Vec<BurstKind> = f.boosters.iter().map(|(k, _)| *k).chain(f.boost_shortcuts.iter().filter(|b| b.active).map(|b| b.kind)).collect();
+        let mut v: Vec<BurstKind> = f.boosters.iter().map(|(k, _)| *k).chain(f.boost_shortcuts.iter().filter(|b| b.active).map(|b| b.kind)).filter(|k| BurstKind::COMBAT.contains(k)).collect();
         v.sort_by_key(|k| BurstKind::ALL.iter().position(|x| x == k));
         v.dedup();
         v

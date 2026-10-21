@@ -1354,7 +1354,7 @@ impl SimUi {
         if self.mode == Mode::Fleets {
             if !narrow {
                 self.left_panel(ui, |sim, ui| fleet_panel::library(sim, ui, now_ms));
-                egui::Panel::right("sim_fleet_results").resizable(false).exact_size(STATS_W + 40.0).show_inside(ui, |ui| {
+                egui::Panel::right("sim_fleet_results").resizable(true).default_size(STATS_W + 40.0).size_range(320.0..=720.0).show_inside(ui, |ui| {
                     fleet_panel::results(self, ui);
                 });
             }
