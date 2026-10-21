@@ -2763,7 +2763,7 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.graph_targets = vec![first, second];
         }));
     }
-    v.push(imperium_dialog_scene("imperium_graph_window", [820.0, 560.0], |sim| {
+    v.push(imperium_dialog_scene("imperium_graph_window", [1160.0, 700.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;
         sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| {

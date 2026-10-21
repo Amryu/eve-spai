@@ -228,7 +228,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let width = plot_rect.width();
     if !sim.graph_current && sim.graph_attackers.is_empty() {
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(tr!("Add a ship to shoot with, on the left.")).weak());
+        ui.label(egui::RichText::new(tr!("Add an attacker.")).weak());
         return;
     }
     if damage && !sim.graph_ideal && sim.graph_targets.is_empty() {
@@ -350,6 +350,9 @@ fn range_box<K: std::hash::Hash + Eq + Copy>(ui: &mut egui::Ui, id: &str, label:
             ui.label(label);
             let mut auto = !map.contains_key(&key);
             let mut v = map.get(&key).copied().unwrap_or(step * 100.0);
+            // No vertical padding: the theme's makes the box taller than the line it sits on.
+            ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+            ui.spacing_mut().interact_size.y = 20.0;
             let r = ui.add_enabled_ui(!auto, |ui| ui.add_sized([96.0, 20.0], egui::DragValue::new(&mut v).range(step..=f64::MAX).speed(step).custom_formatter(|x, _| fmt(x)).custom_parser(parse))).inner;
             if r.changed() {
                 map.insert(key, v);
@@ -422,7 +425,7 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
         }
         ui.allocate_ui_with_layout(egui::vec2(214.0, 120.0), egui::Layout::left_to_right(egui::Align::Min), |ui| {
             let m = &mut sim.graph_motion;
-            motion_dial(ui, tr!("Shooter"), &mut m.shooter);
+            motion_dial(ui, tr!("Attacker"), &mut m.shooter);
             motion_dial(ui, tr!("Target"), &mut m.target);
         });
         let shooter_v = sim.computed().map_or(0.0, |c| c.mobility.max_velocity);
@@ -534,7 +537,7 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                     });
                     remove
                 };
-                ui.label(egui::RichText::new(tr!("Shooting")).strong());
+                ui.label(egui::RichText::new(tr!("Attackers")).strong());
                 if sim.graph_current && row(ui, trf!("{name} (on screen)", name = name_of(current))) {
                     sim.graph_current = false;
                 }
@@ -543,7 +546,7 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                         sim.graph_attackers.retain(|x| *x != id);
                     }
                 }
-                ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add a shooter")), |ui| {
+                ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add an attacker")), |ui| {
                     ui.set_min_width(240.0);
                     if !sim.graph_current && ui.button(tr!("The fit on screen")).clicked() {
                         sim.graph_current = true;
@@ -649,16 +652,18 @@ pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     if !sim.graph_window {
         return;
     }
-    let size = egui::vec2(760.0, 480.0);
+    // Room for the ships column, the plot and the target column side by side, and the dials.
+    let size = egui::vec2(1100.0, 640.0);
+    let min = egui::vec2(900.0, 560.0);
     if ctx.embed_viewports() {
         let mut open = true;
-        egui::Window::new(tr!("Graphs")).id(egui::Id::new("sim_graph_window")).open(&mut open).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        egui::Window::new(tr!("Graphs")).id(egui::Id::new("sim_graph_window")).open(&mut open).resizable(true).default_size(size).min_size(min).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
             show(sim, ui, now_ms);
         });
         sim.graph_window = open;
         return;
     }
-    let builder = egui::ViewportBuilder::default().with_title(tr!("Graphs")).with_inner_size(size).with_min_inner_size([480.0, 320.0]);
+    let builder = egui::ViewportBuilder::default().with_title(tr!("Graphs")).with_inner_size(size).with_min_inner_size(min);
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("sim_graph_window"), builder, |ctx, _| {
         // The root of a viewport of its own has no Ui to show inside, as the app's windows do it.
         #[allow(deprecated)]
