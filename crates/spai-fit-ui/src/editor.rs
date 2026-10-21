@@ -38,10 +38,13 @@ impl Cols {
     /// The name takes what the fixed cells leave of the row's inner width: icon, charge, the
     /// numbers, the two icon buttons and the gaps between them all.
     fn name_width(&self, inner: f32) -> f32 {
-        let fixed = 18.0 + self.charge + if self.numbers { 4.0 * self.num + 4.0 * rows::GAP } else { 0.0 } + if self.extra { self.num + self.info + 2.0 * rows::GAP } else { 0.0 } + if self.more { 2.0 * self.num + 2.0 * rows::GAP } else { 0.0 } + 2.0 * 21.0 + 5.0 * rows::GAP;
+        let fixed = STATE_W + 18.0 + self.charge + if self.numbers { 4.0 * self.num + 4.0 * rows::GAP } else { 0.0 } + if self.extra { self.num + self.info + 2.0 * rows::GAP } else { 0.0 } + if self.more { 2.0 * self.num + 2.0 * rows::GAP } else { 0.0 } + 21.0 + 6.0 * rows::GAP;
         (inner - fixed).max(60.0)
     }
 }
+
+/// The state button's column, first in every module row.
+const STATE_W: f32 = 21.0;
 
 fn rack_list(slot: Slot) -> &'static str {
     match slot {
@@ -555,7 +558,7 @@ fn racks(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = rows::GAP;
         let inner = ui.available_width() - 2.0 * rows::GAP;
-        ui.add_space(rows::GAP + 18.0);
+        ui.add_space(rows::GAP + STATE_W + rows::GAP + 18.0);
         let name_w = cols.name_width(inner);
         rows::head_cell(ui, name_w, tr!("Module"), false);
         rows::head_cell(ui, cols.charge, tr!("Charge"), false);
@@ -611,7 +614,7 @@ fn racks(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 
 fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: u64) {
     let r = rows::row(ui, rack_list(slot), ("sim_empty", slot, index), ROW_H, false, |ui| {
-        ui.add_space(22.0);
+        ui.add_space(STATE_W + rows::GAP + 22.0);
         let w = ui.available_width();
         rows::cell(ui, w, egui::RichText::new(trf!("Empty {slot} slot", slot = picker::slot_name(slot))).weak(), "");
     });
@@ -736,6 +739,24 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             ui.disable();
         }
         let inner = ui.available_width();
+        // The state first, in a cell of its own width: green active, red overloaded.
+        let glyph = match state {
+            State::Overload => egui::RichText::new(state_icon(state)).color(ui.visuals().error_fg_color),
+            State::Active => egui::RichText::new(state_icon(state)).color(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)),
+            _ => egui::RichText::new(state_icon(state)),
+        };
+        let b = ui.allocate_ui_with_layout(egui::vec2(STATE_W, ROW_H - 4.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_width(STATE_W);
+            icon_button(ui, glyph)
+        }).inner;
+        let b = b.on_hover_text(trf!("{state}. Click: online or active. Right-click: overload. Ctrl-click: offline.", state = state_name(state)));
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if b.clicked() {
+            set_state = Some(gesture_state(dogma, type_id, state, if ctrl { Gesture::Offline } else { Gesture::Toggle }));
+        }
+        if b.secondary_clicked() {
+            set_state = Some(gesture_state(dogma, type_id, state, Gesture::Overload));
+        }
         // The icon is the handle: dragging it moves the module, with Shift copies it. The rest of
         // the row stays for clicks, menus and the charge button.
         let icon = crate::icons::type_icon(ui, crate::mutation::icon_of(dogma, type_id, rolled.as_ref()), 18.0).interact(egui::Sense::drag()).on_hover_text(tr!("Drag to another slot to move it, with Shift to copy it"));
@@ -816,18 +837,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                     ui.add(egui::Label::new(if off { t.weak() } else { t }).truncate().selectable(false).show_tooltip_when_elided(false));
                 });
                 if burn.is_some() {
-                    r.response.on_hover_text(tr!("Overloaded, how long it lasts at worst: its hit points over the heat damage it takes each overloaded cycle. A cooler rack lasts longer."));
+                    r.response.on_hover_text(tr!("Overloaded, how long it lasts on average: the rack heats up from every module overloaded in it, and each cycle may damage it and its neighbours. More modules overloaded beside it, sooner."));
                 }
             }
-        }
-        let glyph = if state == State::Overload { egui::RichText::new(state_icon(state)).color(ui.visuals().error_fg_color) } else { egui::RichText::new(state_icon(state)) };
-        let b = icon_button(ui, glyph).on_hover_text(trf!("{state}. Click: online or active. Right-click: overload. Ctrl-click: offline.", state = state_name(state)));
-        let ctrl = ui.input(|i| i.modifiers.command);
-        if b.clicked() {
-            set_state = Some(gesture_state(dogma, type_id, state, if ctrl { Gesture::Offline } else { Gesture::Toggle }));
-        }
-        if b.secondary_clicked() {
-            set_state = Some(gesture_state(dogma, type_id, state, Gesture::Overload));
         }
         if icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
             remove = true;

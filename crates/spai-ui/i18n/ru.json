@@ -1643,7 +1643,7 @@
   "Over 50%": "Больше 50%",
   "Overlay over EVE": "Оверлей поверх EVE",
   "Overloaded": "Перегружен",
-  "Overloaded, how long it lasts at worst: its hit points over the heat damage it takes each overloaded cycle. A cooler rack lasts longer.": "В перегрузке, сколько продержится в худшем случае: его прочность, делённая на урон от нагрева за цикл. Более холодная стойка держится дольше.",
+  "Overloaded, how long it lasts on average: the rack heats up from every module overloaded in it, and each cycle may damage it and its neighbours. More modules overloaded beside it, sooner.": "Перегрев, сколько продержится в среднем: стойка греется от каждого перегретого модуля, и каждый цикл может повредить его и соседей. Больше перегретых рядом — раньше.",
   "Overview": "Овервью",
   "Overwrite": "Перезаписать",
   "Overwrite the destination settings, keeping a backup of each": "Перезаписать настройки назначения, сохранив копию каждой",

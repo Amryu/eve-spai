@@ -1643,7 +1643,7 @@
   "Over 50%": "Plus de 50 %",
   "Overlay over EVE": "Superposition sur EVE",
   "Overloaded": "Surchargé",
-  "Overloaded, how long it lasts at worst: its hit points over the heat damage it takes each overloaded cycle. A cooler rack lasts longer.": "En surcharge, combien de temps il tient au pire : ses points de vie divisés par les dégâts de chaleur par cycle surchargé. Un rack plus froid tient plus longtemps.",
+  "Overloaded, how long it lasts on average: the rack heats up from every module overloaded in it, and each cycle may damage it and its neighbours. More modules overloaded beside it, sooner.": "Surchauffé, combien de temps il tient en moyenne : le rack chauffe avec chaque module surchauffé, et chaque cycle peut l'endommager ainsi que ses voisins. Plus de modules surchauffés à côté, plus tôt.",
   "Overview": "Vue d'ensemble",
   "Overwrite": "Écraser",
   "Overwrite the destination settings, keeping a backup of each": "Écraser les paramètres de destination, en gardant une sauvegarde de chacun",
