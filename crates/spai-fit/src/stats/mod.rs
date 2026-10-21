@@ -1062,8 +1062,9 @@ pub fn module_info(calc: &Calc, i: ItemIdx) -> Option<ModuleInfo> {
 /// Seconds of overload before it burns out, if every overloaded cycle damages it: its hit points
 /// over its heat damage per cycle, at the overloaded cycle time. A cooler rack damages it less
 /// often, so this is how long it lasts at the worst.
-/// How long the module lasts overloaded, at the expected rate of heat damage, beside what else in
-/// its rack is overloaded now (counting itself as overloaded if it is not yet).
+/// How long the module lasts at the expected rate of heat damage: with modules of its rack
+/// overloaded, as things stand (overloaded itself or only hit by the others' heat); with none, as
+/// if it were overloaded alone.
 ///
 /// The rack's heat climbs as `H(t) = 1 − e^(−k t)`, `k = heatGenerationMultiplier × Σ
 /// heatAbsorbtionRateModifier` over the overloaded modules. Each cycle of an overloaded module
@@ -1091,12 +1092,16 @@ fn burnout_of(calc: &Calc, i: ItemIdx) -> Option<f64> {
     let slots: f64 = ["hiSlots", "medSlots", "lowSlots", "rigSlots"].iter().filter_map(|n| get(ship, n)).sum();
     let online = calc.modules().filter(|(_, it)| matches!(it.kind, ItemKind::Module { slot: crate::fit::Slot::High | crate::fit::Slot::Mid | crate::fit::Slot::Low, .. }) && it.state >= State::Online).count() as f64;
     let share = if slots > 0.0 { (online / slots).min(1.0) } else { 1.0 };
-    // The rack's overloaded modules, with this one among them.
+    // With anything in the rack overloaded, what happens as it is: the overloaded modules heat it,
+    // and one not overloaded only takes what spills over. With nothing overloaded, this one as if
+    // overloaded alone.
+    let any_over = calc.modules().any(|(_, it)| matches!(it.kind, ItemKind::Module { slot: s, .. } if s == slot) && it.state == State::Overload);
     let mut k = 0.0;
     let mut a = 0.0;
     for (j, it) in calc.modules() {
         let ItemKind::Module { slot: s, index: x } = it.kind else { continue };
-        if s != slot || (it.state != State::Overload && j != i) {
+        let heating = if any_over { it.state == State::Overload } else { j == i };
+        if s != slot || !heating {
             continue;
         }
         let (Some(damage), Some(mut cycle)) = (get(j, "heatDamage"), cycle_of(calc, j)) else { continue };

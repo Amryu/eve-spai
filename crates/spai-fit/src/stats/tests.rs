@@ -356,6 +356,31 @@ fn a_module_that_heats_tells_how_long_it_lasts_overloaded() {
 }
 
 #[test]
+fn a_neighbour_left_cool_outlasts_the_overloaded_module() {
+    use crate::fit::{Module, Slot, State};
+    use crate::test_support::attr_def;
+    let mut d = dataset();
+    d.attributes.push(attr_def(attr::HEAT_DAMAGE, "heatDamage", true, false, 0.0));
+    d.attributes.push(attr_def(9001, "heatAbsorbtionRateModifier", true, false, 0.0));
+    d.attributes.push(attr_def(9002, "heatAttenuationHi", true, false, 0.0));
+    let gun = d.types.iter_mut().find(|t| t.id == ids::GUN).unwrap();
+    gun.attrs.extend([(attr::HEAT_DAMAGE, 10.0), (attr::HP, 40.0), (9001, 0.02)]);
+    gun.attrs.sort_by_key(|(a, _)| *a);
+    let ship = d.types.iter_mut().find(|t| t.id == ids::SHIP).unwrap();
+    ship.attrs.push((9002, 0.5));
+    ship.attrs.sort_by_key(|(a, _)| *a);
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Overload));
+    f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO).with_state(State::Active));
+    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let c = compute_with(&calc, &f);
+    let stats = module_stats(&calc, &c);
+    let at = |i: u8| stats.iter().find(|m| m.slot == Slot::High && m.index == i).unwrap().burnout_s.unwrap();
+    assert!(at(1) > at(0), "the cool neighbour only takes the spill-over: {} against {}", at(1), at(0));
+}
+
+#[test]
 fn missiles_fly_whole_seconds_and_one_more_by_chance() {
     let m = crate::stats::MissileProfile { velocity: 1000.0, flight_time_s: 6.3, range: 6300.0, explosion_radius: 0.0, explosion_velocity: 0.0, damage_reduction_factor: 0.0 };
     assert_eq!((m.short_range(), m.long_range()), (6000.0, 7000.0));
