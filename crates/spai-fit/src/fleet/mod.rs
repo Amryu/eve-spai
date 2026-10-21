@@ -514,6 +514,10 @@ pub struct Against {
     pub target_signature: f64,
 }
 
+fn ships(s: &FleetStats) -> Vec<(u32, &Computed)> {
+    s.slots.iter().filter(|x| x.count > 0).map(|x| (x.count, &x.computed)).collect()
+}
+
 /// The ewar a fleet keeps on the enemy: what its ships project unless typed by hand.
 pub fn ewar_of(fleet: &Fleet, stats: &FleetStats) -> Ewar {
     if fleet.ewar_auto {
@@ -530,7 +534,15 @@ pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stat
     let t = &target.computed;
     let a_ewar = ewar_of(a, a_stats);
     let b_ewar = ewar_of(b, b_stats);
-    let (velocity, signature) = ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature);
+    let range = f64::from(a.range);
+    // The ships' own modules by range, all on the main hull; counts typed by hand at full strength.
+    let (velocity, signature) = if a.ewar_auto {
+        let e = ewar::ewar_at(&ships(a_stats), range, 1.0);
+        (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
+    } else {
+        ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature)
+    };
+    let on_shooters = b.ewar_auto.then(|| ewar::ewar_at(&ships(b_stats), range, f64::from(a_stats.ships.max(1))));
     out.target_velocity = velocity;
     out.target_signature = signature;
     let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0 };
@@ -543,8 +555,11 @@ pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stat
         let mut dps = 0.0;
         let mut volley = 0.0;
         for w in &slot.computed.weapons {
-            let mut w = w.clone();
-            if w.kind == WeaponKind::Turret {
+            let mut w = match &on_shooters {
+                Some(e) => sweep::disrupted(w, e),
+                None => w.clone(),
+            };
+            if on_shooters.is_none() && w.kind == WeaponKind::Turret {
                 w.optimal *= td_factor;
                 w.falloff *= td_factor;
                 w.tracking *= td_factor;

@@ -26,6 +26,10 @@ pub struct FleetEntry {
     pub name: String,
     pub updated_at: i64,
     pub doc: String,
+    #[serde(default)]
+    pub rev: i64,
+    #[serde(default)]
+    pub server_rev: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -53,6 +57,11 @@ impl Library {
     pub fn put(&mut self, id: &str, name: &str, ship: u32, doc: &str, now: i64) {
         let (rev, server_rev) = self.fits.get(id).map_or((1, 0), |e| (e.rev + 1, e.server_rev));
         self.fits.insert(id.to_owned(), Entry { name: name.to_owned(), ship, updated_at: now, doc: doc.to_owned(), rev, server_rev });
+    }
+
+    pub fn put_fleet(&mut self, id: &str, name: &str, doc: &str, now: i64) {
+        let (rev, server_rev) = self.fleets.get(id).map_or((1, 0), |e| (e.rev + 1, e.server_rev));
+        self.fleets.insert(id.to_owned(), FleetEntry { name: name.to_owned(), updated_at: now, doc: doc.to_owned(), rev, server_rev });
     }
 
     pub fn remove(&mut self, id: &str) {

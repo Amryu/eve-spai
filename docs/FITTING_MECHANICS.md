@@ -407,36 +407,112 @@ Tests: `stats::tests::remote_modules_are_listed_with_their_reach_and_fighters_sh
 A fleet is a list of saved fits with a count rule each: a fixed number, a share of the fleet size
 in percent, or "fill" (what the others leave, within bounds: the line ship). Fixed and percent
 counts are taken first, fill slots share the rest, a typed number overrides its rule
-(`fleet::resolve_counts`).
+(`fleet::resolve_counts`). Each slot flies one of its fit's variations or its base fit
+(`FleetSlot.variation`, `fleet::flown`), whatever was last switched on in the editor.
 
-**Bursts.** One booster fit per burst kind; every active burst module with a charge names up to
-four buffs (`warfareBuffNID`, `warfareBuffNValue`, the module's values after the charge's
-`chargeBonusWarfareCharge` modifiers and the booster's own skills), the strongest of each buff id
-is kept (section 6) and every ship of the fleet is computed with them (`fleet::env_of`).
+**Roles** (`fleet::role_of`): the main slot is `Main`, other filling slots `Mainline`; the
+rest by hull group: logistics, command ships and command destroyers, interdictors and heavy
+interdictors (tackle), recons and electronic attack ships (ewar); anything else is support.
+
+**Bursts.** One booster per burst kind: a fit of the fleet carrying that kind's burst module, or a
+generic booster (`Fleet.boost_shortcuts`, the same shortcut as on a fit's projected tab: the
+kind's Tech II burst once per charge switched on, on a hull without burst bonuses or a chosen
+boosting hull, its own skills and optionally the mindlink). A generic booster flies in no slot,
+so it is never a target. Every active burst module with a charge names up to four buffs
+(`warfareBuffNID`, `warfareBuffNValue`, after the charge's `chargeBonusWarfareCharge`
+modifiers and the booster's skills); the strongest of each buff id is kept (section 6) and every
+ship of the fleet is computed with them (`fleet::env_of`).
 
 **Fleet numbers** (`fleet::stats`): each slot computed with the fleet's buffs and its own skills
-profile, scaled by its count: DPS, volley, logistics (remote armour and shield repairs per second,
-section 17), neuts, the slowest and fastest hull.
+profile, scaled by its count: DPS, volley, logistics (section 17), neuts, the slowest and fastest
+hull. Drones and fighters count in DPS but never in a volley: they attack on their own time, so
+they are no alpha that kills a ship before its logistics react. With `Fleet.drones` off they are
+left out entirely.
 
-**Against** (`fleet::against`), fleet A on fleet B's main hull at A's engagement range:
+**Formation and motion** (`fleet::geometry`). The two anchors sit `d` apart on one axis. A
+**ball** puts its ships on a sphere of the given radius around the anchor, directions spread
+evenly (a Fibonacci sphere). A **flock** puts the anchor at the centre and the others at
+distances following a half-normal of the given width σ (`σ·√2·erf⁻¹(share)` for evenly spread
+shares), directions spread evenly. Each fleet moves as one at its share of its slowest ship's
+top speed, along a heading against the line to the other: 0° straight at it, 90° across (the
+same side for both), 180° away. For a shooter and a target the distance, the transversal speed
+(the relative velocity's component across the line between them) and the angular velocity
+(transversal over distance) follow; up to 20 sampled ships a side make the pairs
+(`geometry::engagement`).
 
-- A's ewar on the target: unless typed by hand (`ewar_auto` off), what A's ships project,
-  every web, painter and tracking disruptor fitted times the ships carrying it
-  (`FleetStats.projected`); each web −60% speed, each painter +30% signature, penalised like
-  modules; B's tracking disruptors cut A's turret optimal, falloff and tracking by 17.19%
-  each, penalised. The target moves fully transversally at its speed.
-- Applied DPS and volley: each weapon group's listed figure times its applied share (section 14),
-  summed by count.
-- Critical mass: `ceil(EHP of B's main hull / (applied volley of one A main ship × efficiency))`,
-  the ships of A's main slot that must volley together to kill one B main hull; the efficiency
-  (85% by default) stands for lacking skills and mechanical failures.
-- Kills per volley: `applied volley × efficiency / EHP`.
-- Break point: B's logistics plus B's main hull's own repairs per second; the margin is A's
-  applied DPS × efficiency above it, negative when B out-repairs A.
+**Ewar by range** (`fleet::ewar::ewar_at`). Every ewar module of a side, as many times as it
+flies, gives its own strength (`RemoteModule.parts`: a web's speed factor, a painter's
+signature bonus, a damp's lock range and scan resolution, a tracking disruptor's tracking,
+optimal and falloff, a guidance disruptor's explosion radius, explosion velocity, missile
+velocity and flight time) times the range factor `0.5^((max(0, d − optimal)/falloff)²)`, zero
+past `optimal + 3·falloff`. On one figure the percent changes stack penalised (section 5),
+strongest first, `k` of them, where `k` is the modules in reach over the ships they are spread
+on: 1 for everything on one primary, the other fleet's size to spread them over it; a
+fractional `k` counts the last module in part. Neutralisers add their GJ/s times the range
+factor, over the same spread. Scramblers and disruptors hold within their optimal only.
+Cutoffs per kind: the strongest optimal, and the outer edge `optimal + 3·falloff` (the optimal
+for tackle). A fleet's ewar typed by hand (`ewar_auto` off) keeps the plain model: each web
+−60% speed, each painter +30% signature, each tracking disruptor −17.19% turret optimal,
+falloff and tracking, penalised.
+
+**Ammo by range** (`fleet::ammo`). Each weapon is recomputed with every compatible charge
+(`Dogma::compatible_charges`); carried are the loaded charge and those in the cargo. At each
+range the carried charge landing the most on the target is used; a charge not carried that
+would land more is a suggestion, its gain averaged over the stretch where the carried one is
+best.
+
+**Range sweep** (`fleet::sweep`). Over every range to 110% of the farthest weapon reach on
+either side (201 steps, plus every ewar optimal and edge), each side's applied DPS on the
+other's primary: per weapon the best carried charge, disrupted by the other side's ewar spread
+over this fleet, its applied share (section 14) averaged over the formation pairs, against the
+primary's signature and speed under this side's ewar focused on it. The primary is the first
+role of the shooter's target order present in the enemy (default: damage first, then
+logistics, support, tackle, ewar, command). The score of a range is primaries killed per minute
+(`60 × applied DPS / primary EHP`) times `1 − penalties`, the penalties capped at 90%: webbed
+0.15, held by a scrambler or disruptor 0.20, neut pressure 0.30 at full (the other side's
+neutralising per ship over this fleet's peak recharge per ship, capped at 1). A side is
+favoured where its score leads the other's by 5%; a stretch needs two ranges or more. A side's
+best range is the farthest where it still lands 90% of its most.
+
+**Race** (`fleet::race`), at one range in steps of 0.25 s, for at most 30 minutes:
+
+- Each side shoots one primary, picked by its target order, until it dies.
+- A ship's first volley on a new call comes after its reaction delay, spread log-normally over
+  the side (median 1.5 s, σ of the log 0.6, quantiles laid out evenly), and never before its
+  guns have cycled since its last; then a volley every cycle, a reload after each load.
+  Disintegrators spool from cold on each new target.
+- A volley's damage by type goes through shield, armor and hull with their resonances; what
+  a layer cannot hold carries on. A reactive hardener steps each cycle towards the damage
+  that reached it (section 7). The fleet's volley efficiency scales every volley.
+- An assault damage control goes on when its ship is called primary, for its `duration`,
+  multiplying every resonance by its `resistanceMultiplier`, once per fight (its reactivation
+  delay outlasts the fight).
+- Logistics repair the primary by layer once locked (`lock time` of the first logistics slot on
+  the primary's signature).
+- Critical mass is lost when the damage landing on the primary, through the resistances of the
+  layer being worn, no longer beats the repairs on it.
+- Per target slot a verdict: one volley, dead before its logistics locked, dead with the
+  damage outpacing the repairs by so much, or held.
+
+**Against** (`fleet::against`), the summary at the set range on B's main hull: applied DPS and
+volley with the ewar by range above (or typed by hand), critical mass
+`ceil(EHP / (applied volley of one A main ship × efficiency))`, kills per volley
+`applied volley × efficiency / EHP`, break point (B's logistics plus the main hull's own repairs)
+and the margin above it.
+
+**Graphs.** Damage by range (both sweeps, favoured stretches shaded, markers at the set range,
+best ranges and ewar optimals), the race's ships left and damage landing over time with
+critical mass markers, and the angular velocities of every shooter and target pair sorted, with
+each turret group's half-hit angular `tracking × signature / signature resolution`.
+
+**Opponents** are a saved fleet or an enemy doctrine group built as below at the open fleet's
+size. Fleets sync with the server like fits, by revision.
 
 **From a doctrine** (`fleet::from_doctrine`): every preset of a doctrine becomes a slot with a
 rule by its hull's group: logistics 15 %, command ships and command destroyers 2, interdictors
 and heavy interdictors 3, recons and electronic attack ships 2, everything else fills; the first
 filling slot is the main; a fit with an active command burst becomes the booster of that kind.
 
-Tests: `fleet::tests::*`, `spai-fit-ui` `fleets_ask_for_fit_documents_and_compute_once_they_arrive`.
+Tests: `fleet::tests::*`, `fleet::ewar::tests::*`, `fleet::ammo::tests::*`,
+`fleet::geometry::tests::*`, `spai-fit-ui`
+`fleets_ask_for_fit_documents_and_compute_once_they_arrive`, `store::tests::fleets_go_up_once_and_come_down_newer`.

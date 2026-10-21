@@ -199,6 +199,38 @@ impl SimWebApp {
                     }
                 }
             }
+            // Fleets the same way.
+            for (id, e) in lib.fleets.clone() {
+                if e.server_rev >= e.rev {
+                    continue;
+                }
+                let Ok(doc) = serde_json::from_str::<serde_json::Value>(&e.doc) else { continue };
+                let body = serde_json::json!({ "name": e.name, "rev": e.server_rev, "doc": doc });
+                let mut req = ehttp::Request::post(Self::api(&format!("/fleets/{id}")), body.to_string().into_bytes());
+                req.method = ehttp::Method::PUT;
+                req.headers = ehttp::Headers::new(&[("Content-Type", "application/json")]);
+                if let Ok(r) = ehttp::fetch_async(auth(req)).await {
+                    if let Some(rev) = r.ok.then(|| serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["rev"].as_i64())).flatten() {
+                        if let Some(x) = lib.fleets.get_mut(&id) {
+                            x.server_rev = rev;
+                            x.rev = rev;
+                        }
+                    }
+                }
+            }
+            if let Ok(r) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/fleets")))).await {
+                if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
+                    for entry in list {
+                        let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
+                        if lib.fleets.get(id).is_some_and(|e| e.server_rev >= rev) {
+                            continue;
+                        }
+                        let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/fleets/{id}"))))).await else { continue };
+                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&full.bytes) else { continue };
+                        lib.fleets.insert(id.to_owned(), FleetEntry { name: v["name"].as_str().unwrap_or("").to_owned(), updated_at: v["updated_at"].as_i64().unwrap_or(0), doc: v["doc"].to_string(), rev, server_rev: rev });
+                    }
+                }
+            }
             page::save_raw(KEY, &lib.to_json());
             events.lock().unwrap().push(HostEvent::Status("\u{0}reload".into()));
             ctx.request_repaint();
@@ -355,9 +387,10 @@ impl SimWebApp {
                 }
             }
             HostRequest::SaveFleet { id, name, doc } => {
-                self.library.fleets.insert(id.clone(), FleetEntry { name, updated_at: now, doc });
+                self.library.put_fleet(&id, &name, &doc, now);
                 page::save_raw(KEY, &self.library.to_json());
                 self.sim.handle(HostEvent::FleetSaved(id));
+                self.sync(ctx);
             }
             HostRequest::DeleteFleet(id) => {
                 self.library.fleets.remove(&id);
@@ -405,6 +438,7 @@ impl eframe::App for SimWebApp {
                 HostEvent::Status(s) if s == "\u{0}reload" => {
                     self.library = page::load_raw(KEY).map(|t| Library::from_json(&t)).unwrap_or_default();
                     self.sim.handle(HostEvent::Fits(self.library.summaries()));
+                    self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries()));
                 }
                 e => self.sim.handle(e),
             }

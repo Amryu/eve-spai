@@ -27,6 +27,9 @@ pub struct FleetSession {
     pub enemy: Option<String>,
 }
 
+/// Opens an opponent id naming an enemy doctrine group rather than a saved fleet.
+pub const ENEMY_DOCTRINE: &str = "doctrine:";
+
 pub fn role_name(role: spai_fit::fleet::Role) -> &'static str {
     use spai_fit::fleet::Role as R;
     match role {
@@ -75,8 +78,13 @@ impl SimUi {
 
     /// The doctrines by tag, each tag one doctrine's presets; an untagged preset stands alone.
     pub fn doctrine_groups(&self) -> Vec<(String, Vec<String>)> {
+        self.doctrine_groups_of(None)
+    }
+
+    /// The doctrine groups of one side only, or of all.
+    pub fn doctrine_groups_of(&self, side: Option<crate::DoctrineSide>) -> Vec<(String, Vec<String>)> {
         let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-        for d in &self.doctrines {
+        for d in self.doctrines.iter().filter(|d| side.is_none_or(|s| d.side == s)) {
             let names: Vec<String> = if d.tags.is_empty() { vec![d.name.clone()] } else { d.tags.clone() };
             for n in names {
                 match groups.iter_mut().find(|(g, _)| *g == n) {
@@ -87,6 +95,22 @@ impl SimUi {
         }
         groups.sort_by(|a, b| a.0.cmp(&b.0));
         groups
+    }
+
+    /// The opponent by its id: a saved fleet, or an enemy doctrine group (`ENEMY_DOCTRINE` and its
+    /// name) built into a fleet of the open one's size.
+    pub(crate) fn enemy_fleet(&self, id: &str) -> Option<Fleet> {
+        let Some(group) = id.strip_prefix(ENEMY_DOCTRINE) else { return self.fleet_docs.get(id).cloned() };
+        let dogma = self.dogma.as_ref()?;
+        let (_, ids) = self.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().find(|(g, _)| g == group)?;
+        let fits: Vec<(String, Fit)> = ids.iter().filter_map(|id| self.fit_docs.get(id).map(|f| (id.clone(), f.clone()))).collect();
+        if fits.is_empty() {
+            return None;
+        }
+        let mut fleet = spai_fit::fleet::from_doctrine(dogma, group, &fits, self.skills());
+        fleet.id = id.to_owned();
+        fleet.size = self.fleet.as_ref().map_or(50, |f| f.fleet.size);
+        Some(fleet)
     }
 
     /// A fleet of the doctrine's presets, each a slot by its hull's role.
@@ -118,10 +142,10 @@ impl SimUi {
         let fits = |id: &str| docs.get(id).cloned();
         let skills = |p: Option<&str>| self.fleet_skills(p);
         let mine = fleet::stats(dogma, &f.fleet, &fits, &skills);
-        let enemy = f.enemy.as_ref().and_then(|id| self.fleet_docs.get(id)).map(|e| {
-            let theirs = fleet::stats(dogma, e, &fits, &skills);
-            let a = fleet::against(dogma, &f.fleet, &mine, e, &theirs);
-            let b = fleet::against(dogma, e, &theirs, &f.fleet, &mine);
+        let enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id)).map(|e| {
+            let theirs = fleet::stats(dogma, &e, &fits, &skills);
+            let a = fleet::against(dogma, &f.fleet, &mine, &e, &theirs);
+            let b = fleet::against(dogma, &e, &theirs, &f.fleet, &mine);
             (theirs, a, b)
         });
         Some((mine, enemy))
@@ -147,7 +171,7 @@ impl SimUi {
     pub(crate) fn fleet_analysis(&mut self) -> Option<std::sync::Arc<Analysis>> {
         use std::hash::{Hash, Hasher};
         let (dogma, f) = (self.dogma.clone()?, self.fleet.as_ref()?);
-        let enemy = f.enemy.as_ref().and_then(|id| self.fleet_docs.get(id))?.clone();
+        let enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id))?;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&f.fleet).unwrap_or_default().hash(&mut h);
         serde_json::to_string(&enemy).unwrap_or_default().hash(&mut h);
@@ -272,6 +296,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         })
         .collect();
     let mut want_all_docs = false;
+    let enemy_doctrines: Vec<String> = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().map(|(g, _)| g).collect();
     // Each fit's variations, to fly a slot with one of them.
     let variations: HashMap<String, Vec<(u32, String)>> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), f.variations.iter().map(|v| (v.id, v.name.clone())).collect())).collect();
     let Some(session) = sim.fleet.as_mut() else { return };
@@ -549,7 +574,10 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             });
             ui.end_row();
             ui.label(tr!("Against"));
-            let enemy_name = session.enemy.as_ref().and_then(|id| fleets.iter().find(|x| &x.id == id)).map_or_else(|| tr!("none").to_owned(), |x| x.name.clone());
+            let enemy_name = match session.enemy.as_deref() {
+                Some(id) => id.strip_prefix(ENEMY_DOCTRINE).map(|g| trf!("{name} (enemy doctrine)", name = g)).or_else(|| fleets.iter().find(|x| x.id == id).map(|x| x.name.clone())).unwrap_or_else(|| tr!("none").to_owned()),
+                None => tr!("none").to_owned(),
+            };
             egui::ComboBox::from_id_salt("sim_fleet_enemy").selected_text(text::clip(&enemy_name, 28)).width(220.0).show_ui(ui, |ui| {
                 if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
                     session.enemy = None;
@@ -561,6 +589,18 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                         session.enemy = Some(x.id.clone());
                         f.enemy = Some(x.id.clone());
                         changed = true;
+                    }
+                }
+                if !enemy_doctrines.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(tr!("Enemy doctrines")).weak());
+                    for g in &enemy_doctrines {
+                        let id = format!("{ENEMY_DOCTRINE}{g}");
+                        if ui.menu_label(session.enemy.as_deref() == Some(id.as_str()), g.clone()).clicked() {
+                            session.enemy = Some(id.clone());
+                            f.enemy = Some(id);
+                            changed = true;
+                        }
                     }
                 }
             });
@@ -598,7 +638,10 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
         sim.want_fit_docs(all.into_iter());
     }
     if let Some(enemy) = sim.fleet.as_ref().and_then(|f| f.enemy.clone()) {
-        if !sim.fleet_docs.contains_key(&enemy) {
+        if let Some(group) = enemy.strip_prefix(ENEMY_DOCTRINE) {
+            let ids = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().find(|(g, _)| g == group).map(|(_, ids)| ids).unwrap_or_default();
+            sim.want_fit_docs(ids.into_iter());
+        } else if !sim.fleet_docs.contains_key(&enemy) {
             sim.request(HostRequest::LoadFleetDoc(enemy));
         }
         let wanted: Vec<String> = sim.fleet_docs.values().flat_map(|e| e.slots.iter().map(|s| s.fit_id.clone()).chain(e.boosters.iter().map(|(_, id)| id.clone()))).collect();

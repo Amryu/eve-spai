@@ -82,7 +82,7 @@ pub struct Sweep {
 }
 
 /// The weapon as the other side's ewar leaves it: disruptors on turrets and on missiles.
-fn disrupted(w: &WeaponGroup, e: &EwarOn) -> WeaponGroup {
+pub(crate) fn disrupted(w: &WeaponGroup, e: &EwarOn) -> WeaponGroup {
     let mut w = w.clone();
     w.tracking *= e.tracking;
     w.optimal *= e.optimal;

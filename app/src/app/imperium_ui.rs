@@ -76,6 +76,8 @@ impl SpaiApp {
                         self.sim.forget_fit_doc(&id);
                     }
                     self.sim_list_fits();
+                    self.sim.fleet_docs.clear();
+                    self.sim_list_fleets();
                 }
                 e => self.sim.handle(e),
             }
@@ -278,6 +280,35 @@ impl SpaiApp {
                             let _ = store.fit_mark_synced(&id, rev);
                         }
                     }
+                }
+            }
+            // Fleets go up and come down the same way as fits.
+            for (id, name, doc, server_rev, deleted) in store.fleets_unsynced() {
+                if deleted {
+                    if client.delete(format!("{base}/api/sim/fleets/{id}")).bearer_auth(&bearer).send().is_ok_and(|r| r.status().is_success() || r.status().as_u16() == 404) {
+                        let _ = store.fleet_purge(&id);
+                    }
+                    continue;
+                }
+                let Ok(doc_json) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
+                let body = serde_json::json!({ "name": name, "rev": server_rev, "doc": doc_json });
+                if let Ok(r) = client.put(format!("{base}/api/sim/fleets/{id}")).bearer_auth(&bearer).json(&body).send() {
+                    if r.status().is_success() {
+                        if let Some(rev) = r.json::<serde_json::Value>().ok().and_then(|v| v["rev"].as_i64()) {
+                            let _ = store.fleet_mark_synced(&id, rev);
+                        }
+                    }
+                }
+            }
+            if let Ok(list) = client.get(format!("{base}/api/sim/fleets")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<Vec<serde_json::Value>>()) {
+                let local: std::collections::HashMap<String, (i64, bool)> = store.fleets_revisions().into_iter().map(|(id, rev, deleted)| (id, (rev, deleted))).collect();
+                for entry in list {
+                    let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
+                    if local.get(id).is_some_and(|(r, d)| *r >= rev || *d) {
+                        continue;
+                    }
+                    let Ok(full) = client.get(format!("{base}/api/sim/fleets/{id}")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<serde_json::Value>()) else { continue };
+                    let _ = store.fleet_put_from_server(id, full["name"].as_str().unwrap_or(""), &full["doc"].to_string(), rev, full["updated_at"].as_i64().unwrap_or(0));
                 }
             }
             let Ok(list) = client.get(format!("{base}/api/sim/fits")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<Vec<serde_json::Value>>()) else { return };

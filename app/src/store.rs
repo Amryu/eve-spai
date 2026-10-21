@@ -805,6 +805,39 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Fleets saved here since the server last confirmed them, and deletions not yet sent:
+    /// `(id, name, doc, server_rev, deleted)`.
+    pub fn fleets_unsynced(&self) -> Vec<(String, String, String, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, doc, server_rev, deleted FROM fleets WHERE rev > server_rev OR (deleted = 1 AND server_rev > 0)") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    pub fn fleet_mark_synced(&self, id: &str, server_rev: i64) -> Result<()> {
+        self.exec_essential("DELETE FROM fleets WHERE id = ?1 AND deleted = 1", params![id])?;
+        self.exec_essential("UPDATE fleets SET server_rev = ?2, rev = ?2 WHERE id = ?1", params![id, server_rev]).map(|_| ())
+    }
+
+    pub fn fleet_purge(&self, id: &str) -> Result<()> {
+        self.exec_essential("DELETE FROM fleets WHERE id = ?1", params![id]).map(|_| ())
+    }
+
+    pub fn fleets_revisions(&self) -> Vec<(String, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, server_rev, deleted FROM fleets") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    pub fn fleet_put_from_server(&self, id: &str, name: &str, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
+        self.exec_essential(
+            "INSERT INTO fleets(id, name, doc, rev, updated_at, server_rev, deleted) VALUES(?1, ?2, ?3, ?4, ?5, ?4, 0)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, doc = excluded.doc, rev = excluded.rev, updated_at = excluded.updated_at,
+             server_rev = excluded.server_rev, deleted = 0",
+            params![id, name, doc, rev, updated_at],
+        )
+        .map(|_| ())
+    }
+
     pub fn fleet_delete(&self, id: &str) -> Result<()> {
         let now = crate::clock::utc().timestamp();
         self.exec_essential("UPDATE fleets SET deleted = 1, updated_at = ?2 WHERE id = ?1", params![id, now]).map(|_| ())
@@ -1629,6 +1662,24 @@ mod tests {
         assert_eq!(mode(&dir.join("eve-spai.db-wal")), 0o600);
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fleets_go_up_once_and_come_down_newer() {
+        let s = Store::mem();
+        s.fleet_put("a", "Alpha", "{}").unwrap();
+        assert_eq!(s.fleets_unsynced().len(), 1, "a new fleet waits to go up");
+        s.fleet_mark_synced("a", 3).unwrap();
+        assert!(s.fleets_unsynced().is_empty());
+        s.fleet_put("a", "Alpha", "{\"size\":5}").unwrap();
+        assert_eq!(s.fleets_unsynced().len(), 1, "an edit goes up again");
+        s.fleet_put_from_server("b", "Beta", "{}", 7, 0).unwrap();
+        assert!(s.fleets_revisions().iter().any(|(id, rev, _)| id == "b" && *rev == 7));
+        assert!(!s.fleets_unsynced().iter().any(|f| f.0 == "b"), "what came down is not sent back");
+        s.fleet_delete("b").unwrap();
+        assert!(s.fleets_unsynced().iter().any(|f| f.0 == "b" && f.4), "a deletion goes up");
+        s.fleet_mark_synced("b", 7).unwrap();
+        assert!(s.fleet_doc("b").is_none() && !s.fleets_revisions().iter().any(|f| f.0 == "b"));
     }
 
     #[test]
