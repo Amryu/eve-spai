@@ -91,6 +91,9 @@ pub struct Reps {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tank {
+    /// A PANIC core is running: the game makes the ship all but untouchable for its duration,
+    /// by strengths the server applies and the data does not give, so no hit points are claimed.
+    pub invulnerable: bool,
     pub shield: Layer,
     pub armor: Layer,
     pub hull: Layer,
@@ -499,6 +502,9 @@ fn layer(calc: &Calc, hp: crate::ids::AttrId, resonances: [crate::ids::AttrId; 4
 }
 
 /// Shield peak: like the capacitor, `2.5 × capacity / τ`.
+/// The Rorqual's Pulse Activated Nexus Invulnerability Core.
+const PANIC_EFFECT: &str = "moduleBonusIndustrialInvulnerability";
+
 fn tank(calc: &Calc, fit: &Fit) -> Tank {
     let p = &fit.damage_profile;
     let shield = layer(calc, attr::SHIELD_CAPACITY, [attr::SHIELD_EM_RESONANCE, attr::SHIELD_THERMAL_RESONANCE, attr::SHIELD_KINETIC_RESONANCE, attr::SHIELD_EXPLOSIVE_RESONANCE], p);
@@ -507,7 +513,8 @@ fn tank(calc: &Calc, fit: &Fit) -> Tank {
     let recharge_s = calc.ship(attr::SHIELD_RECHARGE_RATE) / 1000.0;
     let shield_peak_regen = if recharge_s > 0.0 { 2.5 * shield.hp / recharge_s } else { 0.0 };
     let reps = reps(calc);
-    Tank { ehp: shield.ehp + armor.ehp + hull.ehp, shield, armor, hull, shield_peak_regen, shield_recharge_s: recharge_s, reps }
+    let invulnerable = calc.modules().any(|(i, it)| it.state >= State::Active && calc.effect_names(i).any(|n| n == PANIC_EFFECT));
+    Tank { invulnerable, ehp: shield.ehp + armor.ehp + hull.ehp, shield, armor, hull, shield_peak_regen, shield_recharge_s: recharge_s, reps }
 }
 
 /// Local repairs per second from the active repairers. An ancillary armour repairer with Nanite

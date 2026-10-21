@@ -461,3 +461,40 @@ fn real_data_boost_shortcuts() {
     let low = strength(BoostShortcut { skills: vec![(d.type_named("Shield Command Specialist").unwrap().id, 0)], ..Default::default() });
     assert!(low.iter().zip(&plain).any(|(l, p)| l.1.abs() < p.1.abs()), "fewer skills, weaker bursts");
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_panic_module() {
+    use crate::fit::{Module, Slot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let panic = d.types.iter().find(|t| t.name.contains("Pulse Activated Nexus")).unwrap();
+    println!("{} group {}", panic.name, d.groups.iter().find(|g| g.id == panic.group).map(|g| g.name.as_str()).unwrap_or(""));
+    for (e, _) in &panic.effects {
+        let x = d.effect(*e).unwrap();
+        println!("effect {} {:?} mods {}", x.name, x.category, x.modifiers.len());
+        for m in &x.modifiers {
+            println!("   {:?}", m);
+        }
+    }
+    for (a, v) in &panic.attrs {
+        println!("  attr {} = {v}", d.attr(*a).map(|x| x.name.as_str()).unwrap_or("?"));
+    }
+    for b in d.buffs.iter().filter(|b| { let n = b.name.to_lowercase(); n.contains("invuln") || n.contains("panic") || n.contains("industrial") || n.contains("nexus") }) {
+        println!("buff {} {} {:?} items {:?} loc {:?}", b.id, b.name, b.op, b.item, b.location);
+    }
+    let rorq = d.type_named("Rorqual").unwrap().id;
+    let ehp = |state| {
+        let mut f = Fit::new(rorq, "r");
+        f.modules.push(Module::new(panic.id, Slot::High, 0).with_state(state));
+        let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        (c.tank.ehp, c.tank.shield.resist(0), c.tank.shield.hp)
+    };
+    println!("online {:?} active {:?}", ehp(State::Online), ehp(State::Active));
+    let tank = |state| {
+        let mut f = Fit::new(rorq, "r");
+        f.modules.push(Module::new(panic.id, Slot::High, 0).with_state(state));
+        crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default()).tank.invulnerable
+    };
+    assert!(!tank(State::Online) && tank(State::Active), "running, the PANIC marks the ship invulnerable");
+}

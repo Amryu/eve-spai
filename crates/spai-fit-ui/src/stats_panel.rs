@@ -229,7 +229,12 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
     let mut picked = None;
     let t = &c.tank;
     section(ui, tr!("Defense"));
-    line(ui, tr!("Effective HP"), text::num(t.ehp));
+    if t.invulnerable {
+        line_colored(ui, tr!("Effective HP"), tr!("Invulnerable").to_owned(), Some(egui::Color32::from_rgb(0x7F, 0xC9, 0x8A)));
+        ui.add(egui::Label::new(egui::RichText::new(tr!("The PANIC core runs: the game keeps the ship all but untouchable while it lasts. The layers below are without it.")).weak()).wrap());
+    } else {
+        line(ui, tr!("Effective HP"), text::num(t.ehp));
+    }
     let w = ui.available_width() - 2.0 * rows::GAP;
     let (name_w, hp_w) = (52.0, 54.0);
     let res_w = ((w - name_w - hp_w) / 4.0).max(30.0);
