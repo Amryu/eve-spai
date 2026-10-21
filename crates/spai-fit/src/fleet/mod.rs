@@ -147,6 +147,10 @@ pub struct Fleet {
     pub motion: (f32, f32),
     /// The order it shoots the enemy's ships in, by role.
     pub target_order: Vec<Role>,
+    /// The share of its logistics' repairs that does any good: late locks, misjudged targets,
+    /// cycles landing on full health.
+    #[serde(default = "default_logi_efficiency")]
+    pub logi_efficiency: f32,
     /// Drones and fighters launched: counted in damage per second, never in a volley.
     #[serde(default = "default_true")]
     pub drones: bool,
@@ -162,6 +166,10 @@ pub struct Fleet {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_logi_efficiency() -> f32 {
+    0.75
 }
 
 impl Default for Fleet {
@@ -184,6 +192,7 @@ impl Default for Fleet {
             target_order: Role::DEFAULT_ORDER.to_vec(),
             adc: true,
             drones: true,
+            logi_efficiency: 0.75,
             enemy: None,
             scene: None,
         }
@@ -547,7 +556,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let range = f64::from(a.range);
     // The ships' own modules by range, all on the main hull; counts typed by hand at full strength.
     let (velocity, signature) = if a.ewar_auto {
-        let e = ewar::ewar_at(&ships(a_stats), range, 1.0);
+        let e = ewar::ewar_on(&ships(a_stats), range, 1.0, Some(t));
         (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
     } else {
         ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature)
@@ -590,7 +599,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let eff = f64::from(a.volley_efficiency.clamp(0.01, 1.0));
     out.critical_mass = (main_volley_per_ship > 0.0 && ehp > 0.0).then(|| (ehp / (main_volley_per_ship * eff)).ceil() as u32);
     out.kills_per_volley = if ehp > 0.0 { out.applied_volley * eff / ehp } else { 0.0 };
-    out.break_point = b_stats.logi_rep + t.tank.reps.armor + t.tank.reps.shield + t.tank.reps.hull;
+    out.break_point = b_stats.logi_rep * f64::from(b.logi_efficiency.clamp(0.0, 1.0)) * t.rep_intake + t.tank.reps.armor + t.tank.reps.shield + t.tank.reps.hull;
     out.margin = out.applied_dps * eff - out.break_point;
     let _ = dogma;
     out

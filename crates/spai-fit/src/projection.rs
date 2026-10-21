@@ -757,3 +757,81 @@ fn real_data_fleet_analysis_timing() {
     println!("TIME race {:?} {} steps", t.elapsed(), rc.timeline.len());
     assert!(!s.points.is_empty());
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_target_painters_by_range_and_stacking() {
+    use crate::fit::{Module, Slot};
+    use crate::fleet::ewar::ewar_on;
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap_or_else(|| panic!("{n}")).id;
+    let sk = SkillSet::all_v();
+    let env = crate::calc::Env::default();
+    let mut painter = Fit::new(id("Hurricane"), "painter");
+    painter.modules.push(Module::new(id("Target Painter II"), Slot::Mid, 0).with_state(State::Active));
+    let p = crate::stats::compute(&d, &painter, &sk, &env);
+    let tp = p.remote.modules.iter().find(|m| m.kind == crate::stats::RemoteKind::Painter).expect("a painter");
+    let bonus = tp.parts[0] / 100.0;
+    println!("PAINTER bonus {:.1}% optimal {:.0} falloff {:.0}", bonus * 100.0, tp.optimal, tp.falloff);
+    let target_fit = |mwd: bool| {
+        let mut f = Fit::new(id("Hurricane"), "target");
+        if mwd {
+            f.modules.push(Module::new(id("50MN Microwarpdrive II"), Slot::Mid, 0).with_state(State::Active));
+        }
+        crate::stats::compute(&d, &f, &sk, &env)
+    };
+    let (plain, bloomed) = (target_fit(false), target_fit(true));
+    for t in [&plain, &bloomed] {
+        assert!((crate::calc::combine(t.signature_base, true, &t.signature_mods) - t.mobility.signature).abs() < 1e-6, "base and modifiers give the signature");
+    }
+    let one = |dist: f64, t: &crate::stats::Computed, n: u32| ewar_on(&[(n, &p)], dist, 1.0, Some(t)).signature;
+    let close = one(tp.optimal * 0.5, &plain, 1);
+    assert!((close - (1.0 + bonus)).abs() < 1e-9, "in optimal: x{close}");
+    let edge = one(tp.optimal + tp.falloff, &plain, 1);
+    assert!((edge - (1.0 + bonus * 0.5)).abs() < 1e-9, "one falloff out, half: x{edge}");
+    assert_eq!(one(tp.optimal + 3.0 * tp.falloff + 1.0, &plain, 1), 1.0, "nothing past three falloffs");
+    let two = one(tp.optimal * 0.5, &plain, 2);
+    let second = 0.869_119_980_800_397_9;
+    assert!((two - (1.0 + bonus) * (1.0 + bonus * second)).abs() < 1e-6, "the second painter at 86.9%: x{two}");
+    let mwd: f64 = bloomed.signature_mods.iter().filter(|(_, _, pen)| *pen).map(|(_, v, _)| *v).fold(0.0, f64::max) / 100.0;
+    let painted = one(tp.optimal * 0.5, &bloomed, 1);
+    println!("PAINTER mwd bloom {:.0}%, painted x{painted:.4} against x{:.4} unpenalised", mwd * 100.0, 1.0 + bonus);
+    assert!((painted - (1.0 + bonus * second)).abs() < 1e-6, "behind a microwarpdrive's bloom the painter is the second in its group");
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_logi_fleet_race() {
+    use crate::fit::{Module, Slot};
+    use crate::fleet::{race, stats, sweep, CountRule, Fleet, FleetSlot};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap_or_else(|| panic!("{n}")).id;
+    let mut ferox = Fit::new(id("Ferox"), "ferox");
+    for i in 0..7 {
+        ferox.modules.push(Module::new(id("250mm Railgun II"), Slot::High, i).with_charge(id("Antimatter Charge L")).with_state(State::Active));
+    }
+    for i in 0..2 {
+        ferox.modules.push(Module::new(id("Large Shield Extender II"), Slot::Mid, i).with_state(State::Online));
+    }
+    let mut basi = Fit::new(id("Basilisk"), "basi");
+    for i in 0..4 {
+        basi.modules.push(Module::new(id("Large Remote Shield Booster II"), Slot::High, i).with_state(State::Active));
+    }
+    basi.modules.push(Module::new(id("Large Shield Extender II"), Slot::Mid, 0).with_state(State::Online));
+    let lib = [ferox, basi];
+    let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let fleet = |size: u32| Fleet { size, slots: vec![FleetSlot { fit_id: "ferox".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }, FleetSlot { fit_id: "basi".into(), rule: CountRule::Fixed(20), override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    for (na, nb) in [(170, 170), (170, 140)] {
+        let (fa, fb) = (fleet(na), fleet(nb));
+        let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
+        let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &[] }, sweep::Side { fleet: &fb, stats: &sb, ammo: &[] });
+        let r = race::race(&d, &a, &b, 40_000.0, 1800.0);
+        let lost = |side: usize| r.events.iter().filter(|(_, e)| matches!(e, race::Event::Kill { side: s, .. } if *s == side)).count();
+        let end = r.timeline.last().unwrap();
+        println!("RACE {na} vs {nb}: winner {:?} after {:.0}s, left {} / {}, lost {} / {}, crit {:?}, verdicts a {:?} b {:?}", r.winner, r.seconds, end.1, end.2, lost(0), lost(1), r.critical_mass_lost, r.verdicts[0], r.verdicts[1]);
+        println!("RACE logi reps/s per basi {:.0}, ferox ehp {:.0}, volley per ferox {:.0}", sb.slots[1].computed.remote.shield_rep, sb.slots[0].computed.tank.ehp, sa.slots[0].computed.volley());
+    }
+}

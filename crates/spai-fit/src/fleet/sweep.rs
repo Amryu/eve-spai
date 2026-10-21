@@ -3,7 +3,7 @@
 //! for where it would rather be.
 
 use super::ammo::{self, AmmoChoice};
-use super::ewar::{cutoffs, ewar_at, EwarOn};
+use super::ewar::{cutoffs, ewar_at, ewar_on, EwarOn};
 use super::geometry;
 use super::{Fleet, FleetStats, Role, SlotStats};
 use crate::fit::TargetProfile;
@@ -112,7 +112,7 @@ pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f6
 /// As `weapons_on`, with the applied share of every shooter and target pair, not their mean.
 pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64) -> Vec<(WeaponGroup, Vec<f64>)> {
     let Some(slot) = a.stats.slots.get(k) else { return Vec::new() };
-    let on_target = ewar_at(&a.ships(), distance, 1.0);
+    let on_target = ewar_on(&a.ships(), distance, 1.0, Some(&target.computed));
     let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
     let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_target.speed, f64::from(b.fleet.motion.1), distance);
     let signature = target.computed.mobility.signature * on_target.signature;
@@ -257,7 +257,7 @@ pub fn angular(a: &Side, b: &Side, distance: f64) -> Vec<f64> {
 /// the other side's disruptors counted: (slot, the group, rad/s).
 pub fn half_hit_angular(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<(usize, WeaponGroup, f64)> {
     let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
-    let on_target = ewar_at(&a.ships(), distance, 1.0);
+    let on_target = ewar_on(&a.ships(), distance, 1.0, Some(&target.computed));
     let signature = target.computed.mobility.signature * on_target.signature;
     let mut out = Vec::new();
     for (k, slot) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {

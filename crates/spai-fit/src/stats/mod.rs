@@ -287,6 +287,8 @@ pub struct RemoteModule {
     /// tracking, optimal and falloff; a guidance disruptor's explosion radius, explosion velocity,
     /// missile velocity and flight time.
     pub parts: [f64; 4],
+    /// Seconds a cycle lasts: an armor or hull repair lands at its end, a shield one at its start.
+    pub cycle_s: f64,
 }
 
 /// What the fit does to others per second: repairs, capacitor and neuts.
@@ -330,6 +332,43 @@ pub struct Computed {
     /// The cargo hold first, then every other hold the hull has.
     pub holds: Vec<Hold>,
     pub unknown_types: Vec<TypeId>,
+    /// The hull's signature before its stacking-penalised modifiers, and those modifiers: a
+    /// target painter stacks with them (a running microwarpdrive's bloom first among them).
+    pub signature_base: f64,
+    pub signature_mods: Vec<(crate::dogma::Op, f64, bool)>,
+    /// What the hull lets through of each kind of ewar on it, 1 for all of it.
+    pub resist: EwarResist,
+    /// The share of remote repairs it takes, 1 for all of them (bastion and siege modes cut it).
+    pub rep_intake: f64,
+}
+
+/// A hull's resistance to ewar, as the share of each kind's strength it lets through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EwarResist {
+    pub web: f64,
+    pub painter: f64,
+    pub damp: f64,
+    pub disruption: f64,
+    pub neut: f64,
+}
+
+impl Default for EwarResist {
+    fn default() -> Self {
+        EwarResist { web: 1.0, painter: 1.0, damp: 1.0, disruption: 1.0, neut: 1.0 }
+    }
+}
+
+impl EwarResist {
+    pub fn of(&self, kind: RemoteKind) -> f64 {
+        match kind {
+            RemoteKind::Web => self.web,
+            RemoteKind::Painter => self.painter,
+            RemoteKind::Damp => self.damp,
+            RemoteKind::TrackingDisruptor | RemoteKind::GuidanceDisruptor => self.disruption,
+            RemoteKind::Neut | RemoteKind::Nos => self.neut,
+            _ => 1.0,
+        }
+    }
 }
 
 impl Computed {
@@ -362,6 +401,24 @@ pub fn compute_with(calc: &Calc, fit: &Fit) -> Computed {
         holds: holds(calc, fit),
         weapons,
         unknown_types: calc.unknown_types.clone(),
+        signature_base: calc.base(calc.ship_idx(), attr::SIGNATURE_RADIUS),
+        signature_mods: calc.modifiers_of(calc.ship_idx(), attr::SIGNATURE_RADIUS),
+        resist: resist(calc),
+        rep_intake: calc.dogma.attr_named("remoteRepairImpedance").filter(|a| calc.has(calc.ship_idx(), a.id)).map_or(1.0, |a| calc.ship(a.id)),
+    }
+}
+
+/// The hull's ewar resistances: the attribute each kind's `remoteResistanceID` names, read on the
+/// ship, 1 where it has none.
+fn resist(calc: &Calc) -> EwarResist {
+    let ship = calc.ship_idx();
+    let read = |a: crate::ids::AttrId| if calc.has(ship, a) { calc.ship(a).clamp(0.0, 1.0) } else { 1.0 };
+    EwarResist {
+        web: read(attr::STASIS_WEBIFIER_RESISTANCE),
+        painter: read(attr::TARGET_PAINTER_RESISTANCE),
+        damp: read(attr::SENSOR_DAMPENER_RESISTANCE),
+        disruption: read(attr::WEAPON_DISRUPTION_RESISTANCE),
+        neut: read(attr::ENERGY_WARFARE_RESISTANCE),
     }
 }
 
@@ -653,7 +710,7 @@ fn remote(calc: &Calc) -> Remote {
             RemoteKind::GuidanceDisruptor => [pct(attr::AOE_CLOUD_SIZE_BONUS), pct(attr::AOE_VELOCITY_BONUS), pct(attr::MISSILE_VELOCITY_BONUS), pct(attr::EXPLOSION_DELAY_BONUS)],
             _ => [0.0; 4],
         };
-        r.modules.push(RemoteModule { type_id: it.type_id, kind, amount, optimal, falloff, parts });
+        r.modules.push(RemoteModule { type_id: it.type_id, kind, amount, optimal, falloff, parts, cycle_s: cycle });
     }
     r
 }

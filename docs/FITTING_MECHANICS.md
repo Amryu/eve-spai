@@ -451,8 +451,14 @@ strongest first, `k` of them, where `k` is the modules in reach over the ships t
 on: 1 for everything on one primary, the other fleet's size to spread them over it; a
 fractional `k` counts the last module in part. Neutralisers add their GJ/s times the range
 factor, over the same spread. Scramblers and disruptors hold within their optimal only.
-Cutoffs per kind: the strongest optimal, and the outer edge `optimal + 3·falloff` (the optimal
-for tackle). A fleet's ewar typed by hand (`ewar_auto` off) keeps the plain model: each web
+On one known ship (the primary) each module's strength is first cut by the ship's resistance to
+its kind (`stasisWebifierResistance`, `targetPainterResistance`, `sensorDampenerResistance`,
+`weaponDisruptionResistance`, `energyWarfareResistance`: the share let through), and painters
+stack in one penalty group with the ship's own penalised signature modifiers (`Computed.
+signature_mods` on `signature_base`): behind a running microwarpdrive's bloom a painter is the
+second in the group, at 86.9%. Reach per kind: the strongest optimal, and where the farthest
+module is at half strength (`optimal + falloff`; tackle to its optimal only); nothing reaches past
+`optimal + 3·falloff`. A fleet's ewar typed by hand (`ewar_auto` off) keeps the plain model: each web
 −60% speed, each painter +30% signature, each tracking disruptor −17.19% turret optimal,
 falloff and tracking, penalised.
 
@@ -488,18 +494,23 @@ best range is the farthest where it still lands 90% of its most.
 - An assault damage control goes on when its ship is called primary, for its `duration`,
   multiplying every resonance by its `resistanceMultiplier`, once per fight (its reactivation
   delay outlasts the fight).
-- Logistics repair the primary by layer once locked (`lock time` of the first logistics slot on
-  the primary's signature).
+- Logistics repair only once the primary has taken damage: each logi ship after its own reaction
+  delay (the same spread as the guns'), its lock time on the primary's signature, and for armor
+  or hull repairs a whole cycle (they land at its end; shield repairs at its start). Every
+  repair is times the fleet's logistics efficiency (75% by default: late locks, the wrong ship,
+  cycles landing on full health) and the primary's `remoteRepairImpedance` where it has one, and
+  heals no more than the damage there: what overreps is lost. Remote repairs have no stacking
+  penalty in the game; their diminishing returns are these.
 - Critical mass is lost when the damage landing on the primary, through the resistances of the
   layer being worn, no longer beats the repairs on it.
-- Per target slot a verdict: one volley, dead before its logistics locked, dead with the
+- Per target slot a verdict: one volley, dead before any repair landed, dead with the
   damage outpacing the repairs by so much, or held.
 
 **Against** (`fleet::against`, `fleet::against_slot`), the summary at the set range on B's main hull, or on any slot of B picked: applied DPS and
 volley with the ewar by range above (or typed by hand), critical mass
 `ceil(EHP / (applied volley of one A main ship × efficiency))`, kills per volley
 `applied volley × efficiency / EHP`, break point (B's logistics plus the main hull's own repairs)
-and the margin above it.
+(the logistics at their efficiency) and the margin above it.
 
 **Graphs.** Damage by range and volley by range (the volley with the other's first target's effective HP across: above it one volley kills; both sweeps, favoured stretches shaded, markers at the set range,
 best ranges and ewar optimals), the race's ships left and damage landing over time with

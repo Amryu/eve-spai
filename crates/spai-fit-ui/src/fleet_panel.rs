@@ -703,6 +703,9 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             crate::graphs_panel::motion_dial(ui, "", &mut f.motion);
             changed |= f.motion != before;
             ui.end_row();
+            ui.label(tr!("Logistics efficiency")).on_hover_text(tr!("The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health"));
+            changed |= ui.add(egui::Slider::new(&mut f.logi_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
+            ui.end_row();
             ui.label(tr!("Drones"));
             changed |= ui.checkbox(&mut f.drones, tr!("Launched")).on_hover_text(tr!("Drones and fighters add damage per second, never to a volley: they attack on their own time, no alpha before logi react")).changed();
             ui.end_row();
@@ -1021,7 +1024,16 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
         title(ui, &head, true);
         for (kind, optimal, edge) in cuts {
             let Some(label) = crate::stats_panel::ewar_name(*kind) else { continue };
-            tline(ui, label, trf!("{o}, gone past {e}", o = text::metres(*optimal), e = text::metres(*edge)), |ui| tip(ui, label, &[(tr!("Full strength to").to_owned(), text::metres(*optimal)), (tr!("Nothing past").to_owned(), text::metres(*edge))], tr!("Its strength halves at one falloff past optimal and fades to nothing at three; tackle holds within optimal only.")));
+            let value = if edge > optimal { trf!("{o}, half at {h}", o = text::metres(*optimal), h = text::metres(*edge)) } else { text::metres(*optimal) };
+            tline(ui, label, value, |ui| {
+                let mut rows = vec![(tr!("Full strength to").to_owned(), text::metres(*optimal))];
+                if edge > optimal {
+                    rows.push((tr!("Half strength at").to_owned(), text::metres(*edge)));
+                    rows.push((tr!("A sixteenth at").to_owned(), text::metres(*optimal + 2.0 * (edge - optimal))));
+                    rows.push((tr!("Nothing past").to_owned(), text::metres(*optimal + 3.0 * (edge - optimal))));
+                }
+                tip(ui, label, &rows, tr!("The strongest module of the kind: its strength halves at one falloff past optimal, falls to a sixteenth at two and to nothing past three; tackle holds within optimal only. On a ship it stacks with the ship's own penalised modifiers and is cut by its resistances."));
+            });
         }
     }
     let neut = their_cuts.iter().filter(|(k, _, _)| matches!(k, spai_fit::stats::RemoteKind::Neut)).map(|(_, o, _)| *o).fold(0.0, f64::max);
@@ -1038,7 +1050,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
     };
     tline(ui, tr!("Outcome"), outcome, |ui| {
         let adcs = r.events.iter().filter(|(_, e)| matches!(e, Event::Adc { .. })).count();
-        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; logistics repair once locked; assault damage controls go on when their ship is called."));
+        tip(ui, tr!("The race"), &[(tr!("Assault damage controls on").to_owned(), adcs.to_string()), (tr!("Fight lasted").to_owned(), text::secs(r.seconds))], tr!("Each side calls one primary at a time by its target order. Ships fire after a reaction delay, on their own cycle, and reload after each load; a volley's damage past what kills is lost. Logistics start only once the primary is hurt, each after its own reaction, its lock and its first cycle, at the fleet's logistics efficiency, and heal no more than the damage there; assault damage controls go on when their ship is called."));
     });
     // Per side, shooter first: ships left, its first loss, and when its reps catch up (the other
     // side loses its critical mass).
@@ -1073,7 +1085,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
                 Verdict::Outpaced { seconds, .. } => trf!("dies in {s}", s = text::secs(*seconds)),
                 Verdict::Held => tr!("holds").to_owned(),
             };
-            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before its logistics locked it, dead with the damage outpacing the repairs, or still standing.")));
+            tline(ui, &slot_name(s), text, |ui| tip(ui, &slot_name(s), &[(tr!("Effective HP").to_owned(), text::num(s.computed.tank.ehp))], tr!("How its first ship to be called primary fared: dead in one volley from full health, dead before any repair landed on it, dead with the damage outpacing the repairs, or still standing.")));
         }
     }
     // The shooter's ammo by range, against its first target.
@@ -1239,7 +1251,7 @@ fn against_card(ui: &mut egui::Ui, a: &Against, shooter: &FleetStats, target: &F
     });
     tline(ui, tr!("Kills per volley"), text::num(a.kills_per_volley), |ui| tip(ui, tr!("Kills per volley"), &[], tr!("The whole fleet's applied volley times the volley efficiency, over the picked ship's effective hit points.")));
     tline(ui, tr!("Break point (their reps)"), trf!("{v}/s", v = text::num(a.break_point)), |ui| {
-        tip(ui, tr!("Break point"), &[(tr!("Their logistics").to_owned(), trf!("{v}/s", v = text::num(target.logi_rep)))], tr!("The repairs the enemy can put on one ship: its logistics plus the hull's own repairs. Below it, nothing dies."));
+        tip(ui, tr!("Break point"), &[(tr!("Their logistics").to_owned(), trf!("{v}/s", v = text::num(target.logi_rep)))], tr!("The repairs the enemy can put on one ship: its logistics at their efficiency plus the hull's own repairs. Below it, nothing dies."));
     });
     let color = if a.margin >= 0.0 { ui.visuals().hyperlink_color } else { ui.visuals().error_fg_color };
     let r = ui.scope(|ui| crate::stats_panel::line_colored(ui, tr!("Margin"), trf!("{v}/s", v = text::num(a.margin)), Some(color))).response.interact(egui::Sense::hover());

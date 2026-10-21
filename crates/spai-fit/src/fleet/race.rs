@@ -163,6 +163,9 @@ fn guns(own: &Side, other: &Side, distance: f64) -> Guns {
 
 /// A side's logi: per ship, its repairs per second by layer (shield, armor, hull), its lock time
 /// on the given signature and its reach.
+/// A side's logi: per slot, each ship's repairs per second by layer (shield, armor, hull), and
+/// how long after its lock the first repair lands: an armor or hull repair at its cycle's end, a
+/// shield one at its start.
 fn logi(side: &Side) -> Vec<(usize, [f64; 3], f64)> {
     side.stats
         .slots
@@ -171,7 +174,8 @@ fn logi(side: &Side) -> Vec<(usize, [f64; 3], f64)> {
         .filter(|(_, s)| s.computed.remote.modules.iter().any(|m| m.kind.is_rep()))
         .map(|(k, s)| {
             let r = &s.computed.remote;
-            (k, [r.shield_rep, r.armor_rep, r.hull_rep], r.rep_range)
+            let land = r.modules.iter().filter(|m| matches!(m.kind, crate::stats::RemoteKind::ArmorRep | crate::stats::RemoteKind::HullRep)).map(|m| m.cycle_s).fold(0.0, f64::max);
+            (k, [r.shield_rep, r.armor_rep, r.hull_rep], land)
         })
         .collect()
 }
@@ -186,6 +190,9 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     let mut primary = [pick(&a.fleet.target_order, &fleets[1]), pick(&b.fleet.target_order, &fleets[0])];
     // When the current primary was picked, for spool, lock and the first-volley verdict.
     let mut since = [0.0f64; 2];
+    // On each side's current primary: when it first took damage, and when repairs first landed.
+    let mut first_hit: [Option<f64>; 2] = [None; 2];
+    let mut reps_landed: [Option<f64>; 2] = [None; 2];
     let mut verdict_open: [Option<(usize, f64)>; 2] = [primary[0].map(|p| (p, 0.0)), primary[1].map(|p| (p, 0.0))];
     // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
     // With the volleys fired since the last reload.
@@ -252,22 +259,37 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             }).sum::<f64>() * f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
             let full = fleets[1 - side][p].hp == fleets[1 - side][p].max;
             hit(&mut fleets[1 - side][p], damage, t);
-            // Reps from the target side's logi, once locked, on its primary.
-            let lock = logis[1 - side].first().map_or(f64::INFINITY, |(k, _, _)| sides[1 - side].stats.slots[*k].computed.sensors.lock_time_s(sides[1 - side].stats.slots[target_slot].computed.mobility.signature));
+            if first_hit[side].is_none() && damage.iter().sum::<f64>() > 0.0 {
+                first_hit[side] = Some(t);
+            }
+            // Repairs from the target side's logi: none before the primary is hurt; then each logi
+            // ship after its own reaction, its lock on the primary and its first cycle, times the
+            // logistics efficiency and what the primary takes in. Only damage present is healed,
+            // so what overreps is lost.
             let mut reps_on = 0.0;
-            if fleets[1 - side][p].alive && t - since[side] >= lock {
-                for (k, r, _) in &logis[1 - side] {
-                    let n = alive_at[1 - side].get(*k).copied().unwrap_or(0) as f64;
+            if let (Some(hit), true) = (first_hit[side], fleets[1 - side][p].alive) {
+                let eff = f64::from(sides[1 - side].fleet.logi_efficiency.clamp(0.0, 1.0)) * sides[1 - side].stats.slots[target_slot].computed.rep_intake;
+                let signature = sides[1 - side].stats.slots[target_slot].computed.mobility.signature;
+                for (k, r, land) in &logis[1 - side] {
+                    let n = alive_at[1 - side].get(*k).copied().unwrap_or(0);
+                    let lock = sides[1 - side].stats.slots[*k].computed.sensors.lock_time_s(signature);
+                    let on = (0..n).filter(|i| t >= hit + reaction(*i, n) + lock + land).count() as f64;
+                    if on == 0.0 {
+                        continue;
+                    }
                     let ship = &mut fleets[1 - side][p];
                     for layer in 0..3 {
-                        let add = r[layer] * n * STEP;
-                        reps_on += r[layer] * n;
-                        ship.hp[layer] = (ship.hp[layer] + add).min(ship.max[layer]);
+                        let rate = r[layer] * on * eff;
+                        reps_on += rate;
+                        ship.hp[layer] = (ship.hp[layer] + rate * STEP).min(ship.max[layer]);
                     }
                 }
             }
+            if reps_on > 0.0 && reps_landed[side].is_none() {
+                reps_landed[side] = Some(t);
+            }
             // Critical mass: the damage landing no longer beats the reps on the primary.
-            if out.critical_mass_lost[side].is_none() && t - since[side] > lock + 1.0 {
+            if out.critical_mass_lost[side].is_none() && reps_landed[side].is_some() {
                 let sustained: f64 = guns[side].groups.iter().map(|(k, w, shares)| {
                     let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64;
                     w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
@@ -288,7 +310,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                         let seconds = t - at;
                         let v = if full && seconds < STEP * 2.0 {
                             Verdict::OneVolley
-                        } else if lock.is_finite() && seconds < lock {
+                        } else if reps_landed[side].is_none() && !logis[1 - side].is_empty() {
                             Verdict::BeforeReps { seconds }
                         } else {
                             Verdict::Outpaced { seconds, by: (landed[side] - reps_on).max(0.0) }
@@ -298,6 +320,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 }
                 primary[side] = pick(&sides[side].fleet.target_order, &fleets[1 - side]);
                 since[side] = t + STEP;
+                first_hit[side] = None;
+                reps_landed[side] = None;
                 // A new call: no ship fires before it reacts, nor before its guns have cycled.
                 for next in next_fire[side].iter_mut() {
                     let n = next.len();

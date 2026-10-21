@@ -98,7 +98,7 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert!((close.applied_dps - sa.dps * 0.5 * (1.0 + 0.98 + 0.0501)).abs() < 1e-6, "still target in optimal: every shot hits");
     let eff = f64::from(a.volley_efficiency);
     assert_eq!(close.critical_mass, Some((sb.main().unwrap().computed.tank.ehp / (sa.slots[0].computed.volley() * eff)).ceil() as u32));
-    assert!((close.break_point - (sb.logi_rep + sb.main().unwrap().computed.tank.reps.armor)).abs() < 1e-9);
+    assert!((close.break_point - (sb.logi_rep * f64::from(b.logi_efficiency) + sb.main().unwrap().computed.tank.reps.armor)).abs() < 1e-9, "their logistics at their efficiency");
     assert!((close.margin - (close.applied_dps * eff - close.break_point)).abs() < 1e-9);
     a.range = 20_000.0;
     let far = against(&d, &a, &sa, &b, &sb);
@@ -356,4 +356,23 @@ fn application_gives_the_charge_the_targets_hit_points_against_it_and_the_spread
     let t = &sb.slots[0].computed.tank;
     let raw = t.shield.hp + t.armor.hp + t.hull.hp;
     assert!(sweep::ehp_against(t, &crate::stats::Damage { em: 1.0, ..Default::default() }) >= raw - 1e-6);
+}
+
+#[test]
+fn logi_repair_only_after_damage_reaction_lock_and_cycle_and_at_their_efficiency() {
+    let lib = library();
+    let tight = Formation::Ball { radius_m: 0.0 };
+    let big = Fleet { size: 30, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let with_logi = |eff: f32| Fleet { size: 8, formation: tight, logi_efficiency: eff, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(4))], ..Fleet::default() };
+    let first_kill = |r: &race::Race| r.events.iter().find(|(_, e)| matches!(e, race::Event::Kill { side: 1, .. })).map(|(t, _)| *t).unwrap_or(f64::MAX);
+    let lost = |r: &race::Race| r.events.iter().filter(|(_, e)| matches!(e, race::Event::Kill { side: 1, .. })).count();
+    let none = race_between(&big, &with_logi(0.0), &lib, 500.0);
+    let full = race_between(&big, &with_logi(1.0), &lib, 500.0);
+    let usual = race_between(&big, &with_logi(0.75), &lib, 500.0);
+    assert!(first_kill(&full) >= first_kill(&none), "logi slow the first kill, if at all");
+    assert!(first_kill(&usual) <= first_kill(&full) + 1e-9, "at 75% they hold less than at full");
+    assert!(lost(&usual) > 0, "thirty against eight with four logi still kill");
+    // The first primary dies before any repair lands: reps start only once it is hurt, then each
+    // logi ship needs its reaction, its lock and, for armor, a whole cycle.
+    assert!(matches!(usual.verdicts[1].iter().find(|(k, _)| *k == 0).map(|(_, v)| *v), Some(race::Verdict::BeforeReps { .. }) | Some(race::Verdict::OneVolley)), "{:?}", usual.verdicts[1]);
 }

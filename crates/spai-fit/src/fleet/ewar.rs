@@ -62,6 +62,14 @@ fn stacked(percents: &[f64], k: f64) -> f64 {
 /// The ewar `ships` (each a fit with how many fly) put on the other side at `distance`, spread
 /// over `targets` ships: 1 for everything on the primary, the enemy's count to share it out.
 pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarOn {
+    ewar_on(ships, distance, targets, None)
+}
+
+/// As `ewar_at`, on one known ship: each kind's strength scaled by what its resistances let
+/// through, and painters stacked with its own penalised signature modifiers, a running
+/// microwarpdrive's bloom first among them, as the game stacks them.
+pub fn ewar_on(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: Option<&Computed>) -> EwarOn {
+    let resist = |kind: RemoteKind| target.map_or(1.0, |t| t.resist.of(kind));
     let sources: Vec<Source> = ships
         .iter()
         .flat_map(|(n, c)| c.remote.modules.iter().map(move |m| Source { kind: m.kind, parts: m.parts, amount: m.amount, optimal: m.optimal, falloff: m.falloff, count: f64::from(*n) }))
@@ -78,7 +86,7 @@ pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarO
                 continue;
             }
             for _ in 0..(s.count.ceil() as usize).max(1) {
-                list.push(s.parts[part] * f);
+                list.push(s.parts[part] * f * resist(kind));
             }
             total += s.count;
         }
@@ -93,7 +101,22 @@ pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarO
         }
     };
     out.speed = apply(RemoteKind::Web, 0);
-    out.signature = apply(RemoteKind::Painter, 0);
+    out.signature = match target.filter(|t| t.signature_base > 0.0 && t.mobility.signature > 0.0) {
+        Some(t) => {
+            let (mut list, k) = figure(RemoteKind::Painter, 0);
+            list.sort_by(|a, b| b.abs().total_cmp(&a.abs()));
+            let k = k.min(list.len() as f64);
+            let with = |n: usize| {
+                let mut mods = t.signature_mods.clone();
+                mods.extend(list.iter().take(n).map(|p| (Op::PostPercent, *p, true)));
+                crate::calc::combine(t.signature_base, true, &mods)
+            };
+            let (whole, part) = (k.floor() as usize, k - k.floor());
+            let sig = with(whole) + (with((whole + 1).min(list.len())) - with(whole)) * part;
+            sig / t.mobility.signature
+        }
+        None => apply(RemoteKind::Painter, 0),
+    };
     out.lock_range = apply(RemoteKind::Damp, 0);
     out.scan_resolution = apply(RemoteKind::Damp, 1);
     out.tracking = apply(RemoteKind::TrackingDisruptor, 0);
@@ -103,7 +126,7 @@ pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarO
     out.explosion_velocity = apply(RemoteKind::GuidanceDisruptor, 1);
     out.missile_velocity = apply(RemoteKind::GuidanceDisruptor, 2);
     out.flight_time = apply(RemoteKind::GuidanceDisruptor, 3);
-    out.neut = sources.iter().filter(|s| s.kind == RemoteKind::Neut).map(|s| s.amount * s.count * range_factor(distance, s.optimal, s.falloff)).sum::<f64>() / targets;
+    out.neut = sources.iter().filter(|s| s.kind == RemoteKind::Neut).map(|s| s.amount * s.count * range_factor(distance, s.optimal, s.falloff)).sum::<f64>() / targets * resist(RemoteKind::Neut);
     // Tackle holds or not: within its optimal, it has no falloff.
     let reaches = |kind: RemoteKind| sources.iter().any(|s| s.kind == kind && distance <= s.optimal);
     out.scrammed = reaches(RemoteKind::Scram);
@@ -112,8 +135,9 @@ pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarO
     out
 }
 
-/// Where each kind of the side's ewar stops working: (kind, optimal, the outer edge where the
-/// strongest module's strength reaches nothing).
+/// How far each kind of the side's ewar reaches: (kind, optimal, where the farthest module is at
+/// half strength: one falloff past its optimal; tackle holds to its optimal only). Nothing
+/// reaches past three falloffs.
 pub fn cutoffs(ships: &[(u32, &Computed)]) -> Vec<(RemoteKind, f64, f64)> {
     let mut out: Vec<(RemoteKind, f64, f64)> = Vec::new();
     for (_, c) in ships {
@@ -121,7 +145,7 @@ pub fn cutoffs(ships: &[(u32, &Computed)]) -> Vec<(RemoteKind, f64, f64)> {
             if m.kind.is_rep() || m.kind == RemoteKind::CapTransfer {
                 continue;
             }
-            let edge = if matches!(m.kind, RemoteKind::Scram | RemoteKind::Point) || m.falloff <= 0.0 { m.optimal } else { m.optimal + 3.0 * m.falloff };
+            let edge = if matches!(m.kind, RemoteKind::Scram | RemoteKind::Point) || m.falloff <= 0.0 { m.optimal } else { m.optimal + m.falloff };
             match out.iter_mut().find(|(k, _, _)| *k == m.kind) {
                 Some(e) => {
                     e.1 = e.1.max(m.optimal);
