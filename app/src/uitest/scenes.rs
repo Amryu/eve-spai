@@ -2808,8 +2808,22 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.edit(spai_fit::history::EditKind::AddModule, 0, |f| f.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Active)));
         sim.graph = spai_fit::graphs::GraphKind::EwarVsDistance;
     }));
-    for (name, size, narrow_pane) in [("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit), ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats), ("imperium_fleet_engagement", [720.0, 1500.0], spai_fit_ui::Pane::Stats)] {
-        v.push(imperium_scene_with(name, size, false, narrow_pane, |sim| {
+    use spai_fit_ui::fleet_graphs::FleetGraph;
+    for (name, size, narrow_pane, graph) in [
+        ("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit, None),
+        ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit, None),
+        ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats, None),
+        ("imperium_fleet_engagement", [720.0, 1500.0], spai_fit_ui::Pane::Stats, None),
+        ("imperium_fleet_graphs_range", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageByRange)),
+        ("imperium_fleet_graphs_race", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::ShipsOverTime)),
+        ("imperium_fleet_graphs_damage", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageOverTime)),
+        ("imperium_fleet_graphs_angular_narrow", [720.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::Angular)),
+    ] {
+        v.push(imperium_scene_with(name, size, false, narrow_pane, move |sim| {
+            if let Some(g) = graph {
+                sim.fleet_graph = g;
+                sim.center = spai_fit_ui::Center::Graphs;
+            }
             use spai_fit::fleet::{BurstKind, CountRule, Fleet, FleetSlot};
             use spai_fit::test_support::ids;
             let fit = |name: &str, guns: u8| {
@@ -2837,9 +2851,10 @@ pub(crate) fn all() -> Vec<Scene> {
                 boosters: vec![(BurstKind::Shield, "f-boost".into())],
                 boost_shortcuts: vec![spai_fit::fit::BoostShortcut { kind: BurstKind::Armor, mindlink: true, ..Default::default() }],
                 main: Some(0),
+                range: 6_000.0,
                 ..Fleet::default()
             };
-            let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
+            let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, formation: spai_fit::fleet::Formation::Flock { sigma_m: 4000.0 }, motion: (0.8, 60.0), range: 10_000.0, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
             sim.handle(spai_fit_ui::HostEvent::Fleets(vec![spai_fit_ui::FleetSummary { id: "fl-1".into(), name: mine.name.clone(), updated_at: 0 }, spai_fit_ui::FleetSummary { id: "fl-2".into(), name: enemy.name.clone(), updated_at: 0 }]));
             sim.handle(spai_fit_ui::HostEvent::FleetDoc { id: "fl-2".into(), doc: serde_json::to_string(&enemy).unwrap() });
             sim.handle(spai_fit_ui::HostEvent::Fleet { id: "fl-1".into(), doc: serde_json::to_string(&mine).unwrap() });

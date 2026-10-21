@@ -282,3 +282,24 @@ fn a_slot_flies_its_picked_variation_or_its_base() {
     fl.slots[0].variation = Some(7);
     assert_eq!(stats(&d, &fl, &lookup(&lib), &skills).dps, 0.0, "the picked variation");
 }
+
+#[test]
+fn a_wider_ball_spreads_the_angular_velocities_the_guns_see() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let mk = |r: f32| Fleet { size: 20, formation: Formation::Ball { radius_m: r }, motion: (1.0, 90.0), slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let spread = |r: f32| {
+        let f = mk(r);
+        let s = stats(&d, &f, &lookup(&lib), &skills);
+        let side = sweep::Side { fleet: &f, stats: &s, ammo: &[] };
+        let v = sweep::angular(&side, &side, 20_000.0);
+        v.last().unwrap() - v.first().unwrap()
+    };
+    assert!(spread(8_000.0) > spread(0.0), "a wider ball, a wider spread of angles");
+    let f = mk(0.0);
+    let s = stats(&d, &f, &lookup(&lib), &skills);
+    let side = sweep::Side { fleet: &f, stats: &s, ammo: &[] };
+    let half = sweep::half_hit_angular(&side, &side, &s.slots[0], 20_000.0);
+    assert!(!half.is_empty() && half.iter().all(|(_, _, a)| *a > 0.0));
+}

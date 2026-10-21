@@ -79,6 +79,10 @@ fn axes(kind: GraphKind) -> (&'static str, &'static str, Fmt, Fmt) {
 
 /// The graphs filling the space given: the controls on top, the plot below.
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
+    if sim.mode == crate::Mode::Fleets {
+        crate::fleet_graphs::show(sim, ui);
+        return;
+    }
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| body(sim, ui, now_ms));
 }
 
@@ -269,6 +273,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         fmt_x,
         fmt_y,
         y_to: sim.graph_y_to.get(&kind.axes().0).copied(),
+        bands: Vec::new(),
+        markers: Vec::new(),
         series: series
             .iter()
             .enumerate()
@@ -674,7 +680,7 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let _ = ui;
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LINES), lines.len()));
-    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines })
+    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new() })
 }
 
 /// The graphs in a window of their own while `graph_window` is on: a window of the desktop's

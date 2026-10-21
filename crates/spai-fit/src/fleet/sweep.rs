@@ -31,7 +31,7 @@ pub struct Side<'a> {
 
 impl Side<'_> {
     /// The fleet's speed: its share of the slowest ship's top speed.
-    fn speed(&self) -> f64 {
+    pub fn speed(&self) -> f64 {
         f64::from(self.fleet.motion.0.clamp(0.0, 1.0)) * self.stats.speed_min
     }
 
@@ -222,4 +222,30 @@ pub fn ranges(a: &FleetStats, b: &FleetStats) -> Vec<f64> {
     v.sort_by(|x, y| x.total_cmp(y));
     v.dedup();
     v
+}
+
+/// The angular velocities of `a`'s ships on `b`'s ships at `distance`, ascending: how spread
+/// formations and motion widen what the guns must track.
+pub fn angular(a: &Side, b: &Side, distance: f64) -> Vec<f64> {
+    let on_b = ewar_at(&a.ships(), distance, 1.0);
+    let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_b.speed, f64::from(b.fleet.motion.1), distance);
+    let mut v: Vec<f64> = pairs.iter().flatten().map(|p| p.angular).collect();
+    v.sort_by(|x, y| x.total_cmp(y));
+    v
+}
+
+/// The angular velocity at which each of `a`'s turret groups still hits `target` half the time,
+/// the other side's disruptors counted: (slot, the group, rad/s).
+pub fn half_hit_angular(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<(usize, WeaponGroup, f64)> {
+    let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
+    let on_target = ewar_at(&a.ships(), distance, 1.0);
+    let signature = target.computed.mobility.signature * on_target.signature;
+    let mut out = Vec::new();
+    for (k, slot) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
+        for w in slot.computed.weapons.iter().filter(|w| w.kind == crate::stats::WeaponKind::Turret && w.signature_resolution > 0.0) {
+            let w = disrupted(w, &on_a);
+            out.push((k, w.clone(), w.tracking * signature / w.signature_resolution));
+        }
+    }
+    out
 }

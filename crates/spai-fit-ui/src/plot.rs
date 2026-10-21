@@ -18,6 +18,24 @@ pub struct Plot {
     pub fmt_y: fn(f64) -> String,
     /// The top of the value axis when set; the data's own otherwise.
     pub y_to: Option<f64>,
+    /// Stretches of the x axis shaded in a colour, behind the lines.
+    pub bands: Vec<PlotBand>,
+    /// Vertical lines at a value of x, labelled at the top.
+    pub markers: Vec<PlotMarker>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlotBand {
+    pub from: f64,
+    pub to: f64,
+    pub color: Color32,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlotMarker {
+    pub x: f64,
+    pub label: String,
+    pub color: Color32,
 }
 
 /// Eight colours apart in hue and legible on the dark and light themes.
@@ -116,6 +134,13 @@ impl Plot {
         }
         let to_screen = |x: f64, y: f64| Pos2::new(inner.min.x + ((x - x_min) / (x_max - x_min)) as f32 * inner.width(), inner.max.y - (y / y_top) as f32 * inner.height());
 
+        let clip = ui.painter_at(inner);
+        for b in &self.bands {
+            let (l, r) = (to_screen(b.from.max(x_min), 0.0).x, to_screen(b.to.min(x_max), 0.0).x);
+            if r > l {
+                clip.rect_filled(Rect::from_min_max(Pos2::new(l, inner.min.y), Pos2::new(r, inner.max.y)), 0.0, b.color.gamma_multiply(0.18));
+            }
+        }
         let grid = Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color);
         for y in ticks(0.0, y_top, 5) {
             let p = to_screen(x_min, y);
@@ -125,7 +150,11 @@ impl Plot {
         for x in ticks(x_min, x_max, 6) {
             let p = to_screen(x, 0.0);
             painter.line_segment([Pos2::new(p.x, inner.min.y), p], grid);
-            painter.text(Pos2::new(p.x, inner.max.y + 3.0), egui::Align2::CENTER_TOP, (self.fmt_x)(x), font.clone(), weak);
+            // The outermost labels stay inside the plot's rect.
+            let label = (self.fmt_x)(x);
+            let half = painter.layout_no_wrap(label.clone(), font.clone(), weak).size().x / 2.0;
+            let cx = p.x.clamp(rect.min.x + half + 1.0, rect.max.x - half - 1.0);
+            painter.text(Pos2::new(cx, inner.max.y + 3.0), egui::Align2::CENTER_TOP, label, font.clone(), weak);
         }
         painter.text(Pos2::new(inner.center().x, rect.max.y - 2.0), egui::Align2::CENTER_BOTTOM, &self.x_label, font.clone(), text);
         painter.text(Pos2::new(rect.min.x + 2.0, inner.min.y - line_h / 2.0 - 2.0), egui::Align2::LEFT_BOTTOM, &self.y_label, font.clone(), text);
@@ -141,6 +170,21 @@ impl Plot {
             let x = rect.min.x + 6.0 + col as f32 * entry_w;
             painter.line_segment([Pos2::new(x, y), Pos2::new(x + 16.0, y)], Stroke::new(2.0, s.color));
             painter.text(Pos2::new(x + 20.0, y), egui::Align2::LEFT_CENTER, &s.label, font.clone(), text);
+        }
+
+        // A marker's label takes the first line down where it runs into no other.
+        let mut placed: Vec<(usize, f32, f32)> = Vec::new();
+        for m in self.markers.iter().filter(|m| m.x >= x_min && m.x <= x_max) {
+            let x = to_screen(m.x, 0.0).x;
+            clip.add(egui::Shape::dashed_line(&[Pos2::new(x, inner.min.y), Pos2::new(x, inner.max.y)], Stroke::new(1.0, m.color), 4.0, 3.0));
+            let galley = painter.layout_no_wrap(m.label.clone(), font.clone(), m.color);
+            let w = galley.size().x;
+            let left = if x + 4.0 + w > inner.max.x { x - 4.0 - w } else { x + 4.0 };
+            let row = (0..6).find(|r| !placed.iter().any(|(pr, l, rt)| pr == r && left < rt + 6.0 && left + w + 6.0 > *l)).unwrap_or(0);
+            placed.push((row, left, left + w));
+            let at = Pos2::new(left, inner.min.y + 2.0 + row as f32 * line_h);
+            painter.rect_filled(Rect::from_min_size(at, galley.size()).expand(2.0), 2.0, visuals.extreme_bg_color.gamma_multiply(0.85));
+            painter.galley(at, galley, m.color);
         }
 
         if let Some(pos) = response.hover_pos().filter(|p| inner.contains(*p)) {

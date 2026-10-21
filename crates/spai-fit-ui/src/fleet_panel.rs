@@ -756,8 +756,10 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, na
             line(ui, &format!("{} · {}", slot_name(slot), gun), String::new());
             for band in bands {
                 let charge = dogma.type_(band.charge).map_or("?", |t| t.name.as_str());
-                let better = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| trf!(", carry {c} (+{p}%)", c = t.name.clone(), p = format!("{:.0}", share * 100.0)))).unwrap_or_default();
-                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), format!("{charge}{better}"));
+                line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), charge.to_owned());
+                if let Some(t) = band.better.and_then(|(id, share)| dogma.type_(id).map(|t| (t.name.clone(), share))) {
+                    line(ui, "", trf!("better, not carried: {c} +{p}%", c = t.0, p = format!("{:.0}", t.1 * 100.0)));
+                }
             }
         }
     }

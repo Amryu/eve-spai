@@ -19,6 +19,7 @@ pub mod details;
 pub mod mutation;
 pub mod dock;
 pub mod editor;
+pub mod fleet_graphs;
 pub mod fleet_panel;
 pub mod graphs_panel;
 pub mod icons;
@@ -413,6 +414,7 @@ pub struct SimUi {
     pub skills_window: bool,
     pub traits_window: bool,
     pub graph_window: bool,
+    pub fleet_graph: fleet_graphs::FleetGraph,
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -499,6 +501,7 @@ impl Default for SimUi {
             skills_window: false,
             traits_window: false,
             graph_window: false,
+            fleet_graph: fleet_graphs::FleetGraph::default(),
             import: None,
             import_ask: None,
             import_from_button: false,
@@ -1299,8 +1302,8 @@ impl SimUi {
                 if narrow {
                     ui.horizontal(|ui| {
                         use spai_ui::widgets::SteadySelect as _;
-                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results"))];
-                        let w = egui::vec2(((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(40.0), 24.0);
+                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results")), (Pane::Graphs, tr!("Graphs"))];
+                        let w = egui::vec2(((ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0).max(40.0), 24.0);
                         for (pane, label) in tabs {
                             if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
                                 self.pane = pane;
@@ -1309,9 +1312,10 @@ impl SimUi {
                     });
                     ui.separator();
                 }
-                match (narrow, self.pane) {
-                    (true, Pane::Library) => fleet_panel::library(self, ui, now_ms),
-                    (true, Pane::Stats | Pane::Graphs | Pane::Browse) => fleet_panel::results(self, ui),
+                match (narrow, self.pane, self.center) {
+                    (true, Pane::Library, _) => fleet_panel::library(self, ui, now_ms),
+                    (true, Pane::Stats | Pane::Browse, _) => fleet_panel::results(self, ui),
+                    (true, Pane::Graphs, _) | (false, _, Center::Graphs) => fleet_graphs::show(self, ui),
                     _ => fleet_panel::editor(self, ui, now_ms),
                 }
             });
@@ -1537,11 +1541,11 @@ impl SimUi {
                 if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch skills from EVE")).clicked() {
                     self.requests.push(HostRequest::FetchSkills);
                 }
-                if self.mode == Mode::Fits && !narrow {
+                if !narrow {
                     ui.separator();
                     use spai_ui::widgets::SteadySelect as _;
                     let w = egui::vec2(64.0, 24.0);
-                    if ui.menu_label_sized(w, self.center == Center::Fit, tr!("Fit")).clicked() {
+                    if ui.menu_label_sized(w, self.center == Center::Fit, if self.mode == Mode::Fleets { tr!("Fleet") } else { tr!("Fit") }).clicked() {
                         self.center = Center::Fit;
                     }
                     if ui.menu_label_sized(w, self.center == Center::Graphs, tr!("Graphs")).clicked() {
