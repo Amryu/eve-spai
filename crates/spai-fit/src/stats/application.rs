@@ -63,8 +63,10 @@ pub fn applied_factor(w: &WeaponGroup, distance: f64, target: &TargetProfile, dr
                 return 0.0;
             }
             let lacking = (f64::from(target.velocity) - drone_speed).max(0.0);
+            // A drone that keeps up hits every shot, wrecking shots included, as a turret with
+            // no transversal does: a flat 1.0 here dipped below the first step of the curve.
             if lacking <= 0.0 {
-                return 1.0;
+                return turret_damage_factor(1.0);
             }
             let orbit = w.optimal.max(500.0);
             turret_damage_factor(turret_hit_chance(orbit, lacking, sig, w.optimal, w.falloff, w.tracking, w.signature_resolution))

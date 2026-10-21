@@ -304,7 +304,7 @@ within 600 ms fold into one step; a new edit drops the redo branch. Test: `histo
 |---|---|
 | Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / d` in rad/s, and 0 past `optimal + 3 × falloff`. Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
 | Missile | `min(1, sig / aoeCloudSize, ((sig × aoeVelocity) / (aoeCloudSize × targetVelocity))^aoeDamageReductionFactor)` (EVE Uni "Missile mechanics"). The server moves missiles in whole seconds: every missile reaches `velocity × floor(flightTime)`, the share `fract(flightTime)` reaches one second further, none beyond. |
-| Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and lands its listed damage; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation). |
+| Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and hits every shot, averaging the same 1.015 of its damage (wrecking shots included) as a turret with no transversal; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation). |
 | Smartbomb | All within `empFieldRange`, nothing beyond. |
 
 Tests: `stats::application::tests::*` (every shot hits in optimal, half at one falloff, cut-off at

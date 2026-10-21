@@ -471,3 +471,28 @@ mod axes_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod speed_bump {
+    use super::*;
+    use crate::test_support::{dataset, ids};
+    use crate::fit::{DroneStack, Fit, Module, Slot, State};
+
+    #[test]
+    fn damage_never_rises_with_target_speed() {
+        let d = dataset();
+        let mut f = Fit::new(ids::SHIP, "x");
+        f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+        f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 1).with_charge(ids::MISSILE).with_state(State::Active));
+        f.drones.push(DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
+        let c = crate::stats::compute(&d, &f, &crate::skills::SkillSet::all_v(), &crate::calc::Env::default());
+        for kind in [GraphKind::VolleyVsTargetSpeed, GraphKind::DamageVsTargetSpeed] {
+            let spec = GraphSpec::new(kind, TargetProfile { signature: 120.0, distance: 5000.0, ..Default::default() });
+            for s in sample(&c, &spec, None) {
+                for w in s.points.windows(2) {
+                    assert!(w[1][1] <= w[0][1] + 1e-9, "{kind:?} {:?} rises from {:?} to {:?}", s.label, w[0], w[1]);
+                }
+            }
+        }
+    }
+}
