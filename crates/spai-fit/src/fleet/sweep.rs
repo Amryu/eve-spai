@@ -103,6 +103,14 @@ pub(crate) fn disrupted(w: &WeaponGroup, e: &EwarOn) -> WeaponGroup {
 /// best carried charge, disrupted by `b`'s ewar shared over `a`, and the share of its damage that
 /// lands, averaged over the formations' pairs.
 pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64) -> Vec<(WeaponGroup, f64)> {
+    shares_on(a, b, k, target, distance).into_iter().map(|(w, f)| {
+        let mean = f.iter().sum::<f64>() / (f.len().max(1) as f64);
+        (w, mean)
+    }).collect()
+}
+
+/// As `weapons_on`, with the applied share of every shooter and target pair, not their mean.
+pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64) -> Vec<(WeaponGroup, Vec<f64>)> {
     let Some(slot) = a.stats.slots.get(k) else { return Vec::new() };
     let on_target = ewar_at(&a.ships(), distance, 1.0);
     let on_a = ewar_at(&b.ships(), distance, f64::from(a.stats.ships.max(1)));
@@ -121,16 +129,15 @@ pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f6
                 .and_then(|c| ammo::best_at(c, distance, &probe).and_then(|((charge, _), _)| c.options.iter().find(|(x, _, _)| *x == charge).map(|(_, _, g)| g)))
                 .unwrap_or(w);
             let w = disrupted(w, &on_a);
-            let mut factor = 0.0;
-            let mut n: f64 = 0.0;
-            for row in &pairs {
-                for p in row {
+            let shares = pairs
+                .iter()
+                .flatten()
+                .map(|p| {
                     let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0 };
-                    factor += applied_factor(&w, p.distance, &t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range);
-                    n += 1.0;
-                }
-            }
-            (w, factor / n.max(1.0))
+                    applied_factor(&w, p.distance, &t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range)
+                })
+                .collect();
+            (w, shares)
         })
         .collect()
 }
@@ -260,4 +267,47 @@ pub fn half_hit_angular(a: &Side, b: &Side, target: &SlotStats, distance: f64) -
         }
     }
     out
+}
+
+/// How one weapon group of a shooter fares on one target: the charge it fires (its best carried
+/// one there), the target's effective hit points against that charge's damage, and the share of
+/// its raw damage that lands, on average and at the bottom and top 5% of shooter and target pairs.
+#[derive(Clone, Debug)]
+pub struct Application {
+    pub slot: usize,
+    pub weapon: WeaponGroup,
+    pub target_ehp: f64,
+    pub mean: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+pub fn application(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<Application> {
+    let mut out = Vec::new();
+    for k in (0..a.stats.slots.len()).filter(|k| a.stats.slots[*k].count > 0) {
+        for (w, mut f) in shares_on(a, b, k, target, distance) {
+            if f.is_empty() {
+                continue;
+            }
+            f.sort_by(|x, y| x.total_cmp(y));
+            let at = |q: f64| f[((f.len() - 1) as f64 * q).round() as usize];
+            let mean = f.iter().sum::<f64>() / f.len() as f64;
+            out.push(Application { slot: k, target_ehp: ehp_against(&target.computed.tank, &w.volley), mean, low: at(0.05), high: at(0.95), weapon: w });
+        }
+    }
+    out
+}
+
+/// Effective hit points against a damage split: each layer's hit points over the share of that
+/// damage its resistances let through.
+pub fn ehp_against(t: &crate::stats::Tank, d: &crate::stats::Damage) -> f64 {
+    let total = d.total();
+    if total <= 0.0 {
+        return t.ehp;
+    }
+    let w = [d.em / total, d.thermal / total, d.kinetic / total, d.explosive / total];
+    [&t.shield, &t.armor, &t.hull].iter().map(|l| {
+        let through: f64 = (0..4).map(|i| w[i] * l.resonance[i]).sum();
+        if through > 0.0 { l.hp / through } else { f64::INFINITY }
+    }).sum()
 }

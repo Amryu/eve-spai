@@ -871,7 +871,7 @@ fn weapon(calc: &Calc, i: ItemIdx, fit: &Fit) -> Option<Weapon> {
     }
 }
 
-fn weapons(calc: &Calc, fit: &Fit) -> Vec<WeaponGroup> {
+pub(crate) fn weapons(calc: &Calc, fit: &Fit) -> Vec<WeaponGroup> {
     let mut groups: Vec<WeaponGroup> = Vec::new();
     for (i, it) in calc.items().iter().enumerate() {
         let ws = match it.kind {

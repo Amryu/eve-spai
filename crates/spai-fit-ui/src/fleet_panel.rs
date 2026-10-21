@@ -1,6 +1,7 @@
 //! Fleets: which fits fly in what numbers, the boosters, and how the fleet fares against another.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use egui_phosphor::regular as icon;
 use spai_fit::fit::Fit;
@@ -111,15 +112,28 @@ impl SimUi {
             return Some(fleet);
         }
         let Some(group) = id.strip_prefix(ENEMY_DOCTRINE) else { return self.fleet_docs.get(id).cloned() };
+        use std::hash::{Hash, Hasher};
         let dogma = self.dogma.as_ref()?;
         let (_, ids) = self.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().find(|(g, _)| g == group)?;
         let fits: Vec<(String, Fit)> = ids.iter().filter_map(|id| self.fit_docs.get(id).map(|f| (id.clone(), f.clone()))).collect();
         if fits.is_empty() {
             return None;
         }
+        let size = self.fleet.as_ref().map_or(50, |f| f.fleet.size);
+        // Building it computes every fit; done once per what it is built from.
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (id, size, self.profile).hash(&mut h);
+        serde_json::to_string(&fits).unwrap_or_default().hash(&mut h);
+        let key = h.finish();
+        if let Some((_, f)) = self.fleet_cache.borrow().doctrine.iter().find(|(k, _)| *k == key) {
+            return Some(f.clone());
+        }
         let mut fleet = spai_fit::fleet::from_doctrine(dogma, group, &fits, self.skills());
         fleet.id = id.to_owned();
-        fleet.size = self.fleet.as_ref().map_or(50, |f| f.fleet.size);
+        fleet.size = size;
+        let mut cache = self.fleet_cache.borrow_mut();
+        cache.doctrine.insert(0, (key, fleet.clone()));
+        cache.doctrine.truncate(CACHED);
         Some(fleet)
     }
 
@@ -137,6 +151,7 @@ impl SimUi {
 
     pub fn save_fleet(&mut self) {
         if let Some(f) = &self.fleet {
+            self.fleet_sent = Some(content_hash(&f.fleet));
             self.requests.push(HostRequest::SaveFleet { id: f.id.clone(), name: f.fleet.name.clone(), doc: serde_json::to_string(&f.fleet).unwrap_or_default() });
         }
     }
@@ -146,20 +161,121 @@ impl SimUi {
     }
 
     /// The fleet's numbers, and the enemy's with both comparisons, from the documents at hand.
-    pub fn fleet_stats(&self) -> Option<(FleetStats, Option<(FleetStats, Against, Against)>)> {
+    /// Each fleet's numbers are worked out once per content (`stats_key`), so a frame only
+    /// redoes the two comparisons.
+    pub fn fleet_stats(&self) -> Option<(Arc<FleetStats>, Option<(Arc<FleetStats>, Against, Against)>)> {
         let (dogma, f) = (self.dogma.as_ref()?, self.fleet.as_ref()?);
-        let docs = &self.fit_docs;
-        let fits = |id: &str| docs.get(id).cloned();
-        let skills = |p: Option<&str>| self.fleet_skills(p);
-        let mine = fleet::stats(dogma, &f.fleet, &fits, &skills);
+        let mine = self.cached_stats(&f.fleet);
         let enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id)).map(|e| {
-            let theirs = fleet::stats(dogma, &e, &fits, &skills);
+            let theirs = self.cached_stats(&e);
             let a = fleet::against(dogma, &f.fleet, &mine, &e, &theirs);
             let b = fleet::against(dogma, &e, &theirs, &f.fleet, &mine);
             (theirs, a, b)
         });
         Some((mine, enemy))
     }
+
+    /// What a fleet's numbers depend on: its slots, boosters, size and main, the documents of the
+    /// fits it flies and the skills they fly with. Not its range, motion or formation.
+    pub(crate) fn stats_key(&self, f: &Fleet) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&(&f.name, f.size, &f.slots, &f.boosters, &f.boost_shortcuts, f.main, f.drones)).unwrap_or_default().hash(&mut h);
+        for id in f.slots.iter().map(|s| &s.fit_id).chain(f.boosters.iter().map(|(_, id)| id)) {
+            id.hash(&mut h);
+            if let Some(doc) = self.fit_docs.get(id) {
+                serde_json::to_string(doc).unwrap_or_default().hash(&mut h);
+            }
+        }
+        let mut profiles: Vec<Option<&str>> = f.slots.iter().map(|s| s.profile.as_deref()).collect();
+        profiles.sort();
+        profiles.dedup();
+        for p in profiles {
+            let sk = self.fleet_skills(p);
+            let mut levels: Vec<(u32, u8)> = sk.levels.iter().map(|(k, v)| (*k, *v)).collect();
+            levels.sort_unstable();
+            (p, sk.fallback, levels).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    fn cached_stats(&self, f: &Fleet) -> Arc<FleetStats> {
+        let key = self.stats_key(f);
+        if let Some((_, s)) = self.fleet_cache.borrow().stats.iter().find(|(k, _)| *k == key) {
+            return s.clone();
+        }
+        let Some(dogma) = self.dogma.as_ref() else { return Arc::new(FleetStats::default()) };
+        let docs = &self.fit_docs;
+        let fits = |id: &str| docs.get(id).cloned();
+        let skills = |p: Option<&str>| self.fleet_skills(p);
+        let s = Arc::new(fleet::stats(dogma, f, &fits, &skills));
+        let mut cache = self.fleet_cache.borrow_mut();
+        cache.stats.insert(0, (key, s.clone()));
+        cache.stats.truncate(CACHED);
+        s
+    }
+
+    /// Every weapon's options among its charges. Each recomputes the fit, the dearest part of an
+    /// analysis, so they are kept per fit, skills and boosts: not per fleet, whose size or counts
+    /// change them not.
+    fn cached_ammo(&self, s: &FleetStats) -> Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>> {
+        use std::hash::{Hash, Hasher};
+        let Some(dogma) = self.dogma.as_ref() else { return Arc::default() };
+        let env = format!("{:?}", s.env);
+        let out = s
+            .slots
+            .iter()
+            .map(|x| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                serde_json::to_string(&x.fit).unwrap_or_default().hash(&mut h);
+                let mut levels: Vec<(u32, u8)> = x.skills.levels.iter().map(|(k, v)| (*k, *v)).collect();
+                levels.sort_unstable();
+                (levels, x.skills.fallback, &env).hash(&mut h);
+                let key = h.finish();
+                if let Some((_, a)) = self.fleet_cache.borrow().ammo.iter().find(|(k, _)| *k == key) {
+                    return (**a).clone();
+                }
+                let a = Arc::new(spai_fit::fleet::ammo::choices(dogma, &x.fit, &x.skills, &s.env));
+                let mut cache = self.fleet_cache.borrow_mut();
+                cache.ammo.insert(0, (key, a.clone()));
+                cache.ammo.truncate(CACHED_SLOTS);
+                (*a).clone()
+            })
+            .collect();
+        Arc::new(out)
+    }
+}
+
+/// Slots' ammo options kept at once.
+const CACHED_SLOTS: usize = 48;
+
+/// A fleet document's content, to tell an edit from what was saved.
+pub fn content_hash(f: &Fleet) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(f).unwrap_or_default().hash(&mut h);
+    h.finish()
+}
+
+/// Fleets' numbers and ammo options kept at once: the open one, its opponent, a few before.
+const CACHED: usize = 6;
+
+/// How long the knobs must rest before the engagement is worked out again; the last one stays on
+/// screen meanwhile.
+pub const SETTLE_MS: u64 = 250;
+
+#[derive(Default)]
+pub struct FleetCache {
+    stats: Vec<(u64, Arc<FleetStats>)>,
+    ammo: Vec<(u64, Arc<Vec<spai_fit::fleet::ammo::AmmoChoice>>)>,
+    /// Enemy doctrine groups built into fleets, by what they were built from.
+    doctrine: Vec<(u64, Fleet)>,
+    /// An analysis asked for but not yet worked out, and since when.
+    pending: Option<(u64, u64)>,
+    /// The weapons section's figures, by analysis, direction and target slot.
+    apps: Option<(Arc<Analysis>, usize, usize, Arc<Vec<spai_fit::fleet::sweep::Application>>)>,
+    /// Per burst kind the fits carrying it, by the fits and documents at hand.
+    boosting: Option<(u64, Vec<(BurstKind, Vec<(String, String)>)>)>,
 }
 
 /// The fight between the open fleet and its opponent: ammo per range, the sweep over ranges, and
@@ -167,18 +283,19 @@ impl SimUi {
 pub struct Analysis {
     pub fleet: Fleet,
     pub range: f32,
-    pub mine: FleetStats,
-    pub theirs: FleetStats,
+    pub mine: Arc<FleetStats>,
+    pub theirs: Arc<FleetStats>,
     pub enemy: Fleet,
-    pub ammo: [Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>; 2],
+    pub ammo: [Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>>; 2],
     pub sweep: spai_fit::fleet::sweep::Sweep,
     pub race: spai_fit::fleet::race::Race,
 }
 
 impl SimUi {
-    /// The engagement analysis, worked out again only when either fleet, the fits they fly or the
-    /// skills change.
-    pub(crate) fn fleet_analysis(&mut self) -> Option<std::sync::Arc<Analysis>> {
+    /// The engagement analysis. Worked out again once the fleets, their fits or skills, or the
+    /// fight's settings change and then rest for `SETTLE_MS`; until then the last one is given,
+    /// so dragging a knob stays smooth.
+    pub(crate) fn fleet_analysis(&mut self) -> Option<Arc<Analysis>> {
         use std::hash::{Hash, Hasher};
         let (dogma, f) = (self.dogma.clone()?, self.fleet.as_ref()?);
         let mut enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id))?;
@@ -186,26 +303,38 @@ impl SimUi {
         if let Some(scene) = &f.fleet.scene {
             enemy.motion = scene.read().2;
         }
+        let (mine_key, theirs_key) = (self.stats_key(&f.fleet), self.stats_key(&enemy));
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&f.fleet).unwrap_or_default().hash(&mut h);
-        serde_json::to_string(&enemy).unwrap_or_default().hash(&mut h);
-        let mut ids: Vec<&String> = self.fit_docs.keys().collect();
-        ids.sort();
-        ids.hash(&mut h);
-        self.profile.hash(&mut h);
+        (mine_key, theirs_key).hash(&mut h);
+        for x in [&f.fleet, &enemy] {
+            serde_json::to_string(&(x.range, x.motion, x.formation, &x.target_order, x.adc, x.volley_efficiency, x.ewar_auto, &x.ewar)).unwrap_or_default().hash(&mut h);
+        }
         let key = h.finish();
-        if let Some((k, a)) = &self.fleet_analysis {
+        let now = self.now_ms;
+        let cached = self.fleet_analysis.as_ref().map(|(k, a)| (*k, a.clone()));
+        if let Some((k, a)) = &cached {
             if *k == key {
+                self.fleet_cache.get_mut().pending = None;
                 return Some(a.clone());
             }
+            let pending = &mut self.fleet_cache.get_mut().pending;
+            match pending {
+                Some((pk, since)) if *pk == key => {
+                    if now.saturating_sub(*since) < SETTLE_MS {
+                        return Some(a.clone());
+                    }
+                }
+                _ => {
+                    *pending = Some((key, now));
+                    return Some(a.clone());
+                }
+            }
         }
-        let docs = &self.fit_docs;
-        let fits = |id: &str| docs.get(id).cloned();
-        let skills = |p: Option<&str>| self.fleet_skills(p);
-        let mine = fleet::stats(&dogma, &f.fleet, &fits, &skills);
-        let theirs = fleet::stats(&dogma, &enemy, &fits, &skills);
-        let ammo_of = |s: &FleetStats| s.slots.iter().map(|x| spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &s.env)).collect::<Vec<_>>();
-        let ammo = [ammo_of(&mine), ammo_of(&theirs)];
+        self.fleet_cache.get_mut().pending = None;
+        let mine = self.cached_stats(&f.fleet);
+        let theirs = self.cached_stats(&enemy);
+        let ammo = [self.cached_ammo(&mine), self.cached_ammo(&theirs)];
+        let f = self.fleet.as_ref()?;
         let a = spai_fit::fleet::sweep::Side { fleet: &f.fleet, stats: &mine, ammo: &ammo[0] };
         let b = spai_fit::fleet::sweep::Side { fleet: &enemy, stats: &theirs, ammo: &ammo[1] };
         let mut ranges = spai_fit::fleet::sweep::ranges(&mine, &theirs);
@@ -214,9 +343,14 @@ impl SimUi {
         ranges.dedup();
         let sweep = spai_fit::fleet::sweep::sweep(&a, &b, &ranges);
         let race = spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(f.fleet.range), 1800.0);
-        let out = std::sync::Arc::new(Analysis { fleet: f.fleet.clone(), range: f.fleet.range, mine, theirs, enemy, ammo, sweep, race });
+        let out = Arc::new(Analysis { fleet: f.fleet.clone(), range: f.fleet.range, mine: mine.clone(), theirs: theirs.clone(), enemy, ammo, sweep, race });
         self.fleet_analysis = Some((key, out.clone()));
         Some(out)
+    }
+
+    /// Whether an analysis waits for the knobs to rest, so the host keeps drawing until it is done.
+    pub fn fleet_analysis_pending(&self) -> bool {
+        self.fleet_cache.borrow().pending.is_some()
     }
 }
 
@@ -301,14 +435,28 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let projected = sim.fleet_stats().map(|(mine, _)| mine.projected).unwrap_or_default();
     let doctrine_fits: Vec<(String, String)> = sim.doctrines.iter().map(|d| (d.id.clone(), trf!("{name} (doctrine)", name = d.name))).collect();
     let dogma = sim.dogma.clone();
-    // Per burst kind, the fits that carry its module, among those loaded.
-    let boosting: Vec<(BurstKind, Vec<(String, String)>)> = BurstKind::ALL
-        .iter()
-        .map(|&kind| {
-            let fits = library.iter().map(|x| (x.id.clone(), x.name.clone())).chain(doctrine_fits.iter().cloned()).filter(|(id, _)| dogma.as_ref().zip(sim.fit_docs.get(id)).is_some_and(|(d, f)| fleet::fit_has_burst(d, f, kind))).collect();
-            (kind, fits)
+    // Per burst kind, the fits that carry its module, among those loaded; looked through again
+    // only when the set of fits or documents changes.
+    let boosting: Vec<(BurstKind, Vec<(String, String)>)> = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut ids: Vec<&String> = sim.fit_docs.keys().collect();
+        ids.sort();
+        (ids, library.iter().map(|x| (&x.id, &x.name)).collect::<Vec<_>>(), &doctrine_fits).hash(&mut h);
+        let key = h.finish();
+        let hit = sim.fleet_cache.borrow().boosting.as_ref().filter(|(k, _)| *k == key).map(|(_, v)| v.clone());
+        hit.unwrap_or_else(|| {
+            let v: Vec<(BurstKind, Vec<(String, String)>)> = BurstKind::ALL
+                .iter()
+                .map(|&kind| {
+                    let fits = library.iter().map(|x| (x.id.clone(), x.name.clone())).chain(doctrine_fits.iter().cloned()).filter(|(id, _)| dogma.as_ref().zip(sim.fit_docs.get(id)).is_some_and(|(d, f)| fleet::fit_has_burst(d, f, kind))).collect();
+                    (kind, fits)
+                })
+                .collect();
+            sim.fleet_cache.borrow_mut().boosting = Some((key, v.clone()));
+            v
         })
-        .collect();
+    };
     let mut want_all_docs = false;
     let enemy_doctrines: Vec<String> = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().map(|(g, _)| g).collect();
     // Each fit's variations, to fly a slot with one of them.
@@ -527,7 +675,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
             changed |= ui.add(egui::Slider::new(&mut f.volley_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
             ui.end_row();
             // How the ships sit: a ball of a radius, or a flock bell-curved around the anchor.
-            ui.label(tr!("Formation")).on_hover_text(tr!("Ball: every ship on a sphere of this radius around the anchor. Flock: ships follow the anchor, their distance to it spread like a bell curve of this width."));
+            ui.label(tr!("Formation")).on_hover_text(tr!("Ball: every ship on a sphere of this radius around the anchor. Flock: a swarm strung out along the heading, densest in the middle; this is its spread along the line, less across it and up and down."));
             ui.horizontal(|ui| {
                 use spai_ui::widgets::SteadySelect as _;
                 let (ball, mut metres) = match f.formation {
@@ -745,6 +893,16 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
             });
         });
         against_card(ui, &aimed, shooter, target, slot);
+        if let Some(an) = &analysis {
+            // Worked out once per analysis, direction and target, not every frame.
+            let hit = sim.fleet_cache.borrow().apps.as_ref().filter(|(a, d, k, _)| Arc::ptr_eq(a, an) && *d == dir && *k == slot).map(|x| x.3.clone());
+            let apps = hit.unwrap_or_else(|| {
+                let v = Arc::new(applications(an, dir, slot));
+                sim.fleet_cache.borrow_mut().apps = Some((an.clone(), dir, slot, v.clone()));
+                v
+            });
+            weapons_card(ui, &dogma, an, dir, slot, &apps, &names);
+        }
         ui.add_space(4.0);
         ui.separator();
         fleet_card(ui, &dogma, shooter, &names);
@@ -787,6 +945,14 @@ fn tip(ui: &mut egui::Ui, head: &str, rows: &[(String, String)], note_text: &str
 fn note(ui: &mut egui::Ui, text: &str) {
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(crate::rows::GAP as i8, 0)).show(ui, |ui| {
         ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
+    });
+}
+
+/// A strong heading in a line's row.
+fn subhead(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add_space(crate::rows::GAP);
+        ui.add(egui::Label::new(egui::RichText::new(text).strong()).truncate().selectable(false));
     });
 }
 
@@ -927,10 +1093,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
             }
             let gun = dogma.type_(c.weapon).map_or("?", |t| t.name.as_str());
             ui.add_space(3.0);
-            ui.horizontal(|ui| {
-                ui.add_space(crate::rows::GAP);
-                ui.add(egui::Label::new(egui::RichText::new(format!("{} · {}", slot_name(slot), gun)).strong()).truncate());
-            });
+            subhead(ui, &format!("{} · {}", slot_name(slot), gun));
             for band in bands {
                 let charge = dogma.type_(band.charge).map_or("?", |t| t.name.as_str());
                 line(ui, &format!("{} - {}", text::metres(band.from), text::metres(band.to)), text::clip(charge, 26));
@@ -1020,6 +1183,44 @@ fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names:
             });
         }
         line(ui, tr!("Speed"), trf!("{v} m/s", v = text::num(c.mobility.max_velocity)));
+    }
+}
+
+/// Each weapon group of the shooter on the picked ship at the set range: the charge it fires,
+/// the ship's effective hit points against that charge, and how much of the raw damage lands.
+fn applications(an: &Analysis, dir: usize, slot: usize) -> Vec<spai_fit::fleet::sweep::Application> {
+    use spai_fit::fleet::sweep::{self, Side};
+    let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
+    let (sf, tf) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
+    let Some(t) = target.slots.get(slot) else { return Vec::new() };
+    let (a, b) = (Side { fleet: sf, stats: shooter, ammo: &an.ammo[dir] }, Side { fleet: tf, stats: target, ammo: &an.ammo[1 - dir] });
+    sweep::application(&a, &b, t, f64::from(an.range))
+}
+
+fn weapons_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, dir: usize, slot: usize, apps: &[spai_fit::fleet::sweep::Application], names: &HashMap<String, String>) {
+    let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
+    let Some(t) = target.slots.get(slot) else { return };
+    if apps.is_empty() {
+        return;
+    }
+    title(ui, &trf!("Weapons on {t} at {r}", t = text::clip(names.get(&t.fit_id).unwrap_or(&t.name), 22), r = text::metres(f64::from(an.range))), true);
+    for x in apps {
+        let Some(s) = shooter.slots.get(x.slot) else { continue };
+        let gun = dogma.type_(x.weapon.type_id).map_or("?", |t| t.name.as_str());
+        ui.add_space(3.0);
+        subhead(ui, &format!("{} x {} · {}", s.count, names.get(&s.fit_id).unwrap_or(&s.name), gun));
+        let charge = x.weapon.charge.and_then(|c| dogma.type_(c)).map_or_else(|| tr!("none").to_owned(), |c| c.name.clone());
+        let v = &x.weapon.volley;
+        tline(ui, tr!("Ammo"), text::clip(&charge, 28), |ui| {
+            tip(ui, &charge, &[(tr!("EM").to_owned(), text::num(v.em)), (tr!("Thermal").to_owned(), text::num(v.thermal)), (tr!("Kinetic").to_owned(), text::num(v.kinetic)), (tr!("Explosive").to_owned(), text::num(v.explosive))], tr!("Its best carried charge at this range against this ship, with the group's volley by damage type."));
+        });
+        tline(ui, tr!("Target EHP against it"), text::num(x.target_ehp), |ui| {
+            tip(ui, tr!("Effective hit points against this charge"), &[(tr!("Against the fit's damage profile").to_owned(), text::num(t.computed.tank.ehp))], tr!("Each layer's hit points over the share of this charge's damage its resistances let through."));
+        });
+        let pct = |f: f64| format!("{:.0}%", f * 100.0);
+        tline(ui, tr!("Raw damage applied"), trf!("{m} ({l} to {h})", m = pct(x.mean), l = pct(x.low), h = pct(x.high)), |ui| {
+            tip(ui, tr!("Share of the raw damage that lands"), &[(tr!("Average").to_owned(), pct(x.mean)), (tr!("Bottom 5% of pairs").to_owned(), pct(x.low)), (tr!("Top 5% of pairs").to_owned(), pct(x.high))], tr!("Over every shooter and target pair of the two formations as they move: tracking or explosion against the target's speed and signature, range against optimal and falloff, the ewar on both."));
+        });
     }
 }
 

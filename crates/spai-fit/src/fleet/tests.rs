@@ -334,3 +334,26 @@ fn hulls_fall_in_size_classes_by_group() {
     assert_eq!(hull_class(&d, ids::SHIP), HullClass::Frigate, "the fixture's frigate");
     assert_eq!(hull_class(&d, 0), HullClass::Industrial, "anything unknown");
 }
+
+#[test]
+fn application_gives_the_charge_the_targets_hit_points_against_it_and_the_spread() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 20, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (1.0, 90.0), slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 20, motion: (1.0, 90.0), slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &[] }, sweep::Side { fleet: &b, stats: &sb, ammo: &[] });
+    let apps = sweep::application(&side_a, &side_b, &sb.slots[0], 3_000.0);
+    assert!(!apps.is_empty());
+    for x in &apps {
+        assert_eq!(x.weapon.charge, Some(ids::AMMO), "the loaded charge without other options");
+        assert!(x.low <= x.mean && x.mean <= x.high && x.high <= 1.0 && x.low >= 0.0, "{} {} {}", x.low, x.mean, x.high);
+        assert!(x.target_ehp > 0.0 && x.target_ehp.is_finite());
+    }
+    assert!(apps[0].high > apps[0].low, "a spread swarm crossing sees a spread of application");
+    // Against damage it does not resist, the hit points are the raw ones.
+    let t = &sb.slots[0].computed.tank;
+    let raw = t.shield.hp + t.armor.hp + t.hull.hp;
+    assert!(sweep::ehp_against(t, &crate::stats::Damage { em: 1.0, ..Default::default() }) >= raw - 1e-6);
+}

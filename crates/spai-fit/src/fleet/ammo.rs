@@ -37,8 +37,9 @@ pub fn choices(dogma: &Dogma, fit: &Fit, skills: &SkillSet, env: &Env) -> Vec<Am
             for x in f.modules.iter_mut().filter(|x| x.type_id == m.type_id) {
                 x.charge = Some(c);
             }
-            let computed = crate::stats::compute(dogma, &f, skills, env);
-            if let Some(w) = computed.weapons.into_iter().find(|w| w.type_id == m.type_id && w.charge == Some(c)) {
+            // The weapons only: the rest of the fit's figures do not change with a charge.
+            let calc = crate::calc::Calc::new(dogma, &f, skills, env);
+            if let Some(w) = crate::stats::weapons(&calc, &f).into_iter().find(|w| w.type_id == m.type_id && w.charge == Some(c)) {
                 options.push((c, carried(c), w));
             }
         }

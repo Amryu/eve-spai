@@ -710,3 +710,50 @@ fn real_data_ship_groups() {
     seen.dedup();
     println!("GROUPS {}", seen.join(" | "));
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_fleet_analysis_timing() {
+    use crate::fit::{Module, Slot};
+    use crate::fleet::{ammo, race, stats, sweep, CountRule, Fleet, FleetSlot, Formation};
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap_or_else(|| panic!("{n}")).id;
+    let mut ferox = Fit::new(id("Ferox"), "ferox");
+    for i in 0..7 {
+        ferox.modules.push(Module::new(id("250mm Railgun II"), Slot::High, i).with_charge(id("Antimatter Charge L")).with_state(State::Active));
+    }
+    ferox.modules.push(Module::new(id("Large Shield Extender II"), Slot::Mid, 0).with_state(State::Online));
+    ferox.modules.push(Module::new(id("Stasis Webifier II"), Slot::Mid, 1).with_state(State::Active));
+    let mut cane = Fit::new(id("Hurricane"), "cane");
+    for i in 0..6 {
+        cane.modules.push(Module::new(id("425mm AutoCannon II"), Slot::High, i).with_charge(id("Hail M")).with_state(State::Active));
+    }
+    let lib = [ferox, cane];
+    let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let fleet = |n: &str| Fleet { size: 150, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (0.5, 90.0), slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    let (fa, fb) = (fleet("ferox"), fleet("cane"));
+    let t = std::time::Instant::now();
+    let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
+    println!("TIME stats {:?}", t.elapsed());
+    let t = std::time::Instant::now();
+    let am = |s: &crate::fleet::FleetStats| s.slots.iter().map(|x| ammo::choices(&d, &x.fit, &x.skills, &s.env)).collect::<Vec<_>>();
+    let (aa, ab) = (am(&sa), am(&sb));
+    println!("TIME ammo {:?}", t.elapsed());
+    for c in aa.iter().chain(ab.iter()).flatten() {
+        println!("CHARGES {} {}", d.type_(c.weapon).unwrap().name, c.options.len());
+    }
+    let t = std::time::Instant::now();
+    let _ = crate::calc::Calc::new(&d, &sa.slots[0].fit, &SkillSet::all_v(), &sa.env);
+    println!("TIME one calc {:?}", t.elapsed());
+    let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &aa }, sweep::Side { fleet: &fb, stats: &sb, ammo: &ab });
+    let t = std::time::Instant::now();
+    let r = sweep::ranges(&sa, &sb);
+    let s = sweep::sweep(&a, &b, &r);
+    println!("TIME sweep {:?} over {} ranges", t.elapsed(), r.len());
+    let t = std::time::Instant::now();
+    let rc = race::race(&d, &a, &b, 10_000.0, 1800.0);
+    println!("TIME race {:?} {} steps", t.elapsed(), rc.timeline.len());
+    assert!(!s.points.is_empty());
+}

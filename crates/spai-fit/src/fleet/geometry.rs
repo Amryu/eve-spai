@@ -54,23 +54,60 @@ pub(crate) fn erf_inv(x: f64) -> f64 {
     }
 }
 
-/// Where `n` ships sit around their anchor (at the origin): on a sphere for a ball; for a flock,
-/// at distances that follow a bell curve of the given spread (a half-normal), in directions
-/// spread evenly. The anchor itself is the first ship of a flock.
-pub fn positions(formation: Formation, n: usize) -> Vec<Vec3> {
-    let dirs = directions(n.max(1));
+/// A flock's spread across its line and up and down, against its spread along it.
+pub const FLOCK_ACROSS: f64 = 0.4;
+pub const FLOCK_UP: f64 = 0.25;
+
+/// A standard normal draw for ship `i`, axis `k`: seeded, so the same fleet always sits the same
+/// way, and without a pattern the eye picks up.
+fn normal(i: usize, k: u64) -> f64 {
+    let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let mut next = || {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (u, v) = (next().max(1e-12), next());
+    (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+}
+
+/// Where `n` ships sit around their anchor (at the origin), a flock strung out along `along`
+/// (any length; the x axis when zero): on a sphere for a ball, directions spread evenly; a flock
+/// as a swarm, each ship's offset drawn from a bell curve of spread σ along its line,
+/// `FLOCK_ACROSS`·σ across it and `FLOCK_UP`·σ up and down, so it is densest in the middle and
+/// thins out to the edges. The anchor is the first ship of a flock.
+pub fn positions_along(formation: Formation, n: usize, along: Vec3) -> Vec<Vec3> {
     match formation {
-        Formation::Ball { radius_m } => dirs.into_iter().take(n).map(|d| d.map(|x| x * f64::from(radius_m))).collect(),
-        Formation::Flock { sigma_m } => (0..n)
-            .map(|i| {
-                // Shares spread evenly but shuffled against the directions, so near and far
-                // ships are not bunched on one side.
-                let share = ((i as f64 * 0.618_033_988_75) + 0.5).fract() * 0.999;
-                let r = if i == 0 { 0.0 } else { f64::from(sigma_m) * std::f64::consts::SQRT_2 * erf_inv(share) };
-                dirs[i].map(|x| x * r)
-            })
-            .collect(),
+        Formation::Ball { radius_m } => directions(n.max(1)).into_iter().take(n).map(|d| d.map(|x| x * f64::from(radius_m))).collect(),
+        Formation::Flock { sigma_m } => {
+            let l = len(along);
+            let ax = if l > 1e-9 { along.map(|x| x / l) } else { [1.0, 0.0, 0.0] };
+            // Across on the level where it can be, then up completes the frame.
+            let mut side = [-ax[2], 0.0, ax[0]];
+            if len(side) < 1e-6 {
+                side = [0.0, 0.0, 1.0];
+            }
+            let side = side.map(|x| x / len(side));
+            let up = [ax[1] * side[2] - ax[2] * side[1], ax[2] * side[0] - ax[0] * side[2], ax[0] * side[1] - ax[1] * side[0]];
+            let sigma = f64::from(sigma_m);
+            (0..n)
+                .map(|i| {
+                    if i == 0 {
+                        return [0.0; 3];
+                    }
+                    let (a, b, c) = (normal(i, 1) * sigma, normal(i, 2) * sigma * FLOCK_ACROSS, normal(i, 3) * sigma * FLOCK_UP);
+                    [ax[0] * a + side[0] * b + up[0] * c, ax[1] * a + side[1] * b + up[1] * c, ax[2] * a + side[2] * b + up[2] * c]
+                })
+                .collect()
+        }
     }
+}
+
+/// `positions_along` with the flock strung out along the x axis.
+pub fn positions(formation: Formation, n: usize) -> Vec<Vec3> {
+    positions_along(formation, n, [1.0, 0.0, 0.0])
 }
 
 /// A fleet's velocity: `speed` along its heading against the line to the enemy, 0° towards it,
@@ -104,8 +141,9 @@ pub fn pair(shooter: Vec3, shooter_v: Vec3, target: Vec3, target_v: Vec3) -> Pai
 /// Two fleets `range` apart, anchors on the x axis: every shooter of `a` against every target
 /// of `b`, with each fleet moving at its own speed and heading.
 pub fn engagement(a: Formation, a_n: usize, a_speed: f64, a_heading: f64, b: Formation, b_n: usize, b_speed: f64, b_heading: f64, range: f64) -> Vec<Vec<Pair>> {
-    let pa = positions(a, a_n);
-    let pb: Vec<Vec3> = positions(b, b_n).into_iter().map(|p| [p[0] + range, p[1], p[2]]).collect();
+    // A flock strings out along its heading, moving or not.
+    let pa = positions_along(a, a_n, velocity(1.0, a_heading, [1.0, 0.0, 0.0]));
+    let pb: Vec<Vec3> = positions_along(b, b_n, velocity(1.0, b_heading, [-1.0, 0.0, 0.0])).into_iter().map(|p| [p[0] + range, p[1], p[2]]).collect();
     let va = velocity(a_speed, a_heading, [1.0, 0.0, 0.0]);
     let vb = velocity(b_speed, b_heading, [-1.0, 0.0, 0.0]);
     pa.iter().map(|s| pb.iter().map(|t| pair(*s, va, *t, vb)).collect()).collect()
@@ -116,17 +154,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_ball_sits_on_its_radius_and_a_flock_spreads_like_a_bell() {
+    fn a_ball_sits_on_its_radius_and_a_flock_is_a_swarm_strung_out_along_its_heading() {
         let ball = positions(Formation::Ball { radius_m: 5000.0 }, 50);
         assert!(ball.iter().all(|p| (len(*p) - 5000.0).abs() < 1e-6));
-        let flock = positions(Formation::Flock { sigma_m: 4000.0 }, 400);
-        let dists: Vec<f64> = flock.iter().map(|p| len(*p)).collect();
-        let mean = dists.iter().sum::<f64>() / dists.len() as f64;
-        // A half-normal of spread σ averages σ·√(2/π).
-        assert!((mean / (4000.0 * (2.0 / std::f64::consts::PI).sqrt()) - 1.0).abs() < 0.05, "mean {mean}");
-        assert_eq!(dists[0], 0.0, "the anchor sits at the centre");
-        let near = dists.iter().filter(|d| **d < 4000.0).count() as f64 / dists.len() as f64;
-        assert!((near - 0.683).abs() < 0.05, "about two thirds within one σ: {near}");
+        let n = 2000;
+        let flock = positions_along(Formation::Flock { sigma_m: 4000.0 }, n, [0.0, 0.0, 3.0]);
+        assert_eq!(flock[0], [0.0; 3], "the anchor sits at the centre");
+        let sd = |k: usize| (flock.iter().map(|p| p[k] * p[k]).sum::<f64>() / n as f64).sqrt();
+        assert!((sd(2) / 4000.0 - 1.0).abs() < 0.08, "σ along the heading (z here): {}", sd(2));
+        assert!((sd(0) / (4000.0 * FLOCK_ACROSS) - 1.0).abs() < 0.08, "narrower across: {}", sd(0));
+        assert!((sd(1) / (4000.0 * FLOCK_UP) - 1.0).abs() < 0.08, "flatter up and down: {}", sd(1));
+        // Denser in the middle: a bell puts about 68% within one σ along the line.
+        let near = flock.iter().filter(|p| p[2].abs() < 4000.0).count() as f64 / n as f64;
+        assert!((near - 0.683).abs() < 0.04, "{near}");
+        assert_eq!(flock, positions_along(Formation::Flock { sigma_m: 4000.0 }, n, [0.0, 0.0, 3.0]), "the same every time");
     }
 
     #[test]

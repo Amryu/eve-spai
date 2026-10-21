@@ -467,6 +467,13 @@ pub struct SimUi {
     pub fleet_docs: std::collections::HashMap<String, spai_fit::fleet::Fleet>,
     /// The engagement analysis of the open fleet against its opponent, with what it was for.
     pub(crate) fleet_analysis: Option<(u64, std::sync::Arc<fleet_panel::Analysis>)>,
+    pub(crate) fleet_cache: std::cell::RefCell<fleet_panel::FleetCache>,
+    /// The open fleet's content as last edited and since when, and the content last sent to be
+    /// saved: it autosaves once edits rest, like a fit.
+    pub(crate) fleet_edit: Option<(u64, u64)>,
+    pub(crate) fleet_sent: Option<u64>,
+    /// The save under way was an autosave, which says nothing.
+    pub(crate) fleet_quiet: bool,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -540,6 +547,10 @@ impl Default for SimUi {
             fit_docs_asked: std::collections::HashSet::new(),
             fleet_docs: std::collections::HashMap::new(),
             fleet_analysis: None,
+            fleet_cache: Default::default(),
+            fleet_edit: None,
+            fleet_sent: None,
+            fleet_quiet: false,
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -649,14 +660,20 @@ impl SimUi {
                 }
             }
             HostEvent::FleetSaved(id) => {
+                let now_hash = self.fleet.as_ref().map(|f| fleet_panel::content_hash(&f.fleet));
                 if let Some(f) = &mut self.fleet {
                     if f.id == id {
-                        f.dirty = false;
+                        // Edited again since it was sent: still to save.
+                        if now_hash == self.fleet_sent {
+                            f.dirty = false;
+                        }
                         self.fleet_docs.insert(id, f.fleet.clone());
                     }
                 }
                 self.requests.push(HostRequest::ListFleets);
-                self.status(tr!("Saved").to_owned());
+                if !std::mem::take(&mut self.fleet_quiet) {
+                    self.status(tr!("Saved").to_owned());
+                }
             }
         }
     }
@@ -1174,6 +1191,18 @@ impl SimUi {
         for i in due {
             self.save_session(i);
         }
+        // The open fleet the same way, once its edits rest.
+        if let Some(f) = self.fleet.as_ref().filter(|f| f.dirty) {
+            let h = fleet_panel::content_hash(&f.fleet);
+            if self.fleet_edit.is_none_or(|(e, _)| e != h) {
+                self.fleet_edit = Some((h, now_ms));
+            }
+            let since = self.fleet_edit.map_or(now_ms, |(_, t)| t);
+            if self.fleet_sent != Some(h) && now_ms >= since + AUTOSAVE_MS {
+                self.fleet_quiet = true;
+                self.save_fleet();
+            }
+        }
     }
 
     fn save_session(&mut self, i: usize) {
@@ -1289,6 +1318,10 @@ impl SimUi {
         }
         let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
         self.now_ms = now_ms;
+        // An engagement waiting for the knobs to rest needs a frame once they have.
+        if self.fleet_analysis_pending() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(fleet_panel::SETTLE_MS));
+        }
         if !self.prices_asked {
             self.prices_asked = true;
             self.requests.push(HostRequest::FetchPrices);

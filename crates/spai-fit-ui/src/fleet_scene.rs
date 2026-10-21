@@ -248,8 +248,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
     // Every ship by its hull symbol where its formation puts it.
     for (i, form) in [f.formation, enemy_form].into_iter().enumerate() {
         let list = hulls(&sides[i].0);
-        let at = fleets[i].0;
-        for (class, pos) in list.iter().zip(spai_fit::fleet::geometry::positions(form, list.len())) {
+        let (at, dir) = (fleets[i].0, fleets[i].1);
+        for (class, pos) in list.iter().zip(spai_fit::fleet::geometry::positions_along(form, list.len(), [f64::from(dir[0]), f64::from(dir[1]), f64::from(dir[2])])) {
             if let Some((c, _)) = cam.project(add(at, [pos[0] as f32, pos[1] as f32, pos[2] as f32])) {
                 symbol(&painter, c, *class, fleets[i].4);
             }

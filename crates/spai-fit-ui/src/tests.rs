@@ -253,6 +253,16 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let an = s.fleet_analysis().expect("the mirror is analysed");
     assert_eq!(an.sweep.a_best, an.sweep.b_best);
     assert!(an.sweep.a_favoured.is_empty() && an.sweep.b_favoured.is_empty(), "neither side is favoured against itself");
+    // A knob moving keeps the last analysis on screen until it rests.
+    s.now_ms = 100_000;
+    s.fleet.as_mut().unwrap().fleet.range = 9_000.0;
+    let held = s.fleet_analysis().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&held, &an), "the last one while the knob moves");
+    assert!(s.fleet_analysis_pending());
+    s.now_ms += crate::fleet_panel::SETTLE_MS;
+    let fresh = s.fleet_analysis().unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&fresh, &an) && fresh.range == 9_000.0, "worked out once it rests");
+    assert!(!s.fleet_analysis_pending());
 }
 
 #[test]
@@ -1220,4 +1230,28 @@ fn real_data_what_the_dialogs_leave_out() {
         g = d.market_group(id).and_then(|m| m.parent);
     }
     println!("in its group's list: {}", tree.types(d.type_(b).unwrap().market_group.unwrap()).contains(&b));
+}
+
+#[test]
+fn a_fleet_autosaves_once_its_edits_rest_and_an_edit_after_sending_stays_unsaved() {
+    let mut s = sim();
+    s.new_fleet(10);
+    s.take_requests();
+    let saves = |s: &mut SimUi| s.take_requests().into_iter().filter(|r| matches!(r, HostRequest::SaveFleet { .. })).count();
+    s.fleet.as_mut().unwrap().fleet.size = 80;
+    s.autosave_for_test(1_000);
+    assert_eq!(saves(&mut s), 0, "still being edited");
+    s.autosave_for_test(1_000 + crate::AUTOSAVE_MS);
+    assert_eq!(saves(&mut s), 1, "saved once the edits rest");
+    s.autosave_for_test(10_000);
+    assert_eq!(saves(&mut s), 0, "not sent twice");
+    let id = s.fleet.as_ref().unwrap().id.clone();
+    s.fleet.as_mut().unwrap().fleet.size = 90;
+    s.handle(HostEvent::FleetSaved(id.clone()));
+    assert!(s.fleet.as_ref().unwrap().dirty, "edited after it was sent: still to save");
+    s.autosave_for_test(20_000);
+    s.autosave_for_test(20_000 + crate::AUTOSAVE_MS);
+    assert_eq!(saves(&mut s), 1);
+    s.handle(HostEvent::FleetSaved(id));
+    assert!(!s.fleet.as_ref().unwrap().dirty);
 }

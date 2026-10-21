@@ -431,9 +431,10 @@ left out entirely.
 
 **Formation and motion** (`fleet::geometry`). The two anchors sit `d` apart on one axis. A
 **ball** puts its ships on a sphere of the given radius around the anchor, directions spread
-evenly (a Fibonacci sphere). A **flock** puts the anchor at the centre and the others at
-distances following a half-normal of the given width σ (`σ·√2·erf⁻¹(share)` for evenly spread
-shares), directions spread evenly. Each fleet moves as one at its share of its slowest ship's
+evenly (a Fibonacci sphere). A **flock** is a swarm strung out along the fleet's heading: the
+anchor at the centre, every other ship offset by seeded normal draws of spread σ along the
+heading, 0.4σ across it on the level and 0.25σ up and down, so it is densest in the middle and
+thins out to the edges, the same way every time. Each fleet moves as one at its share of its slowest ship's
 top speed, along a heading against the line to the other: 0° straight at it, 90° across (the
 same side for both), 180° away. For a shooter and a target the distance, the transversal speed
 (the relative velocity's component across the line between them) and the angular velocity
@@ -512,6 +513,18 @@ their radius: interdictor probe 20 km, surgical probe 10 km, heavy interdictor f
 (Tech I / II). Placed, the anchors' distance is the range, the angle between a fleet's arrow
 and the line to the other its heading, and the opponent moves as placed there. Moving the range
 or heading knobs elsewhere moves the scene with them.
+
+**On a picked ship** (`fleet::sweep::application`): per weapon group of the shooter at the set
+range, the charge it fires (its best carried one there), the target's effective hit points
+against that charge's damage split (`sweep::ehp_against`: each layer's hit points over the share
+of that damage its resistances let through), and the share of its raw damage that lands over
+every shooter and target pair: the average, and the values at the bottom and top 5%.
+
+**Performance.** A fleet's numbers are kept by what they depend on (slots, boosters, size, the
+fit documents and skills), each slot's ammo options by its fit, skills and boosts (every charge
+recomputes the fit's weapons, the dearest part), and an enemy doctrine fleet by what it is built
+from. The engagement analysis is worked out again once its inputs have rested for 250 ms; until
+then the last one stays on screen. The open fleet saves itself 1.5 s after its last edit.
 
 **Opponents** are a saved fleet, an enemy doctrine group built as below at the open fleet's
 size, or the open fleet itself as edited (a mirror match; each race step both sides fire on the
