@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "br-core"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "serde",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "eve-spai"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6326,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "spai-assets"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -6335,7 +6335,7 @@ dependencies = [
 
 [[package]]
 name = "spai-core"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "chrono",
  "ecolor",
@@ -6348,7 +6348,7 @@ dependencies = [
 
 [[package]]
 name = "spai-fit"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "base64",
@@ -6362,7 +6362,7 @@ dependencies = [
 
 [[package]]
 name = "spai-fit-ui"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "egui",
  "egui-phosphor",
@@ -6375,7 +6375,7 @@ dependencies = [
 
 [[package]]
 name = "spai-share"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "base64",
@@ -6395,7 +6395,7 @@ dependencies = [
 
 [[package]]
 name = "spai-sim-web"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "eframe",
  "egui",
@@ -6418,7 +6418,7 @@ dependencies = [
 
 [[package]]
 name = "spai-ui"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "chrono",
  "egui",
@@ -6431,7 +6431,7 @@ dependencies = [
 
 [[package]]
 name = "spai-web"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "anyhow",
  "base64",
@@ -6454,7 +6454,7 @@ dependencies = [
 
 [[package]]
 name = "spai-webkit"
-version = "1.0.15"
+version = "1.0.16"
 dependencies = [
  "base64",
  "ehttp",
