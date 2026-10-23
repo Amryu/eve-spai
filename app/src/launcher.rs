@@ -47,6 +47,30 @@ mod imp {
             }
             *last = Some(count);
         }
+        // Opening the bus and the blocking send take tens of milliseconds: off the UI thread.
+        static TX: std::sync::OnceLock<Option<std::sync::mpsc::Sender<u32>>> = std::sync::OnceLock::new();
+        let tx = TX.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<u32>();
+            std::thread::Builder::new()
+                .name("launcher-count".into())
+                .spawn(move || {
+                    while let Ok(mut count) = rx.recv() {
+                        // Only the latest count matters.
+                        while let Ok(next) = rx.try_recv() {
+                            count = next;
+                        }
+                        send(count);
+                    }
+                })
+                .ok()
+                .map(|_| tx)
+        });
+        if let Some(tx) = tx {
+            let _ = tx.send(count);
+        }
+    }
+
+    fn send(count: u32) {
         let Some(conn) = conn() else { return };
         let mut props: std::collections::HashMap<&str, zbus::zvariant::Value> =
             std::collections::HashMap::new();

@@ -52,7 +52,7 @@ fn the_picker_filters_by_what_the_slot_takes() {
     let charges = results(&d, PickTarget::Charge(Slot::High, 0), Some(ids::GUN), "");
     assert_eq!(charges, vec![ids::AMMO_LONG, ids::AMMO], "by name: Barrage before EMP");
     assert_eq!(results(&d, PickTarget::Charge(Slot::High, 0), Some(ids::AAR), ""), vec![ids::PASTE]);
-    assert_eq!(results(&d, PickTarget::Drone, None, ""), vec![ids::DRONE]);
+    assert_eq!(results(&d, PickTarget::Drone, None, ""), vec![ids::WEB_DRONE, ids::LOGI_DRONE, ids::DRONE], "by name");
     assert_eq!(results(&d, PickTarget::Implant, None, ""), vec![ids::IMPLANT]);
     assert_eq!(results(&d, PickTarget::Booster, None, ""), vec![ids::BOOSTER]);
     assert!(results(&d, PickTarget::Cargo, None, "").contains(&ids::CAP_CHARGE));
@@ -169,6 +169,32 @@ fn recording_a_variation_keeps_the_difference_and_switches_it_on() {
 }
 
 #[test]
+fn with_a_variation_on_edits_land_in_it_and_leave_the_base_alone() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.start_recording(3);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO_LONG, 4);
+    s.keep_recording(5);
+    // Its own module: the change is the variation's.
+    s.edit(EditKind::SetState, 6, |f| f.module_mut(Slot::High, 0).unwrap().state = State::Offline);
+    apply(&mut s, PickTarget::Module(Slot::Low, 0), ids::DC, 7);
+    let f = s.session().unwrap().fit.clone();
+    assert_eq!(f.module(Slot::High, 0).map(|m| (m.charge, m.state)), Some((Some(ids::AMMO), State::Active)), "the base keeps its gun as it was");
+    assert!(f.module(Slot::Low, 0).is_none(), "and gains nothing");
+    let v = s.view_fit().unwrap();
+    assert_eq!(v.module(Slot::High, 0).map(|m| (m.charge, m.state)), Some((Some(ids::AMMO_LONG), State::Offline)));
+    assert_eq!(v.module(Slot::Low, 0).map(|m| m.type_id), Some(ids::DC), "a new module joins the variation");
+    s.edit(EditKind::Variation, 8, |f| f.active_variations.clear());
+    let base = s.view_fit().unwrap();
+    assert_eq!(base.module(Slot::High, 0).map(|m| m.charge), Some(Some(ids::AMMO)));
+    assert!(base.module(Slot::Low, 0).is_none());
+    s.edit(EditKind::Variation, 9, |f| spai_fit::variations::activate(f, 1));
+    assert_eq!(s.view_fit().unwrap().module(Slot::Low, 0).map(|m| m.type_id), Some(ids::DC), "kept with the variation");
+}
+
+#[test]
 fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     let mut s = sim();
     let mut fit = Fit::new(ids::SHIP, "Doctrine Rifter");
@@ -218,15 +244,15 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let f = s.fleet.as_mut().unwrap();
     f.fleet.size = 20;
     f.fleet.range = 1000.0;
-    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None });
-    let (mine, enemy) = s.fleet_stats().unwrap();
+    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() });
+    let (mine, enemy) = s.fleet_stats_settled().unwrap();
     assert_eq!((mine.ships, mine.slots.len()), (20, 1), "the saved fit's document is already at hand");
     assert!(enemy.is_none());
     assert!(mine.dps > 0.0);
     s.forget_fit_doc(&fit_id);
-    assert_eq!(s.fleet_stats().unwrap().0.slots.len(), 0, "without the document the slot is left out");
+    assert_eq!(s.fleet_stats_settled().unwrap().0.slots.len(), 0, "without the document the slot is left out");
     s.handle(HostEvent::FitDocs(vec![(fit_id.clone(), doc.clone())]));
-    assert_eq!(s.fleet_stats().unwrap().0.slots.len(), 1);
+    assert_eq!(s.fleet_stats_settled().unwrap().0.slots.len(), 1);
     s.save_fleet();
     let reqs = s.take_requests();
     let Some(HostRequest::SaveFleet { id, name, doc: fleet_doc }) = reqs.iter().find(|r| matches!(r, HostRequest::SaveFleet { .. })) else { panic!("{reqs:?}") };
@@ -236,7 +262,7 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     s.handle(HostEvent::Fleets(vec![FleetSummary { id: id.clone(), name: name.clone(), updated_at: 0 }]));
     s.handle(HostEvent::FleetDoc { id: "enemy".into(), doc: fleet_doc.clone() });
     s.fleet.as_mut().unwrap().enemy = Some("enemy".into());
-    let (_, enemy) = s.fleet_stats().unwrap();
+    let (_, enemy) = s.fleet_stats_settled().unwrap();
     let (theirs, a, b) = enemy.unwrap();
     assert_eq!(theirs.ships, 20);
     assert!(a.applied_dps > 0.0 && (a.applied_dps - b.applied_dps).abs() < 1e-9, "a fleet against its own copy is symmetric: {a:?} vs {b:?}");
@@ -246,7 +272,7 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     // A mirror match: the fleet as edited, unsaved changes too, against itself.
     s.fleet.as_mut().unwrap().enemy = Some(crate::fleet_panel::MIRROR.into());
     s.fleet.as_mut().unwrap().fleet.size = 30;
-    let (_, enemy) = s.fleet_stats().unwrap();
+    let (_, enemy) = s.fleet_stats_settled().unwrap();
     let (theirs, a, b) = enemy.expect("the mirror needs no document");
     assert_eq!(theirs.ships, 30, "the copy follows the edits");
     assert!((a.applied_dps - b.applied_dps).abs() < 1e-9);
@@ -260,14 +286,22 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     assert!(std::sync::Arc::ptr_eq(&held, &an), "the last one while the knob moves");
     assert!(s.fleet_analysis_pending());
     s.now_ms += crate::fleet_panel::SETTLE_MS;
-    let fresh = s.fleet_analysis().unwrap();
+    // Worked out once it rests, on its own thread: the last one until it is in.
+    let mut fresh = s.fleet_analysis().unwrap();
+    for _ in 0..300 {
+        if !std::sync::Arc::ptr_eq(&fresh, &an) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fresh = s.fleet_analysis().unwrap();
+    }
     assert!(!std::sync::Arc::ptr_eq(&fresh, &an) && fresh.range == 9_000.0, "worked out once it rests");
     assert!(!s.fleet_analysis_pending());
     // The copy at its own numbers.
     s.fleet.as_mut().unwrap().fleet.mirror_size = Some(12);
-    assert_eq!(s.fleet_stats().unwrap().1.unwrap().0.ships, 12, "the mirror at its own size");
+    assert_eq!(s.fleet_stats_settled().unwrap().1.unwrap().0.ships, 12, "the mirror at its own size");
     s.fleet.as_mut().unwrap().fleet.mirror_counts = vec![Some(5)];
-    let (mine, theirs) = s.fleet_stats().map(|(m, e)| (m, e.unwrap().0)).unwrap();
+    let (mine, theirs) = s.fleet_stats_settled().map(|(m, e)| (m, e.unwrap().0)).unwrap();
     assert_eq!((theirs.ships, mine.ships), (5, 30), "a typed count for the copy, the fleet itself untouched");
 }
 
@@ -485,6 +519,23 @@ fn details_list_the_raw_and_fitted_numbers_with_who_changed_them() {
     s.open_details(DetailsTarget::Module(Slot::High, 0));
     s.open_details(DetailsTarget::Module(Slot::High, 0));
     assert_eq!(s.details.len(), 1, "one window per item");
+}
+
+#[test]
+fn a_charge_or_drone_off_the_fit_shows_its_numbers_as_the_fit_would_use_it() {
+    use crate::details::{build, DetailsTarget};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    let ammo = build(&s, DetailsTarget::Type(ids::AMMO), false).unwrap();
+    assert!(ammo.fitted && ammo.trial.as_deref().is_some_and(|n| n.contains("Gun") || n.contains(&spai_fit::formats::name_of(s.dogma.as_ref().unwrap(), ids::GUN))), "{:?}", ammo.trial);
+    let missile = build(&s, DetailsTarget::Type(ids::MISSILE), false).unwrap();
+    let launcher = spai_fit::formats::name_of(s.dogma.as_ref().unwrap(), ids::LAUNCHER);
+    assert!(missile.fitted && missile.trial.as_deref().is_some_and(|n| n.contains(&launcher)), "none fitted: the game's launcher: {:?}", missile.trial);
+    let drone = build(&s, DetailsTarget::Type(ids::DRONE), true).unwrap();
+    assert!(drone.fitted && drone.trial.is_some() && drone.rows.iter().any(|r| r.changed), "skills raise the drone's numbers");
+    let gun = build(&s, DetailsTarget::Type(ids::GUN), false).unwrap();
+    assert!(!gun.fitted && gun.trial.is_none(), "a module off the fit shows the data's numbers");
 }
 
 #[test]
@@ -790,7 +841,7 @@ fn the_slot_picker_offers_what_the_hull_and_the_fit_leave_room_for() {
     use crate::picker::{fits, FitFilter, FitRoom};
     let d = dataset();
     let gun = d.type_(ids::GUN).unwrap();
-    let room = |turrets_free: u32, cpu_left: f64| FitRoom { ship: ids::SHIP, ship_group: 25, rig_size: None, cpu_total: 130.0, power_total: 40.0, cpu_left, power_left: 40.0, turrets_total: 3, launchers_total: 2, turrets_free, launchers_free: 2 };
+    let room = |turrets_free: u32, cpu_left: f64| FitRoom { ship: ids::SHIP, ship_group: 25, rig_size: None, cpu_total: 130.0, power_total: 40.0, cpu_left, power_left: 40.0, turrets_total: 3, launchers_total: 2, turrets_free, launchers_free: 2, costs: Default::default(), slot_group: None };
     assert!(fits(&d, gun, &room(1, 100.0), FitFilter::Left));
     assert!(!fits(&d, gun, &room(0, 100.0), FitFilter::Left), "no turret hardpoint free");
     assert!(fits(&d, gun, &room(0, 100.0), FitFilter::Totals), "but it fits an empty hull");
@@ -802,6 +853,35 @@ fn the_slot_picker_offers_what_the_hull_and_the_fit_leave_room_for() {
     s.new_fit(ids::SHIP, 0);
     let r = s.fit_room(Slot::High, 0).expect("room on a fitted hull");
     assert!(r.cpu_left <= r.cpu_total && r.turrets_free <= r.turrets_total);
+    // A hull that halves its guns' CPU, as role bonuses cut bombers' launchers.
+    use spai_fit::dogma::{attr, Domain, EffectCategory, Func, Modifier, Op};
+    let mut hd = dataset();
+    let gun_group = hd.type_(ids::GUN).unwrap().group;
+    hd.attributes.push(spai_fit::test_support::attr_def(9990, "shipGunCpuBonus", true, false, 0.0));
+    hd.effects.push(spai_fit::test_support::effect(9990, "shipGunCpuBonus", EffectCategory::Passive, vec![Modifier { domain: Domain::Ship, func: Func::LocationGroup, modified: attr::CPU, modifying: 9990, op: Op::PostPercent, group: Some(gun_group), skill: None }]));
+    let ship = hd.types.iter_mut().find(|t| t.id == ids::SHIP).unwrap();
+    ship.attrs.push((9990, -50.0));
+    ship.effects.push((9990, false));
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(Arc::new(hd.finish())));
+    s.new_fit(ids::SHIP, 0);
+    let r = s.fit_room(Slot::High, 0).unwrap();
+    let raw_cpu = f64::from(gun.attr(attr::CPU).unwrap());
+    let (cpu, _) = r.costs[&ids::GUN];
+    assert!(cpu > 0.0 && cpu < raw_cpu, "skills cut its CPU: {cpu} of {raw_cpu}");
+    let mut tight = room(1, (cpu + raw_cpu) / 2.0);
+    assert!(!fits(&d, gun, &tight, FitFilter::Left), "by its own CPU it does not fit");
+    tight.costs = r.costs.clone();
+    assert!(fits(&d, gun, &tight, FitFilter::Left), "with what the skills leave of it, it does");
+}
+
+#[test]
+fn the_slot_picker_lists_a_modules_cpu_powergrid_and_capacitor() {
+    let d = dataset();
+    assert_eq!(crate::picker::costs(&d, ids::GUN), [25.0, 15.0, 0.0], "a projectile turret needs no capacitor");
+    let [cpu, power, cap] = crate::picker::costs(&d, ids::WEB);
+    assert_eq!((cpu, power), (30.0, 1.0));
+    assert!((cap - 6.0 / 5.0).abs() < 1e-9, "its need over its cycle: {cap}");
 }
 
 #[test]
@@ -950,7 +1030,7 @@ fn the_graph_keeps_its_size_whatever_the_controls() {
         m.state = State::Active;
         m.charge = Some(ids::AMMO);
     });
-    s.center = crate::Center::Graphs;
+    s.graph_window = true;
     s.pane = crate::Pane::Graphs;
     for w in [1440.0f32, 760.0] {
         let ctx = egui::Context::default();
@@ -999,7 +1079,7 @@ fn an_axis_end_set_by_hand_is_where_the_graph_stops() {
     s.graph_x_to.insert(GraphX::Distance, 100_000.0);
     let c = s.computed().unwrap();
     let spec = GraphSpec { x_to: s.graph_x_to.get(&GraphKind::DamageVsDistance.axes().1).copied(), ..GraphSpec::new(GraphKind::DamageVsDistance, Default::default()) };
-    let series = spai_fit::graphs::sample(&c, &spec, None);
+    let series = spai_fit::graphs::sample(&c, &spec);
     let last = series.iter().filter_map(|s| s.points.last()).map(|p| p[0]).fold(0.0, f64::max);
     assert!((last - 100_000.0).abs() < 1.0, "the bottom ends at 100 km: {last}");
 }
@@ -1201,7 +1281,7 @@ fn the_fit_on_screen_can_be_taken_off_the_graph() {
     let other = s.sessions()[0].id.clone();
     s.graph_attackers = vec![other];
     s.graph_current = false;
-    s.center = crate::Center::Graphs;
+    s.graph_window = true;
     s.pane = crate::Pane::Graphs;
     let ctx = egui::Context::default();
     let mut legend = 0;
@@ -1211,6 +1291,39 @@ fn the_fit_on_screen_can_be_taken_off_the_graph() {
         legend = crate::graphs_panel::last_line_count(&ctx);
     }
     assert_eq!(legend, 1, "only the other fit is drawn");
+}
+
+#[test]
+fn a_pinned_attacker_stays_whichever_tab_is_on_screen() {
+    let mut s = sim();
+    for t in [1, 3] {
+        s.new_fit(ids::SHIP, t);
+        apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, t + 1);
+        s.edit(EditKind::SetState, t + 1, |f| {
+            let m = f.module_mut(Slot::High, 0).unwrap();
+            m.state = State::Active;
+            m.charge = Some(ids::AMMO);
+        });
+    }
+    // The second tab pinned while on screen, beside the fit on screen.
+    let pinned = s.sessions()[1].id.clone();
+    s.graph_attackers = vec![pinned.clone()];
+    let ctx = egui::Context::default();
+    let lines = |s: &mut SimUi| {
+        s.graph_window = true;
+        s.pane = crate::Pane::Graphs;
+        let mut n = 0;
+        for t in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), time: Some(f64::from(t) * 0.05), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| s.show(ui));
+            n = crate::graphs_panel::last_line_count(&ctx);
+        }
+        n
+    };
+    assert_eq!(lines(&mut s), 2, "the pinned copy and the fit on screen, though they are one tab");
+    s.activate(0);
+    assert_eq!(lines(&mut s), 2);
+    assert_eq!(s.graph_attackers, vec![pinned], "switching tabs neither drops nor adds attackers");
 }
 
 #[test]
@@ -1272,3 +1385,291 @@ fn charge_names_shorten_to_what_tells_them_apart() {
     assert_eq!(short_charge("Republic Fleet EMP XL"), "RF EMP");
     assert_eq!(short_charge("Multifrequency L"), "Multifrequency");
 }
+
+#[test]
+fn fits_now_leaves_out_the_module_being_swapped() {
+    use crate::picker::{fits, FitFilter};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    for i in 0..2 {
+        apply(&mut s, PickTarget::Module(Slot::High, i), ids::GUN, 1 + u64::from(i));
+    }
+    let d = dataset();
+    let gun = d.type_(ids::GUN).unwrap();
+    let full = s.fit_room(Slot::High, 2).unwrap();
+    assert!(!fits(&d, gun, &full, FitFilter::Left), "a third gun overloads the powergrid: {full:?}");
+    let swap = s.fit_room(Slot::High, 1).unwrap();
+    assert_eq!((swap.turrets_free, swap.cpu_left, swap.power_left), (full.turrets_free + 1, full.cpu_left + 25.0, full.power_left + 15.0), "the gun there gives back its hardpoint, CPU and powergrid");
+    assert!(fits(&d, gun, &swap, FitFilter::Left));
+}
+
+/// The gun with a faction and an officer variant beside it.
+fn gun_family() -> spai_fit::Dogma {
+    let mut d = dataset();
+    let gun = d.type_(ids::GUN).unwrap().clone();
+    let set = |t: &mut spai_fit::dogma::TypeDef, a: spai_fit::ids::AttrId, v: f32| match t.attrs.iter_mut().find(|(x, _)| *x == a) {
+        Some(e) => e.1 = v,
+        None => t.attrs.push((a, v)),
+    };
+    let mut faction = spai_fit::dogma::TypeDef { id: 90_001, name: "Republic Fleet 200mm AutoCannon".into(), variation_parent: Some(ids::GUN), meta_group: Some(4), meta_level: Some(8), ..gun.clone() };
+    set(&mut faction, spai_fit::dogma::attr::CPU, 20.0);
+    let mut officer = spai_fit::dogma::TypeDef { id: 90_002, name: "Officer 200mm AutoCannon".into(), variation_parent: Some(ids::GUN), meta_group: Some(5), meta_level: Some(14), ..gun.clone() };
+    set(&mut officer, spai_fit::dogma::attr::CPU, 18.0);
+    d.types.push(faction);
+    d.types.push(officer);
+    d.finish()
+}
+
+#[test]
+fn compare_variants_brings_the_whole_family_and_the_filters_narrow_it() {
+    use crate::compare::{columns, variants, visible, CompareWindow};
+    let d = gun_family();
+    let family = variants(&d, 90_002);
+    assert_eq!(family, vec![ids::GUN, 90_001, 90_002], "from any member, its Tech I parent first");
+    assert_eq!(variants(&d, ids::WEB), vec![ids::WEB], "an item without variants compares alone");
+    let mut w = CompareWindow { items: family.clone(), ..Default::default() };
+    assert_eq!(visible(&d, &w), family, "by meta level when unsorted");
+    let cols = columns(&d, &family, true, true);
+    assert_eq!(cols, vec![spai_fit::dogma::attr::CPU], "only what differs: {cols:?}");
+    assert!(columns(&d, &family, true, false).len() > 5);
+    w.sort = Some((spai_fit::dogma::attr::CPU, false));
+    assert_eq!(visible(&d, &w), vec![90_002, 90_001, ids::GUN], "lowest CPU first");
+    w.hidden_meta.insert(Some(5));
+    assert_eq!(visible(&d, &w), vec![90_001, ids::GUN], "the officer one hidden");
+    w.hidden_meta.clear();
+    w.meta_levels = (5, 10);
+    assert_eq!(visible(&d, &w), vec![90_001], "meta 5 to 10");
+}
+
+#[test]
+fn compare_menus_open_the_window_and_add_without_repeats() {
+    let ctx = egui::Context::default();
+    let mut s = sim();
+    crate::compare::request(&ctx, &[ids::GUN, ids::WEB]);
+    let _ = ctx.run_ui(Default::default(), |ui| crate::compare::window(&mut s, ui.ctx()));
+    assert_eq!(s.compare.as_ref().map(|w| w.items.clone()), Some(vec![ids::GUN, ids::WEB]), "unlike items side by side");
+    crate::compare::request(&ctx, &[ids::WEB, ids::DC]);
+    let _ = ctx.run_ui(Default::default(), |ui| crate::compare::window(&mut s, ui.ctx()));
+    assert_eq!(s.compare.as_ref().map(|w| w.items.clone()), Some(vec![ids::GUN, ids::WEB, ids::DC]));
+}
+
+#[test]
+fn a_double_click_on_an_empty_slot_opens_the_picker() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)));
+    let frame = |s: &mut SimUi, t: f64, events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: screen, time: Some(t), events, ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    };
+    frame(&mut s, 0.0, vec![]);
+    frame(&mut s, 0.05, vec![]);
+    let log = ctx.data(|d| d.get_temp::<crate::rows::RowLog>(egui::Id::new("sim_row_log"))).unwrap_or_default();
+    let rect = log.0.iter().find(|(l, _)| *l == egui::Id::new("rack/mid")).map(|(_, r)| *r).expect("an empty mid slot");
+    let at = rect.center();
+    let press = |down| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: down, modifiers: Default::default() };
+    frame(&mut s, 0.1, vec![egui::Event::PointerMoved(at)]);
+    frame(&mut s, 0.15, vec![press(true)]);
+    frame(&mut s, 0.2, vec![press(false)]);
+    frame(&mut s, 0.25, vec![press(true)]);
+    frame(&mut s, 0.3, vec![press(false)]);
+    frame(&mut s, 0.35, vec![]);
+    assert!(s.picker.is_some(), "the module picker opens");
+}
+
+
+#[test]
+fn the_graphs_open_in_a_window_dock_beside_the_fit_and_come_back_where_they_were() {
+    let mut s = sim();
+    assert!(!s.graphs_shown());
+    s.toggle_graphs();
+    assert!(s.graph_window && !s.graph_docked, "first in a window");
+    s.dock_graphs(true);
+    assert!(s.graph_docked && !s.graph_window);
+    s.graph_collapsed = true;
+    s.toggle_graphs();
+    assert!(!s.graphs_shown(), "closed");
+    s.toggle_graphs();
+    assert!(s.graph_docked && !s.graph_collapsed, "back in the dock, open");
+    let json = serde_json::to_string(&s.layout()).unwrap();
+    let mut t = sim();
+    t.apply_layout(&json);
+    assert!(t.graph_docked, "the dock is kept between starts");
+    s.dock_graphs(false);
+    assert!(s.graph_window && !s.graph_docked);
+    s.toggle_graphs();
+    s.toggle_graphs();
+    assert!(s.graph_window, "a window again once floated");
+}
+
+
+fn drag_window(s: &mut SimUi, window: &str, delta: egui::Vec2) -> (egui::Rect, egui::Rect) {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    let mut t = 0.0;
+    let mut frame = |s: &mut SimUi, events: Vec<egui::Event>| {
+        t += 0.05;
+        let input = egui::RawInput { screen_rect: screen, time: Some(t), events, ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    };
+    for _ in 0..3 {
+        frame(s, vec![]);
+    }
+    let rect = |ctx: &egui::Context| ctx.memory(|m| m.area_rect(egui::Id::new(window))).unwrap();
+    let before = rect(&ctx);
+    let corner = before.max - egui::vec2(2.0, 2.0);
+    let to = corner + delta;
+    let press = |p, down| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: Default::default() };
+    frame(s, vec![egui::Event::PointerMoved(corner)]);
+    frame(s, vec![press(corner, true)]);
+    for k in 1..=10 {
+        frame(s, vec![egui::Event::PointerMoved(corner + delta * (k as f32 / 10.0))]);
+    }
+    frame(s, vec![press(to, false)]);
+    for _ in 0..3 {
+        frame(s, vec![]);
+    }
+    (before, rect(&ctx))
+}
+
+/// Drags from `from` by `delta` over frames of the simulator at 1600 by 1000.
+fn drag(s: &mut SimUi, ctx: &egui::Context, from: egui::Pos2, delta: egui::Vec2) {
+    let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    let mut t = ctx.input(|i| i.time) + 0.05;
+    let mut frame = |s: &mut SimUi, events: Vec<egui::Event>| {
+        t += 0.05;
+        let input = egui::RawInput { screen_rect: screen, time: Some(t), events, ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    };
+    let press = |p, down| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: Default::default() };
+    frame(s, vec![egui::Event::PointerMoved(from)]);
+    frame(s, vec![press(from, true)]);
+    for k in 1..=10 {
+        frame(s, vec![egui::Event::PointerMoved(from + delta * (k as f32 / 10.0))]);
+    }
+    frame(s, vec![press(from + delta, false)]);
+    for _ in 0..3 {
+        frame(s, vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))]);
+    }
+}
+
+fn settle(s: &mut SimUi, ctx: &egui::Context) {
+    let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    for k in 0..3 {
+        let input = egui::RawInput { screen_rect: screen, time: Some(f64::from(k) * 0.05), ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    }
+}
+
+#[test]
+fn the_graph_windows_and_docks_follow_a_drag_both_ways() {
+    let wider = |(a, b): (egui::Rect, egui::Rect)| (b.width() - a.width(), b.height() - a.height());
+    for fleets in [false, true] {
+        let open = |s: &mut SimUi| {
+            if fleets {
+                s.new_fleet(0);
+                s.mode = Mode::Fleets;
+                s.fleet_graph_open = true;
+                s.fleet_graph_place = crate::GraphPlace::Window;
+            } else {
+                s.new_fit(ids::SHIP, 0);
+                s.graph_window = true;
+            }
+        };
+        let id = if fleets { "sim_fleet_graph_window" } else { "sim_graph_window" };
+        let mut s = sim();
+        open(&mut s);
+        let (w, h) = wider(drag_window(&mut s, id, egui::vec2(150.0, 80.0)));
+        assert!((w - 150.0).abs() < 2.0 && (h - 80.0).abs() < 2.0, "{id} grows: {w} {h}");
+        let mut s = sim();
+        open(&mut s);
+        let (w, h) = wider(drag_window(&mut s, id, egui::vec2(-200.0, -150.0)));
+        assert!((w + 200.0).abs() < 2.0 && (h + 150.0).abs() < 2.0, "{id} shrinks: {w} {h}");
+    }
+    // A dock's inner edge, dragged in and out.
+    let check = |s: &mut SimUi, id: egui::Id, side: crate::DockSide| {
+        let ctx = egui::Context::default();
+        settle(s, &ctx);
+        for d in [-120.0f32, 90.0] {
+            let r = egui::PanelState::load(&ctx, id).unwrap().rect;
+            let (from, delta, along): (egui::Pos2, egui::Vec2, fn(egui::Rect) -> f32) = match side {
+                crate::DockSide::Right => (egui::pos2(r.min.x, r.center().y), egui::vec2(d, 0.0), |r| r.width()),
+                crate::DockSide::Left => (egui::pos2(r.max.x, r.center().y), egui::vec2(-d, 0.0), |r| r.width()),
+                crate::DockSide::Bottom => (egui::pos2(r.center().x, r.min.y), egui::vec2(0.0, d), |r| r.height()),
+            };
+            drag(s, &ctx, from, delta);
+            let after = egui::PanelState::load(&ctx, id).unwrap().rect;
+            assert!((along(after) - along(r) + d).abs() < 2.0, "{side:?} dock by {d}: {r:?} -> {after:?}");
+        }
+    };
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.dock_graphs(true);
+    check(&mut s, egui::Id::new("sim_graph_dock"), crate::DockSide::Right);
+    for (place, side) in [(crate::GraphPlace::Bottom, crate::DockSide::Bottom), (crate::GraphPlace::Right, crate::DockSide::Right), (crate::GraphPlace::Left, crate::DockSide::Left)] {
+        let mut s = sim();
+        s.new_fleet(0);
+        s.mode = Mode::Fleets;
+        s.fleet_graph_open = true;
+        s.fleet_graph_place = place;
+        check(&mut s, egui::Id::new(("sim_fleet_graph_dock", side as u8)), side);
+    }
+}
+
+
+#[test]
+fn a_changed_fleet_is_analysed_off_the_frame_and_the_result_comes_in() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let fit_id = fit_id.clone();
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+    f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
+    let first = s.fleet_analysis().expect("the first analysis is worked out at once");
+    // A change: the old one is shown while the new one is worked out on its own thread.
+    s.fleet.as_mut().unwrap().fleet.slots[0].charges = vec![(ids::GUN, ids::AMMO_LONG)];
+    s.now_ms = 0;
+    assert!(Arc::ptr_eq(&s.fleet_analysis().unwrap(), &first), "while the knobs rest, the last one");
+    s.now_ms = 10_000;
+    let shown = s.fleet_analysis().unwrap();
+    assert!(Arc::ptr_eq(&shown, &first) && s.fleet_analysis_pending(), "the run is under way, the frame not held up");
+    let mut fresh = None;
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let a = s.fleet_analysis().unwrap();
+        if !Arc::ptr_eq(&a, &first) {
+            fresh = Some(a);
+            break;
+        }
+    }
+    let fresh = fresh.expect("the new analysis comes in");
+    assert!(!s.fleet_analysis_pending());
+    let gun = fresh.mine.slots[0].computed.weapons.iter().find(|w| w.type_id == ids::GUN).unwrap();
+    assert_eq!(gun.charge, Some(ids::AMMO_LONG), "it is of the changed fleet");
+}
+
+
+
+
+
+
+
+#[test]
+fn a_subsystem_lists_the_slots_it_gives() {
+    let d = spai_fit::test_support::dataset();
+    assert_eq!(crate::picker::slots_given(&d, ids::SUBSYSTEM), [2.0, 0.0, 0.0]);
+    assert_eq!(crate::picker::slots_given(&d, ids::GUN), [0.0; 3], "a module gives none");
+}
+
+
+

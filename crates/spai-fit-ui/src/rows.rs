@@ -26,6 +26,15 @@ pub struct CutRows(pub Vec<(egui::Rect, egui::Rect)>);
 
 const CUT: &str = "sim_cut_rows";
 
+/// A scroll area's whole content and the part of it on screen, for the layout checks: what lies
+/// outside the view is clipped away, as in a cut row.
+pub fn note_scrolled(ctx: &egui::Context, out: &egui::scroll_area::ScrollAreaOutput<()>) {
+    let full = egui::Rect::from_min_size(out.inner_rect.min - out.state.offset, out.content_size);
+    if !out.inner_rect.contains_rect(full) {
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<CutRows>(egui::Id::new(CUT)).0.push((full, out.inner_rect)));
+    }
+}
+
 pub fn cut_rows(ctx: &egui::Context) -> Vec<(egui::Rect, egui::Rect)> {
     ctx.data(|d| d.get_temp::<CutRows>(egui::Id::new(CUT)).map(|c| c.0).unwrap_or_default())
 }

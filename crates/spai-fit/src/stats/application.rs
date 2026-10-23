@@ -9,7 +9,8 @@ use super::{WeaponGroup, WeaponKind};
 /// The chance a turret hits: `0.5^((angular × sigRes / (tracking × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`,
 /// `angular` in radians per second. Beyond `optimal + 3 × falloff` the range term is 0.
 pub fn turret_hit_chance(distance: f64, transversal: f64, target_sig: f64, optimal: f64, falloff: f64, tracking: f64, sig_res: f64) -> f64 {
-    let angular = if distance > 1.0 { transversal.abs() / distance } else { 0.0 };
+    // Closer than a metre counts as one: point blank, anything crossing is too fast to track.
+    let angular = transversal.abs() / distance.max(1.0);
     let tracking_term = if tracking > 0.0 && target_sig > 0.0 { 0.5f64.powf((angular * sig_res / (tracking * target_sig)).powi(2)) } else if angular > 0.0 { 0.0 } else { 1.0 };
     let over = (distance - optimal).max(0.0);
     let range_term = if over <= 0.0 {
@@ -71,6 +72,29 @@ pub fn applied_factor(w: &WeaponGroup, distance: f64, target: &TargetProfile, dr
             let orbit = w.optimal.max(500.0);
             turret_damage_factor(turret_hit_chance(orbit, lacking, sig, w.optimal, w.falloff, w.tracking, w.signature_resolution))
         }
+        WeaponKind::Vorton => {
+            let Some(m) = &w.missile else { return 0.0 };
+            if distance > w.optimal {
+                return 0.0;
+            }
+            missile_damage_factor(sig, f64::from(target.velocity), m.explosion_radius, m.explosion_velocity, m.damage_reduction_factor)
+        }
+        WeaponKind::Bomb => {
+            let Some(m) = &w.missile else { return 0.0 };
+            // It bursts where its flight ends; what sits within its blast takes the share its
+            // signature is of the explosion.
+            if (distance - m.range).abs() > w.splash {
+                return 0.0;
+            }
+            if m.explosion_radius > 0.0 { (sig / m.explosion_radius).min(1.0) } else { 1.0 }
+        }
+        WeaponKind::Breacher => w.missile.as_ref().map_or(0.0, |m| m.reach(distance)),
+        WeaponKind::Superweapon => {
+            if distance > w.optimal {
+                return 0.0;
+            }
+            if w.signature_resolution > 0.0 { (sig / w.signature_resolution).min(1.0) } else { 1.0 }
+        }
         WeaponKind::Smartbomb => {
             if distance <= w.optimal {
                 1.0
@@ -97,6 +121,9 @@ mod tests {
     fn a_still_target_in_optimal_is_always_hit_and_falloff_halves_at_one_falloff() {
         assert!(close(turret_hit_chance(1000.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 1.0));
         assert!(close(turret_hit_chance(7200.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 0.5));
+        assert!(close(turret_hit_chance(0.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 1.0), "point blank and still");
+        assert!(turret_hit_chance(0.0, 300.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0) < 1e-6, "point blank and crossing: too fast to track");
+        assert!(turret_hit_chance(0.0, 300.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0) <= turret_hit_chance(100.0, 300.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0));
         assert!(close(turret_hit_chance(1200.0 + 18_000.0 + 1.0, 0.0, 100.0, 1200.0, 6000.0, 0.5, 40_000.0), 0.0), "turrets are cut off past three falloffs");
         assert!(close(turret_hit_chance(2000.0, 0.0, 100.0, 1200.0, 0.0, 0.5, 40_000.0), 0.0), "no falloff: nothing past optimal");
     }

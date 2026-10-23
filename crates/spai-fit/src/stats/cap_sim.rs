@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 /// Something that cycles against the capacitor.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct User {
     pub cycle_ms: f64,
     /// Drawn at each activation.
@@ -16,6 +16,8 @@ pub struct User {
     /// Activations per load, then `reload_ms` pass; `None` runs forever.
     pub shots: Option<u32>,
     pub reload_ms: f64,
+    /// A nosferatu, `give` its drain: true when it takes from a target emptier than the ship.
+    pub nos: Option<bool>,
 }
 
 impl User {
@@ -53,9 +55,32 @@ pub fn recharge(c: f64, cap: f64, tau: f64, dt: f64) -> f64 {
 /// The capacitor level over time on `n` points up to `horizon_s`: a run of the simulation, the
 /// recharge curve filling in between activations.
 pub fn trace(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, n: usize) -> Vec<[f64; 2]> {
+    trace_against(capacity, tau_s, users, None, horizon_s, n)
+}
+
+/// The ship a nosferatu takes from, running its own modules.
+pub struct Opponent<'a> {
+    pub capacity: f64,
+    pub tau_s: f64,
+    pub users: &'a [User],
+    /// The share of a drain that lands: its capacitor warfare resistance.
+    pub resist: f64,
+}
+
+/// The trace with each nosferatu taking what the game lets it from `opponent`'s capacitor: only
+/// while that is fuller than the ship's, unless the hull overrides it, and never more than it
+/// holds. Without one the target is unknown and only overriding nosferatu count.
+pub fn trace_against(capacity: f64, tau_s: f64, users: &[User], opponent: Option<&Opponent>, horizon_s: f64, n: usize) -> Vec<[f64; 2]> {
     let n = n.max(2);
     let mut events: Vec<(f64, f64)> = Vec::new();
-    simulate_impl(capacity, tau_s, users, horizon_s, true, Some(&mut events));
+    let unknown: Vec<User>;
+    let users = if opponent.is_none() && users.iter().any(|u| u.nos == Some(false)) {
+        unknown = users.iter().filter(|u| u.nos != Some(false)).cloned().collect();
+        &unknown[..]
+    } else {
+        users
+    };
+    simulate_impl(capacity, tau_s, users, horizon_s, true, Some(&mut events), opponent);
     let mut out = Vec::with_capacity(n);
     let mut last = (0.0, capacity);
     let mut next = 0;
@@ -100,20 +125,31 @@ pub fn simulate(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64) -> Ou
 }
 
 pub fn simulate_with(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stagger: bool) -> Outcome {
-    simulate_impl(capacity, tau_s, users, horizon_s, stagger, None)
+    simulate_impl(capacity, tau_s, users, horizon_s, stagger, None, None)
 }
 
 /// `events`, when given, receives `(time, capacitor after)` at every activation; running dry adds
 /// a final `(time, -1)`.
-fn simulate_impl(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stagger: bool, mut events: Option<&mut Vec<(f64, f64)>>) -> Outcome {
+fn simulate_impl(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stagger: bool, mut events: Option<&mut Vec<(f64, f64)>>, opponent: Option<&Opponent>) -> Outcome {
     if capacity <= 0.0 {
         return Outcome { stable_at: None, lasts_s: Some(0.0) };
     }
     if users.is_empty() {
         return Outcome { stable_at: Some(1.0), lasts_s: None };
     }
-    let is_booster = |u: &User| u.give > 0.0;
-    let mut heap: BinaryHeap<Reverse<(Time, usize)>> = BinaryHeap::new();
+    // Against a known opponent a nosferatu cycles like any module and takes what it finds.
+    let mut heap_seed: Vec<(f64, usize)> = Vec::new();
+    let is_booster = |u: &User| u.give > 0.0 && (opponent.is_none() || u.nos.is_none());
+    let theirs = opponent.map_or(&[][..], |o| o.users);
+    let mut their_cap = opponent.map_or(0.0, |o| o.capacity);
+    let mut their_t = 0.0;
+    let mut their_fired = vec![0u32; theirs.len()];
+    for (j, u) in theirs.iter().enumerate() {
+        let twins_before = theirs[..j].iter().filter(|o| *o == u).count();
+        let twins = theirs.iter().filter(|o| *o == u).count();
+        heap_seed.push((u.cycle_ms / 1000.0 * twins_before as f64 / twins as f64, users.len() + j));
+    }
+    let mut heap: BinaryHeap<Reverse<(Time, usize)>> = heap_seed.into_iter().map(|(t, i)| Reverse((Time(t), i))).collect();
     let mut fired = vec![0u32; users.len()];
     // Boosters wait until there is room, or until a module would otherwise find no capacitor.
     let mut ready_at: Vec<f64> = vec![0.0; users.len()];
@@ -137,9 +173,48 @@ fn simulate_impl(capacity: f64, tau_s: f64, users: &[User], horizon_s: f64, stag
         if at > horizon_s {
             break;
         }
+        if let (Some(o), Some(j)) = (opponent, i.checked_sub(users.len())) {
+            // Their modules run when they can, boosters when there is room; nothing of theirs
+            // ends the run.
+            their_cap = recharge(their_cap, o.capacity, o.tau_s, at - their_t);
+            their_t = at;
+            let u = &theirs[j];
+            let give = if u.nos.is_some() { 0.0 } else { u.give };
+            if give > 0.0 && their_cap + give > o.capacity {
+                heap.push(Reverse((Time(at + 1.0), i)));
+                continue;
+            }
+            if u.need <= their_cap {
+                their_cap = (their_cap - u.need + give).min(o.capacity);
+                their_fired[j] += 1;
+            }
+            if let Some(ms) = next_cycle(u, their_fired[j].max(1)) {
+                heap.push(Reverse((Time(at + ms.max(1.0) / 1000.0), i)));
+            }
+            continue;
+        }
         cap = recharge(cap, capacity, tau_s, at - t);
         t = at;
         let u = &users[i];
+        if let (Some(o), Some(any_level)) = (opponent, u.nos) {
+            their_cap = recharge(their_cap, o.capacity, o.tau_s, at - their_t);
+            their_t = at;
+            let fuller = o.capacity > 0.0 && their_cap / o.capacity > cap / capacity;
+            let took = if any_level || fuller { (u.give * o.resist).min(their_cap) } else { 0.0 };
+            their_cap -= took;
+            cap = (cap + took).min(capacity);
+            if let Some(ev) = events.as_deref_mut() {
+                ev.push((t, cap));
+            }
+            if t >= tail_from {
+                low_tail = low_tail.min(cap);
+            }
+            fired[i] += 1;
+            if let Some(ms) = next_cycle(u, fired[i]) {
+                heap.push(Reverse((Time(t + ms / 1000.0), i)));
+            }
+            continue;
+        }
         if is_booster(u) {
             if ready_at[i] > t + 1e-9 {
                 continue;
@@ -215,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_light_draw_settles_and_a_heavy_one_runs_dry() {
-        let light = vec![User { cycle_ms: 5000.0, need: 10.0, give: 0.0, shots: None, reload_ms: 0.0 }];
+        let light = vec![User { cycle_ms: 5000.0, need: 10.0, give: 0.0, shots: None, reload_ms: 0.0, nos: None }];
         let out = simulate(1000.0, 200.0, &light, 3600.0);
         assert!(out.lasts_s.is_none());
         let at = out.stable_at.unwrap();
@@ -224,7 +299,7 @@ mod tests {
         assert!(close(estimate, 0.918, 0.001));
         assert_eq!(stable_estimate(1000.0, 200.0, 12.5), Some(0.25), "the peak rate holds at exactly a quarter");
         assert_eq!(stable_estimate(1000.0, 200.0, 13.0), None);
-        let heavy = vec![User { cycle_ms: 1000.0, need: 50.0, give: 0.0, shots: None, reload_ms: 0.0 }];
+        let heavy = vec![User { cycle_ms: 1000.0, need: 50.0, give: 0.0, shots: None, reload_ms: 0.0, nos: None }];
         let out = simulate(1000.0, 200.0, &heavy, 3600.0);
         assert!(out.stable_at.is_none());
         let lasts = out.lasts_s.unwrap();
@@ -234,8 +309,8 @@ mod tests {
     #[test]
     fn boosters_hold_back_until_there_is_room_and_then_keep_a_fit_up() {
         let users = vec![
-            User { cycle_ms: 1000.0, need: 40.0, give: 0.0, shots: None, reload_ms: 0.0 },
-            User { cycle_ms: 12000.0, need: 0.0, give: 800.0, shots: Some(3), reload_ms: 10000.0 },
+            User { cycle_ms: 1000.0, need: 40.0, give: 0.0, shots: None, reload_ms: 0.0, nos: None },
+            User { cycle_ms: 12000.0, need: 0.0, give: 800.0, shots: Some(3), reload_ms: 10000.0, nos: None },
         ];
         let without = simulate(1000.0, 200.0, &users[..1], 600.0);
         assert!(without.lasts_s.is_some());
@@ -246,7 +321,7 @@ mod tests {
 
     #[test]
     fn twins_start_staggered_which_keeps_the_low_point_higher() {
-        let u = User { cycle_ms: 10000.0, need: 2.5, give: 0.0, shots: None, reload_ms: 0.0 };
+        let u = User { cycle_ms: 10000.0, need: 2.5, give: 0.0, shots: None, reload_ms: 0.0, nos: None };
         let together = simulate_with(100.0, 400.0, &[u.clone(), u.clone()], 600.0, false);
         let staggered = simulate_with(100.0, 400.0, &[u.clone(), u.clone()], 600.0, true);
         assert!(together.lasts_s.is_none() && staggered.lasts_s.is_none(), "{together:?} {staggered:?}");
@@ -255,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_trace_follows_the_run_and_hits_zero_when_dry() {
-        let users = vec![User { cycle_ms: 1000.0, need: 50.0, give: 0.0, shots: None, reload_ms: 0.0 }];
+        let users = vec![User { cycle_ms: 1000.0, need: 50.0, give: 0.0, shots: None, reload_ms: 0.0, nos: None }];
         let pts = trace(1000.0, 200.0, &users, 120.0, 25);
         assert_eq!(pts.len(), 25);
         assert_eq!(pts[0][0], 0.0);
@@ -270,7 +345,24 @@ mod tests {
     fn empty_and_nothing_cases() {
         assert_eq!(simulate(0.0, 200.0, &[], 10.0).lasts_s, Some(0.0));
         assert_eq!(simulate(100.0, 200.0, &[], 10.0).stable_at, Some(1.0));
-        assert_eq!(User { cycle_ms: 1000.0, need: 5.0, give: 0.0, shots: Some(0), reload_ms: 0.0 }.average_per_s(), 0.0);
+        assert_eq!(User { cycle_ms: 1000.0, need: 5.0, give: 0.0, shots: Some(0), reload_ms: 0.0, nos: None }.average_per_s(), 0.0);
+    }
+
+    #[test]
+    fn a_nosferatu_drains_only_a_fuller_capacitor_unless_the_hull_overrides_it() {
+        let drain = User { cycle_ms: 2000.0, need: 10.0, ..User::default() };
+        let nos = |any| User { cycle_ms: 5000.0, give: 40.0, nos: Some(any), ..User::default() };
+        let end = |users: &[User], o: Option<&Opponent>| trace_against(1000.0, 300.0, users, o, 120.0, 200).last().unwrap()[1];
+        let alone = end(&[drain.clone()], None);
+        assert!((end(&[drain.clone(), nos(false)], None) - alone).abs() < 1e-9, "an unknown target gives a plain nosferatu nothing");
+        assert!(end(&[drain.clone(), nos(true)], None) > alone + 1.0, "one that drains any ship counts");
+        let full = Opponent { capacity: 5000.0, tau_s: 300.0, users: &[], resist: 1.0 };
+        assert!(end(&[drain.clone(), nos(false)], Some(&full)) > alone + 1.0, "a fuller target feeds it");
+        let flat = [User { cycle_ms: 1000.0, need: 200.0, ..User::default() }];
+        let dry = Opponent { capacity: 1000.0, tau_s: 300.0, users: &flat, resist: 1.0 };
+        assert!((end(&[drain.clone(), nos(false)], Some(&dry)) - alone).abs() < 5.0, "an emptier target gives nothing");
+        assert!(end(&[drain.clone(), nos(true)], Some(&dry)) > alone, "the override takes what little there is");
+        let resistant = Opponent { resist: 0.0, ..full };
+        assert!((end(&[drain, nos(false)], Some(&resistant)) - alone).abs() < 1e-9, "resistance cuts the drain");
     }
 }
-

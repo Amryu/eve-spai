@@ -101,6 +101,12 @@ struct Ship {
     alive: bool,
     /// The damage by type that reached it last, for its hardener to adapt to.
     last_hit: [f64; 4],
+    /// A breacher pod's damage a second on it, and until when.
+    dot: f64,
+    dot_until: f64,
+    /// A breach control's share of breacher damage let through and how long it runs; none once used.
+    breach: Option<(f64, f64)>,
+    breach_until: f64,
 }
 
 fn layers(s: &SlotStats) -> ([f64; 3], [[f64; 4]; 3]) {
@@ -137,11 +143,36 @@ fn ships(dogma: &crate::Dogma, side: &Side, adc: bool) -> Vec<Ship> {
         let rah = s.computed.tank.rah.filter(|r| r.shift > 0.0).map(|r| (r.start, r));
         let sup = if adc { suppressor_of(dogma, s) } else { None };
         let adc = if adc { adc_of(dogma, s) } else { None };
+        let breach = breach_of(dogma, s);
         for _ in 0..s.count {
-            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, sup: sup.map(|(_, d)| d), sup_until: 0.0, alive: true, last_hit: [0.0; 4] });
+            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, sup: sup.map(|(_, d)| d), sup_until: 0.0, alive: true, last_hit: [0.0; 4], dot: 0.0, dot_until: 0.0, breach, breach_until: 0.0 });
         }
     }
     out
+}
+
+/// A fitted breach control: the share of breacher damage it lets through while it runs, and for
+/// how long. It goes on when the first pod lands.
+fn breach_of(dogma: &crate::Dogma, s: &SlotStats) -> Option<(f64, f64)> {
+    s.fit.modules.iter().filter(|m| m.state >= crate::fit::State::Online).find_map(|m| {
+        let t = dogma.type_(m.type_id)?;
+        let cut = dogma.attr_named("breacherPodActivatedDamageReceivedPercentage").and_then(|a| t.attr(a.id))?;
+        let duration = t.attr(crate::dogma::attr::DURATION).map_or(0.0, |d| f64::from(d) / 1000.0);
+        Some(((1.0 + f64::from(cut) / 100.0).max(0.0), duration))
+    })
+}
+
+/// Damage past every resistance, shield first.
+fn hit_true(ship: &mut Ship, mut amount: f64) {
+    for layer in 0..3 {
+        let take = amount.min(ship.hp[layer]);
+        ship.hp[layer] -= take;
+        amount -= take;
+        if amount <= 0.0 {
+            return;
+        }
+    }
+    ship.alive = false;
 }
 
 /// The next primary: the first alive ship of the first role in the order present.
@@ -154,6 +185,20 @@ fn pick_except(order: &[Role], ships: &[Ship], taken: &[usize]) -> Option<usize>
         .find_map(|r| ships.iter().enumerate().position(|(i, s)| free(i, s) && s.role == *r))
         .or_else(|| ships.iter().enumerate().position(|(i, s)| free(i, s)))
         .or_else(|| ships.iter().position(|s| s.alive))
+}
+
+/// How many ships besides the primary a weapon's arc or area damage reaches among `n` alive.
+fn extra_targets(memo: &mut std::collections::HashMap<(usize, u32, u64, u64), f64>, formation: super::Formation, n: usize, w: &WeaponGroup) -> f64 {
+    if n < 2 || (w.arc_targets == 0 && w.splash <= 0.0) {
+        return 0.0;
+    }
+    *memo.entry((n, w.arc_targets, w.arc_range.to_bits(), w.splash.to_bits())).or_insert_with(|| {
+        if w.arc_targets > 0 {
+            super::geometry::arc_reach(formation, n, w.arc_range, w.arc_targets)
+        } else {
+            super::geometry::splash_reach(formation, n, w.splash)
+        }
+    })
 }
 
 /// Damage per type landing on `ship`, layer by layer, with its hardener and ADC.
@@ -186,7 +231,9 @@ fn hit(ship: &mut Ship, damage: [f64; 4], now: f64) {
 /// One side's guns: per weapon group (slot, the group, its share landing on a target of each
 /// slot, and on one whose signature suppressor runs).
 struct Guns {
-    groups: Vec<(usize, WeaponGroup, Vec<f64>, Vec<f64>)>,
+    /// Per weapon group: its slot, the group, its share on each target slot (plain and under a
+    /// suppressor), and whether it is the second part of a stack split onto two targets.
+    groups: Vec<(usize, WeaponGroup, Vec<f64>, Vec<f64>, bool)>,
 }
 
 fn guns(dogma: &crate::Dogma, own: &Side, other: &Side, distance: f64) -> Guns {
@@ -210,11 +257,27 @@ fn guns(dogma: &crate::Dogma, own: &Side, other: &Side, distance: f64) -> Guns {
         }
         let per_target: Vec<Vec<(WeaponGroup, f64)>> = other.stats.slots.iter().map(|t| weapons_on(own, other, k, t, distance)).collect();
         let per_shrunk: Vec<Option<Vec<(WeaponGroup, f64)>>> = shrunk.iter().map(|t| t.as_ref().map(|t| weapons_on(own, other, k, t, distance))).collect();
+        let apart = own.fleet.slots.get(s.slot).and_then(|x| x.splits.iter().find(|sp| sp.apart).copied());
         for (g, w) in s.computed.weapons.iter().enumerate() {
             let shares: Vec<f64> = per_target.iter().map(|v| v.get(g).map_or(0.0, |(_, f)| *f)).collect();
             let suppressed: Vec<f64> = per_shrunk.iter().zip(&shares).map(|(v, plain)| v.as_ref().and_then(|v| v.get(g)).map_or(*plain, |(_, f)| *f)).collect();
             let w = per_target.first().and_then(|v| v.get(g)).map_or_else(|| w.clone(), |(w, _)| w.clone());
-            groups.push((k, w, shares, suppressed));
+            match apart.filter(|sp| sp.weapon == w.type_id) {
+                // Both parts on one charge come as one group: shared out by their modules.
+                Some(sp) if sp.charges[0] == sp.charges[1] => {
+                    let [a, b] = sp.counts(w.count);
+                    for (n, second) in [(a, false), (b, true)] {
+                        let f = f64::from(n) / f64::from(w.count.max(1));
+                        let mut part = w.clone();
+                        part.dps *= f;
+                        part.volley = part.volley.scaled(f);
+                        part.count = n;
+                        groups.push((k, part, shares.clone(), suppressed.clone(), second));
+                    }
+                }
+                Some(sp) => groups.push((k, w.clone(), shares, suppressed, w.charge == Some(sp.charges[1]))),
+                None => groups.push((k, w, shares, suppressed, false)),
+            }
         }
     }
     Guns { groups }
@@ -246,8 +309,14 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     let guns = [guns(dogma, a, b, distance), guns(dogma, b, a, distance)];
     let logis = [logi(a), logi(b)];
     let mut out = Race::default();
-    // Each side's fire groups: a slot's ships by turns, each group on its own primary.
-    let groups = [a.fleet.split_fire.max(1) as usize, b.fleet.split_fire.max(1) as usize];
+    // Each side's fire groups: a slot's ships by turns, each group on its own primary. A side
+    // with a stack split onto two targets has a second primary per group, which that stack's
+    // second part shoots.
+    let split = [a.fleet.split_fire.max(1) as usize, b.fleet.split_fire.max(1) as usize];
+    let doubled = [0, 1].map(|side| guns[side].groups.iter().any(|g| g.4));
+    let groups = [0, 1].map(|side| split[side] * if doubled[side] { 2 } else { 1 });
+    // The group a ship's weapon group fires with: its turn, in the second set for a second part.
+    let aim = |side: usize, ship: usize, second: bool| ship % split[side] + if second { split[side] } else { 0 };
     let mut primary: [Vec<Option<usize>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
     for side in 0..2 {
         for g in 0..groups[side] {
@@ -264,12 +333,14 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
     // Volleys on their way, per side: when they land, on which ship, by damage type. Missiles
     // fly for distance over velocity; the rest land as they are fired.
     let mut in_flight: [Vec<(f64, usize, [f64; 4])>; 2] = [Vec::new(), Vec::new()];
+    // Per side, by ships alive, how many more of them a vorton's arc strikes.
+    let mut arc_memo: [std::collections::HashMap<(usize, u32, u64, u64), f64>; 2] = Default::default();
     // Per side, the slots of it that have been called primary.
     let mut called: [Vec<bool>; 2] = [vec![false; a.stats.slots.len()], vec![false; b.stats.slots.len()]];
     // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
     // With the volleys fired since the last reload.
     let mut next_fire: [Vec<Vec<(f64, u32)>>; 2] = [0, 1].map(|side| {
-        guns[side].groups.iter().map(|(k, _, _, _)| {
+        guns[side].groups.iter().map(|(k, _, _, _, _)| {
             let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
             (0..n).map(|i| (reaction(i, n), 0)).collect()
         }).collect()
@@ -294,7 +365,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             }
             // Fire: each ship once its reaction is over and its guns have cycled since its last
             // volley, on its group's primary.
-            for (wg, (k, w, plain, suppressed)) in guns[side].groups.iter().enumerate() {
+            for (wg, (k, w, plain, suppressed, second)) in guns[side].groups.iter().enumerate() {
                 let alive = alive_at[side].get(*k).copied().unwrap_or(0);
                 if alive == 0 || w.cycle_s <= 0.0 {
                     continue;
@@ -303,10 +374,11 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 next.truncate(alive);
                 let mut firing = vec![0.0f64; gn];
                 for (i, (at, fired)) in next.iter_mut().enumerate() {
-                    if primary[side][i % gn].is_none() || *at > t {
+                    let g = aim(side, i, *second);
+                    if primary[side][g].is_none() || *at > t {
                         continue;
                     }
-                    firing[i % gn] += 1.0;
+                    firing[g] += 1.0;
                     *at += w.cycle_s;
                     *fired += 1;
                     if w.shots.is_some_and(|n| n > 0 && *fired >= n) {
@@ -326,7 +398,37 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                     let v = &w.volley;
                     let scale = firing[g] * eff * share * spool;
                     let flight = w.missile.as_ref().filter(|m| m.velocity > 0.0).map_or(0.0, |m| distance / m.velocity);
+                    if let Some(d) = w.dot.filter(|_| share > 0.0) {
+                        // One pod's damage runs on a ship at a time: the strongest, renewed.
+                        let ship = &mut fleets[1 - side][p];
+                        let total: f64 = ship.max.iter().sum();
+                        ship.dot = if ship.dot_until > t { ship.dot.max(d.on(total)) } else { d.on(total) };
+                        ship.dot_until = t + flight + d.duration_s;
+                        // Its breach control goes on once, as the first pod lands.
+                        if let Some((cut, duration)) = ship.breach.filter(|b| b.1 > 0.0) {
+                            ship.breach_until = t + flight + duration;
+                            ship.breach = Some((cut, 0.0));
+                        }
+                        continue;
+                    }
                     in_flight[side].push((t + flight, p, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                    // A vorton's arc, a bomb's blast or a doomsday's beam goes on to the ships near
+                    // the primary, as many as its formation puts within reach: whole strikes on the
+                    // first, a share on the last.
+                    if w.arc_targets > 0 || w.splash > 0.0 {
+                        let others: Vec<usize> = (0..fleets[1 - side].len()).filter(|j| *j != p && fleets[1 - side][*j].alive).collect();
+                        let n = others.len() + 1;
+                        let reach = extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, n, w);
+                        for (j, o) in others.iter().enumerate() {
+                            let part = (reach - j as f64).clamp(0.0, 1.0);
+                            if part <= 0.0 {
+                                break;
+                            }
+                            let share = plain.get(fleets[1 - side][*o].slot).copied().unwrap_or(0.0);
+                            let scale = firing[g] * eff * share * spool * part;
+                            in_flight[side].push((t, *o, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                        }
+                    }
                 }
             }
             // What lands now, per ship; on a ship already dead it is lost.
@@ -343,17 +445,37 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                 }
                 false
             });
-            // The timeline carries what lands per second sustained, not one step's volley.
+            // The timeline carries what lands per second sustained, not one step's volley, a
+            // vorton's arc included.
+            let alive_other = fleets[1 - side].iter().filter(|s| s.alive).count();
+            let arcs: Vec<f64> = guns[side].groups.iter().map(|(_, w, _, _, _)| 1.0 + extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, alive_other, w)).collect();
             for g in 0..gn {
                 let Some(p) = primary[side][g] else { continue };
                 let target_slot = fleets[1 - side][p].slot;
                 let suppressing = fleets[1 - side][p].sup_until > t;
-                landed[side] += guns[side].groups.iter().map(|(k, w, plain, suppressed)| {
+                landed[side] += guns[side].groups.iter().zip(&arcs).map(|((k, w, plain, suppressed, second), arc)| {
+                    if *second != (g >= split[side]) {
+                        return 0.0;
+                    }
                     let shares = if suppressing { suppressed } else { plain };
-                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / gn as f64;
+                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
                     let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
-                    w.dps * spool * alive * shares.get(target_slot).copied().unwrap_or(0.0)
+                    if w.dot.is_some() {
+                        return 0.0;
+                    }
+                    w.dps * spool * alive * arc * shares.get(target_slot).copied().unwrap_or(0.0)
                 }).sum::<f64>() * eff;
+            }
+            // Breacher pods tick on whatever they were put on, through no resistance.
+            for (i, ship) in fleets[1 - side].iter_mut().enumerate().filter(|(_, s)| s.alive && s.dot_until > t) {
+                let cut = if t < ship.breach_until { ship.breach.map_or(1.0, |b| b.0) } else { 1.0 };
+                let rate = ship.dot * cut;
+                landed[side] += rate;
+                hit_true(ship, rate * STEP);
+                // A ship the pods finish counts as a kill like one a volley does.
+                if !ship.alive && !arriving.iter().any(|(p, _)| *p == i) {
+                    arriving.push((i, [0.0; 4]));
+                }
             }
             let full: Vec<bool> = arriving.iter().map(|(p, _)| fleets[1 - side][*p].hp == fleets[1 - side][*p].max).collect();
             for (p, d) in &arriving {
@@ -388,7 +510,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                     (0..n).filter(|i| i % hurt.len() == turn && t >= hit_at + logi_start(*i, n, sides[1 - side].fleet, lock, *land)).count() as u32
                 }).collect();
                 if active.iter().any(|n| *n > 0) {
-                    let landing = super::reps_on_one(sides[1 - side].stats, &|k, _| active[k]);
+                    let since = reps_landed[side][*g].map_or(0.0, |at| t - at);
+                    let landing = super::reps_on_one_at(sides[1 - side].stats, &|k, _| active[k], Some(since));
                     let ship = &mut fleets[1 - side][p];
                     for layer in 0..3 {
                         let rate = landing[layer] * logi_eff * intake;
@@ -407,9 +530,9 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
             if let (None, Some(p), Some(_)) = (out.critical_mass_lost[side], primary[side][0], reps_landed[side][0]) {
                 let target_slot = fleets[1 - side][p].slot;
                 let suppressing = fleets[1 - side][p].sup_until > t;
-                let sustained: f64 = guns[side].groups.iter().map(|(k, w, plain, suppressed)| {
+                let sustained: f64 = guns[side].groups.iter().filter(|g| !g.4).map(|(k, w, plain, suppressed, _)| {
                     let shares = if suppressing { suppressed } else { plain };
-                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / gn as f64;
+                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
                     w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
                 }).sum::<f64>() * eff;
                 // Through the layer now being worn down.
@@ -441,7 +564,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                             } else if reps_landed[side][g].is_none() && !logis[1 - side].is_empty() {
                                 Verdict::BeforeReps { seconds }
                             } else {
-                                Verdict::Outpaced { seconds, by: (landed[side] / gn as f64 - reps_on[g]).max(0.0) }
+                                Verdict::Outpaced { seconds, by: (landed[side] / split[side] as f64 - reps_on[g]).max(0.0) }
                             };
                             out.verdicts[1 - side].push((target_slot, v));
                         }
@@ -455,7 +578,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                     // guns have cycled.
                     for next in next_fire[side].iter_mut() {
                         let n = next.len();
-                        for (i, (at, _)) in next.iter_mut().enumerate().filter(|(i, _)| i % gn == g) {
+                        for (i, (at, _)) in next.iter_mut().enumerate().filter(|(i, _)| i % split[side] == g % split[side]) {
                             *at = at.max(since[side][g] + reaction(i, n));
                         }
                     }

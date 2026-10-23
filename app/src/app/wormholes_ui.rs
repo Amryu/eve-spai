@@ -81,46 +81,61 @@ impl SpaiApp {
     }
 
     pub(crate) fn reload_wormholes(&mut self) {
+        // The database is read on a thread of its own: six queries every two seconds, waiting on
+        // the disk and on every other connection, stutter the frame they run in.
+        if let Some((_, rx)) = &self.wh_loader {
+            match rx.try_recv() {
+                Ok(loaded) => {
+                    self.wh_loading = false;
+                    if loaded.gen == self.wh_gen {
+                        self.apply_wormholes(loaded);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.wh_loader = None;
+                    self.wh_loading = false;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let due = self.wh_reloaded.map(|t| t.elapsed().as_millis() > 2000).unwrap_or(true);
         if !due {
             return;
         }
+        // An edit asked for a reload while one is under way: that one may have read before the
+        // edit, so another follows it, the debounce left open until then.
+        if self.wh_loading {
+            return;
+        }
         self.wh_reloaded = Some(std::time::Instant::now());
+        let now = crate::clock::utc().timestamp();
+        if !cfg!(test) && self.store.is_some() && self.wh_loader.is_none() {
+            self.wh_loader = spawn_wh_loader();
+        }
+        match &self.wh_loader {
+            Some((tx, _)) if tx.send((now, self.wh_gen)).is_ok() => self.wh_loading = true,
+            _ => {
+                if let Some(store) = &self.store {
+                    let loaded = load_wormholes(store, now, self.wh_gen);
+                    self.apply_wormholes(loaded);
+                }
+            }
+        }
+    }
+
+    /// Puts holes read from the database in place, and refreshes a route that went through one
+    /// that changed.
+    fn apply_wormholes(&mut self, loaded: WhLoaded) {
         let usable = self.wh_usable();
         let was = self.route_destination.and_then(|d| self.ingame_hole_waypoints(d));
-        if let Some(store) = &self.store {
-            let now = crate::clock::utc().timestamp();
-            store.prune_wormholes(now);
-            let mut whs = store.wormholes();
-            // Saved before these were refused, or by an older version.
-            whs.retain(|w| !w.is_expired(now) && crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_none());
-            let groups = store.wormhole_groups();
-            let hidden = store.share_hidden_groups();
-            if !hidden.is_empty() {
-                whs.retain(|w| groups.get(&w.uid).is_none_or(|g| !hidden.contains(g)));
-            }
-            whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-            let authors = store.wormhole_authors();
-            let mut sigs: std::collections::HashMap<i64, Vec<crate::store::SystemSig>> = std::collections::HashMap::new();
-            for (sys, sig) in store.all_system_sigs() {
-                sigs.entry(sys).or_default().push(sig);
-            }
-            let sigs_at = |sys: Option<i64>| sys.and_then(|id| sigs.get(&id)).map_or(&[][..], Vec::as_slice);
-            for w in &mut whs {
-                if let Some((created, edited)) = authors.get(&w.uid) {
-                    w.created_by = Some(created.clone());
-                    w.edited_by = edited.clone();
-                }
-                w.born_after = w.opened_after(sigs_at(Some(w.system_id)), sigs_at(w.dest_system_id));
-            }
-            // A hole switched off that has since closed is forgotten with it.
-            let before = self.settings.wh_disabled_holes.len();
-            self.settings.wh_disabled_holes.retain(|u| whs.iter().any(|w| &w.uid == u));
-            self.needs_save |= self.settings.wh_disabled_holes.len() != before;
-            self.wh_cache = whs;
-            self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
-            self.wh_group_of = groups;
-        }
+        let WhLoaded { holes, groups, now, .. } = loaded;
+        // A hole switched off that has since closed is forgotten with it.
+        let before = self.settings.wh_disabled_holes.len();
+        self.settings.wh_disabled_holes.retain(|u| holes.iter().any(|w| &w.uid == u));
+        self.needs_save |= self.settings.wh_disabled_holes.len() != before;
+        self.wh_cache = holes;
+        self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
+        self.wh_group_of = groups;
         // Synced, expired, edited or found: a route through a hole that changed is out of date.
         if self.wh_usable() != usable {
             self.wh_routes_refresh(Some(was));
@@ -386,8 +401,13 @@ impl SpaiApp {
         if let Some(store) = self.store.as_ref() {
             store.kill_wormhole(id);
         }
-        self.wh_reloaded = None; // bypass the reload debounce, the map must not show it again
-        self.reload_wormholes();
+        // At once, not on the loader's next turn: the map must not show it again.
+        self.wh_gen += 1;
+        if let Some(store) = &self.store {
+            let loaded = load_wormholes(store, crate::clock::utc().timestamp(), self.wh_gen);
+            self.apply_wormholes(loaded);
+        }
+        self.wh_reloaded = Some(std::time::Instant::now());
     }
 
     /// Redoes every route after the holes they may use changed: the map's planned route and the one
@@ -1001,4 +1021,83 @@ pub(crate) fn pick_characters_menu(ui: &mut egui::Ui, choices: &[(String, Option
         }
     }
     picked
+}
+
+/// The holes as the database has them, ready to show: expired and refused ones and hidden groups'
+/// left out, newest first, each with its authors and when it opened.
+pub(crate) struct WhLoaded {
+    holes: Vec<crate::wormholes::Wormhole>,
+    groups: std::collections::HashMap<String, String>,
+    now: i64,
+    gen: u64,
+}
+
+pub(crate) fn load_wormholes(store: &crate::store::Store, now: i64, gen: u64) -> WhLoaded {
+    store.prune_wormholes(now);
+    let mut whs = store.wormholes();
+    // Saved before these were refused, or by an older version.
+    whs.retain(|w| !w.is_expired(now) && crate::whdata::connection_problem(w.system_id, w.dest_system_id, |_| None, None, None).is_none());
+    let groups = store.wormhole_groups();
+    let hidden = store.share_hidden_groups();
+    if !hidden.is_empty() {
+        whs.retain(|w| groups.get(&w.uid).is_none_or(|g| !hidden.contains(g)));
+    }
+    whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let authors = store.wormhole_authors();
+    let mut sigs: std::collections::HashMap<i64, Vec<crate::store::SystemSig>> = std::collections::HashMap::new();
+    for (sys, sig) in store.all_system_sigs() {
+        sigs.entry(sys).or_default().push(sig);
+    }
+    let sigs_at = |sys: Option<i64>| sys.and_then(|id| sigs.get(&id)).map_or(&[][..], Vec::as_slice);
+    for w in &mut whs {
+        if let Some((created, edited)) = authors.get(&w.uid) {
+            w.created_by = Some(created.clone());
+            w.edited_by = edited.clone();
+        }
+        w.born_after = w.opened_after(sigs_at(Some(w.system_id)), sigs_at(w.dest_system_id));
+    }
+    WhLoaded { holes: whs, groups, now, gen }
+}
+
+/// A thread with its own connection that loads the holes whenever asked, at the time it is given.
+fn spawn_wh_loader() -> Option<(std::sync::mpsc::Sender<(i64, u64)>, std::sync::mpsc::Receiver<WhLoaded>)> {
+    let (ask, asked) = std::sync::mpsc::channel::<(i64, u64)>();
+    let (give, given) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("wh-reload".into())
+        .spawn(move || {
+            let Ok(store) = crate::store::Store::open() else { return };
+            while let Ok(mut ask) = asked.recv() {
+                // Only the latest ask matters.
+                while let Ok(later) = asked.try_recv() {
+                    ask = later;
+                }
+                if give.send(load_wormholes(&store, ask.0, ask.1)).is_err() {
+                    return;
+                }
+            }
+        })
+        .ok()?;
+    Some((ask, given))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_wormholes;
+    use crate::wormholes::{DestClass, Source, Wormhole};
+
+    #[test]
+    fn the_loader_reads_the_live_holes_newest_first_and_keeps_its_generation() {
+        let _guard = crate::disk::test_guard();
+        let s = crate::store::Store::mem();
+        let now = crate::clock::utc().timestamp();
+        let hole = |system_id: i64, sig: &str, at: i64| Wormhole { system_id, signature: Some(sig.into()), dest: DestClass::Thera, dest_system_id: Some(31_000_005), source: Source::Manual, reported_at: at, updated_at: at, ..Default::default() };
+        s.upsert_wormhole(&hole(30_000_142, "AAA-111", now - 3600));
+        s.upsert_wormhole(&hole(30_002_187, "BBB-222", now - 60));
+        s.upsert_wormhole(&hole(30_004_759, "OLD-999", now - 30 * 86_400));
+        let loaded = load_wormholes(&s, now, 7);
+        let sigs: Vec<_> = loaded.holes.iter().map(|w| w.signature.clone().unwrap()).collect();
+        assert_eq!(sigs, ["BBB-222", "AAA-111"], "the month-old one has closed");
+        assert_eq!(loaded.gen, 7, "a read asked for before a reload on the spot is told apart by it");
+    }
 }

@@ -48,6 +48,19 @@ pub fn describe(dogma: &Dogma, w: &Warning) -> String {
         WarningKind::CapUnstable { lasts_s } => trf!("Capacitor lasts {t}", t = text::secs(*lasts_s)),
         WarningKind::MissingSkills { count } => trf!("{n} skills missing for this pilot", n = count),
         WarningKind::UnknownTypes(ids) => trf!("Unknown types left out: {ids}", ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")),
+        WarningKind::GroupLimit { slot, index, limit, max } => match limit {
+            spai_fit::calc::GroupLimit::Fitted => trf!("Only {max} of its kind fits: {at} left out", max = max, at = at(*slot, *index)),
+            spai_fit::calc::GroupLimit::Online => trf!("Only {max} of its kind can be online: {at} counted offline", max = max, at = at(*slot, *index)),
+            spai_fit::calc::GroupLimit::Active => trf!("Only {max} of its kind can run: {at} counted online", max = max, at = at(*slot, *index)),
+        },
+        WarningKind::WrongCharge { slot, index } => trf!("The charge in {at} does not fit the module and is left out", at = at(*slot, *index)),
+        WarningKind::SquadronOver { fighter, count, max } => trf!("{n} {fighter} in one squadron, it holds {max}", n = count, fighter = name(*fighter), max = max),
+        WarningKind::FighterTubesOver { used, total } => trf!("{used} squadrons out, the hull has {total} launch tubes", used = used, total = total),
+        WarningKind::FighterClassOver { class, used, total } => match class {
+            spai_fit::warnings::FighterClass::Light => trf!("{used} light squadrons out, the hull takes {total}", used = used, total = total),
+            spai_fit::warnings::FighterClass::Support => trf!("{used} support squadrons out, the hull takes {total}", used = used, total = total),
+            spai_fit::warnings::FighterClass::Heavy => trf!("{used} heavy squadrons out, the hull takes {total}", used = used, total = total),
+        },
         WarningKind::VariationConflict { first, second } => trf!("Variations \"{first}\" and \"{second}\" change the same thing; the later one wins", first = first, second = second),
     }
 }

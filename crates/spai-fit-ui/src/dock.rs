@@ -333,6 +333,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
     for (i, (id, count, active, variation)) in list.into_iter().enumerate() {
         // The source fit's variations, to fly it with one of them.
         let variations: Vec<(u32, String)> = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map(|f| f.variations.iter().map(|v| (v.id, v.name.clone())).collect()).unwrap_or_default();
+        let base = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map_or_else(|| tr!("Base").to_owned(), crate::base_label);
         let flying = variation.and_then(|v| variations.iter().find(|(x, _)| *x == v)).map(|(_, n)| n.clone());
         let mut set_variation: Option<Option<u32>> = None;
         let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship)));
@@ -354,7 +355,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                 ui.label(egui::RichText::new(hull).weak());
                 ui.label(tr!("Its remote modules and drones act on this fit, and its command bursts boost it."));
                 if !variations.is_empty() {
-                    ui.label(egui::RichText::new(trf!("Flies as: {v}. Right-click to pick another variation.", v = flying.clone().unwrap_or_else(|| tr!("Base").to_owned()))).weak());
+                    ui.label(egui::RichText::new(trf!("Flies as: {v}. Right-click to pick another variation.", v = flying.clone().unwrap_or_else(|| base.clone()))).weak());
                 }
             });
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
@@ -379,7 +380,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                 ui.menu_button(tr!("Variation"), |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     ui.set_min_width(200.0);
-                    if ui.menu_label(variation.is_none() || flying.is_none(), tr!("Base")).clicked() {
+                    if ui.menu_label(variation.is_none() || flying.is_none(), base.as_str()).clicked() {
                         set_variation = Some(None);
                         ui.close();
                     }
@@ -475,6 +476,7 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 toggle = true;
                 ui.close();
             }
+            crate::compare::menu(ui, dogma, type_id);
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();
@@ -572,6 +574,7 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 launch = Some(if out > 0 { 0 } else { may });
                 ui.close();
             }
+            crate::compare::menu(ui, dogma, type_id);
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();
@@ -640,6 +643,7 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         });
         let mut details = false;
         r.context_menu(|ui| {
+            crate::compare::menu(ui, dogma, type_id);
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();
@@ -754,6 +758,7 @@ fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_m
                 toggle_side = true;
                 ui.close();
             }
+            crate::compare::menu(ui, dogma, type_id);
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();
@@ -1010,6 +1015,7 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         let mut details = false;
         let mut move_to: Option<Option<spai_fit::ids::AttrId>> = None;
         r.context_menu(|ui| {
+            crate::compare::menu(ui, dogma, type_id);
             if ui.button(tr!("Details…")).clicked() {
                 details = true;
                 ui.close();

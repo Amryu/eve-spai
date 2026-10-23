@@ -8,6 +8,7 @@ pub mod side_lists;
 pub mod sig_browser;
 pub mod star_map;
 pub mod theme;
+pub mod timing;
 pub mod wh_form;
 pub mod wh_graph;
 pub mod wh_layout;

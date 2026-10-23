@@ -41,13 +41,15 @@ const SUBSYSTEM_SLOTS: [(crate::ids::AttrId, crate::ids::AttrId); 5] = [
 /// drone switched on changes the ship's (or its weapons' and charges') attribute by its own
 /// percentage, penalised among its kind: (effects, what it changes, by which of its attributes,
 /// on what: the ship, or what needs a skill).
-const REMOTE_EFFECTS: [(&[&str], &[(&str, &str)], Remote); 6] = [
+const REMOTE_EFFECTS: [(&[&str], &[(&str, &str)], Remote); 7] = [
     (&["remoteWebifierFalloff", "remoteWebifierEntity"], &[("maxVelocity", "speedFactor")], Remote::Ship),
     (&["remoteTargetPaintFalloff", "remoteTargetPaintEntity"], &[("signatureRadius", "signatureRadiusBonus")], Remote::Ship),
     (&["remoteSensorDampFalloff", "remoteSensorDampEntity", "remoteSensorBoostFalloff"], &[("maxTargetRange", "maxTargetRangeBonus"), ("scanResolution", "scanResolutionBonus")], Remote::Ship),
     (&["shipModuleTrackingDisruptor", "npcEntityWeaponDisruptor", "shipModuleRemoteTrackingComputer"], &[("maxRange", "maxRangeBonus"), ("falloff", "falloffBonus"), ("trackingSpeed", "trackingSpeedBonus")], Remote::Needing(GUNNERY)),
     (&["npcEntityWeaponDisruptor"], &[("maxVelocity", "missileVelocityBonus"), ("explosionDelay", "explosionDelayBonus"), ("aoeCloudSize", "aoeCloudSizeBonus"), ("aoeVelocity", "aoeVelocityBonus")], Remote::Needing(MISSILE_LAUNCHER_OPERATION)),
     (&["shipModuleGuidanceDisruptor"], &[("maxVelocity", "missileVelocityBonus"), ("explosionDelay", "explosionDelayBonus"), ("aoeCloudSize", "aoeCloudSizeBonus"), ("aoeVelocity", "aoeVelocityBonus")], Remote::Needing(MISSILE_LAUNCHER_OPERATION)),
+    // A vorton projector keeps its explosion on the module and has no flight to disrupt.
+    (&["shipModuleGuidanceDisruptor", "npcEntityWeaponDisruptor"], &[("aoeCloudSize", "aoeCloudSizeBonus"), ("aoeVelocity", "aoeVelocityBonus")], Remote::Needing(VORTON_PROJECTOR_OPERATION)),
 ];
 
 #[derive(Clone, Copy)]
@@ -60,6 +62,7 @@ enum Remote {
 
 const GUNNERY: crate::ids::TypeId = 3300;
 const MISSILE_LAUNCHER_OPERATION: crate::ids::TypeId = 3319;
+const VORTON_PROJECTOR_OPERATION: crate::ids::TypeId = 55033;
 
 /// The Rorqual's PANIC core: its effect is empty and its buffs carry no values, the server applies
 /// them. While it runs the shield's resonances are multiplied by this, worked back from one in-game
@@ -81,12 +84,25 @@ pub(super) fn apply(c: &mut Calc) {
     panic_core(c);
     reactive_hardener(c);
     prop_mods(c);
+    field_bloom(c);
     skill_bonuses(c);
     subsystem_slots(c);
 }
 
 fn has_effect(c: &Calc, item: ItemIdx, names: &[&str]) -> bool {
     c.effect_names(item).any(|n| names.contains(&n))
+}
+
+/// A running warp disruption field generator blooms the ship's signature by its
+/// `signatureRadiusBonus`, which the focused script takes back to nothing; its effect is empty.
+const FIELD_EFFECT: &str = "warpDisruptSphere";
+
+fn field_bloom(c: &mut Calc) {
+    let ship = c.ship_idx();
+    let fields: Vec<ItemIdx> = c.modules().filter(|(_, it)| it.state >= State::Active).map(|(i, _)| i).filter(|&i| has_effect(c, i, &[FIELD_EFFECT]) && c.has(i, attr::SIGNATURE_RADIUS_BONUS)).collect();
+    for i in fields {
+        c.add_source_mod(ship, attr::SIGNATURE_RADIUS, Op::PostPercent, Source::Attr(i, attr::SIGNATURE_RADIUS_BONUS), true);
+    }
 }
 
 fn prop_mods(c: &mut Calc) {
@@ -97,7 +113,8 @@ fn prop_mods(c: &mut Calc) {
         if c.has(i, attr::SIGNATURE_RADIUS_BONUS) {
             c.add_source_mod(ship, attr::SIGNATURE_RADIUS, Op::PostPercent, Source::Attr(i, attr::SIGNATURE_RADIUS_BONUS), true);
         }
-        c.add_source_mod(ship, attr::MAX_VELOCITY, Op::PostPercent, Source::PropBonus(i), true);
+        // The game keeps the boost out of the stacking chain: a penalised one cost a nanofibre Sabre 111 m/s.
+        c.add_source_mod(ship, attr::MAX_VELOCITY, Op::PostPercent, Source::PropBonus(i), false);
     }
 }
 

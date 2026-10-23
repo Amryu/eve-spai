@@ -494,14 +494,19 @@ impl SpaiApp {
         Some(std::sync::Arc::new(crate::web::map::build(&systems, graph)))
     }
 
-    pub(crate) fn publish_ui_facts(&self) {
-        let mut f = self.web_facts.lock().unwrap_or_else(|e| e.into_inner());
+    /// False when the web server held the facts and nothing was published: try again later.
+    pub(crate) fn publish_ui_facts(&self) -> bool {
+        let mut f = match self.web_facts.try_lock() {
+            Ok(f) => f,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
         f.web_enabled = self.settings.web.enabled;
         // Everything below clones a roster, a rule list and a graph handle, once per frame. The web
         // view is off by default, so doing it anyway would be a cost paid by every user who never
         // turns it on. The publisher reads `web_enabled` and idles for the same reason.
         if !f.web_enabled {
-            return;
+            return true;
         }
         f.systems = self.systems.clone();
         f.chars = self.characters.iter().map(|c| (c.name.clone(), c.id)).collect();
@@ -537,7 +542,11 @@ impl SpaiApp {
         f.avoid_jump = self.settings.route_avoid_jump.clone();
         drop(f);
 
-        let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = match self.web_detail.try_lock() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
         d.graph = self.systems.clone();
         d.player_sys = self.player_system();
         d.active_character = self.active_character.clone();
@@ -546,7 +555,12 @@ impl SpaiApp {
         d.count_bridges = self.settings.intel_count_bridges;
         // Cloned rather than shared: the status map is small and rewritten wholesale by its poller,
         // so holding its lock from a request thread would be the only way to block that poller.
-        d.status = self.system_status.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Kept as last published while the status poller holds it.
+        match self.system_status.try_lock() {
+            Ok(st) => d.status = st.clone(),
+            Err(std::sync::TryLockError::Poisoned(e)) => d.status = e.into_inner().clone(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
         // Shared, unlike the above: one room's backlog is bigger than every pane put together, and
         // the page reads one conversation at a time.
         d.jabber = Some(self.jabber.clone());
@@ -586,6 +600,7 @@ impl SpaiApp {
         d.sov_upgrades = self.settings.sov_upgrades.clone();
         d.bookmarks = self.settings.bookmarks.clone();
         d.camps = Some(self.camps.clone());
+        true
     }
 
     /// The rescue pane, or `None` when this build has no rescue mode or the user has it off.

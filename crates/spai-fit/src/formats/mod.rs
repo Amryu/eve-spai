@@ -17,6 +17,8 @@ use crate::ids::{category, TypeId};
 pub enum Place {
     Ship,
     Module(Slot),
+    /// A hull's mode.
+    Mode,
     Charge,
     Drone,
     Fighter,
@@ -28,6 +30,7 @@ pub enum Place {
 pub fn place_of(dogma: &Dogma, t: &TypeDef) -> Place {
     match t.category {
         category::SHIP => Place::Ship,
+        _ if t.group == crate::ids::group::SHIP_MODIFIERS => Place::Mode,
         category::MODULE | category::SUBSYSTEM => dogma.slot_of(t.id).map_or(Place::Other, Place::Module),
         category::CHARGE => Place::Charge,
         category::DRONE => Place::Drone,
@@ -47,8 +50,8 @@ pub fn can_activate(dogma: &Dogma, type_id: TypeId) -> bool {
 }
 
 /// Active modules that wait online until used: cloaks, jump portals, cynos, micro jumps,
-/// nullifiers and assault damage controls.
-const STARTS_ONLINE: [&str; 6] = ["cloaking", "jumpPortalGeneration", "cynosural", "microJump", "interdictionNullifierBonus", "moduleBonusAssaultDamageControl"];
+/// nullifiers, assault damage controls and signature suppressors.
+const STARTS_ONLINE: [&str; 7] = ["cloaking", "jumpPortalGeneration", "cynosural", "microJump", "interdictionNullifierBonus", "moduleBonusAssaultDamageControl", "targetSpectrumBreakerBonus"];
 
 /// A module's state when it comes in without one: active when it can be and is meant to run all
 /// the time, else online.
@@ -70,6 +73,13 @@ pub fn clamp_states(dogma: &Dogma, fit: &mut Fit) {
         if m.state > top {
             m.state = top;
         }
+    }
+}
+
+/// A mode the hull does not have is dropped, so it never travels with the fit.
+pub fn drop_foreign_mode(dogma: &Dogma, fit: &mut Fit) {
+    if fit.mode.is_some_and(|m| !dogma.modes_of(fit.ship).contains(&m)) {
+        fit.mode = None;
     }
 }
 
@@ -126,6 +136,7 @@ pub fn add_item(dogma: &Dogma, fit: &mut Fit, type_id: TypeId, quantity: u32) ->
                 }
             }
         }
+        Place::Mode => fit.mode = Some(type_id),
         Place::Charge => fit.cargo.push(CargoItem { type_id, quantity: quantity.max(1), hold: None }),
         Place::Drone => match fit.drones.iter_mut().find(|d| d.type_id == type_id) {
             Some(d) => d.count += quantity.max(1),

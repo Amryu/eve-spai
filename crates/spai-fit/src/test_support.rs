@@ -101,9 +101,52 @@ pub mod ids {
     pub const CAP_CHARGE: TypeId = 11283;
     pub const HEAVY: TypeId = 99901;
     pub const REMOTE_REP: TypeId = 3538;
+    pub const NOS: TypeId = 530;
+    pub const DEFENSE_MODE: TypeId = 34319;
+    pub const PROPULSION_MODE: TypeId = 34323;
+    pub const SCRAM: TypeId = 448;
+    pub const POINT: TypeId = 3244;
+    pub const FIELD: TypeId = 4248;
+    pub const FOCUSED_SCRIPT: TypeId = 29003;
     pub const BURST: TypeId = 43552;
     pub const BURST_CHARGE: TypeId = 42830;
     pub const FIGHTER: TypeId = 40354;
+    pub const VORTON: TypeId = 54753;
+    pub const VORTON_CHARGE: TypeId = 54783;
+    pub const BOMB_LAUNCHER: TypeId = 27914;
+    pub const BOMB: TypeId = 27912;
+    pub const BREACHER_LAUNCHER: TypeId = 85084;
+    pub const BREACHER_POD: TypeId = 85088;
+    pub const DOOMSDAY: TypeId = 24550;
+    pub const LANCE: TypeId = 40631;
+    pub const LOGI_DRONE: TypeId = 28197;
+    pub const WEB_DRONE: TypeId = 23536;
+    pub const SUPPORT_FIGHTER: TypeId = 40347;
+    pub const MUTA_REP: TypeId = 49773;
+    pub const ARAR: TypeId = 41478;
+    pub const MINER: TypeId = 17912;
+    pub const SENSOR_BOOST: TypeId = 1969;
+    pub const TRACKING_BOOST: TypeId = 2104;
+    pub const ECM_BURST: TypeId = 22551;
+    /// Named attributes of the synthetic data with ids of its own.
+    pub const ARC_TARGETS: AttrId = 2950;
+    pub const ARC_RANGE: AttrId = 2951;
+    pub const EXPLOSION_RANGE: AttrId = 2952;
+    pub const DOT_PER_TICK: AttrId = 2953;
+    pub const DOT_HP_PCT: AttrId = 2954;
+    pub const DOT_DURATION: AttrId = 2955;
+    pub const DD_TICK: AttrId = 2956;
+    pub const DD_DURATION: AttrId = 2957;
+    pub const DD_RADIUS: AttrId = 2958;
+    pub const FIGHTER_WEB: AttrId = 2959;
+    pub const FIGHTER_WEB_RANGE: AttrId = 2960;
+    pub const FIGHTER_WEB_DURATION: AttrId = 2961;
+    pub const SQUADRON_MAX: AttrId = 2962;
+    pub const REP_SPOOL_MAX: AttrId = 2963;
+    pub const REP_SPOOL_STEP: AttrId = 2964;
+    pub const CRIT_CHANCE: AttrId = 2965;
+    pub const CRIT_YIELD: AttrId = 2966;
+    pub const MAX_GROUP_ACTIVE: AttrId = 763;
 }
 
 pub const SHIP_BONUS_MF: AttrId = 587;
@@ -234,6 +277,30 @@ pub fn dataset() -> Dogma {
         type_def(CAP_CHARGE, "Cap Booster 400", GROUP_CAP_CHARGE, 8, &[(attr::CAPACITOR_BONUS, 400.0), (attr::VOLUME, 10.0)], &[], &[]),
         type_def(HEAVY, "Oversized Turret", 55, 7, &[(attr::CPU, 100.0), (attr::POWER, 50.0), (attr::SPEED, 3000.0), (attr::CHARGE_GROUP_1, GROUP_AMMO as f32)], &[301, 320, 321, 330], &[]),
         type_def(REMOTE_REP, "Small Remote Armor Repairer II", 325, 7, &[(attr::ARMOR_DAMAGE_AMOUNT, 60.0), (attr::DURATION, 6000.0), (attr::CAPACITOR_NEED, 20.0), (attr::MAX_RANGE, 7000.0), (attr::FALLOFF_EFFECTIVENESS, 2000.0), (attr::CPU, 20.0), (attr::POWER, 10.0)], &[345, 320, 330], &[]),
+        type_def(NOS, "Small Energy Nosferatu I", 68, 7, &[(attr::POWER_TRANSFER_AMOUNT, 12.0), (attr::DURATION, 6000.0), (attr::MAX_RANGE, 6000.0), (attr::FALLOFF_EFFECTIVENESS, 3000.0), (attr::CPU, 10.0), (attr::POWER, 5.0)], &[349, 320, 330], &[]),
+        type_def(SCRAM, "Warp Scrambler II", 52, 7, &[(attr::MAX_RANGE, 9000.0), (attr::WARP_SCRAMBLE_STRENGTH, 2.0), (attr::DURATION, 5000.0)], &[350, 323, 330], &[]),
+        type_def(POINT, "Warp Disruptor II", 52, 7, &[(attr::MAX_RANGE, 24_000.0), (attr::WARP_SCRAMBLE_STRENGTH, 1.0), (attr::DURATION, 5000.0)], &[351, 323, 330], &[]),
+        type_def(FIELD, "Warp Disruption Field Generator I", 899, 7, &[(attr::WARP_SCRAMBLE_RANGE, 20_000.0), (attr::WARP_SCRAMBLE_STRENGTH, 100.0), (attr::DURATION, 30_000.0), (attr::CAPACITY, 1.0), (attr::CHARGE_GROUP_1, 908.0)], &[352, 320, 330], &[]),
+        type_def(FOCUSED_SCRIPT, "Focused Warp Disruption Script", 908, 8, &[(1327, 50.0), (attr::VOLUME, 1.0)], &[353], &[]),
+        type_def(VORTON, "Large Vorton Projector II", 4060, 7, &[(attr::DAMAGE_MULTIPLIER, 1.0), (attr::SPEED, 10_000.0), (attr::MAX_RANGE, 20_000.0), (attr::AOE_CLOUD_SIZE, 200.0), (attr::AOE_VELOCITY, 80.0), (attr::AOE_DAMAGE_REDUCTION_FACTOR, 0.7), (attr::CHARGE_GROUP_1, 4061.0), (attr::CAPACITY, 1.0), (ARC_TARGETS, 3.0), (ARC_RANGE, 10_000.0)], &[371, 320, 330], &[]),
+        type_def(VORTON_CHARGE, "ElectroPunch Ultra L", 4061, 8, &[(attr::EM_DAMAGE, 100.0), (attr::KINETIC_DAMAGE, 100.0), (attr::VOLUME, 0.01)], &[], &[]),
+        type_def(BOMB_LAUNCHER, "Bomb Launcher I", 862, 7, &[(attr::SPEED, 10_000.0), (669, 80_000.0), (attr::CHARGE_GROUP_1, 90.0), (attr::CAPACITY, 150.0), (attr::RELOAD_TIME, 10_000.0)], &[331, 320, 330], &[]),
+        type_def(BOMB, "Concussion Bomb", 90, 8, &[(attr::KINETIC_DAMAGE, 5800.0), (attr::MAX_VELOCITY, 2500.0), (attr::EXPLOSION_DELAY, 12_000.0), (attr::AOE_CLOUD_SIZE, 400.0), (EXPLOSION_RANGE, 15_000.0), (attr::VOLUME, 75.0)], &[372], &[]),
+        type_def(BREACHER_LAUNCHER, "Small Breacher Pod Launcher", 4807, 7, &[(attr::SPEED, 24_000.0), (attr::CHARGE_GROUP_1, 4808.0), (attr::CAPACITY, 4.0)], &[331, 320, 330], &[]),
+        type_def(BREACHER_POD, "SCARAB Breacher Pod S", 4808, 8, &[(attr::MAX_VELOCITY, 2000.0), (attr::EXPLOSION_DELAY, 2000.0), (DOT_PER_TICK, 200.0), (DOT_HP_PCT, 0.6), (DOT_DURATION, 40_000.0), (attr::VOLUME, 0.1)], &[373], &[]),
+        type_def(DOOMSDAY, "'Judgment' Electromagnetic Doomsday", 588, 7, &[(attr::EM_DAMAGE, 2_400_000.0), (attr::DURATION, 300_000.0)], &[374, 320, 330], &[]),
+        type_def(LANCE, "'Holy Destiny' Electromagnetic Lance", 588, 7, &[(attr::EM_DAMAGE, 50_000.0), (attr::DURATION, 300_000.0), (attr::MAX_RANGE, 200_000.0), (attr::SIGNATURE_RADIUS, 5000.0), (DD_TICK, 1000.0), (DD_DURATION, 15_000.0), (DD_RADIUS, 2500.0)], &[375, 320, 330], &[]),
+        type_def(LOGI_DRONE, "Heavy Armor Maintenance Bot II", 640, 18, &[(attr::ARMOR_DAMAGE_AMOUNT, 72.0), (attr::DURATION, 5000.0), (attr::MAX_RANGE, 10_000.0)], &[376], &[]),
+        type_def(WEB_DRONE, "Berserker SW-900", 641, 18, &[(attr::SPEED_FACTOR, -20.0), (attr::DURATION, 5000.0), (attr::MAX_RANGE, 10_000.0)], &[377], &[]),
+        type_def(SUPPORT_FIGHTER, "Dromi I", 1537, 87, &[(FIGHTER_WEB, -10.0), (FIGHTER_WEB_RANGE, 8000.0), (FIGHTER_WEB_DURATION, 10_000.0), (SQUADRON_MAX, 3.0)], &[378], &[]),
+        type_def(MUTA_REP, "Heavy Mutadaptive Remote Armor Repairer II", 2018, 7, &[(attr::ARMOR_DAMAGE_AMOUNT, 60.0), (attr::DURATION, 6000.0), (attr::MAX_RANGE, 10_000.0), (REP_SPOOL_MAX, 1.5), (REP_SPOOL_STEP, 0.1)], &[379, 320, 330], &[]),
+        type_def(ARAR, "Large Ancillary Remote Armor Repairer", 1698, 7, &[(attr::ARMOR_DAMAGE_AMOUNT, 60.0), (attr::DURATION, 6000.0), (attr::MAX_RANGE, 7000.0), (attr::CHARGE_GROUP_1, GROUP_PASTE as f32), (attr::CAPACITY, 0.08), (attr::CHARGE_RATE, 1.0), (attr::RELOAD_TIME, 60_000.0), (attr::CHARGED_ARMOR_DAMAGE_MULTIPLIER, 3.0)], &[380, 320, 330], &[]),
+        type_def(SENSOR_BOOST, "Remote Sensor Booster II", 290, 7, &[(attr::MAX_TARGET_RANGE_BONUS, 30.0), (attr::SCAN_RESOLUTION_BONUS, 30.0), (attr::DURATION, 5000.0), (attr::MAX_RANGE, 48_000.0), (attr::FALLOFF_EFFECTIVENESS, 96_000.0)], &[382, 320, 330], &[]),
+        type_def(TRACKING_BOOST, "Remote Tracking Computer II", 646, 7, &[(attr::TRACKING_SPEED_BONUS, 25.0), (attr::MAX_RANGE_BONUS, 15.0), (attr::FALLOFF_BONUS, 25.0), (attr::DURATION, 5000.0), (attr::MAX_RANGE, 30_000.0), (attr::FALLOFF_EFFECTIVENESS, 60_000.0)], &[383, 320, 330], &[]),
+        type_def(ECM_BURST, "Burst Jammer II", 80, 7, &[(attr::SCAN_GRAVIMETRIC_STRENGTH_BONUS, 4.0), (142, 6000.0), (attr::DURATION, 30_000.0), (attr::MAX_RANGE, 1.0)], &[384, 320, 330], &[]),
+        type_def(MINER, "Modulated Strip Miner II", 483, 7, &[(attr::MINING_AMOUNT, 120.0), (attr::DURATION, 45_000.0), (CRIT_CHANCE, 0.01), (CRIT_YIELD, 2.0)], &[381, 320, 330], &[]),
+        type_def(DEFENSE_MODE, "Rifter Defense Mode", crate::ids::group::SHIP_MODIFIERS, 7, &[], &[], &[]),
+        type_def(PROPULSION_MODE, "Rifter Propulsion Mode", crate::ids::group::SHIP_MODIFIERS, 7, &[(2003, 0.5)], &[6020], &[]),
         type_def(BURST, "Shield Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1769.0), (attr::CAPACITY, 10.0)], &[346, 320, 330], &[]),
         type_def(FIGHTER, "Templar II", 1652, 87, &[(2901, 20.0), (2902, 10.0), (2903, 0.0), (2904, 0.0), (2905, 1.5), (2906, 4000.0), (2907, 6000.0), (2908, 3000.0), (2909, 40.0), (2910, 200.0), (2911, 0.8), (attr::VOLUME, 5000.0), (attr::MAX_VELOCITY, 4000.0)], &[348], &[]),
         type_def(BURST_CHARGE, "Shield Harmonizing Charge", 1769, 8, &[(attr::WARFARE_BUFF_1_ID, 12.0), (2596, 20.0), (attr::VOLUME, 1.0)], &[347], &[]),
@@ -281,6 +348,26 @@ pub fn dataset() -> Dogma {
         EffectDef { duration_attr: Some(attr::SPEED), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(343, "targetDisintegratorAttack", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), ..effect(344, "powerBooster", EffectCategory::Active, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(345, "shipModuleRemoteArmorRepairer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(350, "warpScrambleBlockMWDWithNPCEffect", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(351, "warpDisrupt", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(352, "warpDisruptSphere", EffectCategory::Active, vec![]) },
+        effect(353, "scriptWarpScrambleRangeBonus", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::WARP_SCRAMBLE_RANGE, 1327, Op::PostPercent)]),
+        EffectDef { duration_attr: Some(attr::SPEED), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(371, "ChainLightning", EffectCategory::Target, vec![]) },
+        effect(372, "bombLaunching", EffectCategory::Passive, vec![]),
+        effect(373, "dotMissileLaunching", EffectCategory::Passive, vec![]),
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(374, "superWeaponAmarr", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(375, "doomsdayBeamDOT", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(376, "npcEntityRemoteArmorRepairer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(377, "remoteWebifierEntity", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(FIGHTER_WEB_DURATION), ..effect(378, "fighterAbilityStasisWebifier", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(379, "ShipModuleRemoteArmorMutadaptiveRepairer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(380, "shipModuleAncillaryRemoteArmorRepairer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(381, "miningLaser", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(382, "remoteSensorBoostFalloff", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(383, "shipModuleRemoteTrackingComputer", EffectCategory::Target, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(384, "ECMBurstJammer", EffectCategory::Active, vec![]) },
+        effect(6020, "modeVelocityPostDiv", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, 2003, Op::PostDiv)]),
+        EffectDef { duration_attr: Some(attr::DURATION), ..effect(349, "energyNosferatuFalloff", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(346, "moduleBonusWarfareLinkShield", EffectCategory::Active, vec![]) },
         // The charge names the buff and multiplies the module's strength into its value.
         EffectDef { duration_attr: Some(2906), ..effect(348, "fighterAbilityAttackM", EffectCategory::Target, vec![]) },
@@ -305,6 +392,30 @@ pub fn dataset() -> Dogma {
         attr_def(attr::ARMOR_HP, "armorHP", false, true, 0.0),
         attr_def(attr::FALLOFF, "falloff", false, true, 0.0),
         attr_def(attr::MAX_RANGE, "maxRange", false, true, 0.0),
+        attr_def(attr::WARP_SCRAMBLE_RANGE, "warpScrambleRange", false, true, 0.0),
+        attr_def(attr::WARP_SCRAMBLE_STRENGTH, "warpScrambleStrength", false, true, 0.0),
+        attr_def(142, "ecmBurstRange", false, true, 0.0),
+        attr_def(1327, "warpScrambleRangeBonus", true, true, 0.0),
+        attr_def(ARC_TARGETS, "VortonArcTargets", true, true, 0.0),
+        attr_def(ARC_RANGE, "VortonArcRange", true, true, 0.0),
+        attr_def(EXPLOSION_RANGE, "explosionRange", true, true, 0.0),
+        attr_def(DOT_PER_TICK, "dotMaxDamagePerTick", true, true, 0.0),
+        attr_def(DOT_HP_PCT, "dotMaxHPPercentagePerTick", true, true, 0.0),
+        attr_def(DOT_DURATION, "dotDuration", true, true, 0.0),
+        attr_def(DD_TICK, "doomsdayDamageCycleTime", true, true, 0.0),
+        attr_def(DD_DURATION, "doomsdayDamageDuration", true, true, 0.0),
+        attr_def(DD_RADIUS, "doomsdayDamageRadius", true, true, 0.0),
+        attr_def(FIGHTER_WEB, "fighterAbilityStasisWebifierSpeedPenalty", true, true, 0.0),
+        attr_def(FIGHTER_WEB_RANGE, "fighterAbilityStasisWebifierOptimalRange", true, true, 0.0),
+        attr_def(FIGHTER_WEB_DURATION, "fighterAbilityStasisWebifierDuration", true, true, 0.0),
+        attr_def(SQUADRON_MAX, "fighterSquadronMaxSize", true, true, 0.0),
+        attr_def(REP_SPOOL_MAX, "repairMultiplierBonusMax", true, true, 0.0),
+        attr_def(REP_SPOOL_STEP, "repairMultiplierBonusPerCycle", true, true, 0.0),
+        attr_def(CRIT_CHANCE, "miningCritChance", true, true, 0.0),
+        attr_def(CRIT_YIELD, "miningCritBonusYield", true, true, 0.0),
+        attr_def(MAX_GROUP_ACTIVE, "maxGroupActive", true, true, 0.0),
+        attr_def(attr::MINING_AMOUNT, "miningAmount", true, true, 0.0),
+        attr_def(669, "moduleReactivationDelay", true, false, 0.0),
         attr_def(attr::DAMAGE_MULTIPLIER, "damageMultiplier", false, true, 1.0),
         attr_def(attr::SKILL_LEVEL, "skillLevel", true, true, 0.0),
         attr_def(SHIP_BONUS_MF, "shipBonusMF2", true, true, 0.0),

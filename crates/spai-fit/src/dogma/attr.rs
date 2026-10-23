@@ -41,6 +41,7 @@ pub const SENSOR_DAMPENER_RESISTANCE: AttrId = 2112;
 pub const WEAPON_DISRUPTION_RESISTANCE: AttrId = 2113;
 pub const TARGET_PAINTER_RESISTANCE: AttrId = 2114;
 pub const ENERGY_WARFARE_RESISTANCE: AttrId = 2045;
+pub const NOS_OVERRIDE: AttrId = 1945;
 pub const IS_ONLINE: AttrId = 2;
 pub const DAMAGE: AttrId = 3;
 pub const CAPACITOR_NEED: AttrId = 6;
@@ -107,6 +108,7 @@ pub const SHIELD_RECHARGE_RATE: AttrId = 479;
 pub const CAPACITOR_CAPACITY: AttrId = 482;
 pub const SIGNATURE_RADIUS: AttrId = 552;
 pub const SIGNATURE_RADIUS_BONUS: AttrId = 554;
+pub const MINING_AMOUNT: AttrId = 77;
 pub const WARP_SCRAMBLE_RANGE: AttrId = 103;
 pub const WARP_SCRAMBLE_STRENGTH: AttrId = 105;
 pub const SCAN_GRAVIMETRIC_STRENGTH_BONUS: AttrId = 238;
@@ -202,6 +204,7 @@ pub const NAMED: &[(AttrId, &str)] = &[
     (WEAPON_DISRUPTION_RESISTANCE, "weaponDisruptionResistance"),
     (TARGET_PAINTER_RESISTANCE, "targetPainterResistance"),
     (ENERGY_WARFARE_RESISTANCE, "energyWarfareResistance"),
+    (NOS_OVERRIDE, "nosOverride"),
     (IS_ONLINE, "isOnline"),
     (DAMAGE, "damage"),
     (CAPACITOR_NEED, "capacitorNeed"),
@@ -283,6 +286,7 @@ pub const NAMED: &[(AttrId, &str)] = &[
     (AOE_CLOUD_SIZE, "aoeCloudSize"),
     (MODULE_REACTIVATION_DELAY, "moduleReactivationDelay"),
     (MAX_GROUP_ACTIVE, "maxGroupActive"),
+    (MINING_AMOUNT, "miningAmount"),
     (CRYSTAL_VOLATILITY_CHANCE, "crystalVolatilityChance"),
     (CRYSTAL_VOLATILITY_DAMAGE, "crystalVolatilityDamage"),
     (CRYSTALS_GET_DAMAGED, "crystalsGetDamaged"),

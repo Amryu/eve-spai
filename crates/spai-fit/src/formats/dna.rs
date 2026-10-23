@@ -19,6 +19,9 @@ pub fn export(fit: &Fit) -> String {
     for m in fit.modules.iter().filter(|m| m.slot != crate::fit::Slot::Subsystem) {
         push(m.type_id, 1);
     }
+    if let Some(m) = fit.mode {
+        push(m, 1);
+    }
     for d in &fit.drones {
         push(d.type_id, d.count);
     }
@@ -49,5 +52,6 @@ pub fn import(dogma: &Dogma, dna: &str) -> Option<Fit> {
         let (Ok(id), Ok(n)) = (id.trim().parse::<TypeId>(), n.trim().parse::<u32>()) else { continue };
         add_item(dogma, &mut fit, id, n);
     }
+    super::drop_foreign_mode(dogma, &mut fit);
     Some(fit)
 }

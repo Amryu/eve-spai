@@ -36,24 +36,95 @@ const GOOD: egui::Color32 = egui::Color32::from_rgb(92, 184, 92);
 const BAD: egui::Color32 = egui::Color32::from_rgb(214, 96, 96);
 
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| body(sim, ui));
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| body(sim, ui, None));
 }
 
-fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
+/// The buttons that move the graphs: to the left, below or right of the fleet, into a window of
+/// their own, or shut.
+fn place_buttons(sim: &mut SimUi, ui: &mut egui::Ui, close: bool) {
+    use crate::GraphPlace;
+    use egui_phosphor::regular as icon;
+    use spai_ui::widgets::icon_button;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if close && icon_button(ui, icon::X).on_hover_text(tr!("Close the graphs")).clicked() {
+            sim.fleet_graph_open = false;
+        }
+        for (place, glyph, hint) in [
+            (GraphPlace::Window, icon::ARROW_SQUARE_OUT, tr!("Graphs in their own window")),
+            (GraphPlace::Right, icon::ARROW_LINE_RIGHT, tr!("Dock the graphs on the right")),
+            (GraphPlace::Bottom, icon::ARROW_LINE_DOWN, tr!("Dock the graphs below")),
+            (GraphPlace::Left, icon::ARROW_LINE_LEFT, tr!("Dock the graphs on the left")),
+        ] {
+            if sim.fleet_graph_place != place && icon_button(ui, glyph).on_hover_text(hint).clicked() {
+                sim.fleet_graph_place = place;
+                sim.fleet_graph_size = None;
+            }
+        }
+    });
+}
+
+/// The graphs docked where they were put, with a bar to move or close them.
+pub fn docked(sim: &mut SimUi, ui: &mut egui::Ui) {
+    use crate::{DockSide, GraphPlace};
+    let side = match sim.fleet_graph_place {
+        GraphPlace::Window => return,
+        GraphPlace::Left => DockSide::Left,
+        GraphPlace::Right => DockSide::Right,
+        GraphPlace::Bottom => DockSide::Bottom,
+    };
+    let avail = ui.available_size();
+    let (default, min, max) = if side == DockSide::Bottom { (avail.y * 0.4, 220.0, (avail.y - 200.0).max(240.0)) } else { (avail.x * 0.4, 360.0, (avail.x - 320.0).max(360.0)) };
+    // A panel of its own per side: a size kept for one is no size for another.
+    let id = egui::Id::new(("sim_fleet_graph_dock", side as u8));
+    let mut size = sim.fleet_graph_size;
+    crate::dock_panel(ui, id, side, &mut size, default, min..=max, |ui| body(sim, ui, Some(true)));
+    sim.fleet_graph_size = size;
+}
+
+/// The graphs in a window of their own, when put there.
+pub fn window(sim: &mut SimUi, ctx: &egui::Context) {
+    if !sim.fleet_graph_open || sim.fleet_graph_place != crate::GraphPlace::Window {
+        return;
+    }
+    let size = egui::vec2(900.0, 560.0);
+    let mut open = true;
+    egui::Window::new(tr!("Fleet graphs")).id(egui::Id::new("sim_fleet_graph_window")).open(&mut open).resizable(true).default_size(size).min_size(egui::vec2(480.0, 320.0)).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        // As big as it was dragged, not as its content: a minimum, which adds no spacing of
+        // its own the way filling what is left after the content does, frame after frame.
+        ui.set_min_size(ui.available_size());
+        body(sim, ui, Some(false));
+    });
+    if !open {
+        sim.fleet_graph_open = false;
+    }
+}
+
+/// The graph; `place`, when docked or in the window, puts the buttons that move it on the plot's
+/// line, with a close button of its own when docked.
+fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
+    let _t = spai_ui::timing::span("sim: fleet graphs");
     let width = ui.available_width();
     ui.horizontal(|ui| {
         use spai_ui::widgets::SteadySelect as _;
         ui.label(tr!("Plot"));
-        egui::ComboBox::from_id_salt("sim_fleet_graph").selected_text(sim.fleet_graph.name()).width(280.0f32.min(width - 60.0)).show_ui(ui, |ui| {
+        let buttons_w = if place.is_some() { 5.0 * 28.0 } else { 0.0 };
+        egui::ComboBox::from_id_salt("sim_fleet_graph").selected_text(sim.fleet_graph.name()).width(280.0f32.min(width - 60.0 - buttons_w).max(120.0)).show_ui(ui, |ui| {
             for g in FleetGraph::ALL {
                 if ui.menu_label(sim.fleet_graph == g, g.name()).clicked() {
                     sim.fleet_graph = g;
                 }
             }
         });
+        if let Some(close) = place {
+            place_buttons(sim, ui, close);
+        }
     });
     ui.add_space(4.0);
-    let Some(an) = sim.fleet_analysis() else {
+    let analysis = sim.fleet_analysis();
+    if sim.fleet_analysis_pending() {
+        crate::fleet_panel::working_badge(ui);
+    }
+    let Some(an) = analysis else {
         ui.add_space(8.0);
         ui.label(egui::RichText::new(if sim.fleet.is_none() { tr!("No fleet open.") } else { tr!("Pick a fleet under Against to compare.") }).weak());
         return;
@@ -73,7 +144,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
 }
 
 fn plain() -> Plot {
-    Plot { x_label: String::new(), y_label: String::new(), series: Vec::new(), fmt_x: text::num, fmt_y: text::num, y_to: None, bands: Vec::new(), markers: Vec::new() }
+    Plot { x_label: String::new(), y_label: String::new(), series: Vec::new(), fmt_x: text::num, fmt_y: text::num, y_to: None, bands: Vec::new(), markers: Vec::new(), levels: Vec::new() }
 }
 
 /// Damage each fleet lands on the other's primary over range, shaded where either is favoured,
@@ -82,14 +153,15 @@ fn by_range(ui: &egui::Ui, an: &Analysis) -> Plot {
     let sw = &an.sweep;
     let (a, b) = (series_color(0), series_color(1));
     let mut markers = vec![
-        PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color() },
-        PlotMarker { x: sw.a_best, label: trf!("{a} best", a = text::clip(&an.mine.name, 18)), color: a },
-        PlotMarker { x: sw.b_best, label: trf!("{a} best", a = text::clip(&an.theirs.name, 18)), color: b },
+        PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color(), to: None },
+        PlotMarker { x: sw.a_best, label: trf!("{a} best", a = text::clip(&an.mine.name, 18)), color: a, to: None },
+        PlotMarker { x: sw.b_best, label: trf!("{a} best", a = text::clip(&an.theirs.name, 18)), color: b, to: None },
     ];
     for (cuts, color) in [(&sw.a_cutoffs, a), (&sw.b_cutoffs, b)] {
-        for (kind, optimal, _) in cuts {
+        for (kind, optimal, edge) in cuts {
             if let Some(name) = crate::stats_panel::ewar_name(*kind) {
-                markers.push(PlotMarker { x: *optimal, label: name.to_owned(), color: color.gamma_multiply(0.8) });
+                // Out to its falloff: where the farthest module is at half strength.
+                markers.push(PlotMarker { x: *optimal, label: name.to_owned(), color: color.gamma_multiply(0.8), to: (*edge > *optimal).then_some(*edge) });
             }
         }
     }
@@ -129,7 +201,7 @@ fn volley_by_range(ui: &egui::Ui, an: &Analysis) -> Plot {
         y_label: tr!("Volley on the primary").to_owned(),
         fmt_x: text::metres,
         series,
-        markers: vec![PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color() }],
+        markers: vec![PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color(), to: None }],
         ..plain()
     }
 }
@@ -146,7 +218,7 @@ fn over_time(an: &Analysis, ships: bool) -> Plot {
     };
     let names = [&an.mine.name, &an.theirs.name];
     let series = (0..2).map(|side| PlotSeries { label: names[side].clone(), color: series_color(side), points: r.timeline.iter().map(|x| [x.0, pick(x, side)]).collect() }).collect();
-    let markers = (0..2).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side) })).collect();
+    let markers = (0..2).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side), to: None })).collect();
     Plot {
         x_label: tr!("Time").to_owned(),
         y_label: if ships { tr!("Ships") } else { tr!("DPS on the primary") }.to_owned(),

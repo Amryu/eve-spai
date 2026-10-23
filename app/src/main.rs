@@ -133,6 +133,16 @@ pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::Nativ
         }
     }
 
+    // wgpu's default hint reserves 128 MiB device + 64 MiB host blocks up front, and with ReBAR both
+    // land in VRAM; an egui UI needs a few MiB of textures.
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut native_options.wgpu_options.wgpu_setup {
+        let base = std::sync::Arc::clone(&setup.device_descriptor);
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| eframe::wgpu::DeviceDescriptor {
+            memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
+            ..base(adapter)
+        });
+    }
+
     native_options
 }
 

@@ -567,7 +567,11 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
     };
     let mut dps = fit("Alpha Rifter with a long doctrine name", 3);
     dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Brawl refit with a long name".into(), ..Default::default() });
-    let docs: Vec<(String, String)> = [("f-dps", dps), ("f-logi", fit("Logi Rifter", 0)), ("f-boost", fit("Booster Rifter", 1)), ("e-dps", fit("Hostile kiter", 1))].into_iter().map(|(id, f)| (id.to_owned(), spai_fit::doc::to_json(&f))).collect();
+    // The logistics carry a repairer and a web, so the fleet has support modules and ewar to show.
+    let mut logi = fit("Logi Rifter", 0);
+    logi.modules.push(spai_fit::fit::Module::new(ids::REMOTE_REP, spai_fit::fit::Slot::High, 0).with_state(spai_fit::fit::State::Active));
+    logi.modules.push(spai_fit::fit::Module::new(ids::WEB, spai_fit::fit::Slot::Mid, 0).with_state(spai_fit::fit::State::Active));
+    let docs: Vec<(String, String)> = [("f-dps", dps), ("f-logi", logi), ("f-boost", fit("Booster Rifter", 1)), ("e-dps", fit("Hostile kiter", 1))].into_iter().map(|(id, f)| (id.to_owned(), spai_fit::doc::to_json(&f))).collect();
     sim.handle(spai_fit_ui::HostEvent::Fits(docs.iter().map(|(id, _)| spai_fit_ui::FitSummary { id: id.clone(), name: id.clone(), ship: ids::SHIP, updated_at: 0 }).collect()));
     sim.handle(spai_fit_ui::HostEvent::FitDocs(docs));
     sim.mode = spai_fit_ui::Mode::Fleets;
@@ -576,9 +580,9 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
         name: "Alpha fleet".into(),
         size: 120,
         slots: vec![
-            FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None, variation: Some(1) },
-            FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None, variation: None },
-            FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None, variation: None },
+            FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None, variation: Some(1), charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() },
+            FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() },
+            FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() },
         ],
         boosters: vec![(BurstKind::Shield, "f-boost".into())],
         boost_shortcuts: vec![spai_fit::fit::BoostShortcut { kind: BurstKind::Armor, mindlink: true, ..Default::default() }],
@@ -586,7 +590,7 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
         range: 6_000.0,
         ..Fleet::default()
     };
-    let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, formation: spai_fit::fleet::Formation::Flock { sigma_m: 4000.0 }, motion: (0.8, 60.0), range: 10_000.0, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, formation: spai_fit::fleet::Formation::Flock { sigma_m: 4000.0 }, motion: (0.8, 60.0), range: 10_000.0, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
     sim.handle(spai_fit_ui::HostEvent::Fleets(vec![spai_fit_ui::FleetSummary { id: "fl-1".into(), name: mine.name.clone(), updated_at: 0 }, spai_fit_ui::FleetSummary { id: "fl-2".into(), name: enemy.name.clone(), updated_at: 0 }]));
     sim.handle(spai_fit_ui::HostEvent::FleetDoc { id: "fl-2".into(), doc: serde_json::to_string(&enemy).unwrap() });
     sim.handle(spai_fit_ui::HostEvent::Fleet { id: "fl-1".into(), doc: serde_json::to_string(&mine).unwrap() });
@@ -2664,10 +2668,11 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_scene("imperium_fit_narrow_stats", [720.0, 800.0], false, spai_fit_ui::Pane::Stats));
     v.push(imperium_scene("imperium_fit_extreme", [1280.0, 900.0], true, spai_fit_ui::Pane::Fit));
     v.push(imperium_scene("imperium_fit_extreme_narrow", [640.0, 900.0], true, spai_fit_ui::Pane::Fit));
-    v.push(imperium_scene("imperium_graphs_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs));
+    v.push(imperium_scene_with("imperium_graphs_wide", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| sim.dock_graphs(true)));
     v.push(imperium_scene("imperium_graphs_narrow", [720.0, 800.0], true, spai_fit_ui::Pane::Graphs));
     v.push(imperium_scene_with("imperium_graphs_cap", [1280.0, 800.0], true, spai_fit_ui::Pane::Graphs, |sim| {
         sim.graph = spai_fit::graphs::GraphKind::CapacitorOverTime;
+        sim.dock_graphs(true);
     }));
     v.push(imperium_scene_with("imperium_variations", [1280.0, 800.0], false, spai_fit_ui::Pane::Stats, |sim| {
         use spai_fit::fit::Slot;
@@ -2725,6 +2730,16 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.open_details(spai_fit_ui::details::DetailsTarget::Module(Slot::High, 0));
         sim.details[0].all = true;
     }));
+    v.push(imperium_dialog_scene("imperium_fleet_graphs_window", [1000.0, 660.0], |sim| {
+        fleet_fixture(sim);
+        sim.mode = spai_fit_ui::Mode::Fleets;
+        sim.fleet_graph_open = true;
+        sim.fleet_graph_place = spai_fit_ui::GraphPlace::Window;
+    }));
+    v.push(imperium_dialog_scene("imperium_details_charge", [560.0, 520.0], |sim| {
+        sim.open_details(spai_fit_ui::details::DetailsTarget::Type(spai_fit::test_support::ids::MISSILE));
+        sim.details[0].all = true;
+    }));
     v.push(imperium_scene_with("imperium_fit_selected", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
         use spai_fit::fit::Slot;
         sim.selection = vec![(Slot::High, 0), (Slot::High, 1)];
@@ -2747,7 +2762,8 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.browser.query = "II".into();
     }));
     v.push(imperium_scene_with("imperium_graphs_center", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
-        sim.center = spai_fit_ui::Center::Graphs;
+        sim.dock_graphs(true);
+        sim.graph_collapsed = true;
     }));
     v.push(imperium_scene_with("imperium_fit_all_columns", [1920.0, 1000.0], false, spai_fit_ui::Pane::Fit, |sim| {
         use spai_fit::test_support::ids;
@@ -2788,7 +2804,7 @@ pub(crate) fn all() -> Vec<Scene> {
         v.push(imperium_scene_with(name, size, false, spai_fit_ui::Pane::Graphs, |sim| {
             use spai_fit::fit::{Module, Slot, State};
             use spai_fit::test_support::ids;
-            sim.center = spai_fit_ui::Center::Graphs;
+            sim.dock_graphs(true);
             let first = sim.sessions()[0].id.clone();
             sim.new_fit(ids::SHIP, 5);
             sim.edit(spai_fit::history::EditKind::AddModule, 6, |f| {
@@ -2802,15 +2818,6 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.graph_targets = vec![first, second];
         }));
     }
-    v.push(imperium_dialog_scene("imperium_fleet_volley_window", [1000.0, 620.0], |sim| {
-        fleet_fixture(sim);
-        sim.fleet_volley_window = Some((0, 0));
-    }));
-    v.push(imperium_dialog_scene("imperium_fleet_volley_what_if", [1000.0, 760.0], |sim| {
-        fleet_fixture(sim);
-        sim.fleet_volley_window = Some((0, 0));
-        sim.fleet_what_if = spai_fit_ui::fleet_panel::WhatIf { distance: Some(12_000.0), volley_efficiency: Some(1.0), shooter_off: vec![spai_fit::fleet::BurstKind::Shield], ..Default::default() };
-    }));
     v.push(imperium_dialog_scene("imperium_graph_window", [1160.0, 700.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;
@@ -2869,13 +2876,56 @@ pub(crate) fn all() -> Vec<Scene> {
         ("imperium_fleet_graphs_angular_narrow", [720.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::Angular)),
         ("imperium_fleet_scene", [1440.0, 900.0], spai_fit_ui::Pane::Scene, None),
         ("imperium_fleet_scene_narrow", [720.0, 900.0], spai_fit_ui::Pane::Scene, None),
+        ("imperium_fleet_ships_ranges", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_target", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_narrow", [720.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_logi", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_split", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_boosts", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_ships_modules", [1440.0, 900.0], spai_fit_ui::Pane::Ships, None),
+        ("imperium_fleet_graphs_left", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageByRange)),
     ] {
         v.push(imperium_scene_with(name, size, false, narrow_pane, move |sim| {
             if let Some(g) = graph {
                 sim.fleet_graph = g;
-                sim.center = spai_fit_ui::Center::Graphs;
+                sim.fleet_graph_open = true;
+                sim.fleet_graph_place = if name.ends_with("_left") {
+                    spai_fit_ui::GraphPlace::Left
+                } else {
+                    spai_fit_ui::GraphPlace::Bottom
+                };
             }
             fleet_fixture(sim);
+            if name.starts_with("imperium_fleet_ships") {
+                sim.center = spai_fit_ui::Center::Ships;
+                use spai_fit::test_support::ids;
+                if name.ends_with("_split") {
+                    let slot = &mut sim.fleet.as_mut().unwrap().fleet.slots[0];
+                    slot.splits = vec![spai_fit::fleet::WeaponSplit { weapon: ids::GUN, first: 1, charges: [ids::AMMO, ids::AMMO_LONG], apart: true }];
+                }
+                if name.ends_with("_logi") {
+                    sim.fleet_ships.ship = Some(1);
+                }
+                if name.ends_with("_modules") {
+                    // The logi, its web switched off here.
+                    sim.fleet_ships.ship = Some(1);
+                    sim.fleet_ships.modules_open = Some((false, 1));
+                    sim.fleet_ships.states.insert((false, 1), vec![(spai_fit::fit::Slot::Mid, 0, spai_fit::fit::State::Online)]);
+                }
+                if name.ends_with("_boosts") {
+                    // Over the empty lists: the layout check cannot tell text under a window from in it.
+                    sim.fleet_ships.boosts_at = Some(egui::pos2(70.0, 560.0));
+                }
+                if name.ends_with("_ranges") {
+                    sim.fleet_ships.all_charges = true;
+                    sim.fleet_ships.ship = Some(2);
+                }
+                if name.ends_with("_target") {
+                    let slot = &mut sim.fleet.as_mut().unwrap().fleet.slots[0];
+                    slot.charges = vec![(ids::GUN, ids::AMMO_LONG)];
+                    slot.mode = Some(ids::PROPULSION_MODE);
+                }
+            }
             if name.starts_with("imperium_fleet_scene") {
                 use spai_fit::fleet::scene::{Bubble, Scene, SceneObject};
                 sim.center = spai_fit_ui::Center::Scene;
@@ -2928,9 +2978,23 @@ pub(crate) fn all() -> Vec<Scene> {
             p.expanded.extend(sim.dogma.as_ref().map(|d| d.market_groups.iter().map(|g| g.id).collect::<Vec<_>>()).unwrap_or_default());
         }
     }));
-    v.push(imperium_dialog_scene("imperium_picker", [460.0, 520.0], |sim| {
+    v.push(imperium_dialog_scene("imperium_picker", [640.0, 520.0], |sim| {
         spai_fit_ui::picker::open(sim, spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::High, 2));
         sim.picker.as_mut().unwrap().query = "auto".into();
+    }));
+    // Swapping out a fitted module: the columns read as what the swap changes.
+    v.push(imperium_dialog_scene("imperium_picker_swap", [640.0, 520.0], |sim| {
+        let mid = spai_fit_ui::PickTarget::Module(spai_fit::fit::Slot::Mid, 0);
+        spai_fit_ui::picker::apply(sim, mid, spai_fit::test_support::ids::WEB, 1);
+        spai_fit_ui::picker::open(sim, mid);
+        if let Some(p) = sim.picker.as_mut() {
+            p.expanded.extend(sim.dogma.as_ref().map(|d| d.market_groups.iter().map(|g| g.id).collect::<Vec<_>>()).unwrap_or_default());
+        }
+    }));
+    // Unlike items side by side: every column is some row's, a dash where a row has none.
+    v.push(imperium_dialog_scene("imperium_compare", [960.0, 560.0], |sim| {
+        use spai_fit::test_support::ids;
+        sim.compare = Some(spai_fit_ui::compare::CompareWindow { items: vec![ids::GUN, ids::WEB, ids::DC, ids::LAUNCHER, ids::CAP_BOOSTER], all: true, ..Default::default() });
     }));
     v.push(imperium_dialog_scene("imperium_import", [520.0, 440.0], |sim| {
         sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("Unknown: Nope Module".into()) });
@@ -9966,4 +10030,145 @@ fn uitest_sim_state_changes_reach_the_selection() {
     h.event(egui::Event::PointerGone);
     h.run_steps(3);
     assert_eq!(lightning(&h), before - 2, "both selected guns went online together");
+}
+
+/// The damage profile menu opens from the "Incoming" word and its caret, with either button, and
+/// not from the percentages beside it.
+#[test]
+fn uitest_sim_incoming_opens_the_profile_menu() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_incoming_menu", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let word = h.query_all_by_label_contains("Incoming").map(|n| n.rect()).next().expect("the Incoming row");
+    // Press and release a frame apart, as a hand does.
+    let click = |h: &mut egui_kittest::Harness<'_>, pos: egui::Pos2, button: egui::PointerButton| {
+        h.event(egui::Event::PointerMoved(pos));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::default() });
+            h.run_steps(1);
+        }
+    };
+    let open = |h: &egui_kittest::Harness<'_>| h.query_all_by_label("Uniform").next().is_some();
+    for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+        click(&mut h, word.center(), button);
+        h.run_steps(3);
+        assert!(open(&h), "{button:?} on the word opens the menu");
+        click(&mut h, egui::pos2(5.0, 5.0), egui::PointerButton::Primary);
+        h.run_steps(3);
+        assert!(!open(&h), "a click elsewhere closes it");
+    }
+    click(&mut h, egui::pos2(word.max.x + 60.0, word.center().y), egui::PointerButton::Primary);
+    h.run_steps(3);
+    assert!(!open(&h), "the percentages are not part of the button");
+}
+
+#[test]
+fn uitest_sim_mode_buttons_switch_the_hulls_mode() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = imperium_scene("sim_mode", [1440.0, 2400.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let button = |h: &egui_kittest::Harness<'_>, label: &str| h.query_all_by_label(label).find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).map(|n| n.rect());
+    let defense = button(&h, "Defense").expect("the mode row, above the high slots");
+    let prop = button(&h, "Propulsion").expect("each of the hull's modes");
+    // The test hull's propulsion mode doubles its speed.
+    let speed = |h: &egui_kittest::Harness<'_>| h.root().children_recursive().filter_map(|n| n.accesskit_node().value().or_else(|| n.accesskit_node().label())).find(|l| l.ends_with(" m/s") && !l.contains(',')).expect("the max velocity line");
+    let before = speed(&h);
+    assert!((defense.center().y - prop.center().y).abs() < 1.0, "side by side");
+    let highs = h.query_all_by_label_contains("High slots").next().expect("the high rack").rect();
+    assert!(defense.max.y < highs.min.y, "above the high slots");
+    h.event(egui::Event::PointerMoved(prop.center()));
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: prop.center(), button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() });
+        h.run_steps(1);
+    }
+    h.run_steps(3);
+    let after = speed(&h);
+    let num = |s: &str| s.trim_end_matches(" m/s").replace([',', ' ', '\u{a0}', '\u{202f}'], "").parse::<f64>().unwrap();
+    assert!((num(&after) - 2.0 * num(&before)).abs() < 2.0, "{before} -> {after}: the propulsion mode doubles the test hull's speed");
+}
+
+/// A graph window sized to fill itself must not grow from frame to frame: filling what is left
+/// after the content once added the item spacing every frame.
+#[test]
+fn uitest_the_fleet_graph_window_keeps_its_size() {
+    for mut scene in all().into_iter().filter(|s| s.name == "imperium_fleet_graphs_window") {
+        scene.density = 1.0;
+        let mut harness = harness::build(&mut scene, false);
+        let mut sizes = Vec::new();
+        for _ in 0..20 {
+            harness.step();
+            sizes.push(harness.ctx.memory(|m| m.area_rect(egui::Id::new("sim_fleet_graph_window"))).expect("the window").size());
+        }
+        assert!(sizes[3..].iter().all(|x| (*x - sizes[3]).length() < 0.5), "{sizes:?}");
+    }
+}
+
+#[test]
+fn uitest_a_module_past_the_slots_stays_listed_after_one_before_it_goes() {
+    use egui_kittest::kittest::Queryable as _;
+    use spai_fit::fit::{Module, Slot, State};
+    use spai_fit::test_support::ids;
+    // Three mid slots, a microwarpdrive in the first; webs at 1, 2 and 4, the one at 3 removed.
+    let mut scene = imperium_scene_with("sim_overfull", [1440.0, 2400.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        let mut f = sim.session().expect("the scene's fit").fit.clone();
+        for i in [1u8, 2, 4] {
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, i).with_state(State::Active));
+        }
+        sim.open_fit(f, 0);
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Stasis Webifier II").count(), 3, "the web past the slots is listed, to be removed");
+    assert_eq!(h.query_all_by_label("Empty mid slot").count(), 0, "no empty row past the hull's slots");
+}
+
+#[test]
+fn uitest_the_base_tab_can_be_renamed() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = imperium_scene("sim_rename_base", [1440.0, 1200.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let click = |h: &mut egui_kittest::Harness<'_>, at: egui::Pos2, button: egui::PointerButton| {
+        h.event(egui::Event::PointerMoved(at));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::default() });
+            h.run_steps(1);
+        }
+    };
+    let button = |h: &egui_kittest::Harness<'_>, label: &str| h.query_all_by_label(label).find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).map(|n| n.rect().center());
+    let base = button(&h, "Base").expect("the base tab");
+    click(&mut h, base, egui::PointerButton::Secondary);
+    h.run_steps(3);
+    let rename = button(&h, "Rename").expect("its menu");
+    click(&mut h, rename, egui::PointerButton::Primary);
+    h.run_steps(3);
+    let field = h.query_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.accesskit_node().placeholder() == Some("Base")).expect("the base's name field").rect().center();
+    click(&mut h, field, egui::PointerButton::Primary);
+    h.event(egui::Event::Text("Shield".into()));
+    h.run_steps(1);
+    let done = button(&h, egui_phosphor::regular::CHECK).expect("the done button");
+    click(&mut h, done, egui::PointerButton::Primary);
+    h.run_steps(1);
+    assert!(button(&h, "Shield").is_some(), "the tab carries its new name");
+    assert!(button(&h, "Base").is_none());
+}
+
+#[test]
+fn uitest_the_module_picker_keeps_its_fitting_filter() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    // Changing the high slot's gun: the filter stays offered frame after frame, not only on the
+    // frame the list is redone.
+    let mut scene = imperium_scene_with("sim_picker_filter", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        spai_fit_ui::picker::open(sim, spai_fit_ui::picker::PickTarget::Module(spai_fit::fit::Slot::High, 0));
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(6);
+    for label in ["Fits now", "Fits empty"] {
+        assert!(h.query_all_by_label(label).any(|n| n.accesskit_node().role() == egui::accesskit::Role::Button), "{label}");
+    }
 }

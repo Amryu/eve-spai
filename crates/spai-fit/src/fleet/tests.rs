@@ -7,7 +7,7 @@ fn fleet(size: u32, slots: Vec<FleetSlot>) -> Fleet {
 }
 
 fn slot(fit: &str, rule: CountRule) -> FleetSlot {
-    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None }
+    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }
 }
 
 #[test]
@@ -511,4 +511,197 @@ fn splitting_fire_kills_weak_targets_faster_when_one_volley_overkills() {
     // A split too fine for the volley to kill still runs.
     let fine = race_between(&big(10), &few, &lib, 500.0);
     assert!(fine.seconds > 0.0);
+}
+
+#[test]
+fn arcs_and_blasts_reach_the_ships_near_the_primary() {
+    use super::geometry::{arc_reach, splash_reach};
+    let tight = Formation::Ball { radius_m: 0.0 };
+    assert_eq!(arc_reach(tight, 10, 10_000.0, 3), 3.0, "a packed ball: every jump finds a ship");
+    assert_eq!(arc_reach(tight, 2, 10_000.0, 3), 1.0, "only one other ship to strike");
+    assert_eq!(arc_reach(Formation::Ball { radius_m: 50_000.0 }, 6, 1_000.0, 3), 0.0, "spread too wide to jump");
+    assert_eq!(splash_reach(tight, 5, 100.0), 4.0, "every other ship within the blast");
+    assert_eq!(splash_reach(tight, 1, 100.0), 0.0);
+}
+
+#[test]
+fn vortons_land_on_more_than_the_primary_and_breacher_pods_kill_through_resists() {
+    let mut vorton = Fit::new(ids::SHIP, "vorton");
+    vorton.modules.push(Module::new(ids::VORTON, Slot::High, 0).with_charge(ids::VORTON_CHARGE).with_state(State::Active));
+    let mut pod = Fit::new(ids::SHIP, "pod");
+    pod.modules.push(Module::new(ids::BREACHER_LAUNCHER, Slot::High, 0).with_charge(ids::BREACHER_POD).with_state(State::Active));
+    let mut lib = library();
+    lib.push(vorton);
+    lib.push(pod);
+    lib.push(Fit::new(ids::SHIP, "hulk"));
+    let tight = Formation::Ball { radius_m: 0.0 };
+    let shooters = |fit: &str| Fleet { size: 5, formation: tight, slots: vec![slot(fit, CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let targets = Fleet { size: 10, formation: tight, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let peak = |r: &race::Race| r.timeline.iter().map(|x| x.3).fold(0.0, f64::max);
+    let packed = peak(&race_between(&shooters("vorton"), &targets, &lib, 5000.0));
+    let alone = peak(&race_between(&shooters("vorton"), &Fleet { size: 1, ..targets.clone() }, &lib, 5000.0));
+    assert!(alone > 0.0 && (packed / alone - 4.0).abs() < 0.01, "packed, the arc strikes three more: {packed} against {alone}");
+    let r = race_between(&shooters("pod"), &Fleet { size: 2, slots: vec![slot("hulk", CountRule::Fill { min: 0, max: 100 })], ..targets.clone() }, &lib, 3000.0);
+    assert!(r.events.iter().any(|(_, e)| matches!(e, race::Event::Kill { side: 1, .. })), "pods alone kill: {:?}", r.events.iter().take(3).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_slot_flies_its_own_charges_and_mode_and_its_fit_keeps_its_own() {
+    let d = dataset();
+    let lib = library();
+    let mut f = fleet(10, vec![slot("kiter", CountRule::Fixed(10))]);
+    let plain = stats(&d, &f, &lookup(&lib), &|_| SkillSet::all_v());
+    f.slots[0].charges = vec![(ids::GUN, ids::AMMO_LONG)];
+    f.slots[0].mode = Some(ids::PROPULSION_MODE);
+    let swapped = stats(&d, &f, &lookup(&lib), &|_| SkillSet::all_v());
+    let gun = |s: &FleetStats| s.slots[0].computed.weapons.iter().find(|w| w.type_id == ids::GUN).unwrap().clone();
+    assert_eq!(gun(&swapped).charge, Some(ids::AMMO_LONG));
+    assert!(gun(&swapped).optimal > gun(&plain).optimal, "the long-range charge reaches farther");
+    assert!(swapped.slots[0].computed.mobility.max_velocity > plain.slots[0].computed.mobility.max_velocity, "the propulsion mode speeds it up");
+    assert_eq!(lookup(&lib)("kiter").unwrap().modules[0].charge, Some(ids::AMMO), "the fit is untouched");
+}
+
+#[test]
+fn a_spread_fleet_switches_to_the_long_charge_once_it_lands_more_over_the_pairs() {
+    use crate::fit::CargoItem;
+    let d = dataset();
+    let mut f = gun_fit("two charges", 2);
+    f.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: 100, hold: None });
+    let lib = vec![f, gun_fit("kiter", 1)];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let spread = Formation::Flock { sigma_m: 6000.0 };
+    let a = Fleet { size: 30, formation: spread, slots: vec![slot("two charges", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 30, formation: spread, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let ammo: Vec<Vec<ammo::AmmoChoice>> = sa.slots.iter().map(|x| ammo::choices(&d, &x.fit, &x.skills, &sa.env)).collect();
+    let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &ammo }, sweep::Side { fleet: &b, stats: &sb, ammo: &[] });
+    for k in 0..30 {
+        let at = 500.0 + f64::from(k) * 1000.0;
+        let used: f64 = sweep::weapons_on(&side_a, &side_b, 0, &sb.slots[0], at).iter().map(|(w, f)| w.dps * f).sum();
+        let best = sweep::charge_options(&side_a, &side_b, &sb.slots[0], at).iter().filter(|o| o.carried).map(|o| o.group.dps * o.mean).fold(0.0, f64::max);
+        assert!(used >= best - 1e-6, "at {at} m the fleet fires a charge that lands {used}, another would land {best}");
+    }
+}
+
+#[test]
+fn a_split_volley_shares_the_webs_and_needs_more_ships_per_group() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 60, main: Some(0), range: 1500.0, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("webber", CountRule::Fixed(3))], ..Fleet::default() };
+    let b = Fleet { size: 20, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let x = against(&d, &a, &sa, &b, &sb);
+    assert_eq!(x.split_mass.first().copied().flatten(), x.critical_mass, "one group is the whole fleet on one target");
+    let need: Vec<u32> = x.split_mass.iter().map(|n| n.unwrap()).collect();
+    assert!(need.windows(2).all(|w| w[1] >= w[0]), "fewer webs on each target, never fewer ships to kill it: {need:?}");
+    assert!(need.last() > need.first(), "three webs over six targets do less than on one: {need:?}");
+    let ships = sa.slots[0].count;
+    if let Some((g, n)) = split_groups(&x.split_mass, ships) {
+        assert!(ships / g >= n);
+    }
+}
+
+#[test]
+fn a_focused_kind_lands_on_the_primaries_and_a_spread_one_on_the_whole_fleet() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 5, slots: vec![slot("webber", CountRule::Fixed(5))], ..Fleet::default() };
+    let sa = stats(&d, &a, &lookup(&lib), &skills);
+    let ships: Vec<(u32, &crate::stats::Computed)> = sa.slots.iter().map(|s| (s.count, &s.computed)).collect();
+    let mut plan = ewar::EwarPlan::default();
+    assert!(!plan.spreads(crate::stats::RemoteKind::Web), "webs are focused by default");
+    let one = ewar::planned(&ships, 1000.0, &plan, 1, 40, None).speed;
+    let two = ewar::planned(&ships, 1000.0, &plan, 2, 40, None).speed;
+    plan.set(crate::stats::RemoteKind::Web, true);
+    let spread = ewar::planned(&ships, 1000.0, &plan, 1, 40, None).speed;
+    assert!(one < two && two < spread && spread < 1.0, "all five on one, shared by two primaries, spread over forty: {one} {two} {spread}");
+}
+
+#[test]
+fn spread_ewar_on_part_of_the_fleet_hits_those_harder_and_averages_the_same_or_less() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 5, slots: vec![slot("webber", CountRule::Fixed(5))], ..Fleet::default() };
+    let sa = stats(&d, &a, &lookup(&lib), &skills);
+    let ships: Vec<(u32, &crate::stats::Computed)> = sa.slots.iter().map(|s| (s.count, &s.computed)).collect();
+    let mut plan = ewar::EwarPlan::default();
+    plan.set(crate::stats::RemoteKind::Web, true);
+    let even = ewar::planned(&ships, 1000.0, &plan, 1, 40, None).speed;
+    plan.coverage = 0.25;
+    let hit = ewar::planned(&ships, 1000.0, &plan, 1, 40, None).speed;
+    let average = ewar::planned_average(&ships, 1000.0, &plan, 1, 40, None).speed;
+    assert!(hit < even, "a ship among the quarter they work on is slowed more: {hit} vs {even}");
+    assert!(average > hit && average < 1.0, "the fleet on average less: {average}");
+}
+
+#[test]
+fn a_split_stack_fires_two_charges_and_on_two_targets_needs_more_ships() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let split = WeaponSplit { weapon: ids::GUN, first: 1, charges: [ids::AMMO, ids::AMMO_LONG], apart: false };
+    let mut s = slot("brawler", CountRule::Fill { min: 0, max: 100 });
+    s.splits = vec![split];
+    let flown = s.adjusted(lookup(&lib)("brawler").unwrap());
+    let charges: Vec<Option<TypeId>> = flown.modules.iter().filter(|m| m.type_id == ids::GUN).map(|m| m.charge).collect();
+    assert_eq!(charges, vec![Some(ids::AMMO), Some(ids::AMMO_LONG), Some(ids::AMMO_LONG)], "one, then the other two");
+    let b = Fleet { size: 20, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let sb = stats(&d, &b, &lookup(&lib), &skills);
+    let mass = |apart: bool| {
+        let mut slot = s.clone();
+        slot.splits[0].apart = apart;
+        let a = Fleet { size: 60, main: Some(0), range: 1000.0, slots: vec![slot], ..Fleet::default() };
+        let sa = stats(&d, &a, &lookup(&lib), &skills);
+        against(&d, &a, &sa, &b, &sb).critical_mass.unwrap()
+    };
+    assert!(mass(true) > mass(false), "each part on a target of its own needs more ships: {} vs {}", mass(true), mass(false));
+}
+
+#[test]
+fn a_stack_split_onto_two_targets_kills_two_ships_at_once_in_the_race() {
+    let mut lib = library();
+    lib.push(Fit::new(ids::SHIP, "hulk"));
+    let hulks = Fleet { size: 40, slots: vec![slot("hulk", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let shooters = |apart: bool| {
+        let mut s = slot("brawler", CountRule::Fill { min: 0, max: 100 });
+        s.splits = vec![WeaponSplit { weapon: ids::GUN, first: 1, charges: [ids::AMMO, ids::AMMO], apart }];
+        Fleet { size: 30, slots: vec![s], ..Fleet::default() }
+    };
+    // Thirty ships of three guns overkill an unarmed hull: on two targets they clear the field
+    // sooner than on one.
+    let together = race_between(&shooters(false), &hulks, &lib, 1000.0);
+    let apart = race_between(&shooters(true), &hulks, &lib, 1000.0);
+    assert_eq!(apart.winner, Some(0));
+    assert!(apart.seconds < together.seconds, "{} vs {}", apart.seconds, together.seconds);
+}
+
+#[test]
+fn a_slot_can_fly_a_module_switched_off_and_its_fit_keeps_it_on() {
+    let d = dataset();
+    let lib = library();
+    let mut f = fleet(10, vec![slot("webber", CountRule::Fixed(10))]);
+    let webs = |s: &FleetStats| s.slots[0].computed.remote.modules.iter().filter(|m| m.kind == crate::stats::RemoteKind::Web).count();
+    assert_eq!(webs(&stats(&d, &f, &lookup(&lib), &|_| SkillSet::all_v())), 1);
+    f.slots[0].states = vec![(Slot::Mid, 0, State::Online)];
+    assert_eq!(webs(&stats(&d, &f, &lookup(&lib), &|_| SkillSet::all_v())), 0, "switched off here, it webs nothing");
+    assert_eq!(lookup(&lib)("webber").unwrap().module(Slot::Mid, 0).unwrap().state, State::Active, "the fit is untouched");
+}
+
+#[test]
+fn an_ecm_burst_bonus_does_not_make_a_hull_a_booster() {
+    use crate::dogma::{Bonus, TypeTraits};
+    let line = |text: &str| Bonus { amount: Some(10.0), unit: Some(105), text: text.into() };
+    let with = |text: &str| {
+        let mut d = dataset();
+        d.traits = vec![TypeTraits { type_id: ids::SHIP, role: vec![line(text)], misc: vec![], per_skill: vec![] }];
+        d.finish()
+    };
+    let d = with("ECM Burst Jammer optimal range, falloff, and strength increased");
+    assert!(!hull_boosts(&d, ids::SHIP, BurstKind::Shield), "a jammer is no command burst");
+    let d = with("bonus to Shield Command and Mining Foreman Burst effect strength and duration");
+    assert!(hull_boosts(&d, ids::SHIP, BurstKind::Shield));
+    assert!(!hull_boosts(&d, ids::SHIP, BurstKind::Armor), "named for shield only");
 }

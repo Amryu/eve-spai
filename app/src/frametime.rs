@@ -8,7 +8,13 @@ const SLOW: Duration = Duration::from_millis(20);
 
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("EVE_SPAI_FRAME_LOG").is_some())
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EVE_SPAI_FRAME_LOG").is_some();
+        if on {
+            spai_ui::timing::enable();
+        }
+        on
+    })
 }
 
 pub struct FrameTimer {
@@ -78,5 +84,7 @@ impl Drop for Span {
 }
 
 fn take_spans() -> Vec<(&'static str, Duration)> {
-    SPANS.with(|s| std::mem::take(&mut *s.borrow_mut()))
+    let mut v = SPANS.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    v.extend(spai_ui::timing::take());
+    v
 }

@@ -208,9 +208,8 @@ pub fn diff(base: &Fit, edited: &Fit) -> Vec<RefitOp> {
                 if b.charge.is_some() {
                     ops.push(RefitOp::SetCharge { slot, index, charge: b.charge });
                 }
-                if b.state != crate::fit::State::Online {
-                    ops.push(RefitOp::SetState { slot, index, state: b.state });
-                }
+                // Its state too: put back, it would come up in its default one.
+                ops.push(RefitOp::SetState { slot, index, state: b.state });
             }
             (Some(_), None) => ops.push(RefitOp::Replace { slot, index, with: None }),
             (None, None) => {}
@@ -229,6 +228,33 @@ pub fn diff(base: &Fit, edited: &Fit) -> Vec<RefitOp> {
         ops.push(RefitOp::SetCargo(edited.cargo.clone()));
     }
     ops
+}
+
+/// The fit after `edited`, a change made to the fit as shown (`shown`, its active variations
+/// applied), lands in variation `target`: what a variation holds (modules, implants, boosters,
+/// drones, cargo) becomes the target's difference from the fit without it, the rest goes to the
+/// base. A target with rules keeps them and takes the change as positions after them.
+pub fn edit_through(dogma: &Dogma, base: &Fit, target: u32, shown: &Fit, edited: Fit) -> Fit {
+    let Some(at) = base.variations.iter().position(|v| v.id == target) else { return edited };
+    let old = &base.variations[at].ops;
+    let ops = if old.iter().any(|o| matches!(o, RefitOp::ReplaceWhere { .. } | RefitOp::SetChargeWhere { .. })) {
+        old.iter().cloned().chain(diff(shown, &edited)).collect()
+    } else {
+        // The target is the last switched on, so its changes come after every other's.
+        let mut without = base.clone();
+        without.active_variations.retain(|v| *v != target);
+        diff(&resolve(dogma, &without), &edited)
+    };
+    let mut out = edited;
+    out.modules = base.modules.clone();
+    out.implants = base.implants.clone();
+    out.boosters = base.boosters.clone();
+    out.drones = base.drones.clone();
+    out.cargo = base.cargo.clone();
+    out.variations = base.variations.clone();
+    out.active_variations = base.active_variations.clone();
+    out.variations[at].ops = ops;
+    out
 }
 
 /// The part of a refit key before the colon: `prop` for `prop:ab`, which the `prop:mwd` variation

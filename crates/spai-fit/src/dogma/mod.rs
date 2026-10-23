@@ -395,6 +395,13 @@ impl Dogma {
         (groups, t.attr(attr::CHARGE_SIZE))
     }
 
+    /// Whether the module can load the charge: of a group it takes, its size, small enough.
+    pub fn takes_charge(&self, module: TypeId, charge: TypeId) -> bool {
+        let (groups, size) = self.charge_filter(module);
+        let capacity = self.type_(module).and_then(|t| t.attr(attr::CAPACITY)).filter(|c| *c > 0.0);
+        self.type_(charge).is_some_and(|t| groups.contains(&t.group) && (size.is_none() || t.attr(attr::CHARGE_SIZE) == size) && capacity.is_none_or(|cap| t.attr(attr::VOLUME).is_none_or(|v| v <= cap)))
+    }
+
     /// The charges a module can load, by name.
     pub fn compatible_charges(&self, module: TypeId) -> Vec<TypeId> {
         let (groups, size) = self.charge_filter(module);
@@ -544,6 +551,29 @@ impl Dogma {
 
     pub fn traits_of(&self, type_id: TypeId) -> Option<&TypeTraits> {
         self.index.traits_by_type.get(&type_id).map(|&i| &self.traits[i as usize])
+    }
+
+    /// A strategic cruiser's subsystem groups, one a slot, in the game's order: core, defensive,
+    /// offensive, propulsion. Its `maxSubSystems` still says five, from before one was retired.
+    pub fn subsystem_groups(&self, ship: TypeId) -> Vec<GroupId> {
+        const ORDER: [GroupId; 4] = [958, 954, 956, 957];
+        let Some(fits) = self.attr_named("fitsToShipType").map(|a| a.id) else { return Vec::new() };
+        ORDER.into_iter().filter(|g| self.types_in_group(*g).iter().filter_map(|t| self.type_(*t)).any(|t| t.published && t.attr(fits).is_some_and(|v| v as TypeId == ship))).collect()
+    }
+
+    /// The modes the hull switches between, by name; the first (defense, or primary) is the one it
+    /// starts in.
+    pub fn modes_of(&self, ship: TypeId) -> Vec<TypeId> {
+        let Some(prefix) = self.type_(ship).map(|t| format!("{} ", t.name.to_lowercase())) else { return Vec::new() };
+        let mut modes: Vec<TypeId> = self.types_in_group(crate::ids::group::SHIP_MODIFIERS).iter().copied().filter(|m| self.type_(*m).is_some_and(|t| t.name.to_lowercase().starts_with(&prefix))).collect();
+        modes.sort_by_key(|m| self.type_(*m).map(|t| t.name.clone()));
+        modes
+    }
+
+    /// The mode the hull flies in: the one chosen when it has it, else its first.
+    pub fn mode_for(&self, ship: TypeId, chosen: Option<TypeId>) -> Option<TypeId> {
+        let modes = self.modes_of(ship);
+        chosen.filter(|c| modes.contains(c)).or(modes.first().copied())
     }
 
     pub fn types_in_group(&self, group: GroupId) -> &[TypeId] {

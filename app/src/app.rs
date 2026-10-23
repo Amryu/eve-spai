@@ -605,7 +605,10 @@ pub struct SpaiApp {
     mention_input: String,
     pub(crate) session_start: i64,
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    eve_focus_checked: Option<std::time::Instant>,
+    /// Set each frame something wants to know whether the game has focus; the watcher thread
+    /// checks only then.
+    eve_focus_wanted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    eve_focus_watching: bool,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     /// The language, ship-name toggle and static-data state last applied.
     language_applied: Option<(String, bool, bool)>,
@@ -698,6 +701,11 @@ pub struct SpaiApp {
     pub(crate) wh_cache: Vec<crate::wormholes::Wormhole>,
     pub(crate) dash: dashboard::DashState,
     wh_reloaded: Option<std::time::Instant>,
+    /// The thread that reads the holes from the database, and whether it is reading.
+    wh_loader: Option<(std::sync::mpsc::Sender<(i64, u64)>, std::sync::mpsc::Receiver<crate::app::wormholes_ui::WhLoaded>)>,
+    wh_loading: bool,
+    /// Bumped by a reload done on the spot: a read asked for before it is older, and dropped.
+    wh_gen: u64,
     wh_overlay: WhOverlay,
     /// The add/edit form, while it is open.
     wh_form: Option<crate::app::wormholes_ui::WhForm>,
@@ -1602,7 +1610,8 @@ impl SpaiApp {
             mention_input: String::new(),
             session_start: crate::clock::utc().timestamp(),
             eve_focused,
-            eve_focus_checked: None,
+            eve_focus_wanted: Default::default(),
+            eve_focus_watching: false,
             ship_index: None,
             language_applied: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
@@ -1675,6 +1684,9 @@ impl SpaiApp {
             wh_cache: Vec::new(),
             dash: Default::default(),
             wh_reloaded: None,
+            wh_loader: None,
+            wh_loading: false,
+            wh_gen: 0,
             wh_overlay: WhOverlay::default(),
             wh_form: None,
             sde_file_dialog: false,
@@ -1976,8 +1988,13 @@ impl SpaiApp {
             }
             due
         };
+        // The alert thread holds its locks while it works through every report: a frame waiting on
+        // them stutters. Each step below skips a busy lock and tries again the next frame.
         if due(&mut self.alert_cfg_at, std::time::Duration::from_millis(250)) {
-            let mut cfg = self.alerts_engine.config.lock().unwrap();
+            let Ok(mut cfg) = self.alerts_engine.config.try_lock() else {
+                self.alert_cfg_at = None;
+                return;
+            };
             cfg.enabled = self.settings.alert_enabled;
             cfg.alerts = self.settings.alerts.clone();
             cfg.severity = self.settings.severity.clone();
@@ -1994,12 +2011,12 @@ impl SpaiApp {
             cfg.staging = self.staging_system().map(str::to_owned);
             cfg.notes = self.notes_view.clone();
         }
-        if due(&mut self.ui_facts_at, std::time::Duration::from_millis(500)) {
-            self.publish_ui_facts();
+        if due(&mut self.ui_facts_at, std::time::Duration::from_millis(500)) && !self.publish_ui_facts() {
+            self.ui_facts_at = None;
         }
         self.sync_web_server();
         let (fired, matched) = {
-            let mut rt = self.alerts_engine.runtime.lock().unwrap();
+            let Ok(mut rt) = self.alerts_engine.runtime.try_lock() else { return };
             (std::mem::take(&mut rt.fired_ui), std::mem::take(&mut rt.matched_ui))
         };
         for (report, sev, rule_id, suppressed) in matched {
@@ -2413,11 +2430,7 @@ impl SpaiApp {
 
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
         if self.settings.fleet_ping_on_top == crate::settings::OnTop::Smart {
-            let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
-            if due {
-                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
-                self.eve_focus_checked = Some(std::time::Instant::now());
-            }
+            self.watch_eve_focus();
         }
         let (moved, moved_size) = {
             let mut st = self.ping_shared.lock().unwrap();
@@ -2534,14 +2547,7 @@ impl SpaiApp {
     fn alert_window(&mut self, ctx: &egui::Context) {
         let feature = self.alert_window_feature();
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
-            let due = self
-                .eve_focus_checked
-                .map(|t| t.elapsed().as_millis() > 800)
-                .unwrap_or(true);
-            if due {
-                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
-                self.eve_focus_checked = Some(std::time::Instant::now());
-            }
+            self.watch_eve_focus();
         }
         let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
             && (self.settings.alerts.on_top == crate::settings::OnTop::Always
@@ -4269,6 +4275,26 @@ fn active_window() -> Option<(String, String)> {
     }
     let name = Command::new("xdotool").args(["getwindowname", &id]).output().ok()?;
     Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
+}
+
+impl SpaiApp {
+    /// Keeps `eve_focused` current while something wants it. The check runs `xdotool` twice and
+    /// waits on it, which held a frame every time it ran on this thread; its own thread polls it
+    /// at the old pace instead, and only while it is asked for.
+    pub(crate) fn watch_eve_focus(&mut self) {
+        self.eve_focus_wanted.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.eve_focus_watching || self.headless {
+            return;
+        }
+        self.eve_focus_watching = true;
+        let (wanted, focused) = (self.eve_focus_wanted.clone(), self.eve_focused.clone());
+        let _ = std::thread::Builder::new().name("eve-focus".into()).spawn(move || loop {
+            if wanted.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(800));
+        });
+    }
 }
 
 /// Whether the game is the active window, or one of this app's own (an alert window or the map

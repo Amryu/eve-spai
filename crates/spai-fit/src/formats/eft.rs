@@ -46,6 +46,32 @@ struct Line<'a> {
     counted: bool,
 }
 
+/// The rack an empty-slot marker stands for: `[Empty Med slot]`.
+fn empty_slot(raw: &str) -> Option<Slot> {
+    let inner = raw.trim().strip_prefix('[')?.strip_suffix(']')?.to_ascii_lowercase();
+    let rack = inner.strip_prefix("empty ")?.strip_suffix(" slot")?;
+    Some(match rack {
+        "high" => Slot::High,
+        "med" | "mid" => Slot::Mid,
+        "low" => Slot::Low,
+        "rig" => Slot::Rig,
+        "subsystem" => Slot::Subsystem,
+        "service" => Slot::Service,
+        _ => return None,
+    })
+}
+
+fn empty_marker(slot: Slot) -> &'static str {
+    match slot {
+        Slot::High => "[Empty High slot]",
+        Slot::Mid => "[Empty Med slot]",
+        Slot::Low => "[Empty Low slot]",
+        Slot::Rig => "[Empty Rig slot]",
+        Slot::Subsystem => "[Empty Subsystem slot]",
+        Slot::Service => "[Empty Service slot]",
+    }
+}
+
 /// `Name[, Charge][ /OFFLINE][ xN][ [mutation]]`; `None` for an empty-slot marker.
 fn parse_line(raw: &str) -> Option<Line<'_>> {
     let mut s = raw.trim();
@@ -93,7 +119,13 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
         _ => out.unknown.push(ship_name.to_owned()),
     }
     out.fit.name = if fit_name.is_empty() { ship_name.to_owned() } else { fit_name.to_owned() };
+    // Each rack's next index, in the order written: an empty-slot marker keeps its place.
+    let mut next: std::collections::HashMap<Slot, u8> = std::collections::HashMap::new();
     for raw in lines {
+        if let Some(slot) = empty_slot(raw) {
+            *next.entry(slot).or_default() += 1;
+            continue;
+        }
         let Some(line) = parse_line(raw) else { continue };
         let Some(t) = dogma.type_named(line.name) else {
             out.unknown.push(line.name.to_owned());
@@ -112,7 +144,10 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
             Place::Module(_) if line.counted => out.fit.cargo.push(CargoItem { type_id: t.id, quantity: line.quantity.max(1), hold: None }),
             Place::Module(slot) => {
                 for _ in 0..line.quantity.max(1) {
-                    let index = out.fit.add_module(t.id, slot);
+                    let at = next.entry(slot).or_default();
+                    let index = *at;
+                    *at = at.saturating_add(1);
+                    out.fit.modules.push(crate::fit::Module::new(t.id, slot, index));
                     let m = out.fit.module_mut(slot, index).expect("just added");
                     m.state = if line.offline { State::Offline } else { super::default_state(dogma, t.id) };
                     m.charge = charge.flatten();
@@ -124,6 +159,7 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
             }
         }
     }
+    super::drop_foreign_mode(dogma, &mut out.fit);
     Some(out)
 }
 
@@ -136,23 +172,30 @@ pub fn export_named(fit: &Fit, name: impl Fn(TypeId) -> String) -> String {
     let mut out = format!("[{}, {}]\n", name(fit.ship), if fit.name.is_empty() { name(fit.ship) } else { fit.name.clone() });
     let mut sections: Vec<Vec<String>> = Vec::new();
     for slot in [Slot::Low, Slot::Mid, Slot::High, Slot::Rig, Slot::Subsystem, Slot::Service] {
-        let lines: Vec<String> = fit
-            .rack(slot)
-            .map(|m| {
-                let mut l = name(m.type_id);
-                if let Some(c) = m.charge {
-                    l.push_str(", ");
-                    l.push_str(&name(c));
-                }
-                if m.state == State::Offline {
-                    l.push_str(" /OFFLINE");
-                }
-                l
-            })
-            .collect();
+        // A gap between modules is written as the game writes it, so it survives a copy.
+        let mut lines: Vec<String> = Vec::new();
+        let mut at = 0u8;
+        for m in fit.rack(slot) {
+            for _ in at..m.index {
+                lines.push(empty_marker(slot).to_owned());
+            }
+            at = m.index.saturating_add(1);
+            let mut l = name(m.type_id);
+            if let Some(c) = m.charge {
+                l.push_str(", ");
+                l.push_str(&name(c));
+            }
+            if m.state == State::Offline {
+                l.push_str(" /OFFLINE");
+            }
+            lines.push(l);
+        }
         if !lines.is_empty() {
             sections.push(lines);
         }
+    }
+    if let Some(m) = fit.mode {
+        sections.push(vec![name(m)]);
     }
     let counted = |items: Vec<(TypeId, u32)>| items.into_iter().map(|(id, n)| format!("{} x{n}", name(id))).collect::<Vec<_>>();
     let bay: Vec<(TypeId, u32)> = fit.drones.iter().map(|d| (d.type_id, d.count)).chain(fit.fighters.iter().map(|f| (f.type_id, f.count))).collect();

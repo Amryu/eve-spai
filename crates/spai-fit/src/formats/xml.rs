@@ -87,8 +87,19 @@ pub fn import(dogma: &Dogma, text: &str) -> Vec<Imported> {
                 imp.unknown.push(name);
                 continue;
             };
+            // A module at the slot the file names, so an empty one between stays empty.
+            let at = slot.rsplit_once(" slot ").and_then(|(word, n)| Some((Slot::ALL.into_iter().find(|s| slot_word(*s) == word)?, n.trim().parse::<u8>().ok()?)));
             if slot == "cargo" {
                 imp.fit.cargo.push(CargoItem { type_id: t.id, quantity: qty.max(1), hold: None });
+            } else if let (Some((rack, index)), Place::Module(fits_in)) = (at, place_of(dogma, t)) {
+                if rack == fits_in && imp.fit.module(rack, index).is_none() {
+                    imp.fit.modules.push(crate::fit::Module::new(t.id, rack, index));
+                    if let Some(m) = imp.fit.module_mut(rack, index) {
+                        m.state = super::default_state(dogma, t.id);
+                    }
+                } else {
+                    add_item(dogma, &mut imp.fit, t.id, qty);
+                }
             } else {
                 add_item(dogma, &mut imp.fit, t.id, qty);
             }

@@ -102,6 +102,12 @@ fn items_are_placed_by_their_type() {
     assert_eq!(default_state(&d, ids::GUN), State::Active, "it has a target effect");
     assert_eq!(default_state(&d, ids::MWD), State::Active, "it needs capacitor");
     assert_eq!(default_state(&d, ids::DC), State::Online);
+    let mut d2 = d.clone();
+    let sup = crate::ids::EffectId::MAX;
+    d2.effects.push(crate::dogma::EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..crate::test_support::effect(sup, "targetSpectrumBreakerBonus", crate::dogma::EffectCategory::Active, vec![]) });
+    d2.types.push(crate::test_support::type_def(4409, "Signature Radius Suppressor I", 1154, 7, &[(attr::CAPACITOR_NEED, 10.0)], &[sup], &[]));
+    let d2 = d2.finish();
+    assert_eq!(default_state(&d2, 4409), State::Online, "a signature suppressor waits online until called on");
     let _ = Module::new(1, Slot::Low, 0);
 }
 
@@ -201,4 +207,41 @@ fn boosters_in_use_follow_the_cargo() {
     f.boosters.push(crate::fit::Booster { type_id: ids::BOOSTER, side_effects: false, side_on: None });
     sync_boosters(&d, &mut f, None);
     assert_eq!(f.boosters.iter().map(|b| b.type_id).collect::<Vec<_>>(), vec![ids::BOOSTER], "the latest picked for the slot is the one used");
+}
+
+#[test]
+fn the_mode_travels_in_eft_and_dna_and_only_with_its_hull() {
+    let d = dataset();
+    let text = "[Rifter, Fast]\nDamage Control II\n\nRifter Propulsion Mode\n";
+    let f = eft::import(&d, text).unwrap().fit;
+    assert_eq!(f.mode, Some(ids::PROPULSION_MODE));
+    assert_eq!(eft::export(&d, &f), text);
+    assert_eq!(dna::import(&d, &dna::export(&f)).unwrap().mode, Some(ids::PROPULSION_MODE));
+    let mut other = f.clone();
+    other.ship = ids::HEAVY;
+    drop_foreign_mode(&d, &mut other);
+    assert_eq!(other.mode, None, "another hull does not keep it");
+}
+
+#[test]
+fn eft_keeps_empty_slots_where_they_are_both_ways() {
+    let d = dataset();
+    let text = "[Rifter, Gaps]\n[Empty Low slot]\nDamage Control II\n\n1MN Microwarpdrive II\n[Empty Med slot]\nStasis Webifier II\n\n200mm AutoCannon II, EMP S\n[Empty High slot]\n[Empty High slot]\n200mm AutoCannon II, EMP S\n";
+    let f = eft::import(&d, text).unwrap().fit;
+    let at = |slot: Slot| f.rack(slot).map(|m| m.index).collect::<Vec<_>>();
+    assert_eq!((at(Slot::Low), at(Slot::Mid), at(Slot::High)), (vec![1], vec![0, 2], vec![0, 3]), "each gap keeps its slot");
+    let out = eft::export(&d, &f);
+    assert!(out.contains("[Empty Low slot]\nDamage Control II\n"), "{out}");
+    assert!(out.contains("1MN Microwarpdrive II\n[Empty Med slot]\nStasis Webifier II\n"), "{out}");
+    assert!(out.contains("200mm AutoCannon II, EMP S\n[Empty High slot]\n[Empty High slot]\n200mm AutoCannon II, EMP S\n"), "{out}");
+    assert_eq!(eft::import(&d, &out).unwrap().fit.modules, f.modules, "and read back the same");
+}
+
+#[test]
+fn fitting_xml_keeps_each_module_at_its_slot() {
+    let d = dataset();
+    let text = "<fittings><fitting name=\"Gaps\"><shipType value=\"Rifter\"/><hardware slot=\"hi slot 2\" type=\"200mm AutoCannon II\"/><hardware slot=\"med slot 1\" type=\"1MN Microwarpdrive II\"/><hardware slot=\"low slot 0\" type=\"Damage Control II\"/></fitting></fittings>";
+    let f = &xml::import(&d, text)[0].fit;
+    let at = |slot: Slot| f.rack(slot).map(|m| m.index).collect::<Vec<_>>();
+    assert_eq!((at(Slot::High), at(Slot::Mid), at(Slot::Low)), (vec![2], vec![1], vec![0]));
 }

@@ -53,6 +53,9 @@ pub struct Details {
     pub title: String,
     pub subtitle: String,
     pub fitted: bool,
+    /// Where the fitted column comes from when the item is not in the fit itself: the module a
+    /// charge is loaded in, or the fit a drone is launched from.
+    pub trial: Option<String>,
     pub rows: Vec<AttrRow>,
 }
 
@@ -70,18 +73,18 @@ impl DetailsWindow {
 }
 
 /// A value the fit improved, and one it made worse: soft enough to read as a tint on the number.
-const GOOD: egui::Color32 = egui::Color32::from_rgb(0x7F, 0xC9, 0x8A);
-const BAD: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x86, 0x7E);
+pub(crate) const GOOD: egui::Color32 = egui::Color32::from_rgb(0x7F, 0xC9, 0x8A);
+pub(crate) const BAD: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x86, 0x7E);
 
 /// How many attributes a tooltip shows.
 const SUMMARY_ATTRS: usize = 6;
 
 /// A type's pilot-facing attributes, those with a display name, or every one it carries.
-fn attrs_shown(dogma: &Dogma, attrs: &[AttrId], all: bool) -> Vec<AttrId> {
+pub(crate) fn attrs_shown(dogma: &Dogma, attrs: &[AttrId], all: bool) -> Vec<AttrId> {
     attrs.iter().copied().filter(|a| all || dogma.attr(*a).is_some_and(|d| !d.display.is_empty())).collect()
 }
 
-fn label_of(dogma: &Dogma, a: AttrId) -> String {
+pub(crate) fn label_of(dogma: &Dogma, a: AttrId) -> String {
     match dogma.attr(a) {
         Some(d) if !d.display.is_empty() => d.display.clone(),
         Some(d) => d.name.clone(),
@@ -318,18 +321,103 @@ pub fn rows_for_type(dogma: &Dogma, type_id: TypeId, all: bool) -> Vec<AttrRow> 
         .collect()
 }
 
-fn build(sim: &SimUi, target: DetailsTarget, all: bool) -> Option<Details> {
+/// The charge's total damage as the calculation makes it, times the module's multiplier.
+fn charge_score(calc: &Calc, module: ItemIdx) -> f64 {
+    let Some(c) = calc.items()[module].charge else { return 0.0 };
+    let damage: f64 = [attr::EM_DAMAGE, attr::THERMAL_DAMAGE, attr::KINETIC_DAMAGE, attr::EXPLOSIVE_DAMAGE].iter().map(|a| calc.value(c, *a)).sum();
+    let mult = if calc.has(module, attr::DAMAGE_MULTIPLIER) { calc.value(module, attr::DAMAGE_MULTIPLIER) } else { 1.0 };
+    damage * mult
+}
+
+/// A charge or drone not in the fit, put into a copy of it: the charge in the module of the fit
+/// that does the most with it, else in a Tech II module that takes it (Tech I without one); the
+/// drone launched. The copy, the target in it and what was done.
+pub fn trial(dogma: &Dogma, fit: &spai_fit::fit::Fit, calc_of: &dyn Fn(&spai_fit::fit::Fit, Slot, u8) -> f64, type_id: TypeId) -> Option<(spai_fit::fit::Fit, DetailsTarget, String)> {
+    use spai_fit::ids::category;
+    let t = dogma.type_(type_id)?;
+    if t.category == category::DRONE {
+        let mut f = fit.clone();
+        f.drones.retain(|d| d.type_id != type_id);
+        f.drones.push(spai_fit::fit::DroneStack { type_id, count: 1, active: true, launched: None, mutation: None });
+        return Some((f, DetailsTarget::Drone(type_id), tr!("Launched from the fit on screen").to_owned()));
+    }
+    if t.category != category::CHARGE {
+        return None;
+    }
+    let loaded = |m: &spai_fit::fit::Module| {
+        let mut f = fit.clone();
+        let slot = f.modules.iter_mut().find(|x| x.slot == m.slot && x.index == m.index)?;
+        slot.charge = Some(type_id);
+        Some(f)
+    };
+    // One of each kind of module: a rack of the same guns gives the same numbers.
+    let mut seen = Vec::new();
+    let fitted = fit.modules.iter().filter(|m| dogma.takes_charge(m.type_id, type_id) && !seen.contains(&m.type_id) && {
+        seen.push(m.type_id);
+        true
+    });
+    let best_fitted = fitted
+        .filter_map(|m| loaded(m).map(|f| (calc_of(&f, m.slot, m.index), m, f)))
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then((b.1.slot, b.1.index).cmp(&(a.1.slot, a.1.index))));
+    if let Some((_, m, f)) = best_fitted {
+        let name = spai_fit::formats::name_of(dogma, m.type_id);
+        return Some((f, DetailsTarget::Charge(m.slot, m.index), trf!("Loaded in {module} on the fit on screen", module = name)));
+    }
+    // None fitted: a Tech II module that takes it, else Tech I, else any.
+    let tier = |m: &spai_fit::dogma::TypeDef| match m.meta_group {
+        Some(2) => 2,
+        Some(1) | None if m.tech.unwrap_or(1) == 1 => 1,
+        _ => 0,
+    };
+    // The plain one of its tier (Torpedo Launcher II over a Polarized one), then the most damage,
+    // then the smallest (Heavy Capacitor Booster II over the capital one).
+    let plain = |m: &spai_fit::dogma::TypeDef| m.name.ends_with(if tier(m) == 2 { " II" } else { " I" });
+    let rank = |m: &spai_fit::dogma::TypeDef| (tier(m), plain(m), m.attr(attr::DAMAGE_MULTIPLIER).unwrap_or(1.0), -m.attr(attr::POWER).unwrap_or(0.0));
+    let module = dogma
+        .types
+        .iter()
+        .filter(|m| m.published && m.category == category::MODULE && dogma.takes_charge(m.id, type_id))
+        .max_by(|a, b| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal).then(b.name.cmp(&a.name)))?;
+    let slot = dogma.slot_of(module.id)?;
+    let mut f = fit.clone();
+    let index = f.modules.iter().filter(|m| m.slot == slot).map(|m| m.index + 1).max().unwrap_or(0);
+    f.modules.push(spai_fit::fit::Module::new(module.id, slot, index).with_charge(type_id));
+    Some((f, DetailsTarget::Charge(slot, index), trf!("As if loaded in {module}, which the fit on screen does not carry", module = module.name)))
+}
+
+pub(crate) fn build(sim: &SimUi, target: DetailsTarget, all: bool) -> Option<Details> {
     let dogma = sim.dogma.as_ref()?;
+    let mut trial_note = None;
     let (type_id, rows, fitted) = match target {
-        DetailsTarget::Type(t) => (t, rows_for_type(dogma, t, all), false),
+        DetailsTarget::Type(t) if !trial_kind(dogma, t) || sim.session().is_none() => (t, rows_for_type(dogma, t, all), false),
         _ => {
             let s = sim.session()?;
             let (resolved, env) = sim.outside().apply(dogma, &s.fit, sim.skills());
-            let type_id = type_of_target(&resolved, target)?;
+            let type_id = match target {
+                DetailsTarget::Type(t) => t,
+                _ => type_of_target(&resolved, target)?,
+            };
             let calc = Calc::new(dogma, &resolved, sim.skills(), &env);
             match item_of(&calc, &resolved, target) {
                 Some(item) => (type_id, rows_for_item(dogma, &calc, item, all), true),
-                None => (type_id, rows_for_type(dogma, type_id, all), false),
+                None => {
+                    let score = |f: &spai_fit::fit::Fit, slot: Slot, index: u8| {
+                        let c = Calc::new(dogma, f, sim.skills(), &env);
+                        c.module(slot, index).map_or(0.0, |m| charge_score(&c, m))
+                    };
+                    let tried = trial(dogma, &resolved, &score, type_id).and_then(|(f, at, note)| {
+                        let c = Calc::new(dogma, &f, sim.skills(), &env);
+                        let item = item_of(&c, &f, at)?;
+                        Some((rows_for_item(dogma, &c, item, all), note))
+                    });
+                    match tried {
+                        Some((rows, note)) => {
+                            trial_note = Some(note);
+                            (type_id, rows, true)
+                        }
+                        None => (type_id, rows_for_type(dogma, type_id, all), false),
+                    }
+                }
             }
         }
     };
@@ -339,7 +427,12 @@ fn build(sim: &SimUi, target: DetailsTarget, all: bool) -> Option<Details> {
         Some(m) => trf!("{group} · Meta {m}", group = group, m = m),
         None => group,
     };
-    Some(Details { title: t.name.clone(), subtitle, fitted, rows })
+    Some(Details { title: t.name.clone(), subtitle, fitted, trial: trial_note, rows })
+}
+
+/// A charge or a drone, which the window shows as the fit on screen would use it.
+fn trial_kind(dogma: &Dogma, type_id: TypeId) -> bool {
+    dogma.type_(type_id).is_some_and(|t| t.category == spai_fit::ids::category::CHARGE || t.category == spai_fit::ids::category::DRONE)
 }
 
 impl SimUi {
@@ -387,7 +480,9 @@ pub fn windows(sim: &mut SimUi, ctx: &egui::Context) {
                         ui.checkbox(&mut all, tr!("All attributes"));
                     });
                 });
-                if !data.fitted && !matches!(target, DetailsTarget::Type(_)) {
+                if let Some(note) = &data.trial {
+                    ui.add(egui::Label::new(format!("{} {note}", egui_phosphor::regular::INFO)).wrap());
+                } else if !data.fitted && !matches!(target, DetailsTarget::Type(_)) {
                     ui.label(egui::RichText::new(tr!("Not in the fit on screen: the data's numbers only.")).weak());
                 }
                 ui.separator();
@@ -414,7 +509,7 @@ fn table(ui: &mut egui::Ui, data: &Details) {
         crate::rows::head_cell(ui, label_w, tr!("Attribute"), false);
         crate::rows::head_cell(ui, num_w, if data.fitted { tr!("Base") } else { tr!("Value") }, true);
         if data.fitted {
-            crate::rows::head_cell(ui, num_w, tr!("Fitted"), true);
+            crate::rows::head_cell(ui, num_w, if data.trial.is_some() { tr!("Modified") } else { tr!("Fitted") }, true);
         }
     });
     for row in &data.rows {

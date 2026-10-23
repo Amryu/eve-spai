@@ -55,6 +55,24 @@ pub enum WarningKind {
     UnknownTypes(Vec<TypeId>),
     /// Two switched-on variations change the same thing; the later one wins.
     VariationConflict { first: String, second: String },
+    /// One more of the module's group than the game lets fit, online or run; it is counted as
+    /// the state the limit leaves it in.
+    GroupLimit { slot: Slot, index: u8, limit: crate::calc::GroupLimit, max: u32 },
+    /// A charge the module cannot load: another group, size or too big for it. Left out.
+    WrongCharge { slot: Slot, index: u8 },
+    /// More fighters in a squadron than its type holds; counted at its size.
+    SquadronOver { fighter: TypeId, count: u32, max: u32 },
+    /// More squadrons out than the hull has launch tubes.
+    FighterTubesOver { used: u32, total: u32 },
+    /// More squadrons of a class out than the hull has slots for: light, support or heavy.
+    FighterClassOver { class: FighterClass, used: u32, total: u32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FighterClass {
+    Light,
+    Support,
+    Heavy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +179,33 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
         let big = dogma.type_(fit.ship).and_then(|t| t.attr(crate::dogma::attr::RIG_SIZE)).is_some_and(|r| r >= 3.0);
         out.push(warn(if big { Severity::Info } else { Severity::Warn }, WarningKind::NoPropMod));
     }
+    let named = |t: &crate::dogma::TypeDef, n: &str| dogma.attr_named(n).and_then(|a| t.attr(a.id)).filter(|v| *v > 0.0).map(|v| v as u32);
+    for f in &fit.fighters {
+        if let Some(max) = dogma.type_(f.type_id).and_then(|t| named(t, "fighterSquadronMaxSize")).filter(|m| f.count > *m) {
+            out.push(warn(Severity::Error, WarningKind::SquadronOver { fighter: f.type_id, count: f.count, max }));
+        }
+    }
+    if let Some(hull) = dogma.type_(fit.ship).filter(|_| fit.fighters.iter().any(|f| f.active)) {
+        let out_now: Vec<&crate::dogma::TypeDef> = fit.fighters.iter().filter(|f| f.active).filter_map(|f| dogma.type_(f.type_id)).collect();
+        let tubes = named(hull, "fighterTubes").unwrap_or(0);
+        if out_now.len() as u32 > tubes {
+            out.push(warn(Severity::Error, WarningKind::FighterTubesOver { used: out_now.len() as u32, total: tubes }));
+        }
+        for (class, is, slots) in [(FighterClass::Light, "fighterSquadronIsLight", "fighterLightSlots"), (FighterClass::Support, "fighterSquadronIsSupport", "fighterSupportSlots"), (FighterClass::Heavy, "fighterSquadronIsHeavy", "fighterHeavySlots")] {
+            let used = out_now.iter().filter(|t| named(t, is).is_some()).count() as u32;
+            let total = named(hull, slots).unwrap_or(0);
+            if used > total {
+                out.push(warn(Severity::Error, WarningKind::FighterClassOver { class, used, total }));
+            }
+        }
+    }
+    for c in crate::calc::group_limits(dogma, fit) {
+        let severity = if c.limit == crate::calc::GroupLimit::Fitted { Severity::Error } else { Severity::Warn };
+        out.push(warn(severity, WarningKind::GroupLimit { slot: c.slot, index: c.index, limit: c.limit, max: c.max }));
+    }
+    for m in fit.modules.iter().filter(|m| m.charge.is_some_and(|c| !dogma.takes_charge(m.type_id, c))) {
+        out.push(warn(Severity::Error, WarningKind::WrongCharge { slot: m.slot, index: m.index }));
+    }
     for m in &fit.modules {
         if m.state == State::Offline {
             out.push(warn(Severity::Warn, WarningKind::OfflineModule { slot: m.slot, index: m.index }));
@@ -180,7 +225,7 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
         }
     }
     for w in &computed.weapons {
-        if !matches!(w.kind, WeaponKind::Turret | WeaponKind::Missile) {
+        if !matches!(w.kind, WeaponKind::Turret | WeaponKind::Missile | WeaponKind::Vorton) {
             continue;
         }
         let possible = compatible_charges(dogma, w.type_id);

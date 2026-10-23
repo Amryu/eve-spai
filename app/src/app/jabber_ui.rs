@@ -726,8 +726,9 @@ impl SpaiApp {
         let Some(tx) = &self.kill_tx else { return };
         let mut to_fetch: Vec<i64> = Vec::new();
         {
-            let cache = self.kill_cache.lock().unwrap();
-            let st = self.intel_state.lock().unwrap();
+            // The intel and alert threads hold these for tens of milliseconds at a time: a frame
+            // waiting on them stutters, and the next frame looks again.
+            let (Ok(cache), Ok(st)) = (self.kill_cache.try_lock(), self.intel_state.try_lock()) else { return };
             for r in &st.reports {
                 for l in &r.links {
                     if l.kind == crate::intel::LinkKind::Killmail {
@@ -740,8 +741,12 @@ impl SpaiApp {
                 }
             }
         }
+        if to_fetch.is_empty() {
+            return;
+        }
+        let Ok(mut cache) = self.kill_cache.try_lock() else { return };
         for id in to_fetch {
-            self.kill_cache.lock().unwrap().entry(id).or_insert(None);
+            cache.entry(id).or_insert(None);
             let _ = tx.send(id);
         }
     }

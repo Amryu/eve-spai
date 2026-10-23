@@ -61,6 +61,10 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         }
     }
     out.projected.retain(|p| !is_generator(dogma, p.type_id));
+    // Its own command bursts reach it too: a booster is in the fleet it boosts.
+    for (id, value) in crate::fleet::bursts_of(dogma, fit, skills) {
+        env.offer(dogma, id, value);
+    }
     // Boost shortcuts: their bursts as any booster's, the strongest of each buff kept.
     for b in fit.boosts.iter().filter(|b| b.active) {
         if let Some((booster, pilot)) = crate::fleet::shortcut_booster(dogma, b) {
@@ -74,11 +78,14 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         // The variation picked for it, or its base fit: not whatever was last switched on there.
         src.active_variations = pf.variation.filter(|v| src.variations.iter().any(|x| x.id == *v)).into_iter().collect();
         let src = crate::variations::resolve(dogma, &src);
+        let calc = crate::calc::Calc::new(dogma, &src, skills, &Env::default());
+        let values = |i: Option<crate::calc::ItemIdx>| i.map(|i| calc.attrs(i).into_iter().map(|a| (a, calc.value(i, a))).collect()).unwrap_or_default();
         for m in src.modules.iter().filter(|m| m.state >= State::Active && reaches_out(dogma, m.type_id)) {
-            out.projected.push(Projected { type_id: m.type_id, count: pf.count, state: m.state, charge: m.charge });
+            out.projected.push(Projected { type_id: m.type_id, count: pf.count, state: m.state, charge: m.charge, values: values(calc.module(m.slot, m.index)) });
         }
         for d in src.drones.iter().filter(|d| d.in_space() > 0 && reaches_out(dogma, d.type_id)) {
-            out.projected.push(Projected { type_id: d.type_id, count: d.in_space() * pf.count, state: State::Active, charge: None });
+            let item = calc.drones().find(|(_, it)| it.type_id == d.type_id).map(|(i, _)| i);
+            out.projected.push(Projected { type_id: d.type_id, count: d.in_space() * pf.count, state: State::Active, charge: None, values: values(item) });
         }
         for (id, value) in crate::fleet::bursts_of(dogma, &src, skills) {
             env.offer(dogma, id, value);
@@ -142,6 +149,27 @@ mod tests {
         assert!(off.projected.is_empty() && env.buffs.is_empty());
         assert!(acts_on_others(&d, &support));
         assert!(!acts_on_others(&d, &Fit::new(ids::SHIP, "plain")), "a fit with nothing that reaches out is not offered");
+    }
+
+    #[test]
+    fn a_fits_own_bursts_boost_it_and_a_projected_module_brings_its_own_fits_numbers() {
+        let mut d = dataset();
+        d.buffs.push(crate::dogma::BuffDef { id: 12, name: "Armor HP".into(), aggregate: crate::dogma::Aggregate::Max, op: crate::dogma::Op::PostPercent, item: vec![attr::ARMOR_HP], location: vec![], location_group: vec![], location_skill: vec![] });
+        let d = d.finish();
+        let mut booster = Fit::new(ids::SHIP, "booster");
+        booster.modules.push(Module::new(ids::BURST, Slot::High, 0).with_charge(ids::BURST_CHARGE).with_state(State::Active));
+        let (_, env) = expand(&d, &booster, &|_| None, &SkillSet::all_v());
+        assert_eq!(env.buffs.len(), 1, "a booster is in the fleet it boosts");
+        let mut support = Fit::new(ids::SHIP, "support");
+        support.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Overload));
+        let lookup = |id: &str| (id == "support").then(|| support.clone());
+        let mut me = Fit::new(ids::SHIP, "me");
+        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 1, active: true, variation: None });
+        let (fit, _) = expand(&d, &me, &lookup, &SkillSet::all_v());
+        let own = Calc::new(&d, &support, &SkillSet::all_v(), &Env::default());
+        let web = own.module(Slot::Mid, 0).unwrap();
+        let carried = fit.projected[0].values.iter().find(|(a, _)| *a == attr::SPEED_FACTOR).map(|(_, v)| *v);
+        assert_eq!(carried, Some(own.value(web, attr::SPEED_FACTOR)), "as its own fit makes it");
     }
 
     #[test]
@@ -544,7 +572,7 @@ fn real_data_missile_step() {
     let c = crate::stats::compute(&d, &f, &SkillSet::all_v(), &Env::default());
     let m = c.weapons[0].missile.clone().unwrap();
     println!("flight {} s, velocity {}, short {} long {}", m.flight_time_s, m.velocity, m.short_range(), m.long_range());
-    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }), None);
+    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }));
     let w = &s[0];
     let at = |x: f64| crate::graphs::value_at_for_test(&w.points, x);
     let (full, step) = (at(m.short_range() - 100.0), at(m.short_range() + 100.0));
@@ -565,7 +593,7 @@ fn real_data_eft_missile_flight() {
         let m = w.missile.as_ref().unwrap();
         println!("{} flight {:.4} s velocity {:.1} -> {:.0}..{:.0}", d.type_(w.type_id).unwrap().name, m.flight_time_s, m.velocity, m.short_range(), m.long_range());
     }
-    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }), None);
+    let s = sample(&c, &GraphSpec::new(GraphKind::DamageVsDistance, crate::fit::TargetProfile { signature: 400.0, ..Default::default() }));
     let total = s.iter().find(|x| x.label == crate::graphs::SeriesLabel::Total).unwrap();
     let mut last = f64::NAN;
     for p in &total.points {
@@ -671,7 +699,7 @@ fn real_data_fleet_race_with_assault_damage_controls() {
     let lib = [ferox, cane];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
     let (fa, fb) = (fleet("ferox"), fleet("cane"));
     let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
     let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &[] }, sweep::Side { fleet: &fb, stats: &sb, ammo: &[] });
@@ -732,7 +760,7 @@ fn real_data_fleet_analysis_timing() {
     let lib = [ferox, cane];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |n: &str| Fleet { size: 150, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (0.5, 90.0), slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    let fleet = |n: &str| Fleet { size: 150, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (0.5, 90.0), slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
     let (fa, fb) = (fleet("ferox"), fleet("cane"));
     let t = std::time::Instant::now();
     let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
@@ -823,7 +851,7 @@ fn real_data_logi_fleet_race() {
     let lib = [ferox, basi];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |size: u32| Fleet { size, slots: vec![FleetSlot { fit_id: "ferox".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None }, FleetSlot { fit_id: "basi".into(), rule: CountRule::Fixed(20), override_count: None, profile: None, variation: None }], ..Fleet::default() };
+    let fleet = |size: u32| Fleet { size, slots: vec![FleetSlot { fit_id: "ferox".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }, FleetSlot { fit_id: "basi".into(), rule: CountRule::Fixed(20), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
     for (na, nb) in [(170, 170), (170, 140)] {
         let (fa, fb) = (fleet(na), fleet(nb));
         let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
@@ -916,3 +944,4 @@ fn real_data_fury_is_short_range_ammo() {
     assert!(gap("Scourge Fury Cruise Missile").is_none_or(|(short, _)| !short), "Fury carried: no short-range gap");
     assert_eq!(gap("Scourge Cruise Missile").map(|g| g.0), Some(true), "only T1 carried: Fury is the short-range ammo missing");
 }
+

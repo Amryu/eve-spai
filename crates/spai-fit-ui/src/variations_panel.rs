@@ -80,7 +80,7 @@ impl SimUi {
         Some(variations::resolve(d, &s.fit))
     }
 
-    /// Rack positions an active variation decides, which the racks mark and keep read-only.
+    /// Rack positions an active variation decides, which the racks mark.
     pub fn variation_positions(&self) -> std::collections::BTreeSet<(spai_fit::fit::Slot, u8)> {
         let mut out = std::collections::BTreeSet::new();
         if let (Some(d), Some(s)) = (self.dogma.as_ref(), self.session()) {

@@ -22,6 +22,15 @@ pub struct Plot {
     pub bands: Vec<PlotBand>,
     /// Vertical lines at a value of x, labelled at the top.
     pub markers: Vec<PlotMarker>,
+    /// Horizontal dashed lines at a value of y, such as a line's peak, labelled at the right.
+    pub levels: Vec<PlotLevel>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlotLevel {
+    pub y: f64,
+    pub label: String,
+    pub color: Color32,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +45,8 @@ pub struct PlotMarker {
     pub x: f64,
     pub label: String,
     pub color: Color32,
+    /// Where a reach fades out, past `x`: an ewar module's falloff, drawn as a band out to it.
+    pub to: Option<f64>,
 }
 
 /// Eight colours apart in hue and legible on the dark and light themes.
@@ -147,9 +158,22 @@ impl Plot {
             painter.line_segment([p, Pos2::new(inner.max.x, p.y)], grid);
             painter.text(Pos2::new(inner.min.x - 4.0, p.y), egui::Align2::RIGHT_CENTER, (self.fmt_y)(y), font.clone(), weak);
         }
-        for x in ticks(x_min, x_max, 6) {
+        // As many labels as stand apart on the width there is.
+        let label_w = |x: f64| painter.layout_no_wrap((self.fmt_x)(x), font.clone(), weak).size().x;
+        let mut x_ticks = ticks(x_min, x_max, 6);
+        for want in (2..=6).rev() {
+            x_ticks = ticks(x_min, x_max, want);
+            let gap = x_ticks.windows(2).map(|w| to_screen(w[1], 0.0).x - to_screen(w[0], 0.0).x).fold(f32::INFINITY, f32::min);
+            if x_ticks.iter().map(|x| label_w(*x)).fold(0.0, f32::max) + 10.0 <= gap {
+                break;
+            }
+        }
+        for x in x_ticks {
             let p = to_screen(x, 0.0);
-            painter.line_segment([Pos2::new(p.x, inner.min.y), p], grid);
+            // None on the left edge: it read as a line of the data, dropping to zero.
+            if p.x > inner.min.x + 0.5 {
+                painter.line_segment([Pos2::new(p.x, inner.min.y), p], grid);
+            }
             // The outermost labels stay inside the plot's rect.
             let label = (self.fmt_x)(x);
             let half = painter.layout_no_wrap(label.clone(), font.clone(), weak).size().x / 2.0;
@@ -172,19 +196,66 @@ impl Plot {
             painter.text(Pos2::new(x + 20.0, y), egui::Align2::LEFT_CENTER, &s.label, font.clone(), text);
         }
 
-        // A marker's label takes the first line down where it runs into no other.
+        // A level's label sits above its line at the right end, moved left past any it would cover.
+        let mut taken: Vec<Rect> = Vec::new();
+        for l in self.levels.iter().filter(|l| l.y > 0.0 && l.y <= y_top) {
+            let y = to_screen(x_min, l.y).y;
+            clip.add(egui::Shape::dashed_line(&[Pos2::new(inner.min.x, y), Pos2::new(inner.max.x, y)], Stroke::new(1.0, l.color), 6.0, 4.0));
+            let galley = painter.layout_no_wrap(l.label.clone(), font.clone(), l.color);
+            let size = galley.size();
+            let mut at = Rect::from_min_size(Pos2::new(inner.max.x - 4.0 - size.x, (y - 2.0 - size.y).max(inner.min.y)), size);
+            while let Some(r) = taken.iter().find(|r| r.expand(3.0).intersects(at)) {
+                at = at.translate(Vec2::new(r.min.x - 8.0 - at.max.x, 0.0));
+            }
+            taken.push(at);
+            painter.rect_filled(at.expand(2.0), 2.0, visuals.extreme_bg_color.gamma_multiply(0.85));
+            painter.galley(at.min, galley, l.color);
+        }
+
+        // A marker's label takes the first line down where it runs into no other. Laid out first,
+        // so the one under the pointer is known before any is drawn.
         let mut placed: Vec<(usize, f32, f32)> = Vec::new();
-        for m in self.markers.iter().filter(|m| m.x >= x_min && m.x <= x_max) {
-            let x = to_screen(m.x, 0.0).x;
-            clip.add(egui::Shape::dashed_line(&[Pos2::new(x, inner.min.y), Pos2::new(x, inner.max.y)], Stroke::new(1.0, m.color), 4.0, 3.0));
-            let galley = painter.layout_no_wrap(m.label.clone(), font.clone(), m.color);
-            let w = galley.size().x;
-            let left = if x + 4.0 + w > inner.max.x { x - 4.0 - w } else { x + 4.0 };
-            let row = (0..6).find(|r| !placed.iter().any(|(pr, l, rt)| pr == r && left < rt + 6.0 && left + w + 6.0 > *l)).unwrap_or(0);
-            placed.push((row, left, left + w));
-            let at = Pos2::new(left, inner.min.y + 2.0 + row as f32 * line_h);
-            painter.rect_filled(Rect::from_min_size(at, galley.size()).expand(2.0), 2.0, visuals.extreme_bg_color.gamma_multiply(0.85));
-            painter.galley(at, galley, m.color);
+        let laid: Vec<(&PlotMarker, f32, Option<f32>, Rect, std::sync::Arc<egui::Galley>)> = self
+            .markers
+            .iter()
+            .filter(|m| m.x >= x_min && m.x <= x_max)
+            .map(|m| {
+                let x = to_screen(m.x, 0.0).x;
+                let to = m.to.filter(|t| *t > m.x).map(|t| to_screen(t.min(x_max), 0.0).x);
+                let galley = painter.layout_no_wrap(m.label.clone(), font.clone(), m.color);
+                let w = galley.size().x;
+                let left = if x + 4.0 + w > inner.max.x { x - 4.0 - w } else { x + 4.0 };
+                let row = (0..6).find(|r| !placed.iter().any(|(pr, l, rt)| pr == r && left < rt + 6.0 && left + w + 6.0 > *l)).unwrap_or(0);
+                placed.push((row, left, left + w));
+                let at = Rect::from_min_size(Pos2::new(left, inner.min.y + 2.0 + row as f32 * line_h), galley.size());
+                (m, x, to, at, galley)
+            })
+            .collect();
+        let pointer = response.hover_pos();
+        let hovered = pointer.and_then(|p| laid.iter().position(|(_, x, to, at, _)| at.expand(2.0).contains(p) || (inner.contains(p) && ((p.x - x).abs() < 5.0 || to.is_some_and(|t| (p.x - t).abs() < 5.0)))));
+        for (i, (m, x, to, at, galley)) in laid.iter().enumerate() {
+            let lit = hovered == Some(i);
+            let color = if hovered.is_some() && !lit { m.color.gamma_multiply(0.45) } else { m.color };
+            let width = if lit { 2.0 } else { 1.0 };
+            if let Some(t) = to {
+                clip.rect_filled(Rect::from_min_max(Pos2::new(*x, inner.min.y), Pos2::new(*t, inner.max.y)), 0.0, m.color.gamma_multiply(if lit { 0.22 } else { 0.07 }));
+                clip.add(egui::Shape::dotted_line(&[Pos2::new(*t, inner.min.y), Pos2::new(*t, inner.max.y)], color, 6.0, width * 0.75));
+            }
+            clip.add(egui::Shape::dashed_line(&[Pos2::new(*x, inner.min.y), Pos2::new(*x, inner.max.y)], Stroke::new(width, color), 4.0, 3.0));
+            painter.rect_filled(at.expand(2.0), 2.0, visuals.extreme_bg_color.gamma_multiply(if lit { 1.0 } else { 0.85 }));
+            if lit {
+                painter.rect_stroke(at.expand(2.0), 2.0, Stroke::new(1.0, m.color), egui::StrokeKind::Outside);
+            }
+            painter.galley_with_override_text_color(at.min, galley.clone(), color);
+        }
+        if let Some(i) = hovered {
+            let (m, ..) = &laid[i];
+            let reach = match m.to {
+                Some(t) if t > m.x => format!("{}: {} + {}", m.label, (self.fmt_x)(m.x), (self.fmt_x)(t - m.x)),
+                _ => format!("{}: {}", m.label, (self.fmt_x)(m.x)),
+            };
+            response.clone().on_hover_text_at_pointer(reach);
+            return;
         }
 
         if let Some(pos) = response.hover_pos().filter(|p| inner.contains(*p)) {

@@ -10,9 +10,9 @@ use super::Dogma;
 
 const MAGIC: &[u8; 7] = b"SPAIFIT";
 /// Bumped whenever the encoded structures change, or what is baked does: 2 brought the weather
-/// beacons, 3 the mutaplasmids, 4 packaged volumes, 5 the fuels; the file name carries it, so a client never keeps a copy made without them
+/// beacons, 3 the mutaplasmids, 4 packaged volumes, 5 the fuels, 6 the ship modes, 7 the fighters' bombs; the file name carries it, so a client never keeps a copy made without them
 /// and a cached file of the old name is never served in place of the new.
-pub const FORMAT: u16 = 5;
+pub const FORMAT: u16 = 7;
 const HEADER_LEN: usize = MAGIC.len() + 2 + 4;
 
 pub fn file_name() -> String {

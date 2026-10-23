@@ -393,6 +393,9 @@ impl SpaiApp {
                 let path = dir.join(spai_fit::dogma::blob::file_name());
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
+                    // A test run asking the mirror for a file not yet uploaded gets the CDN to
+                    // cache that 404 for hours.
+                    Err(_) if cfg!(test) => anyhow::bail!("tests fetch no fitting data"),
                     Err(_) => {
                         let url = format!("{BLOB_MIRROR}/{}", spai_fit::dogma::blob::file_name());
                         let client = crate::http::client(120)?;

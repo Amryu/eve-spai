@@ -26,6 +26,8 @@ pub enum ItemKind {
     Char,
     Skill,
     Module { slot: Slot, index: u8 },
+    /// The hull's mode: a tactical destroyer's defense, propulsion or sharpshooter.
+    Mode,
     Charge,
     Drone { count: u32 },
     Fighter { count: u32 },
@@ -227,8 +229,16 @@ impl<'d> Calc<'d> {
                 self.items[i].overrides.push((attr::SKILL_LEVEL, level));
             }
         }
+        if let Some(mode) = self.dogma.mode_for(fit.ship, fit.mode) {
+            if let Some(i) = self.item_for(mode, ItemKind::Mode, State::Online) {
+                self.items[i].location = Some(ship);
+                self.items[i].owner = Some(char);
+            }
+        }
+        let capped = group_limits(self.dogma, fit);
         for m in &fit.modules {
-            let Some(i) = self.item_for(m.type_id, ItemKind::Module { slot: m.slot, index: m.index }, m.state) else { continue };
+            let state = capped.iter().find(|c| (c.slot, c.index) == (m.slot, m.index)).map_or(m.state, |c| c.state);
+            let Some(i) = self.item_for(m.type_id, ItemKind::Module { slot: m.slot, index: m.index }, state) else { continue };
             if m.fixed {
                 self.fixed.push(i);
             }
@@ -237,8 +247,9 @@ impl<'d> Calc<'d> {
             if let Some(mu) = &m.mutation {
                 self.items[i].overrides.extend(mu.attrs.iter().map(|(a, v)| (*a, f64::from(*v))));
             }
-            if let Some(c) = m.charge {
-                if let Some(ci) = self.item_for(c, ItemKind::Charge, m.state) {
+            // A charge the module cannot take stays out of it: the game would not load it.
+            if let Some(c) = m.charge.filter(|c| self.dogma.takes_charge(m.type_id, *c)) {
+                if let Some(ci) = self.item_for(c, ItemKind::Charge, state) {
                     self.items[ci].location = Some(ship);
                     self.items[ci].owner = Some(char);
                     self.items[ci].module = Some(i);
@@ -265,7 +276,9 @@ impl<'d> Calc<'d> {
         }
         for f in &fit.fighters {
             let state = if f.active { State::Active } else { State::Offline };
-            if let Some(i) = self.item_for(f.type_id, ItemKind::Fighter { count: f.count }, state) {
+            // A squadron holds no more than its type's size.
+            let count = self.dogma.attr_named("fighterSquadronMaxSize").and_then(|a| self.dogma.type_(f.type_id).and_then(|t| t.attr(a.id))).filter(|m| *m > 0.0).map_or(f.count, |m| f.count.min(m as u32));
+            if let Some(i) = self.item_for(f.type_id, ItemKind::Fighter { count }, state) {
                 self.items[i].location = Some(ship);
                 self.items[i].owner = Some(char);
             }
@@ -297,6 +310,11 @@ impl<'d> Calc<'d> {
                 continue;
             }
             let Some(i) = self.item_for(p.type_id, ItemKind::Projected { count: p.count }, p.state) else { continue };
+            // Figured on its own fit already, its charge's effects included.
+            if !p.values.is_empty() {
+                self.items[i].overrides.extend(p.values.iter().copied());
+                continue;
+            }
             if let Some(c) = p.charge {
                 if let Some(ci) = self.item_for(c, ItemKind::Charge, p.state) {
                     self.items[ci].module = Some(i);
@@ -404,7 +422,8 @@ impl<'d> Calc<'d> {
     }
 
     fn add_mod(&mut self, target: ItemIdx, attr: AttrId, op: Op, src: ItemIdx, src_attr: AttrId) {
-        let penalised = self.penalised(attr, op, self.items[src].category);
+        // System effects stand apart from the penalty, as implants do.
+        let penalised = self.items[src].kind != ItemKind::Environment && self.penalised(attr, op, self.items[src].category);
         self.mods[target].entry(attr).or_default().push(Modification { op, source: value::Source::Attr(src, src_attr), penalised });
     }
 
@@ -588,6 +607,63 @@ impl<'d> Calc<'d> {
     pub(crate) fn add_source_mod(&mut self, target: ItemIdx, attr: AttrId, op: Op, source: value::Source, penalised: bool) {
         self.mods[target].entry(attr).or_default().push(Modification { op, source, penalised });
     }
+}
+
+/// Which limit of a module's group holds it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GroupLimit {
+    Fitted,
+    Online,
+    Active,
+}
+
+/// A module held below the state it is set to by its group's limit (`maxGroupFitted`,
+/// `maxGroupOnline`, `maxGroupActive`): the first ones in rack order keep theirs, as the game
+/// refuses to fit, online or activate one more.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Capped {
+    pub slot: crate::fit::Slot,
+    pub index: u8,
+    pub state: State,
+    pub limit: GroupLimit,
+    pub max: u32,
+}
+
+pub fn group_limits(dogma: &crate::Dogma, fit: &Fit) -> Vec<Capped> {
+    let mut order: Vec<&crate::fit::Module> = fit.modules.iter().collect();
+    order.sort_by_key(|m| (m.slot, m.index));
+    let online_attr = dogma.attr_named("maxGroupOnline").map(|a| a.id);
+    let mut counts: HashMap<(crate::ids::GroupId, GroupLimit), u32> = HashMap::new();
+    let mut out = Vec::new();
+    for m in order {
+        let Some(t) = dogma.type_(m.type_id) else { continue };
+        let max = |a: Option<AttrId>| a.and_then(|a| t.attr(a)).filter(|v| *v > 0.0).map(|v| v as u32);
+        let mut state = m.state;
+        let mut hit: Option<(GroupLimit, u32)> = None;
+        for (limit, attr, from, to) in [
+            (GroupLimit::Fitted, Some(attr::MAX_GROUP_FITTED), State::Offline, None),
+            (GroupLimit::Online, online_attr, State::Online, Some(State::Offline)),
+            (GroupLimit::Active, Some(attr::MAX_GROUP_ACTIVE), State::Active, Some(State::Online)),
+        ] {
+            let Some(cap) = max(attr) else { continue };
+            if state < from {
+                continue;
+            }
+            let n = counts.entry((t.group, limit)).or_insert(0);
+            *n += 1;
+            if *n > cap {
+                hit = Some((limit, cap));
+                state = to.unwrap_or(State::Offline);
+                if to.is_none() {
+                    break;
+                }
+            }
+        }
+        if let Some((limit, max)) = hit {
+            out.push(Capped { slot: m.slot, index: m.index, state: state.min(m.state), limit, max });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
         navigation(ui, &computed);
         targeting(ui, &computed);
         drones(ui, &computed);
+        mining(ui, &computed);
         remote(ui, &computed);
         cost(ui, sim.cost());
     });
@@ -112,6 +113,36 @@ fn rep_text(sustained: f64, running: f64) -> String {
     } else {
         trf!("{v}/s", v = text::num(running))
     }
+}
+
+/// The layers' hit points and resistances as the game shows them: each in its damage colour, a
+/// bar filled to the share resisted.
+/// The column widths it used, for lines below it to line up with.
+pub(crate) fn resist_table(ui: &mut egui::Ui, t: &spai_fit::stats::Tank) -> (f32, f32, f32) {
+    let w = ui.available_width() - 2.0 * rows::GAP;
+    let (name_w, hp_w) = (52.0, 54.0);
+    let res_w = ((w - name_w - hp_w) / 4.0).max(30.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(rows::GAP);
+        rows::head_cell(ui, name_w, "", false);
+        rows::head_cell(ui, hp_w, "HP", true);
+        for (i, h) in ["EM", "TH", "KIN", "EXP"].into_iter().enumerate() {
+            rows::head_cell_centered(ui, res_w, h, spai_ui::colors::DAMAGE[i]);
+        }
+    });
+    for (name, layer) in [(tr!("Shield"), &t.shield), (tr!("Armor"), &t.armor), (tr!("Hull"), &t.hull)] {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(rows::GAP);
+            ui.add_sized([name_w, 18.0], egui::Label::new(name).halign(egui::Align::LEFT).selectable(false));
+            rows::num_cell(ui, hp_w, text::num(layer.hp), false);
+            for i in 0..4 {
+                resist_cell(ui, res_w, layer.resist(i), spai_ui::colors::DAMAGE[i]);
+            }
+        });
+    }
+    (name_w, hp_w, res_w)
 }
 
 /// A resistance as the game shows one: its damage colour filled to the share resisted over a
@@ -231,48 +262,33 @@ fn defense(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, c: &Co
     if t.invulnerable {
         ui.add(egui::Label::new(egui::RichText::new(tr!("The PANIC core runs: near total shield resistances, worked out from an in-game figure since the game data gives none.")).weak()).wrap());
     }
-    let w = ui.available_width() - 2.0 * rows::GAP;
-    let (name_w, hp_w) = (52.0, 54.0);
-    let res_w = ((w - name_w - hp_w) / 4.0).max(30.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(rows::GAP);
-        rows::head_cell(ui, name_w, "", false);
-        rows::head_cell(ui, hp_w, "HP", true);
-        for (i, h) in ["EM", "TH", "KIN", "EXP"].into_iter().enumerate() {
-            rows::head_cell_centered(ui, res_w, h, spai_ui::colors::DAMAGE[i]);
-        }
-    });
-    for (name, layer) in [(tr!("Shield"), &t.shield), (tr!("Armor"), &t.armor), (tr!("Hull"), &t.hull)] {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(rows::GAP);
-            ui.add_sized([name_w, 18.0], egui::Label::new(name).halign(egui::Align::LEFT).selectable(false));
-            rows::num_cell(ui, hp_w, text::num(layer.hp), false);
-            for i in 0..4 {
-                resist_cell(ui, res_w, layer.resist(i), spai_ui::colors::DAMAGE[i]);
-            }
-        });
-    }
+    let (name_w, hp_w, res_w) = resist_table(ui, t);
     let weights = profile.weights();
+    let hover_bg = ui.painter().add(egui::Shape::Noop);
     let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(rows::GAP);
-        // The caret says the row opens a menu, as a dropdown would.
-        ui.add_sized([name_w + hp_w, 18.0], egui::Label::new(egui::RichText::new(format!("{} {}", tr!("Incoming"), egui_phosphor::regular::CARET_DOWN))).halign(egui::Align::LEFT).selectable(false));
+        // The caret says the word opens a menu, as a dropdown would.
+        let cell = ui.allocate_ui_with_layout(egui::vec2(name_w + hp_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(egui::vec2(name_w + hp_w, 18.0));
+            ui.add(egui::Label::new(egui::RichText::new(format!("{} {}", tr!("Incoming"), egui_phosphor::regular::CARET_DOWN))).selectable(false).sense(egui::Sense::click()))
+        });
         for (i, w) in weights.iter().enumerate() {
             rows::num_cell_centered(ui, res_w, format!("{:.0}%", w * 100.0), spai_ui::colors::DAMAGE[i]);
         }
+        cell.inner
     });
-    let r = ui.interact(row.response.rect, egui::Id::new("sim_damage_profile"), egui::Sense::click());
+    let r = row.inner;
     if r.hovered() {
-        ui.painter().rect_filled(row.response.rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
+        ui.painter().set(hover_bg, egui::epaint::RectShape::filled(r.rect.expand(2.0), 3.0, ui.visuals().widgets.hovered.weak_bg_fill));
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let r = r.on_hover_text(tr!("The damage expected in, which the effective HP is figured against. Click to change it."));
     // Either click opens it at the pointer; it stays open while the custom fields are edited, and a
     // pick or a click elsewhere closes it.
-    let toggle = (r.clicked() || r.secondary_clicked()).then_some(egui::SetOpenCommand::Toggle);
+    // A toggle would not record the pointer the popup is anchored at, so it never showed.
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
+    let toggle = (r.clicked() || r.secondary_clicked()).then_some(egui::SetOpenCommand::Bool(!open));
     egui::Popup::menu(&r).open_memory(toggle).at_pointer_fixed().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(220.0);
         if ui.button(tr!("Uniform")).clicked() {
@@ -351,19 +367,49 @@ fn offense(ui: &mut egui::Ui, dogma: &Dogma, c: &Computed) {
             ui.add_space(rows::GAP);
             ui.add(egui::Label::new(egui::RichText::new(&title).weak()).truncate()).on_hover_text(&title);
         });
-        line(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(w.dps), volley = text::num(w.volley.total())));
+        match w.dot {
+            Some(d) => line(ui, tr!("Damage over time"), trf!("{n}/s, at most {pct}% of the target's hit points, {s}", n = text::num(d.per_tick), pct = text::num(d.hp_pct), s = text::secs(d.duration_s))),
+            None => line(ui, tr!("DPS / volley"), trf!("{dps} / {volley}", dps = text::num(w.dps), volley = text::num(w.volley.total()))),
+        }
         match w.kind {
-            WeaponKind::Missile | WeaponKind::Fighter => {
+            WeaponKind::Bomb => {
+                if let Some(m) = &w.missile {
+                    line(ui, tr!("Bursts at"), trf!("{r}, blast {b}", r = text::metres(m.range), b = text::metres(w.splash)));
+                    line(ui, tr!("Explosion"), trf!("{r} m", r = text::num(m.explosion_radius)));
+                }
+            }
+            WeaponKind::Breacher => {
+                if let Some(m) = &w.missile {
+                    line(ui, tr!("Range"), text::metres(m.range));
+                }
+            }
+            WeaponKind::Superweapon => {
+                line(ui, tr!("Range"), text::metres(w.optimal));
+                if w.splash > 0.0 {
+                    line(ui, tr!("Area"), text::metres(w.splash));
+                }
+            }
+            WeaponKind::Missile | WeaponKind::Fighter | WeaponKind::Vorton => {
                 if let Some(m) = &w.missile {
                     line(ui, tr!("Range"), text::metres(m.range));
                     line(ui, tr!("Explosion"), trf!("{r} m, {v} m/s", r = text::num(m.explosion_radius), v = text::num(m.explosion_velocity)));
                 }
             }
             WeaponKind::Smartbomb => line(ui, tr!("Range"), text::metres(w.optimal)),
-            _ => {
+            WeaponKind::Turret | WeaponKind::Drone => {
                 line(ui, tr!("Optimal + falloff"), trf!("{o} + {f}", o = text::metres(w.optimal), f = text::metres(w.falloff)));
                 line(ui, tr!("Tracking"), text::num(w.tracking));
             }
+        }
+        if w.kind == WeaponKind::Fighter && w.missile.is_some() {
+            let hint = tr!("Sustained, without the downtime to rearm between salvos");
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 19.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add_space(rows::GAP);
+                ui.add(egui::Label::new(egui::RichText::new(hint).weak()).truncate()).on_hover_text(hint);
+            });
+        }
+        if w.arc_targets > 0 {
+            line(ui, tr!("Arc"), trf!("{n} more ships, {r} apart", n = w.arc_targets, r = text::metres(w.arc_range)));
         }
         if w.spool_max > 0.0 {
             // Spooled as set, the most it reaches, and how long it takes from cold.
@@ -451,6 +497,20 @@ fn cost(ui: &mut egui::Ui, c: Option<crate::Cost>) {
     }
 }
 
+fn mining(ui: &mut egui::Ui, c: &Computed) {
+    let m = &c.mining;
+    if m.total() <= 0.0 {
+        return;
+    }
+    section(ui, tr!("Mining"));
+    let rate = |v: f64| trf!("{s} m³/s, {h} m³/h", s = format!("{v:.2}"), h = text::num(v * 3600.0));
+    for (label, v) in [(tr!("Ore"), m.ore), (tr!("Ice"), m.ice), (tr!("Gas"), m.gas), (tr!("Drones"), m.drones)] {
+        if v > 0.0 {
+            line(ui, label, rate(v));
+        }
+    }
+}
+
 fn remote(ui: &mut egui::Ui, c: &Computed) {
     let r = &c.remote;
     if r.modules.is_empty() {
@@ -478,7 +538,18 @@ fn remote(ui: &mut egui::Ui, c: &Computed) {
     let ewar: Vec<&spai_fit::stats::RemoteModule> = r.modules.iter().filter(|m| !m.kind.is_rep() && !matches!(m.kind, spai_fit::stats::RemoteKind::Neut | spai_fit::stats::RemoteKind::Nos)).collect();
     for m in ewar {
         let Some(label) = ewar_name(m.kind) else { continue };
-        line(ui, label, trf!("{v} at {o} + {f}", v = text::num(m.amount), o = text::metres(m.optimal), f = text::metres(m.falloff)));
+        let reach = if m.kind == spai_fit::stats::RemoteKind::EcmBurst { trf!("{r} around", r = text::metres(m.optimal)) } else if m.falloff > 0.0 { trf!("{o} + {f}", o = text::metres(m.optimal), f = text::metres(m.falloff)) } else { text::metres(m.optimal) };
+        line(ui, label, trf!("{v} at {reach}", v = ewar_amount(m.kind, m.amount), reach = reach));
+    }
+}
+
+/// An ewar module's strength with its unit: percent for the ones that scale an attribute.
+pub(crate) fn ewar_amount(kind: spai_fit::stats::RemoteKind, amount: f64) -> String {
+    use spai_fit::stats::RemoteKind as K;
+    match kind {
+        K::Web | K::Painter | K::Damp | K::TrackingDisruptor | K::GuidanceDisruptor | K::SensorBoost | K::TrackingBoost => format!("{}%", text::num(amount)),
+        K::Scram | K::Point | K::Bubble => trf!("{n} pts", n = text::num(amount)),
+        _ => text::num(amount),
     }
 }
 
@@ -491,8 +562,12 @@ pub fn ewar_name(kind: spai_fit::stats::RemoteKind) -> Option<&'static str> {
         K::TrackingDisruptor => tr!("Tracking disruptor"),
         K::GuidanceDisruptor => tr!("Guidance disruptor"),
         K::Ecm => tr!("ECM"),
+        K::EcmBurst => tr!("ECM burst"),
+        K::SensorBoost => tr!("Sensor booster"),
+        K::TrackingBoost => tr!("Tracking computer"),
         K::Scram => tr!("Scrambler"),
         K::Point => tr!("Disruptor"),
+        K::Bubble => tr!("Warp bubble"),
         K::Neut => tr!("Neutraliser"),
         K::Nos => tr!("Nosferatu"),
         _ => return None,

@@ -33,7 +33,7 @@ impl Tree {
             if rolled.contains(&t.id) {
                 continue;
             }
-            if !t.published || !matches!(place_of(dogma, t), Place::Ship | Place::Module(_) | Place::Charge | Place::Drone | Place::Fighter | Place::Implant | Place::Booster) {
+            if !t.published || !matches!(place_of(dogma, t), Place::Ship | Place::Module(_) | Place::Charge | Place::Drone | Place::Fighter | Place::Implant | Place::Booster) || crate::picker::structure_fighter(dogma, t) {
                 continue;
             }
             if let Some(g) = t.market_group {
@@ -188,6 +188,21 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
                 f.ship = type_id;
             });
         }
+        // A subsystem has a slot of its own, by its group, and replaces what is there.
+        Place::Module(Slot::Subsystem) if sim.session().is_some_and(|s| !dogma.subsystem_groups(s.fit.ship).is_empty()) => {
+            let ship = sim.session().map_or(0, |s| s.fit.ship);
+            let group = dogma.type_(type_id).map(|t| t.group);
+            let own = dogma.attr_named("fitsToShipType").and_then(|a| dogma.type_(type_id).and_then(|t| t.attr(a.id))).is_some_and(|v| v as TypeId == ship);
+            let Some(index) = dogma.subsystem_groups(ship).iter().position(|g| Some(*g) == group).filter(|_| own) else {
+                sim.status(trf!("{name} does not go on this hull", name = formats::name_of(&dogma, type_id)));
+                return false;
+            };
+            let index = index as u8;
+            sim.edit(EditKind::AddModule, now_ms, |f| {
+                f.modules.retain(|m| !(m.slot == Slot::Subsystem && m.index == index));
+                f.modules.push(spai_fit::fit::Module::new(type_id, Slot::Subsystem, index));
+            });
+        }
         Place::Module(slot) => {
             let total = sim.computed().map_or(0, |c| c.fitting.slots[Slot::ALL.iter().position(|s| *s == slot).unwrap_or(0)].1);
             let view = sim.view_fit();
@@ -236,7 +251,7 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
                 f.boosters.push(spai_fit::fit::Booster { type_id, side_effects: false, side_on: None });
             });
         }
-        Place::Other => return false,
+        Place::Mode | Place::Other => return false,
     }
     true
 }
@@ -448,6 +463,7 @@ fn type_row(ui: &mut egui::Ui, dogma: &Dogma, id: TypeId, indent: f32, note: &st
             *details = Some(id);
             ui.close();
         }
+        crate::compare::menu(ui, dogma, id);
     });
     add
 }

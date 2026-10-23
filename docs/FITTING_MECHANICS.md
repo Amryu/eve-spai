@@ -17,7 +17,7 @@ Baked from the JSONL zip by `spai_fit::bake::from_zip` into one blob
 
 | Member | Taken |
 |---|---|
-| `types.jsonl` | Published types of categories 6 ship, 7 module, 8 charge, 18 drone, 20 implant/booster, 32 subsystem, 87 fighter; every 16 skill published or not; type 1373 `CharacterType` (the pilot's base attributes). English name, group, market group, meta group/level, tech level, `variationParentTypeID`; `mass`, `capacity`, `volume`, `radius` are injected as attributes 4, 38, 161, 162 when the dogma lacks them. |
+| `types.jsonl` | Published types of categories 6 ship, 7 module, 8 charge, 18 drone, 20 implant/booster, 32 subsystem, 87 fighter; every 16 skill published or not; every type of group 1306 Ship Modifiers (the hull modes, unpublished); every type of group 90 Bomb (heavy fighters drop unpublished ones, named by `fighterAbilityLaunchBombType`); type 1373 `CharacterType` (the pilot's base attributes). English name, group, market group, meta group/level, tech level, `variationParentTypeID`; `mass`, `capacity`, `volume`, `radius` are injected as attributes 4, 38, 161, 162 when the dogma lacks them. |
 | `typeDogma.jsonl` | Attribute values and effects of the kept types. `requiredSkillN` / `requiredSkillNLevel` (182/277, 183/278, 184/279, 1285/1286, 1289/1287, 1290/1288) are also folded into `required_skills`. |
 | `dogmaAttributes.jsonl` | All: `stackable`, `highIsGood`, default, unit, min/max attribute, display name. |
 | `dogmaEffects.jsonl` | Effects used by kept types: category, offensive/assistance flags, the duration/range/falloff/tracking/discharge/usage-chance/resistance attribute ids, and `modifierInfo`. A modifier is dropped when its `func` is `EffectStopper`, its `operation` is 9 (skill level from skill points) or missing, or its domain is unknown. `skillTypeID = -1` becomes `SkillRef::Own`. |
@@ -41,10 +41,20 @@ A fit becomes a tree of items, each with a type, a state, a *location* and an *o
 | Ship | online | – | pilot |
 | Every skill in the data, `skillLevel` (280) overridden with the pilot's level | online | pilot | pilot |
 | Module (any rack, rigs and subsystems included) | as fitted | ship | pilot |
+| Hull mode (group 1306) | online | ship | pilot |
 | Charge | its module's | ship | pilot |
 | Drone, fighter | active in space, else offline | ship | pilot |
 | Implant, booster | online | pilot | pilot |
 | Projected module (another ship's) and its charge | as set | – | – |
+
+A hull's modes are the Ship Modifiers types named after it (`Confessor Defense Mode`), sorted by
+name; the fit flies the one it names, else the first (defense, or Anhinga's primary). A mode of
+another hull counts as none and is dropped on edit and import. Modes are category 7, so their
+`PostDiv` modifiers are stacking-penalised like a module's. EFT writes the mode as its own section
+after the racks, DNA as one more item; the game's XML and ESI JSON have no mode.
+Tests: `a_hull_flies_its_chosen_mode_or_else_its_first`,
+`the_mode_travels_in_eft_and_dna_and_only_with_its_hull`,
+`the_real_blob_switches_a_tactical_destroyers_mode` (ignored, `SPAI_DOGMA_BLOB`).
 
 Unknown type ids are listed in `Calc::unknown_types` and left out. Mutated modules carry their
 mutated values as overrides.
@@ -118,7 +128,8 @@ Then the value is clamped by the attribute's `minAttributeID` / `maxAttributeID`
 
 **Stacking penalty.** A Mul/Div/Percent modifier is penalised when the modified attribute is not
 `stackable` and the source item's category is not one of ship (6), charge (8), skill (16), implant
-(20), subsystem (32), structure (65). Fleet buffs are always penalised. Within **one operator**,
+(20), subsystem (32), structure (65), and it is not a system effect (an `Environment` item: wormhole
+and abyssal weather, incursions), which stands apart as implants do. Fleet buffs are always penalised. Within **one operator**,
 the penalised bonuses (`x > 0`) and maluses (`x < 0`) are sorted apart by `|x|` descending and the
 k-th (from 0) keeps
 
@@ -183,6 +194,8 @@ fitted types; everything there that changes an attribute must be listed here).
 | `remoteWebifierFalloff`/`Entity`, `remoteTargetPaintFalloff`/`Entity`, `remoteSensorDampFalloff`/`Entity`, `remoteSensorBoostFalloff`, `shipModuleTrackingDisruptor`, `shipModuleRemoteTrackingComputer`, `npcEntityWeaponDisruptor`, `shipModuleGuidanceDisruptor`, when the data leaves them empty | On a projected module or drone switched on, once per projected copy, all PostPercent and penalised: webs `maxVelocity` by `speedFactor`; painters `signatureRadius` by `signatureRadiusBonus`; dampeners and boosters `maxTargetRange` by `maxTargetRangeBonus` and `scanResolution` by `scanResolutionBonus`; tracking disruptors and computers the ship's Gunnery items' `maxRange`, `falloff`, `trackingSpeed` by `maxRangeBonus`, `falloffBonus`, `trackingSpeedBonus`; guidance disruptors the Missile Launcher Operation charges' `maxVelocity`, `explosionDelay`, `aoeCloudSize`, `aoeVelocity` by `missileVelocityBonus`, `explosionDelayBonus`, `aoeCloudSizeBonus`, `aoeVelocityBonus`. Neutralisers, ECM and remote repairs are not applied to the ship's own stats yet. | The modules' show-info descriptions |
 | `droneDmgBonus` on a skill | Drones requiring the skill: `damageMultiplier` PostPercent the skill's `damageMultiplierBonus`. | same |
 | `selfRof` on a skill | Launchers requiring the skill: `speed` PostPercent the skill's `rofBonus` (293, × level by `rapidFiringSkillBoostRofBonus`). | same |
+| `shipModuleGuidanceDisruptor`, `npcEntityWeaponDisruptor` on a vorton | The ship's Vorton Projector Operation items' `aoeCloudSize` and `aoeVelocity` by `aoeCloudSizeBonus`, `aoeVelocityBonus`, penalised: a vorton keeps its explosion on the module. | — |
+| `warpDisruptSphere` | While active: ship `signatureRadius` PostPercent the module's `signatureRadiusBonus` (penalised), which the focused script takes to nothing. | The module's description |
 | `slotModifier`, `hardPointModifierEffect` on a subsystem | Ship `hiSlots`/`medSlots`/`lowSlots` += `hiSlotModifier`/`medSlotModifier`/`lowSlotModifier`; `turretSlotsLeft`/`launcherSlotsLeft` += `turretHardPointModifier`/`launcherHardPointModifier`. | The subsystems' descriptions |
 
 Empty effects that are *not* attribute modifiers (what a module does rather than what it changes:
@@ -221,11 +234,17 @@ in the band fitting tools agree on.
 | EHP | Per layer `hp / Σ_t w_t · resonance_t` with the damage profile's weights normalised to 1; shield 263 with 271–274, armour 265 with 267–270, hull 9 with 113/110/109/111. |
 | Shield regen | Peak `2.5 × shieldCapacity / (shieldRechargeRate / 1000)` per second, at 25% (same curve as the capacitor). |
 | Local reps | Active repairers only: `armorDamageAmount` (84) / `shieldBonus` (68) / `structureDamageAmount` (83) per `duration` (73) seconds, overload already in the attributes. An ancillary armour repairer with Nanite Repair Paste (group 916) repairs `chargedArmorDamageMultiplier` (1886) times as much for its load (cycles = `floor(capacity / paste volume / chargeRate)`), then reloads `reloadTime` (1795): the sustained figure counts the reload, the burst figure does not. An ancillary shield booster with charges runs its load, then reloads; without, it runs on capacitor. |
-| Turret volley | `damageMultiplier` (64) of the turret × the charge's four damage attributes (114, 118, 117, 116). No charge, no damage. Effects: `projectileFired`, `targetAttack`, `ChainLightning`, `targetDisintegratorAttack`. |
+| Turret volley | `damageMultiplier` (64) of the turret × the charge's four damage attributes (114, 118, 117, 116). No charge, no damage. Effects: `projectileFired`, `targetAttack`, `targetDisintegratorAttack`. A charge the module cannot take (another group, size, or bigger than it holds) is left out of it. |
 | Disintegrator spool | Volley × `(1 + damageMultiplierBonusMax (2734) × spool)`, spool 0..1 from the fit (`Module::spool`, fully spooled by default). |
-| Missile volley | The charge's damage × the pilot's `missileDamageMultiplier` (212, which Ballistic Control Systems raise); launcher effect `useMissiles`, charge effect `missileLaunching` (or the FoF / breacher variants). |
+| Missile volley | The charge's damage × the pilot's `missileDamageMultiplier` (212, which Ballistic Control Systems raise); launcher effect `useMissiles`, charge effect `missileLaunching` or `fofMissileLaunching`. |
 | Drone volley | `damageMultiplier` × the drone's damage × drones in space; effect `targetAttack`. |
 | Smartbomb | The module's own damage per `duration`, range `empFieldRange` (99). |
+| Vorton projector | Effect `ChainLightning`: `damageMultiplier` × the charge's damage, range `maxRange`, applied as a missile from the module's own `aoeCloudSize`, `aoeVelocity`, `aoeDamageReductionFactor`; it arcs on to `VortonArcTargets` more ships, each within `VortonArcRange` of the last. |
+| Bomb | Charge effect `bombLaunching`: the charge's damage, no missile skill, bursting at `maxVelocity × explosionDelay`; everything within `explosionRange` of that point takes `min(1, sig / aoeCloudSize)` of it. A heavy fighter's `fighterAbilityLaunchBomb` drops one bomb of `fighterAbilityLaunchBombType` per fighter each `fighterAbilityLaunchBombDuration`. |
+| Breacher pod | Charge effect `dotMissileLaunching`: each second for `dotDuration`, `min(dotMaxDamagePerTick, dotMaxHPPercentagePerTick % × the target's whole hit points)`, through no resistance; one runs on a target at a time, so the group's DPS is one pod's cap however many launchers. |
+| Superweapon | `superWeapon*`: the module's damage once per `duration`. `doomsdayBeamDOT`, `doomsdaySlash`, `doomsdayConeDOT`, `debuffLance`: the damage each `doomsdayDamageCycleTime` for `doomsdayDamageDuration`, within `maxRange` (else the hull's lock range), ships smaller than its `signatureRadius` taking the share their signature is; `doomsdayDamageRadius` is the area around the primary it reaches. |
+| Mining | Every running `miningLaser`, `miningClouds` or mining drone: `miningAmount / duration`, × `(1 + miningCritChance × miningCritBonusYield)`; ore, ice (group 464 harvesters), gas and drones apart. |
+| Group limits | `maxGroupFitted`, `maxGroupOnline`, `maxGroupActive` of the module's type: past the limit, in rack order, a module counts as offline, offline, online, with a warning. |
 | Cycle | `speed` (51) for weapons, plus `moduleReactivationDelay` (669). |
 | Load | `floor(floor(capacity / chargeVolume) / chargeRate)` cycles; crystals that wear (`crystalsGetDamaged` 786): `floor(hp / (crystalVolatilityDamage × crystalVolatilityChance))` per crystal carried; scripts and unworn crystals: unlimited. |
 | DPS | Burst `volley / cycle`; sustained `volley × shots / (shots × cycle + reloadTime)`. |
@@ -254,6 +273,8 @@ Event-driven:
   fraction `p` is `10 C / τ × (√p − p)`, peaking at `p = 0.25` with `2.5 C / τ`.
 - Each user activates every `cycle`, drawing `need` and giving `give`; after `shots` activations it
   reloads for `reloadTime`. Identical users start staggered over one cycle.
+- A running nosferatu gives its `powerTransferAmount` each cycle, the target taken to have it. This is
+  the fitting screen's figure; the capacitor graph plays it as the game does (below).
 - A capacitor booster is held back while its charge would overfill the capacitor; when a module finds less capacitor than it needs, the ready booster that wastes the
   least fires first, and only when none can is the capacitor dry.
 - A capacitor booster waits while `cap + give > C`, looking again a second later.
@@ -263,8 +284,17 @@ Event-driven:
   `p = ¼ (1 + √(1 − 0.4 D τ / C))²`, none when `D` exceeds the peak. (The factor is 0.4, not the 2
   sometimes quoted: 2 belongs with τ expressed as the time to the peak.)
 
+**The capacitor graph** (`cap_sim::trace_against`, users kept in `Computed.cap.users`) runs the
+nosferatu as the game does: a nosferatu drains only a target whose capacitor fraction is above the
+ship's, unless its `nosOverride` (1945) is set (the Blood Raider hulls' `shipBonusNosferatuOverride`),
+and never more than the target holds, times the target's `energyWarfareResistance`. A target fit on
+the graph runs its own modules on a capacitor of its own, which the drain lowers. Without one the
+target is unknown and only overriding nosferatu count. The graph's targets take fits for this.
+
 Tests: `stats::cap_sim::tests::*` (curve, peak, settle vs estimate, running dry, boosters,
-stagger), `capacitor_usage_comes_from_the_effects_discharge_attributes`.
+stagger, `a_nosferatu_drains_only_a_fuller_capacitor_unless_the_hull_overrides_it`),
+`capacitor_usage_comes_from_the_effects_discharge_attributes`,
+`a_running_nosferatu_feeds_the_capacitor`, `the_capacitor_graph_feeds_a_nosferatu_only_from_a_fuller_target`.
 
 ## 11. Formats (`formats`)
 
@@ -285,7 +315,10 @@ Tests: `formats::tests::*`, `eft::tests::lines_parse_every_decoration`.
 ## 12. Warnings (`warnings`)
 
 Errors: CPU, power, calibration, slots, hardpoints, drone bandwidth, bay or count over; unknown
-types. Warnings: no propulsion module, offline modules, an ancillary armour repairer without
+types; one more of a group than `maxGroupFitted`; a charge the module cannot take; a squadron over
+`fighterSquadronMaxSize`, more squadrons out than `fighterTubes` or than the hull's
+`fighterLightSlots` / `fighterSupportSlots` / `fighterHeavySlots`. Warnings: one more of a group
+online or running than its limit. Warnings: no propulsion module, offline modules, an ancillary armour repairer without
 paste, a capacitor or ancillary shield booster without charges, a weapon without ammo, capacitor
 running dry, missing skills. Info: free slots; ammo coverage: for each turret or launcher group,
 the charges it can load (`chargeGroup1..5` 604/605/606/609/610 and `chargeSize` 128) are compared
@@ -304,10 +337,14 @@ within 600 ms fold into one step; a new edit drops the redo branch. Test: `histo
 
 | Weapon | Share of listed damage that lands |
 |---|---|
-| Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / d` in rad/s, and 0 past `optimal + 3 × falloff`. Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
+| Turret | `hit = 0.5^((angular × optimalSigRadius / (trackingSpeed × sig))²) × 0.5^((max(0, d − optimal) / falloff)²)`, `angular = transversal / max(d, 1 m)` in rad/s (point blank, anything crossing is untrackable), and 0 past `optimal + 3 × falloff`. Then the average over normal and wrecking shots: `0.5 × min(hit² + 0.98 hit + 0.0501, 6 hit)` (EVE Uni "Turret mechanics"). `trackingSpeed` is the post-2016 figure (33.792 for a 425mm AutoCannon II), paired with the 40 000 m `optimalSigRadius`. |
 | Missile | `min(1, sig / aoeCloudSize, ((sig × aoeVelocity) / (aoeCloudSize × targetVelocity))^aoeDamageReductionFactor)` (EVE Uni "Missile mechanics"). The server moves missiles in whole seconds: every missile reaches `velocity × floor(flightTime)`, the share `fract(flightTime)` reaches one second further, none beyond. |
 | Drone | Nothing past the pilot's control range. A drone as fast as the target keeps up and hits every shot, averaging the same 1.015 of its damage (wrecking shots included) as a turret with no transversal; a slower one is a turret whose transversal is the speed it lacks, around its own orbit (an approximation). |
 | Smartbomb | All within `empFieldRange`, nothing beyond. |
+| Vorton | Nothing past its range; within, the missile formula from its own explosion figures. |
+| Bomb | Nothing outside `explosionRange` of where it bursts; within, `min(1, sig / aoeCloudSize)`. |
+| Breacher pod | Its reach as a missile's; the damage is the pod's cap until the target's hit points are known (the fleet race). |
+| Superweapon | Nothing past its range; within, `min(1, sig / signatureRadius)` for those that have one. The Bosonic field's cone has no area radius in the data, so the fleet race lands it on its primary only (to address). |
 
 Tests: `stats::application::tests::*` (every shot hits in optimal, half at one falloff, cut-off at
 three; the 425mm AutoCannon II figure against a 400 m target at 0.1 rad/s; wrecking shots below
@@ -369,8 +406,10 @@ Tests: `variations::tests::*`, `warnings::tests::clashing_variations_are_pointed
 ## 17. Remote modules and fighters (`stats::remote`, `stats::fighter_weapons`)
 
 **Remote modules** (`Computed.remote.modules`): every active module whose effect names it as
-acting on another ship, with the amount it gives or takes, its optimal (`maxRange`, warp
-scramble range for tackle) and its falloff (`falloffEffectiveness`, else `falloff`):
+acting on another ship, with the amount it gives or takes, its optimal (`maxRange`; a warp
+disruption field generator's `warpScrambleRange`, which the focused script raises by 50 %) and its
+falloff (`falloffEffectiveness`, else `falloff`, each only when the module carries it: a missing
+attribute reads as its default and gave capacitor transmitters a 1 m falloff):
 
 | Kind | Effect | Amount |
 |---|---|---|
@@ -379,10 +418,30 @@ scramble range for tackle) and its falloff (`falloffEffectiveness`, else `fallof
 | neutraliser | `energyNeutralizerFalloff` | GJ drained per second |
 | web, painter, damp, tracking and guidance disruptor | `remoteWebifierFalloff`, `remoteTargetPaintFalloff`, `remoteSensorDampFalloff`, `shipModule{Tracking,Guidance}Disruptor` | the strongest of its bonuses, as a magnitude in percent (a −60 % web reads 60) |
 | ECM | `remoteECMFalloff` | the strongest sensor-type jam strength |
+| ECM burst | `ECMBurstJammer`: everything within `ecmBurstRange` (142) around the ship, no falloff | the strongest sensor-type jam strength |
+| remote sensor booster, remote tracking computer | `remoteSensorBoostFalloff`, `shipModuleRemoteTrackingComputer`: help for a friend (`is_assist`), never counted as ewar on an enemy | the strongest of its bonuses in percent |
 | scrambler, disruptor | `warpScramble…`, `warpDisrupt` | warp points |
+| warp disruption field | `warpDisruptSphere`: a point with the focused script loaded, else a bubble around the ship | warp points |
+
+An ancillary remote armour repairer with paste repairs `chargedArmorDamageMultiplier` times as
+much for its load, then reloads: the figure is the sustained one, as for local repairers. A
+mutadaptive one spools by `repairMultiplierBonusPerCycle` a cycle up to `repairMultiplierBonusMax`,
+fully spooled unless the module is set lower; the fleet race spools it from cold on each new
+primary. Drones and support fighters count as well, each drone and each fighter of a squadron
+once: logistics drones (`npcEntityRemote{Armor,Shield,Hull}Repairer`), neutralising, webbing,
+painting, damping, disrupting and jamming drones (`entityEnergyNeutralizerFalloff`,
+`remote…Entity`, `npcEntityWeaponDisruptor`, `entityECMFalloff`) and the fighter abilities
+`fighterAbilityEnergyNeutralizer`, `…StasisWebifier`, `…WarpDisruption`, `…ECM`.
+
+Tests: `boosts_for_friends_and_an_ecm_burst_show_as_remote_and_stay_out_of_the_enemys_ewar`.
 
 The totals `armor_rep`, `shield_rep`, `hull_rep`, `cap_transfer`, `neut` and `rep_range`
 (the longest optimal plus falloff of the repairers) feed the fleet numbers (section 18).
+
+A projected fit brings its modules and drones with their attributes as its own fit makes them
+(its pilot's skills, its hull's bonuses, its charges), so they are not figured again on the fit
+they point at. A fit's own running command bursts boost it, as a booster is in the fleet it
+boosts.
 
 `stats::range_factor(d, optimal, falloff)`: 1 inside the optimal, `0.5^((d − optimal) / falloff)²`
 beyond it, 0 past three falloffs or with no falloff. The graphs "Remote repair vs distance"
@@ -397,10 +456,23 @@ name (`fighterAbilityAttackMissileDamageEM` and so on) rather than by baked id. 
 the missile formula (section 14) with the ability's explosion radius, velocity and reduction
 factor, times `range_factor` of the ability's optimal and falloff (missiles: range, no falloff).
 The reduction sensitivity, the squadron's own tank, speed and abilities beyond damage are not
-modelled.
+modelled. Rocket and torpedo abilities count as sustained damage without the downtime to rearm
+between salvos (their charge count and rearm time are not in the data); the stats panel says so.
+Kamikaze is a one-shot that loses the fighter and is left out.
 
 Tests: `stats::tests::remote_modules_are_listed_with_their_reach_and_fighters_shoot_like_missiles`,
-`graphs::tests::remote_and_ewar_curves_follow_the_modules_reach`.
+`stats::tests::tackle_reaches_its_max_range_and_a_field_its_radius`,
+`graphs::tests::remote_and_ewar_curves_follow_the_modules_reach`,
+`stats::tests::drones_fighters_and_charged_or_spooling_repairers_count_as_remote`,
+`stats::tests::a_vorton_hits_within_its_range_like_a_missile_and_arcs_on`,
+`stats::tests::a_bomb_bursts_at_the_end_of_its_flight_and_a_breacher_pod_eats_hit_points`,
+`stats::tests::superweapons_strike_once_or_tick_and_spare_small_ships`,
+`stats::tests::a_group_limit_holds_the_extra_module_back_and_a_wrong_charge_stays_out`,
+`stats::tests::a_running_bubble_blooms_the_signature_and_mining_counts_its_crits`,
+`stats::tests::an_oversized_squadron_counts_at_its_size_and_the_hull_needs_tubes_for_it`,
+`projection::tests::a_fits_own_bursts_boost_it_and_a_projected_module_brings_its_own_fits_numbers`.
+
+**Fighter squadrons** count no more fighters than `fighterSquadronMaxSize`.
 
 ## 18. Fleets (`fleet`)
 
@@ -408,7 +480,50 @@ A fleet is a list of saved fits with a count rule each: a fixed number, a share 
 in percent, or "fill" (what the others leave, within bounds: the line ship). Fixed and percent
 counts are taken first, fill slots share the rest, a typed number overrides its rule
 (`fleet::resolve_counts`). Each slot flies one of its fit's variations or its base fit
-(`FleetSlot.variation`, `fleet::flown`), whatever was last switched on in the editor.
+(`FleetSlot.variation`, `fleet::flown`), whatever was last switched on in the editor. A slot
+can also fly other charges (by weapon type) and another hull mode than its fit
+(`FleetSlot.charges`, `FleetSlot.mode`, `FleetSlot::adjusted`): kept on the fleet, the fit
+untouched, and cleared to go back to it. Every fleet number uses them. Test:
+`a_slot_flies_its_own_charges_and_mode_and_its_fit_keeps_its_own`.
+
+**Splitting a stack** (`FleetSlot.splits`, `WeaponSplit`): a slot can split one weapon type's
+stack in two, the first `first` modules by slot on one charge and the rest on another. Only what
+is aimed at one ship splits (`fleet::splittable`: turrets, missiles, vortons, breachers, drones,
+fighters), not bombs, smartbombs or area superweapons. On one target the two charges simply fly
+together. On two targets (`apart`) each part must kill its own in one volley, the slot's other
+weapons with the first part, so the critical mass is the larger of the two parts' needs. In the
+race a side with such a split has a second primary per fire group, called and replaced like the
+first, which the split's second part shoots. Tests:
+`a_split_stack_fires_two_charges_and_on_two_targets_needs_more_ships`,
+`a_stack_split_onto_two_targets_kills_two_ships_at_once_in_the_race`.
+
+**How ewar is laid** (`Fleet.ewar_plan`, `fleet::ewar::planned`): each kind is focused or spread.
+A focused kind (by default webs, painters and tackle) is on the ship the fleet shoots, or shared
+over the primaries when its fire splits (`split_fire`); a spread kind (dampeners, tracking and
+guidance disruptors, neutralisers and nosferatu, jammers) is shared over the other fleet, one
+module on one ship each, the rest going free. `coverage` is how much of the other fleet the spread
+kinds reach, since pilots cluster: those ships take more, and fleet-wide figures
+(`planned_average`) average it over the whole fleet. Our ewar on what we shoot uses our plan, theirs
+on us theirs. Split volleys (Split fire in the results) share our focused ewar over the targets.
+Tests: `a_focused_kind_lands_on_the_primaries_and_a_spread_one_on_the_whole_fleet`,
+`spread_ewar_on_part_of_the_fleet_hits_those_harder_and_averages_the_same_or_less`,
+`a_split_volley_shares_the_webs_and_needs_more_ships_per_group`.
+
+**One ship against one target** (the Ships tab): the slot's numbers under the enemy's ewar
+(speed, signature, lock range, scan resolution and the lock time on the target, capacitor and
+what neutralises it, its tank), and on a chosen target at a chosen distance and speed what it
+lands (`fleet::ammo::applied`) through the target's outermost layer, damage type by damage type,
+with the time one ship and the whole slot take to kill it. Every weapon lists its carried
+charges (or all it can load, `fleet::ammo::choices`) with reach, application, damage and what
+lands on the target, the best marked. Our ewar on the target is `fleet::ewar::ewar_on` of all
+our ships on it; theirs on this ship is the enemy fleet's, shared over our ships or all on this
+one, disrupting its weapons (`fleet::sweep::disrupted`). Each ewar module type of each ship of
+either fleet can be left out, per ship looked at. Kill times go volley by volley: each weapon
+group on its own cycle, missiles landing after their flight, times the volley efficiency, against
+the enemy logistics' repairs on one ship (`fleet::reps_on_one`, as many logistics as set) from
+five seconds after the first hit, never past full. For this page only, the fleets fly copies:
+boosters, and module states per slot (`FleetSlot.states`, applied in `FleetSlot::adjusted`), for
+this ship or an enemy target. Test: `a_slot_can_fly_a_module_switched_off_and_its_fit_keeps_it_on`.
 
 **Roles** (`fleet::role_of`): the main slot is `Main`, other filling slots `Mainline`; the
 rest by hull group: logistics, command ships and command destroyers, interdictors and heavy
@@ -417,7 +532,8 @@ interdictors (tackle), recons and electronic attack ships (ewar); anything else 
 **Bursts.** One booster per burst kind: a fit of the fleet carrying that kind's burst module, or a
 generic booster (`Fleet.boost_shortcuts`, the same shortcut as on a fit's projected tab: the
 kind's Tech II burst once per charge switched on, on a hull without burst bonuses or a chosen
-boosting hull, its own skills and optionally the mindlink). A generic booster flies in no slot,
+boosting hull (`fleet::hull_boosts`: a trait line naming burst strength, not an ECM burst
+jammer's), its own skills and optionally the mindlink). A generic booster flies in no slot,
 so it is never a target. Every active burst module with a charge names up to four buffs
 (`warfareBuffNID`, `warfareBuffNValue`, after the charge's `chargeBonusWarfareCharge`
 modifiers and the booster's skills); the strongest of each buff id is kept (section 6) and every
@@ -505,6 +621,15 @@ best range is the farthest where it still lands 90% of its most.
   against that signature.
 - Missile volleys land after their flight, distance over missile velocity; on a primary already
   dead they are lost.
+- A vorton's arc, a bomb's blast and a doomsday's area land on more than the primary: as many of
+  the other alive ships as the target fleet's formation puts within reach
+  (`geometry::arc_reach`, jumping to the nearest ship not yet struck within `VortonArcRange`, at
+  most `VortonArcTargets` times; `geometry::splash_reach`, the ships within the radius), averaged
+  over every ship as the primary; whole strikes on the first of them and a share on the last.
+- A breacher pod that lands starts its damage over time on its ship, the strongest of those on it,
+  renewed by each pod; it goes through no resistance and kills as a volley does. A breach control
+  on the ship goes on as the first pod lands and lets through its share
+  (`breacherPodActivatedDamageReceivedPercentage`) for its `duration`, once.
 - Logistics repair only once the primary has taken damage: each logi ship after its reaction
   (spread log-normally about `logi_reaction_s`, 1.5 s by default), its lock time on the
   primary's signature unless it is among the `logi_prelock` share holding it locked already, its

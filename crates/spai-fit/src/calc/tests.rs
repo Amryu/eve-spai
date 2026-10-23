@@ -84,8 +84,8 @@ fn implants_are_exempt_from_the_penalty_and_booster_side_effects_are_opt_in() {
     f.modules.push(Module::new(MWD, Slot::Mid, 0).with_state(State::Active));
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     let mods = c.modifiers_of(c.ship_idx(), attr::MAX_VELOCITY);
-    assert_eq!(mods.iter().filter(|(_, _, p)| !*p).count(), 1, "the implant's 5% is unpenalised");
-    assert_eq!(mods.iter().filter(|(_, _, p)| *p).count(), 1, "the MWD's bonus is penalised");
+    assert_eq!(mods.len(), 2);
+    assert!(mods.iter().all(|(_, _, p)| !*p), "the implant's 5% and the MWD's boost are both unpenalised");
     f.boosters.push(Booster { type_id: BOOSTER, side_effects: false, side_on: None });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     assert_eq!(c.modifiers_of(c.ship_idx(), attr::MAX_VELOCITY).len(), 2);
@@ -178,6 +178,7 @@ fn weather_reaches_the_ship_and_several_webs_each_apply() {
     f.projected.push(Projected { type_id: BEACON, ..Projected::default() });
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     assert!(close(c.ship(attr::MAX_VELOCITY), 365.0 * 1.1), "a beacon's system effect reaches the ship");
+    assert!(c.modifiers_of(c.ship_idx(), attr::MAX_VELOCITY).iter().all(|(_, _, p)| !*p), "and it is never stacking-penalised");
     f.projected[0].state = State::Offline;
     let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
     assert!(close(c.ship(attr::MAX_VELOCITY), 365.0), "and switched off it does not");
@@ -325,6 +326,22 @@ fn the_real_blob_agrees_with_the_named_attributes() {
 }
 
 
+/// `SPAI_DOGMA_BLOB`: the GSF tackle Sabre (two Nanofiber Internal Structure II, 5MN Y-T8) at
+/// all V flies 2989.4 m/s in game: the nanofibres stack only with each other, not the MWD.
+#[test]
+#[ignore]
+fn the_real_blob_keeps_the_mwd_boost_out_of_the_stacking_chain() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let mut f = Fit::new(d.type_named("Sabre").unwrap().id, "Sabre");
+    let nano = d.type_named("Nanofiber Internal Structure II").unwrap().id;
+    f.modules.push(Module::new(nano, Slot::Low, 0).with_state(State::Online));
+    f.modules.push(Module::new(nano, Slot::Low, 1).with_state(State::Online));
+    f.modules.push(Module::new(d.type_named("5MN Y-T8 Compact Microwarpdrive").unwrap().id, Slot::Mid, 0).with_state(State::Active));
+    let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let v = c.ship(attr::MAX_VELOCITY);
+    assert!((v - 2989.4).abs() < 0.1, "{v}");
+}
+
 #[test]
 fn a_rolled_module_or_drone_carries_its_rolled_values() {
     let d = dataset();
@@ -353,4 +370,52 @@ fn a_reactive_hardener_settles_where_the_damage_lands() {
     let two = adapt(even, ship, [0.5, 0.5, 0.0, 0.0], 0.06);
     assert!(two[0] > 0.2 && two[1] > 0.2 && two[2] < 0.1 && two[3] < 0.1, "two types share it: {two:?}");
     assert!((two.iter().sum::<f64>() - 0.6).abs() < 1e-9, "never more or less than it has");
+}
+
+#[test]
+fn a_hull_flies_its_chosen_mode_or_else_its_first() {
+    let d = dataset();
+    assert_eq!(d.modes_of(SHIP), vec![DEFENSE_MODE, PROPULSION_MODE]);
+    let speed = |mode: Option<TypeId>| {
+        let mut f = fit();
+        f.mode = mode;
+        Calc::new(&d, &f, &SkillSet::all_v(), &Env::default()).ship(attr::MAX_VELOCITY)
+    };
+    assert_eq!(speed(None), speed(Some(DEFENSE_MODE)), "the first mode until another is chosen");
+    assert!(close(speed(Some(PROPULSION_MODE)), 2.0 * speed(Some(DEFENSE_MODE))));
+    assert_eq!(speed(Some(GUN)), speed(None), "what is not one of the hull's modes counts as none");
+}
+
+/// `SPAI_DOGMA_BLOB`: a tactical destroyer flies its first mode until another is chosen, and each
+/// mode moves what it names.
+#[test]
+#[ignore]
+fn the_real_blob_switches_a_tactical_destroyers_mode() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    for hull in ["Confessor", "Svipul", "Jackdaw", "Hecate", "Skua", "Anhinga"] {
+        let t = d.type_named(hull).unwrap();
+        let names: Vec<&str> = d.modes_of(t.id).iter().map(|m| d.type_(*m).unwrap().name.as_str()).collect();
+        eprintln!("{hull}: {names:?}");
+        assert_eq!(names.len(), 3, "{hull}");
+    }
+    let confessor = d.type_named("Confessor").unwrap().id;
+    let modes = d.modes_of(confessor);
+    let mwd = d.type_named("5MN Microwarpdrive II").unwrap().id;
+    let calc = |mode: Option<TypeId>| {
+        let mut f = Fit::new(confessor, "Confessor");
+        f.mode = mode;
+        f.modules.push(Module::new(mwd, Slot::Mid, 0).with_state(State::Active));
+        let c = Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+        assert!(c.unknown_types.is_empty());
+        (c.ship(attr::ARMOR_EM_RESONANCE), c.ship(attr::MAX_VELOCITY), c.ship(attr::SIGNATURE_RADIUS), c.ship(attr::AGILITY))
+    };
+    let (none, defense, prop, sharp) = (calc(None), calc(Some(modes[0])), calc(Some(modes[1])), calc(Some(modes[2])));
+    eprintln!("none {none:?}\ndefense {defense:?}\nsharpshooter {sharp:?}\npropulsion {prop:?}");
+    assert_eq!(none, defense, "the first mode by default");
+    assert!(defense.0 < prop.0 && defense.2 < prop.2, "defense: resists and signature");
+    assert!(prop.1 > defense.1 && prop.1 > sharp.1 && prop.3 < defense.3, "propulsion: speed under a microwarpdrive, agility");
+    let mut plain = Fit::new(d.type_named("Rifter").unwrap().id, "Rifter");
+    plain.mode = Some(modes[0]);
+    let c = Calc::new(&d, &plain, &SkillSet::all_v(), &Env::default());
+    assert!(!c.items().iter().any(|i| i.kind == ItemKind::Mode), "another hull's mode is ignored");
 }

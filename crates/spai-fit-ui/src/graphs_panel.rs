@@ -116,7 +116,7 @@ fn control(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::Ran
 }
 
 /// A number with an optional unit after it, as typed into a value box.
-fn leading_number(s: &str) -> Option<f64> {
+pub(crate) fn leading_number(s: &str) -> Option<f64> {
     let t: String = s.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
     t.parse().ok()
 }
@@ -131,15 +131,31 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         return;
     };
     let kind = sim.graph;
+    let open: Vec<(String, String)> = sim.sessions().iter().map(|s| (s.id.clone(), s.fit.name.clone())).collect();
+    let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
     let mut target = sim.session().map(|s| s.fit.target.clone()).unwrap_or_default();
     let before = target.clone();
     let damage = kind.is_damage();
+    // The capacitor graph takes targets too: theirs is what a nosferatu drains.
+    let with_targets = damage || kind == GraphKind::CapacitorOverTime;
     // Wide enough, the target's settings take a column right of the plot.
     let wide = width >= 800.0;
     // A fixed height above the plot whatever it holds, so nothing in it moves the plot: one line
     // wide, room for the target's settings, scrolled if need be, when narrow.
-    let one_line = width >= 880.0;
-    let top_h = if wide || !damage { if one_line { 30.0 } else { 62.0 } } else { 150.0 };
+    // The window's dock button needs room on that line too.
+    let one_line = width >= if sim.graph_in_window { 980.0 } else { 880.0 };
+    let top_h = if wide || !damage {
+        if one_line {
+            30.0
+        } else if width >= 640.0 {
+            62.0
+        } else {
+            // Docked narrow: the ranges and the ships' menu wrap to lines of their own.
+            126.0
+        }
+    } else {
+        150.0
+    };
     let (top, _) = ui.allocate_exact_size(egui::vec2(width, top_h), egui::Sense::hover());
     let mut top_ui = ui.new_child(egui::UiBuilder::new().max_rect(top).layout(egui::Layout::top_down(egui::Align::Min)));
     top_ui.set_clip_rect(top_ui.clip_rect().intersect(top));
@@ -182,6 +198,16 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         range_box(ui, "sim_graph_x_to", tr!("X up to"), &mut sim.graph_x_to, x, x_fmt(x), x_parse(x), x_step(x));
         range_box(ui, "sim_graph_y_to", tr!("Y up to"), &mut sim.graph_y_to, y, |v| text::num(v), leading_number, 1.0);
+        if sim.graph_in_window && ui.button(format!("{} {}", egui_phosphor::regular::ARROW_SQUARE_IN, tr!("Dock"))).on_hover_text(tr!("Dock the graphs beside the fit, above the bottom dock")).clicked() {
+            sim.dock_graphs(true);
+        }
+        // Too narrow for the ships' column: they are a menu away.
+        if width < 640.0 {
+            ui.menu_button(tr!("Ships"), |ui| {
+                ui.set_min_width(260.0);
+                ships_list(sim, ui, &open, &current, with_targets);
+            });
+        }
         if damage && !wide {
             target_controls(sim, ui, kind, &mut target, false);
         }
@@ -192,9 +218,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     // settings on the right.
     let (area, _) = ui.allocate_exact_size(egui::vec2(width, (ui.available_height() - 8.0).max(200.0)), egui::Sense::hover());
     let right_w = if wide && damage { CONTROLS_W } else { 0.0 };
-    let open: Vec<(String, String)> = sim.sessions().iter().map(|s| (s.id.clone(), s.fit.name.clone())).collect();
-    let current = sim.session().map(|s| s.id.clone()).unwrap_or_default();
-    sim.graph_attackers.retain(|id| *id != current && open.iter().any(|(o, _)| o == id));
+    // Kept by tab, whichever tab is on screen; only a closed tab leaves.
+    sim.graph_attackers.retain(|id| open.iter().any(|(o, _)| o == id));
     sim.graph_targets.retain(|id| open.iter().any(|(o, _)| o == id));
     // Both columns only where the plot keeps room; else the ships head the right one.
     let ships_right = right_w > 0.0 && width - right_w - SHIPS_W - 16.0 < 480.0;
@@ -207,7 +232,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             ui.set_min_height(rect.height() - 12.0);
             egui::ScrollArea::vertical().id_salt("sim_graph_controls").auto_shrink([false, false]).show(ui, |ui| {
                 if ships_right {
-                    ships_list(sim, ui, &open, &current, damage);
+                    ships_list(sim, ui, &open, &current, with_targets);
                     ui.add_space(10.0);
                 }
                 target_controls(sim, ui, kind, &mut target, true);
@@ -220,13 +245,13 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     let shooter_top = computed.mobility.max_velocity;
     let motion = sim.graph_motion;
-    let spec = GraphSpec { include_drones: sim.graph_drones, x_to: sim.graph_x_to.get(&kind.axes().1).copied(), ..GraphSpec::new(kind, motion.apply(&target, shooter_top)) };
+    let spec = GraphSpec { include_drones: sim.graph_drones, x_to: sim.graph_x_to.get(&kind.axes().1).copied(), projection: graphs::Projection { target: None, across: Some(motion.across(shooter_top)) }, ..GraphSpec::new(kind, motion.apply(&target, shooter_top)) };
     let area = egui::Rect::from_min_max(area.min, egui::pos2(area.max.x - if right_w > 0.0 { right_w + 8.0 } else { 0.0 }, area.max.y));
     let width = area.width();
     let col_w = if !ships_right && width >= 640.0 { SHIPS_W } else { 0.0 };
     if col_w > 0.0 {
         let mut col = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(area.min, egui::vec2(col_w, area.height()))).layout(egui::Layout::top_down(egui::Align::Min)));
-        ships_panel(sim, &mut col, &open, &current, damage);
+        ships_panel(sim, &mut col, &open, &current, with_targets);
     }
     let plot_rect = egui::Rect::from_min_max(area.min + egui::vec2(if col_w > 0.0 { col_w + 8.0 } else { 0.0 }, 0.0), area.max);
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -244,9 +269,9 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     // One labelled total per shooter and target once the graph holds more than the fit on screen
     // against the profile; that one alone is drawn weapon by weapon.
-    let alone = sim.graph_current && sim.graph_attackers.is_empty() && (!damage || (sim.graph_ideal && sim.graph_targets.is_empty()));
+    let alone = sim.graph_current && sim.graph_attackers.is_empty() && (!with_targets || (sim.graph_ideal || !damage) && sim.graph_targets.is_empty());
     if !alone {
-        let plot = compare_plot(sim, ui, &spec, &target, motion, &open, &current, &computed, damage);
+        let plot = compare_plot(sim, ui, &spec, &target, motion, &open, &current, &computed, with_targets);
         let Some(plot) = plot else {
             ui.add_space(8.0);
             ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
@@ -259,8 +284,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         return;
     }
-    let cap = sim.cap_inputs();
-    let series = graphs::sample(&computed, &spec, cap.as_ref());
+    let series = graphs::sample(&computed, &spec);
     if series.is_empty() {
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
@@ -275,6 +299,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         y_to: sim.graph_y_to.get(&kind.axes().0).copied(),
         bands: Vec::new(),
         markers: Vec::new(),
+        levels: if kind.is_damage() { max_level(graphs::max_damage(&computed, &spec), fmt_y, ui.visuals().text_color()).into_iter().collect() } else { Vec::new() },
         series: series
             .iter()
             .enumerate()
@@ -332,6 +357,12 @@ impl Motion {
         let vt = f64::from(self.target.0) * f64::from(t.velocity);
         let across = va * f64::from(self.shooter.1).to_radians().sin() - vt * f64::from(self.target.1).to_radians().sin();
         spai_fit::fit::TargetProfile { velocity: vt as f32, transversal: across.abs() as f32, ..t.clone() }
+    }
+
+    /// The shooter's speed across the line of sight and the sine of the target's heading: what a
+    /// webbed target's transversal is figured again from.
+    pub fn across(&self, shooter_top: f64) -> (f64, f64) {
+        (f64::from(self.shooter.0) * shooter_top * f64::from(self.shooter.1).to_radians().sin(), f64::from(self.target.1).to_radians().sin())
     }
 
     /// The target's share of speed that gives `angular` at the profile's distance, headings kept;
@@ -533,19 +564,19 @@ pub fn last_line_count(ctx: &egui::Context) -> usize {
 /// The graph's ships, in a column of their own left of the plot: the shooters and, for damage, the
 /// targets, each with a button to add more. The graph belongs to no fit: it starts with the fit
 /// on screen against the target profile, and either can be taken out.
-fn ships_panel(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], current: &str, damage: bool) {
+fn ships_panel(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], current: &str, with_targets: bool) {
     let rect = ui.max_rect();
     let height = rect.height();
     ui.set_clip_rect(ui.clip_rect().intersect(rect));
     egui::Frame::NONE.fill(ui.visuals().faint_bg_color).corner_radius(4.0).inner_margin(6).show(ui, |ui| {
         ui.set_width(SHIPS_W - 12.0);
         ui.set_min_height(height - 12.0);
-        egui::ScrollArea::vertical().id_salt("sim_graph_ships").auto_shrink([false, false]).show(ui, |ui| ships_list(sim, ui, open, current, damage));
+        egui::ScrollArea::vertical().id_salt("sim_graph_ships").auto_shrink([false, false]).show(ui, |ui| ships_list(sim, ui, open, current, with_targets));
     });
 }
 
 /// The shooters and the targets, each with its button to add more.
-fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], current: &str, damage: bool) {
+fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], current: &str, with_targets: bool) {
     let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
     {
         {
@@ -573,15 +604,16 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                 }
                 ui.menu_button(format!("{} {}", icon::PLUS, tr!("Add an attacker")), |ui| {
                     ui.set_min_width(240.0);
-                    if !sim.graph_current && ui.button(tr!("The fit on screen")).clicked() {
+                    if !sim.graph_current && ui.button(tr!("The fit on screen")).on_hover_text(tr!("Follows the tab on screen")).clicked() {
                         sim.graph_current = true;
                         ui.close();
                     }
                     let mut any = false;
                     let taken = sim.graph_attackers.clone();
-                    for (id, name) in open.iter().filter(|(id, _)| id != current && !taken.contains(id)) {
-                        any = true;
-                        if ui.button(text::clip(name, 40)).clicked() {
+                    for (id, name) in open.iter().filter(|(id, _)| !taken.contains(id)) {
+                        any = any || id != current;
+                        let label = if id == current { trf!("{name} (this tab)", name = text::clip(name, 32)) } else { text::clip(name, 40) };
+                        if ui.button(label).on_hover_text(tr!("Stays on the graph whichever tab is on screen")).clicked() {
                             sim.graph_attackers.push(id.clone());
                             ui.close();
                         }
@@ -590,7 +622,7 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                         ui.label(egui::RichText::new(tr!("Open more fits in tabs to draw them here.")).weak());
                     }
                 });
-                if !damage {
+                if !with_targets {
                     return;
                 }
                 ui.add_space(10.0);
@@ -609,7 +641,8 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                         sim.graph_ideal = true;
                         ui.close();
                     }
-                    ui.label(egui::RichText::new(tr!("A fit's signature and speed stand in for the profile's.")).weak());
+                    let hint = if sim.graph == GraphKind::CapacitorOverTime { tr!("A fit's capacitor is what the nosferatu drain, only while it is fuller than yours. The test target gives only to those that drain any ship.") } else { tr!("A fit's signature and speed stand in for the profile's.") };
+                    ui.label(egui::RichText::new(hint).weak());
                     let taken = sim.graph_targets.clone();
                     for (id, name) in open.iter().filter(|(id, _)| !taken.contains(id)) {
                         if ui.button(text::clip(name, 40)).clicked() {
@@ -635,35 +668,44 @@ fn tank_of(c: &spai_fit::stats::Computed) -> graphs::TargetTank {
 }
 
 /// One line per attacker (and per target, for damage), each the total of that fit's weapons.
-fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit::fit::TargetProfile, motion: Motion, open: &[(String, String)], current: &str, computed: &std::sync::Arc<spai_fit::stats::Computed>, damage: bool) -> Option<Plot> {
+fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit::fit::TargetProfile, motion: Motion, open: &[(String, String)], current: &str, computed: &std::sync::Arc<spai_fit::stats::Computed>, with_targets: bool) -> Option<Plot> {
     let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
     // The fit on screen shoots only while it is on the list; it can be taken off like any other.
-    let mut attackers: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>)> = if sim.graph_current { vec![(name_of(current), computed.clone())] } else { Vec::new() };
+    let mut attackers: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>)> = if sim.graph_current { vec![(trf!("{name} (on screen)", name = name_of(current)), computed.clone())] } else { Vec::new() };
     for id in sim.graph_attackers.clone() {
         if let Some(c) = sim.computed_of(&id) {
             attackers.push((name_of(&id), c));
         }
     }
     // A fit as target brings its tank too, for the damage it takes over time.
-    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile, Option<graphs::TargetTank>)> = Vec::new();
-    if damage && !sim.graph_targets.is_empty() {
+    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile, Option<graphs::TargetTank>, Option<std::sync::Arc<spai_fit::stats::Computed>>)> = Vec::new();
+    if with_targets && !sim.graph_targets.is_empty() {
         if sim.graph_ideal {
-            targets.push((Some(tr!("Test target").to_owned()), raw.clone(), None));
+            targets.push((Some(tr!("Test target").to_owned()), raw.clone(), None, None));
         }
         for id in sim.graph_targets.clone() {
             if let Some(c) = sim.computed_of(&id) {
                 let t = spai_fit::fit::TargetProfile { signature: c.mobility.signature as f32, velocity: c.mobility.max_velocity as f32, ..raw.clone() };
-                targets.push((Some(name_of(&id)), t, Some(tank_of(&c))));
+                targets.push((Some(name_of(&id)), t, Some(tank_of(&c)), Some(c)));
             }
         }
     } else {
-        targets.push((None, raw.clone(), None));
+        targets.push((None, raw.clone(), None, None));
     }
+    let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let mut lines: Vec<PlotSeries> = Vec::new();
+    let mut levels: Vec<crate::plot::PlotLevel> = Vec::new();
     for (a_name, c) in &attackers {
-        for (t_name, t, tank) in &targets {
-            let one = GraphSpec { target: motion.apply(t, c.mobility.max_velocity), ..spec.clone() };
-            let series = if spec.kind == GraphKind::DamageOverTime { graphs::damage_over_time(c, &one, tank.as_ref()) } else { graphs::sample(c, &one, None) };
+        // Attackers that share a ceiling share one line, in the first one's colour.
+        if let Some(l) = spec.kind.is_damage().then(|| max_level(graphs::max_damage(c, spec), fmt_y, series_color(lines.len()))).flatten() {
+            if !levels.iter().any(|x| x.label == l.label) {
+                levels.push(l);
+            }
+        }
+        for (t_name, t, tank, t_fit) in &targets {
+            let projection = graphs::Projection { target: t_fit.clone(), across: Some(motion.across(c.mobility.max_velocity)) };
+            let one = GraphSpec { target: motion.apply(t, c.mobility.max_velocity), projection, ..spec.clone() };
+            let series = if spec.kind == GraphKind::DamageOverTime { graphs::damage_over_time(c, &one, tank.as_ref()) } else { graphs::sample(c, &one) };
             let total = series.iter().find(|s| s.label == SeriesLabel::Total).or_else(|| series.first());
             let Some(total) = total else { continue };
             let label = match t_name {
@@ -677,10 +719,14 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     if lines.is_empty() {
         return None;
     }
-    let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let _ = ui;
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LINES), lines.len()));
-    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new() })
+    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new(), levels })
+}
+
+/// A dashed line at what the fit lands with perfect application, labelled with it.
+fn max_level(top: f64, fmt: fn(f64) -> String, color: egui::Color32) -> Option<crate::plot::PlotLevel> {
+    (top > 0.0).then(|| crate::plot::PlotLevel { y: top, label: trf!("Max {value}", value = fmt(top)), color })
 }
 
 /// The graphs in a window of their own while `graph_window` is on: a window of the desktop's
@@ -691,11 +737,15 @@ pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     }
     // Room for the ships column, the plot and the target column side by side, and the dials.
     let size = egui::vec2(1100.0, 640.0);
-    let min = egui::vec2(900.0, 560.0);
+    // Narrow, the controls wrap and the ships go behind a menu.
+    let min = egui::vec2(480.0, 360.0);
     if ctx.embed_viewports() {
         let mut open = true;
         egui::Window::new(tr!("Graphs")).id(egui::Id::new("sim_graph_window")).open(&mut open).resizable(true).default_size(size).min_size(min).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
-            show(sim, ui, now_ms);
+            ui.set_min_size(ui.available_size());
+            sim.graph_in_window = true;
+            body(sim, ui, now_ms);
+            sim.graph_in_window = false;
         });
         sim.graph_window = open;
         return;
@@ -704,11 +754,63 @@ pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("sim_graph_window"), builder, |ctx, _| {
         // The root of a viewport of its own has no Ui to show inside, as the app's windows do it.
         #[allow(deprecated)]
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill)).show(ctx, |ui| show(sim, ui, now_ms));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill)).show(ctx, |ui| {
+            sim.graph_in_window = true;
+            body(sim, ui, now_ms);
+            sim.graph_in_window = false;
+        });
         if ctx.input(|i| i.viewport().close_requested()) {
             sim.graph_window = false;
         }
     });
+}
+
+/// The graphs docked right of the fit's racks and above the bottom dock: folded to a strip, or
+/// open with buttons to fold them, float them in a window again or close them.
+pub fn docked(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
+    use egui_phosphor::regular as icon;
+    use spai_ui::widgets::icon_button;
+    if sim.graph_collapsed {
+        egui::Panel::right("sim_graph_strip").resizable(false).exact_size(34.0).show_inside(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(4.0);
+                if icon_button(ui, icon::CARET_LEFT).on_hover_text(tr!("Show the graphs")).clicked() {
+                    sim.graph_collapsed = false;
+                }
+                if icon_button(ui, icon::CHART_LINE).on_hover_text(tr!("Show the graphs")).clicked() {
+                    sim.graph_collapsed = false;
+                }
+                if icon_button(ui, icon::X).on_hover_text(tr!("Close the graphs")).clicked() {
+                    sim.toggle_graphs();
+                }
+            });
+        });
+        return;
+    }
+    // The racks keep room for their names and numbers beside it.
+    // The racks keep room for their names and numbers beside it.
+    let max = (ui.available_width() - 260.0).max(360.0);
+    let default = ui.available_width() / 2.0;
+    let mut size = sim.graph_dock_w;
+    crate::dock_panel(ui, egui::Id::new("sim_graph_dock"), crate::DockSide::Right, &mut size, default, 360.0..=max, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr!("Graphs")).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_button(ui, icon::X).on_hover_text(tr!("Close the graphs")).clicked() {
+                    sim.toggle_graphs();
+                }
+                if icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Graphs in their own window")).clicked() {
+                    sim.dock_graphs(false);
+                }
+                if icon_button(ui, icon::CARET_RIGHT).on_hover_text(tr!("Fold the graphs to a strip")).clicked() {
+                    sim.graph_collapsed = true;
+                }
+            });
+        });
+        ui.separator();
+        body(sim, ui, now_ms);
+    });
+    sim.graph_dock_w = size;
 }
 
 /// What a remote curve's numbers are.
@@ -720,8 +822,8 @@ fn remote_unit(kind: spai_fit::stats::RemoteKind) -> &'static str {
         K::HullRep => tr!("hull HP/s"),
         K::CapTransfer | K::Nos => tr!("GJ/s given"),
         K::Neut => tr!("GJ/s drained"),
-        K::Web | K::Painter | K::Damp | K::TrackingDisruptor | K::GuidanceDisruptor => tr!("%"),
-        K::Ecm => tr!("jam points"),
-        K::Scram | K::Point => tr!("warp points"),
+        K::Web | K::Painter | K::Damp | K::TrackingDisruptor | K::GuidanceDisruptor | K::SensorBoost | K::TrackingBoost => tr!("%"),
+        K::Ecm | K::EcmBurst => tr!("jam points"),
+        K::Scram | K::Point | K::Bubble => tr!("warp points"),
     }
 }

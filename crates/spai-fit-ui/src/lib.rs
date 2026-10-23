@@ -15,13 +15,20 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod browser;
+pub mod compare;
 pub mod details;
 pub mod mutation;
 pub mod dock;
 pub mod editor;
+
+/// What a fit's base is called beside its variations.
+pub fn base_label(fit: &Fit) -> String {
+    fit.base_name.clone().unwrap_or_else(|| tr!("Base").to_owned())
+}
 pub mod fleet_graphs;
 pub mod fleet_panel;
 pub mod fleet_scene;
+pub mod fleet_ships;
 pub mod graphs_panel;
 pub mod icons;
 pub mod library_panel;
@@ -249,6 +256,8 @@ pub enum Pane {
     Graphs,
     /// The fleets' 3D scene; the fit in fit mode.
     Scene,
+    /// The fleet's ships one by one: ranges, and what they do to one target.
+    Ships,
 }
 
 /// What of the screen's arrangement is kept between starts. Plain fields, each optional, so an
@@ -269,6 +278,14 @@ pub struct SimLayout {
     /// The fits open in tabs, by library id, in tab order, and the one on screen.
     pub tabs: Option<Vec<String>>,
     pub active_tab: Option<String>,
+    /// The graphs docked beside the fit, folded or not, and how wide.
+    pub graph_docked: Option<bool>,
+    pub graph_collapsed: Option<bool>,
+    pub graph_dock_w: Option<f32>,
+    /// The fleet graphs: open, where (0 window, 1 left, 2 bottom, 3 right) and how big docked.
+    pub fleet_graph_open: Option<bool>,
+    pub fleet_graph_place: Option<u8>,
+    pub fleet_graph_size: Option<f32>,
 }
 
 /// ESI's market price list: every type's average price across the market, public, no sign-in.
@@ -317,6 +334,18 @@ pub enum Center {
     Graphs,
     /// The fleets' 3D scene; the fit in fit mode.
     Scene,
+    /// The fleet's ships one by one.
+    Ships,
+}
+
+/// Where the fleet graphs show: a window of their own, or docked on a side of the fleet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GraphPlace {
+    Window,
+    Left,
+    #[default]
+    Bottom,
+    Right,
 }
 
 /// What the left column shows: saved fits or the module browser.
@@ -403,6 +432,8 @@ pub struct SimUi {
     /// Where a shift-click's range starts.
     pub sel_anchor: Option<(Slot, u8)>,
     pub details: Vec<details::DetailsWindow>,
+    /// Items side by side, once something was sent to compare.
+    pub compare: Option<compare::CompareWindow>,
     /// The booster whose side effects are being picked.
     pub side_window: Option<TypeId>,
     /// The item whose abyssal roll is being set.
@@ -419,18 +450,22 @@ pub struct SimUi {
     pub skills_window: bool,
     pub traits_window: bool,
     pub graph_window: bool,
+    /// The graphs docked beside the fit, above the bottom dock, rather than in a window.
+    pub graph_docked: bool,
+    /// Docked but folded to a strip.
+    pub graph_collapsed: bool,
+    /// Where the graphs open again once closed: docked if they were last.
+    pub graph_prefer_dock: bool,
+    pub graph_dock_w: Option<f32>,
+    /// Set while the graphs draw in their window, which offers to dock them.
+    pub(crate) graph_in_window: bool,
     pub fleet_graph: fleet_graphs::FleetGraph,
+    pub fleet_graph_open: bool,
+    pub fleet_graph_place: GraphPlace,
+    pub fleet_graph_size: Option<f32>,
+    pub fleet_ships: fleet_ships::ShipsState,
     /// Which way the fleet results look: 0 the open fleet shooting, 1 its opponent.
     pub fleet_view: usize,
-    /// Per direction, the slot of the other fleet the summary aims at; its main hull when unset.
-    pub fleet_aim: [Option<usize>; 2],
-    /// The volley window open on (direction, target slot), and whether it lists carried charges only.
-    pub fleet_volley_window: Option<(usize, usize)>,
-    pub fleet_volley_carried: bool,
-    /// The volley window's sort: its column and whether high first.
-    pub fleet_volley_sort: (usize, bool),
-    /// The volley window's temporary overrides.
-    pub fleet_what_if: fleet_panel::WhatIf,
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
@@ -498,6 +533,7 @@ impl Default for SimUi {
             profiles: vec![Profile::all_v()],
             profile: 0,
             picker: None,
+            compare: None,
             pane: Pane::Fit,
             center: Center::Fit,
             left: LeftTab::Browse,
@@ -524,13 +560,17 @@ impl Default for SimUi {
             skills_window: false,
             traits_window: false,
             graph_window: false,
+            graph_docked: false,
+            graph_collapsed: false,
+            graph_prefer_dock: false,
+            graph_dock_w: None,
+            graph_in_window: false,
             fleet_graph: fleet_graphs::FleetGraph::default(),
+            fleet_graph_open: false,
+            fleet_graph_place: GraphPlace::default(),
+            fleet_graph_size: None,
+            fleet_ships: fleet_ships::ShipsState::default(),
             fleet_view: 0,
-            fleet_aim: [None; 2],
-            fleet_volley_window: None,
-            fleet_volley_carried: false,
-            fleet_volley_sort: (0, true),
-            fleet_what_if: Default::default(),
             import: None,
             import_ask: None,
             import_from_button: false,
@@ -980,11 +1020,23 @@ impl SimUi {
                 Center::Fit => 0,
                 Center::Graphs => 1,
                 Center::Scene => 2,
+                Center::Ships => 3,
             }),
             dock_first: Some(self.dock.first),
             // Only fits the library holds: a tab not saved yet could not be opened again.
             tabs: Some(self.sessions.iter().filter(|s| s.fit.ship != 0 && self.library.iter().any(|e| e.id == s.id)).map(|s| s.id.clone()).collect()),
             active_tab: self.session().filter(|s| s.fit.ship != 0).map(|s| s.id.clone()),
+            graph_docked: Some(self.graph_docked),
+            graph_collapsed: Some(self.graph_collapsed),
+            graph_dock_w: self.graph_dock_w,
+            fleet_graph_open: Some(self.fleet_graph_open),
+            fleet_graph_place: Some(match self.fleet_graph_place {
+                GraphPlace::Window => 0,
+                GraphPlace::Left => 1,
+                GraphPlace::Bottom => 2,
+                GraphPlace::Right => 3,
+            }),
+            fleet_graph_size: self.fleet_graph_size,
             grouping: Some(match self.library_state.grouping {
                 library_panel::Grouping::Hull => 0,
                 library_panel::Grouping::Tag => 1,
@@ -1016,11 +1068,36 @@ impl SimUi {
             self.center = match c {
                 1 => Center::Graphs,
                 2 => Center::Scene,
+                3 => Center::Ships,
                 _ => Center::Fit,
             };
         }
         if let Some(f) = l.dock_first {
             self.dock.first = f;
+        }
+        if let Some(d) = l.graph_docked {
+            self.graph_docked = d;
+            self.graph_prefer_dock = d;
+        }
+        if let Some(c) = l.graph_collapsed {
+            self.graph_collapsed = c;
+        }
+        if l.graph_dock_w.is_some() {
+            self.graph_dock_w = l.graph_dock_w;
+        }
+        if let Some(o) = l.fleet_graph_open {
+            self.fleet_graph_open = o;
+        }
+        if let Some(p) = l.fleet_graph_place {
+            self.fleet_graph_place = match p {
+                0 => GraphPlace::Window,
+                1 => GraphPlace::Left,
+                3 => GraphPlace::Right,
+                _ => GraphPlace::Bottom,
+            };
+        }
+        if l.fleet_graph_size.is_some() {
+            self.fleet_graph_size = l.fleet_graph_size;
         }
         if let Some(tabs) = l.tabs.filter(|t| !t.is_empty()) {
             for id in &tabs {
@@ -1231,12 +1308,29 @@ impl SimUi {
     pub fn edit(&mut self, kind: EditKind, now_ms: u64, f: impl FnOnce(&mut Fit)) {
         let limit = if self.has_hull() { self.drone_limit() } else { 5 };
         let dogma = self.dogma.clone();
+        // With a variation on, what is shown is what changes: the edit goes into the last one
+        // switched on. Switching and naming variations, and recording one, edit the base.
+        let into_variation = self.recording.is_none() && !matches!(kind, EditKind::Variation | EditKind::Rename);
         let Some(s) = self.session_mut() else { return };
         let before = s.fit.clone();
-        f(&mut s.fit);
-        s.fit.cap_drones_out(limit);
-        if let Some(d) = &dogma {
-            spai_fit::formats::sync_boosters(d, &mut s.fit, Some(&before));
+        match (dogma.as_deref(), s.fit.active_variations.last().copied().filter(|_| into_variation)) {
+            (Some(d), Some(target)) => {
+                let shown = spai_fit::variations::resolve(d, &before);
+                let mut edited = shown.clone();
+                f(&mut edited);
+                edited.cap_drones_out(limit);
+                spai_fit::formats::sync_boosters(d, &mut edited, Some(&shown));
+                spai_fit::formats::drop_foreign_mode(d, &mut edited);
+                s.fit = spai_fit::variations::edit_through(d, &before, target, &shown, edited);
+            }
+            _ => {
+                f(&mut s.fit);
+                s.fit.cap_drones_out(limit);
+                if let Some(d) = &dogma {
+                    spai_fit::formats::sync_boosters(d, &mut s.fit, Some(&before));
+                    spai_fit::formats::drop_foreign_mode(d, &mut s.fit);
+                }
+            }
         }
         if s.fit != before {
             s.history.record(kind, &before, now_ms);
@@ -1313,14 +1407,6 @@ impl SimUi {
         Outside { fits }
     }
 
-    /// What the capacitor graph needs beyond the computed numbers.
-    pub fn cap_inputs(&self) -> Option<spai_fit::graphs::CapInputs> {
-        let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
-        let (resolved, env) = self.outside().apply(dogma, &s.fit, self.skills());
-        let calc = Calc::new(dogma, &resolved, self.skills(), &env);
-        Some(spai_fit::graphs::CapInputs { users: spai_fit::stats::cap_users(&calc) })
-    }
-
     /// The whole simulator, in the space given.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         if self.dogma.is_none() {
@@ -1358,12 +1444,15 @@ impl SimUi {
                     fleet_panel::results(self, ui);
                 });
             }
+            if !narrow && self.fleet_graph_open {
+                fleet_graphs::docked(self, ui);
+            }
             egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
                 if narrow {
                     ui.horizontal(|ui| {
                         use spai_ui::widgets::SteadySelect as _;
-                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Stats, tr!("Results")), (Pane::Graphs, tr!("Graphs")), (Pane::Scene, tr!("Scene"))];
-                        let w = egui::vec2(((ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0).max(40.0), 24.0);
+                        let tabs = [(Pane::Library, tr!("Fleets")), (Pane::Fit, tr!("Fleet")), (Pane::Ships, tr!("Ships")), (Pane::Stats, tr!("Results")), (Pane::Graphs, tr!("Graphs")), (Pane::Scene, tr!("Scene"))];
+                        let w = egui::vec2(((ui.available_width() - 5.0 * ui.spacing().item_spacing.x) / 6.0).max(40.0), 24.0);
                         for (pane, label) in tabs {
                             if ui.menu_label_sized(w, self.pane == pane, label).clicked() {
                                 self.pane = pane;
@@ -1375,7 +1464,8 @@ impl SimUi {
                 match (narrow, self.pane, self.center) {
                     (true, Pane::Library, _) => fleet_panel::library(self, ui, now_ms),
                     (true, Pane::Stats | Pane::Browse, _) => fleet_panel::results(self, ui),
-                    (true, Pane::Graphs, _) | (false, _, Center::Graphs) => fleet_graphs::show(self, ui),
+                    (true, Pane::Graphs, _) => fleet_graphs::show(self, ui),
+                    (true, Pane::Ships, _) | (false, _, Center::Ships) => fleet_ships::show(self, ui),
                     (true, Pane::Scene, _) | (false, _, Center::Scene) => fleet_scene::show(self, ui),
                     _ => fleet_panel::editor(self, ui, now_ms),
                 }
@@ -1393,7 +1483,7 @@ impl SimUi {
                 }
             });
         }
-        if !narrow && self.center != Center::Graphs {
+        if !narrow {
             egui::Panel::right("sim_stats").resizable(false).exact_size(STATS_W).show_inside(ui, |ui| {
                 stats_panel::show(self, ui);
             });
@@ -1417,11 +1507,38 @@ impl SimUi {
                 (true, Pane::Library, _) => library_panel::show(self, ui, now_ms),
                 (true, Pane::Browse, _) => browser::show(self, ui, now_ms),
                 (true, Pane::Stats, _) => stats_panel::show(self, ui),
-                (true, Pane::Graphs, _) | (false, _, Center::Graphs) => graphs_panel::show(self, ui, now_ms),
+                (true, Pane::Graphs, _) => graphs_panel::show(self, ui, now_ms),
                 _ => editor::show(self, ui, now_ms),
             }
         });
         self.show_dialogs(ui.ctx(), now_ms);
+    }
+
+    /// Whether the graphs are on screen, in their window or docked.
+    pub fn graphs_shown(&self) -> bool {
+        self.graph_window || self.graph_docked
+    }
+
+    /// Closes the graphs, or opens them where they were last: docked or in a window.
+    pub fn toggle_graphs(&mut self) {
+        if self.graphs_shown() {
+            self.graph_prefer_dock = self.graph_docked;
+            self.graph_window = false;
+            self.graph_docked = false;
+        } else if self.graph_prefer_dock {
+            self.graph_docked = true;
+            self.graph_collapsed = false;
+        } else {
+            self.graph_window = true;
+        }
+    }
+
+    /// The graphs into the dock beside the fit, out of their window.
+    pub fn dock_graphs(&mut self, docked: bool) {
+        self.graph_docked = docked;
+        self.graph_window = !docked;
+        self.graph_collapsed = false;
+        self.graph_prefer_dock = docked;
     }
 
     /// The picker and the dialogs, floating over whatever is below.
@@ -1431,8 +1548,11 @@ impl SimUi {
         self.publish_window(ctx);
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
-        fleet_panel::volley_window(self, ctx);
+        if self.mode == Mode::Fleets {
+            fleet_graphs::window(self, ctx);
+        }
         details::windows(self, ctx);
+        compare::window(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
         mutation::window(self, ctx, now_ms);
         editor::traits_window(self, ctx);
@@ -1458,10 +1578,15 @@ impl SimUi {
                 ctx.data_mut(|d| d.insert_persisted(id, st));
             }
         }
-        egui::Panel::left(id).resizable(true).default_size(w).min_size(MIN_W).max_size(MAX_W).show_inside(ui, |ui| body(self, ui));
+        egui::Panel::left(id).resizable(true).show_separator_line(false).default_size(w).min_size(MIN_W).max_size(MAX_W).show_inside(ui, |ui| body(self, ui));
         // The resize grip reaches a few points past the edge, and whatever is laid out after it wins
-        // the pointer: a gap keeps the central view's drag areas off the grip.
-        egui::Panel::left(id.with("gap")).resizable(false).show_separator_line(false).exact_size(4.0).frame(egui::Frame::NONE).show_inside(ui, |_| {});
+        // the pointer: a gap keeps the central view's drag areas off the grip. The column's edge is
+        // drawn past the gap, against the central view.
+        let fill = ui.visuals().panel_fill;
+        egui::Panel::left(id.with("gap")).resizable(false).show_separator_line(false).exact_size(4.0).frame(egui::Frame::NONE.fill(fill)).show_inside(ui, |ui| {
+            let r = ui.max_rect();
+            ui.painter().vline(r.right() - 0.5, r.y_range(), ui.visuals().widgets.noninteractive.bg_stroke);
+        });
         if dragging {
             if let Some(st) = egui::PanelState::load(&ctx, id) {
                 self.left_w = Some(st.rect.width().clamp(MIN_W, MAX_W));
@@ -1541,10 +1666,6 @@ impl SimUi {
                 let has_fit = if self.mode == Mode::Fleets { self.fleet.is_some() } else { self.session().is_some() };
                 // Icons alone when the window is narrow; the words are on hover either way.
                 let labelled = |glyph: &str, word: &str| if narrow { glyph.to_owned() } else { format!("{glyph} {word}") };
-                // Fits save themselves; fleets still wait for the button.
-                if self.mode == Mode::Fleets && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::FLOPPY_DISK, tr!("Save")))).on_hover_text(tr!("Save")).clicked() {
-                    self.save_fleet();
-                }
                 if ui.button(labelled(icon::CLIPBOARD_TEXT, tr!("Import"))).on_hover_text(tr!("Import the fit on the clipboard, or paste one: EFT, ESI JSON, fitting XML or DNA")).clicked() {
                     self.import_from_button = true;
                     self.requests.push(HostRequest::ReadClipboard);
@@ -1608,18 +1729,23 @@ impl SimUi {
                     use spai_ui::widgets::SteadySelect as _;
                     let w = egui::vec2(64.0, 24.0);
                     let fleets = self.mode == Mode::Fleets;
-                    let on_fit = self.center == Center::Fit || (!fleets && self.center == Center::Scene);
-                    if ui.menu_label_sized(w, on_fit, if fleets { tr!("Fleet") } else { tr!("Fit") }).clicked() {
-                        self.center = Center::Fit;
-                    }
-                    if ui.menu_label_sized(w, self.center == Center::Graphs, tr!("Graphs")).clicked() {
-                        self.center = Center::Graphs;
-                    }
-                    if fleets && ui.menu_label_sized(w, self.center == Center::Scene, tr!("Scene")).clicked() {
-                        self.center = Center::Scene;
-                    }
-                    if icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Graphs in their own window")).clicked() {
-                        self.graph_window = !self.graph_window;
+                    if fleets {
+                        let on_fleet = !matches!(self.center, Center::Ships | Center::Scene);
+                        if ui.menu_label_sized(w, on_fleet, tr!("Fleet")).clicked() {
+                            self.center = Center::Fit;
+                        }
+                        if ui.menu_label_sized(w, self.center == Center::Ships, tr!("Ships")).on_hover_text(tr!("Every ship's reach with each charge, and what each does to one target")).clicked() {
+                            self.center = Center::Ships;
+                        }
+                        if ui.menu_label_sized(w, self.center == Center::Scene, tr!("Scene")).clicked() {
+                            self.center = Center::Scene;
+                        }
+                        ui.separator();
+                        if ui.menu_label_sized(w, self.fleet_graph_open, tr!("Graphs")).on_hover_text(tr!("The fleet graphs, in a window or docked left, below or right")).clicked() {
+                            self.fleet_graph_open = !self.fleet_graph_open;
+                        }
+                    } else if ui.menu_label_sized(w, self.graphs_shown(), tr!("Graphs")).on_hover_text(tr!("Opens the graphs in a window, which can be docked beside the fit")).clicked() {
+                        self.toggle_graphs();
                     }
                 }
                 // A fixed slot for notes, so one appearing never moves the buttons; it takes what
@@ -1691,6 +1817,66 @@ impl SimUi {
             self.import = None;
         }
     }
+}
+
+/// Which edge a dock sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DockSide {
+    Left,
+    Right,
+    Bottom,
+}
+
+/// A resizable dock as big as it was dragged and no bigger: egui widens a panel to its content
+/// and loses the drag to what is laid out after the grip, so the size is kept here, put back
+/// while nobody drags, and a strip after the panel keeps the next view's widgets off the grip.
+/// The same margin on every side.
+pub(crate) fn dock_panel(ui: &mut egui::Ui, id: egui::Id, side: DockSide, size: &mut Option<f32>, default: f32, range: std::ops::RangeInclusive<f32>, body: impl FnOnce(&mut egui::Ui)) {
+    let ctx = ui.ctx().clone();
+    let (lo, hi) = (*range.start(), (*range.end()).max(*range.start()));
+    let want = size.unwrap_or(default).clamp(lo, hi);
+    let dragging = ctx.is_being_dragged(id.with("__resize"));
+    let along = |r: egui::Rect| if side == DockSide::Bottom { r.height() } else { r.width() };
+    if !dragging {
+        if let Some(mut st) = egui::PanelState::load(&ctx, id) {
+            if (along(st.rect) - want).abs() > 0.5 {
+                // The edge that moves is the one facing the content; the other stays on the side.
+                match side {
+                    DockSide::Left => st.rect.max.x = st.rect.min.x + want,
+                    DockSide::Right => st.rect.min.x = st.rect.max.x - want,
+                    DockSide::Bottom => st.rect.min.y = st.rect.max.y - want,
+                }
+                ctx.data_mut(|d| d.insert_persisted(id, st));
+            }
+        }
+    }
+    let panel = match side {
+        DockSide::Left => egui::Panel::left(id),
+        DockSide::Right => egui::Panel::right(id),
+        DockSide::Bottom => egui::Panel::bottom(id),
+    };
+    let frame = egui::Frame::new().inner_margin(8).fill(ui.visuals().panel_fill);
+    panel.resizable(true).frame(frame).default_size(want).size_range(lo..=hi).show_inside(ui, |ui| {
+        let r = ui.max_rect();
+        ui.set_clip_rect(ui.clip_rect().intersect(r));
+        // As big as it was dragged, whatever it shows: egui keeps a panel's size from its content.
+        ui.set_min_size(ui.available_size());
+        body(ui);
+    });
+    if dragging {
+        if let Some(st) = egui::PanelState::load(&ctx, id) {
+            *size = Some(along(st.rect).clamp(lo, hi));
+        }
+    } else if size.is_none() {
+        *size = Some(want);
+    }
+    let gap = id.with("gap");
+    let strip = match side {
+        DockSide::Left => egui::Panel::left(gap),
+        DockSide::Right => egui::Panel::right(gap),
+        DockSide::Bottom => egui::Panel::bottom(gap),
+    };
+    strip.resizable(false).show_separator_line(false).exact_size(4.0).frame(egui::Frame::NONE).show_inside(ui, |_| {});
 }
 
 #[cfg(test)]

@@ -170,6 +170,10 @@ pub struct Projected {
     pub count: u32,
     pub state: State,
     pub charge: Option<TypeId>,
+    /// From a projected fit: the module's attributes as its own fit makes them (its pilot's
+    /// skills, its hull's bonuses, its charge), so they are not figured again on this one.
+    #[serde(skip)]
+    pub values: Vec<(crate::ids::AttrId, f64)>,
 }
 
 /// Another fit pointed at this one, by its library id, `count` ships of it.
@@ -191,7 +195,7 @@ impl Default for ProjectedFit {
 
 impl Default for Projected {
     fn default() -> Self {
-        Projected { type_id: 0, count: 1, state: State::Active, charge: None }
+        Projected { type_id: 0, count: 1, state: State::Active, charge: None, values: Vec::new() }
     }
 }
 
@@ -284,6 +288,8 @@ pub struct Fit {
     pub id: String,
     pub name: String,
     pub ship: TypeId,
+    /// The hull's mode, for hulls that have them; none flies its first.
+    pub mode: Option<TypeId>,
     pub modules: Vec<Module>,
     pub drones: Vec<DroneStack>,
     pub fighters: Vec<FighterSquad>,
@@ -302,6 +308,9 @@ pub struct Fit {
     /// Command bursts on the fit without a booster fit of their own: a kind, a hull, skills.
     pub boosts: Vec<BoostShortcut>,
     pub variations: Vec<crate::variations::Variation>,
+    /// The base's own name beside its variations; none is plain "Base".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_name: Option<String>,
     /// Switched-on variations, applied in this order.
     pub active_variations: Vec<u32>,
     pub notes: String,

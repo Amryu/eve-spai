@@ -22,6 +22,11 @@ pub mod group {
     pub const EFFECT_BEACON: GroupId = 920;
     /// Ice products: the fuels.
     pub const ICE_PRODUCT: GroupId = 423;
+    /// A hull's modes (tactical destroyers, some ships of their own), unpublished, each named after
+    /// its hull.
+    pub const SHIP_MODIFIERS: GroupId = 1306;
+    /// Bombs: a bomb launcher's, and the unpublished ones heavy fighters drop.
+    pub const BOMB: GroupId = 90;
 }
 
 pub mod category {

@@ -157,6 +157,20 @@ fn capacitor_usage_comes_from_the_effects_discharge_attributes() {
 }
 
 #[test]
+fn a_running_nosferatu_feeds_the_capacitor() {
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::REPAIRER, Slot::Low, 0).with_state(State::Active));
+    let without = compute(&d, &f, &SkillSet::all_v(), &env()).cap;
+    f.modules.push(Module::new(ids::NOS, Slot::High, 0).with_state(State::Online));
+    assert_eq!(compute(&d, &f, &SkillSet::all_v(), &env()).cap.usage, without.usage, "online, it gives nothing");
+    f.modules[1].state = State::Active;
+    let with = compute(&d, &f, &SkillSet::all_v(), &env()).cap;
+    assert!(close(with.usage, without.usage - 12.0 / 6.0), "{} vs {}: 12 GJ every 6 s", with.usage, without.usage);
+    assert!(with.stable_at.unwrap() > without.stable_at.unwrap());
+}
+
+#[test]
 fn mobility_and_sensors_use_the_published_formulas() {
     let d = dataset();
     let mut f = Fit::new(ids::SHIP, "t");
@@ -416,3 +430,187 @@ fn burnout_waits_for_the_rack_to_heat() {
     assert!((dealt - 40.0).abs() < 1e-6 && t > 20.0 + 10.0, "{t}");
     assert_eq!(burn_time(0.0, 0.05, 40.0), None, "no damage, no burnout");
 }
+
+#[test]
+fn tackle_reaches_its_max_range_and_a_field_its_radius() {
+    use crate::stats::RemoteKind;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "tackle");
+    f.modules.push(Module::new(ids::SCRAM, Slot::Mid, 0).with_state(State::Active));
+    f.modules.push(Module::new(ids::POINT, Slot::Mid, 1).with_state(State::Active));
+    f.modules.push(Module::new(ids::FIELD, Slot::High, 0).with_state(State::Active));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let of = |k: RemoteKind| c.remote.modules.iter().find(|m| m.kind == k).map(|m| (m.amount, m.optimal, m.falloff));
+    assert_eq!(of(RemoteKind::Scram), Some((2.0, 9000.0, 0.0)), "a scrambler holds to its maxRange");
+    assert_eq!(of(RemoteKind::Point), Some((1.0, 24_000.0, 0.0)));
+    assert_eq!(of(RemoteKind::Bubble), Some((100.0, 20_000.0, 0.0)), "an unscripted field is a bubble of its warpScrambleRange");
+    f.modules[2] = Module::new(ids::FIELD, Slot::High, 0).with_charge(ids::FOCUSED_SCRIPT).with_state(State::Active);
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let points: Vec<f64> = c.remote.modules.iter().filter(|m| m.kind == RemoteKind::Point).map(|m| m.optimal).collect();
+    assert_eq!(points, vec![24_000.0, 30_000.0], "the focused script points one target at the raised range");
+}
+
+fn running(t: crate::ids::TypeId, slot: Slot, k: u8) -> Module {
+    Module::new(t, slot, k).with_state(State::Active)
+}
+
+#[test]
+fn a_vorton_hits_within_its_range_like_a_missile_and_arcs_on() {
+    use crate::stats::application::applied_factor;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "v");
+    f.modules.push(running(ids::VORTON, Slot::High, 0).with_charge(ids::VORTON_CHARGE));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let w = c.weapons.iter().find(|w| w.kind == WeaponKind::Vorton).expect("a vorton group");
+    assert!(close(w.volley.total(), 200.0) && close(w.optimal, 20_000.0));
+    assert_eq!((w.arc_targets, w.arc_range), (3, 10_000.0));
+    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    assert_eq!(applied_factor(w, 15_000.0, &big, 0.0, 0.0), 1.0, "no wrecking shots, no tracking");
+    assert_eq!(applied_factor(w, 20_001.0, &big, 0.0, 0.0), 0.0, "nothing past its range");
+    let crossing = crate::fit::TargetProfile { signature: 400.0, velocity: 300.0, transversal: 300.0, ..big.clone() };
+    let f = applied_factor(w, 10_000.0, &crossing, 0.0, 0.0);
+    assert!(f > 0.2 && f < 1.0, "a crossing target takes a missile's share, not nothing: {f}");
+}
+
+#[test]
+fn a_bomb_bursts_at_the_end_of_its_flight_and_a_breacher_pod_eats_hit_points() {
+    use crate::stats::application::applied_factor;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "b");
+    f.modules.push(running(ids::BOMB_LAUNCHER, Slot::High, 0).with_charge(ids::BOMB));
+    f.modules.push(running(ids::BREACHER_LAUNCHER, Slot::High, 1).with_charge(ids::BREACHER_POD));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let bomb = c.weapons.iter().find(|w| w.kind == WeaponKind::Bomb).expect("a bomb");
+    assert!(close(bomb.volley.total(), 5800.0), "no missile skill multiplies a bomb: {}", bomb.volley.total());
+    assert!(close(bomb.cycle_s, 90.0), "its cycle and reactivation delay: {}", bomb.cycle_s);
+    assert!(close(bomb.splash, 15_000.0));
+    let big = crate::fit::TargetProfile { signature: 800.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let small = crate::fit::TargetProfile { signature: 100.0, ..big.clone() };
+    assert_eq!(applied_factor(bomb, 30_000.0, &big, 0.0, 0.0), 1.0, "it bursts at 30 km");
+    assert_eq!(applied_factor(bomb, 5_000.0, &big, 0.0, 0.0), 0.0, "and not where it is launched");
+    assert!(close(applied_factor(bomb, 40_000.0, &small, 0.0, 0.0), 0.25), "a quarter of its explosion takes a quarter");
+    let pod = c.weapons.iter().find(|w| w.kind == WeaponKind::Breacher).expect("a breacher pod");
+    let dot = pod.dot.expect("its damage over time");
+    assert_eq!((dot.per_tick, dot.duration_s), (200.0, 40.0));
+    assert!(close(pod.dps, 200.0) && pod.volley.total() == 0.0);
+    assert!(close(dot.on(10_000.0), 60.0), "0.6% of a small target's hit points");
+    assert!(close(dot.on(1_000_000.0), 200.0), "capped on a big one");
+}
+
+#[test]
+fn superweapons_strike_once_or_tick_and_spare_small_ships() {
+    use crate::stats::application::applied_factor;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(running(ids::DOOMSDAY, Slot::High, 0));
+    f.modules.push(running(ids::LANCE, Slot::High, 1));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let dd = c.weapons.iter().find(|w| w.type_id == ids::DOOMSDAY).expect("the doomsday");
+    assert!(close(dd.volley.total(), 2_400_000.0) && close(dd.cycle_s, 300.0));
+    let lance = c.weapons.iter().find(|w| w.type_id == ids::LANCE).expect("the lance");
+    assert!(close(lance.volley.total(), 750_000.0), "fifteen ticks: {}", lance.volley.total());
+    assert!(close(lance.splash, 2500.0));
+    let small = crate::fit::TargetProfile { signature: 2500.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    assert!(close(applied_factor(lance, 100_000.0, &small, 0.0, 0.0), 0.5));
+    assert_eq!(applied_factor(lance, 250_000.0, &small, 0.0, 0.0), 0.0);
+}
+
+#[test]
+fn drones_fighters_and_charged_or_spooling_repairers_count_as_remote() {
+    use crate::fit::FighterSquad;
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "logi");
+    f.drones.push(DroneStack { type_id: ids::LOGI_DRONE, count: 2, active: true, launched: None, mutation: None });
+    f.drones.push(DroneStack { type_id: ids::WEB_DRONE, count: 1, active: true, launched: None, mutation: None });
+    f.fighters.push(FighterSquad { type_id: ids::SUPPORT_FIGHTER, count: 4, active: true });
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(close(c.remote.armor_rep, 2.0 * 72.0 / 5.0), "{}", c.remote.armor_rep);
+    let webs: Vec<&RemoteModule> = c.remote.modules.iter().filter(|m| m.kind == RemoteKind::Web).collect();
+    assert_eq!(webs.len(), 1 + 3, "the drone and each fighter of a squadron its size holds");
+    assert!(webs.iter().all(|w| w.flies));
+    let mut f = Fit::new(ids::SHIP, "rr");
+    f.modules.push(running(ids::MUTA_REP, Slot::High, 0));
+    f.modules.push(running(ids::ARAR, Slot::High, 1).with_charge(ids::PASTE));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let muta = c.remote.modules.iter().find(|m| m.type_id == ids::MUTA_REP).unwrap();
+    assert!(close(muta.amount, 10.0 * 2.5), "fully spooled unless set: {}", muta.amount);
+    assert!(close(muta.spool_at(0.0), 1.0 / 2.5) && close(muta.spool_at(1000.0), 1.0));
+    let arar = c.remote.modules.iter().find(|m| m.type_id == ids::ARAR).unwrap();
+    assert!(close(arar.amount, 60.0 * 3.0 * 8.0 / (8.0 * 6.0 + 60.0)), "paste triples it for a load, then it reloads: {}", arar.amount);
+    f.modules[0].spool = Some(0.0);
+    let cold = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(close(cold.remote.modules.iter().find(|m| m.type_id == ids::MUTA_REP).unwrap().amount, 10.0));
+}
+
+#[test]
+fn boosts_for_friends_and_an_ecm_burst_show_as_remote_and_stay_out_of_the_enemys_ewar() {
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "support");
+    f.modules.push(running(ids::SENSOR_BOOST, Slot::Mid, 0));
+    f.modules.push(running(ids::TRACKING_BOOST, Slot::Mid, 1));
+    f.modules.push(running(ids::ECM_BURST, Slot::Mid, 2));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let of = |k: RemoteKind| c.remote.modules.iter().find(|m| m.kind == k).unwrap_or_else(|| panic!("{k:?}"));
+    let rsb = of(RemoteKind::SensorBoost);
+    assert!(close(rsb.amount, 30.0) && close(rsb.optimal, 48_000.0) && close(rsb.falloff, 96_000.0) && close(rsb.parts[1], 30.0));
+    let rtc = of(RemoteKind::TrackingBoost);
+    assert!(close(rtc.amount, 25.0) && close(rtc.parts[1], 15.0));
+    let burst = of(RemoteKind::EcmBurst);
+    assert!(close(burst.amount, 4.0) && close(burst.optimal, 6000.0) && close(burst.falloff, 0.0), "it jams within its radius: {burst:?}");
+    let cuts = crate::fleet::ewar::cutoffs(&[(1, &c)]);
+    assert!(cuts.iter().all(|(k, _, _)| !k.is_assist()), "{cuts:?}");
+    assert!(cuts.iter().any(|(k, _, edge)| *k == RemoteKind::EcmBurst && close(*edge, 6000.0)));
+}
+
+#[test]
+fn a_group_limit_holds_the_extra_module_back_and_a_wrong_charge_stays_out() {
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "dc");
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 0));
+    let one = compute(&d, &f, &SkillSet::all_v(), &env()).tank.armor.resonance;
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 1));
+    let two = compute(&d, &f, &SkillSet::all_v(), &env()).tank.armor.resonance;
+    assert_eq!(one, two, "the second runs no more than online");
+    let capped = crate::calc::group_limits(&d, &f);
+    assert_eq!(capped.len(), 1);
+    assert_eq!((capped[0].index, capped[0].state, capped[0].limit), (1, State::Online, crate::calc::GroupLimit::Active));
+    let mut g = Fit::new(ids::SHIP, "gun");
+    g.modules.push(running(ids::GUN, Slot::High, 0).with_charge(ids::BOMB));
+    assert!(compute(&d, &g, &SkillSet::all_v(), &env()).weapons.is_empty(), "a gun loads no bomb");
+    let w = crate::warnings::check(&d, &g, &compute(&d, &g, &SkillSet::all_v(), &env()), &[]);
+    assert!(w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::WrongCharge { .. })));
+}
+
+#[test]
+fn a_running_bubble_blooms_the_signature_and_mining_counts_its_crits() {
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::FIELD).unwrap().attrs.push((attr::SIGNATURE_RADIUS_BONUS, 50.0));
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "hic");
+    f.modules.push(Module::new(ids::FIELD, Slot::High, 0).with_state(State::Online));
+    let off = compute(&d, &f, &SkillSet::all_v(), &env()).mobility.signature;
+    f.modules[0].state = State::Active;
+    let on = compute(&d, &f, &SkillSet::all_v(), &env()).mobility.signature;
+    assert!(close(on, off * 1.5), "{off} -> {on}");
+    let mut m = Fit::new(ids::SHIP, "miner");
+    m.modules.push(running(ids::MINER, Slot::High, 0));
+    let c = compute(&d, &m, &SkillSet::all_v(), &env());
+    assert!(close(c.mining.ore, 120.0 / 45.0 * 1.02), "{:?}", c.mining);
+    assert!(close(c.mining.total(), c.mining.ore));
+}
+
+#[test]
+fn an_oversized_squadron_counts_at_its_size_and_the_hull_needs_tubes_for_it() {
+    use crate::warnings::{check, FighterClass, WarningKind};
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "carrier");
+    f.fighters.push(crate::fit::FighterSquad { type_id: ids::SUPPORT_FIGHTER, count: 4, active: true });
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let w = check(&d, &f, &c, &[]);
+    assert!(w.iter().any(|w| w.kind == WarningKind::SquadronOver { fighter: ids::SUPPORT_FIGHTER, count: 4, max: 3 }));
+    assert!(w.iter().any(|w| w.kind == WarningKind::FighterTubesOver { used: 1, total: 0 }), "a frigate has no launch tubes");
+    assert!(!w.iter().any(|w| matches!(w.kind, WarningKind::FighterClassOver { class: FighterClass::Light, .. })), "it is no light fighter");
+}
+

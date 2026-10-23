@@ -39,11 +39,71 @@ pub struct FleetSlot {
     pub profile: Option<String>,
     /// The variation it flies with; none is its base fit.
     pub variation: Option<u32>,
+    /// Charges by weapon type and a hull mode it flies with here, over its fit's: kept with the
+    /// fleet, the fit untouched.
+    pub charges: Vec<(TypeId, TypeId)>,
+    pub mode: Option<TypeId>,
+    /// Weapon stacks split in two, each part with its own charge.
+    pub splits: Vec<WeaponSplit>,
+    /// Module states it flies with here, by slot and index, over its fit's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<(crate::fit::Slot, u8, crate::fit::State)>,
+}
+
+/// A stack of one weapon type split in two: the first `first` modules (by slot) fire one charge,
+/// the rest another, on the same target or each on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeaponSplit {
+    pub weapon: TypeId,
+    pub first: u8,
+    pub charges: [TypeId; 2],
+    /// Each part on a target of its own, so each must kill its target alone.
+    pub apart: bool,
+}
+
+impl WeaponSplit {
+    /// How many modules of the stack fire in each part, of `total`.
+    pub fn counts(&self, total: u32) -> [u32; 2] {
+        let a = u32::from(self.first).min(total);
+        [a, total - a]
+    }
+}
+
+/// Whether a weapon kind can be split: what is aimed at one ship, not what bursts around one.
+pub fn splittable(kind: WeaponKind) -> bool {
+    matches!(kind, WeaponKind::Turret | WeaponKind::Missile | WeaponKind::Vorton | WeaponKind::Breacher | WeaponKind::Drone | WeaponKind::Fighter)
+}
+
+impl FleetSlot {
+    /// The fit with this slot's own charges, splits, mode and module states.
+    pub fn adjusted(&self, mut fit: Fit) -> Fit {
+        for (slot, index, state) in &self.states {
+            if let Some(m) = fit.module_mut(*slot, *index) {
+                m.state = *state;
+            }
+        }
+        for (weapon, charge) in &self.charges {
+            for m in fit.modules.iter_mut().filter(|m| m.type_id == *weapon) {
+                m.charge = Some(*charge);
+            }
+        }
+        for split in &self.splits {
+            let mut stack: Vec<&mut crate::fit::Module> = fit.modules.iter_mut().filter(|m| m.type_id == split.weapon && m.charge.is_some()).collect();
+            stack.sort_by_key(|m| (m.slot, m.index));
+            for (i, m) in stack.into_iter().enumerate() {
+                m.charge = Some(split.charges[usize::from(i >= usize::from(split.first))]);
+            }
+        }
+        if self.mode.is_some() {
+            fit.mode = self.mode;
+        }
+        fit
+    }
 }
 
 impl Default for FleetSlot {
     fn default() -> Self {
-        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None }
+        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }
     }
 }
 
@@ -158,6 +218,8 @@ pub struct Fleet {
     /// one primary for all.
     #[serde(default = "default_split")]
     pub split_fire: u32,
+    /// Which of its ewar it focuses on what it shoots and which it spreads over the other fleet.
+    pub ewar_plan: ewar::EwarPlan,
     /// How long the race may run, in seconds.
     #[serde(default = "default_race_length")]
     pub race_length_s: f32,
@@ -233,6 +295,7 @@ impl Default for Fleet {
             logi_efficiency: 0.75,
             race_length_s: 1800.0,
             split_fire: 1,
+            ewar_plan: ewar::EwarPlan::default(),
             mirror_size: None,
             mirror_counts: Vec::new(),
             logi_prelock: 0.0,
@@ -344,7 +407,8 @@ pub fn hull_boosts(dogma: &Dogma, hull: crate::ids::TypeId, kind: BurstKind) -> 
     lines.into_iter().any(|b| {
         let text = b.text.to_lowercase();
         // Strength, not range or how many fit: "bonus to Shield Command burst strength and duration".
-        text.contains("burst") && text.contains("strength") && (text.contains(&kind.command_name().to_lowercase()) || !named.iter().any(|n| text.contains(n.as_str())))
+        // An ECM burst jammer's strength is no boost.
+        text.contains("burst") && !text.contains("ecm burst") && text.contains("strength") && (text.contains(&kind.command_name().to_lowercase()) || !named.iter().any(|n| text.contains(n.as_str())))
     })
 }
 
@@ -446,7 +510,12 @@ pub fn env_of(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, 
     }
     for (_, fit_id) in &fleet.boosters {
         let Some(fit) = fits(fit_id) else { continue };
-        let fit = flown(dogma, &fit, fleet.slots.iter().find(|s| &s.fit_id == fit_id).and_then(|s| s.variation));
+        let slot = fleet.slots.iter().find(|s| &s.fit_id == fit_id);
+        let fit = flown(dogma, &fit, slot.and_then(|s| s.variation));
+        let fit = match slot {
+            Some(s) => s.adjusted(fit),
+            None => fit,
+        };
         let profile = fleet.slots.iter().find(|s| &s.fit_id == fit_id).and_then(|s| s.profile.clone());
         for (id, value) in bursts_of(dogma, &fit, &skills(profile.as_deref())) {
             env.offer(dogma, id, value);
@@ -507,7 +576,7 @@ pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, s
     let mut out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, env: env.clone(), ..FleetStats::default() };
     for (index, (slot, count)) in fleet.slots.iter().zip(counts).enumerate() {
         let Some(fit) = fits(&slot.fit_id) else { continue };
-        let fit = flown(dogma, &fit, slot.variation);
+        let fit = slot.adjusted(flown(dogma, &fit, slot.variation));
         let pilot = skills(slot.profile.as_deref());
         let calc = Calc::new(dogma, &fit, &pilot, &env);
         let mut computed = compute_with(&calc, &fit);
@@ -576,6 +645,15 @@ pub struct Against {
     /// The enemy main hull's speed and signature as this fleet's ewar leaves them.
     pub target_velocity: f64,
     pub target_signature: f64,
+    /// Ships of the main slot each fire group needs to volley its own target off when the fleet
+    /// splits into `i + 1` groups: the ewar is shared out over the targets as the fire is.
+    pub split_mass: Vec<Option<u32>>,
+}
+
+/// The most fire groups a slot of `ships` can split into with each group still killing its target
+/// in one volley, and what one group then needs; none when even one group cannot.
+pub fn split_groups(split_mass: &[Option<u32>], ships: u32) -> Option<(u32, u32)> {
+    split_mass.iter().enumerate().filter_map(|(i, n)| n.map(|n| (i as u32 + 1, n))).filter(|(g, n)| *n > 0 && ships / g >= *n).last()
 }
 
 /// Remote repairs on one ship lose effect with all the repairs it receives of the same layer
@@ -605,6 +683,12 @@ pub fn rep_landing(reps: &[(f64, f64)]) -> f64 {
 /// A fleet's remote repairs as they would land all on one ship, by layer (shield, armor, hull):
 /// every repair module of every ship, `n` ships of each slot (its count unless given).
 pub fn reps_on_one(stats: &FleetStats, ships: &dyn Fn(usize, &SlotStats) -> u32) -> [f64; 3] {
+    reps_on_one_at(stats, ships, None)
+}
+
+/// The same `since` seconds after the repairs began, mutadaptive repairers spooled that far from
+/// cold; `None` as each is set.
+pub fn reps_on_one_at(stats: &FleetStats, ships: &dyn Fn(usize, &SlotStats) -> u32, since: Option<f64>) -> [f64; 3] {
     let mut lists: [Vec<(f64, f64)>; 3] = Default::default();
     for (k, s) in stats.slots.iter().enumerate() {
         let n = ships(k, s);
@@ -615,8 +699,9 @@ pub fn reps_on_one(stats: &FleetStats, ships: &dyn Fn(usize, &SlotStats) -> u32)
                 RemoteKind::HullRep => 2,
                 _ => continue,
             };
+            let spool = since.map_or(1.0, |t| m.spool_at(t));
             for _ in 0..n {
-                lists[layer].push((m.amount * m.cycle_s, m.cycle_s));
+                lists[layer].push((m.amount * spool * m.cycle_s, m.cycle_s));
             }
         }
     }
@@ -652,12 +737,13 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let range = f64::from(a.range);
     // The ships' own modules by range, all on the main hull; counts typed by hand at full strength.
     let (velocity, signature) = if a.ewar_auto {
-        let e = ewar::ewar_on(&ships(a_stats), range, 1.0, Some(t));
+        let e = ewar::planned(&ships(a_stats), range, &a.ewar_plan, a.split_fire, b_stats.ships, Some(t));
         (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
     } else {
         ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature)
     };
-    let on_shooters = b.ewar_auto.then(|| ewar::ewar_at(&ships(b_stats), range, f64::from(a_stats.ships.max(1))));
+    // As B lays its ewar on this fleet, in its plan.
+    let on_shooters = b.ewar_auto.then(|| ewar::planned_average(&ships(b_stats), range, &b.ewar_plan, b.split_fire, a_stats.ships, None));
     out.target_velocity = velocity;
     out.target_signature = signature;
     let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0 };
@@ -665,6 +751,8 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let td: Vec<(crate::dogma::Op, f64, bool)> = (0..b_ewar.tracking_disruptors).map(|_| (crate::dogma::Op::PostPercent, -17.19, true)).collect();
     let td_factor = crate::calc::combine(1.0, true, &td);
     let mut main_volley_per_ship = 0.0;
+    // The main slot's applied volley per ship by weapon group: (type, charge, modules, volley).
+    let mut main_groups: Vec<(TypeId, Option<TypeId>, u32, f64)> = Vec::new();
     for (i, slot) in a_stats.slots.iter().enumerate() {
         let n = f64::from(slot.count);
         let mut dps = 0.0;
@@ -683,6 +771,9 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
             dps += w.dps * f;
             if w.alpha() {
                 volley += w.volley.total() * f;
+                if i == a_stats.main {
+                    main_groups.push((w.type_id, w.charge, w.count, w.volley.total() * f));
+                }
             }
         }
         out.applied_dps += dps * n;
@@ -694,6 +785,54 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let ehp = t.tank.ehp;
     let eff = f64::from(a.volley_efficiency.clamp(0.01, 1.0));
     out.critical_mass = (main_volley_per_ship > 0.0 && ehp > 0.0).then(|| (ehp / (main_volley_per_ship * eff)).ceil() as u32);
+    // A stack split onto two targets: each part must kill its own, the rest of the weapons with
+    // the first, so the weaker part sets how many ships it takes.
+    let apart = a_stats.slots.get(a_stats.main).and_then(|m| a.slots.get(m.slot)).and_then(|s| s.splits.iter().find(|x| x.apart).copied());
+    if let (Some(split), Some(_)) = (apart, out.critical_mass) {
+        let per_module = |charge: TypeId| main_groups.iter().filter(|g| g.0 == split.weapon && g.1 == Some(charge) && g.2 > 0).map(|g| g.3 / f64::from(g.2)).next().unwrap_or(0.0);
+        let modules: u32 = main_groups.iter().filter(|g| g.0 == split.weapon).map(|g| g.2).sum();
+        let [n0, n1] = split.counts(modules);
+        let rest: f64 = main_groups.iter().filter(|g| g.0 != split.weapon).map(|g| g.3).sum();
+        let first = rest + per_module(split.charges[0]) * f64::from(n0);
+        let second = per_module(split.charges[1]) * f64::from(n1);
+        let need = |v: f64| (v > 0.0).then(|| (ehp / (v * eff)).ceil() as u32);
+        out.critical_mass = match (need(first), need(second)) {
+            (Some(x), Some(y)) => Some(x.max(y)),
+            (x, y) => x.or(y),
+        };
+    }
+    // Split into groups, each target gets its share of the webs and painters.
+    out.split_mass = (1..=SPLIT_GROUPS)
+        .map(|g| {
+            let (v, sig) = if a.ewar_auto {
+                let e = ewar::planned(&ships(a_stats), range, &a.ewar_plan, g, b_stats.ships, Some(t));
+                (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
+            } else {
+                (velocity, signature)
+            };
+            let p = TargetProfile { signature: sig as f32, velocity: v as f32, transversal: v as f32, distance: a.range, radius: 0.0 };
+            let main = a_stats.slots.get(a_stats.main)?;
+            let per_ship: f64 = main
+                .computed
+                .weapons
+                .iter()
+                .filter(|w| w.alpha())
+                .map(|w| {
+                    let mut w = match &on_shooters {
+                        Some(e) => sweep::disrupted(w, e),
+                        None => w.clone(),
+                    };
+                    if on_shooters.is_none() && w.kind == WeaponKind::Turret {
+                        w.optimal *= td_factor;
+                        w.falloff *= td_factor;
+                        w.tracking *= td_factor;
+                    }
+                    w.volley.total() * applied_factor(&w, f64::from(a.range), &p, main.computed.drone_speed.unwrap_or(0.0), main.computed.drones.control_range)
+                })
+                .sum();
+            (per_ship > 0.0 && ehp > 0.0).then(|| (ehp / (per_ship * eff)).ceil() as u32)
+        })
+        .collect();
     out.kills_per_volley = if ehp > 0.0 { out.applied_volley * eff / ehp } else { 0.0 };
     let landing: f64 = reps_on_one(b_stats, &|_, s| s.count).iter().sum();
     out.break_point = landing * f64::from(b.logi_efficiency.clamp(0.0, 1.0)) * t.rep_intake + t.tank.reps.armor + t.tank.reps.shield + t.tank.reps.hull;
@@ -701,6 +840,9 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let _ = dogma;
     out
 }
+
+/// The most fire groups the split figures look at.
+pub const SPLIT_GROUPS: u32 = 6;
 
 /// Hull groups by what they do in a fleet.
 const LOGI_GROUPS: [GroupId; 3] = [832, 1527, 1538];
@@ -776,7 +918,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
         if fleet.main.is_none() && matches!(rule, CountRule::Fill { .. }) {
             fleet.main = Some(fleet.slots.len());
         }
-        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None });
+        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() });
         let calc = Calc::new(dogma, fit, skills, &Env::default());
         for (i, it) in calc.modules() {
             if it.state < State::Active {

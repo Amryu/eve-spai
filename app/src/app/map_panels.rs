@@ -1755,11 +1755,7 @@ impl SpaiApp {
     pub(crate) fn show_map_viewport(&mut self, ctx: &egui::Context) {
         let overlay = self.map_overlay_mode;
         if overlay && self.settings.map_overlay_smart {
-            let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
-            if due {
-                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
-                self.eve_focus_checked = Some(std::time::Instant::now());
-            }
+            self.watch_eve_focus();
         }
         let on_top = if overlay {
             !self.settings.map_overlay_smart

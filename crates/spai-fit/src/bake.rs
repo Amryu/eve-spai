@@ -410,7 +410,10 @@ pub fn from_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<
         let beacon = u16::try_from(r.group_id).is_ok_and(|g| g == crate::ids::group::EFFECT_BEACON);
         // Fuel: the isotopes, strontium, ozone and heavy water jump drives, siege and cynos burn.
         let fuel = r.group_id == u32::from(crate::ids::group::ICE_PRODUCT) && r.published;
-        let wanted = r.key == CHARACTER_TYPE || beacon || fuel || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
+        let mode = r.group_id == u32::from(crate::ids::group::SHIP_MODIFIERS);
+        // Heavy fighters launch bombs of this group that are not on the market.
+        let bomb = r.group_id == u32::from(crate::ids::group::BOMB);
+        let wanted = r.key == CHARACTER_TYPE || beacon || fuel || mode || bomb || (category::BAKED.contains(&cat) && (r.published || cat == category::SKILL));
         if !wanted {
             return Ok(());
         }

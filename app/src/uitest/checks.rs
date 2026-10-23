@@ -104,7 +104,8 @@ fn collect(harness: &Harness<'_>) -> Vec<Widget> {
         // keeps its whole rect, so it is trimmed here the same way.
         if let Some((_, visible)) = cut.iter().find(|(full, _)| full.expand(0.5).contains_rect(rect)) {
             rect = rect.intersect(*visible);
-            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            // A sliver under a pixel left at the edge is as gone as one cut away.
+            if rect.width() < 1.0 || rect.height() < 1.0 {
                 continue;
             }
         }
@@ -200,10 +201,13 @@ pub(crate) fn inspect(harness: &mut Harness<'_>, size: egui::Vec2) -> Report {
             }
         }
 
+        // A floating window takes the clicks over whatever lies under it.
+        let windows: Vec<egui::Rect> = widgets.iter().filter(|w| w.role == egui::accesskit::Role::Window).map(|w| w.rect).collect();
         for (i, a) in hits.iter().enumerate() {
             for b in &hits[i + 1..] {
                 let hit = a.rect.intersect(b.rect);
-                if hit.width() > 1.0 && hit.height() > 1.0 && !related(a, b, &parents) {
+                let covered = window_of(a, &windows).is_some() != window_of(b, &windows).is_some();
+                if hit.width() > 1.0 && hit.height() > 1.0 && !related(a, b, &parents) && !covered {
                     report.overlaps.push(format!("{} <-> {}", a.describe(), b.describe()));
                 }
             }

@@ -144,6 +144,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui) {
 }
 
 fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
+    let _t = spai_ui::timing::span("sim: fleet scene");
     let enemy = sim.fleet.as_ref().and_then(|f| f.fleet.enemy.clone()).and_then(|id| sim.enemy_fleet(&id));
     // Each side's hulls and slowest top speed, for the symbols and the arrows.
     let summary = |d: &spai_fit::Dogma, s: &spai_fit::fleet::FleetStats| (s.slots.iter().map(|x| (spai_fit::fleet::hull_class(d, x.ship), x.count)).collect::<Vec<_>>(), s.speed_min);

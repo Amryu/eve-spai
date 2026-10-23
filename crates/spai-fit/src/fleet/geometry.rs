@@ -105,6 +105,43 @@ pub fn positions_along(formation: Formation, n: usize, along: Vec3) -> Vec<Vec3>
     }
 }
 
+/// How many more ships a vorton arc strikes after its primary, averaged over every ship of the
+/// formation as the primary: it jumps to the nearest ship not yet struck within `range` of the
+/// last one, at most `targets` times.
+pub fn arc_reach(formation: Formation, n: usize, range: f64, targets: u32) -> f64 {
+    if n < 2 || targets == 0 || range <= 0.0 {
+        return 0.0;
+    }
+    let at = positions(formation, n);
+    let gap = |a: Vec3, b: Vec3| len([a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+    let mut total = 0usize;
+    for first in 0..n {
+        let mut struck = vec![false; n];
+        struck[first] = true;
+        let mut last = first;
+        for _ in 0..targets {
+            let next = (0..n).filter(|j| !struck[*j]).map(|j| (j, gap(at[last], at[j]))).filter(|(_, d)| *d <= range).min_by(|a, b| a.1.total_cmp(&b.1));
+            let Some((j, _)) = next else { break };
+            struck[j] = true;
+            last = j;
+            total += 1;
+        }
+    }
+    total as f64 / n as f64
+}
+
+/// How many other ships sit within `radius` of one, averaged over every ship of the formation:
+/// what area damage centred on a primary takes with it.
+pub fn splash_reach(formation: Formation, n: usize, radius: f64) -> f64 {
+    if n < 2 || radius <= 0.0 {
+        return 0.0;
+    }
+    let at = positions(formation, n);
+    let gap = |a: Vec3, b: Vec3| len([a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+    let total: usize = (0..n).map(|i| (0..n).filter(|j| *j != i && gap(at[i], at[*j]) <= radius).count()).sum();
+    total as f64 / n as f64
+}
+
 /// `positions_along` with the flock strung out along the x axis.
 pub fn positions(formation: Formation, n: usize) -> Vec<Vec3> {
     positions_along(formation, n, [1.0, 0.0, 0.0])

@@ -59,6 +59,134 @@ fn stacked(percents: &[f64], k: f64) -> f64 {
     lo + (hi - lo) * part
 }
 
+/// How a fleet lays its ewar on the other: each kind either focused on the ships it shoots (its
+/// primary, or each group's when its fire splits) or spread over the whole other fleet.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EwarPlan {
+    /// The kinds spread over the other fleet; the rest are focused.
+    pub spread: Vec<RemoteKind>,
+    /// The share of the other fleet the spread kinds actually work on: pilots cluster on some
+    /// ships and miss others, so the ships they reach take more and the rest none.
+    pub coverage: f32,
+}
+
+impl Default for EwarPlan {
+    /// As fleets fly it: webs, painters and tackle on the primary; dampeners, disruptors,
+    /// neutralisers and jammers worked through the other fleet.
+    fn default() -> Self {
+        EwarPlan { spread: vec![RemoteKind::Damp, RemoteKind::TrackingDisruptor, RemoteKind::GuidanceDisruptor, RemoteKind::Neut, RemoteKind::Ecm], coverage: 1.0 }
+    }
+}
+
+impl EwarPlan {
+    /// The kinds a plan sets, in the order they are offered.
+    pub const KINDS: [RemoteKind; 8] = [RemoteKind::Web, RemoteKind::Painter, RemoteKind::Scram, RemoteKind::Damp, RemoteKind::TrackingDisruptor, RemoteKind::GuidanceDisruptor, RemoteKind::Neut, RemoteKind::Ecm];
+
+    /// Whether the kind is spread; a nosferatu goes as the neutralisers do, a disruptor as the
+    /// scramblers.
+    pub fn spreads(&self, kind: RemoteKind) -> bool {
+        let as_kind = match kind {
+            RemoteKind::Nos => RemoteKind::Neut,
+            RemoteKind::Point | RemoteKind::Bubble => RemoteKind::Scram,
+            RemoteKind::EcmBurst => RemoteKind::Ecm,
+            k => k,
+        };
+        self.spread.contains(&as_kind)
+    }
+
+    pub fn set(&mut self, kind: RemoteKind, spread: bool) {
+        self.spread.retain(|k| *k != kind);
+        if spread {
+            self.spread.push(kind);
+        }
+    }
+}
+
+/// Over how many ships the plan shares a kind: the primaries when focused, the share of the
+/// fleet it covers when spread.
+pub fn plan_targets(plan: &EwarPlan, kind: RemoteKind, primaries: u32, fleet_size: u32) -> f64 {
+    if plan.spreads(kind) {
+        (f64::from(fleet_size.max(1)) * f64::from(plan.coverage.clamp(0.05, 1.0))).max(1.0)
+    } else {
+        f64::from(primaries.max(1))
+    }
+}
+
+/// One kind of ewar on a ship, module type by module type: the type, how many of it land on the
+/// ship (`targets` sharing them), and the percent each gives at `distance` after the ship's
+/// resistance to it. For a breakdown of `ewar_on`'s figure; `part` as in `RemoteModule::parts`.
+pub fn parts_of(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: Option<&Computed>, kind: RemoteKind, part: usize) -> Vec<(crate::ids::TypeId, f64, f64)> {
+    let resist = target.map_or(1.0, |t| t.resist.of(kind));
+    let mut out: Vec<(crate::ids::TypeId, f64, f64)> = Vec::new();
+    for (n, c) in ships {
+        for m in c.remote.modules.iter().filter(|m| m.kind == kind && m.parts[part] != 0.0) {
+            let pct = m.parts[part] * range_factor(distance, m.optimal, m.falloff) * resist;
+            let landing = f64::from(*n) / targets.max(1.0);
+            match out.iter_mut().find(|(t, _, p)| *t == m.type_id && (*p - pct).abs() < 1e-9) {
+                Some(e) => e.1 += landing,
+                None => out.push((m.type_id, landing, pct)),
+            }
+        }
+    }
+    out.sort_by(|a, b| b.2.abs().total_cmp(&a.2.abs()));
+    out
+}
+
+/// The ewar `ships` put on one ship of a fleet of `fleet_size` as `plan` lays it: a focused kind
+/// shared over the `primaries` the fire is split over, a spread one over the share of the fleet
+/// it covers, this ship among them.
+pub fn planned(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, target: Option<&Computed>) -> EwarOn {
+    let covered = (f64::from(fleet_size.max(1)) * f64::from(plan.coverage.clamp(0.05, 1.0))).max(1.0);
+    let focused = ewar_on(ships, distance, f64::from(primaries.max(1)), target);
+    let spread = ewar_on(ships, distance, covered, target);
+    let pick = |kind: RemoteKind| if plan.spreads(kind) { &spread } else { &focused };
+    let web = pick(RemoteKind::Web);
+    let damp = pick(RemoteKind::Damp);
+    let td = pick(RemoteKind::TrackingDisruptor);
+    let gd = pick(RemoteKind::GuidanceDisruptor);
+    EwarOn {
+        speed: web.speed,
+        webbed: web.webbed,
+        signature: pick(RemoteKind::Painter).signature,
+        lock_range: damp.lock_range,
+        scan_resolution: damp.scan_resolution,
+        tracking: td.tracking,
+        optimal: td.optimal,
+        falloff: td.falloff,
+        explosion_radius: gd.explosion_radius,
+        explosion_velocity: gd.explosion_velocity,
+        missile_velocity: gd.missile_velocity,
+        flight_time: gd.flight_time,
+        neut: pick(RemoteKind::Neut).neut,
+        scrammed: focused.scrammed,
+        pointed: focused.pointed,
+    }
+}
+
+/// As `planned`, averaged over the whole fleet: the spread kinds on the share of it they cover,
+/// nothing on the rest. What fleet-wide figures go by.
+pub fn planned_average(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, target: Option<&Computed>) -> EwarOn {
+    let on = planned(ships, distance, plan, primaries, fleet_size, target);
+    let share = f64::from(plan.coverage.clamp(0.05, 1.0));
+    let mix = |kind: RemoteKind, f: f64| if plan.spreads(kind) { 1.0 + (f - 1.0) * share } else { f };
+    EwarOn {
+        lock_range: mix(RemoteKind::Damp, on.lock_range),
+        scan_resolution: mix(RemoteKind::Damp, on.scan_resolution),
+        tracking: mix(RemoteKind::TrackingDisruptor, on.tracking),
+        optimal: mix(RemoteKind::TrackingDisruptor, on.optimal),
+        falloff: mix(RemoteKind::TrackingDisruptor, on.falloff),
+        explosion_radius: mix(RemoteKind::GuidanceDisruptor, on.explosion_radius),
+        explosion_velocity: mix(RemoteKind::GuidanceDisruptor, on.explosion_velocity),
+        missile_velocity: mix(RemoteKind::GuidanceDisruptor, on.missile_velocity),
+        flight_time: mix(RemoteKind::GuidanceDisruptor, on.flight_time),
+        speed: mix(RemoteKind::Web, on.speed),
+        signature: mix(RemoteKind::Painter, on.signature),
+        neut: if plan.spreads(RemoteKind::Neut) { on.neut * share } else { on.neut },
+        ..on
+    }
+}
+
 /// The ewar `ships` (each a fit with how many fly) put on the other side at `distance`, spread
 /// over `targets` ships: 1 for everything on the primary, the enemy's count to share it out.
 pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarOn {
@@ -130,7 +258,7 @@ pub fn ewar_on(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: 
     // Tackle holds or not: within its optimal, it has no falloff.
     let reaches = |kind: RemoteKind| sources.iter().any(|s| s.kind == kind && distance <= s.optimal);
     out.scrammed = reaches(RemoteKind::Scram);
-    out.pointed = out.scrammed || reaches(RemoteKind::Point);
+    out.pointed = out.scrammed || reaches(RemoteKind::Point) || reaches(RemoteKind::Bubble);
     out.webbed = sources.iter().any(|s| s.kind == RemoteKind::Web && range_factor(distance, s.optimal, s.falloff) > 0.0);
     out
 }
@@ -142,10 +270,10 @@ pub fn cutoffs(ships: &[(u32, &Computed)]) -> Vec<(RemoteKind, f64, f64)> {
     let mut out: Vec<(RemoteKind, f64, f64)> = Vec::new();
     for (_, c) in ships {
         for m in &c.remote.modules {
-            if m.kind.is_rep() || m.kind == RemoteKind::CapTransfer {
+            if m.kind.is_assist() {
                 continue;
             }
-            let edge = if matches!(m.kind, RemoteKind::Scram | RemoteKind::Point) || m.falloff <= 0.0 { m.optimal } else { m.optimal + m.falloff };
+            let edge = if matches!(m.kind, RemoteKind::Scram | RemoteKind::Point | RemoteKind::Bubble | RemoteKind::EcmBurst) || m.falloff <= 0.0 { m.optimal } else { m.optimal + m.falloff };
             match out.iter_mut().find(|(k, _, _)| *k == m.kind) {
                 Some(e) => {
                     e.1 = e.1.max(m.optimal);
