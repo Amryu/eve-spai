@@ -2368,6 +2368,10 @@ fn detects_systems_count_and_flags() {
     assert!(analyze("wh in Jita k162", &s, &noships(), &noknown(), 1, "ch", "x").wormhole);
     assert!(analyze("ess being robbed", &s, &noships(), &noknown(), 1, "ch", "x").ess);
     assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);
+    assert!(analyze("reserve bank hacked Rancer", &s, &noships(), &noknown(), 1, "ch", "x").reserve);
+    assert!(analyze("ess reserve key in use Rancer", &s, &noships(), &noknown(), 1, "ch", "x").reserve);
+    assert!(!analyze("no reserve Rancer", &s, &noships(), &noknown(), 1, "ch", "x").reserve, "said not to be there");
+    assert!(!analyze("ess being robbed", &s, &noships(), &noknown(), 1, "ch", "x").reserve, "the main bank is not the reserve");
     for w in ["filament", "needlejack", "trace", "filaments", "needlejacks"] {
         let r = analyze(&format!("{w} in Rancer"), &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.filament, "{w} should set filament");

@@ -2557,6 +2557,16 @@ mod notes_behaviour_tests {
     }
 
     #[test]
+    fn a_rule_can_ask_for_the_reserve_bank() {
+        let v = view();
+        let ru = AlertRule { min_severity: Severity::Info, require: vec!["reserve".into()], ..Default::default() };
+        let mut r = fixtures::intel_typical();
+        assert!(!fires(&ru, &r, &v), "no reserve mentioned");
+        r.reserve = true;
+        assert!(fires(&ru, &r, &v));
+    }
+
+    #[test]
     fn pilot_tag_condition_matches_by_name_before_resolution() {
         let v = view();
         let hunter = v.pilot_tags.iter().find(|t| t.name == "Hunter").unwrap().id.clone();

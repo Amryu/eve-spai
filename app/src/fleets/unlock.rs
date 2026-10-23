@@ -50,8 +50,7 @@ pub fn check_stored() -> Check {
         Ok(c) => c,
         Err(e) => return Check::Unreachable(e.to_string()),
     };
-    let resp = match client
-        .get(format!("{}/api/v1/authentication/is-authenticated", super::http::BASE))
+    let resp = match super::http::as_page(client.get(format!("{}/api/v1/authentication/is-authenticated", super::http::BASE)))
         .header(reqwest::header::COOKIE, jar)
         .send()
     {

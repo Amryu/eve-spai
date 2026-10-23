@@ -121,6 +121,8 @@ pub struct IntelReport {
     pub ess: bool,
     pub ess_time: Option<String>,
     pub skyhook: bool,
+    /// The ESS reserve bank: its key, a hack on it, someone at it.
+    pub reserve: bool,
     pub filament: bool,
     pub diamond_rats: bool,
     pub anom_sigs: Vec<(AnomKind, String)>,
@@ -443,6 +445,7 @@ impl IntelState {
             prev.ess |= new.ess;
             prev.ess_time = new.ess_time.clone().or_else(|| prev.ess_time.clone());
             prev.skyhook |= new.skyhook;
+            prev.reserve |= new.reserve;
             for l in &new.links {
                 if !prev.links.iter().any(|p| p.url == l.url) {
                     prev.links.push(l.clone());
@@ -611,6 +614,7 @@ fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
     dst.ess |= src.ess;
     dst.ess_time = dst.ess_time.clone().or_else(|| src.ess_time.clone());
     dst.skyhook |= src.skyhook;
+    dst.reserve |= src.reserve;
     dst.text = format!("{}  ·  {}", src.text, dst.text);
 }
 
@@ -622,7 +626,7 @@ const PILOT_STOP: &[&str] = &[
     "gate", "gates", "stargate", "stargates", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "cleared", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
     "solo",
     "type", "types", "shiptype", "shiptypes",
-    "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "nvm", "ess", "skyhook", "hostile",
+    "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "nvm", "ess", "reserve", "skyhook", "hostile",
     "filament", "filaments", "needlejack", "needlejacks", "trace", "traces",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
@@ -2902,6 +2906,7 @@ pub fn analyze_ctx(
             None
         },
         skyhook: lower.contains("skyhook") || lower_tokens.iter().any(|t| is_skyhook_typo(t)),
+        reserve: flagged_exact(&lower_tokens, &pilot_tokens, &["reserve"]),
         filament: flagged_exact(
             &lower_tokens,
             &pilot_tokens,

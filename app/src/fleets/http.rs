@@ -213,9 +213,7 @@ impl HttpBackend {
             Method::Put => reqwest::Method::PUT,
             Method::Delete => reqwest::Method::DELETE,
         };
-        let mut req = self
-            .client
-            .request(method, url)
+        let mut req = as_page(self.client.request(method, url))
             .header(reqwest::header::COOKIE, self.cookies.header())
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*");
         if rec.method != Method::Get {
@@ -224,8 +222,7 @@ impl HttpBackend {
             };
             req = req
                 .header("X-XSRF-TOKEN", percent_decode(&token))
-                .header(reqwest::header::ORIGIN, BASE)
-                .header(reqwest::header::REFERER, format!("{BASE}/"));
+                .header(reqwest::header::ORIGIN, BASE);
         }
         if let Some(body) = &rec.body {
             req = req.json(body);
@@ -386,6 +383,16 @@ fn build_tree(
         })
         .collect();
     Composition { commander, wings, flat: false }
+}
+
+/// Marks a request as the dashboard's own page sends it. The dashboard refuses every API request
+/// without browser fetch metadata, whatever the user agent: `Sec-Fetch-Site: same-origin` is what
+/// a script on its page sends, and nothing outside a browser sends any.
+pub(crate) fn as_page(req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    req.header("Sec-Fetch-Site", "same-origin")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Dest", "empty")
+        .header(reqwest::header::REFERER, format!("{BASE}/"))
 }
 
 fn decode<T: DeserializeOwned>(v: serde_json::Value) -> Result<T> {
@@ -580,9 +587,7 @@ impl FleetBackend for HttpBackend {
             .ok_or_else(|| FleetError::Decode("the hub offered no connection token".to_owned()))?;
 
         let url = format!("{BASE}{HUB}?id={token}");
-        let stream = self
-            .client
-            .get(&url)
+        let stream = as_page(self.client.get(&url))
             .header(reqwest::header::COOKIE, self.cookies.header())
             .header(reqwest::header::ACCEPT, "text/event-stream")
             // reqwest counts its timeout over the whole request, body included, so the client's
@@ -727,6 +732,16 @@ mod tests {
         h.append(reqwest::header::SET_COOKIE, "c=3".parse().expect("a header"));
         jar.absorb(&h);
         assert_eq!(jar.snapshot(), "a=9; c=3");
+    }
+
+    #[test]
+    fn requests_carry_the_fetch_metadata_the_dashboard_insists_on() {
+        let req = as_page(reqwest::blocking::Client::new().get(format!("{BASE}/api/v1/authentication/is-authenticated"))).build().unwrap();
+        let h = req.headers();
+        assert_eq!(h.get("Sec-Fetch-Site").unwrap(), "same-origin", "without it every API request is refused");
+        assert_eq!(h.get("Sec-Fetch-Mode").unwrap(), "cors");
+        assert_eq!(h.get("Sec-Fetch-Dest").unwrap(), "empty");
+        assert_eq!(h.get_all(reqwest::header::REFERER).iter().count(), 1);
     }
 
     #[test]

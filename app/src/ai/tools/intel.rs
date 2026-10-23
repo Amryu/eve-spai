@@ -33,7 +33,7 @@ static SEARCH_INTEL: ToolSpec = ToolSpec {
     run: search_intel,
 };
 
-const KINDS: [&str; 13] = ["cyno", "bubble", "camp", "tackle", "capital_tackled", "dropper", "wormhole", "spike", "help", "clear", "ess", "skyhook", "structure"];
+const KINDS: [&str; 14] = ["cyno", "bubble", "camp", "tackle", "capital_tackled", "dropper", "wormhole", "spike", "help", "clear", "ess", "reserve", "skyhook", "structure"];
 
 /// The kinds a report is, by the names in [`KINDS`].
 fn kinds_of(r: &crate::intel::IntelReport) -> Vec<&'static str> {
@@ -49,6 +49,7 @@ fn kinds_of(r: &crate::intel::IntelReport) -> Vec<&'static str> {
         (r.help, "help"),
         (r.clear, "clear"),
         (r.ess, "ess"),
+        (r.reserve, "reserve"),
         (r.skyhook, "skyhook"),
         (!r.structures.is_empty(), "structure"),
     ]

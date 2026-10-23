@@ -6919,6 +6919,7 @@ fn rule_matches(
             "wormhole" | "wh" => r.wormhole,
             "spike" => r.spike,
             "skyhook" => r.skyhook,
+            "reserve" => r.reserve,
             "filament" | "needlejack" | "trace" => r.filament,
             "nv" | "novisual" => r.no_visual,
             "help" | "sos" | "backup" => r.help,

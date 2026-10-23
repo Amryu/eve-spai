@@ -533,6 +533,7 @@ pub(crate) fn intel_row(
                     && !r.wormhole
                     && !r.ess
                     && !r.skyhook
+                    && !r.reserve
                     && !r.status
                     && !r.diamond_rats
                     && r.anom_sigs.is_empty()

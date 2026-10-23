@@ -180,8 +180,7 @@ fn verified(jar: &str) -> bool {
     else {
         return false;
     };
-    match client
-        .get(format!("{ORIGIN}/api/v1/authentication/is-authenticated"))
+    match crate::fleets::http::as_page(client.get(format!("{ORIGIN}/api/v1/authentication/is-authenticated")))
         .header(reqwest::header::COOKIE, jar)
         .send()
     {

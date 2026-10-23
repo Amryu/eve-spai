@@ -626,7 +626,7 @@ impl SpaiApp {
             ui.end_row();
 
             row(ui, tr!("Mentions"), tr!("The report has to mention one of these"));
-            const KINDS: [(&str, &str); 10] = [
+            const KINDS: [(&str, &str); 11] = [
                 ("bubble", tr_noop!("Bubble")),
                 ("camp", tr_noop!("Camp")),
                 ("cyno", tr_noop!("Cyno")),
@@ -634,6 +634,7 @@ impl SpaiApp {
                 ("captackled", tr_noop!("Capital tackled")),
                 ("kill", tr_noop!("Kill")),
                 ("ess", "ESS"),
+                ("reserve", tr_noop!("Reserve")),
                 ("spike", tr_noop!("Spike")),
                 ("wormhole", tr_noop!("Wormhole")),
                 ("help", tr_noop!("Help")),
