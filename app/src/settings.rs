@@ -64,6 +64,10 @@ pub struct Settings {
     pub kill_intel_jumps: u32,
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
+    /// Reports past `intel_ttl_secs` leave the Intel page and the map's Nearby list instead of
+    /// staying there greyed out.
+    #[serde(default)]
+    pub intel_hide_outdated: bool,
     /// How long a report keeps its system highlighted on the map. Separate from `intel_ttl_secs`,
     /// which is how long the report stays in the feed: a system lit up for an hour says a fight is
     /// happening there now, which stops being true long before the report stops being worth
@@ -1555,6 +1559,7 @@ impl Default for Settings {
             kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
+            intel_hide_outdated: false,
             map_highlight_secs: default_map_highlight_secs(),
             map_highlight_critical_secs: default_map_highlight_critical_secs(),
             intel_count_bridges: false,

@@ -55,6 +55,10 @@ impl SpaiApp {
                 1 => tr!("Within 1 jump").to_owned(),
                 n => trf!("Within {n} jumps", n = n),
             };
+            let range = match self.intel_sort {
+                IntelSort::Nearest => format!("{}  {range}", icon::MAP_PIN),
+                IntelSort::Newest => range,
+            };
             toolbar_combo(ui, "intel_range", range, |ui| {
                 for n in [0u32, 1, 2, 3, 5, 8, 10, 15, 20] {
                     let l = match n {
@@ -64,6 +68,10 @@ impl SpaiApp {
                     };
                     ui.menu_value(&mut self.intel_max_jumps, n, l);
                 }
+                // The order sits with distance: by jumps is the other way to read this list.
+                ui.separator();
+                ui.menu_value(&mut self.intel_sort, IntelSort::Newest, format!("{}  {}", icon::CLOCK, tr!("Newest first")));
+                ui.menu_value(&mut self.intel_sort, IntelSort::Nearest, format!("{}  {}", icon::MAP_PIN, tr!("Nearest first")));
                 ui.separator();
                 if ui
                     .checkbox(&mut self.settings.intel_count_bridges, tr!("Count jump bridges"))
@@ -73,7 +81,7 @@ impl SpaiApp {
                     self.needs_save = true;
                 }
             })
-            .on_hover_text(tr!("How far from you a report may be"));
+            .on_hover_text(tr!("How far from you a report may be, and whether the nearest come first"));
             let zkill = if !self.settings.kill_intel {
                 tr!("zKill: off").to_owned()
             } else {
@@ -108,6 +116,13 @@ impl SpaiApp {
                         self.needs_save = true;
                     }
                 });
+                if ui
+                    .checkbox(&mut self.settings.intel_hide_outdated, tr!("Hide outdated reports"))
+                    .on_hover_text(tr!("Outdated reports leave the Intel page and the map's Nearby list instead of turning grey"))
+                    .changed()
+                {
+                    self.needs_save = true;
+                }
                 if ui.button(trf!("{icon}  Severity colours\u{2026}", icon = icon::PALETTE)).clicked() {
                     self.severity_open = true;
                     ui.close();
@@ -139,12 +154,15 @@ impl SpaiApp {
         let bridges = self.settings.intel_count_bridges;
         let sev_rules = self.settings.severity.clone();
         let notes_view = self.notes_view.clone();
+        let hide_outdated = self.settings.intel_hide_outdated;
+        let ttl = self.settings.intel_ttl_secs;
         let state = self.intel_state.lock().unwrap();
 
         let mut matches: Vec<&crate::intel::IntelReport> = state
             .reports
             .iter()
             .filter(|r| r.primary_system().is_some() || !r.gates.is_empty())
+            .filter(|r| !hide_outdated || !outdated(r, now, ttl))
             .filter(|r| type_filter.matches(r))
             .filter(|r| {
                 max_jumps == 0
@@ -154,6 +172,11 @@ impl SpaiApp {
             .filter(|r| query.is_empty() || intel_query_matches(r, &query, &notes_view))
             .collect();
         matches.sort_by(|a, b| b.received.cmp(&a.received));
+        if self.intel_sort == IntelSort::Nearest {
+            // A stable sort over newest-first keeps the newest first among equals; unknown last.
+            let jumps = |r: &crate::intel::IntelReport| jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges).unwrap_or(u32::MAX);
+            matches.sort_by_key(|r| jumps(r));
+        }
         let last_ship = build_last_ship(&state.reports);
 
         // Shown in the toolbar on the next frame: it is drawn before the reports are counted.
@@ -203,7 +226,6 @@ impl SpaiApp {
             (rp, unc)
         };
         let mut action: Option<IntelClick> = None;
-        let ttl = self.settings.intel_ttl_secs;
         {
             let status = self.system_status.lock().unwrap();
             const CARD_CAP: usize = 250;
@@ -1113,4 +1135,9 @@ fn pane_count(label: &str, shown: usize, total: Option<i64>) -> String {
         Some(t) if t > shown as i64 => trf!("{label} ({shown} of {t})", label = label, shown = shown, t = t),
         _ => format!("{label} ({shown})"),
     }
+}
+
+/// Past the "Outdated after" age: greyed out, or left out when the user hides those.
+pub(crate) fn outdated(r: &crate::intel::IntelReport, now: i64, ttl: i64) -> bool {
+    now - r.received > ttl
 }

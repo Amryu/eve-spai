@@ -18,6 +18,14 @@ pub(crate) enum IntelTypeFilter {
     Threat,
 }
 
+/// The Intel page's order: newest first, or nearest first and newest among equals.
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum IntelSort {
+    #[default]
+    Newest,
+    Nearest,
+}
+
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum SovMode {
     Off,
@@ -184,6 +192,8 @@ struct PersistedView {
     map_threat_jumps: u32,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
+    #[serde(default)]
+    intel_sort: IntelSort,
 }
 
 fn default_threat_jumps() -> u32 {
@@ -384,6 +394,7 @@ pub struct SpaiApp {
     intel_query: String,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
+    intel_sort: IntelSort,
     pub(crate) battles: crate::zkill::SharedBattles,
     battle_history: crate::zkill::SharedBattles,
     battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1182,6 +1193,7 @@ impl SpaiApp {
             map_threat_jumps: 5,
             intel_max_jumps: 0,
             intel_type: IntelTypeFilter::All,
+            intel_sort: IntelSort::Newest,
         });
 
         let initial = if store.as_ref().map(|s| s.sde_ready()).unwrap_or(false) {
@@ -1465,6 +1477,7 @@ impl SpaiApp {
             intel_query: String::new(),
             intel_max_jumps: pv.intel_max_jumps,
             intel_type: pv.intel_type,
+            intel_sort: pv.intel_sort,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_history: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_history_loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3010,6 +3023,11 @@ impl SpaiApp {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_intel_sort(&mut self, sort: IntelSort) {
+        self.intel_sort = sort;
+    }
+
     fn persist_view_options(&mut self) {
         let pv = PersistedView {
             overlays: self.map_overlays,
@@ -3017,6 +3035,7 @@ impl SpaiApp {
             map_threat_jumps: self.map_threat_jumps,
             intel_max_jumps: self.intel_max_jumps,
             intel_type: self.intel_type,
+            intel_sort: self.intel_sort,
         };
         if let Ok(s) = serde_json::to_string(&pv) {
             if s != self.settings.view_options {

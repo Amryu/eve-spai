@@ -1103,11 +1103,12 @@ impl SpaiApp {
         let range = self.map_threat_jumps;
         let mut reports: Vec<(u32, crate::intel::IntelReport)> = Vec::new();
         let mut kills: Vec<(String, u32, u32, u32)> = Vec::new();
+        let (hide_outdated, ttl, now) = (self.settings.intel_hide_outdated, self.settings.intel_ttl_secs, crate::clock::utc().timestamp());
         if let (Some(me), Some(geo)) = (me_sys, self.systems.clone()) {
             {
                 let st = self.intel_state.lock().unwrap();
                 for r in &st.reports {
-                    if r.clear {
+                    if r.clear || (hide_outdated && super::views::outdated(r, now, ttl)) {
                         continue;
                     }
                     if let Some(sys) = r.primary_system() {

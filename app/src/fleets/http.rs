@@ -596,24 +596,24 @@ impl FleetBackend for HttpBackend {
             .timeout(std::time::Duration::from_secs(86_400))
             .send()
             .map_err(|e| FleetError::Transport(e.to_string()))?;
+        // A refused stream answers with an empty body, which would read as a fleet that never
+        // changes.
+        if !stream.status().is_success() {
+            classify(stream.status().as_u16(), "", Perm::AccessFleet)?;
+        }
 
         for frame in [crate::fleets::hub::handshake(), crate::fleets::hub::track(&id.0)] {
-            let mut req = self
-                .client
-                .post(&url)
+            let mut req = as_page(self.client.post(&url))
                 .header(reqwest::header::COOKIE, self.cookies.header())
                 .header(reqwest::header::CONTENT_TYPE, "text/plain")
-                .header(reqwest::header::ORIGIN, BASE)
-                .header(reqwest::header::REFERER, format!("{BASE}/"));
+                .header(reqwest::header::ORIGIN, BASE);
             if let Some(t) = self.cookies.get("XSRF-TOKEN") {
                 req = req.header("X-XSRF-TOKEN", percent_decode(&t));
             }
             let r = req.body(frame).send().map_err(|e| FleetError::Transport(e.to_string()))?;
             if !r.status().is_success() {
-                return Err(FleetError::Http {
-                    status: r.status().as_u16(),
-                    body: r.text().unwrap_or_default(),
-                });
+                let status = r.status().as_u16();
+                classify(status, &r.text().unwrap_or_default(), Perm::AccessFleet)?;
             }
         }
         Ok(Box::new(SseFeed { stream, decoder: Default::default(), queue: Default::default() }))
@@ -732,6 +732,17 @@ mod tests {
         h.append(reqwest::header::SET_COOKIE, "c=3".parse().expect("a header"));
         jar.absorb(&h);
         assert_eq!(jar.snapshot(), "a=9; c=3");
+    }
+
+    #[test]
+    fn every_request_to_the_dashboard_goes_through_as_page() {
+        // One request built on its own left the hub's handshake refused while all else worked.
+        let src = include_str!("http.rs");
+        let src = &src[..src.find("#[cfg(test)]").unwrap()];
+        let built = src.matches("self.client.").count();
+        let marked = src.matches("as_page(self.client.").count();
+        assert!(built > 0);
+        assert_eq!(built, marked, "a request to the dashboard without the fetch metadata it requires");
     }
 
     #[test]

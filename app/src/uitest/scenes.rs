@@ -10172,3 +10172,74 @@ fn uitest_the_module_picker_keeps_its_fitting_filter() {
         assert!(h.query_all_by_label(label).any(|n| n.accesskit_node().role() == egui::accesskit::Role::Button), "{label}");
     }
 }
+
+/// The intel feed as [`intel_feed_scene`] seeds it, then `setup` on the app.
+fn intel_feed_scene_with(name: &'static str, reports: Vec<crate::intel::IntelReport>, setup: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1100.0, 800.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Intel;
+            a.chat_dir = Some(harness::scratch_chat_dir());
+            a.systems = Some(fixtures::systems_bridged_island());
+            a.player.lock().unwrap().system_id = Some(PLAYER_SYS);
+            a.intel_state.lock().unwrap().reports = reports.clone();
+            setup(&mut a);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+#[test]
+fn uitest_the_intel_feed_sorts_by_jumps_and_hides_what_is_outdated() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    // 319-3D one gate away, 7-K5EL two and newest, Jita out of reach and an hour old.
+    let old = crate::intel::IntelReport { received: crate::clock::utc().timestamp() - 3600, ..fixtures::intel_beyond_the_gates() };
+    let reports = vec![fixtures::intel_next_door(), fixtures::intel_across_the_bridge(), old];
+    let order = |sort: crate::app::IntelSort, hide: bool| {
+        let mut scene = intel_feed_scene_with("intel_sort_hide", reports.clone(), move |a| {
+            a.set_intel_sort(sort);
+            a.settings.intel_ttl_secs = 300;
+            a.settings.intel_hide_outdated = hide;
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run_steps(4);
+        let mut at: Vec<(f32, &str)> = ["319-3D", "7-K5EL", "Jita"].into_iter().filter_map(|s| h.query_all_by_label_contains(s).map(|n| n.rect().min.y).reduce(f32::min).map(|y| (y, s))).collect();
+        at.sort_by(|a, b| a.0.total_cmp(&b.0));
+        at.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
+    };
+    assert_eq!(order(crate::app::IntelSort::Newest, false), ["7-K5EL", "319-3D", "Jita"], "newest first, the old one greyed at the end");
+    assert_eq!(order(crate::app::IntelSort::Nearest, false), ["319-3D", "7-K5EL", "Jita"], "nearest first, no route last");
+    assert_eq!(order(crate::app::IntelSort::Newest, true), ["7-K5EL", "319-3D"], "the outdated one hidden");
+}
+
+#[test]
+fn uitest_the_nearby_list_hides_what_is_outdated_when_asked() {
+    use egui_kittest::kittest::Queryable as _;
+    let old = crate::intel::IntelReport { received: crate::clock::utc().timestamp() - 3600, ..fixtures::intel_across_the_bridge() };
+    let shown = |hide: bool| {
+        let reports = vec![fixtures::intel_next_door(), old.clone()];
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
+        let mut scene = Scene::ui("nearby_hide", [600.0, 700.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.systems = Some(fixtures::systems_bridged_island());
+                a.player.lock().unwrap().system_id = Some(PLAYER_SYS);
+                a.intel_state.lock().unwrap().reports = reports.clone();
+                a.settings.intel_ttl_secs = 300;
+                a.settings.intel_hide_outdated = hide;
+                a
+            });
+            a.threat_board(ui);
+        });
+        let mut h = harness::build(&mut scene, false);
+        h.run_steps(3);
+        ["319-3D", "7-K5EL"].into_iter().filter(|s| h.query_all_by_label_contains(s).next().is_some()).collect::<Vec<_>>()
+    };
+    assert_eq!(shown(false), ["319-3D", "7-K5EL"]);
+    assert_eq!(shown(true), ["319-3D"], "the hour-old report left out");
+}
