@@ -533,6 +533,7 @@ fn chat_msg(from: &str, body: &str, age: i64, outgoing: bool) -> crate::jabber::
         body: body.to_owned(),
         time: now() - age,
         outgoing,
+        ..Default::default()
     }
 }
 
@@ -612,6 +613,19 @@ pub(crate) fn jabber_state_long() -> crate::jabber::JabberState {
     let mut st = jabber_state();
     st.chats.insert(JABBER_ROOM.to_owned(), room_history_long());
     st
+}
+
+/// The delve911 room with a rescue under way: another pilot's ping, the FC's comms call, chatter.
+pub(crate) const DELVE911_ROOM: &str = "delve911@conference.goonfleet.com";
+
+pub(crate) fn delve911_tail() -> Vec<crate::jabber::ChatMsg> {
+    vec![
+        chat_msg("Placeholder Scout", "!bping all Rorqual Tackled\nRorqual Name: Placeholder Scout\nSystem: 1DQ1-A\nLocation In System (Anomaly or Moon): Angel Forsaken Hub ABC-123\nName of Cyno (On perch, 300km away): Placeholder Cyno", 240, false),
+        chat_msg("Placeholder Commander", "on it, forming", 200, false),
+        chat_msg("Placeholder Commander", "Placeholder Miner: Join OP 3 Comms https://gnf.lt/NOH1FNH.html", 150, false),
+        chat_msg("Placeholder Wingmate", "get in beehive if op 3 is full", 100, false),
+        chat_msg("Placeholder Miner", "Hostiles now 7, +2 Sabre, Alliance: Placeholder Alliance", 60, true),
+    ]
 }
 
 pub(crate) fn jabber_state() -> crate::jabber::JabberState {
@@ -858,62 +872,6 @@ pub(crate) fn fleet_presets() -> Vec<crate::settings::FleetPreset> {
             ..Default::default()
         },
     ]
-}
-
-/// Opens the start page with the first preset loaded and its ping rendered.
-pub(crate) fn open_fleet_start(app: &crate::app::SpaiApp) {
-    use crate::fleets::backend::FleetBackend;
-    use crate::fleets::state::Page;
-
-    let backend = crate::fleets::spoof::SpoofBackend::with(
-        crate::fleets::seed::invented(),
-        std::time::Duration::ZERO,
-    );
-    let mut st = app.fleet_state_for_test().lock().unwrap();
-    st.page = Page::Start;
-    let preset = fleet_presets().remove(0);
-    st.apply_preset(&preset);
-    if let Ok(w) = backend.ping_preview(&st.ping_request()) {
-        st.preview.put(w.value);
-    }
-    // Headless starts no workers, so the boss check never comes back on its own and the row would
-    // render its "not checked" state forever.
-    if let Some((id, _)) = st.fc() {
-        if let Ok(check) = backend.boss_check(id, false) {
-            st.boss = Some((id, check));
-        }
-    }
-}
-
-/// Drives a few writes through the dry run so the journal has something to show.
-pub(crate) fn record_fleet_requests(app: &crate::app::SpaiApp) {
-    use crate::fleets::backend::{Action, FleetBackend};
-    use crate::fleets::model::{StartForm, StartRequest, TagId};
-
-    let backend = crate::fleets::spoof::SpoofBackend::with(
-        crate::fleets::seed::invented(),
-        std::time::Duration::ZERO,
-    );
-    let mut st = app.fleet_state_for_test().lock().unwrap();
-    let start = StartRequest {
-        form: StartForm {
-            name: "Home Defence".to_owned(),
-            setup_id: 46,
-            set_motd: true,
-            ..StartForm::default()
-        },
-        tag_ids: vec![TagId(1), TagId(12)],
-        character_id: 90_000_001,
-        character_name: "Placeholder Main".to_owned(),
-        formup_location_id: Some(30_000_772),
-        ..StartRequest::default()
-    };
-    if let Ok(w) = backend.start(&start) {
-        st.record(w.record);
-        if let Ok(w) = backend.act(&w.value, &Action::SetMotd) {
-            st.record(w.record);
-        }
-    }
 }
 
 /// A closed fleet: the dashboard keeps the participants but the wings are gone, so the roster is
@@ -1337,29 +1295,6 @@ pub(crate) fn fleet_boost_lines() -> Vec<crate::fleets::boosts::Line> {
     .enumerate()
     .filter_map(|(i, (who, text))| crate::fleets::boosts::parse(who, text, at + i as i64 * 60))
     .collect()
-}
-
-/// Jabber with traffic in the two rooms the fleet chat dock shows, so the dock renders a feed
-/// rather than "(no messages)" and its spacing can actually be looked at.
-pub(crate) fn jabber_state_fleet_rooms() -> crate::jabber::JabberState {
-    let mut st = jabber_state();
-    st.chats.insert(
-        "skirmish_commanders@conference.goonfleet.com".to_owned(),
-        vec![
-            chat_msg("Placeholder FC", "forming on staging, 10 minutes", 600, false),
-            chat_msg("Placeholder FC", "need two more logi before we undock", 540, false),
-            chat_msg("Other Commander", "we can lend you a pair", 480, false),
-            chat_msg("me", "much appreciated, bring them to op 3", 420, true),
-        ],
-    );
-    st.chats.insert(
-        "delve911@conference.goonfleet.com".to_owned(),
-        vec![
-            chat_msg("Placeholder Scout", "hostiles on the staging gate", 300, false),
-            chat_msg("Placeholder Scout", "about fifteen, mixed hulls", 240, false),
-        ],
-    );
-    st
 }
 
 /// A pasted local for the Lookup table. Fake names and ids only.

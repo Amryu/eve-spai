@@ -1228,8 +1228,16 @@ impl SpaiApp {
         {
             let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
             if let (crate::fleets::state::Page::Tracking(id), Some(open)) = (&st.page, st.open.value.as_ref()) {
-                if open.fleet.id == *id && open.fleet.closed_at.is_none() {
+                if open.fleet.id == *id && open.fleet.closed_at.is_none() && !id.is_live() {
                     want.push((id.clone(), open.fleet.name.clone()));
+                }
+            }
+            // Every tracked fleet of ours, whatever page is up: tracking is the point of it.
+            for f in &st.live {
+                if let Some(id) = &f.tracked {
+                    if !want.iter().any(|(w, _)| w == id) {
+                        want.push((id.clone(), format!("{}'s fleet", f.boss_name)));
+                    }
                 }
             }
         }

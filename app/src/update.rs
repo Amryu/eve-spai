@@ -29,18 +29,26 @@ pub fn relaunch() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The elevated helper runs the app as `--apply-update <asset_url>`: it does the swap with admin
-/// rights, then exits.
+/// The elevated helper runs the app as `--apply-update <downloaded file> <sha256>`: it checks the
+/// file is still what was verified, does the swap with admin rights, then exits.
 pub const UPDATE_FLAG: &str = "--apply-update";
 
-pub fn apply_update_arg() -> Option<String> {
+pub fn apply_update_arg() -> Option<(String, String)> {
     let mut args = std::env::args();
     while let Some(a) = args.next() {
         if a == UPDATE_FLAG {
-            return args.next();
+            return Some((args.next()?, args.next()?));
         }
     }
     None
+}
+
+/// The elevated side of `elevated_update`: the file the user's side downloaded and verified, checked
+/// again here, since anything running as the user could have changed it in between.
+pub fn apply_downloaded(path: &str, sha256: &str) -> anyhow::Result<()> {
+    let bytes = std::fs::read(path)?;
+    verify(&bytes, Some(sha256))?;
+    replace_with(&bytes)
 }
 
 /// A machine-wide install (Program Files) is not writable without elevation, and the update swaps
@@ -68,18 +76,19 @@ pub fn update_needs_admin() -> bool {
 /// Relaunch elevated (UAC prompt) to perform the swap, waiting for it and reporting whether it
 /// applied. Windows only.
 #[cfg(windows)]
-pub fn elevated_update(asset_api_url: &str) -> anyhow::Result<()> {
+pub fn elevated_update(file: &std::path::Path, sha256: &str) -> anyhow::Result<()> {
     use anyhow::{bail, Context};
     let exe = std::env::current_exe().context("locating current executable")?;
     // Start-Process -Verb RunAs raises the UAC prompt; -Wait -PassThru lets us read the helper's
     // exit code back out. A declined prompt throws, so PowerShell exits non-zero.
     let script = format!(
         "$ErrorActionPreference='Stop';\
-         $p=Start-Process -FilePath '{exe}' -ArgumentList '{flag}','{url}' -Verb RunAs -Wait -PassThru;\
+         $p=Start-Process -FilePath '{exe}' -ArgumentList '{flag}','\"{file}\"','{sha}' -Verb RunAs -Wait -PassThru;\
          exit $p.ExitCode",
         exe = exe.display(),
         flag = UPDATE_FLAG,
-        url = asset_api_url,
+        file = file.display(),
+        sha = sha256,
     );
     let status = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -93,7 +102,7 @@ pub fn elevated_update(asset_api_url: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(not(windows))]
-pub fn elevated_update(_asset_api_url: &str) -> anyhow::Result<()> {
+pub fn elevated_update(_file: &std::path::Path, _sha256: &str) -> anyhow::Result<()> {
     anyhow::bail!("elevated update is Windows-only")
 }
 
@@ -101,13 +110,49 @@ pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Where the newest release is mirrored, for those GitHub serves slowly: `<os>/current` and the
+/// sign-in helper, each with a `.json` beside it naming its version and checksum.
+pub const MIRROR: &str = "https://eve-spai.com";
+
+/// One file of a release.
+#[derive(Clone, Debug)]
+pub struct Asset {
+    pub api_url: String,
+    /// GitHub's checksum of it: whichever source it comes from, this is what it must match.
+    pub sha256: Option<String>,
+    pub size: u64,
+    /// Its path on the mirror.
+    pub mirror: &'static str,
+}
+
 #[derive(Clone)]
 pub struct Available {
     pub version: String,
     pub html_url: String,
-    pub asset_api_url: Option<String>,
-    /// Linux: the fleet sign-in helper that goes next to the binary.
-    pub helper_api_url: Option<String>,
+    pub asset: Option<Asset>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Github,
+    Mirror,
+}
+
+/// A download under way.
+#[derive(Clone, Copy, Debug)]
+pub struct Progress {
+    pub source: Source,
+    pub received: u64,
+    pub total: u64,
+    /// Bytes per second so far.
+    pub rate: f64,
+}
+
+/// Where the user would rather download from. The mirror is only used once they agreed to it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Prefs {
+    pub mirror_ok: bool,
+    pub prefer_mirror: bool,
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +161,14 @@ pub struct UpdateState {
     pub installing: bool,
     pub done: bool,
     pub error: Option<String>,
+    pub progress: Option<Progress>,
+    /// The window put away while downloading or once done: the status bar carries it instead.
+    pub hidden: bool,
+    /// GitHub turned out slow, at this many bytes per second, and the user has not said yet whether
+    /// to switch to the mirror.
+    pub slow: Option<f64>,
+    /// Their answer: switch to the mirror, or keep going.
+    pub use_mirror: Option<bool>,
     /// A manual "check for updates" is in flight.
     pub checking: bool,
     /// The last manual check found nothing newer.
@@ -143,11 +196,6 @@ fn asset_name() -> &'static str {
         "eve-spai-linux-x86_64"
     }
 }
-
-/// Linux keeps WebKitGTK out of the app; the fleet sign-in window is this separate binary, as
-/// published and as installed next to the app.
-const HELPER_ASSET: &str = "eve-spai-fleet-login-linux-x86_64";
-pub const HELPER_NAME: &str = "eve-spai-fleet-login";
 
 fn http() -> Option<reqwest::blocking::Client> {
     crate::http::client(20).ok()
@@ -204,11 +252,8 @@ pub fn spawn_check(state: SharedUpdate, skip_version: String, announce: bool, ct
             return finish(&state);
         }
         let html_url = json["html_url"].as_str().unwrap_or("").to_owned();
-        let asset_api_url = json["assets"].as_array().and_then(|a| {
-            a.iter().find(|x| x["name"].as_str() == Some(asset_name())).and_then(|x| x["url"].as_str())
-        }).map(|s| s.to_owned());
-        let helper_api_url = cfg!(target_os = "linux").then(|| helper_url(&json)).flatten();
-        state.lock().unwrap().available = Some(Available { version: tag, html_url, asset_api_url, helper_api_url });
+        let asset = asset_of(&json, asset_name(), mirror_path());
+        state.lock().unwrap().available = Some(Available { version: tag, html_url, asset });
         finish(&state);
     });
 }
@@ -220,55 +265,189 @@ fn is_newer(a: &str, b: &str) -> bool {
     parse(a) > parse(b)
 }
 
-fn helper_url(release: &serde_json::Value) -> Option<String> {
-    release["assets"].as_array()?.iter().find(|x| x["name"].as_str() == Some(HELPER_ASSET))?["url"].as_str().map(str::to_owned)
-}
-
-fn download(api_url: &str) -> anyhow::Result<Vec<u8>> {
-    let client = crate::http::client(180)?;
-    let mut req = client.get(api_url).header("Accept", "application/octet-stream");
-    if let Some(t) = token() {
-        req = req.header("Authorization", format!("token {t}"));
+/// This platform's directory on the mirror.
+fn mirror_path() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows/current"
+    } else if cfg!(target_os = "macos") {
+        "macos/current"
+    } else {
+        "linux/current"
     }
-    Ok(req.send()?.error_for_status()?.bytes()?.to_vec())
 }
 
-/// Puts the fleet sign-in helper from `api_url` next to this binary.
-pub fn install_helper(api_url: &str) -> anyhow::Result<std::path::PathBuf> {
+/// The mirror's page for this platform's download, for a user who prefers it.
+pub fn mirror_download_url() -> String {
+    format!("{MIRROR}/{}", mirror_path())
+}
+
+fn asset_of(release: &serde_json::Value, name: &str, mirror: &'static str) -> Option<Asset> {
+    let a = release["assets"].as_array()?.iter().find(|x| x["name"].as_str() == Some(name))?;
+    Some(Asset {
+        api_url: a["url"].as_str()?.to_owned(),
+        sha256: a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase),
+        size: a["size"].as_u64().unwrap_or(0),
+        mirror,
+    })
+}
+
+/// How long GitHub gets before its speed is judged.
+const SPEED_PROBE: Duration = Duration::from_secs(6);
+
+/// Slow enough to be worth the mirror: more than a minute still to go at this rate, and not quick in
+/// itself.
+pub fn is_slow(rate: f64, received: u64, total: u64) -> bool {
+    if rate <= 0.0 || total <= received {
+        return false;
+    }
+    let eta = (total - received) as f64 / rate;
+    eta > 60.0 && rate < 2.0 * 1024.0 * 1024.0
+}
+
+/// The download, or word that the user would rather switch to the mirror.
+enum Got {
+    Bytes(Vec<u8>),
+    Switch,
+}
+
+/// Streams `url`, reporting progress to `state`. From GitHub with `watch`, a slow start asks the
+/// user about the mirror (or switches straight away once they agreed to it before).
+fn fetch(url: &str, source: Source, size_hint: u64, watch: bool, prefs: Prefs, state: Option<&SharedUpdate>, ctx: Option<&egui::Context>) -> anyhow::Result<Got> {
+    use std::io::Read as _;
+    // Per read, not for the whole download: a slow line is not a dead one.
+    let client = crate::http::client(30)?;
+    let mut req = client.get(url);
+    if source == Source::Github {
+        req = req.header("Accept", "application/octet-stream");
+        if let Some(t) = token() {
+            req = req.header("Authorization", format!("token {t}"));
+        }
+    }
+    let mut resp = req.send()?.error_for_status()?;
+    let total = resp.content_length().unwrap_or(size_hint);
+    let mut out = Vec::with_capacity(total as usize);
+    let mut chunk = vec![0u8; 64 * 1024];
+    let start = std::time::Instant::now();
+    let mut shown = start;
+    let mut watching = watch;
+    loop {
+        let n = resp.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        let rate = out.len() as f64 / start.elapsed().as_secs_f64().max(0.001);
+        if let Some(state) = state {
+            if shown.elapsed() >= Duration::from_millis(200) {
+                shown = std::time::Instant::now();
+                state.lock().unwrap().progress = Some(Progress { source, received: out.len() as u64, total, rate });
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
+                }
+            }
+            if watching && start.elapsed() >= SPEED_PROBE && is_slow(rate, out.len() as u64, total) {
+                if prefs.mirror_ok {
+                    return Ok(Got::Switch);
+                }
+                let mut s = state.lock().unwrap();
+                match s.use_mirror {
+                    Some(true) => return Ok(Got::Switch),
+                    Some(false) => watching = false,
+                    None if s.slow.is_none() => {
+                        s.slow = Some(rate);
+                        // The question needs the window, even if it was put away.
+                        s.hidden = false;
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    Ok(Got::Bytes(out))
+}
+
+/// The bytes are what GitHub says the file is.
+fn verify(bytes: &[u8], sha256: Option<&str>) -> anyhow::Result<()> {
+    use sha2::Digest as _;
+    let Some(want) = sha256 else { return Ok(()) };
+    let got: String = sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if !got.eq_ignore_ascii_case(want) {
+        anyhow::bail!("the download is damaged (checksum mismatch)");
+    }
+    Ok(())
+}
+
+/// From the mirror, only when it carries exactly this version, and only matching GitHub's checksum.
+fn from_mirror(asset: &Asset, version: &str, prefs: Prefs, state: Option<&SharedUpdate>, ctx: Option<&egui::Context>) -> anyhow::Result<Vec<u8>> {
+    let client = crate::http::client(20)?;
+    let meta: serde_json::Value = client.get(format!("{MIRROR}/{}.json", asset.mirror)).send()?.error_for_status()?.json()?;
+    if meta["version"].as_str().map(|v| v.trim_start_matches('v')) != Some(version) {
+        anyhow::bail!("the mirror does not have v{version} yet");
+    }
+    let want = asset.sha256.clone().or_else(|| meta["sha256"].as_str().map(str::to_lowercase));
+    let Some(want) = want else { anyhow::bail!("no checksum to check the mirror's copy against") };
+    let Got::Bytes(bytes) = fetch(&format!("{MIRROR}/{}", asset.mirror), Source::Mirror, asset.size, false, prefs, state, ctx)? else {
+        unreachable!("only GitHub downloads are watched")
+    };
+    verify(&bytes, Some(&want))?;
+    Ok(bytes)
+}
+
+/// One release file, from wherever the user's choices and GitHub's speed say.
+fn get_asset(asset: &Asset, version: &str, prefs: Prefs, state: Option<&SharedUpdate>, ctx: Option<&egui::Context>) -> anyhow::Result<Vec<u8>> {
+    if prefs.prefer_mirror {
+        match from_mirror(asset, version, prefs, state, ctx) {
+            Ok(b) => return Ok(b),
+            Err(e) => eprintln!("[update] mirror: {e:#}, trying GitHub"),
+        }
+    }
+    let github = |watch: bool| -> anyhow::Result<Got> { fetch(&asset.api_url, Source::Github, asset.size, watch, prefs, state, ctx) };
+    match github(!prefs.prefer_mirror) {
+        Ok(Got::Bytes(b)) => {
+            verify(&b, asset.sha256.as_deref())?;
+            Ok(b)
+        }
+        Ok(Got::Switch) => match from_mirror(asset, version, prefs, state, ctx) {
+            Ok(b) => Ok(b),
+            Err(e) => {
+                eprintln!("[update] mirror: {e:#}, back to GitHub");
+                let Got::Bytes(b) = github(false)? else { unreachable!("not watched") };
+                verify(&b, asset.sha256.as_deref())?;
+                Ok(b)
+            }
+        },
+        Err(e) if prefs.mirror_ok && !prefs.prefer_mirror => from_mirror(asset, version, prefs, state, ctx).map_err(|m| e.context(format!("the mirror failed too: {m:#}"))),
+        Err(e) => Err(e),
+    }
+}
+
+/// Downloads the release and puts it in place of this binary.
+pub fn install(av: &Available, prefs: Prefs, state: &SharedUpdate, ctx: &egui::Context) -> anyhow::Result<()> {
+    let asset = av.asset.as_ref().ok_or_else(|| anyhow::anyhow!("this release has no download for this platform"))?;
+    let bytes = get_asset(asset, &av.version, prefs, Some(state), Some(ctx))?;
+    if update_needs_admin() {
+        // Verified here, swapped by an elevated copy of the app that checks it once more.
+        let sha = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let file = std::env::temp_dir().join(format!("eve-spai-update-{}.exe", av.version));
+        std::fs::write(&file, &bytes)?;
+        let res = elevated_update(&file, &sha);
+        let _ = std::fs::remove_file(&file);
+        res?;
+    } else {
+        replace_with(&bytes)?;
+    }
+    Ok(())
+}
+
+/// Puts `bytes` in place of this binary.
+fn replace_with(bytes: &[u8]) -> anyhow::Result<()> {
     use anyhow::Context;
-    let bytes = download(api_url)?;
-    let exe = std::env::current_exe().context("locating current executable")?;
-    let dest = exe.with_file_name(HELPER_NAME);
-    let tmp = dest.with_extension("new");
-    std::fs::write(&tmp, &bytes).context("writing the sign-in helper")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    }
-    std::fs::rename(&tmp, &dest).context("installing the sign-in helper")?;
-    Ok(dest)
-}
-
-/// The sign-in helper of the release this binary is, for an install that predates it: an older
-/// updater replaced only the main binary.
-#[cfg_attr(feature = "fleet-auth", allow(dead_code))]
-pub fn fetch_helper_for_current() -> anyhow::Result<std::path::PathBuf> {
-    let client = http().ok_or_else(|| anyhow::anyhow!("couldn't start the HTTP client"))?;
-    let mut req = client
-        .get(format!("https://api.github.com/repos/{REPO}/releases/tags/v{}", current()))
-        .header("Accept", "application/vnd.github+json");
-    if let Some(t) = token() {
-        req = req.header("Authorization", format!("token {t}"));
-    }
-    let json: serde_json::Value = req.send()?.error_for_status()?.json()?;
-    let url = helper_url(&json).ok_or_else(|| anyhow::anyhow!("release v{} has no sign-in helper", current()))?;
-    install_helper(&url)
-}
-
-pub fn download_and_replace(asset_api_url: &str, helper_api_url: Option<&str>) -> anyhow::Result<()> {
-    use anyhow::Context;
-    let bytes = download(asset_api_url)?;
 
     let exe = std::env::current_exe().context("locating current executable")?;
     let new_path = exe.with_extension("new");
@@ -287,7 +466,7 @@ pub fn download_and_replace(asset_api_url: &str, helper_api_url: Option<&str>) -
             }
         }
     }
-    std::fs::write(&new_path, &bytes).context("writing new binary")?;
+    std::fs::write(&new_path, bytes).context("writing new binary")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -308,13 +487,6 @@ pub fn download_and_replace(asset_api_url: &str, helper_api_url: Option<&str>) -
     #[cfg(not(windows))]
     {
         std::fs::rename(&new_path, &exe).context("replacing binary")?;
-    }
-    // After the app itself: a helper that fails to arrive only costs the sign-in, which fetches
-    // it again on first use.
-    if let Some(url) = helper_api_url {
-        if let Err(e) = install_helper(url) {
-            eprintln!("[update] the fleet sign-in helper did not install: {e:#}");
-        }
     }
     Ok(())
 }
@@ -338,5 +510,40 @@ fn schedule_delete_on_reboot(path: &std::path::Path) {
     const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x4;
     unsafe {
         MoveFileExW(wide.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_is_slow_when_the_rest_would_take_over_a_minute() {
+        let mb = 1024.0 * 1024.0;
+        assert!(is_slow(200.0 * 1024.0, 2_000_000, 42_000_000), "200 KB/s for 40 MB more: minutes");
+        assert!(!is_slow(5.0 * mb, 2_000_000, 42_000_000), "fast");
+        assert!(!is_slow(300.0 * 1024.0, 40_000_000, 42_000_000), "nearly done anyway");
+        assert!(!is_slow(0.0, 0, 42_000_000) && !is_slow(100.0, 10, 0), "nothing to judge yet");
+    }
+
+    #[test]
+    fn a_download_must_match_githubs_checksum() {
+        let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert!(verify(b"", Some(empty)).is_ok());
+        assert!(verify(b"", Some(&empty.to_uppercase())).is_ok());
+        assert!(verify(b"tampered", Some(empty)).is_err());
+        assert!(verify(b"anything", None).is_ok(), "an old release without a digest is taken as it comes");
+    }
+
+    #[test]
+    fn a_release_asset_carries_its_checksum_and_mirror_path() {
+        let release = serde_json::json!({"assets": [
+            {"name": "eve-spai-linux-x86_64", "url": "https://api.github.com/x/1", "size": 42, "digest": "sha256:ABCDEF"},
+            {"name": "eve-spai-windows-x86_64.exe", "url": "https://api.github.com/x/2", "size": 7}
+        ]});
+        let a = asset_of(&release, "eve-spai-linux-x86_64", "linux/current").unwrap();
+        assert_eq!((a.api_url.as_str(), a.sha256.as_deref(), a.size, a.mirror), ("https://api.github.com/x/1", Some("abcdef"), 42, "linux/current"));
+        assert_eq!(asset_of(&release, "eve-spai-windows-x86_64.exe", "windows/current").unwrap().sha256, None);
+        assert!(asset_of(&release, "missing", "x").is_none());
     }
 }

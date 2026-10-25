@@ -300,6 +300,7 @@ fn jabber_state() -> std::sync::Arc<std::sync::Mutex<crate::jabber::JabberState>
         body: body.to_owned(),
         time: at,
         outgoing: me,
+        ..Default::default()
     };
     st.chats.insert(
         "wingmate.alpha@goonfleet.com".to_owned(),

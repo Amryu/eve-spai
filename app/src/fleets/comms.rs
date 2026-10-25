@@ -119,6 +119,8 @@ pub fn builtin_named_link(channel_name: &str) -> Option<&'static str> {
 pub fn builtin_named_mumble(channel_name: &str) -> Option<&'static str> {
     Some(match channel_name.trim().to_lowercase().as_str() {
         "hd" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Home%20Defense%20-%20How%20did%20you%20NOT%20know%20there%20was%20a%20strat%20op?title=Goonfleet&version=1.2.0",
+        // Where capital rescues gather; it has no short link.
+        "beehive" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Beehive%20-%20The%20buzzing%20is%20normal?title=Goonfleet&version=1.2.0",
         "capital comms" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Capital%20Ops%20-%20just%20gate?title=Goonfleet&version=1.2.0",
         "standing comms" => "mumble://mumble.goonfleet.com/Ops/Op%20Channels/Standing%20Fleet?title=Goonfleet&version=1.2.0",
         _ => return None,
@@ -222,6 +224,13 @@ mod tests {
 
     /// Strategic goes to Alpha, peacetime to Bravo, and anything unlabelled to Bravo rather than
     /// putting an FC into the strategic sector by accident.
+    #[test]
+    fn beehive_has_a_direct_link_and_no_short_one() {
+        let l = links("Beehive", &Default::default(), &Default::default());
+        assert!(l.mumble.as_deref().is_some_and(|m| m.contains("Beehive")));
+        assert_eq!(l.short, None);
+    }
+
     #[test]
     fn the_tags_decide_the_command_sector() {
         assert_eq!(sector(&[tag("STRATEGIC", true)]), Sector::Alpha);

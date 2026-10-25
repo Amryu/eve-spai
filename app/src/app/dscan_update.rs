@@ -35,20 +35,49 @@ impl SpaiApp {
         ctx.request_repaint_after(crate::update::CHECK_EVERY);
     }
 
+    /// The user's download source choices, as the updater reads them.
+    pub(crate) fn update_prefs(&self) -> crate::update::Prefs {
+        crate::update::Prefs { mirror_ok: self.settings.update_mirror_ok, prefer_mirror: self.settings.update_mirror_ok && self.settings.update_prefer_mirror }
+    }
+
+    /// Where "Download manually" leads: the mirror for a user who prefers it.
+    pub(crate) fn update_manual_url(&self, av: &crate::update::Available) -> String {
+        if self.update_prefs().prefer_mirror { crate::update::mirror_download_url() } else { av.html_url.clone() }
+    }
+
+    pub(crate) fn restart_for_update(&mut self, ctx: &egui::Context) {
+        // Without this the minimize-to-tray interceptor cancels the close and hides the window,
+        // stranding the app in the tray with the relaunch never reached.
+        self.really_exit = true;
+        // Closing runs `on_exit` (settings persisted) and only then is
+        // the single-instance lock free, so main.rs does the relaunch after the loop returns.
+        crate::update::request_restart();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     pub(crate) fn update_dialog(&mut self, ctx: &egui::Context) {
         let st = self.update.lock().unwrap().clone();
         let Some(av) = st.available.clone() else { return };
-        if self.update_dismissed || av.version == self.settings.update_skip_version {
+        if av.version == self.settings.update_skip_version {
             return;
         }
-        let mut close = false;
+        let busy = st.installing || st.done;
+        // Put away while busy, the status bar carries it; put away before, it asks again in an hour.
+        if (busy && st.hidden) || (!busy && self.update_dismissed) {
+            return;
+        }
+        let mut open = true;
         let mut start_install = false;
         let mut restart = false;
+        let mut hide = false;
+        let mut answer: Option<bool> = None;
         egui::Window::new(trf!("{icon}  Update available", icon = egui_phosphor::regular::DOWNLOAD_SIMPLE))
             .collapsible(false)
             .resizable(false)
+            .open(&mut open)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
             .show(ctx, |ui| {
+                ui.set_max_width(420.0);
                 if st.done {
                     ui.label(trf!("Updated to v{v}. It applies on restart.", v = av.version));
                     ui.add_space(6.0);
@@ -56,22 +85,57 @@ impl SpaiApp {
                         if ui.button(tr!("Restart now")).clicked() {
                             restart = true;
                         }
-                        if ui.button(tr!("Later")).clicked() {
-                            close = true;
+                        if ui.button(tr!("Later")).on_hover_text(tr!("The status bar keeps a restart button")).clicked() {
+                            hide = true;
                         }
                     });
                     return;
                 }
                 if st.installing {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(tr!("Downloading update…"));
-                    });
+                    match st.progress {
+                        Some(p) => {
+                            let frac = if p.total > 0 { p.received as f32 / p.total as f32 } else { 0.0 };
+                            ui.label(match p.source {
+                                crate::update::Source::Github => trf!("Downloading v{v} from GitHub", v = av.version),
+                                crate::update::Source::Mirror => trf!("Downloading v{v} from eve-spai.com", v = av.version),
+                            });
+                            ui.add(egui::ProgressBar::new(frac).desired_width(400.0).text(trf!(
+                                "{got} of {total} · {rate}",
+                                got = fmt_bytes(p.received),
+                                total = fmt_bytes(p.total),
+                                rate = fmt_rate(p.rate)
+                            )));
+                        }
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(tr!("Downloading update…"));
+                            });
+                        }
+                    }
+                    if let (Some(rate), None) = (st.slow, st.use_mirror) {
+                        ui.add_space(6.0);
+                        ui.colored_label(crate::theme::standing::WARNING, trf!("GitHub is slow right now ({rate}).", rate = fmt_rate(rate)));
+                        ui.add(egui::Label::new(tr!("Download from eve-spai.com instead? The file is checked against GitHub's own checksum either way.")).wrap());
+                        ui.checkbox(&mut self.update_always_mirror, tr!("Always download updates from eve-spai.com"));
+                        ui.horizontal(|ui| {
+                            if ui.button(tr!("Use eve-spai.com")).clicked() {
+                                answer = Some(true);
+                            }
+                            if ui.button(tr!("Keep GitHub")).clicked() {
+                                answer = Some(false);
+                            }
+                        });
+                    }
+                    ui.add_space(6.0);
+                    if ui.button(tr!("Hide")).on_hover_text(tr!("The download goes on, its progress in the status bar")).clicked() {
+                        hide = true;
+                    }
                     return;
                 }
                 if let Some(e) = &st.error {
                     ui.colored_label(crate::theme::standing::WARNING, trf!("Update failed: {e}", e = e));
-                    ui.hyperlink_to(tr!("Download manually"), &av.html_url);
+                    ui.hyperlink_to(tr!("Download manually"), self.update_manual_url(&av));
                     ui.add_space(4.0);
                 }
                 ui.label(trf!("EVE Spai v{v} is available. You have v{v2}.", v = av.version, v2 = crate::update::current()));
@@ -84,54 +148,100 @@ impl SpaiApp {
                     if ui.button(tr!("No")).clicked() {
                         self.settings.update_skip_version = av.version.clone();
                         self.needs_save = true;
-                        close = true;
                     }
                     if ui.button(tr!("Ask me again later")).clicked() {
                         self.update_dismissed = true;
                     }
                 });
             });
-
+        if !open {
+            if busy {
+                hide = true;
+            } else {
+                self.update_dismissed = true;
+            }
+        }
+        if hide {
+            self.update.lock().unwrap().hidden = true;
+        }
+        if let Some(yes) = answer {
+            if yes {
+                self.settings.update_mirror_ok = true;
+                self.settings.update_prefer_mirror = self.update_always_mirror;
+                self.needs_save = true;
+            }
+            let mut s = self.update.lock().unwrap();
+            s.use_mirror = Some(yes);
+            s.slow = None;
+        }
         if start_install {
-            match &av.asset_api_url {
-                Some(url) => {
-                    self.update.lock().unwrap().installing = true;
-                    let (upd, url, ctx2) = (self.update.clone(), url.clone(), ctx.clone());
-                    let helper = av.helper_api_url.clone();
-                    std::thread::spawn(move || {
-                        // In a machine-wide install the exe dir needs elevation to overwrite, so hand
-                        // the swap to an admin helper (UAC prompt); otherwise do it in-process.
-                        let res = if crate::update::update_needs_admin() {
-                            crate::update::elevated_update(&url)
-                        } else {
-                            crate::update::download_and_replace(&url, helper.as_deref())
-                        };
-                        let mut s = upd.lock().unwrap();
-                        s.installing = false;
-                        match res {
-                            Ok(()) => s.done = true,
-                            Err(e) => s.error = Some(format!("{e:#}")),
+            if av.asset.is_some() {
+                {
+                    let mut s = self.update.lock().unwrap();
+                    s.installing = true;
+                    s.error = None;
+                    s.progress = None;
+                    s.slow = None;
+                    s.use_mirror = None;
+                    s.hidden = false;
+                }
+                let (upd, ctx2, prefs) = (self.update.clone(), ctx.clone(), self.update_prefs());
+                std::thread::spawn(move || {
+                    let res = crate::update::install(&av, prefs, &upd, &ctx2);
+                    let mut s = upd.lock().unwrap();
+                    s.installing = false;
+                    s.progress = None;
+                    s.slow = None;
+                    match res {
+                        Ok(()) => s.done = true,
+                        Err(e) => {
+                            s.error = Some(format!("{e:#}"));
+                            // A failure needs reading, wherever the window was.
+                            s.hidden = false;
                         }
-                        ctx2.request_repaint();
-                    });
-                }
-                None => {
-                    let _ = crate::launch::that(&av.html_url);
-                    close = true;
-                }
+                    }
+                    ctx2.request_repaint();
+                });
+            } else {
+                let _ = crate::launch::that(&self.update_manual_url(&av));
+                self.update_dismissed = true;
             }
         }
         if restart {
-            // Without this the minimize-to-tray interceptor cancels the close and hides the window,
-            // stranding the app in the tray with the relaunch never reached.
-            self.really_exit = true;
-            // Closing runs `on_exit` (settings persisted) and only then is
-            // the single-instance lock free, so main.rs does the relaunch after the loop returns.
-            crate::update::request_restart();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.restart_for_update(ctx);
         }
-        if close {
-            self.update.lock().unwrap().available = None;
+    }
+
+    /// The update in the status bar: what is available, how far the download is, a question about
+    /// GitHub's speed, or the restart that finishes it. A click brings the window back.
+    pub(crate) fn update_status(&mut self, ui: &mut egui::Ui) {
+        let st = self.update.lock().unwrap().clone();
+        let Some(av) = st.available.clone() else { return };
+        if av.version == self.settings.update_skip_version {
+            return;
+        }
+        let green = egui::Color32::from_rgb(0x5a, 0xc8, 0x7a);
+        let (text, colour, tip) = if st.done {
+            (trf!("● v{v} ready · restart", v = av.version), green, tr!("Restart to finish the update"))
+        } else if st.installing && st.slow.is_some() && st.use_mirror.is_none() {
+            (tr!("● GitHub is slow · switch?").to_owned(), crate::theme::standing::WARNING, tr!("Show the update window"))
+        } else if st.installing {
+            let pct = st.progress.filter(|p| p.total > 0).map_or(0, |p| (p.received * 100 / p.total) as u32);
+            let rate = st.progress.map_or(String::new(), |p| format!(" · {}", fmt_rate(p.rate)));
+            (trf!("● Updating to v{v}: {pct}%{rate}", v = av.version, pct = pct, rate = rate), green, tr!("Show the update window"))
+        } else if st.error.is_some() {
+            (tr!("● Update failed").to_owned(), crate::theme::standing::WARNING, tr!("Show the update window"))
+        } else {
+            (trf!("● v{v} available", v = av.version), green, tr!("A newer version is available. Click to see it."))
+        };
+        let r = ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).sense(egui::Sense::click())).on_hover_text(tip);
+        if r.clicked() {
+            if st.done {
+                self.restart_for_update(ui.ctx());
+            } else {
+                self.update.lock().unwrap().hidden = false;
+                self.update_dismissed = false;
+            }
         }
     }
 
@@ -235,7 +345,10 @@ impl SpaiApp {
     }
 
     pub(crate) fn poll_dscan_clipboard(&mut self, ctx: &egui::Context) {
-        if !self.settings.dscan_autoprompt {
+        // The rescuee reads the clipboard for d-scans while its panel shows, whatever the prompt
+        // setting: the scan is what the FC needs.
+        let rescuee_reads = self.rescuee_panel_shown() && self.settings.rescuee_read_dscan;
+        if !self.settings.dscan_autoprompt && !rescuee_reads {
             return;
         }
         let due = self.dscan_checked.map(|t| t.elapsed().as_millis() > 1200).unwrap_or(true);
@@ -257,6 +370,11 @@ impl SpaiApp {
         }
         self.dscan_seen_hash = h;
         if let Some(n) = crate::dscan::looks_like_dscan(&text) {
+            if rescuee_reads {
+                // The panel shows it and sends it on; no prompt over the game.
+                self.rescuee_take_dscan(ctx, &text);
+                return;
+            }
             // During a rescue, also capture the dscan breakdown onto the rescue state so the FC
             // sees what is on grid without leaving the window.
             if self.rescue_on() && self.rescue.lock().unwrap().active {

@@ -221,6 +221,7 @@ mod battles_ui;
 pub(crate) mod fleet_ui;
 pub(crate) mod fleet_map;
 mod rescue_ui;
+mod rescuee_ui;
 #[cfg(test)]
 pub(crate) use rescue_ui::ping_timer_row;
 pub(crate) use settings_ui::TestIntel;
@@ -623,9 +624,11 @@ pub struct SpaiApp {
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     /// The language, ship-name toggle and static-data state last applied.
     language_applied: Option<(String, bool, bool)>,
-    update: crate::update::SharedUpdate,
+    pub(crate) update: crate::update::SharedUpdate,
     update_checked_at: Option<std::time::Instant>,
     update_dismissed: bool,
+    /// The slow-GitHub question's "always" box, until it is answered.
+    update_always_mirror: bool,
     /// Set when the database can't be opened or written; drives a one-time warning.
     store_error: Option<String>,
     store_warn_dismissed: bool,
@@ -911,20 +914,14 @@ pub struct SpaiApp {
     fleet: std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>>,
     /// Answers the tab's questions. A dry run today, an HTTP client later, same trait.
     fleet_backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
-    fleet_login: crate::fleets::login::SharedLogin,
     /// The last answer to "is this account a commander", from the share thread's check.
-    fleet_unlock_check: std::sync::Arc<std::sync::Mutex<Option<crate::fleets::unlock::Check>>>,
-    fleet_unlock_asked: Option<std::time::Instant>,
     /// Why fleet command is still locked, or that its session ran out.
-    pub(crate) fleet_unlock_note: Option<String>,
     /// The server's full text behind a failed fleet-boss check, while its dialog is open.
     pub(crate) fleet_boss_detail: Option<String>,
-    pub(crate) fleet_snowflakes_open: Option<crate::app::fleet_ui::SnowflakeTarget>,
-    pub(crate) fleet_migrate_open: bool,
     /// The fleet whose push stream is open, and the flag that stops its thread.
-    fleet_hub: Option<(crate::fleets::model::FleetId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     /// Set once a backend has said it has no hub, so the app stops trying and keeps polling.
-    fleet_hub_unavailable_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fleet_comp_at: Option<std::time::Instant>,
+    fleet_live_at: Option<std::time::Instant>,
     /// A fleet to re-read, when to try next and how many tries are left.
     fleet_reopen: Option<(crate::fleets::model::FleetId, std::time::Instant, u8)>,
     /// When the open fleet's Fleet Finder advert was last asked about.
@@ -940,8 +937,6 @@ pub struct SpaiApp {
     /// Which boost's breakdown is open, by charge name.
     pub(crate) fleet_boost_detail: Option<String>,
     /// `preset/op` the rescue last asked the dashboard to render, so it asks once per change.
-    pub(crate) rescue_preview_key: Option<String>,
-    pub(crate) rescue_preview_at: Option<std::time::Instant>,
     /// `(index, label, folder)` of the preset being renamed.
     pub(crate) fleet_preset_rename: Option<(usize, String, String)>,
     /// Whether the docked chat beside the fleet form is expanded, and which room it shows.
@@ -964,17 +959,16 @@ pub struct SpaiApp {
     pub(crate) fleet_booted: bool,
     /// When the form's next preview is due, so typing does not spawn a worker per keystroke.
     fleet_preview_at: Option<std::time::Instant>,
-    pub(crate) fleet_journal_open: bool,
     /// When the tracked fleet's boost channel was last read off disk.
     pub(crate) fleet_boosts_read: Option<std::time::Instant>,
     /// Built for a screenshot or an assertion, so nothing may reach the real profile or its logs.
     pub(crate) headless: bool,
     /// The per-doctrine boost editor window is open.
     pub(crate) fleet_boost_editor: bool,
+    /// The MOTD editor's text while it is open.
+    pub(crate) fleet_motd_edit: Option<String>,
     /// The tracked fleet's settings sidebar is open.
     pub(crate) fleet_sidebar_open: bool,
-    /// The Quick Fleet preset picker is open.
-    pub(crate) fleet_quick_open: bool,
     /// Where Mumble last said it was, as a `mumble://` URL.
     pub(crate) fleet_mumble_at: Option<String>,
     fleet_mumble_asked: Option<std::time::Instant>,
@@ -1059,6 +1053,8 @@ pub struct SpaiApp {
     /// An OpenAI-compatible server's address and the models it listed.
     ai_oa_models: std::sync::Arc<std::sync::Mutex<(String, Option<Vec<String>>)>>,
     rescue_history_open: bool,
+    /// The rescue's preset editor is open.
+    pub(crate) rescue_presets_open: bool,
     rescue_history_filter: String,
     /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
     /// can resolve a hull named in a ping without rebuilding the map.
@@ -1095,6 +1091,8 @@ pub struct SpaiApp {
     cyno_generators_open: bool,
     /// Set true to arm rescue mode (a delve911 ping arrived); the banner offers 1-click entry.
     rescue_armed: bool,
+    /// The rescuee's side of a capital rescue, UI thread only.
+    pub(crate) rescuee: crate::rescuee::RescueeState,
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
     type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
@@ -1276,6 +1274,7 @@ impl SpaiApp {
                     body,
                     time,
                     outgoing,
+                    ..Default::default()
                 });
             }
             for j in purge {
@@ -1630,6 +1629,7 @@ impl SpaiApp {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked_at: None,
             update_dismissed: false,
+            update_always_mirror: false,
             store_error,
             store_warn_dismissed: false,
             persist_retry_at: None,
@@ -1845,22 +1845,14 @@ impl SpaiApp {
             revivals,
             fleet: std::sync::Arc::new(std::sync::Mutex::new(crate::fleets::FleetState::default())),
             fleet_backend: fleet_backend_at_start,
-            fleet_login: Default::default(),
-            fleet_unlock_check: Default::default(),
-            fleet_unlock_asked: None,
-            fleet_unlock_note: None,
             fleet_boss_detail: None,
-            fleet_snowflakes_open: None,
-            fleet_migrate_open: false,
-            fleet_hub: None,
-            fleet_hub_unavailable_flag: Default::default(),
+            fleet_comp_at: None,
+            fleet_live_at: None,
             fleet_reopen: None,
             fleet_advert_at: None,
             fleet_search_pending: None,
             comms_resolved: Default::default(),
             fleet_boost_detail: None,
-            rescue_preview_key: None,
-            rescue_preview_at: None,
             fleet_preset_rename: None,
             fleet_chat_open: true,
             fleet_chat_tab: 0,
@@ -1873,14 +1865,13 @@ impl SpaiApp {
             fleet_gen: Default::default(),
             fleet_booted: false,
             fleet_preview_at: None,
-            fleet_journal_open: false,
             fleet_boosts_read: None,
             headless,
             fleet_boost_editor: false,
+            fleet_motd_edit: None,
             // Open by default: what a fleet flies and where it talks is the first thing checked
             // on a fleet that is already up.
             fleet_sidebar_open: true,
-            fleet_quick_open: false,
             fleet_mumble_at: None,
             fleet_mumble_asked: None,
             fleet_mumble_tx: fleet_mumble.0,
@@ -1932,6 +1923,7 @@ impl SpaiApp {
             ai_pos_fix: Default::default(),
             ai_oa_models: Default::default(),
             rescue_history_open: false,
+            rescue_presets_open: false,
             rescue_history_filter: String::new(),
             ship_groups: None,
             delve911_cursor: 0,
@@ -1953,26 +1945,41 @@ impl SpaiApp {
             rescue_cyno_input: String::new(),
             cyno_generators_open: false,
             rescue_armed: false,
+            rescuee: Default::default(),
         };
         app.tab_set().normalize();
         app
     }
 
-    /// Fleet command is compiled in everywhere, but only for dashboard-confirmed commanders.
-    pub(crate) fn fleet_unlocked(&self) -> bool {
-        self.settings.fleet_unlock.as_ref().is_some_and(|u| {
-                crate::clock::utc().timestamp() - u.verified_at < crate::fleets::unlock::GRACE_SECS
-            })
-    }
-
-    /// The fleet dashboard: unlocked and switched on.
+    /// Fleet command, switched on. Compiled in everywhere: the FC's own ESI token is the only
+    /// credential there is.
     pub(crate) fn fleet_on(&self) -> bool {
-        self.settings.fleet_enabled && self.fleet_unlocked()
+        self.settings.fleet_enabled
     }
 
     /// The delve911 rescue, which runs on fleet command.
     pub(crate) fn rescue_on(&self) -> bool {
         self.fleet_on() && self.settings.fc_rescue_enabled
+    }
+
+    /// The rescuee's side of delve911: any Jabber user who switched it on.
+    pub(crate) fn rescuee_on(&self) -> bool {
+        self.settings.rescuee_enabled
+    }
+
+    /// Either side: what joins delve911, reads it and shows the rescue tab.
+    pub(crate) fn rescue_any(&self) -> bool {
+        self.rescue_on() || self.rescuee_on()
+    }
+
+    /// Which side the rescue tab shows: the only one on, or the one the user picked.
+    pub(crate) fn rescue_mode(&self) -> crate::settings::RescueMode {
+        use crate::settings::RescueMode;
+        match (self.rescue_on(), self.rescuee_on()) {
+            (true, false) => RescueMode::Fc,
+            (false, true) => RescueMode::Rescuee,
+            _ => self.settings.rescue_mode,
+        }
     }
 
     pub(crate) fn open_system(&mut self, system_id: i64) {
@@ -3317,24 +3324,6 @@ impl SpaiApp {
         self.pilot_window_open = true;
     }
 
-    /// Swaps the backend after a sign-in or a sign-out.
-    ///
-    /// The generation bump orphans every read still in flight from the old backend, and the state
-    /// is rebuilt so the journal cannot carry a dry-run record into a live session.
-    pub(crate) fn fleet_set_backend(
-        &mut self,
-        backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
-    ) {
-        self.fleet_backend = backend;
-        self.fleet_gen.page += 1;
-        *self.fleet.lock().unwrap_or_else(|e| e.into_inner()) = crate::fleets::FleetState {
-            seed: crate::fleets::seed::load(),
-            ..Default::default()
-        };
-        // `fleet_ui` boots on the next frame, so there is one boot path rather than two.
-        self.fleet_booted = false;
-    }
-
     #[cfg(test)]
     pub(crate) fn fleet_mode_for_test(&self) -> crate::fleets::backend::Mode {
         self.fleet_backend.mode()
@@ -3642,15 +3631,7 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(self.shown_character()).weak());
                     ui.separator();
                     ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
-                    if let Some(av) = self.update.lock().unwrap().available.clone() {
-                        if av.version != self.settings.update_skip_version {
-                            ui.label(
-                                egui::RichText::new(trf!("● v{v} available", v = av.version))
-                                    .color(egui::Color32::from_rgb(0x5a, 0xc8, 0x7a)),
-                            )
-                            .on_hover_text(tr!("A newer version is available. See the update prompt."));
-                        }
-                    }
+                    self.update_status(ui);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
                         ui.label(
@@ -3701,7 +3682,7 @@ impl SpaiApp {
                 // A rescue runs on a fleet preset and hands over to the fleet tab, so it is part
                 // of fleet command rather than a feature beside it. It keeps its own switch only
                 // because it also needs the delve911 rooms joined.
-                let has_rescue = self.rescue_on();
+                let has_rescue = self.rescue_any();
                 let beta = self.settings.beta_features;
                 let rows: Vec<nav::View> = nav::View::primary()
                     .iter()
@@ -3877,8 +3858,7 @@ impl SpaiApp {
         self.ai_room_waits_tick();
         self.ai_immediate_actions();
         self.fleet_boss_detail_window(ctx);
-        self.fleet_snowflakes_window(ctx);
-        self.fleet_migrate_window(ctx);
+        self.fleet_motd_window(ctx);
         self.fleet_boost_detail_window(ctx);
         self.fleet_preset_rename_window(ctx);
         self.intel_channels_window(ctx);
@@ -3921,13 +3901,14 @@ impl SpaiApp {
         }
         self.cyno_generators_window(ctx);
         self.rescue_history_window(ctx);
+        self.rescue_presets_window(ctx);
         if self.ai_on() && self.settings.ai.popped {
             self.ai_popout_window(ctx);
         }
-        if self.settings.fc_rescue_enabled && self.settings.rescue_popped && self.rescue_on() {
+        if self.settings.rescue_popped && self.rescue_any() {
             self.rescue_popout_window(ctx);
         }
-        if self.settings.fc_rescue_enabled {
+        if self.rescue_any() {
             // The feature being on is the mode. `active` still gates the pollers, and nothing else
             // sets it, so the fleet poller would otherwise wait forever.
             {
@@ -4065,7 +4046,7 @@ impl eframe::App for SpaiApp {
         }
 
         self.sealed_feed_tick();
-        if self.settings.fc_rescue_enabled {
+        if self.rescue_any() {
             self.ingest_delve911_jabber();
             self.drain_rescue_feed(&ctx);
             self.rescue_history_persist();
@@ -4162,12 +4143,13 @@ impl eframe::App for SpaiApp {
         ft.mark("poll_kill_fetches");
         self.dscan_dialog(&ctx);
         ft.mark("dscan_dialog");
-        self.fleet_unlock_tick(&ctx);
         if self.fleet_on() {
+            self.fleet_boot_once();
+            self.fleet_live_poll(&ctx);
             self.fleet_track_tick(&ctx);
         }
         self.dash_track_focus(&ctx);
-        ft.mark("fleet_unlock_tick");
+        ft.mark("fleet_track_tick");
         crate::sound::set_master(self.settings.sound_master_volume, self.settings.sound_muted);
         self.wh_share_tick(&ctx);
         ft.mark("wh_share_tick");
@@ -4978,6 +4960,7 @@ fn msg_row_key(m: &crate::jabber::ChatMsg, grouped: bool, width: f32) -> u64 {
     m.body.hash(&mut h);
     m.time.hash(&mut h);
     m.outgoing.hash(&mut h);
+    m.delivery.hash(&mut h);
     grouped.hash(&mut h);
     (width as i32).hash(&mut h);
     h.finish()
@@ -5686,6 +5669,16 @@ pub(crate) fn fmt_bytes(bytes: u64) -> String {
         format!("{:.1} GB", mb / 1024.0)
     } else {
         format!("{mb:.0} MB")
+    }
+}
+
+/// A download speed: kilobytes under a megabyte, where the whole-megabyte figure would read 0.
+pub(crate) fn fmt_rate(bytes_per_sec: f64) -> String {
+    let kb = bytes_per_sec / 1024.0;
+    if kb < 1024.0 {
+        format!("{kb:.0} KB/s")
+    } else {
+        format!("{:.1} MB/s", kb / 1024.0)
     }
 }
 
@@ -7114,6 +7107,11 @@ pub(crate) fn rescue_chat_feed(
 /// Matched exactly, not by a "bot" suffix, so a pilot named like a bot still gets rescued.
 fn is_ping_bot(nick: &str) -> bool {
     ["delvebot", "directorbot"].contains(&nick.to_ascii_lowercase().as_str())
+}
+
+/// A small "?" that explains the thing beside it on hover.
+pub(crate) fn help_icon(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(text)
 }
 
 /// Soft amber pulse marking an action the FC hasn't taken yet. `None` once done, so the button

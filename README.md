@@ -93,10 +93,6 @@ EVE Spai is developed on Linux and published for Linux, Windows and macOS. Sound
 system tray and the alert overlay work on all three. A few window helpers, such as noticing
 whether the EVE client has focus, are Linux-only and stay quiet elsewhere.
 
-On Linux the fleet dashboard sign-in runs in a small helper, `eve-spai-fleet-login`, which
-the install script puts next to the app. It needs WebKitGTK (webkit2gtk-4.1); everything
-else works without it.
-
 ## How it is built
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

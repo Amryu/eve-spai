@@ -535,6 +535,25 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
                 }
             }
         }
+        // Site names (anomalies and signatures) in every client language, for the rescuee's
+        // ping: a pilot on a German client pastes "Einsamer Angel-Knotenpunkt", the FC reads
+        // "Angel Forsaken Hub".
+        let mut dungeons = String::new();
+        let _ = archive.by_name("dungeons.jsonl").map(|mut e| e.read_to_string(&mut dungeons));
+        if !dungeons.is_empty() {
+            tx.execute("DELETE FROM sde_anomaly_i18n", [])?;
+            let mut ins = tx.prepare("INSERT OR REPLACE INTO sde_anomaly_i18n(name_loc, name_en) VALUES(?1, ?2)")?;
+            for line in dungeons.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(names) = v.get("name").and_then(|n| n.as_object()) else { continue };
+                let Some(en) = names.get("en").and_then(|n| n.as_str()).filter(|s| !s.is_empty()) else { continue };
+                for val in names.values() {
+                    if let Some(loc) = val.as_str().filter(|s| !s.is_empty()) {
+                        ins.execute(params![loc.to_lowercase(), en])?;
+                    }
+                }
+            }
+        }
     }
 
     let version = crate::clock::utc().format("%Y-%m-%d").to_string();

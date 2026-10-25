@@ -129,6 +129,26 @@ pub fn play_delve911_alert(spec: &str, volume: f32) {
     }
 }
 
+/// Rescuee mode: someone else's cap-save ping in delve911, which means a second fight the Rorqual
+/// had better not be caught in. Its own short gate: the siren's five minutes would swallow a
+/// second save behind the first.
+pub fn play_delve911_rescuee(spec: &str, volume: f32) {
+    const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
+    static GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let should_play = {
+        let mut g = GATE.lock().unwrap();
+        let now = std::time::Instant::now();
+        let play = g.map_or(true, |last| now.duration_since(last) >= COOLDOWN);
+        if play {
+            *g = Some(now);
+        }
+        play
+    };
+    if should_play {
+        play(spec, volume);
+    }
+}
+
 fn gate_allows(
     state: Option<(std::time::Instant, u8)>,
     now: std::time::Instant,

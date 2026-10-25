@@ -102,7 +102,16 @@ fn collect(harness: &Harness<'_>) -> Vec<Widget> {
         let mut rect = egui::Rect { min: egui::pos2(b.x0 as f32, b.y0 as f32), max: egui::pos2(b.x1 as f32, b.y1 as f32) };
         // Inside a list row partly scrolled away, egui clips the widget to what shows; the tree
         // keeps its whole rect, so it is trimmed here the same way.
-        if let Some((_, visible)) = cut.iter().find(|(full, _)| full.expand(0.5).contains_rect(rect)) {
+        // Two scroll areas can both claim a widget when one's content runs on under the other
+        // (a band over a chat): the innermost, the smallest content box holding it, is the one
+        // that clips it.
+        // Newest first: the list holds every frame's, and an early frame's clip is stale.
+        let cut_for = cut
+            .iter()
+            .rev()
+            .filter(|(full, _)| full.expand(0.5).contains_rect(rect))
+            .min_by(|a, b| a.0.area().total_cmp(&b.0.area()));
+        if let Some((_, visible)) = cut_for {
             rect = rect.intersect(*visible);
             // A sliver under a pixel left at the edge is as gone as one cut away.
             if rect.width() < 1.0 || rect.height() < 1.0 {

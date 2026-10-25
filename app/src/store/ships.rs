@@ -3,6 +3,20 @@
 use super::*;
 
 impl Store {
+    /// Anomaly and signature site names in every client language, lowercased, to their English
+    /// name: what a pasted probe-scanner row turns into for an English-reading FC.
+    pub fn anomaly_names(&self) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT name_loc, name_en FROM sde_anomaly_i18n") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                for (loc, en) in rows.flatten() {
+                    map.insert(loc, en);
+                }
+            }
+        }
+        map
+    }
+
     pub fn ship_index(&self) -> std::collections::HashMap<String, (i64, String)> {
         let mut map = std::collections::HashMap::new();
         if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_ships") {

@@ -985,6 +985,70 @@
   [
    128,
    "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"
+  ],
+  [
+   30,
+   "Cormorant (Corm > Burst > Bantam > Vigil)"
+  ],
+  [
+   46,
+   "Flycatchers (Boosters > Kirin/Scalpel > Flycatcher > Else)"
+  ],
+  [
+   51,
+   "Kestrels (Kestrels>Bifrosts>Vigils)"
+  ],
+  [
+   59,
+   "Mosh Masters (Boosters > Osprey/Scythe > Hurricane > Hyena > Else)"
+  ],
+  [
+   60,
+   "Torp Bombers (Purifier > Hound > Astero > Else)"
+  ],
+  [
+   62,
+   "Osprey Navy Issue (Boosters > ONI > Scythe > Else)"
+  ],
+  [
+   64,
+   "Void Rays (MWD kikis) (Boosts > Logi > Kikis > Slasher/Hyena/Keres)"
+  ],
+  [
+   65,
+   "Harpy Fleet (Boosters > Kirin/Scalpel > Harpy > Else)"
+  ],
+  [
+   67,
+   "ENIS (Booster > Deacon > ENI)"
+  ],
+  [
+   70,
+   "thrasher Fleet Issues (tFI > scalpel > sentinel )"
+  ],
+  [
+   82,
+   "Retri Fleet (Booster > Deacon > Retri > Support)"
+  ],
+  [
+   100,
+   "Snail Fleet (Moas) (Moa > Moa > Osprey > Booster Drake)"
+  ],
+  [
+   111,
+   "Rupture (Boosters > Rupture > Osprey)"
+  ],
+  [
+   116,
+   "Crusaders (CHECK YOUR POD >>>>> Crusader)"
+  ],
+  [
+   125,
+   "Maelstrom (Booster > Basilisk > Maelstrom > Support > Else)"
+  ],
+  [
+   140,
+   "Typhoon (Boosters > Guardian > Typhoon > HIC > Confessor > Else)"
   ]
  ],
  "fleet_doctrine_strict": [
@@ -1588,5 +1652,111 @@
    "charge": "Electronic Superiority",
    "priority": "medium"
   }
+ ],
+ "setups": [
+  [
+   87,
+   "CAD Cormorants"
+  ],
+  [
+   90,
+   "CAD FeroxNI"
+  ],
+  [
+   30,
+   "Cormorant"
+  ],
+  [
+   116,
+   "Crusaders"
+  ],
+  [
+   67,
+   "ENIS"
+  ],
+  [
+   19,
+   "Entosis"
+  ],
+  [
+   61,
+   "FC Choice"
+  ],
+  [
+   46,
+   "Flycatchers"
+  ],
+  [
+   84,
+   "Hammer Fleet (FNI)"
+  ],
+  [
+   65,
+   "Harpy Fleet"
+  ],
+  [
+   149,
+   "Incursion"
+  ],
+  [
+   51,
+   "Kestrels"
+  ],
+  [
+   48,
+   "Locust"
+  ],
+  [
+   125,
+   "Maelstrom"
+  ],
+  [
+   59,
+   "Mosh Masters"
+  ],
+  [
+   62,
+   "Osprey Navy Issue"
+  ],
+  [
+   119,
+   "Raptors"
+  ],
+  [
+   82,
+   "Retri Fleet"
+  ],
+  [
+   111,
+   "Rupture"
+  ],
+  [
+   57,
+   "SCOUTS"
+  ],
+  [
+   100,
+   "Snail Fleet (Moas)"
+  ],
+  [
+   128,
+   "Svipul"
+  ],
+  [
+   70,
+   "thrasher Fleet Issues"
+  ],
+  [
+   60,
+   "Torp Bombers"
+  ],
+  [
+   140,
+   "Typhoon"
+  ],
+  [
+   64,
+   "Void Rays (MWD kikis)"
+  ]
  ]
 }

@@ -202,6 +202,39 @@ pub fn invented() -> Seed {
     }
 }
 
+/// The tables fleet command runs on without the dashboard: whatever a past sign-in left in the
+/// seed file, and where that is empty, the op channels by number and the setups and tags the
+/// dashboard has always listed. The op channel's id is its number here, since no dashboard id is
+/// ever sent anywhere.
+pub fn builtin() -> Seed {
+    builtin_from(load())
+}
+
+/// `builtin` on a given seed, which is what makes it testable without the file.
+pub fn builtin_from(mut seed: Seed) -> Seed {
+    let stock = invented();
+    // Every op by number, whatever the saved list names: a missing one gets an id no dashboard
+    // channel has, so a preset keeps pointing at the op it was made for.
+    for op in 1..=12u8 {
+        if seed.mumble_channel_for_op(op).is_none() {
+            seed.mumble_channels.push(channel(1_000 + i32::from(op), &format!("Op {op}"), false));
+        }
+    }
+    // The setups the built-in doctrines are keyed by, with their real names. Never the invented
+    // ones: a made-up name on a real setup id reads as a real doctrine.
+    if seed.setups.is_empty() {
+        seed.setups = crate::settings::shipped_setups()
+            .into_iter()
+            .map(|(id, name)| SetupItem { id: SetupId(id), name, minimal_opsec_level_description: None, priority: 0, is_default: false })
+            .collect();
+    }
+    if seed.tags.is_empty() {
+        seed.tags = stock.tags;
+    }
+    seed.placeholder = false;
+    seed
+}
+
 /// Where the real table is read from.
 pub fn path() -> Option<std::path::PathBuf> {
     match std::env::var("EVE_SPAI_FLEET_SEED") {

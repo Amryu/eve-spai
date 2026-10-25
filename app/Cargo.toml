@@ -10,16 +10,6 @@ name = "eve-spai"
 path = "src/main.rs"
 
 [features]
-# Signing in to the fleet dashboard for real. Its crates are optional because on
-# Linux it is the only dependency in this file that needs system libraries (gtk3 and
-# webkit2gtk-4.1): the dashboard authenticates with a session cookie minted by an OIDC redirect
-# that lands on its own origin, so the cookie has to come out of a browser engine we drive. Windows
-# and macOS use the engine the OS ships, so they need nothing installed and `--all-features` on
-# those runners compiles it.
-# Release builds turn it on for Windows and macOS. Linux releases ship it as a second binary,
-# `eve-spai-fleet-login`, so the app itself starts without WebKitGTK installed.
-# Build with `cargo build --features fleet-auth`.
-fleet-auth = ["dep:wry", "dep:tao", "dep:webkit2gtk"]
 # Whisper speech recognition on this computer. whisper.cpp builds with cmake and a C++ compiler,
 # which every CI runner has; a host without them builds with --no-default-features.
 local-stt = ["dep:whisper-rs"]
@@ -102,15 +92,6 @@ spai-ui = { path = "../crates/spai-ui", features = ["test-support"] }
 # change the renderer the Linux/macOS binary is built with.
 egui_kittest = { version = "0.34", features = ["wgpu"] }
 
-# The fleet sign-in webview, behind `fleet-auth`, on the three platforms wry has an engine for:
-# WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS. It runs in a subprocess
-# (`--fleet-login`), since the webview wants an event loop of its own on the main thread and the
-# app's is winit under eframe. Windows and macOS need nothing installed to build it; WebView2 ships
-# with Windows 10 and 11, and WKWebView with macOS.
-[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
-wry = { version = "0.52", optional = true }
-tao = { version = "0.34", optional = true }
-
 [target.'cfg(target_os = "linux")'.dependencies]
 # async-io (not tokio) to match accesskit/zbus in the rest of the tree — avoids
 # forcing zbus into tokio mode (which breaks keyring/notify-rust at runtime).
@@ -122,13 +103,6 @@ x11rb = { version = "0.13", features = ["xinput"] }
 # changes no resolution — in particular it does not pull zbus into tokio mode, which is what breaks
 # keyring and notify-rust at runtime.
 zbus = "5"
-# The Linux half of the fleet sign-in webview, behind `fleet-auth`: wry's engine here is WebKitGTK,
-# so building it wants gtk3 and webkit2gtk-4.1 development packages, and a binary linked against
-# them will not start without them. Named in wry's own public API (`WebViewExtUnix::webview` returns
-# a `webkit2gtk::WebView`), so this is not a second engine, it is the handle wry hands back, and it
-# is what turns off the cookie blocking that broke the sign-in. Pinned to the exact version wry
-# resolves or the two sets of types do not match.
-webkit2gtk = { version = "=2.0.1", optional = true }
 
 # Windows: wgpu, never glow. OpenGL/glow can't get its per-pixel alpha DWM-composited on Windows
 # (transparent windows render as an opaque square), but wgpu (DX12) picks a PreMultiplied

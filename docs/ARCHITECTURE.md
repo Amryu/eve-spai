@@ -117,19 +117,18 @@ stores gzipped reports and serves a read-only page per report.
 
 ## Fleet command
 
-Every build carries it, locked until the fleet dashboard confirms a commander. Two halves of one
-thing: the GSF
-dashboard mirror (`fleets/`, `app/fleet_ui.rs`) starts and tracks fleets, requests pings and reads
-composition, boosts and doctrine. The FC-only capital rescue (`rescue.rs`, `app/rescue_ui.rs`)
+Every build carries it. Two halves of one thing: the fleet tab (`fleets/`, `app/fleet_ui.rs`)
+tracks the fleets this machine's characters are boss of, requests pings and reads composition,
+boosts and doctrine, all through the characters' own ESI tokens. The FC-only capital rescue
+(`rescue.rs`, `app/rescue_ui.rs`)
 watches a rescue channel, checks titan range from staging, and runs on a fleet preset tagged
 Capital Save: its ping and doctrine come from that preset and its Start tracking hands over to the
 fleet tab.
 
-`fleets/backend.rs` builds every dashboard request as a `CallRecord` and performs none, so the
-spoof (`spoof.rs`) and the real client (`http.rs`) are checked against one conformance suite. A
-backend reports a `Mode`: `DryRun` invents its data, `ReadOnly` reads live and holds writes, `Live`
-sends. `fleet-auth` adds the sign-in webview that mints the session cookie, in a subprocess because
-wry needs a GTK main loop and eframe already owns the main thread with winit.
+`fleets/backend.rs` describes every write as a `CallRecord` for the journal, so the spoof
+(`spoof.rs`) and the ESI backend (`esi_backend.rs`, records in `fleet-records.json`) answer one
+conformance suite. A backend reports a `Mode`: `DryRun` invents its data, `ReadOnly` reads live and
+holds writes, `Live` sends. The GSF fleet dashboard's API is never called.
 
 ## Testing
 

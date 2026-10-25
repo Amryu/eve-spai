@@ -21,6 +21,8 @@ pub enum FleetError {
     /// A write the user has not turned on yet. `start` cannot fake a fleet id, so it says this
     /// instead of handing the UI an id that navigates nowhere.
     WritesHeld,
+    /// Something ESI has no equivalent for.
+    Unsupported(&'static str),
 }
 
 impl std::fmt::Display for FleetError {
@@ -32,7 +34,30 @@ impl std::fmt::Display for FleetError {
             FleetError::Transport(e) => write!(f, "could not reach the dashboard: {e}"),
             FleetError::Decode(e) => write!(f, "unexpected reply: {e}"),
             FleetError::WritesHeld => write!(f, "writes are off: the request was recorded, not sent"),
+            FleetError::Unsupported(what) => write!(f, "{what} is not available on ESI"),
         }
+    }
+}
+
+/// An untracked fleet as the page shows it: the boss's, nothing else known.
+pub fn live_fleet_record(live: &LiveFleet) -> Fleet {
+    Fleet {
+        id: FleetId::live(live.esi_id),
+        commander: Some(Labelled { id: live.boss_id, label: live.boss_name.clone() }),
+        esi_id: live.esi_id,
+        name: format!("{}'s fleet", live.boss_name),
+        ..Fleet::default()
+    }
+}
+
+/// What tracking a live fleet as it stands asks for: the boss's name on it, everything else
+/// filled in later from the tracking page.
+pub fn track_request(live: &LiveFleet) -> StartRequest {
+    StartRequest {
+        form: StartForm { name: format!("{}'s fleet", live.boss_name), ..StartForm::default() },
+        character_id: live.boss_id,
+        character_name: live.boss_name.clone(),
+        ..StartRequest::default()
     }
 }
 
@@ -139,17 +164,13 @@ impl SearchKind {
 /// Everything a fleet page can ask for that is not a plain read.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Action {
+    /// The record's own fields: name, doctrine, comms, tags, snowflakes.
     Update(Box<Fleet>),
+    /// Stops tracking: the record closes, the in-game fleet goes on.
     Close,
-    SetMotd,
-    FileReport(ReportRequest),
-    Bonus(BonusRequest),
-    Exception(ExceptionRequest),
-    AssignDistribution { wing: WingId, distribution: DistributionId },
+    SetMotd(String),
+    FreeMove(bool),
     Invite { character_id: i64 },
-    /// Hands the fleet to another character, who must already be the boss of an in-game fleet.
-    /// The dashboard checks that with `boss_check` before it will let the button go.
-    Migrate { character_id: i64 },
     Move { character_id: i64, wing: WingId, squad: SquadId },
     Kick { character_id: i64, exclude: bool },
     KickMany { character_ids: Vec<i64>, exclude: bool },
@@ -157,7 +178,10 @@ pub enum Action {
     KickCapsules,
     AddWing,
     AddSquad(WingId),
-    SplitSquad { wing: WingId, squad: SquadId },
+    RenameWing { wing: WingId, name: String },
+    RenameSquad { wing: WingId, squad: SquadId, name: String },
+    DeleteWing(WingId),
+    DeleteSquad { wing: WingId, squad: SquadId },
 }
 
 impl Action {
@@ -165,13 +189,17 @@ impl Action {
     pub fn perm(&self) -> Perm {
         match self {
             Action::Invite { .. } => Perm::InviteMember,
-            Action::Move { .. } => Perm::MoveMember,
+            Action::Move { .. }
+            | Action::AddWing
+            | Action::AddSquad(_)
+            | Action::RenameWing { .. }
+            | Action::RenameSquad { .. }
+            | Action::DeleteWing(_)
+            | Action::DeleteSquad { .. } => Perm::MoveMember,
             Action::Kick { .. }
             | Action::KickMany { .. }
             | Action::KickAll
             | Action::KickCapsules => Perm::KickMember,
-            Action::FileReport(_) => Perm::FlagFleet,
-            Action::Bonus(_) => Perm::AccessPayouts,
             _ => Perm::AccessFleet,
         }
     }
@@ -290,34 +318,17 @@ pub mod calls {
         CallRecord::new(Method::Post, format!("{FLEET}/ping-preview"), json(req))
     }
 
-    /// Every write that belongs to one fleet.
+    /// Every write that belongs to one fleet, as the journal shows it.
     pub fn act(id: &FleetId, action: &Action) -> CallRecord {
         match action {
             Action::Update(f) => CallRecord::new(Method::Put, FLEET, json(f.as_ref())),
             Action::Close => CallRecord::new(Method::Delete, format!("{FLEET}/{id}"), None),
-            Action::SetMotd => CallRecord::new(Method::Put, format!("{FLEET}/{id}/motd"), None),
-            Action::FileReport(r) => {
-                CallRecord::new(Method::Post, format!("{FLEET}/{id}/report"), json(r))
-            }
-            Action::Bonus(b) => CallRecord::new(Method::Post, format!("{FLEET}/{id}/bonus"), json(b)),
-            Action::Exception(e) => {
-                CallRecord::new(Method::Post, format!("{FLEET}/{id}/exception"), json(e))
-            }
-            Action::AssignDistribution { wing, distribution } => CallRecord::new(
-                Method::Post,
-                format!("{FLEET}/{id}/distribution"),
-                Some(serde_json::json!({ "wingId": wing.0, "distributionId": distribution.0 })),
-            ),
+            Action::SetMotd(motd) => CallRecord::new(Method::Put, format!("{FLEET}/{id}/motd"), Some(serde_json::json!({ "motd": motd }))),
+            Action::FreeMove(on) => CallRecord::new(Method::Put, format!("{FLEET}/{id}/free-move"), Some(serde_json::json!({ "on": on }))),
             Action::Invite { character_id } => CallRecord::new(
                 Method::Post,
                 format!("{FLEET}/{id}/member"),
                 Some(serde_json::json!({ "characterId": character_id })),
-            ),
-            // No body: the target is the path's last segment, the way the site sends it.
-            Action::Migrate { character_id } => CallRecord::new(
-                Method::Put,
-                format!("{FLEET}/{id}/migrate/{character_id}"),
-                None,
             ),
             Action::Move { character_id, wing, squad } => CallRecord::new(
                 Method::Put,
@@ -346,19 +357,20 @@ pub mod calls {
             Action::AddSquad(wing) => {
                 CallRecord::new(Method::Post, format!("{FLEET}/{id}/wing/{wing}/squad"), None)
             }
-            Action::SplitSquad { wing, squad } => CallRecord::new(
-                Method::Post,
-                format!("{FLEET}/{id}/wing/{wing}/squad/{squad}/split"),
-                None,
+            Action::RenameWing { wing, name } => {
+                CallRecord::new(Method::Put, format!("{FLEET}/{id}/wing/{wing}"), Some(serde_json::json!({ "name": name })))
+            }
+            Action::RenameSquad { wing, squad, name } => CallRecord::new(
+                Method::Put,
+                format!("{FLEET}/{id}/wing/{wing}/squad/{squad}"),
+                Some(serde_json::json!({ "name": name })),
             ),
+            Action::DeleteWing(wing) => CallRecord::new(Method::Delete, format!("{FLEET}/{id}/wing/{wing}"), None),
+            Action::DeleteSquad { wing, squad } => {
+                CallRecord::new(Method::Delete, format!("{FLEET}/{id}/wing/{wing}/squad/{squad}"), None)
+            }
         }
     }
-}
-
-/// A live push stream, read one event at a time from a thread of its own. `next` blocks until the
-/// server says something or the connection ends.
-pub trait HubFeed: Send {
-    fn next(&mut self) -> Option<crate::fleets::hub::Event>;
 }
 
 /// Answers the tab's questions. The dry-run spoof and a future HTTP client both wear this.
@@ -388,10 +400,15 @@ pub trait FleetBackend: Send + Sync + 'static {
     fn start(&self, req: &StartRequest) -> Result<Written<FleetId>>;
     fn act(&self, id: &FleetId, action: &Action) -> Result<Written<()>>;
 
-    /// Whether the fleet is advertised in the Fleet Finder, when the boss is one of this machine's
-    /// characters. `None` when it cannot be known, which the page shows as nothing at all.
-    fn advert(&self, _fleet: &Fleet) -> Option<bool> {
+    /// The advert and the MOTD, read through the boss's own token. `None` when it cannot be
+    /// known, which the page shows as nothing at all.
+    fn live_info(&self, _fleet: &Fleet) -> Option<LiveInfo> {
         None
+    }
+
+    /// The in-game fleets this machine's characters are boss of right now.
+    fn live_fleets(&self) -> Vec<LiveFleet> {
+        Vec::new()
     }
 
     /// The character's own fleet per ESI, through this machine's token for them.
@@ -399,10 +416,10 @@ pub trait FleetBackend: Send + Sync + 'static {
         EsiFleet::Unknown("No ESI check on this backend.".to_owned())
     }
 
-    /// Opens the dashboard's push stream for one fleet, so a tracked fleet arrives instead of
-    /// being polled for. A backend with nothing to push says so and the caller keeps polling.
-    fn open_hub(&self, _id: &FleetId) -> Result<Box<dyn HubFeed>> {
-        Err(FleetError::Transport("this backend has no hub".to_owned()))
+    /// Invites the named characters into the boss's fleet through this machine's token for the
+    /// boss: per name, whether the invite went out, or why not.
+    fn esi_invite(&self, _boss_name: &str, _fleet_id: i64, names: &[String]) -> Vec<(String, std::result::Result<(), String>)> {
+        names.iter().map(|n| (n.clone(), Err("No ESI on this backend.".to_owned()))).collect()
     }
 
     fn mode(&self) -> Mode;
@@ -545,8 +562,8 @@ mod tests {
             "/api/v1/fleet/439f833e-2aca/member/7/true"
         );
         assert_eq!(
-            calls::act(&id, &Action::SplitSquad { wing: WingId(2), squad: SquadId(9) }).path,
-            "/api/v1/fleet/439f833e-2aca/wing/2/squad/9/split"
+            calls::act(&id, &Action::DeleteSquad { wing: WingId(2), squad: SquadId(9) }).path,
+            "/api/v1/fleet/439f833e-2aca/wing/2/squad/9"
         );
     }
 
@@ -588,24 +605,10 @@ mod tests {
     #[test]
     fn bodyless_writes_send_no_body() {
         let id = FleetId("abc".into());
-        for a in [Action::Close, Action::SetMotd, Action::KickAll, Action::KickCapsules,
-                  Action::AddWing, Action::AddSquad(WingId(1)),
-                  Action::Migrate { character_id: 90_000_001 }] {
+        for a in [Action::Close, Action::KickAll, Action::KickCapsules,
+                  Action::AddWing, Action::AddSquad(WingId(1)), Action::DeleteWing(WingId(1))] {
             assert!(calls::act(&id, &a).body.is_none(), "{a:?} invented a body");
         }
-    }
-
-    /// Handing a fleet over puts the new boss in the path, not in a body. Taken from the bundle:
-    /// `migrateFleet(e,i){return this.http.put(`${this.apiPath}/${e}/migrate/${i}`,void 0)}`, and
-    /// `i` is the character id the picker's boss check passed.
-    #[test]
-    fn migrating_names_the_new_boss_in_the_path() {
-        let rec =
-            calls::act(&FleetId("abc".into()), &Action::Migrate { character_id: 2_119_400_938 });
-        assert_eq!(rec.method, Method::Put);
-        assert_eq!(rec.path, "/api/v1/fleet/abc/migrate/2119400938");
-        assert!(rec.body.is_none());
-        assert_eq!(Action::Migrate { character_id: 1 }.perm(), Perm::AccessFleet);
     }
 
     /// Kicking several posts the plain array of ids the site sends.
@@ -643,8 +646,7 @@ mod tests {
         assert_eq!(Action::KickAll.perm(), Perm::KickMember);
         assert_eq!(Action::Move { character_id: 1, wing: WingId(1), squad: SquadId(1) }.perm(),
                    Perm::MoveMember);
-        assert_eq!(Action::FileReport(ReportRequest::default()).perm(), Perm::FlagFleet);
-        assert_eq!(Action::Bonus(BonusRequest::default()).perm(), Perm::AccessPayouts);
+        assert_eq!(Action::RenameSquad { wing: WingId(1), squad: SquadId(1), name: String::new() }.perm(), Perm::MoveMember);
     }
 
     /// Every path has to survive becoming a URL. The OData queries carry literal spaces, and a
@@ -652,7 +654,7 @@ mod tests {
     /// percent-encodes them, so this pins the thing the HTTP backend relies on.
     #[test]
     fn every_path_joins_onto_the_base_without_mangling_the_query() {
-        let base = reqwest::Url::parse("https://fleets.gnf.lt").expect("a base");
+        let base = reqwest::Url::parse("https://example.invalid").expect("a base");
         let records = [
             calls::is_authenticated(),
             calls::characters(),

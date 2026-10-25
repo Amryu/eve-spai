@@ -290,6 +290,12 @@ pub struct Settings {
     pub jabber_popout_windows: Vec<ChatWindowCfg>,
     #[serde(default)]
     pub update_skip_version: String,
+    /// The user agreed to download updates from eve-spai.com when GitHub is slow.
+    #[serde(default)]
+    pub update_mirror_ok: bool,
+    /// And would rather always download from there.
+    #[serde(default)]
+    pub update_prefer_mirror: bool,
     #[serde(default)]
     pub wizard_done: bool,
     #[serde(default = "default_true")]
@@ -377,10 +383,11 @@ pub struct Settings {
     pub sound_delve911: String,
     #[serde(default = "default_volume")]
     pub sound_delve911_volume: f32,
-    /// When the fleet dashboard last confirmed a commander rank, and which. Fleet command stays
-    /// locked without it, or once it is older than `fleets::unlock::GRACE_SECS`.
-    #[serde(default)]
-    pub fleet_unlock: Option<FleetUnlock>,
+    /// In Rescuee mode: someone else's cap-save ping, so the Rorqual gets safe.
+    #[serde(default = "default_critical_sound")]
+    pub sound_delve911_rescuee: String,
+    #[serde(default = "default_volume")]
+    pub sound_delve911_rescuee_volume: f32,
     /// Whether the wormhole map's legend is unfolded.
     #[serde(default)]
     pub wh_legend_open: bool,
@@ -465,10 +472,31 @@ pub struct Settings {
     /// even a cyno or a bridging titan is out of place.
     #[serde(default)]
     pub fleet_doctrine_strict: Vec<i32>,
+    /// MOTD doctrine texts the user mapped to a doctrine by hand: `(text, setup id)`, so the same
+    /// text is read the same way next time.
+    #[serde(default)]
+    pub fleet_doctrine_aliases: Vec<(String, i32)>,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
     pub fc_rescue_enabled: bool,
+    /// Skirmish commanders and up run rescues on ops 9 to 12; everyone else on 1 to 6.
+    #[serde(default = "default_true")]
+    pub rescue_sc_ops: bool,
+    /// The other half, for the pilot being rescued: no fleet command needed, delve911 always joined.
+    #[serde(default)]
+    pub rescuee_enabled: bool,
+    /// Which side the rescue tab shows when both are on.
+    #[serde(default)]
+    pub rescue_mode: RescueMode,
+    /// Rescuee: read d-scans off the clipboard while the panel shows, and send them to dscan.info
+    /// for the FC.
+    #[serde(default = "default_true")]
+    pub rescuee_read_dscan: bool,
+    #[serde(default = "default_true")]
+    pub rescuee_dscan_upload: bool,
+    #[serde(default)]
+    pub rescuee_col_w: Option<f32>,
     #[serde(default = "default_rescue_staging")]
     pub rescue_staging_system: String,
     /// System ids that host a friendly cyno generator (ESI can't enumerate these).
@@ -720,12 +748,6 @@ pub struct AlertSettings {
     pub rules: Vec<AlertRule>,
     pub seeded: bool,
     pub compact_mode: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct FleetUnlock {
-    pub verified_at: i64,
-    pub command_group: String,
 }
 
 /// The map measures gate distances this far out, so no setting reaches further.
@@ -1124,6 +1146,20 @@ fn default_siren_sound() -> String {
     "siren".into()
 }
 
+fn default_critical_sound() -> String {
+    "critical".into()
+}
+
+/// Which side of a capital rescue the rescue tab shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RescueMode {
+    /// The FC: builds the fleet ping, calls people into comms, tracks the fleet.
+    #[default]
+    Fc,
+    /// The pilot being rescued: posts the tackle ping, follows the checklist.
+    Rescuee,
+}
+
 fn default_msg_sound() -> String {
     "chime".to_owned()
 }
@@ -1418,7 +1454,7 @@ pub fn seed_rescue_preset(s: &mut Settings, setups: &[(i32, String)]) -> bool {
     true
 }
 
-fn rescue_preset(op: u8, label: &str, setup_id: i32, notes: String) -> FleetPreset {
+pub(crate) fn rescue_preset(op: u8, label: &str, setup_id: i32, notes: String) -> FleetPreset {
     FleetPreset {
         label: label.to_owned(),
         folder: "Rescue".to_owned(),
@@ -1644,6 +1680,8 @@ impl Default for Settings {
             jabber_ping_rules_seeded: true,
             jabber_popout_windows: Vec::new(),
             update_skip_version: String::new(),
+            update_mirror_ok: false,
+            update_prefer_mirror: false,
             wizard_done: false,
             dscan_autoprompt: true,
             dscan_autoupload: false,
@@ -1674,7 +1712,6 @@ impl Default for Settings {
             wh_layout_style: String::new(),
             wh_layout_pack: true,
             wh_minimap: true,
-            fleet_unlock: None,
             sound_master_volume: 1.0,
             sound_muted: false,
             sound_safety: default_danger_sound(),
@@ -1683,6 +1720,8 @@ impl Default for Settings {
             sound_reroute_volume: 1.0,
             sound_delve911: default_siren_sound(),
             sound_delve911_volume: 1.0,
+            sound_delve911_rescuee: default_critical_sound(),
+            sound_delve911_rescuee_volume: 1.0,
             minimize_to_tray: true,
             autostart: false,
             main_window_pos: None,
@@ -1703,8 +1742,15 @@ impl Default for Settings {
             fleet_doctrine_tanks: Vec::new(),
             fleet_doctrine_urls: Vec::new(),
             fleet_doctrine_lines: Vec::new(),
+            fleet_doctrine_aliases: Vec::new(),
             fleet_doctrine_strict: Vec::new(),
             fc_rescue_enabled: false,
+            rescue_sc_ops: true,
+            rescuee_enabled: false,
+            rescue_mode: RescueMode::Fc,
+            rescuee_read_dscan: true,
+            rescuee_dscan_upload: true,
+            rescuee_col_w: None,
             rescue_staging_system: default_rescue_staging(),
             cyno_generators: Vec::new(),
             rescue_op_channel: default_rescue_op_channel(),
@@ -2751,8 +2797,18 @@ pub struct DoctrineDefaults {
     pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
 }
 
-pub const BAKED_DOCTRINES: u32 = 1;
+pub const BAKED_DOCTRINES: u32 = 2;
 const DOCTRINES_JSON: &str = include_str!("../assets/default_doctrines.json");
+
+/// The setups the shipped doctrines belong to, `(id, name)`.
+pub(crate) fn shipped_setups() -> Vec<(i32, String)> {
+    #[derive(Deserialize)]
+    struct Only {
+        #[serde(default)]
+        setups: Vec<(i32, String)>,
+    }
+    serde_json::from_str::<Only>(DOCTRINES_JSON).map(|o| o.setups).unwrap_or_default()
+}
 
 impl Settings {
     /// Gives every doctrine the user has set nothing up for the shipped hulls, tank, links, lines,
@@ -2775,7 +2831,10 @@ impl Settings {
         self.fleet_hulls.extend(d.fleet_hulls.into_iter().filter(|h| fresh(h.setup_id)));
         self.fleet_doctrine_tanks.extend(d.fleet_doctrine_tanks.into_iter().filter(|x| fresh(x.0)));
         self.fleet_doctrine_urls.extend(d.fleet_doctrine_urls.into_iter().filter(|x| fresh(x.0)));
-        self.fleet_doctrine_lines.extend(d.fleet_doctrine_lines.into_iter().filter(|x| fresh(x.0)));
+        // A line is text the ping quotes, not a choice: a doctrine without one gets the shipped one,
+        // whatever else the user configured for it.
+        let has_line: Vec<i32> = self.fleet_doctrine_lines.iter().map(|x| x.0).collect();
+        self.fleet_doctrine_lines.extend(d.fleet_doctrine_lines.into_iter().filter(|x| !has_line.contains(&x.0)));
         self.fleet_doctrine_strict.extend(d.fleet_doctrine_strict.into_iter().filter(|x| fresh(*x)));
         self.fleet_boost_requirements.extend(d.fleet_boost_requirements.into_iter().filter(|b| fresh(b.setup_id)));
         true
@@ -2785,6 +2844,17 @@ impl Settings {
 #[cfg(test)]
 mod doctrine_default_tests {
     use super::*;
+
+    #[test]
+    fn a_configured_doctrine_still_gets_its_shipped_line() {
+        let mut s = Settings::default();
+        s.fleet_hulls.push(FleetHull { setup_id: 140, type_id: 0, name: "Typhoon".into(), main: true });
+        s.fleet_doctrine_lines.push((84, "my own line".into()));
+        assert!(s.apply_doctrine_defaults());
+        assert!(s.fleet_doctrine_lines.iter().any(|(id, l)| *id == 140 && l.starts_with("Typhoon (")), "hulls set, line missing: filled");
+        assert_eq!(s.fleet_doctrine_lines.iter().filter(|(id, _)| *id == 84).count(), 1);
+        assert!(s.fleet_doctrine_lines.contains(&(84, "my own line".into())), "the user's own line stays");
+    }
 
     #[test]
     fn shipped_doctrines_fill_what_is_unset_and_leave_the_rest() {

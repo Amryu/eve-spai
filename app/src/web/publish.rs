@@ -396,6 +396,7 @@ mod tests {
             system_id: Some(HOME),
             docked: false,
             locations,
+            ships: Default::default(),
         }));
         Deps {
             facts: super::super::facts::shared(),

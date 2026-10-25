@@ -10,12 +10,24 @@ use crate::tokens;
 const LOCATION_URL: &str = "https://esi.evetech.net/latest/characters";
 const POLL: Duration = Duration::from_secs(20);
 
+/// A character's place and ship at the last poll: in which system, docked where, flying what.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShipState {
+    pub system: i64,
+    pub docked: bool,
+    pub ship_type: Option<i64>,
+    pub station_id: Option<i64>,
+    pub structure_id: Option<i64>,
+}
+
 #[derive(Default)]
 pub struct Player {
     pub active_name: String,
     pub system_id: Option<i64>,
     pub docked: bool,
     pub locations: std::collections::HashMap<String, (i64, bool)>,
+    /// The same characters with their ship and dock, for what needs more than a system.
+    pub ships: std::collections::HashMap<String, ShipState>,
 }
 
 pub type SharedPlayer = Arc<Mutex<Player>>;
@@ -80,6 +92,7 @@ pub fn spawn_location_poller(
             let now = crate::clock::utc().timestamp();
             let mut fresh: std::collections::HashMap<String, (i64, bool)> =
                 std::collections::HashMap::new();
+            let mut fresh_ships: std::collections::HashMap<String, ShipState> = std::collections::HashMap::new();
             for ch in store.list_characters() {
                 if clones_at.get(&ch.name).is_none_or(|t| now - t >= CLONES_EVERY) {
                     clones_at.insert(ch.name.clone(), now);
@@ -87,7 +100,9 @@ pub fn spawn_location_poller(
                         clones.lock().unwrap().insert(ch.name.clone(), c);
                     }
                 }
-                if let Some((sys, docked, ship)) = location_for(&client, &store, &client_id, &ch.name) {
+                if let Some(state) = location_for(&client, &store, &client_id, &ch.name) {
+                    let (sys, docked, ship) = (state.system, state.docked, state.ship_type);
+                    fresh_ships.insert(ch.name.clone(), state);
                     if let Some(was) = seen.get(&ch.name).filter(|w| w.system != sys) {
                         store.log_move(&crate::store::history::MoveRow {
                             time: now,
@@ -137,9 +152,11 @@ pub fn spawn_location_poller(
             let mut p = player.lock().unwrap();
             let active_loc = fresh.get(&active).copied();
             let changed = p.locations != fresh
+                || p.ships != fresh_ships
                 || p.system_id != active_loc.map(|(s, _)| s)
                 || p.docked != active_loc.map(|(_, d)| d).unwrap_or(false);
             p.locations = fresh;
+            p.ships = fresh_ships;
             p.system_id = active_loc.map(|(s, _)| s);
             p.docked = active_loc.map(|(_, d)| d).unwrap_or(false);
             if changed {
@@ -181,7 +198,7 @@ fn location_for(
     store: &Store,
     client_id: &str,
     name: &str,
-) -> Option<(i64, bool, Option<i64>)> {
+) -> Option<ShipState> {
     let character = store.character_by_name(name)?;
     let token = current_access_token(store, client_id, character.id, character.expires_at)?;
 
@@ -222,7 +239,7 @@ fn location_for(
         .ok()
         .and_then(|r| r.json::<Ship>().ok())
         .map(|s| s.ship_type_id);
-    Some((loc.solar_system_id, docked, ship))
+    Some(ShipState { system: loc.solar_system_id, docked, ship_type: ship, station_id: loc.station_id, structure_id: loc.structure_id })
 }
 
 /// The systems of a character's home and jump clones, for telling a death or a clone jump from a
@@ -834,6 +851,112 @@ pub(crate) const FLEET_SCOPE: &str = "esi-fleets.read_fleet.v1";
 ///
 /// ESI answers both only for the fleet boss's own token, so a stale or backup commander on the
 /// dashboard is a 403 and the caller falls back to the roster.
+/// The scope a fleet invite needs. Characters signed in before it was added lack it until they
+/// sign in again.
+pub(crate) const FLEET_WRITE_SCOPE: &str = "esi-fleets.write_fleet.v1";
+
+/// One write to the boss's fleet through this machine's token for the boss: `path` is under
+/// `/fleets/{fleet_id}/`, and the answer is the JSON body, or `null` for a 204.
+pub(crate) fn fleet_write(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_name: &str,
+    method: reqwest::Method,
+    fleet_id: i64,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let boss = store.character_by_name(boss_name).ok_or_else(|| format!("{boss_name} is not logged in here"))?;
+    if !boss.scopes.split_whitespace().any(|s| s == FLEET_WRITE_SCOPE) {
+        return Err(format!("log {boss_name} in again to grant the fleet write scope"));
+    }
+    let token = current_access_token(store, client_id, boss.id, boss.expires_at).ok_or_else(|| format!("no ESI token for {boss_name}"))?;
+    let mut req = client.request(method, format!("https://esi.evetech.net/latest/fleets/{fleet_id}/{path}")).bearer_auth(&token);
+    if let Some(body) = &body {
+        req = req.json(body);
+    }
+    let resp = req.send().map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if status.is_success() {
+        return Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null));
+    }
+    let why = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or(text);
+    crate::esilog::record("fleet esi write", &format!("{path}: {status}: {why}"));
+    Err(match status.as_u16() {
+        // ESI's answer for a character who is offline, already in a fleet, or blocking invites.
+        520 => "offline, already in a fleet, or not taking invites".to_owned(),
+        403 => "the fleet boss's token was refused".to_owned(),
+        404 => "ESI no longer finds that fleet, wing or pilot".to_owned(),
+        _ => why,
+    })
+}
+
+/// Invites `character_id` into the boss's fleet, through this machine's token for the boss. The
+/// invite still has to be accepted in game; ESI has no way to do that.
+pub(crate) fn fleet_invite(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_name: &str,
+    fleet_id: i64,
+    character_id: i64,
+) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::POST, fleet_id, "members/", Some(serde_json::json!({ "character_id": character_id, "role": "squad_member" }))).map(|_| ())
+}
+
+pub(crate) fn fleet_kick(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, character_id: i64) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::DELETE, fleet_id, &format!("members/{character_id}/"), None).map(|_| ())
+}
+
+/// Seats `character_id` as ESI spells seats: no wing is the boss's chair, a wing with no squad is
+/// its commander's, and a squad is a member's. `-1` is "none", as the dashboard sends it.
+pub(crate) fn fleet_move(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, character_id: i64, wing_id: i64, squad_id: i64) -> Result<(), String> {
+    let body = match (wing_id, squad_id) {
+        (w, _) if w < 0 => serde_json::json!({ "role": "fleet_commander" }),
+        (w, s) if s < 0 => serde_json::json!({ "role": "wing_commander", "wing_id": w }),
+        (w, s) => serde_json::json!({ "role": "squad_member", "wing_id": w, "squad_id": s }),
+    };
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::PUT, fleet_id, &format!("members/{character_id}/"), Some(body)).map(|_| ())
+}
+
+pub(crate) fn fleet_free_move(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, on: bool) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::PUT, fleet_id, "", Some(serde_json::json!({ "is_free_move": on }))).map(|_| ())
+}
+
+pub(crate) fn fleet_rename_wing(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, wing_id: i64, name: &str) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::PUT, fleet_id, &format!("wings/{wing_id}/"), Some(serde_json::json!({ "name": name }))).map(|_| ())
+}
+
+pub(crate) fn fleet_rename_squad(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, squad_id: i64, name: &str) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::PUT, fleet_id, &format!("squads/{squad_id}/"), Some(serde_json::json!({ "name": name }))).map(|_| ())
+}
+
+pub(crate) fn fleet_delete_wing(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, wing_id: i64) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::DELETE, fleet_id, &format!("wings/{wing_id}/"), None).map(|_| ())
+}
+
+pub(crate) fn fleet_delete_squad(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, squad_id: i64) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::DELETE, fleet_id, &format!("squads/{squad_id}/"), None).map(|_| ())
+}
+
+pub(crate) fn fleet_set_motd(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, motd: &str) -> Result<(), String> {
+    fleet_write(client, store, client_id, boss_name, reqwest::Method::PUT, fleet_id, "", Some(serde_json::json!({ "motd": motd }))).map(|_| ())
+}
+
+/// The new wing's id.
+pub(crate) fn fleet_add_wing(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64) -> Result<i64, String> {
+    let v = fleet_write(client, store, client_id, boss_name, reqwest::Method::POST, fleet_id, "wings/", None)?;
+    v["wing_id"].as_i64().ok_or_else(|| "ESI named no wing".to_owned())
+}
+
+/// The new squad's id.
+pub(crate) fn fleet_add_squad(client: &reqwest::blocking::Client, store: &Store, client_id: &str, boss_name: &str, fleet_id: i64, wing_id: i64) -> Result<i64, String> {
+    let v = fleet_write(client, store, client_id, boss_name, reqwest::Method::POST, fleet_id, &format!("wings/{wing_id}/squads/"), None)?;
+    v["squad_id"].as_i64().ok_or_else(|| "ESI named no squad".to_owned())
+}
+
 pub(crate) fn fleet_tree(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -1031,29 +1154,32 @@ pub(crate) struct FleetInfo {
     #[serde(default)]
     pub is_registered: bool,
     #[serde(default)]
+    pub motd: String,
+    #[serde(default)]
     pub is_free_move: bool,
     #[serde(default)]
     pub is_voice_enabled: bool,
 }
 
-/// Whether the fleet is advertised in the Fleet Finder, read through the boss's own token.
+/// What `GET /fleets/{id}/` says, read through the boss's own token: the Fleet Finder advert and
+/// the MOTD.
 ///
 /// `None` for every reason it cannot be known: the boss is not one of this machine's characters,
 /// their token lacks the fleet scope, or ESI refuses because they are no longer boss. Only the
 /// boss may read a fleet's details, so there is no other token to try.
-pub(crate) fn fleet_advert(
+pub(crate) fn fleet_info(
     client: &reqwest::blocking::Client,
     store: &Store,
     client_id: &str,
     boss_name: &str,
     fleet_id: i64,
-) -> Option<bool> {
+) -> Option<FleetInfo> {
     let boss = store.character_by_name(boss_name)?;
     if !boss.scopes.split_whitespace().any(|s| s == FLEET_SCOPE) {
         return None;
     }
     let token = current_access_token(store, client_id, boss.id, boss.expires_at)?;
-    let info: FleetInfo = client
+    client
         .get(format!("https://esi.evetech.net/latest/fleets/{fleet_id}/"))
         .bearer_auth(token)
         .send()
@@ -1061,8 +1187,7 @@ pub(crate) fn fleet_advert(
         .error_for_status()
         .ok()?
         .json()
-        .ok()?;
-    Some(info.is_registered)
+        .ok()
 }
 
 #[cfg(test)]

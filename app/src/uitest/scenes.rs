@@ -426,8 +426,8 @@ fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 /// `bind` opens the advanced part with an address being typed, which is where the field says whether
 /// it is bound, waiting or holding something that is not an address.
-/// The whole settings column, with fleet command locked or unlocked.
-fn fleet_lock_scene(name: &'static str, unlocked: bool) -> Scene {
+/// The whole settings column, with fleet command off or on.
+fn fleet_lock_scene(name: &'static str, enabled: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, [980.0, 3400.0], move |ui| {
@@ -436,13 +436,7 @@ fn fleet_lock_scene(name: &'static str, unlocked: bool) -> Scene {
             a.view = View::Settings;
             a.settings.eve_logs_dir = "/fixture/EVE/logs".to_owned();
             a.settings.eve_settings_dir = "/fixture/EVE/settings".to_owned();
-            a.settings.fleet_enabled = true;
-            if unlocked {
-                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock {
-                    verified_at: crate::clock::utc().timestamp(),
-                    command_group: "SC".into(),
-                });
-            }
+            a.settings.fleet_enabled = enabled;
             a
         });
         app.root_chrome(ui);
@@ -632,6 +626,30 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
         app.apply_language();
         app.root_chrome(ui);
         app.root_central(ui, None);
+    })
+}
+
+/// An update downloading: GitHub slow and the question about the mirror in the window, or the
+/// window put away and the progress in the status bar.
+fn update_scene(name: &'static str, hidden: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1100.0, 700.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let a = crate::app::SpaiApp::build(ui.ctx(), true);
+            {
+                let mut s = a.update.lock().unwrap();
+                s.available = Some(crate::update::Available { version: "9.9.9".into(), html_url: "https://example.com".into(), asset: None });
+                s.installing = true;
+                s.progress = Some(crate::update::Progress { source: crate::update::Source::Github, received: 3_400_000, total: 42_100_000, rate: 180_000.0 });
+                s.slow = (!hidden).then_some(180_000.0);
+                s.hidden = hidden;
+            }
+            a
+        });
+        // No page behind it: the layout check cannot tell text under a window from text in it.
+        app.root_chrome(ui);
+        app.update_dialog(ui.ctx());
     })
 }
 
@@ -1690,7 +1708,6 @@ fn jabber_sidebar_scene_cfg(
             *a.jabber.lock().unwrap() = fixtures::jabber_state();
             a.settings.fc_rescue_enabled = rescue;
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             if name.ends_with("_requests") {
                 // One asking to see our status; the DM partner shares theirs, so its dot is lit.
                 let mut st = a.jabber.lock().unwrap();
@@ -1727,7 +1744,6 @@ fn fleet_advert_scene(name: &'static str, size: [f32; 2], up: bool) -> Scene {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
             fixtures::open_first_fleet(&a);
@@ -1815,46 +1831,8 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
-            a
-        });
-        app.root_chrome(ui);
-        app.root_central(ui, None);
-    })
-}
-
-/// The start form, filled from a preset so every control has something in it, with the ping the
-/// dry run renders beside it.
-fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    fleet_start_scene_with(name, size, false)
-}
-
-/// `tracked` leaves the fixture's FC boss of an active fleet, which is what the double-track
-/// guard is for. Off, the form is in its normal ready-to-track state.
-fn fleet_start_scene_with(name: &'static str, size: [f32; 2], tracked: bool) -> Scene {
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, size, move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.settings.fleet_presets = fixtures::fleet_presets();
-            a.view = View::Fleet;
-            // Traffic in both docked rooms, or the chat renders an empty box and its spacing is
-            // never actually looked at.
-            *a.jabber.lock().unwrap() = fixtures::jabber_state_fleet_rooms();
-            fixtures::seed_fleet_state(&a);
-            fixtures::open_fleet_start(&a);
-            if !tracked {
-                // The spoof's active fleets are led by the fixture's own FC, so without this the
-                // guard fires and the form never shows the state it exists for.
-                let mut st = a.fleet_state_for_test().lock().unwrap();
-                st.active_strat.put(Vec::new());
-                st.active_pct.put(Vec::new());
-            }
             a
         });
         app.root_chrome(ui);
@@ -1871,7 +1849,6 @@ fn fleet_broken_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             fixtures::seed_fleet_state(&a);
             broken_fleet_state(&a);
@@ -1898,43 +1875,6 @@ fn broken_fleet_state(a: &crate::app::SpaiApp) {
     }
 }
 
-/// Track waiting on ESI to catch up after a fleet change, with Track anyway beside it.
-fn fleet_start_waiting_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, size, move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.settings.fleet_presets = fixtures::fleet_presets();
-            a.view = View::Fleet;
-            fixtures::seed_fleet_state(&a);
-            fixtures::open_fleet_start(&a);
-            {
-                let mut st = a.fleet_state_for_test().lock().unwrap();
-                st.active_strat.put(Vec::new());
-                st.active_pct.put(Vec::new());
-                st.begin_track_wait();
-                st.track_since -= 35;
-            }
-            a
-        });
-        // Held each frame: the spoof answers the polls the wait sends with its own verdict.
-        {
-            let mut st = app.fleet_state_for_test().lock().unwrap();
-            if let Some((fc, _)) = st.fc() {
-                st.boss = Some((fc, crate::fleets::model::BossCheck { is_fleet_boss: true, ..Default::default() }));
-                st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::InFleet { fleet_id: 1_000_000_001, boss_id: fc, exists: Some(false) }));
-                st.boss_seq = st.track_seq + 1;
-                st.track_waiting = true;
-            }
-        }
-        app.root_chrome(ui);
-        app.root_central(ui, None);
-    })
-}
-
 /// A tracked fleet, in either of its two halves: who is in it, and what they are flying.
 fn fleet_detail_scene(
     name: &'static str,
@@ -1954,6 +1894,48 @@ fn fleet_detail_scene_with(
     fleet_detail_scene_closed(name, size, tab, closed, true)
 }
 
+/// The fleet's settings are what the fleet is checked against and nothing else: its doctrine and
+/// its boost channel, read from the MOTD, each overridable on the spot. No Apply: nothing goes
+/// anywhere to be applied.
+#[test]
+fn uitest_the_fleet_settings_are_doctrine_and_boosts_from_the_motd() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("selftest_fleet_settings", [1280.0, 900.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            a.fleet_sidebar_open = true;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_first_fleet(&a);
+            a.fleet_booted = true;
+            {
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                let id = st.open.value.as_ref().expect("an open fleet").fleet.id.clone();
+                let motd = "Comms: Op 3 https://example.invalid/x.html\nBoost Channel: <a href=\"joinChannel:-1//None//None\">Awesomeboosts</a>\nDoctrine: Moas".to_owned();
+                st.motd = Some((id.clone(), crate::fleets::motd::parse(&motd)));
+                st.info = Some((id, crate::fleets::model::LiveInfo { advert: true, free_move: false, motd }));
+            }
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let shows = |h: &egui_kittest::Harness<'_>, text: &str| {
+        h.root().children_recursive().any(|n| {
+            let n = n.accesskit_node();
+            n.label().is_some_and(|l| l.contains(text)) || n.value().is_some_and(|v| v.contains(text))
+        })
+    };
+    assert!(shows(&h, "Awesomeboosts (auto)"), "the MOTD's boost channel, marked as detected");
+    assert!(h.query_by_label_contains("Apply").is_none(), "nothing to apply");
+    assert!(h.query_by_label_contains("Snowflakes").is_none());
+}
+
 /// `via_history` decides whether the page was reached through the history or closed underneath the
 /// tracking page. Both have to render the same.
 fn fleet_detail_scene_closed(
@@ -1969,7 +1951,6 @@ fn fleet_detail_scene_closed(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = tab;
             // The app opens it by default, and the composition tab now leans on it for
@@ -2011,7 +1992,6 @@ fn fleet_map_scene_at(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Map;
             let (g, coords) = fixtures::fleet_map_world();
@@ -2066,7 +2046,6 @@ fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
@@ -2097,7 +2076,6 @@ fn fleet_confirm_scene(
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.fleet_booted = true;
             a.fleet_confirm = Some((
                 crate::fleets::model::FleetId("fixture-fleet".to_owned()),
@@ -2120,7 +2098,6 @@ fn fleet_ping_warning_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.fleet_booted = true;
             let body = "Alpha fleet - Get In!\n\nFC Name: Fixture Commander\nFormup Location: \nPAP Type: Strategic\nComms: Op 4 https://gnf.lt/x.html\nDoctrine: ".to_owned();
             let lacking = crate::fleets::ping::missing(&body);
@@ -2163,9 +2140,8 @@ fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
+            // The rescuee's side too, so the header carries the button to it.
+            a.settings.rescuee_enabled = true;
             a.settings.fleet_presets = fixtures::rescue_presets();
             a.settings.rescue_preset = "Capital Save".to_owned();
             fixtures::seed_fleet_state(&a);
@@ -2198,24 +2174,137 @@ fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8
     })
 }
 
-/// The Quick Fleet picker, which is the whole of what the button does.
-fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
+/// The rescue's preset editor, with the fixtures' presets.
+fn rescue_presets_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ctx(name, size, move |ctx| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.settings.fleet_presets = fixtures::fleet_presets();
+            a.settings.fleet_presets = fixtures::rescue_presets();
+            fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
-            a.fleet_quick_open = true;
+            a.rescue_presets_open = true;
             a
         });
-        let presets = app.settings.fleet_presets.clone();
-        let mut act = crate::app::fleet_ui::FormAct::default();
-        app.quick_fleet_window(ctx, &presets, &mut act);
+        app.rescue_presets_window(ctx);
     })
+}
+
+/// The rescuee's side: a Rorqual and its cyno alt undocked in 1DQ1-A, the delve911 room live.
+/// `pinged` is after the ping went out: the checklist, the FC's comms and a d-scan.
+fn rescuee_scene(name: &'static str, size: [f32; 2], compact: bool, pinged: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.rescuee_enabled = true;
+            // The FC's side too, so the header carries the button to it.
+            a.settings.fc_rescue_enabled = true;
+            a.settings.fleet_enabled = true;
+            a.settings.rescue_mode = crate::settings::RescueMode::Rescuee;
+            a.systems = Some(fixtures::systems());
+            a.set_ship_names_for_test(&[(28352, "Rorqual"), (11176, "Crow"), (22456, "Sabre"), (29990, "Loki")]);
+            {
+                let mut p = a.player.lock().unwrap();
+                p.ships.insert("Placeholder Miner".into(), crate::esi::ShipState { system: 30_004_759, docked: false, ship_type: Some(28352), station_id: None, structure_id: None });
+                p.ships.insert("Placeholder Cyno".into(), crate::esi::ShipState { system: 30_004_759, docked: false, ship_type: Some(11176), station_id: None, structure_id: None });
+            }
+            let mut st = fixtures::jabber_state();
+            st.chats.insert(fixtures::DELVE911_ROOM.to_owned(), fixtures::delve911_tail());
+            st.rooms.insert(fixtures::DELVE911_ROOM.to_owned());
+            *a.jabber.lock().unwrap() = st;
+            let now = crate::clock::utc().timestamp();
+            let r = &mut a.rescuee;
+            r.location_input = "Angel Forsaken Hub ABC-123".into();
+            r.location = crate::rescuee::Location::Anomaly { name_en: "Angel Forsaken Hub".into(), code: Some("ABC-123".into()) };
+            r.panic = crate::rescuee::Panic::Available;
+            if pinged {
+                let fields = crate::rescuee::PingFields {
+                    pilot: "Placeholder Miner".into(),
+                    cyno: "Placeholder Cyno".into(),
+                    system: "1DQ1-A".into(),
+                    location: r.location.clone(),
+                    panic: r.panic,
+                    hostiles: Default::default(),
+                };
+                r.sent = Some(crate::rescuee::Sent { at: now - 180, body: crate::rescuee::render_ping(&fields), hostiles_sent: Default::default(), location_sent: fields.location.clone(), fields });
+                r.checklist.location = true;
+                r.hostiles = crate::rescuee::Hostiles { count: Some(7), ships: vec![("Vedmaks".into(), 3), ("Sabre".into(), 2), ("Loki".into(), 2)], alliance: Some("Placeholder Alliance".into()), dscan_link: Some("https://dscan.info/v/placeholder".into()) };
+                r.dscan = Some(crate::rescuee::DscanPreview { counts: r.hostiles.ships.clone(), link: r.hostiles.dscan_link.clone(), at: now - 40 });
+                r.comms = Some(crate::rescuee::CommsInvite { target: crate::rescuee::CommsTarget::Op(3), from: "Placeholder Commander".into(), at: now - 150 });
+                r.comms_also.push(crate::rescuee::CommsInvite { target: crate::rescuee::CommsTarget::Beehive, from: "Placeholder Wingmate".into(), at: now - 100 });
+                r.fleet = crate::rescuee::FleetStatus { rorqual: Some(crate::fleets::model::EsiFleet::NotInFleet), cyno: Some(crate::fleets::model::EsiFleet::NotInFleet), at: Some(now - 20) };
+                r.fleet_asked_at = Some(std::time::Instant::now());
+            }
+            a
+        });
+        app.apply_language();
+        app.rescue_body(ui, compact);
+    })
+}
+
+/// Switching the rescue tab between the FC and rescuee sides leaves the FC's op and preset as
+/// they were, in memory and in the saved settings: a mid-rescue look at the other side must not
+/// cost the FC the channel they already named to people.
+#[test]
+fn uitest_rescue_mode_switch_keeps_fc_op_and_preset() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let rescue: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>>>> = Default::default();
+    let saved: std::sync::Arc<std::sync::Mutex<(u8, String, crate::settings::RescueMode)>> = Default::default();
+    let (rescue_out, saved_out) = (rescue.clone(), saved.clone());
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("selftest_rescue_mode_switch", [1100.0, 700.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fc_rescue_enabled = true;
+            a.settings.rescuee_enabled = true;
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::rescue_presets();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            fixtures::seed_rescue_ping(&a);
+            {
+                let mut r = a.rescue_state_for_test().lock().unwrap();
+                r.op_channel = 7;
+                r.doctrine = a.settings.fleet_presets.last().map(|p| p.key()).unwrap_or_default();
+            }
+            *rescue_out.lock().unwrap() = Some(a.rescue_state_for_test().clone());
+            a
+        });
+        app.rescue_body(ui, false);
+        *saved_out.lock().unwrap() = (app.settings.rescue_op_channel, app.settings.rescue_preset.clone(), app.settings.rescue_mode);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.step();
+    let r = rescue.lock().unwrap().clone().expect("the scene built the app");
+    let want = {
+        let r = r.lock().unwrap();
+        (r.op_channel, r.doctrine.clone())
+    };
+    assert_eq!(want.0, 7);
+    assert!(!want.1.is_empty(), "the fixture has a preset to keep");
+
+    harness.get_by_label(&format!("{}  Rescuee", egui_phosphor::regular::ARROWS_LEFT_RIGHT)).click();
+    harness.step();
+    assert_eq!(saved.lock().unwrap().2, crate::settings::RescueMode::Rescuee, "the switch took");
+    // The switch lands after the frame that clicked it, so the other side draws on the next.
+    harness.step();
+    harness.get_by_label(&format!("{}  FC", egui_phosphor::regular::ARROWS_LEFT_RIGHT)).click();
+    harness.step();
+    harness.step();
+    let (op, preset, mode) = saved.lock().unwrap().clone();
+    assert_eq!(mode, crate::settings::RescueMode::Fc);
+    let now = {
+        let r = r.lock().unwrap();
+        (r.op_channel, r.doctrine.clone())
+    };
+    assert_eq!(now, want, "the FC's op and preset changed across the switch");
+    assert_eq!((op, preset), want, "the saved op and preset do not match the FC's picks");
 }
 
 /// The same window on its Ships tab, which is what stops every hull reading as out of doctrine.
@@ -2226,7 +2315,6 @@ fn fleet_hull_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_hulls = fixtures::fleet_hulls();
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
@@ -2250,7 +2338,6 @@ fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements =
                 crate::fleets::boosts::default_rules(46, false);
             fixtures::seed_fleet_state(&a);
@@ -2280,7 +2367,6 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             // The ping window is its own viewport in the app; rendered inline beside a dialog it
             // lands on top of it and this scene is about the dialog.
             a.settings.fleet_ping_window = false;
@@ -2290,30 +2376,7 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
             fixtures::open_first_fleet(&a);
             a.fleet_booted = true;
             match which {
-                0 => a.fleet_snowflakes_open = Some(crate::app::fleet_ui::SnowflakeTarget::Draft),
-                2 => {
-                    a.fleet_migrate_open = true;
-                    // A character picked and checked, which is the state the button unlocks in.
-                    // One of the account's own characters, which is the only pool offered without
-                    // the startFleetOther permission.
-                    let who = {
-                        let st = a.fleet_state_for_test().lock().unwrap();
-                        let c = st.seed.characters.first().expect("a character").clone();
-                        crate::fleets::model::Labelled { id: c.id, label: c.name }
-                    };
-                    ctx.data_mut(|d| {
-                        d.insert_temp(egui::Id::new("fleet_migrate_pick"), who.clone())
-                    });
-                    let mut st = a.fleet_state_for_test().lock().unwrap();
-                    st.migrate_boss = Some((
-                        who.id,
-                        crate::fleets::model::BossCheck {
-                            is_fleet_boss: true,
-                            backup_available: false,
-                            error_message: None,
-                        },
-                    ));
-                }
+                2 => a.fleet_motd_edit = Some("<font size=\"13\">Welcome</font>\nComms: Comms 1\nBoost Channel: Boosts 1".to_owned()),
                 _ => {
                     {
                         let mut st = a.fleet_state_for_test().lock().unwrap();
@@ -2328,31 +2391,9 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
         // The specific window, not `root_dialogs`: that also renders the fleet ping viewport,
         // which lands on top of the dialog this scene is about.
         match which {
-            0 => app.fleet_snowflakes_window(ctx),
-            2 => app.fleet_migrate_window(ctx),
+            2 => app.fleet_motd_window(ctx),
             _ => app.fleet_boost_detail_window(ctx),
         }
-    })
-}
-
-/// The start form's sidebar on its Search tab, which the Presets scene never reaches.
-fn fleet_side_search_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, size, move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.settings.fleet_presets = fixtures::fleet_presets();
-            a.view = View::Fleet;
-            fixtures::seed_fleet_state(&a);
-            fixtures::open_fleet_start(&a);
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("fleet_side_tab"), 1_u8));
-            a
-        });
-        app.root_chrome(ui);
-        app.root_central(ui, None);
     })
 }
 
@@ -2367,7 +2408,6 @@ fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
             std::env::set_var("EVE_SPAI_FLEET_SEED", "/fixture/EVE/fleet-seed.json");
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
@@ -2380,26 +2420,6 @@ fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
-/// The journal, with the requests a dry run recorded rather than sent.
-fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, size, move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            a.view = View::Fleet;
-            fixtures::seed_fleet_state(&a);
-            fixtures::record_fleet_requests(&a);
-            a.fleet_journal_open = true;
-            a
-        });
-        app.root_chrome(ui);
-        app.root_central(ui, None);
-    })
-}
-
 /// Clicking a fleet has to open it: the rows are painted frames, so nothing but a real click
 /// through the tree proves they are reachable.
 #[test]
@@ -2408,44 +2428,20 @@ fn uitest_fleet_rows_open_the_fleet() {
 
     let mut scene = fleet_scene("fleet_click", [1280.0, 800.0]);
     let mut h = harness::build(&mut scene, false);
+    // A history row: the live list above has buttons rather than rows.
     let row = h
-        .query_all_by_label_contains("Home Defence")
+        .query_all_by_label_contains("Gate camp")
         .next()
         .expect("the seeded fleet is on screen")
         .rect();
     harness::click_at(&h, row.center());
     h.run();
     // The fleet loads on a worker, so either its page or the loading state proves the click landed.
+    // A history row's fleet is not one the spoof can read, so its page may say so instead.
     let opened = h.query_by_label_contains("Members").is_some()
-        || h.query_by_label_contains("Loading the fleet").is_some();
+        || h.query_by_label_contains("Loading the fleet").is_some()
+        || h.query_by_label_contains("could not be loaded").is_some();
     assert!(opened, "clicking a fleet did not open it");
-}
-
-/// The tag field is a badge field plus a dropdown, so nothing about the list is on screen until
-/// the caret is clicked. Only a real click through the tree proves it opens and filters.
-#[test]
-fn uitest_the_tag_field_opens_and_filters() {
-    use egui_kittest::kittest::Queryable as _;
-
-    let mut scene = fleet_start_scene("fleet_tag_popup", [1440.0, 900.0]);
-    let mut h = harness::build(&mut scene, false);
-
-    // Two carets, one per tag row. The second is the secondary tags, which take more than one.
-    let carets: Vec<egui::Rect> = h
-        .query_all_by_label_contains(egui_phosphor::regular::CARET_DOWN)
-        .map(|n| n.rect())
-        .collect();
-    assert_eq!(carets.len(), 2, "one caret per tag row");
-    harness::click_at(&h, carets[1].center());
-    h.run();
-
-    let listed = |h: &egui_kittest::Harness<'_>, name: &str| {
-        h.query_all_by_label_contains(name).count()
-    };
-    assert!(listed(&h, "Structure Bash") > 0, "the secondary tags are not listed");
-    assert!(listed(&h, "Roam") > 0);
-
-    // What typing does to the list is `tag_matches`, unit-tested beside it.
 }
 
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
@@ -3221,6 +3217,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     // 720 is the app's minimum window width (main.rs), where the intel toolbar has to wrap.
     v.push(view_scene("view_intel_narrow", View::Intel, [720.0, 800.0]));
+    v.push(update_scene("update_slow_github", false));
+    v.push(update_scene("update_hidden_progress", true));
     v.push(intel_bridge_scene("view_intel_feed", false, [1280.0, 800.0]));
     v.push(intel_bridge_states_scene("view_intel_feed_bridged", true, [1280.0, 800.0]));
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
@@ -3490,17 +3488,10 @@ pub(crate) fn all() -> Vec<Scene> {
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     v.push(fleet_scene("fleet_list", [1280.0, 800.0]));
-    v.push(fleet_start_scene("fleet_start_form", [1440.0, 820.0]));
-    v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
-    v.push(fleet_start_scene_with("fleet_start_already_tracked", [1440.0, 820.0], true));
     v.push(fleet_broken_scene("fleet_broken_open", [1100.0, 640.0]));
-    v.push(fleet_start_waiting_scene("fleet_start_waiting_esi", [1440.0, 820.0]));
     v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
-    v.push(fleet_side_search_scene("fleet_side_search", [1440.0, 820.0]));
-    v.push(fleet_dialog_scene("fleet_snowflakes", [700.0, 480.0], 0));
-    v.push(fleet_dialog_scene("fleet_migrate", [700.0, 460.0], 2));
+    v.push(fleet_dialog_scene("fleet_motd", [600.0, 360.0], 2));
     v.push(fleet_dialog_scene("fleet_boost_detail", [760.0, 560.0], 1));
-    v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
     v.push(fleet_map_scene("fleet_map", [1280.0, 800.0], false));
     v.push(fleet_map_scene("fleet_map_capsave", [1280.0, 800.0], true));
     v.push(fleet_map_scene_at("fleet_map_history", [1280.0, 800.0], false, Some(500), false, false));
@@ -3523,7 +3514,6 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
     v.push(fleet_boost_editor_scene("fleet_boost_editor", [860.0, 660.0]));
     v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
-    v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
     v.push(rescue_map_scene("rescue_panel_map_wide", [1500.0, 760.0]));
@@ -3532,6 +3522,11 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
     v.push(rescue_panel_scene_full("rescue_ping_incomplete", [1100.0, 700.0], None, false, false, true));
+    v.push(rescue_presets_scene("rescue_presets", [760.0, 620.0]));
+    v.push(rescuee_scene("rescuee_docked", [1100.0, 700.0], false, false));
+    v.push(rescuee_scene("rescuee_popout", [520.0, 640.0], true, false));
+    v.push(rescuee_scene("rescuee_pinged", [1100.0, 760.0], false, true));
+    v.push(rescuee_scene("rescuee_pinged_popout", [520.0, 700.0], true, true));
     v.push(rescue_panel_scene_with("rescue_popout_op_auto", [525.0, 600.0], Some(3), true, false));
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",
@@ -3703,6 +3698,33 @@ fn uitest_layout() {
         // lays out the same, and would only mix the two up.
         scene.density = 1.0;
         let mut harness = harness::build(&mut scene, false);
+        // A window whose content asks for a little more than it was given grows every frame: the
+        // feedback loop of `set_width(available_width())` inside a frame with margins, or a list
+        // claiming the height it is shown in. Many frames on, every window has to be where it was.
+        let windows = |h: &egui_kittest::Harness<'_>| -> Vec<(egui::Id, egui::Rect)> {
+            h.ctx.memory(|m| {
+                m.layer_ids()
+                    .filter(|l| l.order == egui::Order::Middle)
+                    .filter_map(|l| m.area_rect(l.id).map(|r| (l.id, r)))
+                    .collect()
+            })
+        };
+        let before = windows(&harness);
+        for _ in 0..30 {
+            harness.step();
+        }
+        for (id, after) in windows(&harness) {
+            if let Some((_, was)) = before.iter().find(|(b, _)| *b == id) {
+                if after.width() > was.width() + 1.0 || after.height() > was.height() + 1.0 {
+                    failures.push(format!("{name}:\n  [grows] window {id:?} {:?} -> {:?} over 30 frames", was.size(), after.size()));
+                }
+            }
+        }
+        if std::env::var("SPAI_CUT_DEBUG").is_ok_and(|v| v == name) {
+            for (full, visible) in spai_fit_ui::rows::cut_rows(&harness.ctx) {
+                eprintln!("[cut] full {full:?} visible {visible:?}");
+            }
+        }
         let report = super::checks::inspect(&mut harness, size);
         if !report.is_empty() {
             failures.push(report.render(name));
@@ -3726,7 +3748,7 @@ fn uitest_past_edge() {
     for mut scene in all().into_iter().filter(|s| !only.is_empty() && s.name == only) {
         let size = scene.size;
         scene.density = 1.0;
-        let mut harness = harness::build(&mut scene, false);
+        let harness = harness::build(&mut scene, false);
         for line in super::checks::past_right_edge(&harness, size.x) {
             eprintln!("{line}");
         }
@@ -4474,20 +4496,19 @@ fn uitest_wormhole_map_side_panel_lists_the_selected_system() {
     }
 }
 
-/// Fleet command stays out of sight until the dashboard confirms a commander: settings offer only
-/// the sign-in, and the Fleet tab is not in the rail. Unlocked, the dashboard's own settings show.
+/// Fleet command needs no sign-in: settings offer it at once, and the Fleet tab follows the switch.
 #[test]
-fn uitest_fleet_command_is_locked_until_the_dashboard_confirms_a_commander() {
+fn uitest_fleet_command_is_offered_without_a_sign_in() {
     use egui_kittest::kittest::Queryable as _;
-    let mut locked = fleet_lock_scene("fleet_settings_locked", false);
-    let h = harness::build(&mut locked, false);
-    assert!(h.query_by_label_contains("Sign in to the fleet dashboard to unlock").is_some());
-    assert!(h.query_by_label_contains("Enable the fleet dashboard").is_none(), "no fleet options before unlocking");
-    assert!(h.query_by_label("Fleet").is_none(), "no Fleet tab in the rail");
+    let mut off = fleet_lock_scene("fleet_settings_locked", false);
+    let h = harness::build(&mut off, false);
+    assert!(h.query_by_label_contains("Sign in").is_none());
+    assert!(h.query_by_label_contains("Enable fleet command").is_some());
+    assert!(h.query_by_label("Fleet").is_none(), "no Fleet tab in the rail while it is off");
     drop(h);
-    let mut open = fleet_lock_scene("fleet_settings_unlocked", true);
-    let h = harness::build(&mut open, false);
-    assert!(h.query_by_label_contains("Enable the fleet dashboard").is_some());
+    let mut on = fleet_lock_scene("fleet_settings_unlocked", true);
+    let h = harness::build(&mut on, false);
+    assert!(h.query_by_label("Fleet").is_some(), "the Fleet tab once it is on");
 }
 
 /// Hovering a hole's line shows what is known about it next to the pointer, not at an edge of
@@ -7090,7 +7111,6 @@ fn uitest_boss_detail_window_height_settles() {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ctx, true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.fleet_boss_detail = Some(
                 (0..40).map(|i| format!("   at Fleet.Check frame {i}")).collect::<Vec<_>>().join("\n"),
             );
@@ -7119,7 +7139,7 @@ fn uitest_boss_detail_window_height_settles() {
 
 /// A permanent tripwire. The uitest guard redirects `EVE_SPAI_DATA_DIR`, but the keychain sits
 /// outside it, so a developer with a live dashboard session in their keyring must still never get
-/// an `HttpBackend` under test. The headless arm of `SpaiApp::build` is what prevents it.
+/// the ESI backend under test. The headless arm of `SpaiApp::build` is what prevents it.
 #[test]
 fn uitest_headless_never_gets_a_live_fleet_backend() {
     use crate::fleets::backend::Mode;
@@ -7332,101 +7352,6 @@ fn uitest_selectable_toggles_do_not_resize_on_hover() {
     );
 }
 
-/// Every saved-fleet row is the same width, and stays that width frame after frame.
-///
-/// Both halves have gone wrong here: a row sized from `available_width()` grew a few pixels per
-/// row because the row before it had widened the container, and the whole column grew every frame
-/// because that widening fed back in. Measured, not eyeballed: a screenshot of one frame shows
-/// neither.
-#[test]
-fn uitest_preset_rows_are_one_width_and_stay_put() {
-    use egui_kittest::kittest::Queryable as _;
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    let mut scene = Scene::ui("preset_row_widths", [1440.0, 820.0], move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            // Mixed lengths and a folder: a long name must truncate rather than widen its row,
-            // and an indented row must still agree with its neighbours.
-            a.settings.fleet_presets = (0..6)
-                .map(|i| crate::settings::FleetPreset {
-                    label: if i == 2 {
-                        "Preset 2 with a very long name indeed".to_owned()
-                    } else {
-                        format!("Preset {i}")
-                    },
-                    folder: if i >= 4 { "Folder".to_owned() } else { String::new() },
-                    ..Default::default()
-                })
-                .collect();
-            a.view = View::Fleet;
-            fixtures::seed_fleet_state(&a);
-            fixtures::open_fleet_start(&a);
-            a
-        });
-        app.root_chrome(ui);
-        app.root_central(ui, None);
-    });
-    let mut harness = harness::build(&mut scene, false);
-    let label = |i: usize| {
-        if i == 2 {
-            "Preset 2 with a very long name indeed".to_owned()
-        } else {
-            format!("Preset {i}")
-        }
-    };
-    let mut first: Option<Vec<f32>> = None;
-    for pass in 0..4 {
-        harness.run();
-        let widths: Vec<f32> =
-            (0..4).map(|i| harness.get_by_label(&label(i)).rect().width()).collect();
-        assert!(
-            widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5),
-            "rows disagree on pass {pass}: {widths:?}"
-        );
-        match &first {
-            None => first = Some(widths),
-            Some(f) => assert!(
-                f.iter().zip(&widths).all(|(a, b)| (a - b).abs() < 0.5),
-                "rows grew by pass {pass}: {f:?} -> {widths:?}"
-            ),
-        }
-    }
-}
-
-
-/// A closed fleet is read to settle participation, so the list leads with who got paid most.
-#[test]
-fn uitest_closed_fleet_sorts_by_participation() {
-    let mut scene = fleet_detail_scene_with(
-        "closed_fleet_paps",
-        [1280.0, 1000.0],
-        crate::app::fleet_ui::DetailTab::Members,
-        true,
-    );
-    let mut harness = harness::build(&mut scene, false);
-    harness.run();
-    harness.run();
-    use egui_kittest::kittest::Queryable as _;
-    let mut seen: Vec<(i64, i64)> = Vec::new();
-    for (text, paps) in
-        [("no PAP", 0), ("1 PAP", 1), ("2 PAP", 2), ("3 PAP", 3)]
-    {
-        for n in harness.get_all_by_label(text) {
-            seen.push((n.rect().top() as i64, paps));
-        }
-    }
-    assert!(seen.len() >= 8, "the participation column did not render: {seen:?}");
-    seen.sort_by_key(|(y, _)| *y);
-    assert!(
-        seen.windows(2).all(|w| w[0].1 >= w[1].1),
-        "the list is not in descending PAP order: {seen:?}"
-    );
-    // A pilot who got nothing has to say so rather than leave the cell blank.
-    assert!(seen.iter().any(|(_, n)| *n == 0), "no zero-PAP row rendered: {seen:?}");
-}
 
 /// A closed fleet renders as a flat participant list, and its rows must hold their columns.
 ///
@@ -7490,7 +7415,7 @@ fn uitest_a_fleet_that_closes_under_the_page_goes_read_only() {
                                       crate::app::fleet_ui::DetailTab::Members);
     let mut h = harness::build(&mut live, false);
     h.run();
-    assert!(h.query_by_label_contains("Close fleet").is_some(), "no live action bar to lose");
+    assert!(h.query_by_label_contains("Stop tracking").is_some(), "no live action bar to lose");
 
     // Same page, same route, only the fleet's own record says it is over.
     let mut scene = fleet_detail_scene_closed(
@@ -7583,127 +7508,6 @@ fn uitest_closing_a_fleet_lands_on_the_closed_view() {
             "the participant list never arrived after the close"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
-/// The fleet's named roles belong to the fleet, not to the ping that started it, so the settings
-/// panel lists them and can edit them. A closed fleet still shows who was on it: that record is
-/// what a participation correction is made against.
-#[test]
-fn uitest_the_settings_panel_lists_the_snowflakes() {
-    use egui_kittest::kittest::Queryable as _;
-    for (what, closed) in [("live", false), ("closed", true)] {
-        let mut scene = fleet_detail_scene_with(
-            "snowflakes_in_settings",
-            [1280.0, 1400.0],
-            crate::app::fleet_ui::DetailTab::Members,
-            closed,
-        );
-        let mut h = harness::build(&mut scene, false);
-        h.run();
-        h.run();
-        for name in ["Second Seat", "Quiet Observer", "Anchor Pilot"] {
-            assert!(
-                h.query_by_label_contains(name).is_some(),
-                "{what} fleet: the settings panel does not name {name}"
-            );
-        }
-        // Two of the fixture's pilots are backseats, so the role is named twice.
-        assert_eq!(
-            h.query_all_by_label_contains("Backseat").count(),
-            2,
-            "{what} fleet: the roles are not named beside the pilots"
-        );
-        // Editable in both: who was FC or backseat is corrected after the fleet, which is the
-        // whole reason the record exists.
-        assert!(
-            h.query_by_label("Edit").is_some(),
-            "{what} fleet: the snowflakes cannot be edited"
-        );
-    }
-}
-
-/// Starting a fleet for an FC who already leads a tracked one is refused, and said in a row of its
-/// own rather than only on the disabled button's hover.
-///
-/// The first version put that row after the right-to-left button group. That group claims the
-/// panel's whole height, so the row grew the action bar over the form and left one line of it on
-/// screen. The form's last control has to stay visible with the warning up.
-#[test]
-fn uitest_an_already_tracked_fc_cannot_start_again() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
-    let mut scene = fleet_start_scene_with("already_tracked", [1440.0, 820.0], true);
-    let mut h = harness::build(&mut scene, false);
-    h.run();
-    h.run();
-    assert!(
-        h.query_by_label_contains("already tracked as").is_some(),
-        "the guard does not say why tracking is refused"
-    );
-    // "Track fleet: not sent" is a label beside it, so the button is picked out by its role.
-    let track = h
-        .query_all_by_label_contains("Track fleet")
-        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
-        .expect("the Track fleet button");
-    assert!(track.accesskit_node().is_disabled(), "a second fleet can still be started");
-
-    // The form must survive the extra row. It was clipped rather than moved, so its controls
-    // kept their natural positions; what gives it away is the action bar's top landing above the
-    // form's last control.
-    let manage = h.get_by_label_contains("Manage").rect();
-    let save = h.get_by_label_contains("Save as preset").rect();
-    assert!(
-        save.top() > manage.bottom(),
-        "the action bar has grown over the form: bar top {} above the form's last control {}",
-        save.top(),
-        manage.bottom()
-    );
-}
-
-/// What the settings panel offers once a fleet has closed: its record is correctable, the rest
-/// is not.
-///
-/// Tags and snowflakes stay live, because they describe what the fleet was and who led it. Setup
-/// and comms are disabled rather than left editable behind an Apply that refuses them, and the
-/// MOTD checkbox is gone, since there is no in-game fleet left to carry one.
-#[test]
-fn uitest_a_closed_fleet_offers_only_its_record() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
-    for closed in [false, true] {
-        let mut scene = fleet_detail_scene_with(
-            "closed_settings",
-            [1280.0, 1400.0],
-            crate::app::fleet_ui::DetailTab::Members,
-            closed,
-        );
-        let mut h = harness::build(&mut scene, false);
-        h.run();
-        h.run();
-        let what = if closed { "closed" } else { "live" };
-
-        let motd = h.query_by_label_contains("Re-set the MOTD").is_some();
-        assert_eq!(motd, !closed, "{what}: the MOTD checkbox");
-
-        // A combo box carries its current value in `value`, not in its label.
-        let combo = |v: &str| {
-            h.root()
-                .children_recursive()
-                .find(|n| {
-                    let a = n.accesskit_node();
-                    a.role() == egui::accesskit::Role::ComboBox
-                        && a.value().as_deref() == Some(v)
-                })
-                .unwrap_or_else(|| panic!("{what}: no combo showing {v}"))
-        };
-        let setup = combo("Fast Tackle");
-        assert_eq!(setup.accesskit_node().is_disabled(), closed, "{what}: the setup combo");
-        let comms = combo("Comms 3");
-        assert_eq!(comms.accesskit_node().is_disabled(), closed, "{what}: the comms combo");
-
-
-        // The snowflake editor stays offered either way.
-        let edit = h.get_by_label("Edit");
-        assert!(!edit.accesskit_node().is_disabled(), "{what}: snowflakes cannot be edited");
     }
 }
 
@@ -7824,7 +7628,6 @@ fn uitest_the_advert_shows_in_the_title_row() {
             let a = app.get_or_insert_with(|| {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fleet_enabled = true;
-                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
                 a.view = View::Fleet;
                 fixtures::seed_fleet_state(&a);
                 fixtures::open_first_fleet(&a);
@@ -7855,7 +7658,14 @@ fn uitest_the_advert_shows_in_the_title_row() {
         let chip = up.or(off).unwrap().rect();
         // The setup's name, which sits right after the heading on the title row. The fleet's own
         // name is no anchor: it is also the breadcrumb above and one of its tags.
-        let title = h.get_by_label("Fast Tackle").rect();
+        let title = {
+            use egui_kittest::kittest::NodeT as _;
+            h.root()
+                .children_recursive()
+                .find(|n| n.accesskit_node().value().is_some_and(|v| v.contains("Fast Tackle")) || n.accesskit_node().label().is_some_and(|l| l.contains("Fast Tackle")))
+                .expect("the doctrine on the title row")
+                .rect()
+        };
         assert!(
             (chip.center().y - title.center().y).abs() < title.height(),
             "{state:?}: the advert went onto another line: chip {chip:?}, title {title:?}"
@@ -7883,9 +7693,7 @@ fn uitest_the_rescue_op_alerts_when_its_channel_is_in_use() {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fc_rescue_enabled = true;
                 a.settings.fleet_enabled = true;
-                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
                 a.settings.fleet_enabled = true;
-                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
                 a.settings.fleet_presets = fixtures::rescue_presets();
                 a.settings.rescue_preset = "Capital Save".to_owned();
                 fixtures::seed_fleet_state(&a);
@@ -7954,8 +7762,9 @@ fn uitest_the_rescue_op_swaps_off_a_taken_channel_and_back() {
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
     a.settings.fleet_enabled = true;
+    // An FC's pool, 1 to 6, so the wrap below lands on Op 1.
+    a.settings.rescue_sc_ops = false;
     a.settings.fc_rescue_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "FC".into() });
     fixtures::seed_fleet_state(&a);
     // Ids that are not the op numbers, as on the dashboard: only the names say which op is which.
     let busy = |a: &crate::app::SpaiApp, taken: &[i32]| {
@@ -8021,7 +7830,6 @@ fn uitest_a_preset_name_can_repeat_across_folders() {
     let ctx = egui::Context::default();
     let mut a = crate::app::SpaiApp::build(&ctx, true);
     a.settings.fleet_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
     fixtures::seed_fleet_state(&a);
     let save = |a: &mut crate::app::SpaiApp, label: &str, folder: &str| {
         a.fleet_apply_form_for_test(FormAct {
@@ -8071,9 +7879,7 @@ fn uitest_the_rescue_lists_every_capital_save_preset() {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             let cap = |folder: &str, label: &str, channel: i32| crate::settings::FleetPreset {
                 label: label.to_owned(),
                 folder: folder.to_owned(),
@@ -8138,108 +7944,6 @@ fn uitest_the_rescue_lists_every_capital_save_preset() {
     assert_eq!(*op.lock().unwrap(), 11, "the op was taken from the channel id, not its name");
 }
 
-/// Presets and folders are ordered by dragging: a preset dropped on another goes just before it,
-/// and a folder dropped on another folder's heading goes just before that folder.
-#[test]
-fn uitest_presets_and_folders_reorder_by_dragging() {
-    use egui_kittest::kittest::Queryable as _;
-    let grip = egui_phosphor::regular::DOTS_SIX_VERTICAL;
-    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let seen = order.clone();
-    harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    let mut scene = Scene::ui("preset_order", [1440.0, 820.0], move |ui| {
-        let a = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-            let p = |folder: &str, label: &str| crate::settings::FleetPreset {
-                label: label.to_owned(),
-                folder: folder.to_owned(),
-                ..Default::default()
-            };
-            a.settings.fleet_presets = vec![
-                p("", "Alpha"),
-                p("", "Bravo"),
-                p("Caps", "Charlie"),
-                p("Subs", "Delta"),
-                p("Subs", "Echo"),
-            ];
-            a.view = View::Fleet;
-            fixtures::seed_fleet_state(&a);
-            fixtures::open_fleet_start(&a);
-            a
-        });
-        a.root_chrome(ui);
-        a.root_central(ui, None);
-        *seen.lock().unwrap() = a
-            .settings
-            .fleet_presets
-            .iter()
-            .map(|p| format!("{}/{}", p.folder, p.label))
-            .collect();
-    });
-    let mut h = harness::build(&mut scene, false);
-    h.run();
-
-    // The grip on the same row as a label, which is what a hand would pick up.
-    // The grip on the same row as a label, which is what a hand would pick up. Found by query:
-    // walking `root()` does not reach into the side panel here.
-    let grip_of = |h: &egui_kittest::Harness<'_>, label: &str| -> egui::Pos2 {
-        let row = h.get_by_label(label).rect();
-        let grips: Vec<egui::Rect> = h.query_all_by_label(grip).map(|n| n.rect()).collect();
-        grips
-            .iter()
-            .find(|r| (r.center().y - row.center().y).abs() < row.height() / 2.0)
-            .unwrap_or_else(|| panic!("no grip on the {label} row among {grips:?}"))
-            .center()
-    };
-    let drag = |h: &mut egui_kittest::Harness<'_>, from: egui::Pos2, to: egui::Pos2| {
-        h.event(egui::Event::PointerMoved(from));
-        h.event(egui::Event::PointerButton {
-            pos: from,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::default(),
-        });
-        h.step();
-        for k in 1..=8 {
-            let t = k as f32 / 8.0;
-            h.event(egui::Event::PointerMoved(from + (to - from) * t));
-            h.step();
-        }
-        h.event(egui::Event::PointerButton {
-            pos: to,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::default(),
-        });
-        h.step();
-        h.step();
-    };
-
-    // Bravo onto Alpha: Bravo first.
-    let (from, to) = (grip_of(&h, "Bravo"), h.get_by_label("Alpha").rect().center());
-    drag(&mut h, from, to);
-    assert_eq!(order.lock().unwrap()[..2], ["/Bravo".to_owned(), "/Alpha".to_owned()]);
-
-    // Delta, in Subs, onto Bravo at the top level: it comes out of its folder, before Bravo.
-    let (from, to) = (grip_of(&h, "Delta"), h.get_by_label("Bravo").rect().center());
-    drag(&mut h, from, to);
-    assert_eq!(
-        *order.lock().unwrap(),
-        ["/Delta", "/Bravo", "/Alpha", "Caps/Charlie", "Subs/Echo"],
-    );
-
-    // A folder by its heading's grip: Subs dropped on Caps goes before it, Echo with it.
-    let (from, to) = (grip_of(&h, "Subs"), h.get_by_label("Caps").rect().center());
-    drag(&mut h, from, to);
-    assert_eq!(
-        *order.lock().unwrap(),
-        ["/Delta", "/Bravo", "/Alpha", "Subs/Echo", "Caps/Charlie"],
-    );
-}
-
 /// Changing the rescue's op has to change the comms in the ping straight away, and pick up the
 /// dashboard's rendering when it lands, unless the FC has typed into the draft.
 ///
@@ -8259,9 +7963,7 @@ fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fc_rescue_enabled = true;
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.settings.fleet_presets = fixtures::rescue_presets();
             a.settings.rescue_preset = "Capital Save".to_owned();
             // The template names the op, so the stop-gap draft says which op it is for.
@@ -8290,71 +7992,20 @@ fn uitest_changing_the_rescue_op_changes_the_comms_at_once() {
         *next.lock().unwrap() = Some(f);
         h.run_steps(4);
     };
-    let dashboard = |text: &'static str| -> Box<dyn FnOnce(&mut crate::app::SpaiApp) + Send> {
-        Box::new(move |a: &mut crate::app::SpaiApp| {
-            a.fleet_state_for_test().lock().unwrap().rescue_preview =
-                Some(crate::fleets::model::PingPreview { ping: text.to_owned(), motd: String::new() });
-        })
-    };
-
-    // The dashboard's rendering for Op 3 is what the draft shows.
-    run(&mut h, dashboard("DASHBOARD Op 3"));
-    assert_eq!(*draft.lock().unwrap(), "DASHBOARD Op 3");
-
-    // Op 5: the old rendering must not survive the switch, not even for a frame's worth of draft.
+    // The template is the ping: the op change shows in the draft at once.
+    run(&mut h, Box::new(|_| {}));
+    assert_eq!(*draft.lock().unwrap(), "Comms: Op 3");
     run(&mut h, Box::new(|a| a.rescue_state_for_test().lock().unwrap().op_channel = 5));
-    let now = draft.lock().unwrap().clone();
-    assert!(!now.contains("Op 3"), "the draft still names the old comms: {now:?}");
+    assert_eq!(*draft.lock().unwrap(), "Comms: Op 5");
 
-    // The dashboard answers for Op 5: an untouched draft takes it.
-    run(&mut h, dashboard("DASHBOARD Op 5"));
-    assert_eq!(*draft.lock().unwrap(), "DASHBOARD Op 5", "the new rendering was not picked up");
-
-    // Once the FC has typed, a late rendering leaves their draft alone.
+    // Once the FC has typed, a later op change leaves their draft alone.
     run(&mut h, Box::new(|a| {
         let mut r = a.rescue_state_for_test().lock().unwrap();
         r.pending_ping = "typed by hand".to_owned();
         r.ping_edited = true;
     }));
-    run(&mut h, dashboard("DASHBOARD Op 5, again"));
+    run(&mut h, Box::new(|a| a.rescue_state_for_test().lock().unwrap().op_channel = 6));
     assert_eq!(*draft.lock().unwrap(), "typed by hand", "a hand-edited draft was overwritten");
-}
-
-/// Starting a fleet has to land on that fleet, loaded. It set the page and asked for nothing, so
-/// the view sat on "Loading the fleet." until the FC opened it again from the list.
-#[test]
-fn uitest_starting_a_fleet_opens_it() {
-    use crate::fleets::state::Page;
-    harness::scratch_profile();
-    let ctx = egui::Context::default();
-    let mut a = crate::app::SpaiApp::build(&ctx, true);
-    a.settings.fleet_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-    fixtures::seed_fleet_state(&a);
-    fixtures::open_fleet_start(&a);
-    {
-        // The fixture's FC already leads an active fleet, which the double-track guard refuses.
-        let mut st = a.fleet_state_for_test().lock().unwrap();
-        st.active_strat.put(Vec::new());
-        st.active_pct.put(Vec::new());
-        assert!(st.start_request().is_some(), "the fixture form cannot start a fleet");
-    }
-    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start: true, ..Default::default() });
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        a.fleet_collect_for_test();
-        let st = a.fleet_state_for_test().lock().unwrap();
-        if let Page::Tracking(id) = &st.page {
-            if let Some(open) = st.open.value.as_ref() {
-                assert_eq!(open.fleet.id, *id, "a different fleet is on screen");
-                return;
-            }
-        }
-        drop(st);
-        assert!(std::time::Instant::now() < deadline, "the started fleet never loaded");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
 }
 
 /// "Join comms" is for someone else's fleet. On a fleet bossed by one of the account's own
@@ -8369,7 +8020,6 @@ fn uitest_join_comms_is_not_offered_on_your_own_fleet() {
             let a = app.get_or_insert_with(|| {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
                 a.settings.fleet_enabled = true;
-                a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
                 a.view = View::Fleet;
                 fixtures::seed_fleet_state(&a);
                 fixtures::open_first_fleet(&a);
@@ -8418,7 +8068,6 @@ fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
         let a = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
-            a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
             a.view = View::Fleet;
             a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
             fixtures::seed_fleet_state(&a);
@@ -8442,33 +8091,6 @@ fn uitest_the_off_doctrine_clock_runs_between_snapshots() {
         h.query_all_by_label("just seen").count() == 0,
         "the clock did not move without a new snapshot"
     );
-}
-
-/// Typing a name sends one search, for what was typed last, once the typing pauses. It sent one
-/// per keystroke, each on its own thread.
-#[test]
-fn uitest_a_name_search_waits_for_the_typing_to_pause() {
-    use crate::app::fleet_ui::FormAct;
-    harness::scratch_profile();
-    let ctx = egui::Context::default();
-    let mut a = crate::app::SpaiApp::build(&ctx, true);
-    a.settings.fleet_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-    fixtures::seed_fleet_state(&a);
-    for typed in ["amr", "amry", "amryu", "amryu a", "amryu al"] {
-        a.fleet_apply_form_for_test(FormAct {
-            search_character: Some(typed.to_owned()),
-            ..Default::default()
-        });
-    }
-    assert_eq!(a.fleet_search_pending_for_test().as_deref(), Some("amryu al"));
-    assert!(a.fleet_state_for_test().lock().unwrap().found_characters.loading, "no looking shown");
-    // Nothing goes out before the pause is up.
-    a.fleet_search_poll();
-    assert!(a.fleet_search_pending_for_test().is_some(), "sent before the typing paused");
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    a.fleet_search_poll();
-    assert!(a.fleet_search_pending_for_test().is_none(), "never sent once the typing paused");
 }
 
 /// Jump range and Ansiblex zones both tint the system dots, so turning one on turns the other off.
@@ -9578,49 +9200,6 @@ fn docking_the_map_leaves_overlay_mode() {
     assert!(!a.map_overlay_mode && !a.map_popped);
 }
 
-/// Track always waits for a boss check asked after the click: a passing answer from before it
-/// can be a minute old, and ESI names the last fleet for a while after a fleet change. An ESI
-/// that has not caught up, or answers 500, is retried until it passes.
-#[test]
-fn track_waits_for_a_fresh_check_and_for_esi_to_catch_up() {
-    use crate::fleets::model::{BossCheck, EsiFleet};
-    use crate::fleets::state::Outcome;
-    harness::scratch_profile();
-    let ctx = egui::Context::default();
-    let mut a = crate::app::SpaiApp::build(&ctx, true);
-    a.settings.fleet_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-    a.settings.fleet_presets = fixtures::fleet_presets();
-    fixtures::seed_fleet_state(&a);
-    fixtures::open_fleet_start(&a);
-    let boss = BossCheck { is_fleet_boss: true, ..BossCheck::default() };
-    let fc = {
-        let mut st = a.fleet_state_for_test().lock().unwrap();
-        st.active_strat.put(Vec::new());
-        st.active_pct.put(Vec::new());
-        assert!(st.missing().is_empty(), "the fixture's form is complete: {:?}", st.missing());
-        let fc = st.fc().unwrap().0;
-        // Passing, but from before the click.
-        st.apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi: EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(true) } });
-        fc
-    };
-    let answer = |a: &mut crate::app::SpaiApp, esi: EsiFleet| {
-        a.fleet_state_for_test().lock().unwrap().apply(Outcome::Boss { character_id: fc, check: boss.clone(), esi });
-        a.fleet_track_tick(&ctx);
-    };
-    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { track_wait: true, ..Default::default() });
-    a.fleet_track_tick(&ctx);
-    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "started on an answer from before the click");
-
-    answer(&mut a, EsiFleet::InFleet { fleet_id: 1, boss_id: fc, exists: Some(false) });
-    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "ESI had not caught up");
-    answer(&mut a, EsiFleet::Failed("HTTP 500".into()));
-    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "ESI answered 500");
-    answer(&mut a, EsiFleet::InFleet { fleet_id: 2, boss_id: fc, exists: Some(true) });
-    let st = a.fleet_state_for_test().lock().unwrap();
-    assert!(st.starting && !st.track_waiting, "ESI caught up, so it starts and stops waiting");
-}
-
 /// A wait that has not passed after two minutes gives up and says so; Track anyway is still there.
 #[test]
 fn track_gives_up_after_two_minutes() {
@@ -9634,38 +9213,6 @@ fn track_gives_up_after_two_minutes() {
     assert!(!st.track_expired, "a new wait clears the old timeout");
 }
 
-/// Track anyway starts the fleet whatever the boss checks say and even with the FC already boss
-/// of a tracked fleet: the checks can be wrong, and the FC decides.
-#[test]
-fn track_anyway_skips_every_check() {
-    harness::scratch_profile();
-    let ctx = egui::Context::default();
-    let mut a = crate::app::SpaiApp::build(&ctx, true);
-    a.settings.fleet_enabled = true;
-    a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-    a.settings.fleet_presets = fixtures::fleet_presets();
-    fixtures::seed_fleet_state(&a);
-    fixtures::open_fleet_start(&a);
-    {
-        let mut st = a.fleet_state_for_test().lock().unwrap();
-        let fc = st.fc().unwrap().0;
-        st.boss = Some((fc, crate::fleets::model::BossCheck::default()));
-        st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::NotInFleet));
-        assert!(!st.boss_ready());
-        assert!(st.already_tracking().is_some(), "the spoof's active fleets are led by this FC");
-    }
-    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start: true, ..Default::default() });
-    assert!(!a.fleet_state_for_test().lock().unwrap().starting, "a plain start still minds the guard");
-    // In the middle of a wait for the checks, too.
-    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { track_wait: true, ..Default::default() });
-    assert!(a.fleet_state_for_test().lock().unwrap().track_waiting);
-    a.fleet_apply_form_for_test(crate::app::fleet_ui::FormAct { start_anyway: true, ..Default::default() });
-    let st = a.fleet_state_for_test().lock().unwrap();
-    assert!(st.starting, "track anyway did not start");
-    assert!(!st.track_waiting, "the wait kept running after track anyway");
-    assert!(st.last_start.is_some(), "the request is kept for a re-track");
-}
-
 /// A fleet that failed to load offers a way out rather than "No fleet open."
 #[test]
 fn uitest_a_fleet_that_failed_to_load_offers_a_way_out() {
@@ -9673,7 +9220,7 @@ fn uitest_a_fleet_that_failed_to_load_offers_a_way_out() {
     let mut scene = fleet_broken_scene("fleet_broken_test", [1100.0, 640.0]);
     let mut h = harness::build(&mut scene, false);
     h.run_steps(3);
-    for want in ["The dashboard could not load this fleet.", "ESI still names a fleet that no longer exists"] {
+    for want in ["This fleet could not be loaded.", "ESI still names a fleet that no longer exists"] {
         assert!(h.query_by_label_contains(want).is_some(), "missing {want:?}");
     }
     for button in ["Retry", "Close it and track again", "Close fleet"] {
@@ -9688,7 +9235,7 @@ fn a_form_without_doctrine_or_tags_says_what_is_missing() {
     let mut st = crate::fleets::FleetState::default();
     st.draft.form.name = "Home defence".into();
     let m = st.missing();
-    for want in ["a doctrine", "a formup location", "a comms channel", "a primary tag", "a secondary tag"] {
+    for want in ["a doctrine", "a formup location", "a comms channel"] {
         assert!(m.contains(&want), "{want} in {m:?}");
     }
     assert!(!m.contains(&"a fleet name"));
@@ -10195,7 +9742,7 @@ fn intel_feed_scene_with(name: &'static str, reports: Vec<crate::intel::IntelRep
 
 #[test]
 fn uitest_the_intel_feed_sorts_by_jumps_and_hides_what_is_outdated() {
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::Queryable as _;
     // 319-3D one gate away, 7-K5EL two and newest, Jita out of reach and an hour old.
     let old = crate::intel::IntelReport { received: crate::clock::utc().timestamp() - 3600, ..fixtures::intel_beyond_the_gates() };
     let reports = vec![fixtures::intel_next_door(), fixtures::intel_across_the_bridge(), old];

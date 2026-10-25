@@ -25,16 +25,12 @@ std::thread_local! {
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     Main,
-    FleetLogin,
 }
 
 impl Role {
     fn file_name(self) -> &'static str {
         match self {
-            // Both processes run `main` and install the same hook, so one shared file would race
-            // each other's rotation.
             Role::Main => "crash.log",
-            Role::FleetLogin => "crash-fleet-login.log",
         }
     }
 }

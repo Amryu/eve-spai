@@ -44,6 +44,8 @@ pub struct RescueRecord {
     #[serde(default)]
     pub comms: bool,
     #[serde(default)]
+    pub esi_invited: bool,
+    #[serde(default)]
     pub resolved_at: Option<i64>,
 }
 
@@ -144,6 +146,8 @@ pub struct PingActions {
     pub command_comms_op: Option<u8>,
     pub coord_pinged: bool,
     pub invited_op: Option<u8>,
+    /// The fleet the capital and cyno were invited into through ESI, once per fleet.
+    pub esi_invited: Option<i64>,
 }
 
 impl PingActions {
@@ -330,9 +334,9 @@ impl RescueState {
     pub fn sync_history(&mut self) {
         for r in self.history.iter_mut() {
             let Some(a) = r.seq.and_then(|s| self.actions.get(&s)) else { continue };
-            let (coord, invited, comms) = (a.coord_pinged, a.invited_op.is_some(), a.command_comms_op.is_some());
-            if (r.coord_pinged, r.invited, r.comms) != (coord, invited, comms) {
-                (r.coord_pinged, r.invited, r.comms) = (coord, invited, comms);
+            let (coord, invited, comms, esi) = (a.coord_pinged, a.invited_op.is_some(), a.command_comms_op.is_some(), a.esi_invited.is_some());
+            if (r.coord_pinged, r.invited, r.comms, r.esi_invited) != (coord, invited, comms, esi) {
+                (r.coord_pinged, r.invited, r.comms, r.esi_invited) = (coord, invited, comms, esi);
                 self.history_dirty = true;
             }
         }

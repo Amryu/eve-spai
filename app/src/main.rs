@@ -68,6 +68,7 @@ mod procstat;
 mod push;
 mod rats;
 mod rescue;
+mod rescuee;
 mod routeforce;
 mod scanroute;
 mod sde;
@@ -239,24 +240,13 @@ fn main() -> eframe::Result<()> {
         }
         return Ok(());
     }
-    // Installed per role, because both processes run this function and would otherwise append to
-    // one crash.log, racing each other's rotation.
-    let fleet_login_child =
-        std::env::args().any(|a| a == crate::fleets::login::FLAG);
-    crashlog::install(if fleet_login_child { crashlog::Role::FleetLogin } else { crashlog::Role::Main });
+    crashlog::install(crashlog::Role::Main);
     memtrim::spawn_periodic();
-
-    // The sign-in webview needs a GTK main loop, which cannot share a process with eframe's winit
-    // one. Before the single-instance guard, or the child would block behind the parent that
-    // spawned it.
-    if fleet_login_child {
-        return crate::fleets::login::run_child();
-    }
 
     // The elevated helper: swap the binary with admin rights, then exit. No window, no lock. Its exit
     // code tells the parent whether the swap landed.
-    if let Some(url) = update::apply_update_arg() {
-        match update::download_and_replace(&url, None) {
+    if let Some((file, sha256)) = update::apply_update_arg() {
+        match update::apply_downloaded(&file, &sha256) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 eprintln!("[update] elevated swap failed: {e:#}");

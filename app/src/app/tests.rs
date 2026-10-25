@@ -1780,6 +1780,7 @@ mod jabber_forget_tests {
                 body: "hi".to_owned(),
                 time: 0,
                 outgoing: false,
+                ..Default::default()
             }],
         );
     }
@@ -1988,7 +1989,6 @@ mod jabber_rescue_room_tests {
         let mut a = SpaiApp::build(&ctx, true);
         a.settings.fc_rescue_enabled = rescue_on;
         a.settings.fleet_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
         (ctx, a)
     }
 
@@ -2409,7 +2409,6 @@ mod jabber_force_join_tests {
         let (_ctx, mut a) = app();
         a.settings.fc_rescue_enabled = true;
         a.settings.fleet_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
         let rescue = a.jabber_rescue_rooms();
         a.jabber_reconcile(&frame(&[]));
         // Held open by the pin, and already recorded, so a later join is not "first sight".
@@ -3456,7 +3455,6 @@ mod rescue_route_tests {
         let mut a = SpaiApp::build(&ctx, true);
         a.settings.fleet_enabled = true;
         a.settings.fc_rescue_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
         a
     }
 
@@ -3595,47 +3593,6 @@ fn the_app_keeps_text_selection_across_its_windows() {
 /// The rescue's dashboard ping names the FC and the comms, both of which only exist once the
 /// sign-in and the channel table have loaded. A preview asked before that named neither and was
 /// kept until the preset or op changed.
-mod rescue_preview_tests {
-    use super::*;
-
-    #[test]
-    fn the_rescue_preview_is_asked_again_once_fc_and_comms_are_known() {
-        crate::uitest::harness::scratch_profile();
-        let ctx = egui::Context::default();
-        let mut a = SpaiApp::build(&ctx, true);
-        a.settings.fc_rescue_enabled = true;
-        a.settings.fleet_enabled = true;
-        a.settings.fleet_unlock = Some(crate::settings::FleetUnlock { verified_at: crate::clock::utc().timestamp(), command_group: "SC".into() });
-        a.settings.fleet_presets = crate::uitest::fixtures::rescue_presets();
-        a.rescue.lock().unwrap().op_channel = 3;
-
-        // Not signed in yet: nothing to ask for.
-        a.rescue_preview_poll();
-        assert_eq!(a.fleet_gen.rescue, 0, "asked before there was an FC to name");
-
-        crate::uitest::fixtures::seed_fleet_state(&a);
-        a.fleet.lock().unwrap().seed.mumble_channels.clear();
-        a.rescue_preview_poll();
-        assert_eq!(a.fleet_gen.rescue, 1);
-
-        // The channel table lands: Op 3 now has a channel, and the ping has to name it.
-        a.fleet.lock().unwrap().seed.mumble_channels = (1..=12)
-            .map(|n| crate::fleets::model::ChannelItem {
-                id: crate::fleets::model::ChannelId(n),
-                name: format!("Op {n}"),
-                is_in_use: false,
-            })
-            .collect();
-        a.rescue_preview_poll();
-        assert_eq!(a.fleet_gen.rescue, 2, "the comms channel arrived and nothing asked again");
-
-        // Nothing changed: no second request on the next frame.
-        a.fleet.lock().unwrap().rescue_preview = Some(crate::fleets::model::PingPreview { ping: "x".into(), motd: String::new() });
-        a.rescue_preview_poll();
-        assert_eq!(a.fleet_gen.rescue, 2);
-    }
-}
-
 /// Jump-ahead plans on the real universe. Needs a copy of a data directory with the SDE loaded:
 /// `SPAI_REAL_DATA_DIR=<copy> cargo test --bin eve-spai real_jump_ahead -- --ignored --nocapture`.
 /// Opens the copy, so the live database is never written.

@@ -127,12 +127,27 @@ fn classify(e: xmpp::tokio_xmpp::Error) -> Preflight {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ChatMsg {
     pub from: String,
     pub body: String,
     pub time: i64,
     pub outgoing: bool,
+    /// Where one of ours stands: always `Sent` for anything received.
+    pub delivery: Delivery,
+    /// The stanza id ours went out under, which an error reply names.
+    pub id: Option<String>,
+}
+
+/// How far a message of ours got.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Delivery {
+    #[default]
+    Sent,
+    /// Waiting for a connection, or for the room to echo it back.
+    Sending,
+    /// Refused or never confirmed, with the reason.
+    Failed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -206,10 +221,23 @@ pub enum Cmd {
 
 /// Reconnect backoff in seconds: fast at first, then settle at five minutes.
 const RECONNECT_BACKOFF: &[u64] = &[2, 5, 10, 20, 30, 60, 120, 300];
-/// Silence after which we probe the server with a XEP-0199 self-ping.
-const PROBE_IDLE: Duration = Duration::from_secs(25);
-/// Silence after which the session counts as dead, probe answered or not.
+/// Silence after which the session counts as dead, keepalive answered or not.
 const DEAD_AFTER: Duration = Duration::from_secs(60);
+/// How often the server is pinged (XEP-0199), whatever else arrives: the answer is what proves our
+/// side still gets through, which incoming traffic alone never does.
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(30);
+/// No answer to a keepalive within this long ends the session.
+const KEEPALIVE_WAIT: Duration = Duration::from_secs(20);
+/// The longest one stanza may take to go out. The library waits until it is written, and while it
+/// redials that is as long as the outage, holding up everything else in the session.
+const SEND_TIMEOUT: Duration = Duration::from_secs(15);
+/// After coming online, how long queued messages wait for the rooms to take us back.
+const JOIN_SETTLE: Duration = Duration::from_secs(10);
+/// A message to a room not echoed back within this long did not arrive.
+const ECHO_WAIT: Duration = Duration::from_secs(30);
+/// The priority this client announces, above the usual 0 or 1 of other clients on the account, so
+/// messages to the account rather than to one client (DMs, the ping bot) come here.
+const PRIORITY: i8 = 10;
 
 /// How often each room is asked whether we still hold our seat in it (XEP-0410). A room service
 /// restarted behind a live connection drops everyone without a word, and nothing else notices.
@@ -254,6 +282,98 @@ enum SessionEnd {
     Disabled,
     /// Connection lost; the reason is shown while backing off.
     Dropped(String),
+    /// The library reconnected by itself under a fresh stream but kept its old idea of which rooms
+    /// we are in, so it would rejoin none of them: start over with a new client at once.
+    Restart,
+}
+
+/// What waits for the session to be ready, in the order the user asked for it.
+enum Job {
+    Msg { key: String, body: String, id: String, time: i64, kind: MsgKind },
+    Cmd(Cmd),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MsgKind {
+    Direct,
+    Room,
+    /// To one room occupant, through the room.
+    RoomPrivate,
+}
+
+/// What outlives a session: what is still to send, what a room has yet to echo, and the status
+/// the user picked.
+struct Link {
+    pending: std::collections::VecDeque<Job>,
+    echoes: Vec<(String, Instant)>,
+    presence: (Presence, String),
+}
+
+/// A command turned into a job; a message shows in its conversation as sending from now on.
+fn accept(state: &SharedJabber, cmd: Cmd) -> Option<Job> {
+    let now = crate::clock::utc().timestamp();
+    match cmd {
+        Cmd::Send { to, body } => {
+            let id = state.lock().unwrap().queue_outgoing(&to, &body, now);
+            let kind = if to.contains('/') { MsgKind::RoomPrivate } else { MsgKind::Direct };
+            Some(Job::Msg { key: to, body, id, time: now, kind })
+        }
+        Cmd::SendRoom { room, body } => {
+            let id = state.lock().unwrap().queue_outgoing(&room, &body, now);
+            Some(Job::Msg { key: room, body, id, time: now, kind: MsgKind::Room })
+        }
+        Cmd::RetryNow => None,
+        other => Some(Job::Cmd(other)),
+    }
+}
+
+/// The stanza a message goes out as, under its own id so an error reply can be traced to it.
+fn message_stanza(kind: MsgKind, key: &str, body: &str, id: &str) -> Option<xmpp::parsers::message::Message> {
+    use xmpp::parsers::message::{Id, Lang, Message, MessageType};
+    let mut m = match kind {
+        MsgKind::Direct | MsgKind::Room => Message::new(Some(key.parse::<xmpp::jid::BareJid>().ok()?.into())),
+        MsgKind::RoomPrivate => Message::new(Some(key.parse::<xmpp::jid::FullJid>().ok()?.into())).with_payload(xmpp::parsers::muc::user::MucUser::new()),
+    };
+    m.type_ = if kind == MsgKind::Room { MessageType::Groupchat } else { MessageType::Chat };
+    m.bodies.insert(Lang::default(), body.to_owned());
+    m.id = Some(Id(id.to_owned()));
+    Some(m)
+}
+
+/// Our status: to the server with our priority, or to one room.
+fn status_stanza(show: Presence, status: &str, to: Option<xmpp::jid::Jid>) -> xmpp::parsers::presence::Presence {
+    use xmpp::parsers::presence::{Presence as Pres, Show, Type};
+    let (ty, sh) = match show {
+        Presence::Offline => (Type::Unavailable, None),
+        Presence::Online => (Type::None, None),
+        Presence::Away => (Type::None, Some(Show::Away)),
+        Presence::Xa => (Type::None, Some(Show::Xa)),
+        Presence::Dnd => (Type::None, Some(Show::Dnd)),
+    };
+    let mut pres = Pres::new(ty);
+    pres.show = sh;
+    if !status.trim().is_empty() {
+        pres.set_status(String::new(), status.to_owned());
+    }
+    match to {
+        Some(to) => pres.with_to(to),
+        None => {
+            pres.priority = xmpp::parsers::presence::Priority(PRIORITY);
+            pres
+        }
+    }
+}
+
+/// Sends with a deadline. False when it did not go out in time or the stream refused it.
+async fn send_timed(agent: &mut xmpp::Agent, st: impl Into<xmpp::tokio_xmpp::Stanza>) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, agent.send_stanza(st)).await, Ok(Ok(_)))
+}
+
+/// Joins a room, telling the library to forget any idea that we are already in it: after a room
+/// dropped us it still thinks so, and would otherwise send nothing.
+async fn join_timed(agent: &mut xmpp::Agent, room: &str) -> bool {
+    let Ok(jid) = room.parse::<xmpp::jid::BareJid>() else { return true };
+    tokio::time::timeout(SEND_TIMEOUT, agent.join_room(xmpp::muc::room::JoinRoomSettings::new(jid).with_resync())).await.is_ok()
 }
 
 #[derive(Clone, Default)]
@@ -341,6 +461,112 @@ pub struct JabberState {
     /// Conversations a DM just came in on, drained by the UI to open them.
     pub dm_arrived: Vec<String>,
     pub notify_cfg: JabberNotifyCfg,
+    /// Rooms that put us out (kicked, banned, membership taken away): never rejoined by themselves.
+    pub rooms_removed: std::collections::BTreeSet<String>,
+    /// Rooms that dropped us for any other reason (a restart, a shutdown), drained by the session
+    /// to rejoin.
+    pub rooms_lost: Vec<String>,
+    /// For the ids of our outgoing messages.
+    pub out_seq: u64,
+}
+
+impl JabberState {
+    /// One of ours on its way: shown at once as sending, under the id it will go out with.
+    pub(crate) fn queue_outgoing(&mut self, key: &str, body: &str, now: i64) -> String {
+        self.out_seq += 1;
+        let id = format!("spai-msg-{}-{}", now, self.out_seq);
+        self.chats.entry(key.to_owned()).or_default().push(ChatMsg {
+            from: "me".to_owned(),
+            body: body.to_owned(),
+            time: now,
+            outgoing: true,
+            delivery: Delivery::Sending,
+            id: Some(id.clone()),
+        });
+        id
+    }
+
+    fn outgoing_mut(&mut self, id: &str) -> Option<&mut ChatMsg> {
+        self.chats.values_mut().flat_map(|c| c.iter_mut()).find(|m| m.outgoing && m.id.as_deref() == Some(id))
+    }
+
+    /// Handed to the server. A room's own echo is what confirms one sent there.
+    pub(crate) fn mark_sent(&mut self, id: &str) {
+        if let Some(m) = self.outgoing_mut(id) {
+            m.delivery = Delivery::Sent;
+        }
+    }
+
+    /// An error reply or a confirmation that never came. False when no message of ours has the id.
+    pub(crate) fn fail_outgoing(&mut self, id: &str, reason: &str) -> bool {
+        match self.outgoing_mut(id) {
+            Some(m) if m.delivery != Delivery::Sent || m.id.is_some() => {
+                m.delivery = Delivery::Failed(reason.to_owned());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the one sent as `id` still waits for its room's echo.
+    pub(crate) fn still_sending(&self, id: &str) -> bool {
+        self.chats.values().flat_map(|c| c.iter()).any(|m| m.outgoing && m.id.as_deref() == Some(id) && m.delivery == Delivery::Sending)
+    }
+
+    /// The room echoed one of ours back: the echo takes the place of what was shown while sending.
+    pub(crate) fn take_room_echo(&mut self, room: &str, body: &str) -> bool {
+        let Some(conv) = self.chats.get_mut(room) else { return false };
+        match conv.iter().position(|m| m.outgoing && m.delivery == Delivery::Sending && m.body == body) {
+            Some(i) => {
+                conv.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Whether a room's self-presence leaving us out was the room's decision about us (kick, ban,
+/// membership removed), which rejoining would only undo, rather than the room going away.
+pub(crate) fn put_out_of_room(p: &xmpp::parsers::presence::Presence) -> Option<bool> {
+    use xmpp::parsers::muc::user::{MucUser, Status};
+    if p.type_ != xmpp::parsers::presence::Type::Unavailable {
+        return None;
+    }
+    let muc = p.payloads.iter().find_map(|e| MucUser::try_from(e.clone()).ok())?;
+    if !muc.status.contains(&Status::SelfPresence) {
+        return None;
+    }
+    Some(muc.status.iter().any(|s| matches!(s, Status::Banned | Status::Kicked | Status::RemovalFromRoom | Status::ConfigMembersOnly)))
+}
+
+/// The id our server keepalive goes out under; any answer to it proves both directions work.
+const KEEPALIVE_ID: &str = "spai-keepalive";
+
+pub(crate) fn keepalive_answer(iq: &xmpp::parsers::iq::Iq) -> bool {
+    use xmpp::parsers::iq::IqPayload;
+    iq.id().starts_with(KEEPALIVE_ID) && matches!(iq.clone().split().1, IqPayload::Result(_) | IqPayload::Error(_))
+}
+
+/// An error reply to one of ours: its id and why, in words.
+pub(crate) fn refused(msg: &xmpp::parsers::message::Message) -> Option<(String, String)> {
+    use xmpp::parsers::stanza_error::{DefinedCondition as C, StanzaError};
+    if msg.type_ != xmpp::parsers::message::MessageType::Error {
+        return None;
+    }
+    let id = msg.id.as_ref()?.0.clone();
+    let err = msg.payloads.iter().find_map(|e| StanzaError::try_from(e.clone()).ok());
+    let why = match err.as_ref().map(|e| &e.defined_condition) {
+        Some(C::NotAcceptable | C::ItemNotFound | C::NotAllowed) => spai_ui::tr!("not in the room").to_owned(),
+        Some(C::Forbidden) => spai_ui::tr!("not allowed to speak there").to_owned(),
+        Some(C::ServiceUnavailable | C::RecipientUnavailable) => spai_ui::tr!("the recipient is not reachable").to_owned(),
+        Some(C::PolicyViolation | C::ResourceConstraint) => spai_ui::tr!("too many messages, slow down").to_owned(),
+        Some(C::RemoteServerNotFound | C::RemoteServerTimeout) => spai_ui::tr!("their server is not reachable").to_owned(),
+        Some(other) => spai_ui::trf!("refused ({why})", why = format!("{other:?}")),
+        None => spai_ui::tr!("refused").to_owned(),
+    };
+    let text = err.and_then(|e| e.texts.values().next().cloned()).filter(|t| !t.trim().is_empty());
+    Some((id, text.map_or(why.clone(), |t| format!("{why}: {t}"))))
 }
 
 fn is_muted(muted: &std::collections::BTreeMap<String, i64>, key: &str) -> bool {
@@ -509,14 +735,15 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
     ctx.request_repaint();
 }
 
-/// Joins `room` again after a seat check found us gone from it.
-async fn rejoin(agent: &mut xmpp::Agent, state: &SharedJabber, room: &str) {
-    if state.lock().unwrap().rooms_left.contains(room) {
-        return;
+/// Joins `room` again after a seat check found us gone from it. False when the join could not go out.
+async fn rejoin(agent: &mut xmpp::Agent, state: &SharedJabber, room: &str) -> bool {
+    {
+        let s = state.lock().unwrap();
+        if s.rooms_left.contains(room) || s.rooms_removed.contains(room) {
+            return true;
+        }
     }
-    if let Ok(jid) = room.parse::<xmpp::jid::BareJid>() {
-        agent.join_room(xmpp::muc::room::JoinRoomSettings::new(jid)).await;
-    }
+    join_timed(agent, room).await
 }
 
 /// A room whose service is down shows struck through until it answers and we are back in.
@@ -532,6 +759,7 @@ pub(crate) fn seat_unreachable(state: &SharedJabber, room: &str) {
 pub(crate) fn note_room_joined(state: &SharedJabber, room: &str) {
     let mut s = state.lock().unwrap();
     s.rooms_inaccessible.remove(room);
+    s.rooms_removed.remove(room);
     s.rooms_left.remove(room);
     s.rooms.insert(room.to_owned());
 }
@@ -575,7 +803,7 @@ pub(crate) fn receive_direct(
     push_msg(
         state,
         key,
-        ChatMsg { from: key.to_owned(), body, time: stamp, outgoing: false },
+        ChatMsg { from: key.to_owned(), body, time: stamp, outgoing: false, ..Default::default() },
         !delayed && !bot,
         false,
         store,
@@ -711,7 +939,9 @@ async fn run(
     // Join/leave commands seen during a session, applied to `joined` once it ends.
     let mut joined_edits: Vec<(String, bool)> = Vec::new();
     let mut attempt = 0usize;
+    let mut link = Link { pending: Default::default(), echoes: Vec::new(), presence: (Presence::Online, String::new()) };
 
+    async {
     loop {
         if !state.lock().unwrap().enabled {
             return;
@@ -795,6 +1025,7 @@ async fn run(
                     &my_nick,
                     &joined,
                     &mut joined_edits,
+                    &mut link,
                 )
                 .await;
 
@@ -810,9 +1041,22 @@ async fn run(
                     }
                 }
 
+                // Written to a room that will not echo across a new stream: not sent as far as we know.
+                for (id, _) in link.echoes.drain(..) {
+                    let mut s = state.lock().unwrap();
+                    if s.still_sending(&id) {
+                        s.fail_outgoing(&id, spai_ui::tr!("the connection dropped before the room confirmed it"));
+                    }
+                }
+
                 match end {
                     SessionEnd::Disabled => return,
                     SessionEnd::Dropped(msg) => msg,
+                    SessionEnd::Restart => {
+                        attempt = 0;
+                        state.lock().unwrap().connected = false;
+                        continue;
+                    }
                 }
             }
         };
@@ -852,17 +1096,140 @@ async fn run(
                     }
                     ctx.request_repaint();
                 }
-                Some(cmd) = rx.recv() => {
-                    if matches!(cmd, Cmd::RetryNow) {
-                        break;
+                // Kept for the next session, not dropped: a message written while reconnecting is
+                // still to be sent.
+                Some(cmd) = rx.recv() => match cmd {
+                    Cmd::RetryNow => break,
+                    Cmd::JoinRoom { room } => {
+                        state.lock().unwrap().rooms_left.remove(&room);
+                        joined.insert(room);
                     }
-                }
+                    Cmd::LeaveRoom { room } => {
+                        note_room_left(&state, &room);
+                        joined.remove(&room);
+                    }
+                    other => {
+                        if let Some(job) = accept(&state, other) {
+                            link.pending.push_back(job);
+                        }
+                        ctx.request_repaint();
+                    }
+                },
             }
+        }
+    }
+    }
+    .await;
+    // Jabber turned off or given up on: what never went out says so.
+    let mut s = state.lock().unwrap();
+    for job in link.pending.drain(..) {
+        if let Job::Msg { id, .. } = job {
+            s.fail_outgoing(&id, spai_ui::tr!("Jabber is not connected"));
         }
     }
 }
 
-/// One connected session. Returns when the user disables Jabber or the stream goes quiet.
+/// Runs a job. False when it could not go out, which ends the session with the job kept.
+#[allow(clippy::too_many_arguments)]
+async fn run_job(
+    agent: &mut xmpp::Agent,
+    state: &SharedJabber,
+    job: &Job,
+    link_presence: &mut (Presence, String),
+    echoes: &mut Vec<(String, Instant)>,
+    joined_edits: &mut Vec<(String, bool)>,
+    store: Option<&crate::store::Store>,
+    my_nick: &str,
+) -> bool {
+    use xmpp::jid::BareJid;
+    match job {
+        Job::Msg { key, body, id, time, kind } => {
+            let Some(st) = message_stanza(*kind, key, body, id) else {
+                state.lock().unwrap().fail_outgoing(id, spai_ui::tr!("not a valid address"));
+                return true;
+            };
+            if !send_timed(agent, st).await {
+                return false;
+            }
+            if *kind == MsgKind::Room {
+                // Confirmed by the room's echo, or failed when it never comes.
+                echoes.push((id.clone(), Instant::now()));
+            } else {
+                state.lock().unwrap().mark_sent(id);
+                if let Some(s) = store {
+                    s.add_chat(key, "me", body, *time, true);
+                }
+            }
+            true
+        }
+        Job::Cmd(Cmd::JoinRoom { room }) => {
+            state.lock().unwrap().rooms_left.remove(room);
+            if !join_timed(agent, room).await {
+                return false;
+            }
+            joined_edits.push((room.clone(), true));
+            true
+        }
+        Job::Cmd(Cmd::LeaveRoom { room }) => {
+            if let Ok(r) = room.parse::<BareJid>() {
+                let leave = agent.leave_room(xmpp::muc::room::LeaveRoomSettings::new(r));
+                if tokio::time::timeout(SEND_TIMEOUT, leave).await.is_err() {
+                    return false;
+                }
+                note_room_left(state, room);
+                joined_edits.push((room.clone(), false));
+            }
+            true
+        }
+        Job::Cmd(Cmd::SetPresence { show, status }) => {
+            *link_presence = (*show, status.clone());
+            if !send_timed(agent, status_stanza(*show, status, None)).await {
+                return false;
+            }
+            // A room only hears our status when told directly.
+            let rooms: Vec<String> = state.lock().unwrap().rooms.iter().cloned().collect();
+            for room in rooms {
+                if let Ok(to) = format!("{room}/{my_nick}").parse::<xmpp::jid::Jid>() {
+                    if !send_timed(agent, status_stanza(*show, status, Some(to))).await {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        Job::Cmd(Cmd::AddContact { jid }) => match jid.parse::<BareJid>() {
+            Ok(bare) => roster_set(agent, &bare, false).await && send_timed(agent, presence_to(xmpp::parsers::presence::Type::Subscribe, &bare)).await,
+            Err(_) => true,
+        },
+        Job::Cmd(Cmd::RemoveContact { jid }) => {
+            if let Ok(bare) = jid.parse::<BareJid>() {
+                if !roster_set(agent, &bare, true).await {
+                    return false;
+                }
+            }
+            state.lock().unwrap().sub_requests.remove(jid);
+            true
+        }
+        Job::Cmd(Cmd::AnswerRequest { jid, accept }) => {
+            use xmpp::parsers::presence::Type;
+            if let Ok(bare) = jid.parse::<BareJid>() {
+                let answer = if *accept { Type::Subscribed } else { Type::Unsubscribed };
+                if !send_timed(agent, presence_to(answer, &bare)).await {
+                    return false;
+                }
+                let theirs = state.lock().unwrap().roster.get(jid).is_some_and(|c| c.sub.theirs || c.sub.asked);
+                if *accept && !theirs && !(roster_set(agent, &bare, false).await && send_timed(agent, presence_to(Type::Subscribe, &bare)).await) {
+                    return false;
+                }
+            }
+            state.lock().unwrap().sub_requests.remove(jid);
+            true
+        }
+        Job::Cmd(Cmd::Send { .. } | Cmd::SendRoom { .. } | Cmd::RetryNow) => true,
+    }
+}
+
+/// One connected session. Returns when the user disables Jabber or the connection fails either way.
 #[allow(clippy::too_many_arguments)]
 async fn session(
     agent: &mut xmpp::Agent,
@@ -877,19 +1244,22 @@ async fn session(
     my_nick: &str,
     joined: &std::collections::BTreeSet<String>,
     joined_edits: &mut Vec<(String, bool)>,
+    link: &mut Link,
 ) -> SessionEnd {
-    use xmpp::jid::BareJid;
-    use xmpp::message::send::MessageSettings;
-    use xmpp::muc::room::{JoinRoomSettings, LeaveRoomSettings, RoomMessageSettings};
-
+    let me = bare.to_string();
     let mut last_inbound = Instant::now();
-    let mut probe_sent = false;
-    let mut online_once = false;
+    let mut online_at: Option<Instant> = None;
+    // Rooms asked for at login and not yet confirmed: queued messages wait for them, up to a point.
+    let mut awaiting: std::collections::BTreeSet<String> = Default::default();
     let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+    let mut keepalive_sent: Option<Instant> = None;
+    let mut next_keepalive = Instant::now();
+    let mut keepalive_seq = 0u64;
     // Seat checks sent and not yet answered, and rooms whose service was down at the last one.
     let mut seat_pending: std::collections::HashMap<String, Instant> = Default::default();
     let mut unreachable: std::collections::BTreeSet<String> = Default::default();
     let mut next_seat_check = Instant::now() + SEAT_CHECK;
+    let lost = |why: &str| SessionEnd::Dropped(why.to_owned());
 
     loop {
         if !state.lock().unwrap().enabled {
@@ -900,7 +1270,6 @@ async fn session(
             // roster reply); it does not mean the stream ended.
             events = agent.wait_for_events() => {
                 last_inbound = Instant::now();
-                probe_sent = false;
                 let mut urgent = false;
                 let mut background = false;
                 let mut came_online = false;
@@ -911,21 +1280,37 @@ async fn session(
                             seats.push(answer);
                             continue;
                         }
+                        if keepalive_answer(iq) {
+                            keepalive_sent = None;
+                            continue;
+                        }
                     }
-                    if handle_event(event, state, resolve, ping_shared, cmds, ctx, store, my_nick, &mut came_online) {
+                    if handle_event(event, state, resolve, ping_shared, cmds, ctx, store, my_nick, &me, &mut came_online) {
                         urgent = true;
                     } else {
                         background = true;
                     }
                 }
                 if came_online {
-                    online_once = true;
+                    if online_at.is_some() {
+                        eprintln!("[jabber] the stream came back on its own, starting over");
+                        return SessionEnd::Restart;
+                    }
+                    online_at = Some(Instant::now());
+                    next_keepalive = Instant::now() + KEEPALIVE_EVERY;
+                    // Our status and priority, and copies of what our other clients send and get.
+                    let (show, status) = link.presence.clone();
+                    let carbons = xmpp::parsers::iq::Iq::from_set("spai-carbons", xmpp::parsers::carbons::Enable);
+                    if !send_timed(agent, status_stanza(show, &status, None)).await || !send_timed(agent, carbons).await {
+                        return lost("Connection lost.");
+                    }
                     for r in joined {
-                        if let Ok(room) = r.parse::<BareJid>() {
-                            // Asked for by the app, so its RoomJoined is not a bookmark rejoin.
-                            state.lock().unwrap().rooms_left.remove(r.as_str());
-                            agent.join_room(JoinRoomSettings::new(room)).await;
+                        // Asked for by the app, so its RoomJoined is not a bookmark rejoin.
+                        state.lock().unwrap().rooms_left.remove(r.as_str());
+                        if !join_timed(agent, r).await {
+                            return lost("Connection lost.");
                         }
+                        awaiting.insert(r.clone());
                     }
                 }
                 for (room, seat) in seats {
@@ -938,7 +1323,9 @@ async fn session(
                         }
                         Seat::Lost => {
                             eprintln!("[jabber] no longer in {room}, rejoining");
-                            rejoin(agent, state, &room).await;
+                            if !rejoin(agent, state, &room).await {
+                                return lost("Connection lost.");
+                            }
                         }
                         Seat::Unreachable => {
                             if unreachable.insert(room.clone()) {
@@ -949,8 +1336,19 @@ async fn session(
                         }
                     }
                 }
-                if online_once && !state.lock().unwrap().connected {
-                    return SessionEnd::Dropped("Disconnected by the server.".to_owned());
+                // Rooms that dropped us without putting us out: asked again soon, rejoined when gone.
+                let dropped: Vec<String> = std::mem::take(&mut state.lock().unwrap().rooms_lost);
+                for room in dropped {
+                    eprintln!("[jabber] {room} dropped us, rejoining when it answers");
+                    unreachable.insert(room);
+                    next_seat_check = next_seat_check.min(Instant::now() + SEAT_RETRY);
+                }
+                {
+                    let s = state.lock().unwrap();
+                    awaiting.retain(|r| !s.rooms.contains(r) && !s.rooms_inaccessible.contains(r));
+                }
+                if online_at.is_some() && !state.lock().unwrap().connected {
+                    return lost("Disconnected by the server.");
                 }
                 if urgent {
                     ctx.request_repaint_after(Duration::from_millis(100));
@@ -959,26 +1357,46 @@ async fn session(
                 }
             }
             // tokio-xmpp swallows its own suspend/reconnect, so a dropped stream is invisible at this
-            // layer. Watch for silence instead and drive the reconnect ourselves.
+            // layer. Watch for silence and unanswered keepalives instead and drive the reconnect ourselves.
             _ = watchdog.tick() => {
-                let idle = last_inbound.elapsed();
-                if idle >= DEAD_AFTER {
-                    return SessionEnd::Dropped("Connection lost.".to_owned());
+                if last_inbound.elapsed() >= DEAD_AFTER {
+                    return lost("Connection lost.");
                 }
-                if online_once {
+                if online_at.is_some() {
                     let now = Instant::now();
+                    match keepalive_sent {
+                        Some(at) if now - at >= KEEPALIVE_WAIT => return lost("The server stopped answering."),
+                        Some(_) => {}
+                        None if now >= next_keepalive => {
+                            use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
+                            // XEP-0199 ping to the server itself: any reply, result or error, proves
+                            // the stream works both ways, and an IQ get must be answered.
+                            keepalive_seq += 1;
+                            if let Ok(to) = bare.domain().as_str().parse::<xmpp::jid::Jid>() {
+                                let iq = Iq::from_get(format!("{KEEPALIVE_ID}-{keepalive_seq}"), XmppPing).with_to(to);
+                                if !send_timed(agent, iq).await {
+                                    return lost("Connection lost.");
+                                }
+                                keepalive_sent = Some(now);
+                            }
+                            next_keepalive = now + KEEPALIVE_EVERY;
+                        }
+                        None => {}
+                    }
                     // Unanswered: whatever happened, being in the room again is the fix.
                     let silent: Vec<String> = seat_pending.iter().filter(|(_, at)| now - **at >= SEAT_WAIT).map(|(r, _)| r.clone()).collect();
                     for room in silent {
                         seat_pending.remove(&room);
                         eprintln!("[jabber] {room} did not answer a seat check, rejoining");
-                        rejoin(agent, state, &room).await;
+                        if !rejoin(agent, state, &room).await {
+                            return lost("Connection lost.");
+                        }
                     }
                     if now >= next_seat_check {
                         next_seat_check = now + if unreachable.is_empty() { SEAT_CHECK } else { SEAT_RETRY };
                         let rooms: std::collections::BTreeSet<String> = {
                             let s = state.lock().unwrap();
-                            s.rooms.iter().chain(&unreachable).filter(|r| !s.rooms_left.contains(*r)).cloned().collect()
+                            s.rooms.iter().chain(&unreachable).filter(|r| !s.rooms_left.contains(*r) && !s.rooms_removed.contains(*r)).cloned().collect()
                         };
                         for room in rooms {
                             if seat_pending.contains_key(&room) {
@@ -987,121 +1405,45 @@ async fn session(
                             use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
                             if let Ok(to) = format!("{room}/{my_nick}").parse::<xmpp::jid::Jid>() {
                                 let iq = Iq::from_get(format!("{SEAT_ID}{room}"), XmppPing).with_to(to);
-                                let _ = agent.send_stanza(iq).await;
+                                if !send_timed(agent, iq).await {
+                                    return lost("Connection lost.");
+                                }
                                 seat_pending.insert(room, now);
                             }
                         }
                     }
-                }
-                if idle >= PROBE_IDLE && !probe_sent {
-                    use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
-                    // XEP-0199 ping to the server itself: any reply, result or error, proves the
-                    // stream is alive, and an IQ get must be answered.
-                    if let Ok(to) = bare.domain().as_str().parse::<xmpp::jid::Jid>() {
-                        let iq = Iq::from_get("spai-keepalive", XmppPing).with_to(to);
-                        let _ = agent.send_stanza(iq).await;
-                    }
-                    probe_sent = true;
+                    // A room message never echoed back did not arrive.
+                    link.echoes.retain(|(id, at)| {
+                        if now - *at < ECHO_WAIT {
+                            return true;
+                        }
+                        let mut s = state.lock().unwrap();
+                        if s.still_sending(id) {
+                            s.fail_outgoing(id, spai_ui::tr!("the room never confirmed it"));
+                            ctx.request_repaint();
+                        }
+                        false
+                    });
                 }
             }
-            Some(cmd) = rx.recv() => match cmd {
-
-                Cmd::Send { to, body } => {
-                    let sent = match to.split_once('/') {
-                        // Back through the room it came from.
-                        Some((room, nick)) => match (room.parse::<BareJid>(), nick.parse::<xmpp::RoomNick>()) {
-                            (Ok(room), Ok(nick)) => {
-                                agent
-                                    .send_room_private_message(xmpp::muc::private_message::RoomPrivateMessageSettings::new(room, nick, &body))
-                                    .await;
-                                true
-                            }
-                            _ => false,
-                        },
-                        None => match to.parse::<BareJid>() {
-                            Ok(recipient) => {
-                                agent.send_message(MessageSettings { recipient, message: &body, lang: None }).await;
-                                true
-                            }
-                            Err(_) => false,
-                        },
-                    };
-                    if sent {
-                        let now = crate::clock::utc().timestamp();
-                        push_msg(
-                            &state,
-                            &to,
-                            ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
-                            false,
-                            false,
-                            store,
-                        );
-                        ctx.request_repaint();
-                    }
+            Some(cmd) = rx.recv() => {
+                if let Some(job) = accept(state, cmd) {
+                    link.pending.push_back(job);
                 }
-                // Room messages are echoed back by the MUC, so we don't push locally.
-                Cmd::SendRoom { room, body } => {
-                    if let Ok(r) = room.parse::<BareJid>() {
-                        agent.send_room_message(RoomMessageSettings::new(r, &body)).await;
-                    }
+                ctx.request_repaint();
+            }
+        }
+        // Queued work goes out once the session is online and its rooms are back, or have had their
+        // chance: a room message sent before rejoining comes from a stranger and is refused.
+        let ready = online_at.is_some_and(|t| awaiting.is_empty() || t.elapsed() >= JOIN_SETTLE);
+        if ready {
+            while let Some(job) = link.pending.pop_front() {
+                if !run_job(agent, state, &job, &mut link.presence, &mut link.echoes, joined_edits, store, my_nick).await {
+                    link.pending.push_front(job);
+                    return lost("Connection lost.");
                 }
-                Cmd::JoinRoom { room } => {
-                    if let Ok(r) = room.parse::<BareJid>() {
-                        agent.join_room(JoinRoomSettings::new(r)).await;
-                        state.lock().unwrap().rooms_left.remove(&room);
-                        joined_edits.push((room, true));
-                    }
-                }
-                Cmd::LeaveRoom { room } => {
-                    if let Ok(r) = room.parse::<BareJid>() {
-                        agent.leave_room(LeaveRoomSettings::new(r)).await;
-                        note_room_left(state, &room);
-                        joined_edits.push((room, false));
-                    }
-                }
-                Cmd::SetPresence { show, status } => {
-                    use xmpp::parsers::presence::{Presence as Pres, Show, Type};
-                    let (ty, sh) = match show {
-                        Presence::Offline => (Type::Unavailable, None),
-                        Presence::Online => (Type::None, None),
-                        Presence::Away => (Type::None, Some(Show::Away)),
-                        Presence::Xa => (Type::None, Some(Show::Xa)),
-                        Presence::Dnd => (Type::None, Some(Show::Dnd)),
-                    };
-                    let mut pres = Pres::new(ty);
-                    pres.show = sh;
-                    if !status.trim().is_empty() {
-                        pres.set_status(String::new(), status);
-                    }
-                    let _ = agent.send_stanza(pres).await;
-                }
-                Cmd::AddContact { jid } => {
-                    if let Ok(bare) = jid.parse::<BareJid>() {
-                        roster_set(agent, &bare, false).await;
-                        let _ = agent.send_stanza(presence_to(xmpp::parsers::presence::Type::Subscribe, &bare)).await;
-                    }
-                }
-                Cmd::RemoveContact { jid } => {
-                    if let Ok(bare) = jid.parse::<BareJid>() {
-                        roster_set(agent, &bare, true).await;
-                    }
-                    state.lock().unwrap().sub_requests.remove(&jid);
-                }
-                Cmd::AnswerRequest { jid, accept } => {
-                    use xmpp::parsers::presence::Type;
-                    if let Ok(bare) = jid.parse::<BareJid>() {
-                        let answer = if accept { Type::Subscribed } else { Type::Unsubscribed };
-                        let _ = agent.send_stanza(presence_to(answer, &bare)).await;
-                        let theirs = state.lock().unwrap().roster.get(&jid).is_some_and(|c| c.sub.theirs || c.sub.asked);
-                        if accept && !theirs {
-                            roster_set(agent, &bare, false).await;
-                            let _ = agent.send_stanza(presence_to(Type::Subscribe, &bare)).await;
-                        }
-                    }
-                    state.lock().unwrap().sub_requests.remove(&jid);
-                }
-                Cmd::RetryNow => {}
-            },
+                ctx.request_repaint();
+            }
         }
     }
 }
@@ -1111,7 +1453,7 @@ fn presence_to(ty: xmpp::parsers::presence::Type, to: &xmpp::jid::BareJid) -> xm
 }
 
 /// Adds `jid` to the server's contact list, or takes it off.
-async fn roster_set(agent: &mut xmpp::Agent, jid: &xmpp::jid::BareJid, remove: bool) {
+async fn roster_set(agent: &mut xmpp::Agent, jid: &xmpp::jid::BareJid, remove: bool) -> bool {
     use xmpp::parsers::iq::Iq;
     use xmpp::parsers::roster::{Ask, Item, Roster, Subscription};
     let item = Item {
@@ -1123,7 +1465,7 @@ async fn roster_set(agent: &mut xmpp::Agent, jid: &xmpp::jid::BareJid, remove: b
         approved: None,
     };
     let iq = Iq::from_set(format!("spai-roster-{jid}"), Roster { ver: None, items: vec![item] });
-    let _ = agent.send_stanza(iq).await;
+    send_timed(agent, iq).await
 }
 
 fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
@@ -1141,6 +1483,58 @@ fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A one-to-one message in: the ping bot's parsed into the feed, every one stored as a DM.
+#[allow(clippy::too_many_arguments)]
+fn on_chat(
+    state: &SharedJabber,
+    resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
+    ping_shared: &crate::app::SharedPingWindow,
+    ctx: &egui::Context,
+    store: Option<&crate::store::Store>,
+    key: String,
+    body: String,
+    stamp: i64,
+    delayed: bool,
+) {
+    let local = key.split('@').next().unwrap_or_default();
+    if local.eq_ignore_ascii_case(PING_SENDER) {
+        let parsed = crate::pings::parse_ping(stamp, &body, resolve);
+        if !parsed.is_empty() {
+            if let Some(store) = store {
+                for p in &parsed {
+                    if let Ok(json) = serde_json::to_string(p) {
+                        store.add_ping(p.timestamp(), &json);
+                    }
+                }
+            }
+            let fire = {
+                let mut s = state.lock().unwrap();
+                s.pings.extend(parsed);
+                let n = s.pings.len();
+                if n > 2000 {
+                    s.pings.drain(0..n - 2000);
+                }
+                if !delayed {
+                    s.pings_unread = true;
+                    s.pings_new = s.pings_new.saturating_add(1);
+                    s.notify.push((PING_FEED_KEY.to_owned(), true));
+                    s.pings.last().cloned().map(|p| (s.notify_cfg.clone(), p))
+                } else {
+                    None
+                }
+            };
+            if let Some((cfg, ping)) = fire {
+                fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping), None, None);
+                if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
+                    push_ping_window(ping_shared, ctx, &ping);
+                }
+            }
+        }
+    }
+    receive_direct(state, &key, body, stamp, delayed, store);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_event(
     event: xmpp::Event,
     state: &SharedJabber,
@@ -1150,6 +1544,7 @@ fn handle_event(
     ctx: &egui::Context,
     store: Option<&crate::store::Store>,
     my_nick: &str,
+    me: &str,
     came_online: &mut bool,
 ) -> bool {
     use xmpp::Event;
@@ -1208,6 +1603,10 @@ fn handle_event(
         }
         Event::Presence(p) => {
             use xmpp::parsers::presence::Type;
+            // Read before the library turns it into a plain RoomLeft, which says nothing of why.
+            if let (Some(true), Some(from)) = (put_out_of_room(&p), &p.from) {
+                state.lock().unwrap().rooms_removed.insert(from.to_bare().to_string());
+            }
             // Subscription traffic says nothing of anyone's status and must not mark them offline.
             match (p.type_.clone(), &p.from) {
                 (Type::Subscribe, Some(from)) => {
@@ -1243,50 +1642,10 @@ fn handle_event(
             // Offline/history messages carry a <delay/>. They are stored but not sounded or
             // badged, or the backlog of missed pings screeches on startup.
             let delayed = !time_info.delays.is_empty();
-            let stamp = time_info
-                .delays
-                .first()
-                .map(|d| d.stamp.0.timestamp())
-                .unwrap_or(now);
+            let stamp = time_info.delays.first().map(|d| d.stamp.0.timestamp()).unwrap_or(now);
             // Key by the bare JID (no /resource): outgoing DMs and presences use the bare form, and
             // the UI's DM list only surfaces conversations whose key is a valid bare JID.
-            let key = from.to_bare().to_string();
-            let local = key.split('@').next().unwrap_or_default();
-            if local.eq_ignore_ascii_case(PING_SENDER) {
-                let parsed = crate::pings::parse_ping(stamp, &body, resolve);
-                if !parsed.is_empty() {
-                    if let Some(store) = store {
-                        for p in &parsed {
-                            if let Ok(json) = serde_json::to_string(p) {
-                                store.add_ping(p.timestamp(), &json);
-                            }
-                        }
-                    }
-                    let fire = {
-                        let mut s = state.lock().unwrap();
-                        s.pings.extend(parsed);
-                        let n = s.pings.len();
-                        if n > 2000 {
-                            s.pings.drain(0..n - 2000);
-                        }
-                        if !delayed {
-                            s.pings_unread = true;
-                            s.pings_new = s.pings_new.saturating_add(1);
-                            s.notify.push((PING_FEED_KEY.to_owned(), true));
-                            s.pings.last().cloned().map(|p| (s.notify_cfg.clone(), p))
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some((cfg, ping)) = fire {
-                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping), None, None);
-                        if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
-                            push_ping_window(ping_shared, ctx, &ping);
-                        }
-                    }
-                }
-            }
-            receive_direct(state, &key, body, stamp, delayed, store);
+            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), body, stamp, delayed);
         }
         // An edit arrives as a message of its own; losing it would lose what was said.
         Event::ChatMessageCorrection(_, from, body, time_info) => {
@@ -1305,6 +1664,34 @@ fn handle_event(
         // The library handles bookmarks but not invites, so an invite is joined by hand. Both flavours
         // are idempotent on the agent side (a redundant join is warned about and dropped).
         Event::Message(msg) => {
+            if let Some((id, why)) = refused(&msg) {
+                eprintln!("[jabber] message refused: {why}");
+                state.lock().unwrap().fail_outgoing(&id, &why);
+                return true;
+            }
+            // Copies of what our other clients sent and received (XEP-0280), only ever from our
+            // own account: from anyone else it would be a forgery.
+            if msg.from.as_ref().is_some_and(|f| f.to_bare().as_str() == me) {
+                use xmpp::parsers::carbons::{Received, Sent};
+                for p in &msg.payloads {
+                    if let Ok(r) = Received::try_from(p.clone()) {
+                        let m = r.forwarded.message;
+                        if let (Some(from), Some((_, body))) = (m.from.as_ref(), m.get_best_body_cloned(vec![])) {
+                            let stamp = r.forwarded.delay.map(|d| d.stamp.0.timestamp()).unwrap_or(now);
+                            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), body, stamp, false);
+                        }
+                        return true;
+                    }
+                    if let Ok(sent) = Sent::try_from(p.clone()) {
+                        let m = sent.forwarded.message;
+                        if let (Some(to), Some((_, body))) = (m.to.as_ref(), m.get_best_body_cloned(vec![])) {
+                            let key = to.to_bare().to_string();
+                            push_msg(state, &key, ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true, ..Default::default() }, false, false, store);
+                        }
+                        return true;
+                    }
+                }
+            }
             if let Some(room) = invited_room(&msg) {
                 eprintln!("[jabber] invited to room: {room}");
                 let _ = cmds.send(Cmd::JoinRoom { room });
@@ -1329,7 +1716,11 @@ fn handle_event(
             let room = room.to_string();
             s.rooms.remove(&room);
             // Left/kicked while online: keep it in the channel list, struck-through, history intact.
-            s.rooms_inaccessible.insert(room);
+            s.rooms_inaccessible.insert(room.clone());
+            // A room that went away rather than putting us out is joined again once it answers.
+            if !s.rooms_left.contains(&room) && !s.rooms_removed.contains(&room) {
+                s.rooms_lost.push(room);
+            }
         }
         Event::RoomSubject(room, _who, subject, _) => {
             if !subject.trim().is_empty() {
@@ -1350,13 +1741,16 @@ fn handle_event(
             // Our own reflected message (MUC echoes it back under our nick): store it but never
             // notify/sound for it.
             let own = nick.eq_ignore_ascii_case(my_nick);
+            if own && !delayed {
+                state.lock().unwrap().take_room_echo(&room, &body);
+            }
             // Read before the body is stored: "he is safe" ends a rescue, so it is the one delve911
             // line that must not sound the siren.
             let stand_down = crate::rescue::is_safe_call(&body);
             push_msg(
                 state,
                 &room,
-                ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: own },
+                ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: own, ..Default::default() },
                 !delayed && !own,
                 !own,
                 store,
@@ -1428,6 +1822,7 @@ mod tests {
             &egui::Context::default(),
             None,
             "me",
+            "me@example.com",
             &mut online,
         );
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
@@ -1438,11 +1833,101 @@ mod tests {
         let ping: crate::app::SharedPingWindow = Default::default();
         let mut online = false;
         let resolve = |_: &str| None;
-        super::handle_event(ev, state, &resolve, &ping, &tx, &egui::Context::default(), None, "me", &mut online);
+        super::handle_event(ev, state, &resolve, &ping, &tx, &egui::Context::default(), None, "me", "me@example.com", &mut online);
     }
 
     fn presence(xml: &str) -> xmpp::Event {
         xmpp::Event::Presence(xml.parse::<xmpp::minidom::Element>().unwrap().try_into().unwrap())
+    }
+
+    fn message(xml: &str) -> xmpp::parsers::message::Message {
+        xml.parse::<xmpp::minidom::Element>().unwrap().try_into().unwrap()
+    }
+
+    fn delivery(state: &super::SharedJabber, key: &str) -> Vec<(String, super::Delivery)> {
+        state.lock().unwrap().chats.get(key).map(|c| c.iter().filter(|m| m.outgoing).map(|m| (m.body.clone(), m.delivery.clone())).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_message_shows_as_sending_until_sent_or_refused() {
+        use super::Delivery;
+        let state: super::SharedJabber = Default::default();
+        let dm = super::accept(&state, super::Cmd::Send { to: "friend@example.com".into(), body: "hi".into() }).unwrap();
+        let super::Job::Msg { id, kind, .. } = &dm else { panic!() };
+        assert_eq!(*kind, super::MsgKind::Direct);
+        assert_eq!(delivery(&state, "friend@example.com"), [("hi".to_owned(), Delivery::Sending)], "shown at once, even offline");
+        state.lock().unwrap().mark_sent(id);
+        assert_eq!(delivery(&state, "friend@example.com"), [("hi".to_owned(), Delivery::Sent)]);
+        let room = "scouts@conference.example.com";
+        let super::Job::Msg { id, .. } = super::accept(&state, super::Cmd::SendRoom { room: room.into(), body: "inc".into() }).unwrap() else { panic!() };
+        event(&state, xmpp::Event::Message(message(&format!("<message xmlns='jabber:client' type='error' id='{id}' from='{room}'><error type='auth'><forbidden xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></message>"))));
+        assert_eq!(delivery(&state, room), [("inc".to_owned(), Delivery::Failed("not allowed to speak there".into()))], "the room's error reply, in words");
+        assert!(super::accept(&state, super::Cmd::RetryNow).is_none());
+    }
+
+    #[test]
+    fn a_rooms_echo_takes_the_place_of_ours_while_sending() {
+        let state: super::SharedJabber = Default::default();
+        let room = "scouts@conference.example.com";
+        super::note_room_joined(&state, room);
+        super::accept(&state, super::Cmd::SendRoom { room: room.into(), body: "inc 3".into() });
+        let time = xmpp::delay::StanzaTimeInfo { received: chrono::Utc::now(), delays: vec![] };
+        event(&state, xmpp::Event::RoomMessage(None, room.parse().unwrap(), "me".parse().unwrap(), "inc 3".into(), time));
+        let msgs: Vec<_> = state.lock().unwrap().chats[room].iter().map(|m| (m.body.clone(), m.delivery.clone())).collect();
+        assert_eq!(msgs, [("inc 3".to_owned(), super::Delivery::Sent)], "one line, confirmed, not two");
+    }
+
+    #[test]
+    fn a_room_that_went_away_is_rejoined_but_one_that_put_us_out_is_not() {
+        let state: super::SharedJabber = Default::default();
+        let leave = |room: &str, code: u16| {
+            super::note_room_joined(&state, room);
+            event(&state, presence(&format!("<presence xmlns='jabber:client' from='{room}/me' type='unavailable'><x xmlns='http://jabber.org/protocol/muc#user'><item affiliation='none' role='none'/><status code='110'/><status code='{code}'/></x></presence>")));
+            event(&state, xmpp::Event::RoomLeft(room.parse().unwrap()));
+        };
+        leave("restarted@conference.example.com", 332);
+        leave("kicked@conference.example.com", 307);
+        leave("banned@conference.example.com", 301);
+        let s = state.lock().unwrap();
+        assert_eq!(s.rooms_lost, ["restarted@conference.example.com"], "a shutdown is rejoined");
+        assert!(s.rooms_removed.contains("kicked@conference.example.com") && s.rooms_removed.contains("banned@conference.example.com"));
+        assert!(s.rooms_inaccessible.len() == 3, "all three shown struck through meanwhile");
+    }
+
+    #[test]
+    fn copies_of_what_our_other_clients_get_and_send_arrive_here_and_forged_ones_do_not() {
+        let state: super::SharedJabber = Default::default();
+        let carbon = |from: &str, kind: &str, inner: &str| event(&state, xmpp::Event::Message(message(&format!("<message xmlns='jabber:client' from='{from}' to='me@example.com/spai'><{kind} xmlns='urn:xmpp:carbons:2'><forwarded xmlns='urn:xmpp:forward:0'>{inner}</forwarded></{kind}></message>"))));
+        carbon("me@example.com", "received", "<message xmlns='jabber:client' from='friend@example.com/x' to='me@example.com/other' type='chat'><body>hi there</body></message>");
+        carbon("me@example.com", "sent", "<message xmlns='jabber:client' from='me@example.com/other' to='friend@example.com' type='chat'><body>hello</body></message>");
+        carbon("mallory@example.com", "received", "<message xmlns='jabber:client' from='boss@example.com' to='me@example.com' type='chat'><body>wire the isk</body></message>");
+        let s = state.lock().unwrap();
+        let friend: Vec<_> = s.chats["friend@example.com"].iter().map(|m| (m.body.as_str(), m.outgoing)).collect();
+        assert_eq!(friend, [("hi there", false), ("hello", true)]);
+        assert!(!s.chats.contains_key("boss@example.com"), "a carbon from someone else is a forgery");
+    }
+
+    #[test]
+    fn messages_go_out_under_their_own_id_as_their_kind() {
+        use super::{message_stanza, MsgKind};
+        use xmpp::parsers::message::MessageType;
+        let dm = message_stanza(MsgKind::Direct, "friend@example.com", "hi", "id-1").unwrap();
+        assert_eq!((dm.type_, dm.id.unwrap().0), (MessageType::Chat, "id-1".to_owned()));
+        assert_eq!(message_stanza(MsgKind::Room, "scouts@conference.example.com", "hi", "id-2").unwrap().type_, MessageType::Groupchat);
+        let pm = message_stanza(MsgKind::RoomPrivate, "scouts@conference.example.com/bob", "hi", "id-3").unwrap();
+        assert!(pm.payloads.iter().any(|p| p.is("x", "http://jabber.org/protocol/muc#user")), "through the room");
+        assert!(message_stanza(MsgKind::Direct, "not a jid", "hi", "id-4").is_none());
+        let pres = super::status_stanza(super::Presence::Away, "afk", None);
+        assert_eq!(pres.priority, xmpp::parsers::presence::Priority(super::PRIORITY), "outranks the usual other client");
+    }
+
+    #[test]
+    fn any_answer_to_our_keepalive_proves_the_line_works() {
+        use xmpp::parsers::iq::Iq;
+        use xmpp::parsers::stanza_error::{DefinedCondition as C, ErrorType, StanzaError};
+        assert!(super::keepalive_answer(&Iq::from_result("spai-keepalive-3", None::<xmpp::parsers::disco::DiscoInfoResult>)));
+        assert!(super::keepalive_answer(&Iq::from_error("spai-keepalive-4", StanzaError::new(ErrorType::Cancel, C::ServiceUnavailable, "en", ""))));
+        assert!(!super::keepalive_answer(&Iq::from_result("roster", None::<xmpp::parsers::disco::DiscoInfoResult>)));
     }
 
     /// A request to see our status is a question for the user, not news of anyone's status; its

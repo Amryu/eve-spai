@@ -7,7 +7,7 @@ use crate::fleets::backend::FleetBackend;
 use crate::fleets::model::{Composition, FleetId, Member};
 use crate::fleets::movement::{classify, Kind, MoveEvent, Recorder};
 
-/// Polled this often when the dashboard has no push stream for the fleet.
+/// How often the fleet is read.
 const POLL_SECS: u64 = 30;
 /// A move without a gate or bridge between, within this range, was a jump or a bridge. The longest
 /// is a black ops bridge.
@@ -88,25 +88,7 @@ fn record(id: &FleetId, name: &str, t: &Tracking) {
     };
 
     while t.alive.load(Ordering::Relaxed) {
-        if let Ok(mut feed) = t.backend.open_hub(id) {
-            while t.alive.load(Ordering::Relaxed) {
-                match feed.next() {
-                    Some(crate::fleets::hub::Event::Data(d)) => snapshot(&d.composition.to_composition(&t.ships), &mut rec),
-                    Some(crate::fleets::hub::Event::Fleet(v)) => {
-                        if v.get("closedAt").is_some_and(|c| !c.is_null()) {
-                            finish(&mut rec);
-                            return;
-                        }
-                    }
-                    Some(_) => {}
-                    None => break,
-                }
-            }
-        }
-        if !t.alive.load(Ordering::Relaxed) {
-            return;
-        }
-        // Without a stream, or after it dropped: read it directly until the stream comes back.
+        // ESI pushes nothing, so the fleet is read on a clock.
         if t.backend.fleet(id).is_ok_and(|f| f.closed_at.is_some()) {
             finish(&mut rec);
             return;

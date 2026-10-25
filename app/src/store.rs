@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "10";
+pub const SDE_SCHEMA_VERSION: &str = "11";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -103,6 +103,10 @@ CREATE TABLE IF NOT EXISTS known_pilots (
 CREATE TABLE IF NOT EXISTS sde_ship_i18n (
     ship_id INTEGER,
     name    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sde_anomaly_i18n (
+    name_loc TEXT PRIMARY KEY,
+    name_en  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_ship_i18n ON sde_ship_i18n(ship_id);
 CREATE TABLE IF NOT EXISTS sde_ship_names (

@@ -30,7 +30,6 @@ id_newtype!(ChannelId, i32, "A comms channel: mumble, logi or boost. Each has it
 id_newtype!(GroupId, i32, "A SIG.");
 id_newtype!(WingId, i64, "A wing of a tracked fleet.");
 id_newtype!(SquadId, i64, "A squad inside a wing.");
-id_newtype!(DistributionId, i32, "A squad distribution template.");
 
 /// A fleet, identified by the uuid that appears in `/fleet/overview/<uuid>` links.
 
@@ -56,6 +55,20 @@ impl FleetId {
     /// The first group of the uuid, which is as much as anyone reads.
     pub fn short(&self) -> &str {
         self.0.split('-').next().unwrap_or(&self.0)
+    }
+
+    /// An in-game fleet that is not tracked, addressed by its ESI id: it can be looked at and
+    /// run, and nothing of it is kept.
+    pub fn live(esi_id: i64) -> FleetId {
+        FleetId(format!("live-{esi_id}"))
+    }
+
+    pub fn live_esi_id(&self) -> Option<i64> {
+        self.0.strip_prefix("live-")?.parse().ok()
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.live_esi_id().is_some()
     }
 }
 
@@ -259,6 +272,27 @@ pub struct Snowflake {
     pub character_name: String,
     #[serde(rename = "type")]
     pub kind: SnowflakeType,
+}
+
+/// An in-game fleet one of this machine's characters is boss of, whether or not it is tracked.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct LiveFleet {
+    pub esi_id: i64,
+    pub boss_id: i64,
+    pub boss_name: String,
+    /// Everyone in it, docked or not.
+    pub members: usize,
+    /// The record it is tracked as, once it is.
+    pub tracked: Option<FleetId>,
+}
+
+/// What ESI says about a fleet one of our characters is boss of: the advert, and the MOTD the
+/// channel names are read from.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct LiveInfo {
+    pub advert: bool,
+    pub free_move: bool,
+    pub motd: String,
 }
 
 /// A tracked fleet, as `GET /api/v1/fleet/{uuid}` returns it. Also what `PUT /api/v1/fleet` takes
@@ -501,6 +535,13 @@ pub struct BossCheck {
 }
 
 impl BossCheck {
+    /// The verdict from ESI alone, for when the dashboard is not asked. ESI not knowing is the
+    /// one case shown as a failed check rather than as "not the boss".
+    pub fn from_esi(esi: &EsiFleet, character_id: i64) -> Self {
+        let (ok, why) = esi.verdict(character_id);
+        Self { is_fleet_boss: ok == Some(true), backup_available: false, error_message: ok.is_none().then_some(why) }
+    }
+
     /// Whether the fleet can be tracked as this character, and what to say about it.
     pub fn verdict(&self) -> (bool, String) {
         if let Some(e) = self.error() {
@@ -568,38 +609,6 @@ impl EsiFleet {
             EsiFleet::InFleet { .. } => (Some(true), "ESI: fleet boss.".to_owned()),
         }
     }
-}
-
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BonusRequest {
-    pub fleet_id: FleetId,
-    #[serde(default, deserialize_with = "null_default")]
-    pub count: i32,
-    #[serde(default, deserialize_with = "null_default")]
-    pub reason: String,
-    #[serde(default, deserialize_with = "null_default")]
-    pub minutes_before_close: i32,
-}
-
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExceptionRequest {
-    pub fleet_id: FleetId,
-    #[serde(default, deserialize_with = "null_default")]
-    pub character_names: String,
-    #[serde(default, deserialize_with = "null_default")]
-    pub is_exclusion: bool,
-    #[serde(default, deserialize_with = "null_default")]
-    pub reason: String,
-}
-
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReportRequest {
-    pub fleet_id: FleetId,
-    #[serde(default, deserialize_with = "null_default")]
-    pub description: String,
 }
 
 /// One page of an OData collection, with the total the pager needs.
@@ -809,6 +818,17 @@ pub fn history_window(now: i64, days: i64) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_esi_only_boss_check_reads_like_the_dashboard_one() {
+        let boss = EsiFleet::InFleet { fleet_id: 1, boss_id: 7, exists: None };
+        assert!(BossCheck::from_esi(&boss, 7).verdict().0);
+        let member = EsiFleet::InFleet { fleet_id: 1, boss_id: 9, exists: None };
+        assert!(!BossCheck::from_esi(&member, 7).verdict().0);
+        assert!(!BossCheck::from_esi(&EsiFleet::NotInFleet, 7).verdict().0);
+        let unknown = BossCheck::from_esi(&EsiFleet::Unknown("no token".into()), 7);
+        assert_eq!(unknown.error(), Some("no token"));
+    }
 
     /// The captured `GET /api/v1/fleet/{uuid}` body. Deserialising and reserialising it has to come
     /// back the same, which is what catches a renamed or dropped field.

@@ -618,7 +618,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
                     .resizable(false)
                     .collapsible(false)
                     .show(ui.ctx(), |ui| {
-                        ui.set_min_width(420.0);
+                        // Fixed: content sized from what it is given would grow the window each frame.
+                        ui.set_width(460.0);
                         ui.label(egui::RichText::new(tr!("For this page only: the fleet keeps its own boosters.")).weak());
                         let (mut boosters, mut shortcuts) = st.boosts.clone().or_else(|| fleet_boosts.clone()).unwrap_or_default();
                         let (changed, _) = crate::fleet_panel::boosters_ui(ui, &mut boosters, &mut shortcuts, &boosting, Some(&dogma), &library, &doctrine_fits, "sim_fleet_ships_booster");

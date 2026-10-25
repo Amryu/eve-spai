@@ -274,3 +274,41 @@ curl -fsS https://eve-spai.com/sim/ | head -c 200          # the page
 curl -fsSI https://eve-spai.com/sde/dogma-v1.bin.gz | head -1   # the data, after the first bake
 curl -fsS https://eve-spai.com/api/sim/doctrines              # [] until an admin publishes
 ```
+
+---
+
+## 8. Release mirror (eve-spai.com/<os>/current)
+
+Some pilots get poor download speeds from GitHub. `release-mirror.sh` copies the newest release's
+files to the static site, where the app's updater can fetch them when GitHub is slow (only after
+the user agreed to it, and always checked against GitHub's own SHA-256):
+
+| Path | File |
+|---|---|
+| `/windows/current` | `eve-spai-windows-x86_64.exe` |
+| `/macos/current` | `eve-spai-macos-aarch64` |
+| `/linux/current` | `eve-spai-linux-x86_64` |
+
+Each has a `.json` beside it with its `version` and `sha256`. The updater uses a mirrored file
+only when that version matches the release it is installing.
+
+Install the script and run it every 10 minutes, so the mirror is never more than about ten minutes
+behind a release (it needs `curl`, `sha256sum` and `flock`, and does nothing when already current):
+
+```sh
+install -m 755 release-mirror.sh /srv/eve-spai/release-mirror.sh
+/srv/eve-spai/release-mirror.sh /srv/nginx/www/eve-spai          # first copy, prints what it fetched
+( crontab -l 2>/dev/null; echo "*/10 * * * * /srv/eve-spai/release-mirror.sh /srv/nginx/www/eve-spai >> /var/log/eve-spai-release-mirror.log 2>&1" ) | crontab -
+```
+
+Then paste `nginx-eve-spai-downloads.conf` into the eve-spai.com server block (it gives each file
+its real name as a download and keeps it from being cached stale), and test and reload nginx as in
+section 5.
+
+**Check**:
+
+```sh
+curl -sI https://eve-spai.com/linux/current | grep -i -E 'content-disposition|content-length'
+curl -s https://eve-spai.com/linux/current.json
+cat /srv/nginx/www/eve-spai/release-mirror-checked.txt     # within the last 10 minutes
+```

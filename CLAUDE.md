@@ -17,19 +17,15 @@ mirror itself to a local web view. It uses only EVE's public static data.
   build, but a slowdown that also shows in release is a real regression.
 - `cargo test` does NOT rebuild the `eve-spai` binary. Run `cargo build` before relaunching the
   app, or you run a stale binary and a fix looks like it did nothing.
-- **Fleet command is in every build, locked at runtime.** The GSF dashboard mirror (`fleets/`,
-  `app/fleet_ui.rs`) and the FC-only delve911 capital rescue that runs on it (`rescue.rs`,
-  `app/rescue_ui.rs`, the ESI fleet poller, the delve911 sound) stay locked until the fleet
-  dashboard confirms a skirmish commander or above (`fleets/unlock.rs`: `startFleet` plus a
-  command group of SC, FC, TC, CC, Coord or GB/PP; 30-day grace offline). Before that, settings
-  show only the dashboard sign-in and the Fleet and Rescue tabs are hidden: gate new fleet code on
-  `fleet_on()` / `rescue_on()`, never on the raw settings flags.
-  `fleet-auth` adds the sign-in webview. Windows (WebView2) and macOS (WKWebView) releases are
-  built with it, since the engine ships with the OS. On Linux it needs gtk3 and webkit2gtk-4.1 and
-  a binary linked with it will not start without them, so the Linux release ships the app without
-  it plus the same source built with it as `eve-spai-fleet-login`, installed next to the app by
-  `install.sh` and the updater. The app runs that helper for the sign-in, tells the user when
-  WebKitGTK is missing, and downloads the helper itself when an older updater left it out.
+- **Fleet command runs on ESI only.** `fleets/esi_backend.rs` reads and acts on the fleets this
+  machine's characters are boss of through their own ESI tokens and keeps the records locally
+  (`fleet-records.json`). No other fleet service is called, and none is to be added.
+- **Fleet command is in every build.** The fleet tab (`fleets/`, `app/fleet_ui.rs`) and the
+  FC-only delve911 capital rescue that runs on it (`rescue.rs`, `app/rescue_ui.rs`, the ESI fleet
+  poller, the delve911 sound) are gated on `fleet_on()` / `rescue_on()`, never on the raw settings
+  flags. The exception is the rescuee's side of delve911 (`rescuee.rs`, `app/rescuee_ui.rs`): any
+  Jabber user may switch it on (`rescuee_on()`), and `rescue_any()` is what joins delve911, reads
+  it and shows the Rescue tab; `rescue_mode()` picks which side the tab draws.
   The Windows side type-checks locally with `zig cc` standing in for MinGW (`ring` and `aws-lc-sys`
   need a C compiler): point `CC_x86_64_pc_windows_gnu` at a wrapper that drops cc-rs's
   `--target=<rust triple>` and passes `-target x86_64-windows-gnu`, then

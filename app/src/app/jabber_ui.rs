@@ -76,19 +76,16 @@ impl SpaiApp {
     /// rescue with no error anywhere. Both are pinned: always joined, never removable, though their
     /// tabs can be closed.
     pub(crate) fn jabber_rescue_rooms(&self) -> Vec<String> {
-        if self.rescue_on() {
-            return [
-                goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"),
-                goon_jid(
-                    &self.settings.rescue_skirmish_jid,
-                    "skirmish_commanders@conference.goonfleet.com",
-                ),
-            ]
-            .into_iter()
-            .filter(|j| !j.is_empty())
-            .collect();
+        // A rescuee only needs delve911; the FC also posts to skirmish_commanders.
+        let mut rooms = Vec::new();
+        if self.rescue_any() {
+            rooms.push(goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"));
         }
-        Vec::new()
+        if self.rescue_on() {
+            rooms.push(goon_jid(&self.settings.rescue_skirmish_jid, "skirmish_commanders@conference.goonfleet.com"));
+        }
+        rooms.retain(|j| !j.is_empty());
+        rooms
     }
 
     /// The rooms we join ourselves on connect. A deliberately left room is never in here; only the
@@ -392,7 +389,8 @@ impl SpaiApp {
             st.notify_cfg.mention_volume = self.settings.jabber_mention_volume;
             st.notify_cfg.delve911_sound = self.settings.sound_delve911.clone();
             st.notify_cfg.delve911_volume = self.settings.sound_delve911_volume;
-            st.notify_cfg.delve911_siren = self.rescue_on();
+            // The siren is the FC's; a rescuee hears the critical sound from the rescue ingest.
+            st.notify_cfg.delve911_siren = self.rescue_on() && self.rescue_mode() == crate::settings::RescueMode::Fc;
             st.notify_cfg.mention_names = self.mention_names();
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
@@ -2214,7 +2212,7 @@ impl SpaiApp {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
-                if self.settings.fc_rescue_enabled
+                if self.rescue_any()
                     && ui
                         .button(egui_phosphor::regular::WARNING_OCTAGON)
                         .on_hover_text(tr!("Open capital rescue (cap save)"))
@@ -3132,6 +3130,16 @@ impl SpaiApp {
                                     }
                                 }
                                 render_message_body(ui, condense_attention_list(&m.body).as_ref());
+                                match &m.delivery {
+                                    crate::jabber::Delivery::Sent => {}
+                                    crate::jabber::Delivery::Sending => {
+                                        ui.label(egui::RichText::new(tr!("sending…")).weak().italics())
+                                            .on_hover_text(tr!("Goes out once Jabber is connected and back in its rooms"));
+                                    }
+                                    crate::jabber::Delivery::Failed(why) => {
+                                        ui.label(egui::RichText::new(trf!("not sent: {why}", why = why)).color(ui.visuals().error_fg_color));
+                                    }
+                                }
                             });
                         },
                     );

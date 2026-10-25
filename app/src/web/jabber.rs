@@ -86,6 +86,7 @@ mod tests {
                 body: format!("line {i}"),
                 time: 1000 + i as i64,
                 outgoing: i % 2 == 0,
+                ..Default::default()
             })
             .collect();
         st.chats.insert(jid.to_owned(), msgs);

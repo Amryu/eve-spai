@@ -15,6 +15,8 @@ pub struct SpoofBackend {
     data: Mutex<SpoofData>,
     /// Pretend work, so loading states and the stale-result path are exercised in the real app.
     latency: std::time::Duration,
+    /// The in-game fleets the account's characters are boss of, tracked or not.
+    live: Mutex<Vec<LiveFleet>>,
 }
 
 struct SpoofData {
@@ -62,7 +64,20 @@ impl SpoofBackend {
             stats_pending: Default::default(),
         };
         data.populate();
-        Self { data: Mutex::new(data), latency }
+        // The second character runs a small fleet nobody has tracked, so the list shows one.
+        let live = data
+            .seed
+            .characters
+            .get(1)
+            .map(|c| LiveFleet { esi_id: 1_037_000_000_099, boss_id: c.id, boss_name: c.name.clone(), members: 4, tracked: None })
+            .into_iter()
+            .collect();
+        Self { data: Mutex::new(data), latency, live: Mutex::new(live) }
+    }
+
+    /// Tests: what `live_fleets` answers.
+    pub fn set_live(&self, live: Vec<LiveFleet>) {
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = live;
     }
 
     /// Which requests have been recorded, newest last. Inherent rather than on the trait: a real
@@ -288,7 +303,7 @@ fn take_out(c: &mut Composition, drop: &dyn Fn(&Member) -> bool) {
     }
 }
 
-fn report_for(comp: &Composition) -> FleetReport {
+pub(super) fn report_for(comp: &Composition) -> FleetReport {
     let members: Vec<&Member> = comp.members().collect();
     let total = members.len() as i64;
     let pct = |n: i64| if total == 0 { 0.0 } else { n as f64 * 100.0 / total as f64 };
@@ -407,11 +422,22 @@ impl FleetBackend for SpoofBackend {
 
     fn fleet(&self, id: &FleetId) -> Result<Fleet> {
         self.work();
+        if let Some(esi_id) = id.live_esi_id() {
+            return self
+                .live_fleets()
+                .iter()
+                .find(|f| f.esi_id == esi_id)
+                .map(live_fleet_record)
+                .ok_or_else(|| FleetError::Http { status: 404, body: "no such live fleet".to_owned() });
+        }
         self.lock().find(id).cloned()
     }
 
     fn report(&self, id: &FleetId) -> Result<FleetReport> {
         self.work();
+        if id.is_live() {
+            return Ok(FleetReport::default());
+        }
         let mut d = self.lock();
         if let Some(left) = d.stats_pending.get_mut(&id.0) {
             if *left > 0 {
@@ -424,6 +450,9 @@ impl FleetBackend for SpoofBackend {
 
     fn composition(&self, id: &FleetId) -> Result<Composition> {
         self.work();
+        if id.is_live() {
+            return Ok(sample_composition(id));
+        }
         let d = self.lock();
         let mut comp = d.comps.get(&id.0).cloned().unwrap_or_default();
         // A closed fleet has no in-game tree left to read, so the dashboard's report is all there
@@ -442,6 +471,9 @@ impl FleetBackend for SpoofBackend {
 
     fn doctrine(&self, id: &FleetId) -> Result<Option<crate::fleets::doctrine::Doctrine>> {
         self.work();
+        if id.is_live() {
+            return Ok(None);
+        }
         let d = self.lock();
         let setup = d.find(id)?.setup_id;
         Ok(d.seed.doctrine(setup))
@@ -505,6 +537,11 @@ impl FleetBackend for SpoofBackend {
         let mut d = self.lock();
         let started = crate::clock::utc().timestamp();
         let id = d.new_fleet(&req.form.name, req.form.setup_id, req.tag_ids.clone(), started);
+        let live_id = self.live.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|f| f.boss_id == req.character_id).map(|f| f.esi_id);
+        if let (Some(esi_id), Some(f)) = (live_id, d.fleets.last_mut()) {
+            f.esi_id = esi_id;
+            f.commander = Some(Labelled { id: req.character_id, label: req.character_name.clone() });
+        }
         let formup = req
             .formup_location_id
             .and_then(|sys| d.seed.systems.iter().find(|s| s.id == sys).cloned());
@@ -628,9 +665,47 @@ impl FleetBackend for SpoofBackend {
                     }
                 }
             }
+            Action::RenameWing { wing, name } => {
+                if let Some(w) = d.comps.get_mut(&id.0).and_then(|c| c.wings.iter_mut().find(|w| w.id == *wing)) {
+                    w.name = name.clone();
+                }
+            }
+            Action::RenameSquad { wing, squad, name } => {
+                if let Some(s) = d.comps.get_mut(&id.0).and_then(|c| c.wings.iter_mut().find(|w| w.id == *wing)).and_then(|w| w.squads.iter_mut().find(|s| s.id == *squad)) {
+                    s.name = name.clone();
+                }
+            }
+            Action::DeleteWing(wing) => {
+                if let Some(c) = d.comps.get_mut(&id.0) {
+                    c.wings.retain(|w| w.id != *wing);
+                }
+            }
+            Action::DeleteSquad { wing, squad } => {
+                if let Some(w) = d.comps.get_mut(&id.0).and_then(|c| c.wings.iter_mut().find(|w| w.id == *wing)) {
+                    w.squads.retain(|s| s.id != *squad);
+                }
+            }
             _ => {}
         }
         Ok(Written { record: rec, value: () })
+    }
+
+    fn live_info(&self, fleet: &Fleet) -> Option<LiveInfo> {
+        (fleet.esi_id > 0).then(|| LiveInfo {
+            advert: true,
+            free_move: false,
+            motd: "<font size=\"13\" color=\"#bfffffff\">Welcome</font>\nComms: Comms 1\nLogi Channel: Logi 1\nBoost Channel: Boosts 1".to_owned(),
+        })
+    }
+
+    fn live_fleets(&self) -> Vec<LiveFleet> {
+        let d = self.lock();
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Tracked once a fleet with that in-game id is open here, the way the real one answers.
+        for f in &mut live {
+            f.tracked = d.fleets.iter().find(|x| x.esi_id == f.esi_id && x.closed_at.is_none()).map(|x| x.id.clone());
+        }
+        live
     }
 
     fn mode(&self) -> Mode {
@@ -639,7 +714,7 @@ impl FleetBackend for SpoofBackend {
 }
 
 /// The ping and MOTD the dashboard renders, in its own format.
-fn render_ping(seed: &Seed, req: &PingRequest) -> PingPreview {
+pub(super) fn render_ping(seed: &Seed, req: &PingRequest) -> PingPreview {
     let fc = &seed.identity.name;
     let formup = seed
         .systems
@@ -727,14 +802,6 @@ mod tests {
     }
 
     /// Nothing offline has a push stream, and the caller has to be told rather than left waiting.
-    /// The tab keeps polling when this says no.
-    #[test]
-    fn a_spoof_has_no_hub() {
-        let b = SpoofBackend::instant();
-        let id = b.active(true).expect("active")[0].id.clone();
-        assert!(b.open_hub(&id).is_err());
-    }
-
     /// Closing moves it out of the active list and into history.
     #[test]
     fn a_closed_fleet_has_no_tree_left() {
@@ -775,7 +842,7 @@ mod tests {
         assert!(b.records().is_empty());
         // One it may make still works and is recorded.
         let id = b.active(true).expect("active").first().map(|r| r.id.clone()).expect("a fleet");
-        b.act(&id, &Action::SetMotd).expect("allowed");
+        b.act(&id, &Action::SetMotd(String::new())).expect("allowed");
         assert_eq!(b.records().len(), 1);
     }
 
@@ -825,7 +892,7 @@ mod tests {
 ///
 /// The seat ids are the `-1` sentinel the dashboard uses, because there is nothing left to address
 /// and a move posted against a real-looking seat would be refused by the server.
-fn flatten(comp: Composition) -> Composition {
+pub(super) fn flatten(comp: Composition) -> Composition {
     let members: Vec<crate::fleets::model::Member> = comp.members().cloned().collect();
     Composition {
         commander: None,

@@ -2056,6 +2056,15 @@ impl SpaiApp {
                                 .weak(),
                         );
                     });
+                    // Offered once the user agreed to the mirror when GitHub was slow.
+                    if self.settings.update_mirror_ok
+                        && ui
+                            .checkbox(&mut self.settings.update_prefer_mirror, tr!("Download updates from eve-spai.com"))
+                            .on_hover_text(tr!("Instead of GitHub. Checked against GitHub's checksum either way; GitHub is still used when the mirror is behind."))
+                            .changed()
+                    {
+                        changed = true;
+                    }
 
                     ui.add_space(6.0);
                     ui.label(tr!("Fit preview site")).on_hover_text(tr!("Where the fit window's \"Open in\" button sends a loss"));
@@ -2294,10 +2303,15 @@ impl SpaiApp {
                         ui.separator();
                         changed |= self.fleet_settings_section(ui);
                     }
-                    if self.fleet_unlocked() {
+                    {
                         ui.add_space(12.0);
                         ui.separator();
                         changed |= self.rescue_settings_section(ui);
+                    }
+                    {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        changed |= self.rescuee_settings_section(ui);
                     }
 
                     ui.add_space(12.0);
@@ -2461,14 +2475,23 @@ impl SpaiApp {
                 }
             });
 
-            if self.rescue_on() {
+            if self.rescue_any() {
                 group(ui, tr!("Rescue"));
+                let (fc, rescuee) = (self.rescue_on(), self.rescuee_on());
                 egui::Grid::new("sounds_rescue").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                     let st = &mut self.settings;
-                    ui.label(tr!("delve911 callout")).on_hover_text(tr!("A rescue request in delve911. At most once every five minutes."));
-                    changed |= sound_picker(ui, ("sounds_rescue", 0), false, &mut st.sound_delve911, st.sound_delve911_volume);
-                    changed |= volume_slider(ui, &mut st.sound_delve911_volume);
-                    ui.end_row();
+                    if fc {
+                        ui.label(tr!("delve911 callout")).on_hover_text(tr!("A rescue request in delve911. At most once every five minutes."));
+                        changed |= sound_picker(ui, ("sounds_rescue", 0), false, &mut st.sound_delve911, st.sound_delve911_volume);
+                        changed |= volume_slider(ui, &mut st.sound_delve911_volume);
+                        ui.end_row();
+                    }
+                    if rescuee {
+                        ui.label(tr!("Another cap save (Rescuee)")).on_hover_text(tr!("A cap-save ping in delve911 that is not yours while you are in Rescuee mode: get the Rorqual safe. At most once every 20 seconds."));
+                        changed |= sound_picker(ui, ("sounds_rescue", 1), false, &mut st.sound_delve911_rescuee, st.sound_delve911_rescuee_volume);
+                        changed |= volume_slider(ui, &mut st.sound_delve911_rescuee_volume);
+                        ui.end_row();
+                    }
                 });
             }
         });

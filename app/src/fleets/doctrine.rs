@@ -202,6 +202,122 @@ impl Doctrine {
 /// out of. Held by id rather than by name, since the name is alliance-side and could change.
 pub const FC_CHOICE: SetupId = SetupId(61);
 
+/// The doctrine a running fleet is flying, when nobody said: a `Doctrine:` line in the MOTD
+/// naming a setup, else the setup whose configured hulls most of the fleet sits in.
+pub fn detect(
+    comp: &Composition,
+    hulls: &[crate::settings::FleetHull],
+    setups: &[SetupItem],
+    motd: &str,
+    aliases: &[(String, i32)],
+) -> Option<SetupId> {
+    if let Some(line) = super::motd::parse(motd).doctrine {
+        if let Some(id) = from_doctrine_line(&line, hulls, setups, aliases) {
+            return Some(id);
+        }
+    }
+    let total = comp.total();
+    if total == 0 {
+        return None;
+    }
+    let mut best: Option<(i32, usize)> = None;
+    let mut ids: Vec<i32> = hulls.iter().map(|h| h.setup_id).filter(|id| *id != 0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        let mine: Vec<&crate::settings::FleetHull> = hulls.iter().filter(|h| h.setup_id == id).collect();
+        let n = comp
+            .members()
+            .filter(|m| mine.iter().any(|h| (h.type_id != 0 && h.type_id == m.ship_type_id) || h.name.trim().eq_ignore_ascii_case(m.ship_type_name.trim())))
+            .count();
+        if best.is_none_or(|(_, b)| n > b) {
+            best = Some((id, n));
+        }
+    }
+    // A third of the fleet in its hulls, and at least three pilots: less is a coincidence.
+    best.filter(|(_, n)| *n >= 3 && *n * 3 >= total).map(|(id, _)| SetupId(id))
+}
+
+/// The setup a MOTD's `Doctrine:` text names. In order: a correction the user made for this exact
+/// text before, a setup's whole name in it ("Hammer Fleet (FNI) (Boosters > ...)"), else a single
+/// word that is a setup's name word or one of its hulls, plural or not ("Moas", "Svipuls").
+pub fn from_doctrine_line(
+    line: &str,
+    hulls: &[crate::settings::FleetHull],
+    setups: &[SetupItem],
+    aliases: &[(String, i32)],
+) -> Option<SetupId> {
+    let text = alias_key(line);
+    if text.is_empty() {
+        return None;
+    }
+    if let Some((_, id)) = aliases.iter().find(|(k, _)| *k == text) {
+        return Some(SetupId(*id));
+    }
+    let named = setups
+        .iter()
+        .filter(|s| is_doctrine(s.id) && !s.name.trim().is_empty() && text.contains(&s.name.trim().to_lowercase()))
+        .max_by_key(|s| s.name.trim().len());
+    if let Some(s) = named {
+        return Some(s.id);
+    }
+    // Words that say nothing about which doctrine it is.
+    const NOISE: [&str; 10] = ["fleet", "boosters", "booster", "boosts", "support", "else", "logi", "navy", "issue", "the"];
+    let words = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3 && !NOISE.contains(w))
+            .map(singular)
+            .collect()
+    };
+    // Only the head of the line: what follows a bracket is the hull priority, which names hulls
+    // of every doctrine.
+    let head: String = line.split(['(', '>']).next().unwrap_or(line).to_owned();
+    let said = words(&head);
+    if said.is_empty() {
+        return None;
+    }
+    let mut best: Option<(i32, u32)> = None;
+    let mut tie = false;
+    for s in setups.iter().filter(|s| is_doctrine(s.id)) {
+        let mut score = 0;
+        if words(&s.name).iter().any(|w| said.contains(w)) {
+            score += 2;
+        }
+        if hulls.iter().filter(|h| h.setup_id == s.id.0).any(|h| said.contains(&singular(&h.name.to_lowercase()))) {
+            score += 1;
+        }
+        if score == 0 {
+            continue;
+        }
+        match best {
+            Some((_, b)) if score < b => {}
+            Some((_, b)) if score == b => tie = true,
+            _ => {
+                best = Some((s.id.0, score));
+                tie = false;
+            }
+        }
+    }
+    best.filter(|_| !tie).map(|(id, _)| SetupId(id))
+}
+
+/// How a doctrine text is remembered: lowercase, single-spaced, nothing invisible.
+pub fn alias_key(line: &str) -> String {
+    super::motd::strip_tags(line).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn singular(w: &str) -> String {
+    let w = w.trim();
+    if w.ends_with("ies") && w.len() > 4 {
+        format!("{}y", &w[..w.len() - 3])
+    } else if w.ends_with('s') && !w.ends_with("ss") && w.len() > 3 {
+        w[..w.len() - 1].to_owned()
+    } else {
+        w.to_owned()
+    }
+}
+
 /// Whether a setup describes a doctrine at all.
 pub fn is_doctrine(setup_id: SetupId) -> bool {
     setup_id != FC_CHOICE && setup_id.0 != 0
@@ -537,6 +653,54 @@ mod role_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_doctrine_comes_from_the_motd_else_from_the_hulls() {
+        let member = |id: i64, ship: &str| Member { character_id: id, ship_type_name: ship.into(), ..Member::default() };
+        let comp = Composition {
+            wings: vec![Wing { squads: vec![Squad { members: (0..6).map(|i| member(i, if i < 4 { "Ferox" } else { "Scimitar" })).collect(), ..Squad::default() }], ..Wing::default() }],
+            ..Composition::default()
+        };
+        let hull = |setup: i32, name: &str| crate::settings::FleetHull { setup_id: setup, type_id: 0, name: name.into(), main: true };
+        let hulls = vec![hull(84, "Ferox"), hull(125, "Typhoon"), hull(0, "Scimitar")];
+        let setups = vec![
+            SetupItem { id: SetupId(84), name: "Battlecruisers".into(), ..SetupItem::default() },
+            SetupItem { id: SetupId(125), name: "Battleships".into(), ..SetupItem::default() },
+        ];
+        assert_eq!(detect(&comp, &hulls, &setups, "", &[]), Some(SetupId(84)), "most of the fleet flies its hulls");
+        assert_eq!(detect(&comp, &hulls, &setups, "<font>Doctrine: Battleships (Typhoon)</font>", &[]), Some(SetupId(125)), "the MOTD says so");
+        assert_eq!(detect(&Composition::default(), &hulls, &setups, "", &[]), None);
+        let few = Composition { wings: vec![Wing { squads: vec![Squad { members: vec![member(1, "Ferox"), member(2, "Scimitar"), member(3, "Scimitar"), member(4, "Scimitar"), member(5, "Scimitar"), member(6, "Scimitar"), member(7, "Scimitar")], ..Squad::default() }], ..Wing::default() }], ..Composition::default() };
+        assert_eq!(detect(&few, &hulls, &setups, "", &[]), None, "one Ferox is not a doctrine");
+    }
+
+    /// A MOTD often says only "Moas" or "Svipuls": a word of the setup's name or one of its hulls,
+    /// plural or not. What the user corrected once is remembered by its exact text.
+    #[test]
+    fn a_short_doctrine_line_still_finds_its_setup() {
+        let setups = vec![
+            SetupItem { id: SetupId(100), name: "Snail Fleet (Moas)".into(), ..SetupItem::default() },
+            SetupItem { id: SetupId(128), name: "Svipul".into(), ..SetupItem::default() },
+            SetupItem { id: SetupId(65), name: "Harpy Fleet".into(), ..SetupItem::default() },
+            SetupItem { id: SetupId(82), name: "Retri Fleet".into(), ..SetupItem::default() },
+        ];
+        let hull = |setup: i32, name: &str| crate::settings::FleetHull { setup_id: setup, type_id: 0, name: name.into(), main: true };
+        let hulls = vec![hull(100, "Moa"), hull(128, "Svipul"), hull(65, "Harpy"), hull(82, "Retribution"), hull(65, "Kirin"), hull(128, "Kirin")];
+        let find = |s: &str| from_doctrine_line(s, &hulls, &setups, &[]);
+        assert_eq!(find("Moas"), Some(SetupId(100)));
+        assert_eq!(find("Svipuls"), Some(SetupId(128)));
+        assert_eq!(find("svipul"), Some(SetupId(128)));
+        assert_eq!(find("Harpies"), Some(SetupId(65)));
+        assert_eq!(find("Retributions"), Some(SetupId(82)), "a hull of the doctrine");
+        assert_eq!(find("Fleet"), None, "a word every doctrine has says nothing");
+        assert_eq!(find("Kirins"), None, "a hull two doctrines share is no answer");
+        assert_eq!(find("Hammer time"), None);
+        // The priority after the bracket names hulls of other doctrines and is not read.
+        assert_eq!(find("Snail Fleet (Moas) (Moa > Svipul)"), Some(SetupId(100)));
+        // A correction, by its exact text.
+        let aliases = vec![(alias_key("  Cheap   Moas!"), 128)];
+        assert_eq!(from_doctrine_line("Cheap Moas!", &hulls, &setups, &aliases), Some(SetupId(128)));
+    }
 
     fn member(id: i64, name: &str, group: &str) -> Member {
         Member {

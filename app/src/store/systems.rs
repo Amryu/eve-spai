@@ -173,6 +173,10 @@ impl Store {
         out
     }
 
+    pub fn system_name(&self, id: i64) -> Option<String> {
+        self.conn.query_row("SELECT name FROM sde_systems WHERE id = ?1", params![id], |r| r.get(0)).ok()
+    }
+
     pub fn region_of_system(&self, id: i64) -> Option<i64> {
         self.conn
             .query_row("SELECT region_id FROM sde_systems WHERE id = ?1", params![id], |r| r.get(0))
