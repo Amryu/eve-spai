@@ -219,11 +219,13 @@ pub struct PingFields {
     pub location: Location,
     pub panic: Panic,
     pub hostiles: Hostiles,
+    /// Whether a cyno inhibitor is online on grid: `None` until the pilot says.
+    pub cyno_inhib: Option<bool>,
 }
 
 /// The ping's labels, in the order they are written: the form delve911 pings take, as the
 /// room's own pilots post them and the FC side's parser reads them. Then what else is known.
-pub const LABELS_EN: [&str; 7] = [
+pub const LABELS_EN: [&str; 8] = [
     "Rorqual Name",
     "System",
     "Location In System (Anomaly or Moon)",
@@ -231,6 +233,7 @@ pub const LABELS_EN: [&str; 7] = [
     "Hostile Fleet Dscan",
     "Hostiles",
     "Panic",
+    "Cyno Inhib online?",
 ];
 pub const HEADLINE_EN: &str = "Rorqual Tackled";
 /// The room bot's broadcast prefix, which every posted ping leads with.
@@ -238,12 +241,12 @@ pub const BPING: &str = "!bping all";
 
 /// The ping as it is posted: always English.
 pub fn render_ping(f: &PingFields) -> String {
-    let labels: [String; 7] = LABELS_EN.map(str::to_owned);
+    let labels: [String; 8] = LABELS_EN.map(str::to_owned);
     render_ping_with(f, HEADLINE_EN, &labels)
 }
 
 /// The ping with the labels and headline in another language, for the preview only.
-pub fn render_ping_with(f: &PingFields, headline: &str, labels: &[String; 7]) -> String {
+pub fn render_ping_with(f: &PingFields, headline: &str, labels: &[String; 8]) -> String {
     let or_q = |s: &str| if s.trim().is_empty() { "?".to_owned() } else { s.trim().to_owned() };
     let location = f.location.render();
     let mut out = format!(
@@ -265,6 +268,9 @@ pub fn render_ping_with(f: &PingFields, headline: &str, labels: &[String; 7]) ->
     }
     if f.panic != Panic::Unknown {
         out.push_str(&format!("\n{}: {}", labels[6], f.panic.render()));
+    }
+    if let Some(on) = f.cyno_inhib {
+        out.push_str(&format!("\n{}: {}", labels[7], inhib_word(on)));
     }
     out
 }
@@ -326,6 +332,11 @@ pub struct Sent {
     /// What the FC has been told so far, for the follow-up diff.
     pub hostiles_sent: Hostiles,
     pub location_sent: Location,
+    pub inhib_sent: Option<bool>,
+}
+
+fn inhib_word(on: bool) -> &'static str {
+    if on { "yes" } else { "no" }
 }
 
 /// The steps after the ping, as the pilot or the app ticks them.
@@ -339,10 +350,15 @@ pub struct Checklist {
 }
 
 /// What the follow-up has to say, if anything: only what changed since the last post.
-pub fn followup(sent: &Hostiles, now: &Hostiles, location_sent: &Location, location_now: &Location) -> Option<String> {
+pub fn followup(sent: &Hostiles, now: &Hostiles, location_sent: &Location, location_now: &Location, inhib_sent: Option<bool>, inhib_now: Option<bool>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if location_now != location_sent && *location_now != Location::Unknown {
         parts.push(format!("{}: {}", LABELS_EN[2], location_now.render()));
+    }
+    if inhib_now != inhib_sent {
+        if let Some(on) = inhib_now {
+            parts.push(format!("{} {}", LABELS_EN[7], inhib_word(on)));
+        }
     }
     if now.count != sent.count {
         if let Some(n) = now.count {
@@ -502,9 +518,9 @@ pub struct RescueeState {
     pub location: Location,
     pub location_input: String,
     pub panic: Panic,
+    pub cyno_inhib: Option<bool>,
     pub hostiles: Hostiles,
     pub ship_input: String,
-    pub alliance_pilot: String,
     pub arm: Arm,
     /// The same for an update after the ping: every post to delve911 is clicked twice.
     pub arm_update: Arm,
@@ -520,11 +536,8 @@ pub struct RescueeState {
     pub shared_dscan: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
     /// The step the pilot opened by hand; none follows the first step not yet done.
     pub step_open: Option<u8>,
-    pub alliance_error: Option<String>,
     pub shared_fleet: std::sync::Arc<std::sync::Mutex<Option<FleetStatus>>>,
     pub fleet_asked_at: Option<std::time::Instant>,
-    pub shared_alliance: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
-    pub alliance_asking: bool,
     pub mumble_current: Option<String>,
     pub mumble_asked_at: Option<std::time::Instant>,
     /// The `mumble://` an op's short link turned out to point at, for the in-channel check.
@@ -546,6 +559,7 @@ impl RescueeState {
         self.fleet = FleetStatus::default();
         self.arm.clear();
         self.step_open = None;
+        self.cyno_inhib = None;
     }
 }
 
@@ -598,6 +612,18 @@ mod tests {
         assert_eq!(parse_location("  ", &i18n), Location::Unknown);
     }
 
+    /// Optional, like the hostiles: with the ping when known, else as an update once it is.
+    #[test]
+    fn the_cyno_inhib_line_goes_with_the_ping_or_after_it() {
+        let mut f = PingFields { pilot: "X".into(), system: "1DQ1-A".into(), ..Default::default() };
+        assert!(!render_ping(&f).contains("Inhib"), "nothing said until the pilot says");
+        f.cyno_inhib = Some(true);
+        assert!(render_ping(&f).ends_with("Cyno Inhib online?: yes"));
+        let h = Hostiles::default();
+        assert_eq!(followup(&h, &h, &Location::Unknown, &Location::Unknown, None, Some(false)).as_deref(), Some("Cyno Inhib online? no"));
+        assert_eq!(followup(&h, &h, &Location::Unknown, &Location::Unknown, Some(false), Some(false)), None, "told once");
+    }
+
     #[test]
     fn the_ping_is_english_and_the_fc_side_reads_it_back() {
         let f = PingFields {
@@ -607,6 +633,7 @@ mod tests {
             location: Location::Anomaly { name_en: "Angel Forsaken Hub".into(), code: Some("ABC-123".into()) },
             panic: Panic::Available,
             hostiles: Hostiles { count: Some(7), ships: vec![("Sabre".into(), 2), ("Loki".into(), 3)], alliance: Some("Fraternity.".into()), dscan_link: None },
+            cyno_inhib: None,
         };
         let text = render_ping(&f);
         // The form the room's pilots post, line for line, then what else is known.
@@ -614,7 +641,7 @@ mod tests {
             text,
             "!bping all Rorqual Tackled\nRorqual Name: Placeholder Miner\nSystem: 1DQ1-A\nLocation In System (Anomaly or Moon): Angel Forsaken Hub ABC-123\nName of Cyno (On perch, 300km away): Placeholder Cyno\nHostiles: 7 (Sabre x2, Loki x3) - Fraternity.\nPanic: yes"
         );
-        let labels: [String; 7] = ["Rorqual-Name".into(), "System".into(), "Ort im System".into(), "Cyno".into(), "Dscan".into(), "Feinde".into(), "Panik".into()];
+        let labels: [String; 8] = ["Rorqual-Name".into(), "System".into(), "Ort im System".into(), "Cyno".into(), "Dscan".into(), "Feinde".into(), "Panik".into(), "Inhib".into()];
         assert!(render_ping_with(&f, "Rorqual getackelt", &labels).starts_with("!bping all Rorqual getackelt\nRorqual-Name: Placeholder Miner"));
         assert!(render_ping_with(&f, "Rorqual getackelt", &labels).contains("Ort im System: Angel Forsaken Hub ABC-123"));
         let systems = crate::uitest::fixtures::systems();
@@ -634,13 +661,13 @@ mod tests {
     #[test]
     fn the_follow_up_says_only_what_changed() {
         let a = Hostiles { count: Some(5), ships: vec![("Sabre".into(), 2), ("Loki".into(), 1)], alliance: None, dscan_link: None };
-        assert_eq!(followup(&a, &a, &Location::Unknown, &Location::Unknown), None);
+        assert_eq!(followup(&a, &a, &Location::Unknown, &Location::Unknown, None, None), None);
         let b = Hostiles { count: Some(9), ships: vec![("Sabre".into(), 3), ("Proteus".into(), 1)], alliance: Some("Fraternity.".into()), dscan_link: Some("https://dscan.info/v/x".into()) };
         assert_eq!(
-            followup(&a, &b, &Location::Unknown, &Location::Free("gate".into())).as_deref(),
+            followup(&a, &b, &Location::Unknown, &Location::Free("gate".into()), None, None).as_deref(),
             Some("Location In System (Anomaly or Moon): gate, Hostiles now 9, +1 Sabre, +1 Proteus, Loki gone, Alliance: Fraternity., Hostile Fleet Dscan: https://dscan.info/v/x")
         );
-        assert_eq!(followup(&b, &b, &Location::Free("gate".into()), &Location::Free("gate".into())), None, "the link is told once");
+        assert_eq!(followup(&b, &b, &Location::Free("gate".into()), &Location::Free("gate".into()), None, None), None, "the link is told once");
     }
 
     #[test]

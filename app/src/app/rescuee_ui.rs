@@ -134,13 +134,6 @@ impl SpaiApp {
                 Err(e) => eprintln!("[rescuee] dscan upload failed: {e}"),
             }
         }
-        if let Some(res) = self.rescuee.shared_alliance.lock().unwrap().take() {
-            self.rescuee.alliance_asking = false;
-            match res {
-                Ok(name) => self.rescuee.hostiles.alliance = Some(name),
-                Err(e) => self.rescuee.alliance_error = Some(e),
-            }
-        }
         if let Some(f) = self.rescuee.shared_fleet.lock().unwrap().take() {
             self.rescuee.fleet = f;
             let own: Vec<i64> = self.characters.iter().map(|c| c.id).collect();
@@ -296,6 +289,7 @@ impl SpaiApp {
             location: st.location.clone(),
             panic: st.panic,
             hostiles: st.hostiles.clone(),
+            cyno_inhib: st.cyno_inhib,
         };
 
         let after_section = |ui: &mut egui::Ui, st: &mut rescuee::RescueeState, deferred: &mut Deferred, sent: &rescuee::Sent, open_after: bool| {
@@ -418,7 +412,15 @@ impl SpaiApp {
             let sent = st.sent.is_some();
             // Once it is out, what to do next comes first; the steps fold to their summaries.
             if let Some(sent_ping) = st.sent.clone() {
-                after_section(ui, st, deferred, &sent_ping, true);
+                if compact {
+                    let cap = (ui.ctx().content_rect().height() * 0.3).max(120.0);
+                    let out = egui::ScrollArea::vertical().id_salt("rescuee_after").max_height(cap).auto_shrink([false, true]).show(ui, |ui| {
+                        after_section(ui, st, deferred, &sent_ping, true);
+                    });
+                    spai_fit_ui::rows::note_scrolled(ui.ctx(), &out);
+                } else {
+                    after_section(ui, st, deferred, &sent_ping, true);
+                }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(tr!("The ping (sent)")).strong());
@@ -456,7 +458,10 @@ impl SpaiApp {
                 tr!("No pilot or system yet: the ping cannot go out without them.").to_owned()
             };
             let location_hover = if location_done {
-                trf!("{loc} · Panic: {panic}", loc = st.location.render(), panic = panic_label(st.panic))
+                match st.cyno_inhib {
+                    Some(on) => trf!("{loc} · Panic: {panic} · Cyno inhib: {inhib}", loc = st.location.render(), panic = panic_label(st.panic), inhib = if on { tr!("online") } else { tr!("none") }),
+                    None => trf!("{loc} · Panic: {panic}", loc = st.location.render(), panic = panic_label(st.panic)),
+                }
             } else {
                 tr!("No location yet: the FC cannot find you without one.").to_owned()
             };
@@ -544,6 +549,20 @@ impl SpaiApp {
                         }
                     });
                 });
+                ui.horizontal(|ui| {
+                    ui.label(tr!("Cyno inhib")).on_hover_text(tr!("Whether a cyno inhibitor is online on grid: it decides whether the fleet can light a cyno on you. Optional; it can go out with an update later."));
+                    let label = |v: Option<bool>| match v {
+                        None => tr!("not said"),
+                        Some(true) => tr!("online"),
+                        Some(false) => tr!("none"),
+                    };
+                    egui::ComboBox::from_id_salt("rescuee_inhib").selected_text(label(st.cyno_inhib)).show_ui(ui, |ui| {
+                        use spai_ui::widgets::SteadySelect as _;
+                        for v in [None, Some(true), Some(false)] {
+                            ui.menu_value(&mut st.cyno_inhib, v, label(v));
+                        }
+                    });
+                });
             });
             }
             if open == 3 {
@@ -558,36 +577,6 @@ impl SpaiApp {
                     let mut alliance = st.hostiles.alliance.clone().unwrap_or_default();
                     if ui.add(egui::TextEdit::singleline(&mut alliance).hint_text(tr!("name or ticker")).desired_width(120.0)).changed() {
                         st.hostiles.alliance = Some(alliance.trim().to_owned()).filter(|a| !a.is_empty());
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(tr!("Look up")).on_hover_text(tr!("A hostile pilot's name: their alliance is looked up on ESI."));
-                    ui.add(egui::TextEdit::singleline(&mut st.alliance_pilot).hint_text(tr!("pilot name")).desired_width(140.0));
-                    let can = !st.alliance_pilot.trim().is_empty() && !st.alliance_asking;
-                    if ui.add_enabled(can, egui::Button::new(egui_phosphor::regular::MAGNIFYING_GLASS)).clicked() {
-                        st.alliance_asking = true;
-                        st.alliance_error = None;
-                        let (shared, name) = (st.shared_alliance.clone(), st.alliance_pilot.trim().to_owned());
-                        let ctx = ui.ctx().clone();
-                        std::thread::spawn(move || {
-                            let res = (|| -> Result<String, String> {
-                                let client = crate::http::client(15).map_err(|e| e.to_string())?;
-                                let ids = crate::universe::character_ids(&client, &[name.clone()]).ok_or_else(|| tr!("no such pilot").to_owned())?;
-                                let id = ids.get(&name).or_else(|| ids.values().next()).map(|(id, _)| *id).ok_or_else(|| tr!("no such pilot").to_owned())?;
-                                let affil = crate::affiliation::lookup(&client, &[id]);
-                                let (_, alliance) = affil.get(&id).copied().ok_or_else(|| tr!("no affiliation on ESI").to_owned())?;
-                                let alliance = alliance.ok_or_else(|| tr!("no alliance").to_owned())?;
-                                crate::universe::names(&client, &[alliance]).remove(&alliance).ok_or_else(|| tr!("alliance name unknown").to_owned())
-                            })();
-                            *shared.lock().unwrap() = Some(res);
-                            ctx.request_repaint();
-                        });
-                    }
-                    if st.alliance_asking {
-                        ui.spinner();
-                    }
-                    if let Some(e) = &st.alliance_error {
-                        ui.label(egui::RichText::new(e.as_str()).color(crate::theme::standing::WARNING));
                     }
                 });
                 // The hulls seen, each a chip that counts up; the x takes one off.
@@ -650,7 +639,7 @@ impl SpaiApp {
             let english = rescuee::render_ping(&fields);
             if !sent {
                 // The preview in the user's language; what goes out is always English.
-                let labels: [String; 7] = [
+                let labels: [String; 8] = [
                     tr_noop!("Rorqual Name").tr().to_owned(),
                     tr_noop!("System").tr().to_owned(),
                     tr_noop!("Location In System (Anomaly or Moon)").tr().to_owned(),
@@ -658,6 +647,7 @@ impl SpaiApp {
                     tr_noop!("Hostile Fleet Dscan").tr().to_owned(),
                     tr_noop!("Hostiles").tr().to_owned(),
                     tr_noop!("Panic").tr().to_owned(),
+                    tr_noop!("Cyno Inhib online?").tr().to_owned(),
                 ];
                 let mut preview = rescuee::render_ping_with(&fields, tr_noop!("Rorqual Tackled").tr(), &labels);
                 ui.add_space(4.0);
@@ -665,7 +655,7 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(tr!("Send")).strong());
                     help_icon(ui, tr!("What goes to delve911. Shown in your language; posted in English, which is what every FC reads. Click the button twice within three seconds."));
                 });
-                ui.add(egui::TextEdit::multiline(&mut preview).interactive(false).desired_rows(5).desired_width(f32::INFINITY)).on_hover_text(&english);
+                ui.add(egui::TextEdit::multiline(&mut preview).interactive(false).desired_rows(if compact { 3 } else { 5 }).desired_width(f32::INFINITY)).on_hover_text(&english);
                 let missing = rescuee::missing(&fields);
                 let blocked = missing.contains(&"pilot") || missing.contains(&"system");
                 if blocked || fields.location == Location::Unknown {
@@ -695,15 +685,15 @@ impl SpaiApp {
                     st.comms_also.clear();
                     st.fleet_asked_at = None;
                     st.step_open = None;
-                    st.sent = Some(rescuee::Sent { at: now, body: english.clone(), hostiles_sent: fields.hostiles.clone(), location_sent: fields.location.clone(), fields: fields.clone() });
+                    st.sent = Some(rescuee::Sent { at: now, body: english.clone(), hostiles_sent: fields.hostiles.clone(), location_sent: fields.location.clone(), inhib_sent: fields.cyno_inhib, fields: fields.clone() });
                 }
             } else if let Some(sent_ping) = st.sent.clone() {
                 // What changed since the ping, right under the steps that change it.
                 ui.add_space(4.0);
-                let update = rescuee::followup(&sent_ping.hostiles_sent, &st.hostiles, &sent_ping.location_sent, &st.location);
+                let update = rescuee::followup(&sent_ping.hostiles_sent, &st.hostiles, &sent_ping.location_sent, &st.location, sent_ping.inhib_sent, st.cyno_inhib);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(tr!("Update")).strong());
-                    help_icon(ui, tr!("Only what changed since the last post: new hulls, a count, the alliance, the location, the d-scan link."));
+                    help_icon(ui, tr!("Only what changed since the last post: new hulls, a count, the alliance, the location, the cyno inhib, the d-scan link."));
                 });
                 match &update {
                     Some(text) => {
@@ -733,6 +723,7 @@ impl SpaiApp {
                         if let Some(s) = &mut st.sent {
                             s.hostiles_sent = st.hostiles.clone();
                             s.location_sent = st.location.clone();
+                            s.inhib_sent = st.cyno_inhib;
                         }
                         st.checklist.hostiles |= !st.hostiles.is_empty();
                         st.checklist.location |= st.location != Location::Unknown;
@@ -743,17 +734,14 @@ impl SpaiApp {
 
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             if compact {
-                // The sender's height last frame, so the band leaves room for it under a short window.
-                let send_h: f32 = ui.data(|d| d.get_temp(egui::Id::new("rescuee_send_h")).unwrap_or(150.0));
-                let most = (ui.available_height() * 0.6 - send_h).max(120.0);
-                let out = egui::ScrollArea::vertical().id_salt("rescuee_band").max_height(most).auto_shrink([false, true]).show(ui, |ui| panel(ui, st, &mut deferred));
-                spai_fit_ui::rows::note_scrolled(ui.ctx(), &out);
-                let top = ui.cursor().top();
-                ui.separator();
-                sender(ui, st);
-                let h = ui.cursor().top() - top;
-                ui.data_mut(|d| d.insert_temp(egui::Id::new("rescuee_send_h"), h));
-                ui.separator();
+                // The steps and the ping in full, never scrolled: half a form under a scroll bar
+                // reads as a form that ends early. The chat takes what is left.
+                egui::Panel::top("rescuee_top").frame(egui::Frame::NONE).show_inside(ui, |ui| {
+                    panel(ui, st, &mut deferred);
+                    ui.separator();
+                    sender(ui, st);
+                    ui.add_space(2.0);
+                });
             } else {
                 let resp = egui::Panel::left("rescuee_panel")
                     .resizable(true)

@@ -3873,11 +3873,12 @@ fn doctrine_combo(
         .selected_text(shown)
         .width(180.0)
         .show_ui(ui, |ui| {
-            if ui.button(tr!("Detect automatically")).on_hover_text(tr!("From a Doctrine line in the MOTD, else from the hulls most of the fleet flies.")).clicked() {
+            use spai_ui::widgets::SteadySelect as _;
+            if ui.menu_label(detected, tr!("Detect automatically")).on_hover_text(tr!("From a Doctrine line in the MOTD, else from the hulls most of the fleet flies.")).clicked() {
                 *pick = Some(None);
             }
             for s in seed.setups.iter().filter(|s| crate::fleets::doctrine::is_doctrine(s.id)) {
-                if ui.button(s.name.trim()).clicked() {
+                if ui.menu_label(false, s.name.trim()).clicked() {
                     *pick = Some(Some(s.id));
                 }
             }
@@ -3917,11 +3918,12 @@ fn fleet_sidebar(
             let shown = match (&picked, &auto) {
                 (Some(p), _) => p.clone(),
                 (None, Some(a)) => trf!("{name} (auto)", name = a),
-                (None, None) => tr!("none").to_owned(),
+                (None, None) => tr!("From the MOTD").to_owned(),
             };
             let mut set: Option<Option<String>> = None;
             egui::ComboBox::from_id_salt("sidebar_boost_pick").selected_text(shown).width(180.0).show_ui(ui, |ui| {
-                if ui.button(tr!("From the MOTD")).clicked() {
+                use spai_ui::widgets::SteadySelect as _;
+                if ui.menu_label(picked.is_none(), tr!("From the MOTD")).clicked() {
                     set = Some(None);
                 }
                 let mut names: Vec<String> = seed.boost_channels.iter().map(|c| c.name.trim().to_owned()).collect();
@@ -3931,7 +3933,7 @@ fn fleet_sidebar(
                     }
                 }
                 for n in names {
-                    if ui.button(&n).clicked() {
+                    if ui.menu_label(picked.as_ref() == Some(&n), &n).clicked() {
                         set = Some(Some(n));
                     }
                 }
@@ -4010,8 +4012,9 @@ fn action_bar(
         let wings: Vec<(crate::fleets::model::WingId, String)> = open.composition.wings.iter().map(|w| (w.id, w.name.clone())).collect();
         if !wings.is_empty() && !open.composition.flat {
             egui::ComboBox::from_id_salt("fleet_add_squad").selected_text(format!("{}  {}", icon::STACK_SIMPLE, tr!("Add squad"))).width(130.0).show_ui(ui, |ui| {
+                use spai_ui::widgets::SteadySelect as _;
                 for (id, name) in &wings {
-                    if ui.button(trf!("to {wing}", wing = name)).clicked() {
+                    if ui.menu_label(false, trf!("to {wing}", wing = name)).clicked() {
                         act_on.push(Action::AddSquad(*id));
                     }
                 }

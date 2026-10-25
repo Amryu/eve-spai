@@ -2127,12 +2127,17 @@ fn rescue_popout_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// `in_use` names the dashboard's channels "Op N" the way the real list does, with that op taken,
 /// and picks it. The invented table's "Comms N" names resolve to no op at all.
 fn rescue_panel_scene_with(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool) -> Scene {
-    rescue_panel_scene_full(name, size, in_use, compact, map, false)
+    rescue_panel_scene_full(name, size, in_use, compact, map, false, false)
+}
+
+/// The FC boss of a fleet per ESI: the fleet invite button and its lines are shown.
+fn rescue_in_fleet_scene(name: &'static str, size: [f32; 2], compact: bool) -> Scene {
+    rescue_panel_scene_full(name, size, None, compact, false, false, true)
 }
 
 /// `incomplete` leaves the draft ping without its formup and doctrine, as a ping sent before the
 /// dashboard rendered it would be.
-fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool, incomplete: bool) -> Scene {
+fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8>, compact: bool, map: bool, incomplete: bool, in_fleet: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -2167,6 +2172,17 @@ fn rescue_panel_scene_full(name: &'static str, size: [f32; 2], in_use: Option<u8
                 let mut r = a.rescue_state_for_test().lock().unwrap();
                 r.pending_ping = "CAP Save - Get In!\n\nFC Name: Placeholder Commander\nComms: Op 3".to_owned();
                 r.ping_edited = true;
+            }
+            if in_fleet {
+                // The boss poll would replace the seeded answer with the spoof's on the first frame.
+                a.fleet_boss_asked = Some(std::time::Instant::now());
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                if st.fc().is_none() {
+                    st.local_fc = Some((2_000_000_001, "Placeholder Commander".to_owned()));
+                }
+                let fc = st.fc().expect("an FC").0;
+                st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::InFleet { fleet_id: 1_000_000_002, boss_id: fc, exists: Some(true) }));
+                st.esi_fleet_at = crate::clock::utc().timestamp();
             }
             a
         });
@@ -2230,8 +2246,9 @@ fn rescuee_scene(name: &'static str, size: [f32; 2], compact: bool, pinged: bool
                     location: r.location.clone(),
                     panic: r.panic,
                     hostiles: Default::default(),
+                    cyno_inhib: None,
                 };
-                r.sent = Some(crate::rescuee::Sent { at: now - 180, body: crate::rescuee::render_ping(&fields), hostiles_sent: Default::default(), location_sent: fields.location.clone(), fields });
+                r.sent = Some(crate::rescuee::Sent { at: now - 180, body: crate::rescuee::render_ping(&fields), hostiles_sent: Default::default(), location_sent: fields.location.clone(), inhib_sent: None, fields });
                 r.checklist.location = true;
                 r.hostiles = crate::rescuee::Hostiles { count: Some(7), ships: vec![("Vedmaks".into(), 3), ("Sabre".into(), 2), ("Loki".into(), 2)], alliance: Some("Placeholder Alliance".into()), dscan_link: Some("https://dscan.info/v/placeholder".into()) };
                 r.dscan = Some(crate::rescuee::DscanPreview { counts: r.hostiles.ships.clone(), link: r.hostiles.dscan_link.clone(), at: now - 40 });
@@ -2245,6 +2262,61 @@ fn rescuee_scene(name: &'static str, size: [f32; 2], compact: bool, pinged: bool
         app.apply_language();
         app.rescue_body(ui, compact);
     })
+}
+
+/// Boss of a fleet with a ping selected and its pilots known, the rescue shows the fleet invite
+/// button and sends nothing over ESI on its own: the Rorqual pilot is invited on the FC's press.
+#[test]
+fn uitest_rescue_fleet_invite_waits_for_the_button() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    harness::scratch_profile();
+    let rescue: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>>>> = Default::default();
+    let rescue_out = rescue.clone();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    let mut scene = Scene::ui("selftest_rescue_fleet_invite", [1100.0, 700.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fc_rescue_enabled = true;
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::rescue_presets();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            fixtures::seed_rescue_ping(&a);
+            a.fleet_boss_asked = Some(std::time::Instant::now());
+            {
+                let mut st = a.fleet_state_for_test().lock().unwrap();
+                if st.fc().is_none() {
+                    st.local_fc = Some((2_000_000_001, "Placeholder Commander".to_owned()));
+                }
+                let fc = st.fc().expect("an FC").0;
+                st.esi_fleet = Some((fc, crate::fleets::model::EsiFleet::InFleet { fleet_id: 1_000_000_002, boss_id: fc, exists: Some(true) }));
+                st.esi_fleet_at = crate::clock::utc().timestamp();
+            }
+            *rescue_out.lock().unwrap() = Some(a.rescue_state_for_test().clone());
+            a
+        });
+        app.rescue_body(ui, false);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    for _ in 0..5 {
+        harness.step();
+    }
+    if harness.query_by_label_contains("Invite to fleet").is_none() {
+        let mut seen = Vec::new();
+        for node in harness.root().children_recursive() {
+            if let Some(l) = node.accesskit_node().label() {
+                if l.contains("nvite") || l.contains("ESI") {
+                    seen.push(l.to_owned());
+                }
+            }
+        }
+        panic!("the fleet invite is a button; saw {seen:?}");
+    }
+    let r = rescue.lock().unwrap().clone().expect("the scene built the app");
+    let r = r.lock().unwrap();
+    let seq = r.selected_ping.expect("the fixture selects its ping");
+    assert!(r.capital_pilot.is_some(), "the fixture knows the capital pilot");
+    assert_eq!(r.actions(seq).esi_invited, None, "no invite went out without a press");
 }
 
 /// Switching the rescue tab between the FC and rescuee sides leaves the FC's op and preset as
@@ -3516,12 +3588,14 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
     v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout", [520.0, 640.0]));
+    v.push(rescue_in_fleet_scene("rescue_panel_in_fleet", [1100.0, 960.0], false));
+    v.push(rescue_in_fleet_scene("rescue_popout_in_fleet", [520.0, 640.0], true));
     v.push(rescue_map_scene("rescue_panel_map_wide", [1500.0, 760.0]));
     v.push(rescue_map_scene("rescue_panel_map_tab", [1000.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout_narrow", [400.0, 700.0]));
     v.push(rescue_popout_scene("rescue_popout_short", [460.0, 480.0]));
     v.push(rescue_panel_scene_with("rescue_panel_op_in_use", [1100.0, 700.0], Some(3), false, false));
-    v.push(rescue_panel_scene_full("rescue_ping_incomplete", [1100.0, 700.0], None, false, false, true));
+    v.push(rescue_panel_scene_full("rescue_ping_incomplete", [1100.0, 700.0], None, false, false, true, false));
     v.push(rescue_presets_scene("rescue_presets", [760.0, 620.0]));
     v.push(rescuee_scene("rescuee_docked", [1100.0, 700.0], false, false));
     v.push(rescuee_scene("rescuee_popout", [520.0, 640.0], true, false));
@@ -7937,11 +8011,12 @@ fn uitest_the_rescue_lists_every_capital_save_preset() {
     }
     assert!(h.query_all_by_label("Roam").count() == 0, "an untagged preset is offered");
 
-    // Channel id 12 is Op 11. Taking the id as the op, which the picker used to, gives 12.
+    // The op is the rescue's own: picking a preset leaves it where it was.
+    let before = *op.lock().unwrap();
     let item = h.get_by_label("Rescue / FNIs").rect();
     harness::click_at(&h, item.center());
     h.run_steps(3);
-    assert_eq!(*op.lock().unwrap(), 11, "the op was taken from the channel id, not its name");
+    assert_eq!(*op.lock().unwrap(), before, "a preset moved the op");
 }
 
 /// Changing the rescue's op has to change the comms in the ping straight away, and pick up the

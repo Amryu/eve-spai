@@ -466,7 +466,8 @@ impl SpaiApp {
             v.extend(self.settings.fleet_custom_doctrines.iter().cloned());
             v
         };
-        let ops: Vec<(u8, Option<i32>)> = (1u8..=12).map(|n| (n, self.fleet_mumble_for_op(n).map(|c| c.0))).collect();
+        let lines = self.settings.fleet_doctrine_lines.clone();
+        let mut edited_lines: Vec<(i32, String)> = Vec::new();
         let systems = self.systems.clone();
         let mut presets = std::mem::take(&mut self.settings.fleet_presets);
         let mut changed = false;
@@ -483,7 +484,7 @@ impl SpaiApp {
             .min_size([520.0, 260.0])
             .max_height((ctx.content_rect().height() - 80.0).max(260.0))
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(tr!("What a rescue can run on. The Preset picker in the rescue lists these; the op is where the comms invite points.")).weak());
+                ui.label(egui::RichText::new(tr!("What a rescue can run on. The Preset picker in the rescue lists these; the op is picked in the rescue itself.")).weak());
                 ui.add_space(4.0);
                 // The list takes what the window leaves under the button row, and nothing it
                 // holds is sized from the width it is given: either would grow the window.
@@ -530,17 +531,12 @@ impl SpaiApp {
                                     }
                                 });
                                 ui.end_row();
-                                ui.label(tr!("Op"));
-                                let current = ops.iter().find(|(_, ch)| ch.is_some() && *ch == p.mumble_channel_id).map(|(n, _)| *n);
-                                egui::ComboBox::from_id_salt(("rescue_preset_op", i)).selected_text(current.map(|n| trf!("Op {n}", n = n)).unwrap_or_else(|| tr!("none").to_owned())).width(120.0).show_ui(ui, |ui| {
-                                    use spai_ui::widgets::SteadySelect as _;
-                                    for (n, ch) in &ops {
-                                        if ui.menu_label(current == Some(*n), trf!("Op {n}", n = n)).clicked() {
-                                            p.mumble_channel_id = *ch;
-                                            changed = true;
-                                        }
-                                    }
-                                });
+                                ui.label(tr!("Doctrine line")).on_hover_text(tr!("What the ping says on its Doctrine line for this doctrine, priority and all. Starts as the built-in line; a change here is kept for every preset on this doctrine."));
+                                let mut line = lines.iter().find(|(id, _)| *id == p.setup_id).map(|(_, l)| l.clone()).unwrap_or_default();
+                                let hint = setups.iter().find(|(id, _)| *id == p.setup_id).map(|(_, n)| n.clone()).unwrap_or_default();
+                                if ui.add_enabled(p.setup_id != 0, egui::TextEdit::singleline(&mut line).hint_text(hint).desired_width(320.0)).changed() {
+                                    edited_lines.push((p.setup_id, line));
+                                }
                                 ui.end_row();
                                 ui.label(tr!("Formup")).on_hover_text(tr!("Where the fleet forms. Empty: the staging system from settings."));
                                 let mut formup = p.formup_location.as_ref().map(|(_, n)| n.clone()).unwrap_or_default();
@@ -577,8 +573,17 @@ impl SpaiApp {
         if add {
             let n = presets.iter().filter(|p| p.tag_ids.contains(&crate::settings::CAPITAL_SAVE_TAG)).count() + 1;
             let mut p = crate::settings::rescue_preset(3, &trf!("Rescue {n}", n = n), 0, String::new());
-            p.mumble_channel_id = self.fleet_mumble_for_op(3).map(|c| c.0);
+            // The op is the rescue's, not the preset's.
+            p.mumble_channel_id = None;
             presets.push(p);
+            changed = true;
+        }
+        for (id, line) in edited_lines {
+            let line = line.trim().to_owned();
+            self.settings.fleet_doctrine_lines.retain(|(x, _)| *x != id);
+            if !line.is_empty() {
+                self.settings.fleet_doctrine_lines.push((id, line));
+            }
             changed = true;
         }
         // The rescue remembers its preset by key, so it follows a rename.
@@ -856,20 +861,6 @@ impl SpaiApp {
         let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
         let mut new_ops_w = ops_w;
         let presets = self.rescue_presets();
-        // Each preset's op number, by its channel's name. The preset stores the dashboard's channel
-        // id, and the id is not the op: channel 12 is Op 11.
-        let preset_ops: Vec<Option<u8>> = {
-            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
-            presets
-                .iter()
-                .map(|p| {
-                    let id = crate::fleets::model::ChannelId(p.mumble_channel_id?);
-                    st.seed
-                        .channel_name(&st.seed.mumble_channels, Some(id))
-                        .and_then(crate::fleets::comms::op_number)
-                })
-                .collect()
-        };
         // Every preset tagged Capital Save, from any folder. A name used in two folders shows its
         // folder, and only then: the usual list is one folder of distinct names.
         let preset_names: Vec<String> = presets
@@ -913,6 +904,7 @@ impl SpaiApp {
         let mut show_info: Option<String> = None;
         let route_choices = self.destination_choices();
         let mut start_tracking = false;
+        let mut esi_invite_press = false;
         let mut chat_dm: Option<String> = None;
         let in_range_ly = self.rescue_ly.filter(|_| self.rescue_range.is_none());
         let staging_name = self.settings.rescue_staging_system.clone();
@@ -1250,6 +1242,7 @@ impl SpaiApp {
                     let invite_pending =
                         invite_targets.iter().any(|(seq, _)| r.actions(*seq).invited_op != Some(op_now));
                     let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
+                    let esi_can_invite = sel_seq.is_some() && !r.test_mode && (r.capital_pilot.is_some() || r.cyno_pilot.is_some());
 
                     // The rule belongs to the timer: with no ping selected the timer draws
                     // nothing and the line was left sitting at the top of the pane dividing
@@ -1376,16 +1369,9 @@ impl SpaiApp {
                                     );
                                 }
                                 for (i, p) in presets.iter().enumerate() {
-                                    if ui
-                                        .menu_value(&mut r.doctrine, p.key(), &preset_names[i])
-                                        .changed()
-                                    {
-                                        // A preset carries its own comms; the op stays editable
-                                        // after, since a rescue often moves channel.
-                                        if let Some(op) = preset_ops[i] {
-                                            r.op_channel = op;
-                                        }
-                                    }
+                                    // The op is the rescue's own, set beside this: a preset
+                                    // does not move it.
+                                    ui.menu_value(&mut r.doctrine, p.key(), &preset_names[i]);
                                 }
                             })
                             .response
@@ -1622,8 +1608,8 @@ impl SpaiApp {
                             verdict(ui);
                         }
                     });
-                    if compact {
-                        esi_invite_lines(ui, fc_fleet.as_ref(), esi_invites.as_ref(), true);
+                    if compact && esi_invite_lines(ui, fc_fleet.as_ref(), esi_invites.as_ref(), esi_can_invite, true) {
+                        esi_invite_press = true;
                     }
                     if !compact {
                         ui.add_space(6.0);
@@ -1644,7 +1630,9 @@ impl SpaiApp {
                         ui.separator();
                         ui.label(egui::RichText::new(tr!("Comms invite")).strong());
                         invite_ui(ui);
-                        esi_invite_lines(ui, fc_fleet.as_ref(), esi_invites.as_ref(), false);
+                        if esi_invite_lines(ui, fc_fleet.as_ref(), esi_invites.as_ref(), esi_can_invite, false) {
+                            esi_invite_press = true;
+                        }
                     }
 
                     // Inviting the pilot means the FC is taking the op: join its command channel too,
@@ -1665,6 +1653,8 @@ impl SpaiApp {
                         for (seq, _) in &invite_targets {
                             r.actions_mut(*seq).invited_op = Some(op_now);
                         }
+                        // The comms invite is the invite button: the fleet invite rides on it.
+                        esi_invite_press = true;
                     }
                     };
                     if compact {
@@ -1812,20 +1802,10 @@ impl SpaiApp {
             self.raise_main = true;
         }
 
-        // The capital and cyno into the FC's fleet through ESI, once per ping and fleet: the
-        // invite still has to be accepted in game, which the rescuee's side says.
+        // The capital and cyno into the FC's fleet through ESI, on the invite button and never
+        // on its own: the invite still has to be accepted in game, which the rescuee's side says.
         if let Some((boss, fleet_id)) = fc_fleet {
-            let names = {
-                let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
-                let names: Vec<String> = [r.capital_pilot.clone(), r.cyno_pilot.clone()].into_iter().flatten().collect();
-                match r.selected_ping {
-                    Some(seq) if !names.is_empty() && r.actions(seq).esi_invited != Some(fleet_id) && !r.test_mode => {
-                        r.actions_mut(seq).esi_invited = Some(fleet_id);
-                        Some(names)
-                    }
-                    _ => None,
-                }
-            };
+            let names = self.rescue.lock().unwrap_or_else(|e| e.into_inner()).esi_invite_names(fleet_id, esi_invite_press);
             if let Some(names) = names {
                 self.fleet_dispatch(crate::fleets::state::Cmd::EsiInvite { boss_name: boss, fleet_id, names });
             }
@@ -1870,19 +1850,26 @@ impl SpaiApp {
     }
 }
 
-/// How the ESI invites of the capital and cyno into the FC's fleet went, under the comms invite.
-fn esi_invite_lines(ui: &mut egui::Ui, fc_fleet: Option<&(String, i64)>, invites: Option<&(i64, Vec<(String, Result<(), String>)>)>, compact: bool) {
+/// The fleet invite of the capital and cyno over ESI, under the comms invite: its own button,
+/// which the comms invite presses too, and how the last invites went. Returns the press.
+fn esi_invite_lines(ui: &mut egui::Ui, fc_fleet: Option<&(String, i64)>, invites: Option<&(i64, Vec<(String, Result<(), String>)>)>, can_invite: bool, compact: bool) -> bool {
     let Some((_, fleet_id)) = fc_fleet else {
         if !compact {
             ui.label(egui::RichText::new(tr!("Fleet invites over ESI go out once you are in a fleet and a ping is selected.")).weak())
-                .on_hover_text(tr!("Start the fleet from the tracking form; the capital and cyno pilots of the selected ping are then invited, and only have to accept in game."));
+                .on_hover_text(tr!("Start the fleet from the tracking form; the invite button then also invites the capital and cyno pilots of the selected ping, who only have to accept in game."));
         }
-        return;
+        return false;
     };
+    let hover = format!("{}\n{}", tr!("Invite the capital and cyno pilots of the selected ping into your fleet over ESI. They accept in game."), tr!("The comms invite button sends this too. Press again to invite again."));
+    let pressed = ui
+        .add_enabled(can_invite, egui::Button::new(trf!("{icon}  Invite to fleet", icon = egui_phosphor::regular::USER_PLUS)))
+        .on_hover_text(&hover)
+        .on_disabled_hover_text(if can_invite { hover.clone() } else { tr!("No ping selected, or its capital and cyno pilots are not known yet.").to_owned() })
+        .clicked();
     match invites.filter(|(f, _)| f == fleet_id) {
         None => {
             if !compact {
-                ui.label(egui::RichText::new(tr!("Inviting the capital and cyno over ESI…")).weak());
+                ui.label(egui::RichText::new(tr!("No fleet invite sent yet. Nothing goes out until you press invite.")).weak());
             }
         }
         Some((_, results)) => {
@@ -1898,6 +1885,7 @@ fn esi_invite_lines(ui: &mut egui::Ui, fc_fleet: Option<&(String, i64)>, invites
             }
         }
     }
+    pressed
 }
 
 /// The reply row under a rescue chat: Enter sends to `room`, Shift+Enter breaks the line, the

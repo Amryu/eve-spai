@@ -299,6 +299,22 @@ impl RescueState {
         }
     }
 
+    /// The capital and cyno pilots to invite into `fleet_id` through ESI, only on the FC's press
+    /// of the invite button: a Rorqual pilot still fitting or in another fleet must not get an
+    /// invite the FC never sent. Test mode never invites.
+    pub fn esi_invite_names(&mut self, fleet_id: i64, pressed: bool) -> Option<Vec<String>> {
+        if !pressed || self.test_mode {
+            return None;
+        }
+        let seq = self.selected_ping?;
+        let names: Vec<String> = [self.capital_pilot.clone(), self.cyno_pilot.clone()].into_iter().flatten().collect();
+        if names.is_empty() {
+            return None;
+        }
+        self.actions_mut(seq).esi_invited = Some(fleet_id);
+        Some(names)
+    }
+
     pub fn select_ping(&mut self, seq: u64) {
         self.selected_ping = Some(seq);
         self.apply_selection();
@@ -861,6 +877,28 @@ mod history_tests {
             anomaly: None,
             cap_class: Some(CapClass::Rorqual),
         }
+    }
+
+    /// A selected ping with the pilots known is not enough: nothing goes out over ESI until the
+    /// FC presses invite, and a second press invites again.
+    #[test]
+    fn esi_invite_only_on_the_button_press() {
+        let mut r = RescueState::default();
+        r.push_event(ping(1, "rorq tackled 1DQ1-A"));
+        r.select_ping(1);
+        r.capital_pilot = Some("Rorq Pilot".to_owned());
+        r.cyno_pilot = Some("Cyno Pilot".to_owned());
+        assert_eq!(r.esi_invite_names(77, false), None, "no press, no invite");
+        assert_eq!(r.actions(1).esi_invited, None);
+        assert_eq!(r.esi_invite_names(77, true).as_deref(), Some(&["Rorq Pilot".to_owned(), "Cyno Pilot".to_owned()][..]));
+        assert_eq!(r.actions(1).esi_invited, Some(77));
+        assert!(r.esi_invite_names(77, true).is_some(), "a later press invites again");
+        r.capital_pilot = None;
+        r.cyno_pilot = None;
+        assert_eq!(r.esi_invite_names(77, true), None, "nobody to invite");
+        r.test_mode = true;
+        r.capital_pilot = Some("Rorq Pilot".to_owned());
+        assert_eq!(r.esi_invite_names(77, true), None, "test mode never invites");
     }
 
     /// A double save: the first invite calls the selected ping's author, the next one the other
