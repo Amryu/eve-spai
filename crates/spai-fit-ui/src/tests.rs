@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use spai_fit::fit::{DroneStack, Slot, State};
 use spai_fit::history::EditKind;
-use spai_fit::test_support::{dataset, ids};
+use spai_fit::test_support::{close, dataset, ids};
 
 use super::*;
 use crate::picker::{apply, results, PickTarget};
@@ -1233,6 +1233,54 @@ fn no_more_than_five_drones_are_ever_out_across_stacks() {
     let out: Vec<u32> = s.session().unwrap().fit.drones.iter().map(|d| d.in_space()).collect();
     assert_eq!(out, vec![2, 3], "with two out, three of the other stack may go");
     assert_eq!(s.session().unwrap().fit.drones[0].count, 7, "the bay keeps all seven");
+}
+
+/// Drones launched with a variation on land in the variation, so the bay reads the fit as shown.
+#[test]
+fn drones_launched_with_a_variation_on_count_and_show() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::Drones, 1, |f| f.drones.push(DroneStack { type_id: ids::DRONE, count: 5, active: true, launched: None, mutation: None }));
+    let five = s.computed().unwrap().drones.clone();
+    assert_eq!(five.active, 5);
+    s.start_recording(2);
+    s.edit(EditKind::Drones, 3, |f| f.drones[0].launched = Some(2));
+    s.keep_recording(4);
+    assert_eq!(s.session().unwrap().fit.active_variations.len(), 1, "the launch is a variation");
+    assert_eq!(s.session().unwrap().fit.drones[0].in_space(), 5, "the base keeps all five out");
+    assert_eq!(s.view_fit().unwrap().drones[0].in_space(), 2, "the fit as shown has two");
+    let two = s.computed().unwrap().drones.clone();
+    assert_eq!(two.active, 2);
+    assert!(close(two.bandwidth_used, five.bandwidth_used / 5.0 * 2.0), "{two:?}");
+    s.edit(EditKind::Drones, 5, |f| f.drones[0].launched = Some(4));
+    assert_eq!(s.view_fit().unwrap().drones[0].in_space(), 4);
+    assert_eq!(s.computed().unwrap().drones.active, 4);
+}
+
+/// Past a group limit the editor puts the extra module offline, as the game would refuse it, and
+/// the module the pilot just set is the one that stays.
+#[test]
+fn a_group_limit_puts_the_extra_module_offline_and_spares_the_one_just_set() {
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(Arc::new(d.finish())));
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::AddModule, 1, |f| {
+        f.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 0).with_state(State::Active));
+        f.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 1).with_state(State::Active));
+    });
+    let states = |s: &mut SimUi| {
+        s.computed();
+        (0..2).map(|i| s.session().unwrap().fit.module(Slot::Mid, i).unwrap().state).collect::<Vec<_>>()
+    };
+    assert_eq!(states(&mut s), vec![State::Active, State::Offline]);
+    assert!(s.session().unwrap().warnings.iter().all(|w| !matches!(w.kind, spai_fit::warnings::WarningKind::OfflineModule { .. } | spai_fit::warnings::WarningKind::GroupLimit { .. })), "{:?}", s.session().unwrap().warnings);
+    s.edit(EditKind::SetState, 2, |f| f.module_mut(Slot::Mid, 1).unwrap().state = State::Active);
+    s.touch(Slot::Mid, 1);
+    assert_eq!(states(&mut s), vec![State::Offline, State::Active], "the one just set stays, the other yields");
+    s.undo();
+    assert_eq!(states(&mut s), vec![State::Active, State::Offline]);
 }
 
 #[test]

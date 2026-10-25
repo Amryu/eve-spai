@@ -405,6 +405,10 @@ pub struct Computed {
     /// The share of remote repairs it takes, 1 for all of them (bastion and siege modes cut it).
     pub rep_intake: f64,
     pub mining: Mining,
+    /// Modules a group limit holds below their state, the limits as the fit modifies them.
+    pub capped: Vec<crate::calc::Capped>,
+    /// Modules offline in the fit whose group is already as full as its limit allows.
+    pub limited_offline: Vec<(Slot, u8)>,
 }
 
 /// What the fit mines, in cubic metres a second, critical successes counted at their odds.
@@ -517,6 +521,8 @@ pub fn compute_with(calc: &Calc, fit: &Fit) -> Computed {
         signature_mods: calc.modifiers_of(calc.ship_idx(), attr::SIGNATURE_RADIUS),
         resist: resist(calc),
         mining: mining(calc),
+        capped: calc.capped().to_vec(),
+        limited_offline: calc.limited_offline().to_vec(),
         rep_intake: calc.dogma.attr_named("remoteRepairImpedance").filter(|a| calc.has(calc.ship_idx(), a.id)).map_or(1.0, |a| calc.ship(a.id)),
     }
 }

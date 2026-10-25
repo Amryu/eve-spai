@@ -183,6 +183,8 @@ pub struct Session {
     pub edited_at: u64,
     /// A save of the current change has gone to the host and has not come back yet.
     pub save_sent: bool,
+    /// The module the pilot last set: when a group limit has to put one offline, this one stays.
+    touched: Option<(spai_fit::fit::Slot, u8)>,
 }
 
 /// How long a fit sits unchanged before it is saved.
@@ -195,7 +197,7 @@ impl Session {
     }
 
     pub fn new(id: String, fit: Fit) -> Self {
-        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false }
+        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None }
     }
 
     fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside) {
@@ -203,9 +205,19 @@ impl Session {
         if self.computed_for == Some((self.rev, profile, key)) {
             return;
         }
-        let (resolved, env) = outside.apply(dogma, &self.fit, skills);
-        let calc = Calc::new(dogma, &resolved, skills, &env);
-        let computed = spai_fit::stats::compute_with(&calc, &resolved);
+        let mut keep = self.touched.take();
+        let (resolved, calc, computed) = loop {
+            let (resolved, env) = outside.apply(dogma, &self.fit, skills);
+            let calc = Calc::new(dogma, &resolved, skills, &env);
+            let computed = spai_fit::stats::compute_with(&calc, &resolved);
+            // One more of a group than it may online or run goes offline, as the game refuses
+            // it, and the numbers are figured again without it.
+            if spai_fit::calc::yield_to_limits(dogma, &mut self.fit, &resolved, &computed.capped, keep.take()) {
+                self.rev += 1;
+                continue;
+            }
+            break (resolved, calc, computed);
+        };
         self.missing = spai_fit::skills::missing(&resolved, dogma, skills);
         let mut warnings = spai_fit::warnings::check(dogma, &resolved, &computed, &self.missing);
         warnings.extend(spai_fit::warnings::check(dogma, &self.fit, &computed, &[]).into_iter().filter(|w| matches!(w.kind, spai_fit::warnings::WarningKind::VariationConflict { .. })));
@@ -1198,6 +1210,13 @@ impl SimUi {
     /// The fit on screen.
     pub fn session(&self) -> Option<&Session> {
         self.sessions.get(self.active)
+    }
+
+    /// The module the pilot just set, so a group limit that has to put one offline spares it.
+    pub fn touch(&mut self, slot: spai_fit::fit::Slot, index: u8) {
+        if let Some(s) = self.session_mut() {
+            s.touched = Some((slot, index));
+        }
     }
 
     pub fn session_mut(&mut self) -> Option<&mut Session> {

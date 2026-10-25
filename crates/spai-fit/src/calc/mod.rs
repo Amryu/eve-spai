@@ -117,6 +117,10 @@ pub struct Calc<'d> {
     pub(crate) fixed: Vec<ItemIdx>,
     /// The first running reactive hardener, for damage taken over time.
     pub rah: Option<Rah>,
+    /// Modules held below their state by a group limit, with the fit's bonuses on the limits.
+    capped: Vec<Capped>,
+    /// Modules offline in the fit whose group is already as full as its limit lets it be.
+    limited_offline: Vec<(crate::fit::Slot, u8)>,
 }
 
 /// A running reactive hardener: the armor resonances it adapts against, its starting resistances,
@@ -149,12 +153,101 @@ impl<'d> Calc<'d> {
             incoming: fit.damage_profile.weights(),
             fixed: Vec::new(),
             rah: None,
+            capped: Vec::new(),
+            limited_offline: Vec::new(),
         };
-        c.build(fit, skills);
+        // The group limits carry the fit's own bonuses (a Command Processor rig, a command ship's
+        // role bonus), so they are read off a first pass before any module is held back by them.
+        c.build(fit, skills, &[]);
         c.collect();
+        let (capped, limited_offline) = c.group_caps(fit);
+        if !capped.is_empty() {
+            c.reset();
+            c.build(fit, skills, &capped);
+            c.collect();
+        }
+        c.capped = capped;
+        c.limited_offline = limited_offline;
         c.buffs(env);
         patch::apply(&mut c);
         c
+    }
+
+    fn reset(&mut self) {
+        self.items.clear();
+        self.mods.clear();
+        self.cache.borrow_mut().clear();
+        self.visiting.borrow_mut().clear();
+        self.unknown_types.clear();
+        self.fixed.clear();
+        self.rah = None;
+        self.ship = 0;
+        self.char = 0;
+    }
+
+    pub fn capped(&self) -> &[Capped] {
+        &self.capped
+    }
+
+    pub fn limited_offline(&self) -> &[(crate::fit::Slot, u8)] {
+        &self.limited_offline
+    }
+
+    /// `group_limits` on this pass's values: `maxGroupFitted`, `maxGroupOnline` and
+    /// `maxGroupActive` as the fit modifies them. With them, the offline modules whose group is
+    /// full at Online or Active, which are offline for want of room and no cause for a warning.
+    fn group_caps(&self, fit: &Fit) -> (Vec<Capped>, Vec<(crate::fit::Slot, u8)>) {
+        let online_attr = self.dogma.attr_named("maxGroupOnline").map(|a| a.id);
+        let mut order: Vec<&crate::fit::Module> = fit.modules.iter().collect();
+        order.sort_by_key(|m| (m.slot, m.index));
+        let max_of = |m: &crate::fit::Module, a: Option<AttrId>| -> Option<u32> {
+            let a = a?;
+            let t = self.dogma.type_(m.type_id)?;
+            t.attr(a)?;
+            let i = self.items.iter().position(|i| i.kind == ItemKind::Module { slot: m.slot, index: m.index })?;
+            Some(self.value(i, a).round()).filter(|v| *v > 0.0).map(|v| v as u32)
+        };
+        let limits = |m: &crate::fit::Module| {
+            [
+                (GroupLimit::Fitted, max_of(m, Some(attr::MAX_GROUP_FITTED)), State::Offline, None),
+                (GroupLimit::Online, max_of(m, online_attr), State::Online, Some(State::Offline)),
+                (GroupLimit::Active, max_of(m, Some(attr::MAX_GROUP_ACTIVE)), State::Active, Some(State::Online)),
+            ]
+        };
+        let mut counts: HashMap<(crate::ids::GroupId, GroupLimit), u32> = HashMap::new();
+        let mut capped = Vec::new();
+        for m in &order {
+            let Some(t) = self.dogma.type_(m.type_id) else { continue };
+            let mut state = m.state;
+            let mut hit: Option<(GroupLimit, u32)> = None;
+            for (limit, cap, from, to) in limits(m) {
+                let Some(cap) = cap else { continue };
+                if state < from {
+                    continue;
+                }
+                let n = counts.entry((t.group, limit)).or_insert(0);
+                *n += 1;
+                if *n > cap {
+                    hit = Some((limit, cap));
+                    state = to.unwrap_or(State::Offline);
+                    if to.is_none() {
+                        break;
+                    }
+                }
+            }
+            if let Some((limit, max)) = hit {
+                capped.push(Capped { slot: m.slot, index: m.index, state: state.min(m.state), limit, max });
+            }
+        }
+        let mut limited_offline = Vec::new();
+        for m in order.iter().filter(|m| m.state == State::Offline) {
+            let Some(t) = self.dogma.type_(m.type_id) else { continue };
+            let full = limits(m).into_iter().filter(|(limit, _, _, _)| *limit != GroupLimit::Fitted).any(|(limit, cap, _, _)| cap.is_some_and(|cap| counts.get(&(t.group, limit)).copied().unwrap_or(0) >= cap));
+            if full {
+                limited_offline.push((m.slot, m.index));
+            }
+        }
+        (capped, limited_offline)
     }
 
     fn item_for(&mut self, type_id: TypeId, kind: ItemKind, state: State) -> Option<ItemIdx> {
@@ -184,7 +277,7 @@ impl<'d> Calc<'d> {
         Some(self.items.len() - 1)
     }
 
-    fn build(&mut self, fit: &Fit, skills: &SkillSet) {
+    fn build(&mut self, fit: &Fit, skills: &SkillSet, capped: &[Capped]) {
         self.char = match self.item_for(CHARACTER_TYPE, ItemKind::Char, State::Online) {
             Some(i) => i,
             None => {
@@ -235,7 +328,6 @@ impl<'d> Calc<'d> {
                 self.items[i].owner = Some(char);
             }
         }
-        let capped = group_limits(self.dogma, fit);
         for m in &fit.modules {
             let state = capped.iter().find(|c| (c.slot, c.index) == (m.slot, m.index)).map_or(m.state, |c| c.state);
             let Some(i) = self.item_for(m.type_id, ItemKind::Module { slot: m.slot, index: m.index }, state) else { continue };
@@ -629,41 +721,31 @@ pub struct Capped {
     pub max: u32,
 }
 
-pub fn group_limits(dogma: &crate::Dogma, fit: &Fit) -> Vec<Capped> {
-    let mut order: Vec<&crate::fit::Module> = fit.modules.iter().collect();
+/// Puts the modules a group limit holds back offline in `fit`, as the game refuses to online or
+/// run one more: `capped` from the fit as shown (`shown`, variations applied). The module the pilot
+/// last set, `keep`, keeps its state; an earlier one of its group yields instead. A module the base
+/// fit does not hold as shown is left alone. True when something changed.
+/// The one to yield is the last of its group in rack order, the one the game would hold back.
+pub fn yield_to_limits(dogma: &crate::Dogma, fit: &mut Fit, shown: &Fit, capped: &[Capped], keep: Option<(crate::fit::Slot, u8)>) -> bool {
+    let mut changed = false;
+    let mut order: Vec<&crate::fit::Module> = shown.modules.iter().collect();
     order.sort_by_key(|m| (m.slot, m.index));
-    let online_attr = dogma.attr_named("maxGroupOnline").map(|a| a.id);
-    let mut counts: HashMap<(crate::ids::GroupId, GroupLimit), u32> = HashMap::new();
-    let mut out = Vec::new();
-    for m in order {
-        let Some(t) = dogma.type_(m.type_id) else { continue };
-        let max = |a: Option<AttrId>| a.and_then(|a| t.attr(a)).filter(|v| *v > 0.0).map(|v| v as u32);
-        let mut state = m.state;
-        let mut hit: Option<(GroupLimit, u32)> = None;
-        for (limit, attr, from, to) in [
-            (GroupLimit::Fitted, Some(attr::MAX_GROUP_FITTED), State::Offline, None),
-            (GroupLimit::Online, online_attr, State::Online, Some(State::Offline)),
-            (GroupLimit::Active, Some(attr::MAX_GROUP_ACTIVE), State::Active, Some(State::Online)),
-        ] {
-            let Some(cap) = max(attr) else { continue };
-            if state < from {
-                continue;
-            }
-            let n = counts.entry((t.group, limit)).or_insert(0);
-            *n += 1;
-            if *n > cap {
-                hit = Some((limit, cap));
-                state = to.unwrap_or(State::Offline);
-                if to.is_none() {
-                    break;
-                }
-            }
-        }
-        if let Some((limit, max)) = hit {
-            out.push(Capped { slot: m.slot, index: m.index, state: state.min(m.state), limit, max });
+    let group_of = |m: &crate::fit::Module| dogma.type_(m.type_id).map(|t| t.group);
+    for c in capped.iter().filter(|c| c.limit != GroupLimit::Fitted) {
+        let Some(over) = shown.module(c.slot, c.index) else { continue };
+        let victim = if keep == Some((c.slot, c.index)) {
+            let group = group_of(over);
+            order.iter().rev().copied().find(|m| (m.slot, m.index) != (c.slot, c.index) && group_of(m) == group && m.state > State::Offline && fit.module(m.slot, m.index).is_some_and(|b| b.state > State::Offline))
+        } else {
+            Some(over)
+        };
+        let Some(v) = victim else { continue };
+        if let Some(b) = fit.module_mut(v.slot, v.index).filter(|b| b.type_id == v.type_id && b.state > State::Offline) {
+            b.state = State::Offline;
+            changed = true;
         }
     }
-    out
+    changed
 }
 
 #[cfg(test)]

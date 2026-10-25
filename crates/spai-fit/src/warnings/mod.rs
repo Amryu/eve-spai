@@ -199,7 +199,7 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
             }
         }
     }
-    for c in crate::calc::group_limits(dogma, fit) {
+    for c in &computed.capped {
         let severity = if c.limit == crate::calc::GroupLimit::Fitted { Severity::Error } else { Severity::Warn };
         out.push(warn(severity, WarningKind::GroupLimit { slot: c.slot, index: c.index, limit: c.limit, max: c.max }));
     }
@@ -207,7 +207,9 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
         out.push(warn(Severity::Error, WarningKind::WrongCharge { slot: m.slot, index: m.index }));
     }
     for m in &fit.modules {
-        if m.state == State::Offline {
+        // Offline for want of room in its group (a third command burst with one rig) is the
+        // fit as the game allows it, not a module forgotten offline.
+        if m.state == State::Offline && !computed.limited_offline.contains(&(m.slot, m.index)) {
             out.push(warn(Severity::Warn, WarningKind::OfflineModule { slot: m.slot, index: m.index }));
         }
         let Some(t) = dogma.type_(m.type_id) else { continue };

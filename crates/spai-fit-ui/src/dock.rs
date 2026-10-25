@@ -84,14 +84,16 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     {
         use spai_ui::widgets::SteadySelect as _;
         let mut x = row.min.x;
+        // The fit as shown: a variation switched on may hold other drones, implants or cargo.
+        let view = sim.view_fit();
         for (i, t) in tabs.iter().enumerate() {
-            let count = match (t, sim.session()) {
-                (DockTab::Drones, Some(s)) => s.fit.drones.iter().map(|d| d.count).sum::<u32>() as usize,
-                (DockTab::Fighters, Some(s)) => s.fit.fighters.iter().map(|f| f.count).sum::<u32>() as usize,
-                (DockTab::Implants, Some(s)) => s.fit.implants.len(),
-                (DockTab::Boosters, Some(s)) => s.fit.boosters.len(),
-                (DockTab::Cargo, Some(s)) => s.fit.cargo.len(),
-                (DockTab::Projected, Some(s)) => s.fit.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.projected_fits.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + s.fit.boosts.len(),
+            let count = match (t, view.as_ref()) {
+                (DockTab::Drones, Some(f)) => f.drones.iter().map(|d| d.count).sum::<u32>() as usize,
+                (DockTab::Fighters, Some(f)) => f.fighters.iter().map(|f| f.count).sum::<u32>() as usize,
+                (DockTab::Implants, Some(f)) => f.implants.len(),
+                (DockTab::Boosters, Some(f)) => f.boosters.len(),
+                (DockTab::Cargo, Some(f)) => f.cargo.len(),
+                (DockTab::Projected, Some(f)) => f.projected.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + f.projected_fits.iter().map(|p| p.count.max(1)).sum::<u32>() as usize + f.boosts.len(),
                 _ => 0,
             };
             let label = if count > 0 { format!("{} ({count})", t.name()) } else { t.name().to_owned() };
@@ -518,10 +520,11 @@ fn empty_note(ui: &mut egui::Ui, text: &str) {
 
 fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let tips = sim.tip_values();
-    let Some(s) = sim.session() else { return };
-    let list: Vec<(TypeId, u32, u32)> = s.fit.drones.iter().map(|d| (d.type_id, d.count, d.in_space())).collect();
+    // The stacks as shown: with a variation on, its drones, which is where the edits land too.
+    let Some(view) = sim.view_fit() else { return };
+    let list: Vec<(TypeId, u32, u32)> = view.drones.iter().map(|d| (d.type_id, d.count, d.in_space())).collect();
     let all_out: u32 = list.iter().map(|(_, _, o)| *o).sum();
-    let rolls: Vec<Option<spai_fit::fit::Mutation>> = s.fit.drones.iter().map(|d| d.mutation.clone()).collect();
+    let rolls: Vec<Option<spai_fit::fit::Mutation>> = view.drones.iter().map(|d| d.mutation.clone()).collect();
     if list.is_empty() {
         empty_note(ui, tr!("Drag drones here or double-click them in the browser."));
     }
@@ -616,8 +619,8 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 
 fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let tips = sim.tip_values();
-    let Some(s) = sim.session() else { return };
-    let list: Vec<(TypeId, u32, bool)> = s.fit.fighters.iter().map(|d| (d.type_id, d.count, d.active)).collect();
+    let Some(view) = sim.view_fit() else { return };
+    let list: Vec<(TypeId, u32, bool)> = view.fighters.iter().map(|d| (d.type_id, d.count, d.active)).collect();
     if list.is_empty() {
         empty_note(ui, tr!("Drag fighter squadrons here."));
     }
@@ -673,19 +676,19 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 /// Implants or boosters, each with the slot it takes.
 fn worn(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, implants: bool, now_ms: u64) {
     let tips = sim.tip_values();
-    let Some(s) = sim.session() else { return };
+    let Some(view) = sim.view_fit() else { return };
     let mut list: Vec<(TypeId, Option<u8>, bool)> = if implants {
-        s.fit.implants.iter().map(|t| (*t, dogma.type_(*t).and_then(|d| d.attr(spai_fit::dogma::attr::IMPLANTNESS)).map(|v| v as u8), false)).collect()
+        view.implants.iter().map(|t| (*t, dogma.type_(*t).and_then(|d| d.attr(spai_fit::dogma::attr::IMPLANTNESS)).map(|v| v as u8), false)).collect()
     } else {
         // On when any side effect is counted, picked one by one or all at once.
-        s.fit.boosters.iter().map(|b| (b.type_id, dogma.type_(b.type_id).and_then(|d| d.attr(spai_fit::dogma::attr::BOOSTERNESS)).map(|v| v as u8), b.side_on.as_ref().map_or(b.side_effects, |l| !l.is_empty()))).collect()
+        view.boosters.iter().map(|b| (b.type_id, dogma.type_(b.type_id).and_then(|d| d.attr(spai_fit::dogma::attr::BOOSTERNESS)).map(|v| v as u8), b.side_on.as_ref().map_or(b.side_effects, |l| !l.is_empty()))).collect()
     };
     list.sort_by_key(|(_, slot, _)| slot.unwrap_or(99));
     if list.is_empty() {
         empty_note(ui, if implants { tr!("No implants. Drag some here; one per slot.") } else { tr!("No boosters. Drag some here; one per slot.") });
     }
-    let disabled: Vec<TypeId> = sim.session().map(|s| s.fit.disabled.clone()).unwrap_or_default();
-    let fit = sim.session().map(|s| s.fit.clone()).unwrap_or_default();
+    let disabled: Vec<TypeId> = view.disabled.clone();
+    let fit = view;
     for (type_id, slot, side_effects) in list {
         // A booster comes from the cargo: how many it carries, and the others for the same slot.
         let carried: u32 = fit.cargo.iter().filter(|c| c.type_id == type_id).map(|c| c.quantity).sum();

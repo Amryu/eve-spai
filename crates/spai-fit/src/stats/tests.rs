@@ -573,7 +573,7 @@ fn a_group_limit_holds_the_extra_module_back_and_a_wrong_charge_stays_out() {
     f.modules.push(running(ids::HARDENER, Slot::Mid, 1));
     let two = compute(&d, &f, &SkillSet::all_v(), &env()).tank.armor.resonance;
     assert_eq!(one, two, "the second runs no more than online");
-    let capped = crate::calc::group_limits(&d, &f);
+    let capped = compute(&d, &f, &SkillSet::all_v(), &env()).capped;
     assert_eq!(capped.len(), 1);
     assert_eq!((capped[0].index, capped[0].state, capped[0].limit), (1, State::Online, crate::calc::GroupLimit::Active));
     let mut g = Fit::new(ids::SHIP, "gun");
@@ -581,6 +581,156 @@ fn a_group_limit_holds_the_extra_module_back_and_a_wrong_charge_stays_out() {
     assert!(compute(&d, &g, &SkillSet::all_v(), &env()).weapons.is_empty(), "a gun loads no bomb");
     let w = crate::warnings::check(&d, &g, &compute(&d, &g, &SkillSet::all_v(), &env()), &[]);
     assert!(w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::WrongCharge { .. })));
+}
+
+/// A dataset where the hardener's group may have one online and one running, and a rig like the
+/// Command Processor that adds `maxGangModules` to both limits of that group.
+fn group_limited() -> Dogma {
+    use crate::dogma::{Domain, EffectCategory, Func, Modifier, Op};
+    use crate::test_support::{attr_def, effect, modifier, type_def};
+    const MAX_GROUP_ONLINE: crate::ids::AttrId = 978;
+    const MAX_GANG_MODULES: crate::ids::AttrId = 435;
+    let mut d = dataset();
+    let h = d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap();
+    h.attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    h.attrs.push((MAX_GROUP_ONLINE, 1.0));
+    d.attributes.push(attr_def(MAX_GROUP_ONLINE, "maxGroupOnline", true, true, 0.0));
+    d.attributes.push(attr_def(MAX_GANG_MODULES, "maxGangModules", true, true, 0.0));
+    d.effects.push(effect(
+        900,
+        "commandProcessorEffect",
+        EffectCategory::Passive,
+        vec![
+            Modifier { group: Some(328), ..modifier(Domain::Ship, Func::LocationGroup, MAX_GROUP_ONLINE, MAX_GANG_MODULES, Op::ModAdd) },
+            Modifier { group: Some(328), ..modifier(Domain::Ship, Func::LocationGroup, ids::MAX_GROUP_ACTIVE, MAX_GANG_MODULES, Op::ModAdd) },
+        ],
+    ));
+    d.types.push(type_def(COMMAND_PROCESSOR, "Small Command Processor I", 773, 7, &[(MAX_GANG_MODULES, 1.0)], &[900], &[]));
+    d.finish()
+}
+
+const COMMAND_PROCESSOR: crate::ids::TypeId = 9900;
+
+#[test]
+fn group_limits_carry_the_fits_bonuses_and_a_full_group_excuses_the_offline_rest() {
+    use crate::calc::GroupLimit::Online;
+    let d = group_limited();
+    let mut f = Fit::new(ids::SHIP, "cp");
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 0));
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 1));
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 2));
+    f.modules.push(Module::new(ids::HARDENER, Slot::Mid, 3).with_state(State::Offline));
+    let one = compute(&d, &f, &SkillSet::all_v(), &env());
+    let caps = |c: &Computed| c.capped.iter().map(|c| (c.index, c.limit, c.max, c.state)).collect::<Vec<_>>();
+    assert_eq!(caps(&one), vec![(1, Online, 1, State::Offline), (2, Online, 1, State::Offline)]);
+    assert_eq!(one.limited_offline, vec![(Slot::Mid, 3)], "the fourth is offline because the group is full");
+    f.modules.push(Module::new(COMMAND_PROCESSOR, Slot::Rig, 0).with_state(State::Online));
+    let two = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert_eq!(caps(&two), vec![(2, Online, 2, State::Offline)], "the rig makes room for one more");
+    assert_eq!(two.limited_offline, vec![(Slot::Mid, 3)]);
+    assert!(two.tank.armor.resonance[0] < one.tank.armor.resonance[0], "and the second hardener now works: {:?} vs {:?}", two.tank.armor.resonance, one.tank.armor.resonance);
+    let w = crate::warnings::check(&d, &f, &two, &[]);
+    assert!(w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::GroupLimit { index: 2, .. })));
+    assert!(!w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::GroupLimit { index: 1, .. })));
+    assert!(!w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::OfflineModule { .. })), "offline for want of room is no warning: {w:?}");
+}
+
+#[test]
+fn yielding_to_a_limit_puts_the_last_of_the_group_offline_and_spares_the_module_just_set() {
+    let d = group_limited();
+    let mut f = Fit::new(ids::SHIP, "cp");
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 0));
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 1));
+    f.modules.push(running(ids::HARDENER, Slot::Mid, 2));
+    f.modules.push(Module::new(COMMAND_PROCESSOR, Slot::Rig, 0).with_state(State::Online));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let shown = f.clone();
+    assert!(crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, None));
+    let states = |f: &Fit| (0..3).map(|i| f.module(Slot::Mid, i).unwrap().state).collect::<Vec<_>>();
+    assert_eq!(states(&f), vec![State::Active, State::Active, State::Offline]);
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(c.capped.is_empty() && c.limited_offline == vec![(Slot::Mid, 2)]);
+    let same = f.clone();
+    assert!(!crate::calc::yield_to_limits(&d, &mut f, &same, &c.capped, None), "nothing left to yield");
+    // The pilot turns the third on: the second, last of the others in rack order, yields.
+    f.module_mut(Slot::Mid, 2).unwrap().state = State::Active;
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let shown = f.clone();
+    assert!(crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, Some((Slot::Mid, 2))));
+    assert_eq!(states(&f), vec![State::Active, State::Offline, State::Active]);
+    // Shown with another module in the slot (a variation), the base is left alone.
+    let mut other = f.clone();
+    other.module_mut(Slot::Mid, 0).unwrap().type_id = ids::MWD;
+    f.module_mut(Slot::Mid, 1).unwrap().state = State::Active;
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let before = f.clone();
+    let capped: Vec<_> = c.capped.iter().map(|c| crate::calc::Capped { slot: Slot::Mid, index: 0, ..*c }).collect();
+    assert!(!crate::calc::yield_to_limits(&d, &mut f, &other, &capped, None));
+    assert_eq!(f, before);
+}
+
+const LEGION_BOOST: &str = "[Legion, GSF - SAC - Boost - ]
+Damage Control II
+Syndicate 1600mm Steel Plates
+Syndicate 1600mm Steel Plates
+Reactor Control Unit II
+True Sansha Thermal Armor Hardener
+True Sansha EM Armor Hardener
+True Sansha Kinetic Armor Hardener
+Imperial Navy Multispectrum Energized Membrane
+
+Gistum B-Type 50MN Microwarpdrive
+Small Cap Battery II
+
+Information Command Burst II
+Information Command Burst II
+Expanded Probe Launcher I
+125mm Gatling AutoCannon II
+Skirmish Command Burst II
+Skirmish Command Burst II
+
+Medium Command Processor I
+Medium Trimark Armor Pump II
+Medium Trimark Armor Pump II
+
+Legion Core - Augmented Antimatter Reactor
+Legion Defensive - Augmented Plating
+Legion Offensive - Support Processor
+Legion Propulsion - Intercalated Nanofibers
+
+
+Warrior II x5
+Acolyte II x5
+";
+
+/// A Legion runs one command burst, plus one per Command Processor rig; the Support Processor
+/// subsystem adds none. `SPAI_DOGMA_BLOB=<path> cargo test -p spai-fit real_data_legion -- --ignored`
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_legion_runs_two_bursts_with_one_command_processor() {
+    use crate::calc::GroupLimit::Online;
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let imp = crate::formats::import_any(&d, LEGION_BOOST).remove(0);
+    assert!(imp.unknown.is_empty(), "{:?}", imp.unknown);
+    let mut f = imp.fit;
+    f.cap_drones_out(5);
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert_eq!(c.capped.iter().map(|c| (c.slot, c.index, c.limit, c.max)).collect::<Vec<_>>(), vec![(Slot::High, 4, Online, 2), (Slot::High, 5, Online, 2)]);
+    assert_eq!((c.drones.active, c.drones.bandwidth_used, c.drones.max_active), (5, 25.0, 5));
+    let shown = f.clone();
+    assert!(crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, None));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(c.capped.is_empty());
+    assert_eq!(c.limited_offline, vec![(Slot::High, 4), (Slot::High, 5)]);
+    let w = crate::warnings::check(&d, &f, &c, &[]);
+    assert!(!w.iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::OfflineModule { .. } | crate::warnings::WarningKind::GroupLimit { .. })), "{w:?}");
+    // Without the rig, one burst.
+    f.modules.retain(|m| m.slot != Slot::Rig || m.index != 0);
+    for m in f.modules.iter_mut().filter(|m| m.slot == Slot::High) {
+        m.state = State::Active;
+    }
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert_eq!(c.capped.iter().map(|c| (c.index, c.max)).collect::<Vec<_>>(), vec![(1, 1), (4, 1), (5, 1)]);
 }
 
 #[test]

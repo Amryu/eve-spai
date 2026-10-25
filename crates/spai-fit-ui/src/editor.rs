@@ -1128,6 +1128,7 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 }
             }
         });
+        sim.touch(slot, index);
     }
     if let Some(c) = set_charge {
         sim.edit(EditKind::SetCharge, now_ms, |f| {

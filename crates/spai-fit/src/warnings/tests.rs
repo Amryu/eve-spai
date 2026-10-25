@@ -66,6 +66,21 @@ fn modules_without_their_charges_are_pointed_out() {
 }
 
 #[test]
+fn a_module_offline_because_its_group_is_full_is_not_pointed_out() {
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "t");
+    f.modules.push(Module::new(ids::HARDENER, Slot::Mid, 0).with_state(State::Active));
+    f.modules.push(Module::new(ids::HARDENER, Slot::Mid, 1).with_state(State::Offline));
+    f.modules.push(Module::new(ids::MWD, Slot::Mid, 2).with_state(State::Offline));
+    let k = kinds_in(&d, &f, &[]);
+    assert!(!has(&k, |w| matches!(w, WarningKind::OfflineModule { slot: Slot::Mid, index: 1 })), "{k:?}");
+    assert!(has(&k, |w| matches!(w, WarningKind::OfflineModule { slot: Slot::Mid, index: 2 })), "an offline module of a group with room is: {k:?}");
+    assert!(!has(&k, |w| matches!(w, WarningKind::GroupLimit { .. })));
+}
+
+#[test]
 fn ammo_coverage_looks_at_what_is_carried_against_what_exists() {
     let mut f = Fit::new(ids::SHIP, "t");
     f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
