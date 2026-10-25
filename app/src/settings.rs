@@ -45,6 +45,7 @@ pub struct Settings {
     pub sim_layout: String,
     /// Shows what is still being worked on: the fitting and fleet simulator tab.
     #[serde(default)]
+    /// Once gated the fitting tab; kept so saved settings still parse.
     pub beta_features: bool,
     /// The version of the bundled bridge and upgrade defaults already applied.
     #[serde(default)]

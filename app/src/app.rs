@@ -3683,13 +3683,11 @@ impl SpaiApp {
                 // of fleet command rather than a feature beside it. It keeps its own switch only
                 // because it also needs the delve911 rooms joined.
                 let has_rescue = self.rescue_any();
-                let beta = self.settings.beta_features;
                 let rows: Vec<nav::View> = nav::View::primary()
                     .iter()
                     .copied()
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
-                    .filter(|v| *v != nav::View::Imperium || beta)
                     .collect();
                 let member = self.is_imperium_member();
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &move |v| v.label_for(member));

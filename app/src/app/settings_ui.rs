@@ -2023,19 +2023,6 @@ impl SpaiApp {
                         changed = true;
                     }
                     ui.add_space(6.0);
-                    if ui
-                        .checkbox(&mut self.settings.beta_features, tr!("Beta features"))
-                        .on_hover_text(tr!("Shows the fitting and fleet simulator tab. It is new and still changes."))
-                        .changed()
-                    {
-                        changed = true;
-                        if !self.settings.beta_features && self.view == crate::nav::View::Imperium {
-                            self.view = crate::nav::View::Dashboard;
-                        }
-                    }
-                    ui.label(egui::RichText::new(tr!("The fitting and fleet simulator tab, still being worked on.")).weak());
-
-                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui
                             .button(trf!("{icon}  Check for updates", icon = egui_phosphor::regular::ARROWS_CLOCKWISE))
