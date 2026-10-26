@@ -117,10 +117,20 @@ fn damage_types(dogma: &Dogma, charge: TypeId) -> Vec<DamageType> {
 
 /// A charge's reach relative to its kind: the range multiplier for turret ammo, flight distance
 /// for missiles.
-fn reach(dogma: &Dogma, charge: TypeId) -> Option<f64> {
+/// Optimal plus falloff, each scaled by the charge: blaster ammo such as Null reaches through
+/// falloff as much as through optimal.
+pub(crate) fn turret_reach(optimal: f64, falloff: f64, range_mult: f64, falloff_mult: f64) -> f64 {
+    optimal * range_mult + falloff * falloff_mult
+}
+
+fn reach(dogma: &Dogma, weapon: TypeId, charge: TypeId) -> Option<f64> {
     let t = dogma.type_(charge)?;
     if let Some(m) = t.attr(attr::WEAPON_RANGE_MULTIPLIER) {
-        return Some(f64::from(m));
+        let w = dogma.type_(weapon);
+        let (optimal, falloff) = (w.and_then(|w| w.attr(attr::MAX_RANGE)), w.and_then(|w| w.attr(attr::FALLOFF)));
+        let Some(optimal) = optimal else { return Some(f64::from(m)) };
+        let fm = dogma.attr_named("fallofMultiplier").and_then(|a| t.attr(a.id)).unwrap_or(1.0);
+        return Some(turret_reach(f64::from(optimal), falloff.map_or(0.0, f64::from), f64::from(m), f64::from(fm)));
     }
     let v = t.attr(attr::MAX_VELOCITY)?;
     let f = t.attr(attr::EXPLOSION_DELAY)?;
@@ -245,7 +255,7 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
             out.push(warn(Severity::Info, WarningKind::AmmoDamageGap { weapon: w.type_id, missing }));
         }
         let reaches = |ids: &[TypeId]| -> Option<(f64, f64)> {
-            let r: Vec<f64> = ids.iter().filter_map(|c| reach(dogma, *c)).collect();
+            let r: Vec<f64> = ids.iter().filter_map(|c| reach(dogma, w.type_id, *c)).collect();
             let min = r.iter().copied().fold(f64::INFINITY, f64::min);
             let max = r.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             (!r.is_empty()).then_some((min, max))
@@ -256,7 +266,7 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
             // missiles) is not it.
             let hits = |c: TypeId| dogma.type_(c).map_or(0.0, |t| [attr::EM_DAMAGE, attr::THERMAL_DAMAGE, attr::KINETIC_DAMAGE, attr::EXPLOSIVE_DAMAGE].iter().map(|a| t.attr(*a).map_or(0.0, f64::from)).sum::<f64>());
             let hardest = carried.iter().map(|c| hits(*c)).fold(0.0, f64::max);
-            let short = possible.iter().any(|c| reach(dogma, *c).is_some_and(|r| r < cmin * 0.99) && hits(*c) > hardest * 1.01);
+            let short = possible.iter().any(|c| reach(dogma, w.type_id, *c).is_some_and(|r| r < cmin * 0.99) && hits(*c) > hardest * 1.01);
             let long = cmax < pmax * 0.99;
             if short || long {
                 out.push(warn(Severity::Info, WarningKind::AmmoRangeGap { weapon: w.type_id, short, long }));

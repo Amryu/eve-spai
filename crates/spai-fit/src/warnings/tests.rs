@@ -153,3 +153,22 @@ fn a_battleship_without_a_prop_module_is_only_a_note() {
     assert_eq!(severity(1.0), Some(Severity::Warn), "a frigate");
     assert_eq!(severity(3.0), Some(Severity::Info), "a battleship");
 }
+
+#[test]
+fn blaster_ammo_reaches_through_falloff_too() {
+    // A Neutron Blaster Cannon II: Null scales optimal and falloff, Iron optimal only.
+    let null = turret_reach(7200.0, 10_000.0, 1.4, 1.4);
+    let iron = turret_reach(7200.0, 10_000.0, 1.6, 1.0);
+    assert!(null > iron, "{null} vs {iron}");
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn a_blaster_carrying_null_has_its_long_end_covered() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let text = "[Hyperion, Blasters]\nNeutron Blaster Cannon II, Void L\n\nNull L x1000\n";
+    let fit = crate::formats::import_any(&d, text).remove(0).fit;
+    let computed = crate::stats::compute(&d, &fit, &SkillSet::all_v(), &Env::default());
+    let gaps: Vec<_> = check(&d, &fit, &computed, &[]).into_iter().filter(|w| matches!(w.kind, WarningKind::AmmoRangeGap { long: true, .. })).collect();
+    assert!(gaps.is_empty(), "{gaps:?}");
+}
