@@ -47,6 +47,7 @@ impl SimWebApp {
             fetching: Default::default(),
         };
         app.sim.handle(HostEvent::Fits(app.library.summaries()));
+        app.sim.handle(HostEvent::OwnDoctrines(app.library.doctrine_docs()));
         if let Some(layout) = page::load_raw(LAYOUT_KEY) {
             app.sim.handle(HostEvent::Layout(layout));
         }
@@ -104,8 +105,40 @@ impl SimWebApp {
                 }
                 _ => {}
             }
+            if let Ok(r) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/supplied")))).await {
+                if r.ok {
+                    events.lock().unwrap().push(HostEvent::Supplied(spai_fit_ui::SuppliedDoctrine::parse_list(&r.bytes)));
+                }
+            }
             ctx.request_repaint();
         });
+    }
+
+    /// An admin's write or a removal on the server, then the doctrines again.
+    fn send(&self, ctx: &egui::Context, method: ehttp::Method, path: String, body: Option<serde_json::Value>, done: &'static str) {
+        let (events, bearer, ctx2) = (self.events.clone(), self.bearer(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let outcome: Result<(), String> = async {
+                let b = bearer.ok_or("sign in first")?;
+                let mut req = ehttp::Request::post(Self::api(&path), body.map(|b| b.to_string().into_bytes()).unwrap_or_default());
+                req.method = method;
+                req.headers = ehttp::Headers::new(&[("Content-Type", "application/json"), ("Authorization", &format!("Bearer {b}"))]);
+                let r = ehttp::fetch_async(req).await?;
+                if !r.ok && r.status != 404 {
+                    return Err(serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or_else(|| r.status.to_string()));
+                }
+                Ok(())
+            }
+            .await;
+            if !done.is_empty() || outcome.is_err() {
+                events.lock().unwrap().push(HostEvent::Status(match outcome {
+                    Ok(()) => done.to_owned(),
+                    Err(e) => trf!("Could not publish: {e}", e = e),
+                }));
+            }
+            ctx2.request_repaint();
+        });
+        self.fetch_doctrines(ctx);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -228,6 +261,38 @@ impl SimWebApp {
                         let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/fleets/{id}"))))).await else { continue };
                         let Ok(v) = serde_json::from_slice::<serde_json::Value>(&full.bytes) else { continue };
                         lib.fleets.insert(id.to_owned(), FleetEntry { name: v["name"].as_str().unwrap_or("").to_owned(), updated_at: v["updated_at"].as_i64().unwrap_or(0), doc: v["doc"].to_string(), rev, server_rev: rev });
+                    }
+                }
+            }
+            // The pilot's own doctrines the same way.
+            for (id, e) in lib.doctrines.clone() {
+                if e.server_rev >= e.rev {
+                    continue;
+                }
+                let Ok(doc) = serde_json::from_str::<serde_json::Value>(&e.doc) else { continue };
+                let body = serde_json::json!({ "name": e.name, "rev": e.server_rev, "doc": doc });
+                let mut req = ehttp::Request::post(Self::api(&format!("/own-doctrines/{id}")), body.to_string().into_bytes());
+                req.method = ehttp::Method::PUT;
+                req.headers = ehttp::Headers::new(&[("Content-Type", "application/json")]);
+                if let Ok(r) = ehttp::fetch_async(auth(req)).await {
+                    if let Some(rev) = r.ok.then(|| serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["rev"].as_i64())).flatten() {
+                        if let Some(x) = lib.doctrines.get_mut(&id) {
+                            x.server_rev = rev;
+                            x.rev = rev;
+                        }
+                    }
+                }
+            }
+            if let Ok(r) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api("/own-doctrines")))).await {
+                if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
+                    for entry in list {
+                        let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
+                        if lib.doctrines.get(id).is_some_and(|e| e.server_rev >= rev) {
+                            continue;
+                        }
+                        let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/own-doctrines/{id}"))))).await else { continue };
+                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&full.bytes) else { continue };
+                        lib.doctrines.insert(id.to_owned(), FleetEntry { name: v["name"].as_str().unwrap_or("").to_owned(), updated_at: v["updated_at"].as_i64().unwrap_or(0), doc: v["doc"].to_string(), rev, server_rev: rev });
                     }
                 }
             }
@@ -368,6 +433,24 @@ impl SimWebApp {
             HostRequest::FetchDoctrines => self.fetch_doctrines(ctx),
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.delete_doctrine(ctx, id),
+            HostRequest::PublishSupplied { side, doc } => {
+                let Ok(doc) = serde_json::from_str::<serde_json::Value>(&doc) else { return };
+                let id = doc["id"].as_str().unwrap_or_default().to_owned();
+                self.send(ctx, ehttp::Method::PUT, format!("/supplied/{id}"), Some(serde_json::json!({ "side": side, "doc": doc })), tr!("Published"));
+            }
+            HostRequest::DeleteSupplied(id) => self.send(ctx, ehttp::Method::DELETE, format!("/supplied/{id}"), None, tr!("Deleted")),
+            HostRequest::SaveOwnDoctrine { id, name, doc } => {
+                self.library.put_doctrine(&id, &name, &doc, now);
+                page::save_raw(KEY, &self.library.to_json());
+                self.sync(ctx);
+            }
+            HostRequest::DeleteOwnDoctrine(id) => {
+                self.library.doctrines.remove(&id);
+                page::save_raw(KEY, &self.library.to_json());
+                if self.bearer().is_some() {
+                    self.send(ctx, ehttp::Method::DELETE, format!("/own-doctrines/{id}"), None, "");
+                }
+            }
             HostRequest::SyncLibrary => self.sync(ctx),
             HostRequest::FitDocs(ids) => {
                 let docs = ids.iter().filter_map(|id| self.library.fits.get(id).map(|e| (id.clone(), e.doc.clone()))).collect();
@@ -439,6 +522,7 @@ impl eframe::App for SimWebApp {
                     self.library = page::load_raw(KEY).map(|t| Library::from_json(&t)).unwrap_or_default();
                     self.sim.handle(HostEvent::Fits(self.library.summaries()));
                     self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries()));
+                    self.sim.handle(HostEvent::OwnDoctrines(self.library.doctrine_docs()));
                 }
                 e => self.sim.handle(e),
             }

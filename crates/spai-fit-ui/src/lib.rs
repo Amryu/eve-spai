@@ -37,6 +37,7 @@ pub mod plot;
 pub mod rows;
 pub mod stats_panel;
 pub mod text;
+pub mod doctrine_panel;
 pub mod variations_panel;
 pub mod warnings_panel;
 
@@ -107,6 +108,29 @@ pub struct Doctrine {
     pub doc: serde_json::Value,
 }
 
+/// A supplied doctrine as the server lists it: whose side it is on, its revision, the doctrine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SuppliedDoctrine {
+    pub side: DoctrineSide,
+    pub rev: i64,
+    pub doctrine: spai_fit::doctrine::Doctrine,
+}
+
+impl SuppliedDoctrine {
+    /// The server's `/api/sim/supplied` list; entries this version cannot read are left out.
+    pub fn parse_list(json: &[u8]) -> Vec<SuppliedDoctrine> {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            side: DoctrineSide,
+            #[serde(default)]
+            rev: i64,
+            doc: serde_json::Value,
+        }
+        let rows: Vec<Row> = serde_json::from_slice(json).unwrap_or_default();
+        rows.into_iter().filter_map(|r| serde_json::from_value(r.doc).ok().map(|doctrine| SuppliedDoctrine { side: r.side, rev: r.rev, doctrine })).collect()
+    }
+}
+
 /// What the screens ask the host to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostRequest {
@@ -127,6 +151,12 @@ pub enum HostRequest {
     FetchDoctrines,
     PublishDoctrine { id: String, side: DoctrineSide, name: String, tags: Vec<String>, refit_keys: Vec<String>, doc: String },
     DeleteDoctrine(String),
+    /// A doctrine for everyone on the side: a `spai_fit::doctrine::Doctrine` as JSON.
+    PublishSupplied { side: DoctrineSide, doc: String },
+    DeleteSupplied(String),
+    /// The pilot's own doctrine, kept like a fit: a `Doctrine` as JSON.
+    SaveOwnDoctrine { id: String, name: String, doc: String },
+    DeleteOwnDoctrine(String),
     /// Push the library's changes to the server and take its newer entries.
     SyncLibrary,
     /// The documents of these saved fits, for a fleet's numbers.
@@ -155,6 +185,9 @@ pub enum HostEvent {
     /// Average market prices in ISK, by type.
     Prices(Vec<(TypeId, f64)>),
     Doctrines(Vec<Doctrine>),
+    Supplied(Vec<SuppliedDoctrine>),
+    /// The pilot's own doctrines, each a `Doctrine` as JSON.
+    OwnDoctrines(Vec<String>),
     /// Whether the character is signed in with the server, in the Imperium, and a doctrine admin.
     Access { signed_in: bool, imperium: bool, admin: bool },
     FitDocs(Vec<(String, String)>),
@@ -529,6 +562,9 @@ pub struct SimUi {
     pub recording: Option<Fit>,
     pub editing_variation: Option<u32>,
     pub doctrines: Vec<Doctrine>,
+    pub supplied: Vec<SuppliedDoctrine>,
+    pub own_doctrines: Vec<spai_fit::doctrine::Doctrine>,
+    pub doctrine_tab: doctrine_panel::TabState,
     pub access: Access,
     pub publish: Option<PublishDialog>,
     pub mode: Mode,
@@ -621,6 +657,9 @@ impl Default for SimUi {
             recording: None,
             editing_variation: None,
             doctrines: Vec::new(),
+            supplied: Vec::new(),
+            own_doctrines: Vec::new(),
+            doctrine_tab: doctrine_panel::TabState::default(),
             access: Access::default(),
             publish: None,
             mode: Mode::Fits,
@@ -718,6 +757,19 @@ impl SimUi {
                     }
                 }
                 self.doctrines = d;
+            }
+            HostEvent::Supplied(list) => {
+                for s in &list {
+                    for (id, fit) in s.doctrine.inline_fits() {
+                        self.fit_docs.insert(id.to_owned(), fit.clone());
+                    }
+                }
+                self.supplied = list;
+            }
+            HostEvent::OwnDoctrines(docs) => {
+                self.own_doctrines = docs.iter().filter_map(|d| serde_json::from_str(d).ok()).collect();
+                let ids: Vec<String> = self.own_doctrines.iter().flat_map(|d| d.fits.iter().filter(|f| f.fit.is_none()).map(|f| f.fit_id.clone())).collect();
+                self.want_fit_docs(ids.into_iter());
             }
             HostEvent::Access { signed_in, imperium, admin } => self.access = Access { signed_in, imperium, admin },
             HostEvent::FitDocs(docs) => {
@@ -1526,10 +1578,10 @@ impl SimUi {
         }
         if self.show_library && !narrow {
             self.left_panel(ui, |sim, ui| {
-                sim.left_tabs(ui);
+                sim.left_tabs(ui, true);
                 match sim.left {
                     LeftTab::Fits => library_panel::show(sim, ui, now_ms),
-                    LeftTab::Doctrines => library_panel::doctrines_tab(sim, ui, now_ms),
+                    LeftTab::Doctrines => doctrine_panel::show(sim, ui, now_ms),
                     LeftTab::Browse => browser::show(sim, ui, now_ms),
                 }
             });
@@ -1555,7 +1607,14 @@ impl SimUi {
                 ui.separator();
             }
             match (narrow, self.pane, self.center) {
-                (true, Pane::Library, _) => library_panel::show(self, ui, now_ms),
+                (true, Pane::Library, _) => {
+                    // The pane bar has Browse of its own.
+                    self.left_tabs(ui, false);
+                    match self.left {
+                        LeftTab::Doctrines => doctrine_panel::show(self, ui, now_ms),
+                        _ => library_panel::show(self, ui, now_ms),
+                    }
+                }
                 (true, Pane::Browse, _) => browser::show(self, ui, now_ms),
                 (true, Pane::Stats, _) => stats_panel::show(self, ui),
                 (true, Pane::Graphs, _) => graphs_panel::show(self, ui, now_ms),
@@ -1597,6 +1656,7 @@ impl SimUi {
         picker::show_window(self, ctx, now_ms);
         self.import_window(ctx, now_ms);
         self.publish_window(ctx);
+        doctrine_panel::windows(self, ctx, now_ms);
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
         if self.mode == Mode::Fleets {
@@ -1645,14 +1705,15 @@ impl SimUi {
         }
     }
 
-    fn left_tabs(&mut self, ui: &mut egui::Ui) {
+    fn left_tabs(&mut self, ui: &mut egui::Ui, browse: bool) {
         use spai_ui::widgets::SteadySelect as _;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(rows::GAP);
             // Three tabs share what the column has, no wider than their words need.
             let w = egui::vec2(((ui.available_width() - rows::GAP - 2.0 * ui.spacing().item_spacing.x) / 3.0).min(90.0), 22.0);
-            for (tab, label) in [(LeftTab::Fits, tr!("Fits")), (LeftTab::Doctrines, tr!("Doctrines")), (LeftTab::Browse, tr!("Browse"))] {
+            let tabs = [(LeftTab::Fits, tr!("Fits")), (LeftTab::Doctrines, tr!("Doctrines")), (LeftTab::Browse, tr!("Browse"))];
+            for (tab, label) in tabs.into_iter().filter(|(t, _)| browse || *t != LeftTab::Browse) {
                 if ui.menu_label_sized(w, self.left == tab, label).clicked() {
                     self.left = tab;
                 }

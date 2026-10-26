@@ -422,61 +422,6 @@ fn tag_window(sim: &mut SimUi, ctx: &egui::Context) -> Option<(String, Vec<Strin
     out
 }
 
-/// The doctrine presets the server lists, by side; a click opens a copy.
-pub fn doctrines_tab(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
-    rows::heading(ui, tr!("Doctrines"), None, |ui| {
-        if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch the presets again")).clicked() {
-            sim.request(HostRequest::FetchDoctrines);
-        }
-    });
-    if sim.doctrines.is_empty() {
-        let note = if sim.access.signed_in { tr!("No presets published yet.") } else { tr!("Sign in with an Imperium character to see the coalition's presets.") };
-        ui.horizontal(|ui| {
-            ui.add_space(rows::GAP);
-            ui.add(egui::Label::new(egui::RichText::new(note).weak()).wrap());
-        });
-        return;
-    }
-    let mut open: Option<String> = None;
-    let mut delete: Option<String> = None;
-    egui::ScrollArea::vertical().id_salt("sim_doctrine_list").auto_shrink([false, false]).show(ui, |ui| {
-        for side in DoctrineSide::ALL {
-            let list: Vec<(String, String, u32, Vec<String>)> = sim.doctrines.iter().filter(|d| d.side == side).map(|d| (d.id.clone(), d.name.clone(), d.ship, d.tags.clone())).collect();
-            if list.is_empty() {
-                continue;
-            }
-            rows::row(ui, "doctrines", ("sim_doc_side", side.name()), ROW_H, false, |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(side.name()).strong()).selectable(false));
-            });
-            for (id, name, ship, tags) in list {
-                let ship_name = sim.dogma.as_ref().and_then(|d| d.type_(ship)).map_or(String::new(), |t| t.name.clone());
-                let admin = sim.access.admin;
-                let e = Entry { id: id.clone(), name: name.clone(), ship, tags, doctrine: Some(side) };
-                let r = rows::row(ui, "doctrines", ("sim_doc", &id), ROW_H, false, |ui| {
-                    ui.add_space(12.0);
-                    crate::icons::type_icon(ui, ship, 18.0);
-                    let trash = if admin { 26.0 + rows::GAP } else { 0.0 };
-                    let w = ui.available_width() - trash;
-                    rows::cell(ui, w.max(40.0), egui::RichText::new(&name), "").on_hover_ui(|ui| entry_tip(ui, &e, &ship_name));
-                    if admin && icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete the preset")).clicked() {
-                        delete = Some(id.clone());
-                    }
-                });
-                if r.clicked() {
-                    open = Some(id.clone());
-                }
-            }
-        }
-    });
-    if let Some(id) = open {
-        sim.open_doctrine(&id, now_ms);
-    }
-    if let Some(id) = delete {
-        sim.doctrines.retain(|d| d.id != id);
-        sim.request(HostRequest::DeleteDoctrine(id));
-    }
-}
-
 /// Published hulls whose names hold every word of the search, for a fit started from it.
 fn hulls_matching(sim: &SimUi, query: &str) -> Vec<(TypeId, String)> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();

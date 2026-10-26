@@ -96,6 +96,11 @@ impl SimUi {
                 }
             }
         }
+        for d in self.supplied.iter().filter(|d| side.is_none_or(|s| d.side == s)) {
+            if !groups.iter().any(|(g, _)| *g == d.doctrine.name) {
+                groups.push((d.doctrine.name.clone(), d.doctrine.fits.iter().map(|f| f.fit_id.clone()).collect()));
+            }
+        }
         groups.sort_by(|a, b| a.0.cmp(&b.0));
         groups
     }
@@ -136,7 +141,10 @@ impl SimUi {
         if let Some((_, f)) = self.fleet_cache.borrow().doctrine.iter().find(|(k, _)| *k == key) {
             return Some(f.clone());
         }
-        let mut fleet = spai_fit::fleet::from_doctrine(dogma, group, &fits, self.skills());
+        let mut fleet = match self.supplied.iter().find(|d| d.side == crate::DoctrineSide::Enemy && d.doctrine.name == group) {
+            Some(d) => d.doctrine.fleet(dogma, &|id| self.fit_docs.get(id).cloned(), self.skills()),
+            None => spai_fit::fleet::from_doctrine(dogma, group, &fits, self.skills()),
+        };
         fleet.id = id.to_owned();
         fleet.size = size;
         let mut cache = self.fleet_cache.borrow_mut();
@@ -147,6 +155,10 @@ impl SimUi {
 
     /// A fleet of the doctrine's presets, each a slot by its hull's role.
     pub fn new_fleet_from_doctrine(&mut self, group: &str, now_ms: u64) {
+        if let Some(d) = self.supplied.iter().find(|d| d.doctrine.name == group).map(|d| d.doctrine.clone()) {
+            self.new_fleet_of(&d, now_ms);
+            return;
+        }
         let Some(dogma) = self.dogma.clone() else { return };
         let Some((_, ids)) = self.doctrine_groups().into_iter().find(|(g, _)| g == group) else { return };
         let fits: Vec<(String, Fit)> = ids.iter().filter_map(|id| self.fit_docs.get(id).map(|f| (id.clone(), f.clone()))).collect();
@@ -211,7 +223,7 @@ impl SimUi {
     /// only when the set of fits or documents changes.
     pub(crate) fn boosting_fits(&self) -> Vec<(BurstKind, Vec<(String, String)>)> {
         use std::hash::{Hash, Hasher};
-        let doctrine_fits: Vec<(String, String)> = self.doctrines.iter().map(|d| (d.id.clone(), trf!("{name} (doctrine)", name = d.name))).collect();
+        let doctrine_fits = self.doctrine_fit_names();
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let mut ids: Vec<&String> = self.fit_docs.keys().collect();
         ids.sort();
@@ -621,8 +633,17 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let fleets: Vec<FleetSummary> = sim.fleets.clone();
     let my_id = sim.fleet.as_ref().map(|f| f.id.clone()).unwrap_or_default();
     let projected = sim.fleet_stats().map(|(mine, _)| mine.projected).unwrap_or_default();
-    let doctrine_fits: Vec<(String, String)> = sim.doctrines.iter().map(|d| (d.id.clone(), trf!("{name} (doctrine)", name = d.name))).collect();
+    let doctrine_fits = sim.doctrine_fit_names();
     let dogma = sim.dogma.clone();
+    // Per slot fit, its variations' refit keys: the fleet swaps them all at once.
+    let refits: HashMap<String, Vec<(u32, String)>> = sim
+        .fleet
+        .as_ref()
+        .map(|f| f.fleet.slots.iter().filter_map(|s| sim.fit_docs.get(&s.fit_id).map(|fit| (s.fit_id.clone(), fit.variations.iter().filter_map(|v| v.refit_key.clone().map(|k| (v.id, k))).collect()))).collect())
+        .unwrap_or_default();
+    let mut refit_keys: Vec<String> = refits.values().flatten().map(|(_, k)| k.clone()).collect();
+    refit_keys.sort();
+    refit_keys.dedup();
     let boosting = sim.boosting_fits();
     let mut want_all_docs = false;
     let enemy_doctrines: Vec<String> = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().map(|(g, _)| g).collect();
@@ -647,6 +668,55 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                     ui.label(tr!("Size"));
                     changed |= ui.add(egui::DragValue::new(&mut f.size).range(1..=2000)).changed();
                 });
+                if !refit_keys.is_empty() {
+                    ui.horizontal(|ui| {
+                        use spai_ui::widgets::SteadySelect as _;
+                        let keyed: Vec<&FleetSlot> = f.slots.iter().filter(|s| refits.get(&s.fit_id).is_some_and(|v| !v.is_empty())).collect();
+                        let key_of = |s: &FleetSlot| s.variation.and_then(|v| refits.get(&s.fit_id).and_then(|l| l.iter().find(|(id, _)| *id == v)).map(|(_, k)| k.clone()));
+                        let first = keyed.first().map(|s| key_of(s));
+                        let current = match first {
+                            Some(k) if keyed.iter().all(|s| key_of(s) == k) => Some(k),
+                            _ => None,
+                        };
+                        let shown = match &current {
+                            Some(Some(k)) => crate::doctrine_panel::refit_name(k),
+                            Some(None) => tr!("Base fits").to_owned(),
+                            None => tr!("Mixed").to_owned(),
+                        };
+                        ui.label(tr!("Refit"));
+                        let mut pick: Option<Option<String>> = None;
+                        egui::ComboBox::from_id_salt("sim_fleet_refit").selected_text(shown).width(160.0).show_ui(ui, |ui| {
+                            if ui.menu_label(current == Some(None), tr!("Base fits")).clicked() {
+                                pick = Some(None);
+                            }
+                            for k in &refit_keys {
+                                if ui.menu_label(current.as_ref().is_some_and(|c| c.as_deref() == Some(k.as_str())), crate::doctrine_panel::refit_name(k)).clicked() {
+                                    pick = Some(Some(k.clone()));
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr!("Every ship that has this refit flies it; the others keep what they fly"));
+                        if let Some(k) = pick {
+                            for slot in &mut f.slots {
+                                let Some(list) = refits.get(&slot.fit_id) else { continue };
+                                match &k {
+                                    None => {
+                                        if slot.variation.is_some_and(|v| list.iter().any(|(id, _)| *id == v)) {
+                                            slot.variation = None;
+                                        }
+                                    }
+                                    Some(k) => {
+                                        if let Some((id, _)) = list.iter().find(|(_, x)| x == k) {
+                                            slot.variation = Some(*id);
+                                        }
+                                    }
+                                }
+                            }
+                            changed = true;
+                        }
+                    });
+                }
                 ui.add_space(6.0);
             let mut remove: Option<usize> = None;
             let counts = fleet::resolve_counts(f);

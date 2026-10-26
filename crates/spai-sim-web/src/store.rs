@@ -37,6 +37,8 @@ pub struct FleetEntry {
 pub struct Library {
     pub fits: BTreeMap<String, Entry>,
     pub fleets: BTreeMap<String, FleetEntry>,
+    /// The pilot's own doctrines, the same shape as fleets.
+    pub doctrines: BTreeMap<String, FleetEntry>,
 }
 
 impl Library {
@@ -62,6 +64,15 @@ impl Library {
     pub fn put_fleet(&mut self, id: &str, name: &str, doc: &str, now: i64) {
         let (rev, server_rev) = self.fleets.get(id).map_or((1, 0), |e| (e.rev + 1, e.server_rev));
         self.fleets.insert(id.to_owned(), FleetEntry { name: name.to_owned(), updated_at: now, doc: doc.to_owned(), rev, server_rev });
+    }
+
+    pub fn put_doctrine(&mut self, id: &str, name: &str, doc: &str, now: i64) {
+        let (rev, server_rev) = self.doctrines.get(id).map_or((1, 0), |e| (e.rev + 1, e.server_rev));
+        self.doctrines.insert(id.to_owned(), FleetEntry { name: name.to_owned(), updated_at: now, doc: doc.to_owned(), rev, server_rev });
+    }
+
+    pub fn doctrine_docs(&self) -> Vec<String> {
+        self.doctrines.values().map(|e| e.doc.clone()).collect()
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -92,5 +103,15 @@ mod tests {
         l.remove("a");
         assert_eq!(l.summaries().len(), 1);
         assert_eq!(Library::from_json("garbage"), Library::default());
+    }
+
+    #[test]
+    fn own_doctrines_keep_with_the_library_and_older_saves_still_read() {
+        let mut l = Library::default();
+        l.put_doctrine("d", "Mine", "{\"id\":\"d\"}", 5);
+        l.put_doctrine("d", "Mine", "{\"id\":\"d\",\"name\":\"x\"}", 6);
+        assert_eq!(l.doctrines["d"].rev, 2);
+        assert_eq!(Library::from_json(&l.to_json()).doctrine_docs(), vec!["{\"id\":\"d\",\"name\":\"x\"}".to_owned()]);
+        assert!(Library::from_json("{\"fits\":{},\"fleets\":{}}").doctrines.is_empty());
     }
 }

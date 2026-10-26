@@ -591,6 +591,56 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
     sim.fleet.as_mut().unwrap().enemy = Some("fl-2".into());
 }
 
+/// Supplied doctrines of two alliances, an own doctrine and a link, one doctrine open: made up,
+/// like every fixture.
+fn doctrine_fixture(sim: &mut spai_fit_ui::SimUi, extreme: bool) {
+    use spai_fit::doctrine::{supplied_fit_id, Doctrine, DoctrineFit, FitRole};
+    use spai_fit::fit::{Fit, Module, Slot, State};
+    use spai_fit::test_support::ids;
+    let fit = |name: &str, refit: bool| {
+        let mut f = Fit::new(ids::SHIP, name);
+        f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+        f.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
+        if refit {
+            f.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+        }
+        f
+    };
+    let long = if extreme { " with a doctrine name far too long for any column to hold" } else { "" };
+    let doctrine = |id: &str, alliance: &str, category: &str, name: &str, updated: i64| Doctrine {
+        id: id.into(),
+        alliance: alliance.into(),
+        category: category.into(),
+        name: format!("{name}{long}"),
+        tags: vec![alliance.into(), category.into(), "Active".into()],
+        url: Some("https://forum.example/topic/1-made-up/".into()),
+        updated: Some(updated),
+        notes: String::new(),
+        fits: vec![
+            DoctrineFit { fit_id: supplied_fit_id(id, "dps"), fit: Some(fit("DPS - v26.1", true)), role: FitRole::Line, main: true, note: "In a 250 man fleet we want about 170 of these".into() },
+            DoctrineFit { fit_id: supplied_fit_id(id, "logi"), fit: Some(fit("LOGI - v26.1", true)), role: FitRole::Logi, main: false, note: String::new() },
+            DoctrineFit { fit_id: supplied_fit_id(id, "tackle"), fit: Some(fit(if extreme { "Anti-support and bubbles, a fit name that will not fit" } else { "ANTI - V24.1" }, false)), role: FitRole::Tackle, main: false, note: String::new() },
+        ],
+        origin: None,
+        link: false,
+    };
+    sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
+    sim.handle(spai_fit_ui::HostEvent::Supplied(vec![
+        spai_fit_ui::SuppliedDoctrine { side: spai_fit_ui::DoctrineSide::Imperium, rev: 2, doctrine: doctrine("x-1", "Made-up Alliance", "Strategic", "Rifter Fleet", 1_759_600_000) },
+        spai_fit_ui::SuppliedDoctrine { side: spai_fit_ui::DoctrineSide::Imperium, rev: 1, doctrine: doctrine("x-2", "Made-up Alliance", "Strategic", "Brawl Rifters", 1_690_000_000) },
+        spai_fit_ui::SuppliedDoctrine { side: spai_fit_ui::DoctrineSide::Imperium, rev: 1, doctrine: doctrine("x-3", "Made-up Alliance", "Peacetime", "Roam Rifters", 1_720_000_000) },
+        spai_fit_ui::SuppliedDoctrine { side: spai_fit_ui::DoctrineSide::Enemy, rev: 1, doctrine: doctrine("y-1", "Other Made-up Coalition", "Strategic", "Their Rifters", 1_700_000_000) },
+    ]));
+    sim.handle(spai_fit_ui::HostEvent::Fits(vec![spai_fit_ui::FitSummary { id: "lib-1".into(), name: "My Rifter".into(), ship: ids::SHIP, updated_at: 0 }]));
+    sim.fit_docs.insert("lib-1".into(), fit("My Rifter", false));
+    let own = Doctrine { id: "own-1".into(), alliance: String::new(), category: "Strategic".into(), name: format!("Home defence Rifters{long}"), tags: vec!["home".into()], fits: vec![DoctrineFit { fit_id: "lib-1".into(), role: FitRole::Line, main: true, ..DoctrineFit::default() }], ..Doctrine::default() };
+    let link = sim.supplied[0].doctrine.link_to("own-2".into());
+    let docs = vec![serde_json::to_string(&own).unwrap(), serde_json::to_string(&link).unwrap()];
+    sim.handle(spai_fit_ui::HostEvent::OwnDoctrines(docs));
+    sim.doctrine_tab.opened.insert("d:x-1".into());
+    sim.doctrine_tab.opened.insert("d:own-1".into());
+}
+
 fn imperium_dialog_scene(name: &'static str, size: [f32; 2], open: impl Fn(&mut spai_fit_ui::SimUi) + 'static) -> Scene {
     harness::scratch_profile();
     let mut sim: Option<spai_fit_ui::SimUi> = None;
@@ -2803,6 +2853,34 @@ pub(crate) fn all() -> Vec<Scene> {
             spai_fit_ui::Doctrine { id: "d3".into(), side: spai_fit_ui::DoctrineSide::Enemy, name: "Hostile kiting Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Hostile") },
             spai_fit_ui::Doctrine { id: "d4".into(), side: spai_fit_ui::DoctrineSide::Public, name: "Starter Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Starter") },
         ]));
+    }));
+    v.push(imperium_scene_with("imperium_doctrine_tree", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        doctrine_fixture(sim, false);
+        sim.left = spai_fit_ui::LeftTab::Doctrines;
+    }));
+    v.push(imperium_scene_with("imperium_doctrine_tree_narrow", [720.0, 800.0], true, spai_fit_ui::Pane::Library, |sim| {
+        doctrine_fixture(sim, true);
+        sim.left = spai_fit_ui::LeftTab::Doctrines;
+    }));
+    v.push(imperium_scene_with("imperium_doctrine_tree_mine", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        doctrine_fixture(sim, false);
+        sim.left = spai_fit_ui::LeftTab::Doctrines;
+        sim.doctrine_tab.source = spai_fit_ui::doctrine_panel::Source::Mine;
+    }));
+    v.push(imperium_dialog_scene("imperium_doctrine_edit", [620.0, 600.0], |sim| {
+        doctrine_fixture(sim, true);
+        let own = sim.own_doctrines.iter().find(|d| !d.link).cloned().unwrap();
+        sim.doctrine_tab.edit = Some(spai_fit_ui::doctrine_panel::Edit { tags: own.tags.join(", "), doctrine: own, query: String::new() });
+    }));
+    v.push(imperium_dialog_scene("imperium_doctrine_publish", [520.0, 400.0], |sim| {
+        doctrine_fixture(sim, false);
+        let list: Vec<spai_fit::doctrine::Doctrine> = sim.supplied.iter().map(|s| s.doctrine.clone()).collect();
+        sim.doctrine_tab.publish = Some(spai_fit_ui::doctrine_panel::Publish { doctrines: list, side: spai_fit_ui::DoctrineSide::Imperium });
+    }));
+    v.push(imperium_scene_with("imperium_fleet_of_doctrine", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        doctrine_fixture(sim, false);
+        let d = sim.supplied[0].doctrine.clone();
+        sim.new_fleet_of(&d, 5);
     }));
     v.push(imperium_dialog_scene("imperium_details", [560.0, 520.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};

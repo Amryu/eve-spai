@@ -1898,3 +1898,154 @@ fn a_subsystem_lists_the_slots_it_gives() {
     assert_eq!(crate::picker::slots_given(&d, ids::SUBSYSTEM), [2.0, 0.0, 0.0]);
     assert_eq!(crate::picker::slots_given(&d, ids::GUN), [0.0; 3], "a module gives none");
 }
+
+fn supplied_doctrine(id: &str, alliance: &str, category: &str, name: &str) -> spai_fit::doctrine::Doctrine {
+    use spai_fit::doctrine::{supplied_fit_id, Doctrine, DoctrineFit, FitRole};
+    let mut dps = Fit::new(ids::SHIP, "DPS");
+    dps.add_module(ids::GUN, Slot::High);
+    dps.add_module(ids::MWD, Slot::Mid);
+    dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+    let tackle = Fit::new(ids::SHIP, "Tackle");
+    let fits = vec![
+        DoctrineFit { fit_id: supplied_fit_id(id, "tackle"), fit: Some(tackle), role: FitRole::Tackle, main: false, note: String::new() },
+        DoctrineFit { fit_id: supplied_fit_id(id, "dps"), fit: Some(dps), role: FitRole::Line, main: true, note: "most of the fleet".into() },
+    ];
+    Doctrine { id: id.into(), alliance: alliance.into(), category: category.into(), name: name.into(), tags: vec![category.into()], url: Some("https://forum.example/t/1".into()), updated: Some(1_759_600_000), fits, ..Doctrine::default() }
+}
+
+fn supplied_sim() -> SimUi {
+    let mut s = sim();
+    let list = vec![
+        SuppliedDoctrine { side: DoctrineSide::Imperium, rev: 1, doctrine: supplied_doctrine("gsf-2", "Goonswarm Federation", "Peacetime", "Kestrels") },
+        SuppliedDoctrine { side: DoctrineSide::Imperium, rev: 1, doctrine: supplied_doctrine("gsf-1", "Goonswarm Federation", "Strategic", "Rifters") },
+        SuppliedDoctrine { side: DoctrineSide::Enemy, rev: 1, doctrine: supplied_doctrine("horde-1", "Pandemic Horde", "Strategic", "Horde Rifters") },
+    ];
+    s.handle(HostEvent::Supplied(list));
+    s
+}
+
+#[test]
+fn the_server_list_reads_into_supplied_doctrines_and_their_fits_reach_the_fleet_screen() {
+    let d = supplied_doctrine("gsf-1", "Goonswarm Federation", "Strategic", "Rifters");
+    let body = serde_json::json!([{"id": "gsf-1", "side": "imperium", "rev": 3, "updated_at": 5, "doc": d}, {"id": "bad", "side": "imperium", "doc": {"fits": "nope"}}]);
+    let list = SuppliedDoctrine::parse_list(body.to_string().as_bytes());
+    assert_eq!(list.len(), 1, "an entry this version cannot read is left out");
+    assert_eq!((list[0].side, list[0].rev, list[0].doctrine.name.as_str()), (DoctrineSide::Imperium, 3, "Rifters"));
+    let mut s = sim();
+    s.handle(HostEvent::Supplied(list));
+    assert!(s.fit_docs.contains_key("gsf-1~dps"), "inline fits are looked up like library fits");
+    assert!(s.doctrine_fit_names().iter().any(|(id, name)| id == "gsf-1~dps" && name.contains("Rifters")));
+}
+
+#[test]
+fn the_tree_nests_alliance_kind_doctrine_and_fits_with_the_mainline_first() {
+    use crate::doctrine_panel::{lines_for_test, shown, Line, Source};
+    let s = supplied_sim();
+    let all = shown(&s);
+    let none = std::collections::BTreeSet::new();
+    let titles = |lines: &[Line]| -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| match l {
+                Line::Alliance { title, .. } => format!("A {title}"),
+                Line::Category { title, .. } => format!("C {title}"),
+                Line::Doctrine { at, .. } => format!("D {}", all[*at].doctrine.name),
+                Line::Info { .. } => "I".to_owned(),
+                Line::Fit { at, fit } => format!("F {}", all[*at].doctrine.fits[*fit].fit.as_ref().unwrap().name),
+            })
+            .collect()
+    };
+    let closed = lines_for_test(&all, Source::All, "", &none, &none);
+    assert_eq!(titles(&closed), vec!["A Goonswarm Federation", "C Strategic", "D Rifters", "C Peacetime", "D Kestrels", "A Pandemic Horde", "C Strategic", "D Horde Rifters"], "strategic before peacetime, doctrines shut");
+    let opened: std::collections::BTreeSet<String> = ["d:gsf-1".to_owned()].into();
+    let open = lines_for_test(&all, Source::All, "", &none, &opened);
+    assert_eq!(&titles(&open)[2..6], &["D Rifters", "I", "F DPS", "F Tackle"], "when it changed, then the mainline first");
+    let folded: std::collections::BTreeSet<String> = ["a:goonswarm federation".to_owned()].into();
+    assert_eq!(titles(&lines_for_test(&all, Source::All, "", &folded, &none))[..2], ["A Goonswarm Federation", "A Pandemic Horde"]);
+    let found = lines_for_test(&all, Source::All, "tackle horde", &none, &none);
+    assert_eq!(titles(&found), vec!["A Pandemic Horde", "C Strategic", "D Horde Rifters", "I", "F Tackle"], "a search opens what it finds and shows only the fits it names");
+    assert!(lines_for_test(&all, Source::Mine, "", &none, &none).is_empty());
+}
+
+#[test]
+fn a_copy_and_a_link_land_in_my_doctrines_and_a_link_follows_the_supplied_one() {
+    use crate::doctrine_panel::{lines_for_test, shown, Kind, Line, Source};
+    let mut s = supplied_sim();
+    let rifters = s.supplied.iter().find(|d| d.doctrine.id == "gsf-1").unwrap().doctrine.clone();
+    s.copy_doctrine(&rifters, 10);
+    let reqs = s.take_requests();
+    let fits_saved = reqs.iter().filter(|r| matches!(r, HostRequest::SaveFit { .. })).count();
+    assert_eq!(fits_saved, 2, "the fits go into the library");
+    let copy = s.own_doctrines[0].clone();
+    assert!(reqs.iter().any(|r| matches!(r, HostRequest::SaveOwnDoctrine { id, .. } if *id == copy.id)));
+    assert_eq!(copy.origin.as_deref(), Some("gsf-1"));
+    assert!(copy.fits.iter().all(|f| f.fit.is_none() && s.fit_docs.contains_key(&f.fit_id)));
+    assert_eq!(s.supplied.iter().find(|d| d.doctrine.id == "gsf-1").unwrap().doctrine, rifters, "the original stays as it is");
+
+    s.link_doctrine(&rifters, 11);
+    s.link_doctrine(&rifters, 12);
+    assert_eq!(s.own_doctrines.iter().filter(|d| d.link).count(), 1, "one link per supplied doctrine");
+    let mut changed = s.supplied.clone();
+    changed[1].doctrine.fits.pop();
+    s.handle(HostEvent::Supplied(changed));
+    let all = shown(&s);
+    let link = all.iter().find(|x| matches!(x.kind, Kind::Link(_))).unwrap();
+    assert_eq!(link.kind, Kind::Link(true));
+    assert_eq!(link.doctrine.fits.len(), 1, "a link shows the supplied doctrine as it is now");
+    s.handle(HostEvent::Supplied(Vec::new()));
+    let all = shown(&s);
+    assert!(all.iter().any(|x| x.kind == Kind::Link(false)), "signed out, the link stays and says so");
+    let none = std::collections::BTreeSet::new();
+    let mine = lines_for_test(&all, Source::Mine, "", &none, &none);
+    assert!(matches!(&mine[0], Line::Alliance { title, .. } if title == "Goonswarm Federation"));
+    assert_eq!(mine.iter().filter(|l| matches!(l, Line::Doctrine { .. })).count(), 2);
+}
+
+#[test]
+fn a_doctrine_opens_as_a_fleet_with_its_mainline_and_swaps_refits_together() {
+    let mut s = supplied_sim();
+    let rifters = s.supplied.iter().find(|d| d.doctrine.id == "gsf-1").unwrap().doctrine.clone();
+    s.new_fleet_of(&rifters, 20);
+    assert_eq!(s.mode, Mode::Fleets);
+    let f = &s.fleet.as_ref().unwrap().fleet;
+    assert_eq!(f.slots[0].fit_id, "gsf-1~dps");
+    assert_eq!(f.main, Some(0));
+    let docs = s.fit_docs.clone();
+    let mut fleet = f.clone();
+    spai_fit::doctrine::swap_refit(&mut fleet, Some("prop:ab"), &|id| docs.get(id).cloned());
+    assert_eq!(fleet.slots[0].variation, Some(1));
+    s.mode = Mode::Fits;
+    s.new_fleet_from_doctrine("Horde Rifters", 21);
+    assert_eq!(s.fleet.as_ref().unwrap().fleet.slots[0].fit_id, "horde-1~dps", "the fleet list's doctrine menu builds supplied ones the same way");
+}
+
+#[test]
+fn an_own_doctrine_edits_its_fits_and_an_admin_publishes_it_over_the_original() {
+    let mut s = supplied_sim();
+    s.handle(HostEvent::Access { signed_in: true, imperium: true, admin: true });
+    s.new_fit(ids::SHIP, 30);
+    let fit_id = s.session().unwrap().id.clone();
+    s.handle(HostEvent::Fits(vec![FitSummary { id: fit_id.clone(), name: "Rifter".into(), ship: ids::SHIP, updated_at: 0 }]));
+    s.new_own_doctrine(31);
+    let edit = s.doctrine_tab.edit.as_ref().unwrap();
+    assert_eq!(edit.doctrine.fits.len(), 1, "the open saved fit starts the doctrine");
+    assert!(edit.doctrine.fits[0].main);
+    let mut d = edit.doctrine.clone();
+    d.origin = Some("gsf-1".into());
+    s.fit_docs.insert(fit_id.clone(), s.session().unwrap().fit.clone());
+    let out = s.supplied_from_own(&d).unwrap();
+    assert_eq!(out.id, "gsf-1", "publishing a copy replaces the doctrine it came from");
+    assert!(out.fits[0].fit.is_some() && out.fits[0].fit_id.starts_with("gsf-1~"));
+    assert!(!out.link && out.origin.is_none());
+}
+
+#[test]
+fn update_times_read_as_dates_and_ages() {
+    use crate::doctrine_panel::{age, date};
+    assert_eq!(date(0), "1970-01-01");
+    assert_eq!(date(1_759_600_000), "2025-10-04");
+    assert_eq!(age(0, 3600), "today");
+    assert_eq!(age(0, 86_400 * 40), "40 days ago");
+    assert_eq!(age(0, 86_400 * 400), "13 months ago");
+    assert_eq!(age(0, 86_400 * 800), "2 years ago");
+}

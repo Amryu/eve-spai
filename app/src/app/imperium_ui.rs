@@ -58,6 +58,7 @@ impl SpaiApp {
                 self.sim.handle(HostEvent::Layout(layout));
             }
             self.sim_list_fits();
+            self.sim_list_doctrines();
             self.sim_load_profiles();
             self.sim_fetch_stale_skills(ui.ctx());
             self.sim_fetch_doctrines(ui.ctx());
@@ -76,6 +77,10 @@ impl SpaiApp {
                         self.sim.forget_fit_doc(&id);
                     }
                     self.sim_list_fits();
+                    // Supplied fits live in the same map; they come back from what is here.
+                    let supplied = self.sim.supplied.clone();
+                    self.sim.handle(HostEvent::Supplied(supplied));
+                    self.sim_list_doctrines();
                     self.sim.fleet_docs.clear();
                     self.sim_list_fleets();
                 }
@@ -138,6 +143,25 @@ impl SpaiApp {
             HostRequest::FetchDoctrines => self.sim_fetch_doctrines(ctx),
             HostRequest::PublishDoctrine { id, side, name, tags, refit_keys, doc } => self.sim_publish(ctx, id, side, name, tags, refit_keys, doc),
             HostRequest::DeleteDoctrine(id) => self.sim_delete_doctrine(ctx, id),
+            HostRequest::PublishSupplied { side, doc } => {
+                let Ok(doc) = serde_json::from_str::<serde_json::Value>(&doc) else { return };
+                let id = doc["id"].as_str().unwrap_or_default().to_owned();
+                self.sim_send(ctx, reqwest::Method::PUT, format!("/api/sim/supplied/{id}"), Some(serde_json::json!({ "side": side, "doc": doc })), spai_ui::tr!("Published"));
+            }
+            HostRequest::DeleteSupplied(id) => self.sim_send(ctx, reqwest::Method::DELETE, format!("/api/sim/supplied/{id}"), None, spai_ui::tr!("Deleted")),
+            HostRequest::SaveOwnDoctrine { id, name, doc } => {
+                if self.store.as_ref().is_some_and(|s| s.doctrine_put(&id, &name, &doc).is_ok()) {
+                    self.sim_sync(ctx);
+                } else {
+                    self.sim.handle(HostEvent::Status(spai_ui::tr!("Could not save the doctrine").to_owned()));
+                }
+            }
+            HostRequest::DeleteOwnDoctrine(id) => {
+                if let Some(s) = &self.store {
+                    let _ = s.doctrine_delete(&id);
+                }
+                self.sim_sync(ctx);
+            }
             HostRequest::SyncLibrary => self.sim_sync(ctx),
             HostRequest::FitDocs(ids) => {
                 let docs = self.store.as_ref().map(|s| s.fit_docs(&ids)).unwrap_or_default();
@@ -168,6 +192,40 @@ impl SpaiApp {
                 self.sim_list_fleets();
             }
         }
+    }
+
+    fn sim_list_doctrines(&mut self) {
+        let docs = self.store.as_ref().map(|s| s.doctrines_all()).unwrap_or_default();
+        self.sim.handle(HostEvent::OwnDoctrines(docs));
+    }
+
+    /// An admin's write to the supplied doctrines, then the list again.
+    fn sim_send(&mut self, ctx: &egui::Context, method: reqwest::Method, path: String, body: Option<serde_json::Value>, done: &'static str) {
+        let events = self.sim_events.clone();
+        let (char_id, store) = (self.sim_character(), self.store.as_ref().map(|s| s.path().to_path_buf()));
+        let ctx2 = ctx.clone();
+        let _ = std::thread::Builder::new().name("sim-send".into()).spawn(move || {
+            let outcome = (|| -> Result<(), String> {
+                let (c, p) = char_id.zip(store).ok_or("sign in first")?;
+                let bearer = crate::brshare::valid_session(&p, c).ok_or("the sign-in with eve-spai.com failed")?;
+                let client = crate::http::client(30).map_err(|e| e.to_string())?;
+                let mut req = client.request(method, format!("{}{path}", crate::brshare::api_base())).bearer_auth(&bearer);
+                if let Some(b) = &body {
+                    req = req.json(b);
+                }
+                let resp = req.send().map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(resp.json::<serde_json::Value>().ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or_else(|| "refused".into()));
+                }
+                Ok(())
+            })();
+            events.lock().unwrap().push(HostEvent::Status(match outcome {
+                Ok(()) => done.to_owned(),
+                Err(e) => spai_ui::trf!("Could not publish: {e}", e = e),
+            }));
+            ctx2.request_repaint();
+        });
+        self.sim_fetch_doctrines(ctx);
     }
 
     fn sim_list_fleets(&mut self) {
@@ -204,6 +262,14 @@ impl SpaiApp {
             match req.send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<Vec<Doctrine>>()) {
                 Ok(list) => events.lock().unwrap().push(HostEvent::Doctrines(list)),
                 Err(e) => crate::esilog::record("sim doctrines", &format!("{e}")),
+            }
+            let mut req = client.get(format!("{base}/api/sim/supplied"));
+            if let Some(b) = &bearer {
+                req = req.bearer_auth(b);
+            }
+            match req.send().and_then(|r| r.error_for_status()).and_then(|r| r.bytes()) {
+                Ok(bytes) => events.lock().unwrap().push(HostEvent::Supplied(spai_fit_ui::SuppliedDoctrine::parse_list(&bytes))),
+                Err(e) => crate::esilog::record("sim supplied doctrines", &format!("{e}")),
             }
             ctx.request_repaint();
         });
@@ -298,6 +364,35 @@ impl SpaiApp {
                             let _ = store.fleet_mark_synced(&id, rev);
                         }
                     }
+                }
+            }
+            // The pilot's own doctrines too.
+            for (id, name, doc, server_rev, deleted) in store.doctrines_unsynced() {
+                if deleted {
+                    if client.delete(format!("{base}/api/sim/own-doctrines/{id}")).bearer_auth(&bearer).send().is_ok_and(|r| r.status().is_success() || r.status().as_u16() == 404) {
+                        let _ = store.doctrine_purge(&id);
+                    }
+                    continue;
+                }
+                let Ok(doc_json) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
+                let body = serde_json::json!({ "name": name, "rev": server_rev, "doc": doc_json });
+                if let Ok(r) = client.put(format!("{base}/api/sim/own-doctrines/{id}")).bearer_auth(&bearer).json(&body).send() {
+                    if r.status().is_success() {
+                        if let Some(rev) = r.json::<serde_json::Value>().ok().and_then(|v| v["rev"].as_i64()) {
+                            let _ = store.doctrine_mark_synced(&id, rev);
+                        }
+                    }
+                }
+            }
+            if let Ok(list) = client.get(format!("{base}/api/sim/own-doctrines")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<Vec<serde_json::Value>>()) {
+                let local: std::collections::HashMap<String, (i64, bool)> = store.doctrines_revisions().into_iter().map(|(id, rev, deleted)| (id, (rev, deleted))).collect();
+                for entry in list {
+                    let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
+                    if local.get(id).is_some_and(|(r, d)| *r >= rev || *d) {
+                        continue;
+                    }
+                    let Ok(full) = client.get(format!("{base}/api/sim/own-doctrines/{id}")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<serde_json::Value>()) else { continue };
+                    let _ = store.doctrine_put_from_server(id, full["name"].as_str().unwrap_or(""), &full["doc"].to_string(), rev, full["updated_at"].as_i64().unwrap_or(0));
                 }
             }
             if let Ok(list) = client.get(format!("{base}/api/sim/fleets")).bearer_auth(&bearer).send().and_then(|r| r.error_for_status()).and_then(|r| r.json::<Vec<serde_json::Value>>()) {

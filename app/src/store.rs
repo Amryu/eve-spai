@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS fleets (
     server_rev INTEGER NOT NULL DEFAULT 0,
     deleted    INTEGER NOT NULL DEFAULT 0
 );
+-- The pilot's own doctrines, the same shape; `doc` is spai_fit::doctrine::Doctrine as JSON.
+CREATE TABLE IF NOT EXISTS own_doctrines (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    doc        TEXT NOT NULL,
+    rev        INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL,
+    server_rev INTEGER NOT NULL DEFAULT 0,
+    deleted    INTEGER NOT NULL DEFAULT 0
+);
 -- A character's trained skills from ESI, for the simulator's per-pilot profiles.
 CREATE TABLE IF NOT EXISTS character_skills (
     character_id INTEGER NOT NULL,
@@ -791,60 +801,127 @@ impl Store {
     }
 
     pub fn fleets_list(&self) -> Vec<(String, String, i64)> {
-        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, updated_at FROM fleets WHERE deleted = 0 ORDER BY updated_at DESC") else { return Vec::new() };
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+        self.coll_list("fleets")
     }
 
     pub fn fleet_doc(&self, id: &str) -> Option<String> {
-        self.conn.query_row("SELECT doc FROM fleets WHERE id = ?1 AND deleted = 0", params![id], |r| r.get(0)).ok()
+        self.coll_doc("fleets", id)
     }
 
     pub fn fleet_put(&self, id: &str, name: &str, doc: &str) -> Result<()> {
+        self.coll_put("fleets", id, name, doc)
+    }
+
+    pub fn fleets_unsynced(&self) -> Vec<(String, String, String, i64, bool)> {
+        self.coll_unsynced("fleets")
+    }
+
+    pub fn fleet_mark_synced(&self, id: &str, server_rev: i64) -> Result<()> {
+        self.coll_mark_synced("fleets", id, server_rev)
+    }
+
+    pub fn fleet_purge(&self, id: &str) -> Result<()> {
+        self.coll_purge("fleets", id)
+    }
+
+    pub fn fleets_revisions(&self) -> Vec<(String, i64, bool)> {
+        self.coll_revisions("fleets")
+    }
+
+    pub fn fleet_put_from_server(&self, id: &str, name: &str, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
+        self.coll_put_from_server("fleets", id, name, doc, rev, updated_at)
+    }
+
+    pub fn fleet_delete(&self, id: &str) -> Result<()> {
+        self.coll_delete("fleets", id)
+    }
+
+    /// The pilot's own doctrines, every one in full: they are small and listed together.
+    pub fn doctrines_all(&self) -> Vec<String> {
+        self.coll_list("own_doctrines").into_iter().filter_map(|(id, _, _)| self.coll_doc("own_doctrines", &id)).collect()
+    }
+
+    pub fn doctrine_put(&self, id: &str, name: &str, doc: &str) -> Result<()> {
+        self.coll_put("own_doctrines", id, name, doc)
+    }
+
+    pub fn doctrines_unsynced(&self) -> Vec<(String, String, String, i64, bool)> {
+        self.coll_unsynced("own_doctrines")
+    }
+
+    pub fn doctrine_mark_synced(&self, id: &str, server_rev: i64) -> Result<()> {
+        self.coll_mark_synced("own_doctrines", id, server_rev)
+    }
+
+    pub fn doctrine_purge(&self, id: &str) -> Result<()> {
+        self.coll_purge("own_doctrines", id)
+    }
+
+    pub fn doctrines_revisions(&self) -> Vec<(String, i64, bool)> {
+        self.coll_revisions("own_doctrines")
+    }
+
+    pub fn doctrine_put_from_server(&self, id: &str, name: &str, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
+        self.coll_put_from_server("own_doctrines", id, name, doc, rev, updated_at)
+    }
+
+    pub fn doctrine_delete(&self, id: &str) -> Result<()> {
+        self.coll_delete("own_doctrines", id)
+    }
+
+    fn coll_list(&self, table: &str) -> Vec<(String, String, i64)> {
+        let Ok(mut stmt) = self.conn.prepare(&format!("SELECT id, name, updated_at FROM {table} WHERE deleted = 0 ORDER BY updated_at DESC")) else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    fn coll_doc(&self, table: &str, id: &str) -> Option<String> {
+        self.conn.query_row(&format!("SELECT doc FROM {table} WHERE id = ?1 AND deleted = 0"), params![id], |r| r.get(0)).ok()
+    }
+
+    fn coll_put(&self, table: &str, id: &str, name: &str, doc: &str) -> Result<()> {
         let now = crate::clock::utc().timestamp();
-        self.exec_essential(
-            "INSERT INTO fleets(id, name, doc, rev, updated_at, deleted) VALUES(?1, ?2, ?3, 1, ?4, 0)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, doc = excluded.doc, rev = fleets.rev + 1, updated_at = excluded.updated_at, deleted = 0",
+        self.exec_essential(&format!("INSERT INTO {table}(id, name, doc, rev, updated_at, deleted) VALUES(?1, ?2, ?3, 1, ?4, 0)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, doc = excluded.doc, rev = {table}.rev + 1, updated_at = excluded.updated_at, deleted = 0"),
             params![id, name, doc, now],
         )
         .map(|_| ())
     }
 
-    /// Fleets saved here since the server last confirmed them, and deletions not yet sent:
+    /// Documents saved here since the server last confirmed them, and deletions not yet sent:
     /// `(id, name, doc, server_rev, deleted)`.
-    pub fn fleets_unsynced(&self) -> Vec<(String, String, String, i64, bool)> {
-        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, doc, server_rev, deleted FROM fleets WHERE rev > server_rev OR (deleted = 1 AND server_rev > 0)") else {
+    fn coll_unsynced(&self, table: &str) -> Vec<(String, String, String, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare(&format!("SELECT id, name, doc, server_rev, deleted FROM {table} WHERE rev > server_rev OR (deleted = 1 AND server_rev > 0)")) else {
             return Vec::new();
         };
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
-    pub fn fleet_mark_synced(&self, id: &str, server_rev: i64) -> Result<()> {
-        self.exec_essential("DELETE FROM fleets WHERE id = ?1 AND deleted = 1", params![id])?;
-        self.exec_essential("UPDATE fleets SET server_rev = ?2, rev = ?2 WHERE id = ?1", params![id, server_rev]).map(|_| ())
+    fn coll_mark_synced(&self, table: &str, id: &str, server_rev: i64) -> Result<()> {
+        self.exec_essential(&format!("DELETE FROM {table} WHERE id = ?1 AND deleted = 1"), params![id])?;
+        self.exec_essential(&format!("UPDATE {table} SET server_rev = ?2, rev = ?2 WHERE id = ?1"), params![id, server_rev]).map(|_| ())
     }
 
-    pub fn fleet_purge(&self, id: &str) -> Result<()> {
-        self.exec_essential("DELETE FROM fleets WHERE id = ?1", params![id]).map(|_| ())
+    fn coll_purge(&self, table: &str, id: &str) -> Result<()> {
+        self.exec_essential(&format!("DELETE FROM {table} WHERE id = ?1"), params![id]).map(|_| ())
     }
 
-    pub fn fleets_revisions(&self) -> Vec<(String, i64, bool)> {
-        let Ok(mut stmt) = self.conn.prepare("SELECT id, server_rev, deleted FROM fleets") else { return Vec::new() };
+    fn coll_revisions(&self, table: &str) -> Vec<(String, i64, bool)> {
+        let Ok(mut stmt) = self.conn.prepare(&format!("SELECT id, server_rev, deleted FROM {table}")) else { return Vec::new() };
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
-    pub fn fleet_put_from_server(&self, id: &str, name: &str, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
-        self.exec_essential(
-            "INSERT INTO fleets(id, name, doc, rev, updated_at, server_rev, deleted) VALUES(?1, ?2, ?3, ?4, ?5, ?4, 0)
+    fn coll_put_from_server(&self, table: &str, id: &str, name: &str, doc: &str, rev: i64, updated_at: i64) -> Result<()> {
+        self.exec_essential(&format!("INSERT INTO {table}(id, name, doc, rev, updated_at, server_rev, deleted) VALUES(?1, ?2, ?3, ?4, ?5, ?4, 0)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, doc = excluded.doc, rev = excluded.rev, updated_at = excluded.updated_at,
-             server_rev = excluded.server_rev, deleted = 0",
+             server_rev = excluded.server_rev, deleted = 0"),
             params![id, name, doc, rev, updated_at],
         )
         .map(|_| ())
     }
 
-    pub fn fleet_delete(&self, id: &str) -> Result<()> {
+    fn coll_delete(&self, table: &str, id: &str) -> Result<()> {
         let now = crate::clock::utc().timestamp();
-        self.exec_essential("UPDATE fleets SET deleted = 1, updated_at = ?2 WHERE id = ?1", params![id, now]).map(|_| ())
+        self.exec_essential(&format!("UPDATE {table} SET deleted = 1, updated_at = ?2 WHERE id = ?1"), params![id, now]).map(|_| ())
     }
 
     /// `(id, doc)` of the given fits, those that exist.
@@ -1684,6 +1761,24 @@ mod tests {
         assert!(s.fleets_unsynced().iter().any(|f| f.0 == "b" && f.4), "a deletion goes up");
         s.fleet_mark_synced("b", 7).unwrap();
         assert!(s.fleet_doc("b").is_none() && !s.fleets_revisions().iter().any(|f| f.0 == "b"));
+    }
+
+    #[test]
+    fn own_doctrines_keep_apart_from_fleets_and_sync_the_same_way() {
+        let s = Store::mem();
+        s.doctrine_put("d", "Mine", "{\"id\":\"d\"}").unwrap();
+        s.fleet_put("f", "Alpha", "{}").unwrap();
+        assert_eq!(s.doctrines_all(), vec!["{\"id\":\"d\"}".to_owned()]);
+        assert_eq!(s.doctrines_unsynced().len(), 1);
+        assert_eq!(s.fleets_unsynced().len(), 1, "each table its own");
+        s.doctrine_mark_synced("d", 2).unwrap();
+        assert!(s.doctrines_unsynced().is_empty());
+        s.doctrine_delete("d").unwrap();
+        assert!(s.doctrines_all().is_empty() && s.doctrines_unsynced().iter().any(|d| d.4));
+        s.doctrine_put_from_server("e", "Theirs", "{}", 4, 0).unwrap();
+        assert!(s.doctrines_revisions().iter().any(|(id, rev, _)| id == "e" && *rev == 4));
+        s.doctrine_purge("e").unwrap();
+        assert!(!s.doctrines_revisions().iter().any(|(id, _, _)| id == "e"));
     }
 
     #[test]
