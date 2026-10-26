@@ -29,6 +29,18 @@ pub enum FitRole {
 impl FitRole {
     pub const ALL: [FitRole; 6] = [FitRole::Line, FitRole::Logi, FitRole::Command, FitRole::Tackle, FitRole::Ewar, FitRole::Support];
 
+    /// How many fly of a fit in this role: the mainline fills what the others leave, several
+    /// mainline hulls share it.
+    pub fn rule(self, main: bool) -> CountRule {
+        match (main, self) {
+            (true, _) => CountRule::Fill { min: 0, max: 1000 },
+            (_, FitRole::Logi) => CountRule::Percent(15.0),
+            (_, FitRole::Line) => CountRule::Percent(5.0),
+            (_, FitRole::Tackle) => CountRule::Fixed(3),
+            (_, FitRole::Command | FitRole::Ewar | FitRole::Support) => CountRule::Fixed(2),
+        }
+    }
+
     /// By the hull's group, the way the fleet screen counts a slot.
     pub fn of_hull(dogma: &Dogma, ship: crate::ids::TypeId) -> FitRole {
         let group = dogma.type_(ship).map(|t| t.group);
@@ -103,14 +115,10 @@ impl Doctrine {
         let fits: Vec<(String, Fit, &DoctrineFit)> = order.into_iter().filter_map(|f| f.fit.clone().or_else(|| lookup(&f.fit_id)).map(|fit| (f.fit_id.clone(), fit, f))).collect();
         let pairs: Vec<(String, Fit)> = fits.iter().map(|(id, fit, _)| (id.clone(), fit.clone())).collect();
         let mut fleet = crate::fleet::from_doctrine(dogma, &self.name, &pairs, skills);
-        let mains: Vec<usize> = fits.iter().enumerate().filter(|(_, (_, _, f))| f.main).map(|(i, _)| i).collect();
-        if let Some(first) = mains.first() {
-            fleet.main = Some(*first);
-            // Several mainline hulls share what the others leave.
-            for i in &mains {
-                fleet.slots[*i].rule = CountRule::Fill { min: 0, max: 1000 };
-            }
+        for (slot, (_, _, f)) in fleet.slots.iter_mut().zip(&fits) {
+            slot.rule = f.role.rule(f.main);
         }
+        fleet.main = fits.iter().position(|(_, _, f)| f.main).or(fleet.main);
         fleet
     }
 

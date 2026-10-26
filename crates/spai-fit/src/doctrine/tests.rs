@@ -26,6 +26,7 @@ fn a_fleet_of_a_doctrine_flies_its_mainline_first_as_the_main() {
     assert_eq!(fleet.slots[0].fit_id, "gsf-rifters~dps");
     assert_eq!(fleet.main, Some(0));
     assert!(matches!(fleet.slots[0].rule, CountRule::Fill { .. }));
+    assert_eq!(fleet.slots[1].rule, CountRule::Fixed(3), "tackle by its role in the doctrine, whatever the hull");
 }
 
 #[test]
