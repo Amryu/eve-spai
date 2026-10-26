@@ -1030,20 +1030,34 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                     set_charge = Some(None);
                     ui.close();
                 }
-                // One submenu per kind: Tech I, Tech II, each faction.
-                for (title, list) in picker::charge_sections(dogma, &charges) {
-                    let current = list.iter().any(|c| target_mods.iter().any(|m| m.2 == Some(*c)));
-                    let label = if current { egui::RichText::new(&title).strong() } else { egui::RichText::new(&title) };
+                // Tech I and Tech II in the menu itself, each faction in one of its own once
+                // the list is long.
+                let (flat, folded) = picker::fold_sections(picker::charge_sections(dogma, &charges));
+                let mut pick = |ui: &mut egui::Ui, c: TypeId| {
+                    let icon = egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0);
+                    let item = egui::Button::image_and_text(icon, spai_fit::formats::name_of(dogma, c)).selected(target_mods.iter().all(|m| m.2 == Some(c))).frame_when_inactive(false);
+                    if ui.add(item).clicked() {
+                        set_charge = Some(Some(c));
+                        ui.close();
+                    }
+                };
+                for section in &flat {
+                    ui.separator();
+                    for &c in &section.items {
+                        pick(ui, c);
+                    }
+                }
+                if !folded.is_empty() {
+                    ui.separator();
+                }
+                for section in &folded {
+                    let current = section.items.iter().any(|c| target_mods.iter().any(|m| m.2 == Some(*c)));
+                    let label = if current { egui::RichText::new(&section.title).strong() } else { egui::RichText::new(&section.title) };
                     ui.menu_button(label, |ui| {
                         ui.set_min_width(240.0);
                         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                            for c in list {
-                                let icon = egui::Image::new(crate::icons::type_icon_uri(c)).fit_to_exact_size(egui::vec2(16.0, 16.0)).corner_radius(2.0);
-                                let item = egui::Button::image_and_text(icon, spai_fit::formats::name_of(dogma, c)).selected(target_mods.iter().all(|m| m.2 == Some(c))).frame_when_inactive(false);
-                                if ui.add(item).clicked() {
-                                    set_charge = Some(Some(c));
-                                    ui.close();
-                                }
+                            for &c in &section.items {
+                                pick(ui, c);
                             }
                         });
                     });
@@ -1161,12 +1175,31 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     }
 }
 
-/// A module's variants: Tech I and II and the like at the top, the storyline, faction, deadspace
-/// and officer ones each in a menu of their own, all by meta level with their icons.
-fn variants_menu(ui: &mut egui::Ui, dogma: &Dogma, mut variants: Vec<TypeId>) -> Option<TypeId> {
+/// A module's variants by section: Tech I and II and the like first, then the storyline, faction,
+/// deadspace and officer ones, all by meta level.
+pub(crate) fn variant_sections(dogma: &Dogma, mut variants: Vec<TypeId>) -> Vec<picker::MenuSection> {
     use spai_fit::ids::meta_group;
     variants.sort_by_key(|v| dogma.type_(*v).map(|t| (t.meta_level.unwrap_or(0), t.name.clone())));
     let group_of = |v: &TypeId| dogma.type_(*v).and_then(|t| t.meta_group);
+    let sub = [(meta_group::STORYLINE, tr!("Storyline")), (meta_group::FACTION, tr!("Faction")), (meta_group::DEADSPACE, tr!("Deadspace")), (meta_group::OFFICER, tr!("Officer"))];
+    let plain: Vec<TypeId> = variants.iter().copied().filter(|v| !sub.iter().any(|(g, _)| group_of(v) == Some(*g))).collect();
+    let mut out = Vec::new();
+    if !plain.is_empty() {
+        out.push(picker::MenuSection { title: "Tech".to_owned(), items: plain, plain: true });
+    }
+    for (g, label) in sub {
+        let items: Vec<TypeId> = variants.iter().copied().filter(|v| group_of(v) == Some(g)).collect();
+        if !items.is_empty() {
+            out.push(picker::MenuSection { title: label.to_owned(), items, plain: false });
+        }
+    }
+    out
+}
+
+/// A module's variants with their icons: Tech I and II and the like in the menu itself, the
+/// storyline, faction, deadspace and officer ones each in a menu of their own once the list is
+/// long, else all together, a line between the sections.
+fn variants_menu(ui: &mut egui::Ui, dogma: &Dogma, variants: Vec<TypeId>) -> Option<TypeId> {
     let item = |ui: &mut egui::Ui, v: TypeId| {
         let icon = egui::Image::new(crate::icons::type_icon_uri(v)).fit_to_exact_size(egui::vec2(18.0, 18.0));
         let hit = ui.add(egui::Button::image_and_text(icon, spai_fit::formats::name_of(dogma, v)).frame_when_inactive(false)).clicked();
@@ -1175,21 +1208,25 @@ fn variants_menu(ui: &mut egui::Ui, dogma: &Dogma, mut variants: Vec<TypeId>) ->
         }
         hit
     };
-    let sub = [(meta_group::STORYLINE, tr!("Storyline")), (meta_group::FACTION, tr!("Faction")), (meta_group::DEADSPACE, tr!("Deadspace")), (meta_group::OFFICER, tr!("Officer"))];
+    let (flat, folded) = picker::fold_sections(variant_sections(dogma, variants));
     let mut picked = None;
-    for &v in variants.iter().filter(|v| !sub.iter().any(|(g, _)| group_of(v) == Some(*g))) {
-        if item(ui, v) {
-            picked = Some(v);
+    for (k, section) in flat.iter().enumerate() {
+        if k > 0 {
+            ui.separator();
+        }
+        for &v in &section.items {
+            if item(ui, v) {
+                picked = Some(v);
+            }
         }
     }
-    for (g, label) in sub {
-        let these: Vec<TypeId> = variants.iter().copied().filter(|v| group_of(v) == Some(g)).collect();
-        if these.is_empty() {
-            continue;
-        }
-        ui.menu_button(label, |ui| {
+    if !flat.is_empty() && !folded.is_empty() {
+        ui.separator();
+    }
+    for section in &folded {
+        ui.menu_button(&section.title, |ui| {
             ui.set_min_width(260.0);
-            for v in these {
+            for &v in &section.items {
                 if item(ui, v) {
                     picked = Some(v);
                 }

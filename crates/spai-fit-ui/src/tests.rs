@@ -786,8 +786,47 @@ fn charges_sort_into_tech_and_each_faction() {
     d.types.extend([t1, t2, rf, cn]);
     let d = d.finish();
     let s = charge_sections(&d, &[91_001, 91_002, 91_003, 91_004]);
-    let titles: Vec<&str> = s.iter().map(|(t, _)| t.as_str()).collect();
+    let titles: Vec<&str> = s.iter().map(|x| x.title.as_str()).collect();
     assert_eq!(titles, vec!["Tech I", "Tech II", "Faction: Caldari Navy", "Faction: Republic Fleet"]);
+    assert_eq!(s.iter().map(|x| x.plain).collect::<Vec<_>>(), vec![true, true, false, false]);
+}
+
+#[test]
+fn a_short_menu_folds_nothing_and_a_long_one_folds_all_but_tech() {
+    use crate::picker::{fold_sections, MenuSection, FOLD_FROM};
+    let section = |title: &str, n: usize, plain: bool| MenuSection { title: title.to_owned(), items: (0..n as u32).collect(), plain };
+    let short = vec![section("Tech I", 4, true), section("Tech II", 2, true), section("Faction: Republic Fleet", 3, false)];
+    assert_eq!(short.iter().map(|s| s.items.len()).sum::<usize>(), FOLD_FROM - 1);
+    let (flat, folded) = fold_sections(short.clone());
+    assert_eq!((flat.len(), folded.len()), (3, 0), "under ten entries, everything is in the one menu");
+    let mut long = short;
+    long.push(section("Faction: Caldari Navy", 1, false));
+    let (flat, folded) = fold_sections(long);
+    assert_eq!(flat.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["Tech I", "Tech II"], "tech stays in the menu itself");
+    assert_eq!(folded.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["Faction: Republic Fleet", "Faction: Caldari Navy"]);
+}
+
+#[test]
+fn module_variants_section_by_meta_group_with_tech_first() {
+    use spai_fit::ids::meta_group;
+    use spai_fit::test_support::type_def;
+    let mut d = dataset();
+    let gun = d.types.iter().find(|t| t.id == ids::GUN).unwrap().clone();
+    let mut named = |id, name: &str, group, level| {
+        let mut t = type_def(id, name, gun.group, gun.category, &[], &[], &[]);
+        t.meta_group = Some(group);
+        t.meta_level = Some(level);
+        t.variation_parent = Some(ids::GUN);
+        d.types.push(t);
+    };
+    named(92_001, "Gun II", meta_group::TECH_II, 5);
+    named(92_002, "Republic Fleet Gun", meta_group::FACTION, 8);
+    named(92_003, "Gun I upgraded", meta_group::TECH_I, 1);
+    named(92_004, "Domination Gun", meta_group::FACTION, 9);
+    named(92_005, "Tobias' Gun", meta_group::OFFICER, 14);
+    let d = d.finish();
+    let s = crate::editor::variant_sections(&d, vec![92_001, 92_002, 92_003, 92_004, 92_005]);
+    assert_eq!(s.iter().map(|x| (x.title.as_str(), x.items.clone(), x.plain)).collect::<Vec<_>>(), vec![("Tech", vec![92_003, 92_001], true), ("Faction", vec![92_002, 92_004], false), ("Officer", vec![92_005], false)]);
 }
 
 #[test]

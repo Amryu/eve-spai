@@ -363,10 +363,33 @@ pub fn structure_fighter(dogma: &Dogma, t: &spai_fit::dogma::TypeDef) -> bool {
     t.category == category::FIGHTER && dogma.group(t.group).is_some_and(|g| g.name.starts_with("Structure"))
 }
 
+/// One section of a charge or variants menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuSection {
+    pub title: String,
+    pub items: Vec<TypeId>,
+    /// Tech I and Tech II: listed in the menu itself, never folded into one of their own.
+    pub plain: bool,
+}
+
+/// From how many entries in all a menu folds its faction and rarer sections into menus of their
+/// own; under it everything is listed in the one menu.
+pub const FOLD_FROM: usize = 10;
+
+/// The sections listed in the menu itself and those folded into a menu each: the plain ones are
+/// never folded, and nothing is while the whole list is short.
+pub fn fold_sections(sections: Vec<MenuSection>) -> (Vec<MenuSection>, Vec<MenuSection>) {
+    let total: usize = sections.iter().map(|s| s.items.len()).sum();
+    if total < FOLD_FROM {
+        return (sections, Vec::new());
+    }
+    sections.into_iter().partition(|s| s.plain)
+}
+
 /// Charges sorted the way a pilot looks for them: Tech I, Tech II, then each faction on its own,
 /// then the rest. A faction's name is what its charge adds to the Tech I one: "Republic Fleet"
 /// for Republic Fleet EMP S over EMP S.
-pub fn charge_sections(dogma: &Dogma, charges: &[TypeId]) -> Vec<(String, Vec<TypeId>)> {
+pub fn charge_sections(dogma: &Dogma, charges: &[TypeId]) -> Vec<MenuSection> {
     let mut t1 = Vec::new();
     let mut t2 = Vec::new();
     let mut factions: Vec<(String, Vec<TypeId>)> = Vec::new();
@@ -395,16 +418,16 @@ pub fn charge_sections(dogma: &Dogma, charges: &[TypeId]) -> Vec<(String, Vec<Ty
     factions.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Vec::new();
     if !t1.is_empty() {
-        out.push((tr!("Tech I").to_owned(), t1));
+        out.push(MenuSection { title: tr!("Tech I").to_owned(), items: t1, plain: true });
     }
     if !t2.is_empty() {
-        out.push((tr!("Tech II").to_owned(), t2));
+        out.push(MenuSection { title: tr!("Tech II").to_owned(), items: t2, plain: true });
     }
     for (name, v) in factions {
-        out.push((trf!("Faction: {name}", name = name), v));
+        out.push(MenuSection { title: trf!("Faction: {name}", name = name), items: v, plain: false });
     }
     if !other.is_empty() {
-        out.push((tr!("Other").to_owned(), other));
+        out.push(MenuSection { title: tr!("Other").to_owned(), items: other, plain: false });
     }
     out
 }
@@ -652,11 +675,11 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         if matches!(target, PickTarget::Charge(..)) && picker.query.trim().is_empty() {
             let sections = charge_sections(&dogma, &picker.results);
             egui::ScrollArea::vertical().id_salt("sim_picker_charges").auto_shrink([false, false]).show(ui, |ui| {
-                for (title, list) in &sections {
+                for MenuSection { title, items, .. } in &sections {
                     crate::rows::row(ui, "picker", ("sim_pick_section", title.as_str()), 24.0, false, |ui| {
                         ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
                     });
-                    for &id in list {
+                    for &id in items {
                         let Some(t) = dogma.type_(id) else { continue };
                         let r = crate::rows::row(ui, "picker", ("sim_pick", id), 24.0, false, |ui| {
                             ui.add_space(14.0);

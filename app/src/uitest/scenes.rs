@@ -9793,6 +9793,34 @@ fn uitest_the_base_tab_can_be_renamed() {
 }
 
 #[test]
+fn uitest_a_short_charge_menu_lists_the_charges_without_sub_menus() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut scene = imperium_scene("sim_charge_menu", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let click = |h: &mut egui_kittest::Harness<'_>, at: egui::Pos2, button: egui::PointerButton| {
+        h.event(egui::Event::PointerMoved(at));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::default() });
+            h.run_steps(1);
+        }
+    };
+    let gun = h.query_all_by_label("200mm AutoCannon II").next().expect("a gun row").rect().center();
+    click(&mut h, gun, egui::PointerButton::Secondary);
+    h.run_steps(3);
+    // A menu button's label carries the submenu arrow.
+    let charge = h.query_all_by_role(egui::accesskit::Role::Button).find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("Charge "))).expect("the charge menu").rect().center();
+    h.event(egui::Event::PointerMoved(charge));
+    h.run_steps(3);
+    assert!(h.query_all_by_role(egui::accesskit::Role::Button).all(|n| !n.accesskit_node().label().is_some_and(|l| l.starts_with("Tech I"))), "the fixture's two charges are not folded into a Tech I menu");
+    let barrage = h.query_all_by_label("Barrage S").find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).expect("the other charge, listed in the menu itself").rect().center();
+    click(&mut h, barrage, egui::PointerButton::Primary);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Barrage S").count(), 2, "both guns now load it: {:?}", h.query_all_by_label("Barrage S").map(|n| n.accesskit_node().role()).collect::<Vec<_>>());
+}
+
+#[test]
 fn uitest_the_module_picker_keeps_its_fitting_filter() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
     // Changing the high slot's gun: the filter stays offered frame after frame, not only on the
