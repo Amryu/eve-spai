@@ -47,6 +47,7 @@ pub struct Found {
 }
 
 pub fn page(html: &str) -> Page {
+    let html = &double_quoted(html);
     let url = attr_after(html, "name=\"identifier-url\"", "content").or_else(|| attr_after(html, "property=\"og:url\"", "content"));
     let title = between(html, "class=\"ipsType_pagetitle\">", "</h1>").map(|t| decode(&strip_tags(t)).trim().to_owned()).unwrap_or_default();
     let mut posts = Vec::new();
@@ -69,6 +70,47 @@ pub fn page(html: &str) -> Page {
         posts.push(Post { id, author, posted, edited, lines });
     }
     Page { url, title, posts }
+}
+
+/// The same page with every attribute in double quotes: browsers save a page either way.
+fn double_quoted(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut chars = html.chars().peekable();
+    let mut in_tag = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            '=' if in_tag && chars.peek() == Some(&'\'') => {
+                chars.next();
+                out.push_str("=\"");
+                for v in chars.by_ref() {
+                    match v {
+                        '\'' => break,
+                        '"' => out.push_str("&quot;"),
+                        v => out.push(v),
+                    }
+                }
+                out.push('"');
+                continue;
+            }
+            '=' if in_tag && chars.peek() == Some(&'"') => {
+                // Copied whole, so a quote or bracket inside the value does not confuse the rest.
+                chars.next();
+                out.push_str("=\"");
+                for v in chars.by_ref() {
+                    out.push(v);
+                    if v == '"' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The text of a post, a line per element; a line of only a non-breaking space is blank.
@@ -425,6 +467,18 @@ fn dual_prop(dogma: &Dogma, fit: &mut Fit) -> bool {
 /// slots, the first ones written first; the rest wait in the hangar.
 pub fn launch_fighters(dogma: &Dogma, fit: &mut Fit) {
     let named = |t: TypeId, n: &str| dogma.attr_named(n).and_then(|a| dogma.type_(t).and_then(|d| d.attr(a.id))).filter(|v| *v > 0.0).map(|v| v as u32);
+    // A stack written bigger than a squadron holds is that many full squadrons and the rest.
+    let mut squads = Vec::new();
+    for f in std::mem::take(&mut fit.fighters) {
+        let max = named(f.type_id, "fighterSquadronMaxSize").unwrap_or(f.count.max(1));
+        let mut left = f.count;
+        while left > 0 {
+            let n = left.min(max);
+            squads.push(crate::fit::FighterSquad { count: n, ..f.clone() });
+            left -= n;
+        }
+    }
+    fit.fighters = squads;
     let mut tubes = named(fit.ship, "fighterTubes").unwrap_or(0);
     let mut slots = [("fighterSquadronIsLight", named(fit.ship, "fighterLightSlots").unwrap_or(0)), ("fighterSquadronIsSupport", named(fit.ship, "fighterSupportSlots").unwrap_or(0)), ("fighterSquadronIsHeavy", named(fit.ship, "fighterHeavySlots").unwrap_or(0))];
     for f in &mut fit.fighters {
@@ -510,6 +564,14 @@ mod tests {
 <div class="post_block hentry clear clearfix  " id="post_id_12"><span itemprop="name">Someone Else</span>
 <abbr itemprop="commentTime" title="2025-01-01T00:00:00+00:00">x</abbr><div itemprop="commentText" class="post entry-content "><p>nice &lt;3</p></div></div>
 </body></html>"#;
+
+    #[test]
+    fn a_page_saved_with_single_quotes_reads_the_same() {
+        let single = PAGE.replace("\"post_block hentry clear clearfix  \"", "'post_block hentry clear clearfix  '").replace("id=\"post_id_11\"", "id='post_id_11'").replace("itemprop=\"commentText\"", "itemprop='commentText'");
+        assert_ne!(single, PAGE);
+        assert_eq!(page(&single), page(PAGE));
+        assert_eq!(double_quoted("<a title='say \"hi\"' x=\"it's\">it's</a>"), "<a title=\"say &quot;hi&quot;\" x=\"it's\">it's</a>");
+    }
 
     #[test]
     fn a_saved_topic_reads_into_posts_lines_and_times() {

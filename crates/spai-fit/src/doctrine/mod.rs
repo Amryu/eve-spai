@@ -223,6 +223,11 @@ pub fn short_fit_name(name: &str, hull: &str, said: &[&str]) -> String {
     let norm = |w: &str| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_ascii_lowercase();
     let mut known: Vec<String> = Vec::new();
     for s in said.iter().chain(std::iter::once(&hull)) {
+        // Written as one word: TigersClaw for Tiger's Claw.
+        let squashed: String = s.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+        if squashed.len() >= 3 {
+            known.push(squashed);
+        }
         for w in s.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '/') {
             let w = norm(w);
             if w.len() >= 2 {

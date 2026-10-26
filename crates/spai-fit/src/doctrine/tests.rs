@@ -156,5 +156,15 @@ fn fit_names_drop_what_the_tree_already_says() {
     assert_eq!(short_fit_name("T2 TFI", "Thrasher Fleet Issue", &["GSF", "Thrasher Fleet Issues (tFIs)"]), "T2");
     assert_eq!(short_fit_name("GSF - Flycatchers - Boost - V25.1", "Bifrost", &["GSF", "Svipuls"]), "Flycatchers - Boost - V25.1", "another doctrine's name is news here");
     assert_eq!(short_fit_name("GSF Retribution Fleet", "Retribution", &["GSF", "Retributions"]), "Standard");
+    assert_eq!(short_fit_name("TigersClaw - DPS - V25.1", "Thanatos", &["GSF", "Tiger's Claw (Carriers)"]), "DPS - V25.1");
     assert_eq!(short_fit_name("25.01 Standard", "Zirnitra", &["GSF", "Dreadnought Fits"]), "25.01 Standard");
+}
+
+#[test]
+fn a_fighter_stack_bigger_than_a_squadron_splits_into_full_ones() {
+    let d = dataset();
+    let mut fit = Fit::new(ids::SHIP, "Carrier");
+    fit.fighters.push(crate::fit::FighterSquad { type_id: ids::SUPPORT_FIGHTER, count: 7, active: true });
+    forum::launch_fighters(&d, &mut fit);
+    assert_eq!(fit.fighters.iter().map(|f| f.count).collect::<Vec<_>>(), vec![3, 3, 1]);
 }
