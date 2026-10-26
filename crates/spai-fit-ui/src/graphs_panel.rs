@@ -25,6 +25,13 @@ pub fn kind_name(kind: GraphKind) -> &'static str {
         GraphKind::RemoteRepVsDistance => tr!("Remote repair vs distance"),
         GraphKind::EwarVsDistance => tr!("Ewar vs distance"),
         GraphKind::DamageOverTime => tr!("Damage over time"),
+        GraphKind::EffectiveDamageVsDistance => tr!("Effective damage vs distance"),
+        GraphKind::EffectiveDamageVsTargetSpeed => tr!("Effective damage vs target speed"),
+        GraphKind::EffectiveDamageVsTargetSignature => tr!("Effective damage vs target signature"),
+        GraphKind::EffectiveVolleyVsDistance => tr!("Effective volley vs distance"),
+        GraphKind::EffectiveVolleyVsTargetSpeed => tr!("Effective volley vs target speed"),
+        GraphKind::EffectiveVolleyVsTargetSignature => tr!("Effective volley vs target signature"),
+        GraphKind::EffectiveDamageOverTime => tr!("Effective damage over time"),
     }
 }
 
@@ -34,6 +41,8 @@ pub fn y_name(y: GraphY) -> &'static str {
     match y {
         GraphY::Dps => tr!("Damage per second"),
         GraphY::Volley => tr!("Volley"),
+        GraphY::EffectiveDps => tr!("Effective DPS"),
+        GraphY::EffectiveVolley => tr!("Effective volley"),
         GraphY::Capacitor => tr!("Capacitor"),
         GraphY::Shield => tr!("Shield HP"),
         GraphY::Speed => tr!("Speed"),
@@ -74,6 +83,13 @@ fn axes(kind: GraphKind) -> (&'static str, &'static str, Fmt, Fmt) {
         GraphKind::RemoteRepVsDistance => (tr!("Distance"), tr!("Per second"), km, plain),
         GraphKind::EwarVsDistance => (tr!("Distance"), tr!("Strength"), km, plain),
         GraphKind::DamageOverTime => (tr!("Time"), tr!("DPS"), s, plain),
+        GraphKind::EffectiveDamageVsDistance => (tr!("Distance"), tr!("Effective DPS"), km, plain),
+        GraphKind::EffectiveDamageVsTargetSpeed => (tr!("Target speed (m/s)"), tr!("Effective DPS"), plain, plain),
+        GraphKind::EffectiveDamageVsTargetSignature => (tr!("Target signature (m)"), tr!("Effective DPS"), plain, plain),
+        GraphKind::EffectiveVolleyVsDistance => (tr!("Distance"), tr!("Effective volley"), km, plain),
+        GraphKind::EffectiveVolleyVsTargetSpeed => (tr!("Target speed (m/s)"), tr!("Effective volley"), plain, plain),
+        GraphKind::EffectiveVolleyVsTargetSignature => (tr!("Target signature (m)"), tr!("Effective volley"), plain, plain),
+        GraphKind::EffectiveDamageOverTime => (tr!("Time"), tr!("Effective DPS"), s, plain),
     }
 }
 
@@ -153,6 +169,9 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             // Docked narrow: the ranges and the ships' menu wrap to lines of their own.
             126.0
         }
+    } else if kind.is_effective() && sim.graph_ideal {
+        // The test target's resistances take a line more.
+        180.0
     } else {
         150.0
     };
@@ -460,12 +479,26 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
     // bring their own and are not changed by any of it.
     let test_target = sim.graph_ideal && (x != GraphX::TargetSignature || x != GraphX::TargetSpeed);
     if test_target {
-        heading(ui, tr!("Test target"), tr!("A made-up ship to test against. Fits added as targets use their own signature and speed."));
+        let note = if kind.is_effective() { tr!("A made-up ship to test against. Fits added as targets use their own signature, speed and resistances.") } else { tr!("A made-up ship to test against. Fits added as targets use their own signature and speed.") };
+        heading(ui, tr!("Test target"), note);
         if x != GraphX::TargetSignature {
             ctl(ui, tr!("Signature"), &mut target.signature, 25.0..=2000.0, true, &|v| format!("{v:.0} m"), &leading_number);
         }
         if x != GraphX::TargetSpeed {
             ctl(ui, tr!("Speed"), &mut target.velocity, 0.0..=5000.0, false, &|v| format!("{v:.0} m/s"), &leading_number);
+        }
+        if kind.is_effective() {
+            let names = [tr!("EM resistance"), tr!("Thermal resistance"), tr!("Kinetic resistance"), tr!("Explosive resistance")];
+            if stacked {
+                for (i, name) in names.into_iter().enumerate() {
+                    let mut pct = target.resist[i] * 100.0;
+                    if ctl(ui, name, &mut pct, 0.0..=100.0, false, &|v| format!("{v:.0}%"), &leading_number) {
+                        target.resist[i] = (pct / 100.0).clamp(0.0, 1.0);
+                    }
+                }
+            } else {
+                resist_row(ui, target, names);
+            }
         }
         if stacked {
             ui.add_space(8.0);
@@ -496,6 +529,33 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
     ui.allocate_ui_with_layout(egui::vec2(160.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.checkbox(&mut sim.graph_drones, tr!("Include drones"));
     });
+}
+
+/// The test target's four resistances on one line of the row layout, each a box to drag or type
+/// in, where four sliders would push the row's other controls out of the strip.
+fn resist_row(ui: &mut egui::Ui, target: &mut spai_fit::fit::TargetProfile, names: [&str; 4]) {
+    const LABEL_W: f32 = 104.0;
+    let cell = egui::vec2(330.0f32.min(ui.max_rect().width()).max(LABEL_W + 4.0 * 54.0), 26.0);
+    ui.allocate_ui_with_layout(cell, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.allocate_ui_with_layout(egui::vec2(LABEL_W, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(LABEL_W);
+            ui.add(egui::Label::new(tr!("Resistances")).truncate().selectable(false));
+        });
+        let box_w = ((cell.x - LABEL_W - 5.0 * ui.spacing().item_spacing.x) / 4.0).max(40.0);
+        for (i, short) in ["EM", "TH", "KIN", "EXP"].into_iter().enumerate() {
+            let mut pct = f64::from(target.resist[i]) * 100.0;
+            let r = ui.add_sized([box_w, 20.0], egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(1.0).custom_formatter(move |v, _| format!("{short} {v:.0}%")).custom_parser(first_number));
+            if r.on_hover_text(names[i]).changed() {
+                target.resist[i] = (pct / 100.0).clamp(0.0, 1.0) as f32;
+            }
+        }
+    });
+}
+
+/// The first number in a string, past any words before it.
+fn first_number(s: &str) -> Option<f64> {
+    let start = s.find(|c: char| c.is_ascii_digit() || c == '.')?;
+    leading_number(&s[start..])
 }
 
 /// A label over a slider with its value box, as wide as the column.
@@ -641,7 +701,13 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
                         sim.graph_ideal = true;
                         ui.close();
                     }
-                    let hint = if sim.graph == GraphKind::CapacitorOverTime { tr!("A fit's capacitor is what the nosferatu drain, only while it is fuller than yours. The test target gives only to those that drain any ship.") } else { tr!("A fit's signature and speed stand in for the profile's.") };
+                    let hint = if sim.graph == GraphKind::CapacitorOverTime {
+                        tr!("A fit's capacitor is what the nosferatu drain, only while it is fuller than yours. The test target gives only to those that drain any ship.")
+                    } else if sim.graph.is_effective() {
+                        tr!("A fit's signature, speed and resistances stand in for the test target's: its shield, armor and hull each by the share of the kill it takes, its reactive hardener shifting.")
+                    } else {
+                        tr!("A fit's signature and speed stand in for the profile's.")
+                    };
                     ui.label(egui::RichText::new(hint).weak());
                     let taken = sim.graph_targets.clone();
                     for (id, name) in open.iter().filter(|(id, _)| !taken.contains(id)) {
@@ -656,17 +722,6 @@ fn ships_list(sim: &mut SimUi, ui: &mut egui::Ui, open: &[(String, String)], cur
     }
 }
 
-/// The layer a fit is shot through for damage taken: its armor when it runs a reactive hardener,
-/// else the layer holding most of its effective hit points.
-fn tank_of(c: &spai_fit::stats::Computed) -> graphs::TargetTank {
-    let t = &c.tank;
-    if let Some(r) = t.rah {
-        return graphs::TargetTank { resonance: r.armor_before, rah: Some(r) };
-    }
-    let layer = [&t.shield, &t.armor, &t.hull].into_iter().max_by(|a, b| a.ehp.total_cmp(&b.ehp)).unwrap_or(&t.armor);
-    graphs::TargetTank { resonance: std::array::from_fn(|i| 1.0 - layer.resist(i)), rah: None }
-}
-
 /// One line per attacker (and per target, for damage), each the total of that fit's weapons.
 fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit::fit::TargetProfile, motion: Motion, open: &[(String, String)], current: &str, computed: &std::sync::Arc<spai_fit::stats::Computed>, with_targets: bool) -> Option<Plot> {
     let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
@@ -677,35 +732,36 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
             attackers.push((name_of(&id), c));
         }
     }
-    // A fit as target brings its tank too, for the damage it takes over time.
-    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile, Option<graphs::TargetTank>, Option<std::sync::Arc<spai_fit::stats::Computed>>)> = Vec::new();
+    // A fit as target brings its tank too, for the damage it takes past its resistances.
+    let mut targets: Vec<(Option<String>, spai_fit::fit::TargetProfile, Option<std::sync::Arc<spai_fit::stats::Computed>>)> = Vec::new();
     if with_targets && !sim.graph_targets.is_empty() {
         if sim.graph_ideal {
-            targets.push((Some(tr!("Test target").to_owned()), raw.clone(), None, None));
+            targets.push((Some(tr!("Test target").to_owned()), raw.clone(), None));
         }
         for id in sim.graph_targets.clone() {
             if let Some(c) = sim.computed_of(&id) {
                 let t = spai_fit::fit::TargetProfile { signature: c.mobility.signature as f32, velocity: c.mobility.max_velocity as f32, ..raw.clone() };
-                targets.push((Some(name_of(&id)), t, Some(tank_of(&c)), Some(c)));
+                targets.push((Some(name_of(&id)), t, Some(c)));
             }
         }
     } else {
-        targets.push((None, raw.clone(), None, None));
+        targets.push((None, raw.clone(), None));
     }
     let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let mut lines: Vec<PlotSeries> = Vec::new();
     let mut levels: Vec<crate::plot::PlotLevel> = Vec::new();
     for (a_name, c) in &attackers {
-        // Attackers that share a ceiling share one line, in the first one's colour.
-        if let Some(l) = spec.kind.is_damage().then(|| max_level(graphs::max_damage(c, spec), fmt_y, series_color(lines.len()))).flatten() {
-            if !levels.iter().any(|x| x.label == l.label) {
-                levels.push(l);
-            }
-        }
-        for (t_name, t, tank, t_fit) in &targets {
+        for (t_name, t, t_fit) in &targets {
             let projection = graphs::Projection { target: t_fit.clone(), across: Some(motion.across(c.mobility.max_velocity)) };
             let one = GraphSpec { target: motion.apply(t, c.mobility.max_velocity), projection, ..spec.clone() };
-            let series = if spec.kind == GraphKind::DamageOverTime { graphs::damage_over_time(c, &one, tank.as_ref()) } else { graphs::sample(c, &one) };
+            // Attackers that share a ceiling share one line, in the first one's colour; past
+            // resistances the ceiling is the target's too.
+            if let Some(l) = spec.kind.is_damage().then(|| max_level(graphs::max_damage(c, &one), fmt_y, series_color(lines.len()))).flatten() {
+                if !levels.iter().any(|x| x.label == l.label) {
+                    levels.push(l);
+                }
+            }
+            let series = graphs::sample(c, &one);
             let total = series.iter().find(|s| s.label == SeriesLabel::Total).or_else(|| series.first());
             let Some(total) = total else { continue };
             let label = match t_name {

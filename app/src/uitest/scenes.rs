@@ -2742,6 +2742,18 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.graph = spai_fit::graphs::GraphKind::CapacitorOverTime;
         sim.dock_graphs(true);
     }));
+    v.push(imperium_dialog_scene("imperium_graphs_effective_window", [1200.0, 700.0], |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 1, |f| f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active)));
+        sim.graph = spai_fit::graphs::GraphKind::EffectiveDamageVsDistance;
+        sim.edit(spai_fit::history::EditKind::Target, 0, |f| f.target.resist = [0.5, 0.6, 0.7, 0.8]);
+        sim.dock_graphs(false);
+    }));
+    v.push(imperium_scene_with("imperium_graphs_effective_narrow", [720.0, 800.0], true, spai_fit_ui::Pane::Graphs, |sim| {
+        sim.graph = spai_fit::graphs::GraphKind::EffectiveVolleyVsTargetSpeed;
+        sim.edit(spai_fit::history::EditKind::Target, 0, |f| f.target.resist = [0.5, 0.6, 0.7, 0.8]);
+    }));
     v.push(imperium_scene_with("imperium_variations", [1280.0, 800.0], false, spai_fit_ui::Pane::Stats, |sim| {
         use spai_fit::fit::Slot;
         use spai_fit::test_support::ids;

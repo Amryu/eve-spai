@@ -1438,6 +1438,51 @@ fn the_fit_on_screen_can_be_taken_off_the_graph() {
 }
 
 #[test]
+fn the_effective_graphs_shoot_through_the_test_target_or_the_target_fit() {
+    use spai_fit::graphs::{GraphKind, GraphSpec, SeriesLabel};
+    let mut s = sim();
+    for t in [1, 3] {
+        s.new_fit(ids::SHIP, t);
+        apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, t + 1);
+        s.edit(EditKind::SetState, t + 1, |f| {
+            let m = f.module_mut(Slot::High, 0).unwrap();
+            m.state = State::Active;
+            m.charge = Some(ids::AMMO);
+        });
+    }
+    s.edit(EditKind::Target, 9, |f| f.target.resist = [0.5; 4]);
+    s.graph = GraphKind::EffectiveDamageVsDistance;
+    s.graph_window = true;
+    s.pane = crate::Pane::Graphs;
+    let ctx = egui::Context::default();
+    let frames = |s: &mut SimUi, w: f32| {
+        for t in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 900.0))), time: Some(f64::from(t) * 0.05), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| s.show(ui));
+        }
+    };
+    for w in [1440.0, 760.0] {
+        frames(&mut s, w);
+        assert!(crate::plot::last_rect(&ctx).is_some(), "the fit alone against the test target draws at {w}");
+    }
+    // The resistances set on the test target halve the fit's line.
+    let c = s.computed().unwrap();
+    let target = s.session().unwrap().fit.target.clone();
+    let at_zero = |kind| spai_fit::graphs::sample(&c, &GraphSpec::new(kind, target.clone()))[0].points[0][1];
+    assert!((at_zero(GraphKind::EffectiveDamageVsDistance) * 2.0 - at_zero(GraphKind::DamageVsDistance)).abs() < 1e-9);
+    // The other tab as a target brings its own tank and stands beside the test target.
+    let other = s.sessions()[0].id.clone();
+    s.graph_targets = vec![other];
+    frames(&mut s, 1440.0);
+    assert_eq!(crate::graphs_panel::last_line_count(&ctx), 2, "one line per target");
+    s.graph_ideal = false;
+    frames(&mut s, 1440.0);
+    assert_eq!(crate::graphs_panel::last_line_count(&ctx), 1);
+    let series = spai_fit::graphs::sample(&c, &GraphSpec::new(GraphKind::EffectiveDamageOverTime, target.clone()));
+    assert!(series.iter().any(|x| x.label != SeriesLabel::Total), "over time, the weapons draw by name as the other damage graphs do");
+}
+
+#[test]
 fn a_pinned_attacker_stays_whichever_tab_is_on_screen() {
     let mut s = sim();
     for t in [1, 3] {

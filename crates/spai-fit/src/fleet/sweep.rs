@@ -129,7 +129,7 @@ pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64
             .iter()
             .flatten()
             .map(|p| {
-                let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0 };
+                let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, ..TargetProfile::default() };
                 applied_factor(w, p.distance, &t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range)
             })
             .collect()
@@ -345,7 +345,7 @@ pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f6
             let velocity = b.speed() * on_target.speed;
             let signature = (target.computed.mobility.signature * on_target.signature) as f32;
             let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), velocity, f64::from(b.fleet.motion.1), d);
-            let probes = pairs.iter().flatten().map(|p| TargetProfile { signature, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0 }).collect();
+            let probes = pairs.iter().flatten().map(|p| TargetProfile { signature, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0, resist: [0.0; 4] }).collect();
             (d, probes, on_a)
         })
         .collect();
@@ -402,7 +402,7 @@ pub fn charge_options(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> 
                     .iter()
                     .flatten()
                     .map(|p| {
-                        let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, radius: 0.0 };
+                        let t = TargetProfile { signature: signature as f32, velocity: velocity as f32, distance: p.distance as f32, transversal: p.transversal as f32, ..TargetProfile::default() };
                         applied_factor(&w, p.distance, &t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range)
                     })
                     .collect();

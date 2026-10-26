@@ -23,22 +23,40 @@ pub enum GraphKind {
     LockTime,
     RemoteRepVsDistance,
     EwarVsDistance,
-    /// Damage per second from opening fire: spooling weapons build up cycle by cycle, and against
-    /// a fit, a reactive hardener shifts from its even split.
+    /// Damage per second from opening fire: spooling weapons build up cycle by cycle.
     DamageOverTime,
+    /// The damage graphs past the target's resistances: what its hit points lose, a fit's by its
+    /// layers, the test target's by the resistances set on it.
+    EffectiveDamageVsDistance,
+    EffectiveDamageVsTargetSpeed,
+    EffectiveDamageVsTargetSignature,
+    EffectiveVolleyVsDistance,
+    EffectiveVolleyVsTargetSpeed,
+    EffectiveVolleyVsTargetSignature,
+    /// Damage taken over time: against a fit, its reactive hardener shifts from its even split.
+    EffectiveDamageOverTime,
 }
 
 impl GraphKind {
-    /// A damage graph of either kind: per second or per shot.
+    /// A damage graph of either kind: per second or per shot, before or past resistances.
     pub fn is_damage(self) -> bool {
-        matches!(self, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature | GraphKind::DamageOverTime) || self.is_volley()
+        matches!(self, GraphKind::DamageVsDistance | GraphKind::DamageVsTargetSpeed | GraphKind::DamageVsTargetSignature | GraphKind::DamageOverTime | GraphKind::EffectiveDamageVsDistance | GraphKind::EffectiveDamageVsTargetSpeed | GraphKind::EffectiveDamageVsTargetSignature | GraphKind::EffectiveDamageOverTime) || self.is_volley()
     }
 
     pub fn is_volley(self) -> bool {
-        matches!(self, GraphKind::VolleyVsDistance | GraphKind::VolleyVsTargetSpeed | GraphKind::VolleyVsTargetSignature)
+        matches!(self, GraphKind::VolleyVsDistance | GraphKind::VolleyVsTargetSpeed | GraphKind::VolleyVsTargetSignature | GraphKind::EffectiveVolleyVsDistance | GraphKind::EffectiveVolleyVsTargetSpeed | GraphKind::EffectiveVolleyVsTargetSignature)
     }
 
-    pub const ALL: [GraphKind; 14] = [
+    /// A damage graph past the target's resistances.
+    pub fn is_effective(self) -> bool {
+        matches!(self.axes().0, GraphY::EffectiveDps | GraphY::EffectiveVolley)
+    }
+
+    pub fn is_over_time(self) -> bool {
+        matches!(self, GraphKind::DamageOverTime | GraphKind::EffectiveDamageOverTime)
+    }
+
+    pub const ALL: [GraphKind; 21] = [
         GraphKind::DamageVsDistance,
         GraphKind::DamageVsTargetSpeed,
         GraphKind::DamageVsTargetSignature,
@@ -53,6 +71,13 @@ impl GraphKind {
         GraphKind::RemoteRepVsDistance,
         GraphKind::EwarVsDistance,
         GraphKind::DamageOverTime,
+        GraphKind::EffectiveDamageVsDistance,
+        GraphKind::EffectiveDamageVsTargetSpeed,
+        GraphKind::EffectiveDamageVsTargetSignature,
+        GraphKind::EffectiveVolleyVsDistance,
+        GraphKind::EffectiveVolleyVsTargetSpeed,
+        GraphKind::EffectiveVolleyVsTargetSignature,
+        GraphKind::EffectiveDamageOverTime,
     ];
 
     /// What the graph plots, up the side and along the bottom.
@@ -73,6 +98,13 @@ impl GraphKind {
             K::RemoteRepVsDistance => (Y::RemoteRep, X::Distance),
             K::EwarVsDistance => (Y::Ewar, X::Distance),
             K::DamageOverTime => (Y::Dps, X::Time),
+            K::EffectiveDamageVsDistance => (Y::EffectiveDps, X::Distance),
+            K::EffectiveDamageVsTargetSpeed => (Y::EffectiveDps, X::TargetSpeed),
+            K::EffectiveDamageVsTargetSignature => (Y::EffectiveDps, X::TargetSignature),
+            K::EffectiveVolleyVsDistance => (Y::EffectiveVolley, X::Distance),
+            K::EffectiveVolleyVsTargetSpeed => (Y::EffectiveVolley, X::TargetSpeed),
+            K::EffectiveVolleyVsTargetSignature => (Y::EffectiveVolley, X::TargetSignature),
+            K::EffectiveDamageOverTime => (Y::EffectiveDps, X::Time),
         }
     }
 
@@ -87,6 +119,9 @@ impl GraphKind {
 pub enum GraphY {
     Dps,
     Volley,
+    /// Damage per second past the target's resistances.
+    EffectiveDps,
+    EffectiveVolley,
     Capacitor,
     Shield,
     Speed,
@@ -108,7 +143,7 @@ pub enum GraphX {
 }
 
 impl GraphY {
-    pub const ALL: [GraphY; 9] = [GraphY::Dps, GraphY::Volley, GraphY::Capacitor, GraphY::Shield, GraphY::Speed, GraphY::WarpTime, GraphY::LockTime, GraphY::RemoteRep, GraphY::Ewar];
+    pub const ALL: [GraphY; 11] = [GraphY::Dps, GraphY::Volley, GraphY::EffectiveDps, GraphY::EffectiveVolley, GraphY::Capacitor, GraphY::Shield, GraphY::Speed, GraphY::WarpTime, GraphY::LockTime, GraphY::RemoteRep, GraphY::Ewar];
 
     /// The bottoms this can be plotted against, in the order offered.
     pub fn xs(self) -> Vec<GraphX> {
@@ -256,18 +291,81 @@ fn damage_edges(c: &Computed, include_drones: bool) -> Vec<f64> {
     edges
 }
 
+/// A target's tank for the damage it takes: each layer's hit points and resonances, shield, armor
+/// and hull, and its reactive hardener if it runs one (the armor's resonances then are without it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetTank {
+    pub layers: [(f64, [f64; 4]); 3],
+    pub rah: Option<crate::calc::Rah>,
+    /// The hit points in all, when the target is a ship rather than a profile: what caps a
+    /// breacher pod's tick.
+    pub hp: Option<f64>,
+}
+
+impl TargetTank {
+    /// A fit's, as it stands.
+    pub fn of(c: &Computed) -> TargetTank {
+        let t = &c.tank;
+        let armor = t.rah.map_or(t.armor.resonance, |r| r.armor_before);
+        TargetTank { layers: [(t.shield.hp, t.shield.resonance), (t.armor.hp, armor), (t.hull.hp, t.hull.resonance)], rah: t.rah, hp: Some(t.shield.hp + t.armor.hp + t.hull.hp) }
+    }
+
+    /// One layer of the resistances given, em, thermal, kinetic, explosive as shares.
+    pub fn flat(resist: [f32; 4]) -> TargetTank {
+        TargetTank { layers: [(1.0, resist.map(|r| 1.0 - f64::from(r.clamp(0.0, 1.0)))), (0.0, [1.0; 4]), (0.0, [1.0; 4])], rah: None, hp: None }
+    }
+
+    /// The target's for the graph: the fit it is, else the test target's resistances.
+    fn for_spec(spec: &GraphSpec) -> Option<TargetTank> {
+        spec.kind.is_effective().then(|| spec.projection.target.as_deref().map(TargetTank::of).unwrap_or_else(|| TargetTank::flat(spec.target.resist)))
+    }
+
+    /// The resonances the damage coming in meets, the layers blended by the share of the kill each
+    /// takes: a weapon's damage through them sums with the others' to the fit's hit points over
+    /// its effective hit points against the whole. `armor` stands in for the armor's when a
+    /// hardener has shifted them.
+    pub fn blended(&self, incoming: [f64; 4], armor: Option<[f64; 4]>) -> [f64; 4] {
+        let layers: Vec<(f64, [f64; 4])> = self.layers.iter().enumerate().filter(|(_, (hp, _))| *hp > 0.0).map(|(k, (hp, res))| (*hp, if k == 1 { armor.unwrap_or(*res) } else { *res })).collect();
+        if layers.is_empty() {
+            return [1.0; 4];
+        }
+        let sum: f64 = incoming.iter().sum();
+        // Nothing coming in yet: an even split weighs the layers.
+        let split = if sum > 0.0 { incoming.map(|v| v / sum) } else { [0.25; 4] };
+        let mut times = Vec::with_capacity(layers.len());
+        for (hp, res) in &layers {
+            let through: f64 = (0..4).map(|i| split[i] * res[i]).sum();
+            // A layer letting nothing through holds out forever: none of it lands.
+            if through <= 0.0 {
+                return [0.0; 4];
+            }
+            times.push(hp / through);
+        }
+        let total: f64 = times.iter().sum();
+        let mut out = [0.0; 4];
+        for ((_, res), time) in layers.iter().zip(times) {
+            for i in 0..4 {
+                out[i] += time / total * res[i];
+            }
+        }
+        out
+    }
+}
+
 /// What the fit's weapons land with perfect application, the ceiling of its damage graphs: turrets
 /// and drones hit every shot, wrecking shots included, and spooling weapons are fully spooled on
-/// the damage over time graph.
+/// the damage over time graph. Past resistances, what of that the target's hit points lose.
 pub fn max_damage(c: &Computed, spec: &GraphSpec) -> f64 {
     use crate::stats::WeaponKind;
-    c.weapons
+    let tank = TargetTank::for_spec(spec);
+    let full: Vec<(&crate::stats::WeaponGroup, f64)> = c
+        .weapons
         .iter()
         .filter(|w| spec.include_drones || w.kind != WeaponKind::Drone)
         .map(|w| {
             let full = if spec.kind.is_volley() {
                 w.volley.total()
-            } else if spec.kind == GraphKind::DamageOverTime {
+            } else if spec.kind.is_over_time() {
                 w.cold_dps() * (1.0 + w.spool_max)
             } else {
                 w.dps
@@ -276,37 +374,75 @@ pub fn max_damage(c: &Computed, spec: &GraphSpec) -> f64 {
                 WeaponKind::Turret | WeaponKind::Drone => crate::stats::application::turret_damage_factor(1.0),
                 _ => 1.0,
             };
-            full * perfect
+            (w, full * perfect)
         })
-        .sum()
+        .collect();
+    let Some(tank) = tank else { return full.iter().map(|(_, y)| y).sum() };
+    let landed: Vec<[f64; 4]> = full.iter().map(|(w, y)| split_of(w, *y)).collect();
+    let res = tank.blended(sum_splits(&landed), None);
+    full.iter().zip(&landed).map(|((w, y), d)| through(w, *y, d, &res, &tank)).sum()
+}
+
+/// `amount` of the weapon's damage by type, in its volley's shares.
+fn split_of(w: &crate::stats::WeaponGroup, amount: f64) -> [f64; 4] {
+    let v = &w.volley;
+    let total = v.total();
+    if total <= 0.0 {
+        return [0.0; 4];
+    }
+    let f = amount / total;
+    [v.em * f, v.thermal * f, v.kinetic * f, v.explosive * f]
+}
+
+fn sum_splits(parts: &[[f64; 4]]) -> [f64; 4] {
+    parts.iter().fold([0.0; 4], |a, d| std::array::from_fn(|i| a[i] + d[i]))
+}
+
+/// What of `amount`, split as `d`, the target's hit points lose through `res`. A breacher pod's
+/// tick meets no resistance, and takes at most its share of a ship's hit points.
+fn through(w: &crate::stats::WeaponGroup, amount: f64, d: &[f64; 4], res: &[f64; 4], tank: &TargetTank) -> f64 {
+    match (w.kind, w.dot) {
+        (crate::stats::WeaponKind::Breacher, Some(dot)) => match tank.hp {
+            Some(hp) if dot.per_tick > 0.0 => amount * (dot.on(hp) / dot.per_tick).min(1.0),
+            _ => amount,
+        },
+        _ => (0..4).map(|i| d[i] * res[i]).sum(),
+    }
 }
 
 /// The damage curves of a fit at each `x`, `x` being distance, target speed or signature.
 fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, at: impl Fn(f64) -> (f64, TargetProfile)) -> Vec<Series> {
     let xs: Vec<f64> = xs.collect();
+    let tank = TargetTank::for_spec(spec);
     let drone_speed = c.weapons.iter().find(|w| w.kind == crate::stats::WeaponKind::Drone).map_or(0.0, |_| spec.target.velocity as f64);
-    let mut out: Vec<Series> = Vec::new();
-    let mut total = vec![0.0; xs.len()];
-    for w in &c.weapons {
-        if w.kind == crate::stats::WeaponKind::Drone && !spec.include_drones {
-            continue;
-        }
-        let drone_v = if w.kind == crate::stats::WeaponKind::Drone { c.drone_speed.unwrap_or(drone_speed) } else { 0.0 };
-        let full = if spec.kind.is_volley() { w.volley.total() } else { w.dps };
-        let points: Vec<[f64; 2]> = xs
+    let weapons: Vec<&crate::stats::WeaponGroup> = c.weapons.iter().filter(|w| w.kind != crate::stats::WeaponKind::Drone || spec.include_drones).collect();
+    let mut out: Vec<Series> = weapons.iter().map(|w| Series { label: SeriesLabel::Weapon(w.type_id, w.charge), points: Vec::with_capacity(xs.len()) }).collect();
+    let mut total = Vec::with_capacity(xs.len());
+    for &x in &xs {
+        let (distance, target) = at(x);
+        let applied: Vec<f64> = weapons
             .iter()
-            .enumerate()
-            .map(|(i, &x)| {
-                let (distance, target) = at(x);
-                let y = full * applied_factor(w, distance, &target, drone_v, c.drones.control_range);
-                total[i] += y;
-                [x, y]
+            .map(|w| {
+                let drone_v = if w.kind == crate::stats::WeaponKind::Drone { c.drone_speed.unwrap_or(drone_speed) } else { 0.0 };
+                let full = if spec.kind.is_volley() { w.volley.total() } else { w.dps };
+                full * applied_factor(w, distance, &target, drone_v, c.drones.control_range)
             })
             .collect();
-        out.push(Series { label: SeriesLabel::Weapon(w.type_id, w.charge), points });
+        let ys: Vec<f64> = match &tank {
+            None => applied,
+            Some(tank) => {
+                let landed: Vec<[f64; 4]> = weapons.iter().zip(&applied).map(|(w, y)| split_of(w, *y)).collect();
+                let res = tank.blended(sum_splits(&landed), None);
+                weapons.iter().zip(&applied).zip(&landed).map(|((w, y), d)| through(w, *y, d, &res, tank)).collect()
+            }
+        };
+        total.push([x, ys.iter().sum()]);
+        for (s, y) in out.iter_mut().zip(ys) {
+            s.points.push([x, y]);
+        }
     }
     if out.len() > 1 {
-        out.push(Series { label: SeriesLabel::Total, points: xs.iter().zip(total).map(|(x, y)| [*x, y]).collect() });
+        out.push(Series { label: SeriesLabel::Total, points: total });
     }
     out
 }
@@ -315,19 +451,19 @@ fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, 
 pub fn sample(c: &Computed, spec: &GraphSpec) -> Vec<Series> {
     let n = spec.points.max(2);
     match spec.kind {
-        GraphKind::DamageVsDistance | GraphKind::VolleyVsDistance => {
+        GraphKind::DamageVsDistance | GraphKind::VolleyVsDistance | GraphKind::EffectiveDamageVsDistance | GraphKind::EffectiveVolleyVsDistance => {
             let reach = c.weapons.iter().map(|w| w.reach()).fold(10_000.0, f64::max);
             let to = spec.x_to.unwrap_or(reach * 1.1);
             let t = spec.target.clone();
             damage_series(c, spec, with_edges(grid(0.0, to, n), &damage_edges(c, spec.include_drones)).into_iter(), |x| (x, projected_on(c, &spec.projection, spec.projection.across, x, t.clone())))
         }
-        GraphKind::DamageVsTargetSpeed | GraphKind::VolleyVsTargetSpeed => {
+        GraphKind::DamageVsTargetSpeed | GraphKind::VolleyVsTargetSpeed | GraphKind::EffectiveDamageVsTargetSpeed | GraphKind::EffectiveVolleyVsTargetSpeed => {
             let to = spec.x_to.unwrap_or(3000.0);
             let base = spec.target.clone();
             // The axis is the target's own speed with its transversal; the webs cut both.
             damage_series(c, spec, grid(0.0, to, n), |x| (f64::from(base.distance), projected_on(c, &spec.projection, None, f64::from(base.distance), TargetProfile { velocity: x as f32, transversal: x as f32, ..base.clone() })))
         }
-        GraphKind::DamageVsTargetSignature | GraphKind::VolleyVsTargetSignature => {
+        GraphKind::DamageVsTargetSignature | GraphKind::VolleyVsTargetSignature | GraphKind::EffectiveDamageVsTargetSignature | GraphKind::EffectiveVolleyVsTargetSignature => {
             let to = spec.x_to.unwrap_or(2000.0);
             let base = spec.target.clone();
             damage_series(c, spec, grid(1.0, to, n), |x| (f64::from(base.distance), projected_on(c, &spec.projection, spec.projection.across, f64::from(base.distance), TargetProfile { signature: x as f32, ..base.clone() })))
@@ -360,7 +496,7 @@ pub fn sample(c: &Computed, spec: &GraphSpec) -> Vec<Series> {
         }
         GraphKind::RemoteRepVsDistance => remote_series(c, spec, n, true),
         GraphKind::EwarVsDistance => remote_series(c, spec, n, false),
-        GraphKind::DamageOverTime => damage_over_time(c, spec, None),
+        GraphKind::DamageOverTime | GraphKind::EffectiveDamageOverTime => damage_over_time(c, spec, TargetTank::for_spec(spec).as_ref()),
     }
 }
 
@@ -435,7 +571,7 @@ mod tests {
         let d = dataset();
         let f = fit();
         let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
-        let spec = GraphSpec::new(GraphKind::DamageVsDistance, TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 });
+        let spec = GraphSpec::new(GraphKind::DamageVsDistance, TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, ..Default::default() });
         let series = sample(&c, &spec);
         assert_eq!(series.len(), 4, "gun, launcher, drones and the total");
         let gun = series.iter().find(|s| s.label == SeriesLabel::Weapon(ids::GUN, Some(ids::AMMO))).unwrap();
@@ -463,7 +599,7 @@ mod tests {
     fn the_max_line_is_the_damage_before_application() {
         let d = dataset();
         let c = compute(&d, &fit(), &SkillSet::all_v(), &Env::default());
-        let target = TargetProfile { signature: 40.0, velocity: 2000.0, transversal: 2000.0, distance: 5000.0, radius: 0.0 };
+        let target = TargetProfile { signature: 40.0, velocity: 2000.0, transversal: 2000.0, distance: 5000.0, ..Default::default() };
         for kind in [GraphKind::DamageVsDistance, GraphKind::DamageVsTargetSpeed, GraphKind::VolleyVsTargetSignature, GraphKind::DamageOverTime] {
             let spec = GraphSpec::new(kind, target.clone());
             let max = max_damage(&c, &spec);
@@ -472,7 +608,7 @@ mod tests {
             assert!(top < max * 0.9, "{kind:?}: a small fast target takes less than the line, {top} vs {max}");
         }
         let gun = c.weapons.iter().find(|w| w.type_id == ids::GUN).unwrap();
-        let ideal = GraphSpec::new(GraphKind::DamageVsDistance, TargetProfile { signature: 10_000.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 });
+        let ideal = GraphSpec::new(GraphKind::DamageVsDistance, TargetProfile { signature: 10_000.0, velocity: 0.0, transversal: 0.0, distance: 0.0, ..Default::default() });
         let gun_line = sample(&c, &ideal).into_iter().find(|s| s.label == SeriesLabel::Weapon(ids::GUN, Some(ids::AMMO))).unwrap();
         assert!((gun_line.points[0][1] - gun.dps * crate::stats::application::turret_damage_factor(1.0)).abs() < 1e-6, "a still target at point blank touches it");
         let without = max_damage(&c, &GraphSpec { include_drones: false, ..ideal.clone() });
@@ -480,10 +616,93 @@ mod tests {
     }
 
     #[test]
+    fn effective_damage_is_what_the_target_loses_past_its_resistances() {
+        let d = dataset();
+        let c = compute(&d, &fit(), &SkillSet::all_v(), &Env::default());
+        let plain = TargetProfile { signature: 400.0, distance: 0.0, ..Default::default() };
+        let half = TargetProfile { resist: [0.5; 4], ..plain.clone() };
+        for (raw, eff) in [(GraphKind::DamageVsDistance, GraphKind::EffectiveDamageVsDistance), (GraphKind::VolleyVsTargetSpeed, GraphKind::EffectiveVolleyVsTargetSpeed), (GraphKind::DamageVsTargetSignature, GraphKind::EffectiveDamageVsTargetSignature), (GraphKind::DamageOverTime, GraphKind::EffectiveDamageOverTime)] {
+            assert!(eff.is_effective() && !raw.is_effective());
+            let a = sample(&c, &GraphSpec::new(raw, plain.clone()));
+            let scaled = |b: Vec<Series>, k: f64, what: &str| {
+                assert_eq!(a.len(), b.len(), "{eff:?}: a line per weapon and the total");
+                for (x, y) in a.iter().zip(&b) {
+                    assert_eq!(x.label, y.label);
+                    assert!(x.points.len() == y.points.len() && x.points.iter().zip(&y.points).all(|(p, q)| p[0] == q[0] && (p[1] * k - q[1]).abs() < 1e-9), "{eff:?} {:?}: {what}", x.label);
+                }
+            };
+            scaled(sample(&c, &GraphSpec::new(eff, plain.clone())), 1.0, "through no resistance it is the plain graph");
+            scaled(sample(&c, &GraphSpec::new(eff, half.clone())), 0.5, "half of everything lands");
+            let (top, top_half) = (max_damage(&c, &GraphSpec::new(eff, plain.clone())), max_damage(&c, &GraphSpec::new(eff, half.clone())));
+            assert!((top - max_damage(&c, &GraphSpec::new(raw, plain.clone()))).abs() < 1e-9 && (top_half - top * 0.5).abs() < 1e-9, "{eff:?}: the ceiling drops with them, {top} to {top_half}");
+        }
+        let bare = sample(&c, &GraphSpec::new(GraphKind::EffectiveDamageVsDistance, TargetProfile { resist: [1.0, 1.0, 1.0, 1.0], ..plain.clone() }));
+        assert!(bare.iter().all(|s| s.points.iter().all(|p| p[1] == 0.0)), "nothing through a wall");
+        assert_eq!(GraphY::EffectiveDps.xs(), vec![GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature, GraphX::Time]);
+        assert_eq!(GraphY::EffectiveVolley.xs(), vec![GraphX::Distance, GraphX::TargetSpeed, GraphX::TargetSignature]);
+    }
+
+    #[test]
+    fn against_a_fit_the_total_is_its_hit_points_over_its_effective_ones() {
+        let d = dataset();
+        let c = compute(&d, &fit(), &SkillSet::all_v(), &Env::default());
+        let mut t = Fit::new(ids::SHIP, "t");
+        t.modules.push(Module::new(ids::HARDENER, Slot::Mid, 0).with_state(State::Active));
+        let target = std::sync::Arc::new(compute(&d, &t, &SkillSet::all_v(), &Env::default()));
+        let layers = [&target.tank.shield, &target.tank.armor, &target.tank.hull];
+        assert!(layers.iter().any(|l| l.resonance != layers[0].resonance), "its layers resist differently");
+        let profile = TargetProfile { signature: 400.0, distance: 0.0, resist: [0.9; 4], ..Default::default() };
+        let spec = |kind| GraphSpec { projection: Projection { target: Some(target.clone()), across: None }, ..GraphSpec::new(kind, profile.clone()) };
+        let plain = sample(&c, &spec(GraphKind::DamageVsDistance));
+        let eff = sample(&c, &spec(GraphKind::EffectiveDamageVsDistance));
+        // What lands at point blank, by type, from each weapon's own share of the plain line.
+        let mut incoming = crate::stats::Damage::default();
+        let mut applied = 0.0;
+        for s in plain.iter().filter(|s| s.label != SeriesLabel::Total) {
+            let SeriesLabel::Weapon(id, ch) = s.label else { unreachable!() };
+            let w = c.weapons.iter().find(|w| w.type_id == id && w.charge == ch).unwrap();
+            let y = s.points[0][1];
+            applied += y;
+            incoming.add(w.volley.scaled(y / w.volley.total()));
+        }
+        let hp = target.tank.shield.hp + target.tank.armor.hp + target.tank.hull.hp;
+        let want = applied * hp / crate::fleet::sweep::ehp_against(&target.tank, &incoming);
+        let got = eff.iter().find(|s| s.label == SeriesLabel::Total).unwrap().points[0][1];
+        assert!((got - want).abs() < 1e-6, "the fit's tank, not the profile's 90%: {got} vs {want}");
+        assert!(got < applied && got > applied * 0.2, "{got} of {applied}");
+        let sum: f64 = eff.iter().filter(|s| s.label != SeriesLabel::Total).map(|s| s.points[0][1]).sum();
+        assert!((sum - got).abs() < 1e-9, "the weapons' lines add up to the total");
+        let over_time = sample(&c, &spec(GraphKind::EffectiveDamageOverTime));
+        let first = over_time.iter().find(|s| s.label == SeriesLabel::Total).unwrap().points[0][1];
+        assert!((first - got).abs() < 1e-6, "opening fire lands the same: {first} vs {got}");
+    }
+
+    #[test]
+    fn a_breacher_pod_meets_no_resistance_but_a_ship_caps_its_tick() {
+        let d = dataset();
+        let mut f = Fit::new(ids::SHIP, "b");
+        f.modules.push(Module::new(ids::BREACHER_LAUNCHER, Slot::High, 1).with_charge(ids::BREACHER_POD).with_state(State::Active));
+        let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let pod = c.weapons.iter().find(|w| w.kind == crate::stats::WeaponKind::Breacher).unwrap();
+        let hp_pct = pod.dot.unwrap().hp_pct;
+        let walled = TargetProfile { signature: 400.0, distance: 0.0, resist: [1.0; 4], ..Default::default() };
+        let at_zero = |spec: &GraphSpec| sample(&c, spec)[0].points[0][1];
+        assert!((at_zero(&GraphSpec::new(GraphKind::EffectiveDamageVsDistance, walled.clone())) - pod.dps).abs() < 1e-9, "the test target's resistances do not touch it");
+        let small = std::sync::Arc::new(compute(&d, &Fit::new(ids::SHIP, "s"), &SkillSet::all_v(), &Env::default()));
+        let hp = small.tank.shield.hp + small.tank.armor.hp + small.tank.hull.hp;
+        let want = pod.dps.min(hp_pct / 100.0 * hp);
+        assert!(want < pod.dps, "a frigate is small enough to cap it: {want}");
+        let spec = GraphSpec { projection: Projection { target: Some(small.clone()), across: None }, ..GraphSpec::new(GraphKind::EffectiveDamageVsDistance, walled.clone()) };
+        assert!((at_zero(&spec) - want).abs() < 1e-9, "{} vs {want}", at_zero(&spec));
+        let spec = GraphSpec { projection: Projection { target: Some(small), across: None }, ..GraphSpec::new(GraphKind::EffectiveDamageOverTime, walled) };
+        assert!((at_zero(&spec) - want).abs() < 1e-9, "over time as well: {}", at_zero(&spec));
+    }
+
+    #[test]
     fn faster_and_smaller_targets_take_less() {
         let d = dataset();
         let c = compute(&d, &fit(), &SkillSet::all_v(), &Env::default());
-        let target = TargetProfile { signature: 100.0, velocity: 0.0, transversal: 0.0, distance: 1000.0, radius: 0.0 };
+        let target = TargetProfile { signature: 100.0, velocity: 0.0, transversal: 0.0, distance: 1000.0, ..Default::default() };
         let speed = sample(&c, &GraphSpec::new(GraphKind::DamageVsTargetSpeed, target.clone()));
         let total = speed.iter().find(|s| s.label == SeriesLabel::Total).unwrap();
         assert!(total.points[0][1] > total.points.last().unwrap()[1] * 2.0);
@@ -562,7 +781,7 @@ mod tests {
             compute(&d, &f, &SkillSet::all_v(), &Env::default())
         };
         let total = |c: &Computed, spec: &GraphSpec| sample(c, spec).into_iter().next().unwrap().points;
-        let target = TargetProfile { signature: 400.0, velocity: 1500.0, transversal: 1500.0, distance: 5000.0, radius: 0.0 };
+        let target = TargetProfile { signature: 400.0, velocity: 1500.0, transversal: 1500.0, distance: 5000.0, ..Default::default() };
         let speed = GraphSpec::new(GraphKind::DamageVsTargetSpeed, target.clone());
         let (a, o, b) = (total(&active, &speed), total(&online, &speed), total(&bare, &speed));
         assert_eq!(o, b, "an online web projects nothing");
@@ -629,7 +848,7 @@ mod speed_bump {
         let rah = crate::calc::Rah { armor_before: [1.0; 4], start: [0.15; 4], shift: 0.06, cycle_s: 10.0 };
         c.weapons[0].spool_max = 0.0;
         c.weapons[0].dps = cold;
-        let tank = TargetTank { resonance: [1.0; 4], rah: Some(rah) };
+        let tank = TargetTank { layers: [(0.0, [1.0; 4]), (1.0, [1.0; 4]), (0.0, [1.0; 4])], rah: Some(rah), hp: None };
         let taken = &damage_over_time(&c, &spec, Some(&tank))[0].points;
         let (start, end) = (taken[0][1], taken.last().unwrap()[1]);
         let bare = damage_over_time(&c, &spec, None)[0].points[0][1];
@@ -667,17 +886,9 @@ pub(crate) fn value_at_for_test(points: &[[f64; 2]], x: f64) -> f64 {
     if b[0] == a[0] { b[1] } else { a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) }
 }
 
-/// A target's tank for damage taken over time: the resonances of the layer being shot, and its
-/// reactive hardener if it runs one (the resonances then are the armor's without it).
-#[derive(Clone, Copy, Debug)]
-pub struct TargetTank {
-    pub resonance: [f64; 4],
-    pub rah: Option<crate::calc::Rah>,
-}
-
 /// Damage per second from the moment fire opens, at the spec's target and distance. Each weapon's
-/// spool builds up a step a cycle from cold. With a target tank, one line of the damage it takes,
-/// its reactive hardener starting even and shifting each of its cycles towards what hits it.
+/// spool builds up a step a cycle from cold. With a target tank, the damage it takes, its reactive
+/// hardener starting even and shifting each of its cycles towards what hits it.
 pub fn damage_over_time(c: &Computed, spec: &GraphSpec, tank: Option<&TargetTank>) -> Vec<Series> {
     use crate::stats::WeaponKind;
     let weapons: Vec<&crate::stats::WeaponGroup> = c.weapons.iter().filter(|w| spec.include_drones || w.kind != WeaponKind::Drone).collect();
@@ -711,57 +922,42 @@ pub fn damage_over_time(c: &Computed, spec: &GraphSpec, tank: Option<&TargetTank
     let distance = f64::from(spec.target.distance);
     let target = &projected_on(c, &spec.projection, spec.projection.across, distance, spec.target.clone());
     let drone_v = c.drone_speed.unwrap_or(0.0);
-    // Each weapon's damage per second by type, cold, as it lands on the target.
-    let landed: Vec<[f64; 4]> = weapons
-        .iter()
-        .map(|w| {
-            let v = &w.volley;
-            let total = v.total().max(1e-9);
-            let f = w.cold_dps() * applied_factor(w, distance, target, drone_v, c.drones.control_range) / total;
-            [v.em * f, v.thermal * f, v.kinetic * f, v.explosive * f]
-        })
-        .collect();
-    let at = |t: f64| -> Vec<[f64; 4]> { weapons.iter().zip(&landed).map(|(w, d)| d.map(|x| x * w.spool_at(t))).collect() };
-    let Some(tank) = tank else {
-        let mut out: Vec<Series> = weapons.iter().map(|w| Series { label: SeriesLabel::Weapon(w.type_id, w.charge), points: Vec::new() }).collect();
-        let mut total = Vec::new();
-        for &t in &ts {
-            let per = at(t);
-            let mut sum = 0.0;
-            for (k, d) in per.iter().enumerate() {
-                let y: f64 = d.iter().sum();
-                out[k].points.push([t, y]);
-                sum += y;
-            }
-            total.push([t, sum]);
-        }
-        if out.len() > 1 {
-            out.push(Series { label: SeriesLabel::Total, points: total });
-        }
-        return out;
-    };
-    // Against a tank: the hardener's split for each of its cycles, from what hit it in the last.
-    let resonance_at = |t: f64| -> [f64; 4] {
-        let Some(r) = tank.rah else { return tank.resonance };
+    // Each weapon's damage per second, cold, as it lands on the target, and that by type.
+    let landed: Vec<f64> = weapons.iter().map(|w| w.cold_dps() * applied_factor(w, distance, target, drone_v, c.drones.control_range)).collect();
+    let at = |t: f64| -> Vec<(f64, [f64; 4])> { weapons.iter().zip(&landed).map(|(w, y)| (y * w.spool_at(t), split_of(w, y * w.spool_at(t)))).collect() };
+    // Against a hardener: its split for each of its cycles, from what hit it in the last.
+    let armor_at = |t: f64| -> Option<[f64; 4]> {
+        let r = tank?.rah?;
         let cycles = if r.cycle_s > 0.0 && r.shift > 0.0 { (t / r.cycle_s).floor() as usize } else { 0 };
         let mut res = r.start;
         for k in 0..cycles {
-            let incoming = at(k as f64 * r.cycle_s).iter().fold([0.0; 4], |a, d| std::array::from_fn(|i| a[i] + d[i]));
+            let incoming = sum_splits(&at(k as f64 * r.cycle_s).into_iter().map(|(_, d)| d).collect::<Vec<_>>());
             let sum: f64 = incoming.iter().sum();
             if sum <= 0.0 {
                 break;
             }
             res = crate::calc::patch::adapt_step(res, r.armor_before, incoming.map(|x| x / sum), r.shift);
         }
-        std::array::from_fn(|i| r.armor_before[i] * (1.0 - res[i]))
+        Some(std::array::from_fn(|i| r.armor_before[i] * (1.0 - res[i])))
     };
-    let points = ts
-        .iter()
-        .map(|&t| {
-            let res = resonance_at(t);
-            let y: f64 = at(t).iter().map(|d| (0..4).map(|i| d[i] * res[i]).sum::<f64>()).sum();
-            [t, y]
-        })
-        .collect();
-    vec![Series { label: SeriesLabel::Total, points }]
+    let mut out: Vec<Series> = weapons.iter().map(|w| Series { label: SeriesLabel::Weapon(w.type_id, w.charge), points: Vec::with_capacity(ts.len()) }).collect();
+    let mut total = Vec::with_capacity(ts.len());
+    for &t in &ts {
+        let per = at(t);
+        let ys: Vec<f64> = match tank {
+            None => per.iter().map(|(y, _)| *y).collect(),
+            Some(tank) => {
+                let res = tank.blended(sum_splits(&per.iter().map(|(_, d)| *d).collect::<Vec<_>>()), armor_at(t));
+                weapons.iter().zip(&per).map(|(w, (y, d))| through(w, *y, d, &res, tank)).collect()
+            }
+        };
+        total.push([t, ys.iter().sum()]);
+        for (s, y) in out.iter_mut().zip(ys) {
+            s.points.push([t, y]);
+        }
+    }
+    if out.len() > 1 {
+        out.push(Series { label: SeriesLabel::Total, points: total });
+    }
+    out
 }

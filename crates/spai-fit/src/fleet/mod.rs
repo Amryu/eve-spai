@@ -763,7 +763,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let on_shooters = b.ewar_auto.then(|| ewar::planned_average(&ships(b_stats), range, &b.ewar_plan, b.split_fire, a_stats.ships, None));
     out.target_velocity = velocity;
     out.target_signature = signature;
-    let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0 };
+    let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0, resist: [0.0; 4] };
     // Tracking disruptors on the shooters: weaker range and tracking, penalised.
     let td: Vec<(crate::dogma::Op, f64, bool)> = (0..b_ewar.tracking_disruptors).map(|_| (crate::dogma::Op::PostPercent, -17.19, true)).collect();
     let td_factor = crate::calc::combine(1.0, true, &td);
@@ -827,7 +827,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
             } else {
                 (velocity, signature)
             };
-            let p = TargetProfile { signature: sig as f32, velocity: v as f32, transversal: v as f32, distance: a.range, radius: 0.0 };
+            let p = TargetProfile { signature: sig as f32, velocity: v as f32, transversal: v as f32, distance: a.range, radius: 0.0, resist: [0.0; 4] };
             let main = a_stats.slots.get(a_stats.main)?;
             let per_ship: f64 = main
                 .computed

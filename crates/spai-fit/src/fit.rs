@@ -274,11 +274,14 @@ pub struct TargetProfile {
     /// Metres per second across the line of sight.
     pub transversal: f32,
     pub radius: f32,
+    /// Its resistances, em, thermal, kinetic, explosive, as shares of the damage held off: what
+    /// the effective damage graphs shoot through when no fit stands as the target.
+    pub resist: [f32; 4],
 }
 
 impl Default for TargetProfile {
     fn default() -> Self {
-        TargetProfile { signature: 100.0, velocity: 0.0, distance: 10_000.0, transversal: 0.0, radius: 0.0 }
+        TargetProfile { signature: 100.0, velocity: 0.0, distance: 10_000.0, transversal: 0.0, radius: 0.0, resist: [0.0; 4] }
     }
 }
 

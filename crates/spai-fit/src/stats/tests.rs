@@ -245,7 +245,7 @@ fn remote_modules_are_listed_with_their_reach_and_fighters_shoot_like_missiles()
     assert_eq!(fighters.count, 9);
     assert!((fighters.volley.total() - 30.0 * 1.5 * 9.0).abs() < 1e-9, "{}", fighters.volley.total());
     assert!((fighters.dps - fighters.volley.total() / 4.0).abs() < 1e-9);
-    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0, resist: [0.0; 4] };
     let at = |dist: f64, t: &crate::fit::TargetProfile| crate::stats::application::applied_factor(fighters, dist, t, 0.0, 0.0);
     assert_eq!(at(6000.0, &big), 1.0);
     assert!((at(9000.0, &big) - 0.5).abs() < 1e-12, "half at one falloff");
@@ -464,7 +464,7 @@ fn a_vorton_hits_within_its_range_like_a_missile_and_arcs_on() {
     let w = c.weapons.iter().find(|w| w.kind == WeaponKind::Vorton).expect("a vorton group");
     assert!(close(w.volley.total(), 200.0) && close(w.optimal, 20_000.0));
     assert_eq!((w.arc_targets, w.arc_range), (3, 10_000.0));
-    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let big = crate::fit::TargetProfile { signature: 400.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0, resist: [0.0; 4] };
     assert_eq!(applied_factor(w, 15_000.0, &big, 0.0, 0.0), 1.0, "no wrecking shots, no tracking");
     assert_eq!(applied_factor(w, 20_001.0, &big, 0.0, 0.0), 0.0, "nothing past its range");
     let crossing = crate::fit::TargetProfile { signature: 400.0, velocity: 300.0, transversal: 300.0, ..big.clone() };
@@ -484,7 +484,7 @@ fn a_bomb_bursts_at_the_end_of_its_flight_and_a_breacher_pod_eats_hit_points() {
     assert!(close(bomb.volley.total(), 5800.0), "no missile skill multiplies a bomb: {}", bomb.volley.total());
     assert!(close(bomb.cycle_s, 90.0), "its cycle and reactivation delay: {}", bomb.cycle_s);
     assert!(close(bomb.splash, 15_000.0));
-    let big = crate::fit::TargetProfile { signature: 800.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let big = crate::fit::TargetProfile { signature: 800.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0, resist: [0.0; 4] };
     let small = crate::fit::TargetProfile { signature: 100.0, ..big.clone() };
     assert_eq!(applied_factor(bomb, 30_000.0, &big, 0.0, 0.0), 1.0, "it bursts at 30 km");
     assert_eq!(applied_factor(bomb, 5_000.0, &big, 0.0, 0.0), 0.0, "and not where it is launched");
@@ -510,7 +510,7 @@ fn superweapons_strike_once_or_tick_and_spare_small_ships() {
     let lance = c.weapons.iter().find(|w| w.type_id == ids::LANCE).expect("the lance");
     assert!(close(lance.volley.total(), 750_000.0), "fifteen ticks: {}", lance.volley.total());
     assert!(close(lance.splash, 2500.0));
-    let small = crate::fit::TargetProfile { signature: 2500.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0 };
+    let small = crate::fit::TargetProfile { signature: 2500.0, velocity: 0.0, transversal: 0.0, distance: 0.0, radius: 0.0, resist: [0.0; 4] };
     assert!(close(applied_factor(lance, 100_000.0, &small, 0.0, 0.0), 0.5));
     assert_eq!(applied_factor(lance, 250_000.0, &small, 0.0, 0.0), 0.0);
 }

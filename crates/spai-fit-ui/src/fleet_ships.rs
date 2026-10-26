@@ -691,7 +691,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         // The target at its share of its webbed top speed, the speed across the line of fire what
         // both ships' headings leave, this ship's own speed under their webs.
         let profile = target.as_ref().map(|t| {
-            let base = TargetProfile { signature: (t.mobility.signature * on_target.signature) as f32, velocity: (t.mobility.max_velocity * on_target.speed) as f32, transversal: 0.0, distance, radius: 0.0 };
+            let base = TargetProfile { signature: (t.mobility.signature * on_target.signature) as f32, velocity: (t.mobility.max_velocity * on_target.speed) as f32, transversal: 0.0, distance, radius: 0.0, resist: [0.0; 4] };
             motion.apply(&base, s.computed.mobility.max_velocity * on_us.speed)
         });
         let layers: Option<[&spai_fit::stats::Layer; 3]> = target.as_ref().map(|t| [&t.tank.shield, &t.tank.armor, &t.tank.hull]);
