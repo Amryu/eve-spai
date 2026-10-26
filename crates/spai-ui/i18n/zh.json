@@ -3109,6 +3109,7 @@
   "the FC": "FC",
   "the Rorqual is in its own fleet: leave it": "Rorqual 在自己的舰队中：请离开",
   "the check failed": "检查失败",
+  "the connection broke while sending; check whether it arrived before sending it again": "发送时连接中断；再次发送前请先确认是否已送达",
   "the connection dropped before the room confirmed it": "房间确认前连接已断开",
   "the cyno is in its own fleet: leave it": "诱导力场舰在自己的舰队中：请离开",
   "the first volley": "第一轮齐射",

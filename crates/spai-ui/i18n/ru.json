@@ -3109,6 +3109,7 @@
   "the FC": "FC",
   "the Rorqual is in its own fleet: leave it": "Rorqual в своём флоте: выйдите из него",
   "the check failed": "проверка не удалась",
+  "the connection broke while sending; check whether it arrived before sending it again": "соединение оборвалось при отправке; проверь, дошло ли, прежде чем отправлять снова",
   "the connection dropped before the room confirmed it": "соединение оборвалось до подтверждения комнатой",
   "the cyno is in its own fleet: leave it": "цино в своём флоте: выйдите из него",
   "the first volley": "первый залп",

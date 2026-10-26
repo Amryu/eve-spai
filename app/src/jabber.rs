@@ -364,9 +364,53 @@ fn status_stanza(show: Presence, status: &str, to: Option<xmpp::jid::Jid>) -> xm
     }
 }
 
+/// How a send ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sent {
+    Yes,
+    /// The library dropped it unsent.
+    No,
+    /// Not confirmed within the deadline. The library queues a stanza before writing it and keeps
+    /// the queue across its own reconnects and the orderly shutdown, so this one may still go out.
+    Unknown,
+}
+
+/// Sends with a deadline.
+async fn send_outcome(agent: &mut xmpp::Agent, st: impl Into<xmpp::tokio_xmpp::Stanza>) -> Sent {
+    match tokio::time::timeout(SEND_TIMEOUT, agent.send_stanza(st)).await {
+        Ok(Ok(_)) => Sent::Yes,
+        Ok(Err(_)) => Sent::No,
+        Err(_) => Sent::Unknown,
+    }
+}
+
 /// Sends with a deadline. False when it did not go out in time or the stream refused it.
 async fn send_timed(agent: &mut xmpp::Agent, st: impl Into<xmpp::tokio_xmpp::Stanza>) -> bool {
-    matches!(tokio::time::timeout(SEND_TIMEOUT, agent.send_stanza(st)).await, Ok(Ok(_)))
+    send_outcome(agent, st).await == Sent::Yes
+}
+
+/// What became of a job the session ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JobEnd {
+    Done,
+    /// The session is lost and the job never reached the library: it waits for the next session.
+    Lost,
+    /// The session is lost with the job in the library's hands: running it again could send it twice.
+    Spent,
+}
+
+/// A message the stream did not confirm. One the library never took goes back to the queue; one it
+/// still holds may go out with the shutdown, so handing it over again would double it (a fleet ping,
+/// twice to everyone). That one is reported instead, for the user to check and resend.
+fn settle(state: &SharedJabber, id: &str, sent: Sent) -> JobEnd {
+    match sent {
+        Sent::Yes => JobEnd::Done,
+        Sent::No => JobEnd::Lost,
+        Sent::Unknown => {
+            state.lock().unwrap().fail_outgoing(id, spai_ui::tr!("the connection broke while sending; check whether it arrived before sending it again"));
+            JobEnd::Spent
+        }
+    }
 }
 
 /// Joins a room, telling the library to forget any idea that we are already in it: after a room
@@ -468,7 +512,24 @@ pub struct JabberState {
     pub rooms_lost: Vec<String>,
     /// For the ids of our outgoing messages.
     pub out_seq: u64,
+    /// What came in lately, to tell a second copy of a message from a new one.
+    pub recent_in: std::collections::VecDeque<Inbound>,
 }
+
+/// One message that came in: who from, under which id, through which door.
+#[derive(Clone, Debug)]
+pub struct Inbound {
+    pub key: String,
+    pub id: Option<String>,
+    pub body: String,
+    pub at: i64,
+    /// A carbon copy (XEP-0280) of what another client of ours received, rather than one to us.
+    pub carbon: bool,
+}
+
+/// How far apart a direct delivery and its carbon can land and still be the one message.
+const COPY_WINDOW: i64 = 60;
+const RECENT_IN: usize = 64;
 
 impl JabberState {
     /// One of ours on its way: shown at once as sending, under the id it will go out with.
@@ -514,9 +575,16 @@ impl JabberState {
     }
 
     /// The room echoed one of ours back: the echo takes the place of what was shown while sending.
-    pub(crate) fn take_room_echo(&mut self, room: &str, body: &str) -> bool {
+    /// `unconfirmed` also takes one reported as not sent: a room replaying it on rejoin proves it
+    /// arrived after all.
+    pub(crate) fn take_room_copy(&mut self, room: &str, body: &str, unconfirmed: bool) -> bool {
         let Some(conv) = self.chats.get_mut(room) else { return false };
-        match conv.iter().position(|m| m.outgoing && m.delivery == Delivery::Sending && m.body == body) {
+        let fits = |m: &ChatMsg| match &m.delivery {
+            Delivery::Sending => true,
+            Delivery::Failed(_) => unconfirmed,
+            Delivery::Sent => false,
+        };
+        match conv.iter().position(|m| m.outgoing && m.body == body && fits(m)) {
             Some(i) => {
                 conv.remove(i);
                 true
@@ -524,7 +592,38 @@ impl JabberState {
             None => false,
         }
     }
+
+    /// Whether this incoming message is a copy of one already here, and remembers it if not. The
+    /// server hands a message over twice when it reaches us directly and again as a carbon of
+    /// another client's copy: under the sender's id both times, or as the same text seconds apart
+    /// when the sender wrote one stanza per client. Two messages typed alike through one door are
+    /// both kept.
+    pub(crate) fn repeated_inbound(&mut self, key: &str, id: Option<&str>, body: &str, at: i64, carbon: bool) -> bool {
+        let copy = self.recent_in.iter().any(|m| {
+            m.key == key
+                && m.body == body
+                && ((id.is_some() && m.id.as_deref() == id) || (m.carbon != carbon && (at - m.at).abs() <= COPY_WINDOW))
+        });
+        if !copy {
+            self.recent_in.push_back(Inbound { key: key.to_owned(), id: id.map(str::to_owned), body: body.to_owned(), at, carbon });
+            while self.recent_in.len() > RECENT_IN {
+                self.recent_in.pop_front();
+            }
+        }
+        copy
+    }
+
+    /// Whether a room line replayed as history is already in its conversation. A rejoin replays the
+    /// room's last lines under the server's stamp, a second or so off the time they were first seen.
+    pub(crate) fn replayed_room_line(&self, room: &str, from: &str, body: &str, at: i64) -> bool {
+        self.chats.get(room).is_some_and(|conv| {
+            conv.iter().rev().take(RECENT_IN).any(|m| m.from == from && m.body == body && (m.time - at).abs() <= REPLAY_SKEW)
+        })
+    }
 }
+
+/// How far a replayed room line's stamp may sit from the time it was first seen.
+const REPLAY_SKEW: i64 = 5;
 
 /// Whether a room's self-presence leaving us out was the room's decision about us (kick, ban,
 /// membership removed), which rejoining would only undo, rather than the room going away.
@@ -1140,28 +1239,42 @@ async fn run_job(
     joined_edits: &mut Vec<(String, bool)>,
     store: Option<&crate::store::Store>,
     my_nick: &str,
+) -> JobEnd {
+    let Job::Msg { key, body, id, time, kind } = job else {
+        return if run_cmd(agent, state, job, link_presence, joined_edits, my_nick).await { JobEnd::Done } else { JobEnd::Lost };
+    };
+    let Some(st) = message_stanza(*kind, key, body, id) else {
+        state.lock().unwrap().fail_outgoing(id, spai_ui::tr!("not a valid address"));
+        return JobEnd::Done;
+    };
+    let end = settle(state, id, send_outcome(agent, st).await);
+    if end != JobEnd::Done {
+        return end;
+    }
+    if *kind == MsgKind::Room {
+        // Confirmed by the room's echo, or failed when it never comes.
+        echoes.push((id.clone(), Instant::now()));
+    } else {
+        state.lock().unwrap().mark_sent(id);
+        if let Some(s) = store {
+            s.add_chat(key, "me", body, *time, true);
+        }
+    }
+    JobEnd::Done
+}
+
+/// A command job. False when the session is lost with it not done.
+async fn run_cmd(
+    agent: &mut xmpp::Agent,
+    state: &SharedJabber,
+    job: &Job,
+    link_presence: &mut (Presence, String),
+    joined_edits: &mut Vec<(String, bool)>,
+    my_nick: &str,
 ) -> bool {
     use xmpp::jid::BareJid;
     match job {
-        Job::Msg { key, body, id, time, kind } => {
-            let Some(st) = message_stanza(*kind, key, body, id) else {
-                state.lock().unwrap().fail_outgoing(id, spai_ui::tr!("not a valid address"));
-                return true;
-            };
-            if !send_timed(agent, st).await {
-                return false;
-            }
-            if *kind == MsgKind::Room {
-                // Confirmed by the room's echo, or failed when it never comes.
-                echoes.push((id.clone(), Instant::now()));
-            } else {
-                state.lock().unwrap().mark_sent(id);
-                if let Some(s) = store {
-                    s.add_chat(key, "me", body, *time, true);
-                }
-            }
-            true
-        }
+        Job::Msg { .. } => true,
         Job::Cmd(Cmd::JoinRoom { room }) => {
             state.lock().unwrap().rooms_left.remove(room);
             if !join_timed(agent, room).await {
@@ -1438,9 +1551,13 @@ async fn session(
         let ready = online_at.is_some_and(|t| awaiting.is_empty() || t.elapsed() >= JOIN_SETTLE);
         if ready {
             while let Some(job) = link.pending.pop_front() {
-                if !run_job(agent, state, &job, &mut link.presence, &mut link.echoes, joined_edits, store, my_nick).await {
-                    link.pending.push_front(job);
-                    return lost("Connection lost.");
+                match run_job(agent, state, &job, &mut link.presence, &mut link.echoes, joined_edits, store, my_nick).await {
+                    JobEnd::Done => {}
+                    JobEnd::Lost => {
+                        link.pending.push_front(job);
+                        return lost("Connection lost.");
+                    }
+                    JobEnd::Spent => return lost("Connection lost."),
                 }
                 ctx.request_repaint();
             }
@@ -1492,10 +1609,15 @@ fn on_chat(
     ctx: &egui::Context,
     store: Option<&crate::store::Store>,
     key: String,
+    id: Option<String>,
     body: String,
     stamp: i64,
     delayed: bool,
+    carbon: bool,
 ) {
+    if state.lock().unwrap().repeated_inbound(&key, id.as_deref(), &body, stamp, carbon) {
+        return;
+    }
     let local = key.split('@').next().unwrap_or_default();
     if local.eq_ignore_ascii_case(PING_SENDER) {
         let parsed = crate::pings::parse_ping(stamp, &body, resolve);
@@ -1638,14 +1760,14 @@ fn handle_event(
                 }
             }
         }
-        Event::ChatMessage(_, from, body, time_info) => {
+        Event::ChatMessage(id, from, body, time_info) => {
             // Offline/history messages carry a <delay/>. They are stored but not sounded or
             // badged, or the backlog of missed pings screeches on startup.
             let delayed = !time_info.delays.is_empty();
             let stamp = time_info.delays.first().map(|d| d.stamp.0.timestamp()).unwrap_or(now);
             // Key by the bare JID (no /resource): outgoing DMs and presences use the bare form, and
             // the UI's DM list only surfaces conversations whose key is a valid bare JID.
-            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), body, stamp, delayed);
+            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), id.map(|i| i.0), body, stamp, delayed, false);
         }
         // An edit arrives as a message of its own; losing it would lose what was said.
         Event::ChatMessageCorrection(_, from, body, time_info) => {
@@ -1677,8 +1799,11 @@ fn handle_event(
                     if let Ok(r) = Received::try_from(p.clone()) {
                         let m = r.forwarded.message;
                         if let (Some(from), Some((_, body))) = (m.from.as_ref(), m.get_best_body_cloned(vec![])) {
+                            // Forwarded under a <delay/> as a rule (XEP-0297), so that says nothing
+                            // about its age: a carbon is live traffic.
                             let stamp = r.forwarded.delay.map(|d| d.stamp.0.timestamp()).unwrap_or(now);
-                            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), body, stamp, false);
+                            let id = m.id.as_ref().map(|i| i.0.clone());
+                            on_chat(state, resolve, ping_shared, ctx, store, from.to_bare().to_string(), id, body, stamp, false, true);
                         }
                         return true;
                     }
@@ -1741,8 +1866,16 @@ fn handle_event(
             // Our own reflected message (MUC echoes it back under our nick): store it but never
             // notify/sound for it.
             let own = nick.eq_ignore_ascii_case(my_nick);
-            if own && !delayed {
-                state.lock().unwrap().take_room_echo(&room, &body);
+            {
+                let mut s = state.lock().unwrap();
+                // History replayed on a rejoin: the room's last lines again, each a second or so
+                // off the time it was first seen.
+                if delayed && s.replayed_room_line(&room, nick.as_str(), &body, stamp) {
+                    return false;
+                }
+                if own {
+                    s.take_room_copy(&room, &body, delayed);
+                }
             }
             // Read before the body is stored: "he is safe" ends a rescue, so it is the one delve911
             // line that must not sound the siren.
@@ -2055,5 +2188,89 @@ mod tests {
         assert!(jid_format_error("name@").is_some());
         assert!(jid_format_error("no spaces@server.com").is_some());
         assert!(jid_format_error("@server.com").is_some());
+    }
+
+    fn at(secs_ago: i64) -> xmpp::delay::StanzaTimeInfo {
+        let stamp = chrono::Utc::now() - chrono::Duration::seconds(secs_ago);
+        let delay = xmpp::parsers::delay::Delay { from: None, stamp: xmpp::parsers::date::DateTime(stamp.into()), data: None };
+        xmpp::delay::StanzaTimeInfo { received: chrono::Utc::now(), delays: vec![delay] }
+    }
+
+    fn live() -> xmpp::delay::StanzaTimeInfo {
+        xmpp::delay::StanzaTimeInfo { received: chrono::Utc::now(), delays: vec![] }
+    }
+
+    const PING: &str = "cap save, links and logi first\n\nFC Name: Amryu\nFormup Location: C-J6MT\nPAP Type: Strategic\nComms: Op 2 https://gnf.lt/example.html\nDoctrine: Sacrileges\n\n~~~ This was a coord broadcast from amryu to all at 2026-10-25 20:39:22.000000 EVE ~~~";
+
+    fn direct(state: &super::SharedJabber, id: Option<&str>, body: &str) {
+        let id = id.map(|i| xmpp::parsers::message::Id(i.to_owned()));
+        event(state, xmpp::Event::ChatMessage(id, "directorbot@example.com".parse().unwrap(), body.to_owned(), live()));
+    }
+
+    fn carbon(state: &super::SharedJabber, id: &str, body: &str) {
+        let inner = format!("<message xmlns='jabber:client' id='{id}' from='directorbot@example.com/bot' to='me@example.com/phone' type='chat'><body>{body}</body></message>");
+        event(state, xmpp::Event::Message(message(&format!("<message xmlns='jabber:client' from='me@example.com' to='me@example.com/spai'><received xmlns='urn:xmpp:carbons:2'><forwarded xmlns='urn:xmpp:forward:0'>{inner}</forwarded></received></message>"))));
+    }
+
+    fn counts(state: &super::SharedJabber) -> (usize, usize) {
+        let s = state.lock().unwrap();
+        (s.pings.len(), s.chats.get("directorbot@example.com").map_or(0, Vec::len))
+    }
+
+    #[test]
+    fn a_carbon_of_a_ping_already_here_is_not_a_second_ping() {
+        let state: super::SharedJabber = Default::default();
+        direct(&state, Some("p1"), PING);
+        carbon(&state, "p1", PING);
+        assert_eq!(counts(&state), (1, 1), "the same stanza through both doors");
+        carbon(&state, "p1-other-client", PING);
+        assert_eq!(counts(&state), (1, 1), "one stanza per client, same text seconds apart");
+        carbon(&state, "p2", "all clear, stand down\n\n~~~ This was a broadcast from amryu to all at 2026-10-25 21:00:00.000000 EVE ~~~");
+        direct(&state, Some("p2"), "all clear, stand down\n\n~~~ This was a broadcast from amryu to all at 2026-10-25 21:00:00.000000 EVE ~~~");
+        assert_eq!(counts(&state), (2, 2), "the carbon first, then the direct copy: still one");
+    }
+
+    #[test]
+    fn two_alike_messages_through_one_door_are_both_kept() {
+        let state: super::SharedJabber = Default::default();
+        direct(&state, Some("p1"), PING);
+        direct(&state, Some("p3"), PING);
+        assert_eq!(counts(&state), (2, 2), "a reping is a ping");
+        direct(&state, None, "ok");
+        direct(&state, None, "ok");
+        assert_eq!(counts(&state).1, 4, "typed twice without ids: twice");
+    }
+
+    #[test]
+    fn a_rooms_history_replay_does_not_repeat_its_lines() {
+        let state: super::SharedJabber = Default::default();
+        let room = "scouts@conference.example.com";
+        super::note_room_joined(&state, room);
+        let line = |nick: &str, body: &str, time| event(&state, xmpp::Event::RoomMessage(None, room.parse().unwrap(), nick.parse().unwrap(), body.into(), time));
+        line("bob", "inc 3 in C-J", live());
+        line("bob", "inc 3 in C-J", at(1));
+        line("bob", "inc 3 in C-J", at(0));
+        let bodies = |s: &super::SharedJabber| s.lock().unwrap().chats[room].iter().map(|m| m.body.clone()).collect::<Vec<_>>();
+        assert_eq!(bodies(&state), ["inc 3 in C-J"], "the rejoin replayed it a second off");
+        line("bob", "they jumped", at(2));
+        line("bob", "inc 3 in C-J", at(600));
+        assert_eq!(bodies(&state), ["inc 3 in C-J", "they jumped", "inc 3 in C-J"], "history we never saw, and the same words ten minutes earlier");
+    }
+
+    #[test]
+    fn a_message_handed_to_the_library_is_never_handed_over_again() {
+        use super::{settle, Delivery, JobEnd, Sent};
+        let state: super::SharedJabber = Default::default();
+        let room = "skirmish_commanders@conference.example.com";
+        super::note_room_joined(&state, room);
+        let id = state.lock().unwrap().queue_outgoing(room, "!bping coord\n\ncap save", 10);
+        assert_eq!(settle(&state, &id, Sent::No), JobEnd::Lost, "dropped unsent: waits for the next session");
+        assert_eq!(delivery(&state, room), [("!bping coord\n\ncap save".to_owned(), Delivery::Sending)]);
+        assert_eq!(settle(&state, &id, Sent::Unknown), JobEnd::Spent, "queued in the library: may still go out, so never again");
+        assert!(matches!(delivery(&state, room).as_slice(), [(_, Delivery::Failed(_))]), "reported, for the user to check");
+        // The room replays it on the rejoin: it did go out, and the report gives way to the line.
+        event(&state, xmpp::Event::RoomMessage(None, room.parse().unwrap(), "me".parse().unwrap(), "!bping coord\n\ncap save".into(), at(20)));
+        assert_eq!(delivery(&state, room), [("!bping coord\n\ncap save".to_owned(), Delivery::Sent)]);
+        assert_eq!(state.lock().unwrap().chats[room].len(), 1);
     }
 }

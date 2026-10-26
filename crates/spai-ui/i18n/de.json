@@ -3109,6 +3109,7 @@
   "the FC": "der FC",
   "the Rorqual is in its own fleet: leave it": "der Rorqual ist in seiner eigenen Flotte: verlassen",
   "the check failed": "die Prüfung schlug fehl",
+  "the connection broke while sending; check whether it arrived before sending it again": "die Verbindung brach beim Senden ab; prüfe, ob es angekommen ist, bevor du es erneut sendest",
   "the connection dropped before the room confirmed it": "die Verbindung brach ab, bevor der Raum es bestätigte",
   "the cyno is in its own fleet: leave it": "der Cyno ist in seiner eigenen Flotte: verlassen",
   "the first volley": "die erste Salve",
