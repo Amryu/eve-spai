@@ -28,11 +28,14 @@ pub struct Pending {
     /// Where to go once the callback under `/wh/` has finished: the page that started it.
     #[serde(default)]
     pub return_to: Option<String>,
+    /// The same login also signs in to EVE Spai: one trip to EVE for the scopes and the session.
+    #[serde(default)]
+    pub session: bool,
 }
 
 impl Pending {
     pub fn new() -> Self {
-        Pending { state: b64(&random32()[..16]), verifier: b64(&random32()), scopes: Vec::new(), return_to: None }
+        Pending { state: b64(&random32()[..16]), verifier: b64(&random32()), scopes: Vec::new(), return_to: None, session: false }
     }
 
     fn challenge(&self) -> String {
@@ -192,7 +195,7 @@ mod tests {
 
     #[test]
     fn the_authorize_url_carries_pkce_state_scopes_and_the_redirect() {
-        let p = Pending { state: "s".into(), verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into(), scopes: Vec::new(), return_to: None };
+        let p = Pending { state: "s".into(), verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into(), scopes: Vec::new(), return_to: None, session: false };
         let url = p.authorize_url("https://eve-spai.com/wh/callback");
         assert!(url.contains("redirect_uri=https%3A%2F%2Feve-spai.com%2Fwh%2Fcallback"));
         assert!(url.contains("code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"), "{url}");
@@ -205,7 +208,7 @@ mod tests {
 
     #[test]
     fn the_callback_is_checked_against_the_pending_state() {
-        let p = Pending { state: "abc".into(), verifier: "v".into(), scopes: Vec::new(), return_to: Some("/sim/".into()) };
+        let p = Pending { state: "abc".into(), verifier: "v".into(), scopes: Vec::new(), return_to: Some("/sim/".into()), session: true };
         assert_eq!(callback_code("?code=xyz&state=abc", &p).unwrap(), "xyz");
         assert!(callback_code("?code=xyz&state=nope", &p).is_err());
         assert!(callback_code("?error=access_denied&state=abc", &p).unwrap_err().contains("access_denied"));
@@ -213,7 +216,7 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Pending>(&json).unwrap(), p);
         let old: Pending = serde_json::from_str(r#"{"state":"a","verifier":"b"}"#).unwrap();
-        assert_eq!(old.return_to, None);
+        assert_eq!((old.return_to, old.session), (None, false), "a sign-in started before the field reads as scopes only");
     }
 
     #[test]

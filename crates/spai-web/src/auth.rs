@@ -47,7 +47,16 @@ pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added
             Ok((code, p)) if !p.scopes.is_empty() => {
                 let (accounts, added, ctx) = (accounts.clone(), added.clone(), ctx.clone());
                 wasm_bindgen_futures::spawn_local(async move {
-                    let r = token(&p, &code).await.and_then(|t| crate::accounts::web::add(&accounts, t));
+                    let t = token(&p, &code).await;
+                    let access = t.as_ref().ok().map(|t| t.access_token.clone());
+                    let r = t.and_then(|t| crate::accounts::web::add(&accounts, t));
+                    // A sign-in that asked for scopes too: the same token makes the session.
+                    if let (true, Some(access)) = (p.session, access) {
+                        match spai_webkit::sso::session(&page::origin(), &access).await {
+                            Ok(s) => page::save(SESSION, &s),
+                            Err(e) => *added.borrow_mut() = Some(Err(e)),
+                        }
+                    }
                     *added.borrow_mut() = Some(r);
                     // Started by another of our pages (the fitting simulator): back there.
                     if let Some(to) = &p.return_to {

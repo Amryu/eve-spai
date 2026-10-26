@@ -311,9 +311,10 @@ impl SimWebApp {
         self.sim.handle(HostEvent::Profiles(profiles));
     }
 
-    /// Off to EVE for an EVE Spai session, back through `/wh/callback` and then here.
+    /// Off to EVE once for both: the skills of the character and an EVE Spai session; back
+    /// through `/wh/callback` and then here.
     fn sign_in(&self) {
-        let p = Pending { return_to: Some(format!("{}{}", page::origin(), page::base_of("sim"))), ..Pending::new() };
+        let p = Pending { scopes: vec![SKILLS.to_owned()], session: true, return_to: Some(format!("{}{}", page::origin(), page::base_of("sim"))), ..Pending::new() };
         page::save(PENDING_KEY, &p);
         page::go(&p.authorize_url(&format!("{}/wh/callback", page::origin())));
     }
@@ -483,32 +484,74 @@ impl SimWebApp {
         }
     }
 
+    fn sign_out(&mut self, ctx: &egui::Context) {
+        page::forget(SESSION_KEY);
+        self.session = None;
+        self.sim.handle(HostEvent::Access { signed_in: false, imperium: false, admin: false });
+        self.sim.handle(HostEvent::Supplied(Vec::new()));
+        self.fetch_doctrines(ctx);
+    }
+
     fn account_bar(&mut self, ui: &mut egui::Ui) {
+        let mut sign_out = false;
+        let mut remove: Option<i64> = None;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(tr!("EVE Spai fitting")).strong());
             ui.separator();
-            let names: Vec<String> = self.accounts.borrow().iter().filter(|a| a.can(SKILLS)).map(|a| a.name.clone()).collect();
-            if names.is_empty() {
-                ui.label(egui::RichText::new(tr!("No character added for skills")).weak());
-            } else {
-                ui.add(egui::Label::new(egui::RichText::new(trf!("Skills from: {names}", names = names.join(", "))).weak()).truncate());
-            }
-            if ui.small_button(tr!("Add character")).on_hover_text(tr!("Sign in to EVE once more with the skills scope; the login stays in this browser")).clicked() {
-                self.add_character();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &self.session {
-                Some(s) => {
-                    ui.label(egui::RichText::new(&s.character_name).weak());
-                    ui.label(egui::RichText::new(tr!("Fits sync with eve-spai.com as")).weak());
+            let skilled: Vec<(i64, String)> = self.accounts.borrow().iter().filter(|a| a.can(SKILLS)).map(|a| (a.char_id, a.name.clone())).collect();
+            let note = match &self.session {
+                Some(_) => tr!("Fits are kept on eve-spai.com and in this browser"),
+                None => tr!("Fits are kept in this browser"),
+            };
+            ui.label(egui::RichText::new(note).weak());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let title = match &self.session {
+                    Some(s) => format!("{} {}", egui_phosphor::regular::USER_CIRCLE, s.character_name),
+                    None if skilled.is_empty() => String::new(),
+                    None => trf!("{n} characters for skills", n = skilled.len()),
+                };
+                if self.session.is_none() && ui.button(tr!("Sign in with EVE")).on_hover_text(tr!("One login: the character's skills for the numbers, fits kept on eve-spai.com, and the Imperium's doctrines for members")).clicked() {
+                    self.sign_in();
                 }
-                None => {
-                    if ui.small_button(tr!("Sign in")).on_hover_text(tr!("Sign in to EVE Spai to keep fits on the server and see the Imperium doctrines")).clicked() {
-                        self.sign_in();
+                if title.is_empty() {
+                    return;
+                }
+                ui.menu_button(title, |ui| {
+                    ui.set_min_width(260.0);
+                    if let Some(s) = &self.session {
+                        ui.label(egui::RichText::new(trf!("Signed in as {name}", name = s.character_name)).strong());
+                        if ui.button(trf!("{icon} Sign out", icon = egui_phosphor::regular::SIGN_OUT)).on_hover_text(tr!("Fits stay in this browser; they sync again at the next sign-in")).clicked() {
+                            sign_out = true;
+                            ui.close();
+                        }
+                        ui.separator();
                     }
-                    ui.label(egui::RichText::new(tr!("Fits are kept in this browser")).weak());
-                }
+                    ui.label(egui::RichText::new(tr!("Skills from")).weak());
+                    for (id, name) in &skilled {
+                        ui.horizontal(|ui| {
+                            ui.label(name);
+                            if ui.small_button(tr!("Remove")).clicked() {
+                                remove = Some(*id);
+                            }
+                        });
+                    }
+                    if ui.button(trf!("{icon} Add another character", icon = egui_phosphor::regular::PLUS)).on_hover_text(tr!("An alt's skills, read with its own EVE login kept in this browser")).clicked() {
+                        self.add_character();
+                    }
+                });
             });
         });
+        if sign_out {
+            self.sign_out(ui.ctx());
+        }
+        if let Some(id) = remove {
+            self.accounts.borrow_mut().retain(|a| a.char_id != id);
+            page::save(ACCOUNTS_KEY, &*self.accounts.borrow());
+            let mut skills: Vec<(i64, String, Vec<(u32, u8)>)> = page::load("spai.sim.skills").unwrap_or_default();
+            skills.retain(|(c, _, _)| *c != id);
+            page::save("spai.sim.skills", &skills);
+            self.load_profiles();
+        }
     }
 }
 
