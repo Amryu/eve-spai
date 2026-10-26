@@ -128,8 +128,8 @@ fn clashing_variations_are_pointed_out() {
     use spai_fit_variations::*;
     let mut f = Fit::new(ids::SHIP, "t");
     f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
-    f.variations.push(Variation { id: 1, name: "Long".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO_LONG) }] });
-    f.variations.push(Variation { id: 2, name: "Short".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO) }] });
+    f.variations.push(Variation { id: 1, name: "Long".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO_LONG) }], group: None });
+    f.variations.push(Variation { id: 2, name: "Short".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 0, charge: Some(ids::AMMO) }], group: None });
     f.active_variations = vec![1, 2];
     let k = kinds(&f, &[]);
     assert!(has(&k, |w| matches!(w, WarningKind::VariationConflict { first, second } if first == "Long" && second == "Short")), "{k:?}");

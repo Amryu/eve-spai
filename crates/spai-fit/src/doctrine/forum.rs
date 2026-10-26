@@ -285,16 +285,23 @@ fn item_name(line: &str) -> &str {
     if let Some(cut) = s.to_ascii_lowercase().rfind("/offline") {
         s = s[..cut].trim_end();
     }
-    if let Some(x) = s.rfind(" x") {
-        if s[x + 2..].chars().all(|c| c.is_ascii_digit()) && x + 2 < s.len() {
+    if count_of(s).is_some() {
+        if let Some(x) = s.rfind(" x") {
             s = s[..x].trim_end();
         }
     }
     s.split_once(',').map_or(s, |(n, _)| n).trim()
 }
 
+/// A line's `xN` count; the forum writes big ones with thousands commas, `x150,000`.
+fn count_of(line: &str) -> Option<u32> {
+    let (_, n) = line.trim().rsplit_once(" x")?;
+    let digits: String = n.chars().filter(|c| *c != ',').collect();
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.parse().ok()).flatten()
+}
+
 fn counted(line: &str) -> bool {
-    line.trim().rsplit_once(" x").is_some_and(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    count_of(line).is_some()
 }
 
 /// What a line inside a fit is: part of it, or the prose after it.
@@ -323,26 +330,69 @@ fn kind_of(dogma: &Dogma, line: &str) -> Kind {
         // A hull named on a line of its own heads the next part of the topic.
         Some(t) if place_of(dogma, t) == Place::Ship && !counted(l) => Kind::Prose,
         Some(_) => Kind::Item,
-        None if counted(l) || l.contains(" II") || l.ends_with(" I") => Kind::Unknown,
+        // A placeholder for the hull's own: "Racial Isotopes", "Racial Lance".
+        None if l.starts_with("Racial ") && l.len() <= 40 => Kind::Item,
+        None if (counted(l) || l.contains(" II") || l.ends_with(" I")) && l.len() <= 60 && !l.contains(':') => Kind::Unknown,
         None => Kind::Prose,
     }
+}
+
+/// A list of items written apart from any fit: a fit's ammo, implants and refits under its own
+/// heading, or the refits every fit of a page carries. `heading` is the prose line above it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Loose {
+    pub heading: String,
+    pub lines: Vec<String>,
 }
 
 /// The fits written in these lines, each with the prose since the one before. A spare module
 /// after the drones and cargo begin is cargo, `xN` or not.
 pub fn fits_in(dogma: &Dogma, post: &str, lines: &[String]) -> Vec<Found> {
-    let mut out = Vec::new();
+    read(dogma, post, lines).0
+}
+
+/// The fits in a post with the lists written apart from them merged in: a list joins the fits
+/// written before it in the post since the last list, or the next fit when none came before.
+/// Lists that reach no fit, in a post without fits, come back on their own.
+pub fn read(dogma: &Dogma, post: &str, lines: &[String]) -> (Vec<Found>, Vec<Loose>) {
+    let mut out: Vec<Found> = Vec::new();
+    let mut lists: Vec<(usize, Loose)> = Vec::new();
+    let mut current: Option<Loose> = None;
     let mut context: Vec<String> = Vec::new();
+    let flush = |current: &mut Option<Loose>, lists: &mut Vec<(usize, Loose)>, found: usize| {
+        if let Some(l) = current.take() {
+            lists.push((found, l));
+        }
+    };
     let mut i = 0;
     while i < lines.len() {
         let line = &lines[i];
         let Some(_) = header_ship(dogma, line) else {
-            if !line.is_empty() {
-                context.push(line.clone());
+            let kind = kind_of(dogma, line);
+            match kind {
+                // An item the data does not know stays in the list it is part of, or starts one
+                // when it carries a count.
+                Kind::Item | Kind::Unknown if kind == Kind::Item || current.is_some() || counted(line) => {
+                    // The nearest short line above: a heading, not a sentence that names a hold.
+                    let heading = context.iter().rev().find(|c| !c.eq_ignore_ascii_case("spoiler") && c.len() <= 60 && !c.ends_with('.')).cloned().unwrap_or_default();
+                    current.get_or_insert_with(|| Loose { heading, lines: Vec::new() }).lines.push(line.clone());
+                }
+                Kind::Blank => {}
+                _ => {
+                    flush(&mut current, &mut lists, out.len());
+                    if context.last().is_some_and(|c| c.eq_ignore_ascii_case("Fuel Requirements")) {
+                        let fuel = fuel_in(line);
+                        if !fuel.is_empty() {
+                            lists.push((usize::MAX, Loose { heading: FUEL.into(), lines: fuel }));
+                        }
+                    }
+                    context.push(line.clone());
+                }
             }
             i += 1;
             continue;
         };
+        flush(&mut current, &mut lists, out.len());
         let mut body: Vec<String> = Vec::new();
         let mut in_bays = false;
         let mut j = i + 1;
@@ -365,10 +415,12 @@ pub fn fits_in(dogma: &Dogma, post: &str, lines: &[String]) -> Vec<Found> {
                         body.push(l.clone());
                     }
                 }
+                // A heading such as "Implants" ends the fit and what follows is a list of its own;
+                // a name the data lost in the middle of a rack does not.
                 Kind::Prose => {
-                    // An unknown line followed by items is an item the data lost, not prose.
-                    let next_items = lines[j + 1..].iter().take(3).any(|n| matches!(kind_of(dogma, n), Kind::Item));
-                    if next_items && !l.contains(" - ") && l.len() < 60 && header_ship(dogma, l).is_none() && !l.ends_with(':') {
+                    let next = lines[j + 1..].iter().find(|n| !n.trim().is_empty());
+                    let rack_next = next.is_some_and(|n| !counted(n) && dogma.type_named(item_name(n)).is_some_and(|t| matches!(place_of(dogma, t), Place::Module(_))));
+                    if rack_next && !in_bays && !l.ends_with(':') && l.len() <= 60 && header_ship(dogma, l).is_none() {
                         body.push(l.clone());
                     } else {
                         break;
@@ -378,12 +430,165 @@ pub fn fits_in(dogma: &Dogma, post: &str, lines: &[String]) -> Vec<Found> {
             j += 1;
         }
         let text = std::iter::once(line.clone()).chain(body).collect::<Vec<_>>().join("\n");
-        if let Some(imp) = eft::import(dogma, &text) {
+        if let Some(mut imp) = eft::import(dogma, &text) {
+            one_implant_per_slot(dogma, &mut imp.fit);
             out.push(Found { post: post.to_owned(), context: std::mem::take(&mut context), fit: imp.fit, unknown: imp.unknown });
         }
         i = j;
     }
+    flush(&mut current, &mut lists, out.len());
+    let mut orphans = Vec::new();
+    let mut previous: Option<std::ops::Range<usize>> = None;
+    // Fuel goes to every jump-capable fit of the page, so it comes back on its own.
+    orphans.extend(lists.iter().filter(|(a, _)| *a == usize::MAX).map(|(_, l)| l.clone()));
+    lists.retain(|(a, _)| *a != usize::MAX);
+    for (n, (after, list)) in lists.iter().enumerate() {
+        let start = if n == 0 { 0 } else { lists[n - 1].0 };
+        let targets = if *after > start {
+            start..*after
+        } else if let Some(p) = previous.clone().filter(|_| n > 0 && *after > 0) {
+            // Another list after the same fits: theirs too.
+            p
+        } else {
+            // Written under a fit's heading before it: that fit's only.
+            *after..(*after + 1).min(out.len())
+        };
+        previous = Some(targets.clone());
+        if targets.is_empty() {
+            orphans.push(list.clone());
+            continue;
+        }
+        for f in &mut out[targets] {
+            let unknown = add_items(dogma, &mut f.fit, list);
+            f.unknown.extend(unknown);
+        }
+    }
+    (out, orphans)
+}
+
+/// The heading of a list of fuel read out of a page's fuel requirements.
+pub const FUEL: &str = "Fuel";
+
+/// Fuel named in a sentence, "carry 100,000 of their racial isotopes along with 1500 Strontium
+/// Clathrates", as list lines.
+pub fn fuel_in(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let number = |w: &str| -> Option<u64> {
+        let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let (digits, k) = match w.strip_suffix(['k', 'K']) {
+            Some(d) => (d, 1000),
+            None => (w, 1),
+        };
+        let digits: String = digits.chars().filter(|c| *c != ',').collect();
+        (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.parse::<u64>().ok().map(|n| n * k)).flatten()
+    };
+    let before = |i: usize| (i.saturating_sub(4)..i).rev().find_map(|j| number(words[j]));
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let w = w.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase();
+        let name = match w.as_str() {
+            "isotopes" | "isotope" => "Racial Isotopes",
+            "strontium" => "Strontium Clathrates",
+            "heavy" if words.get(i + 1).is_some_and(|n| n.to_ascii_lowercase().starts_with("water")) => "Heavy Water",
+            _ => continue,
+        };
+        if let Some(n) = before(i) {
+            if !out.iter().any(|l: &String| l.starts_with(name)) {
+                out.push(format!("{name} x{n}"));
+            }
+        }
+    }
     out
+}
+
+/// The first implant written for each slot: a list of swaps for a slot names several.
+pub fn one_implant_per_slot(dogma: &Dogma, fit: &mut Fit) {
+    let slot = |t: TypeId| dogma.type_(t).and_then(|d| d.attr(crate::dogma::attr::IMPLANTNESS)).map(|v| v as u32);
+    let mut seen: Vec<u32> = Vec::new();
+    fit.implants.retain(|t| match slot(*t) {
+        Some(s) if seen.contains(&s) => false,
+        Some(s) => {
+            seen.push(s);
+            true
+        }
+        None => true,
+    });
+}
+
+/// The lance of the damage the fitted doomsday deals: `'Holy Destiny' Electromagnetic Lance`
+/// beside a `'Judgment' Electromagnetic Doomsday`.
+fn racial_lance<'a>(dogma: &'a Dogma, fit: &Fit) -> Option<&'a crate::dogma::TypeDef> {
+    let doomsday = fit.modules.iter().filter_map(|m| dogma.type_(m.type_id)).find(|t| t.name.ends_with(" Doomsday"))?;
+    let word = ["Electromagnetic", "Thermal", "Kinetic", "Explosive"].into_iter().find(|w| doomsday.name.contains(w))?;
+    let suffix = format!(" {word} Lance");
+    dogma.types.iter().find(|t| t.published && t.name.ends_with(&suffix) && t.name.starts_with('\''))
+}
+
+/// Fuel in the fuel bay, where the hull has one.
+pub fn fuel_to_bay(dogma: &Dogma, fit: &mut Fit) {
+    let Some(bay) = dogma.attr_named("specialFuelBayCapacity").map(|a| a.id) else { return };
+    if !dogma.type_(fit.ship).and_then(|t| t.attr(bay)).is_some_and(|v| v > 0.0) {
+        return;
+    }
+    for c in fit.cargo.iter_mut().filter(|c| c.hold.is_none()) {
+        if dogma.type_(c.type_id).is_some_and(|t| t.group == crate::ids::group::ICE_PRODUCT) {
+            c.hold = Some(bay);
+        }
+    }
+}
+
+/// A list's items into the fit: modules, charges and anything counted go into the cargo (the
+/// fleet hangar when the list's heading names it and the hull has one), drones and fighters into
+/// their bays, an implant into a slot still free. Returns the names the data does not know.
+pub fn add_items(dogma: &Dogma, fit: &mut Fit, list: &Loose) -> Vec<String> {
+    let mut unknown = Vec::new();
+    let jump_fuel = dogma.attr_named("jumpDriveConsumptionType").and_then(|a| dogma.type_(fit.ship).and_then(|s| s.attr(a.id)));
+    if list.heading == FUEL && jump_fuel.is_none() {
+        return unknown;
+    }
+    let fleet_hangar = list.heading.to_lowercase().contains("fleet hangar");
+    let hold = fleet_hangar.then(|| dogma.attr_named("fleetHangarCapacity").map(|a| a.id)).flatten().filter(|a| dogma.type_(fit.ship).and_then(|t| t.attr(*a)).is_some_and(|v| v > 0.0));
+    for line in &list.lines {
+        let name = item_name(line);
+        let quantity = count_of(line).unwrap_or(1).max(1);
+        // "Racial Isotopes" stands for whichever isotope the hull's jump drive burns.
+        let fuel = name.eq_ignore_ascii_case("Racial Isotopes").then(|| dogma.attr_named("jumpDriveConsumptionType").and_then(|a| dogma.type_(fit.ship).and_then(|s| s.attr(a.id)))).flatten().and_then(|id| dogma.type_(id as TypeId));
+        // "Racial Lance" is the lance of the titan's doomsday damage, unless its own pack has one.
+        let lance = if name.eq_ignore_ascii_case("Racial Lance") {
+            if fit.cargo.iter().any(|c| dogma.type_(c.type_id).is_some_and(|d| d.name.ends_with(" Lance"))) {
+                continue;
+            }
+            racial_lance(dogma, fit)
+        } else {
+            None
+        };
+        // Written without its tier, "Cap Recharger": the Tech II one, else the Tech I.
+        let tiered = || dogma.type_named(&format!("{name} II")).or_else(|| dogma.type_named(&format!("{name} I")));
+        let Some(t) = fuel.or(lance).or_else(|| dogma.type_named(name)).or_else(tiered) else {
+            unknown.push(name.to_owned());
+            continue;
+        };
+        match place_of(dogma, t) {
+            Place::Drone | Place::Fighter => {
+                crate::formats::add_item(dogma, fit, t.id, quantity);
+            }
+            Place::Implant => {
+                fit.implants.push(t.id);
+                one_implant_per_slot(dogma, fit);
+            }
+            Place::Booster if !counted(line) && !fit.boosters.iter().any(|b| b.type_id == t.id) => {
+                crate::formats::add_item(dogma, fit, t.id, 1);
+            }
+            Place::Ship => {}
+            // A page names its fuel in a sentence and again in a list: once is what it means.
+            _ if t.group == crate::ids::group::ICE_PRODUCT && fit.cargo.iter().any(|c| c.type_id == t.id) => {}
+            _ => match fit.cargo.iter_mut().find(|c| c.type_id == t.id && c.hold == hold) {
+                Some(c) => c.quantity += quantity,
+                None => fit.cargo.push(crate::fit::CargoItem { type_id: t.id, quantity, hold }),
+            },
+        }
+    }
+    unknown
 }
 
 /// Drones as a pilot launches them: five at most, within the hull's bandwidth, the first stacks
@@ -409,58 +614,164 @@ fn is_effect(dogma: &Dogma, t: TypeId, name: &str) -> bool {
     dogma.type_(t).is_some_and(|d| d.effects.iter().filter_map(|(id, _)| dogma.effect(*id)).any(|e| e.name == name))
 }
 
-/// The propulsion refit its cargo carries: an afterburner beside a fitted microwarpdrive or the
-/// other way round, as a variation keyed so a whole fleet swaps together. Returns the cargo
-/// modules left over, which stay spares.
-pub fn prop_refit(dogma: &Dogma, fit: &mut Fit) -> Vec<TypeId> {
-    let fitted: Vec<TypeId> = fit.modules.iter().filter(|m| dogma.type_(m.type_id).is_some_and(|t| t.group == PROPULSION_GROUP)).map(|m| m.type_id).collect();
-    let mut left = Vec::new();
-    let mut made = dual_prop(dogma, fit);
-    for c in fit.cargo.clone() {
-        let Some(t) = dogma.type_(c.type_id) else { continue };
-        if !matches!(place_of(dogma, t), Place::Module(_)) {
-            continue;
-        }
-        let swap = !made && t.group == PROPULSION_GROUP && !fitted.is_empty() && !fitted.contains(&c.type_id);
-        let ab = is_effect(dogma, c.type_id, "moduleBonusAfterburner");
-        let mwd = is_effect(dogma, c.type_id, "moduleBonusMicrowarpdrive");
-        let differs = fitted.iter().any(|f| is_effect(dogma, *f, "moduleBonusAfterburner") != ab || is_effect(dogma, *f, "moduleBonusMicrowarpdrive") != mwd);
-        if swap && differs && (ab || mwd) {
-            let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
-            let (name, key) = if ab { ("Afterburner", "prop:ab") } else { ("Microwarpdrive", "prop:mwd") };
-            fit.variations.push(Variation {
-                id,
-                name: name.into(),
-                kind: VariationKind::Refit,
-                refit_key: Some(key.into()),
-                ops: vec![RefitOp::ReplaceWhere { matches: ModulePredicate { group: Some(PROPULSION_GROUP), ..Default::default() }, with: c.type_id }],
-            });
-            made = true;
-        } else {
-            left.push(c.type_id);
-        }
+fn prop_kind(dogma: &Dogma, t: TypeId) -> Option<(&'static str, &'static str)> {
+    if is_effect(dogma, t, "moduleBonusMicrowarpdrive") {
+        Some(("Microwarpdrive", "prop:mwd"))
+    } else if is_effect(dogma, t, "moduleBonusAfterburner") {
+        Some(("Afterburner", "prop:ab"))
+    } else {
+        None
     }
-    left
 }
 
-/// Both an afterburner and a microwarpdrive fitted: one runs at a time, so the base runs the
-/// microwarpdrive and a keyed variation the afterburner.
-fn dual_prop(dogma: &Dogma, fit: &mut Fit) -> bool {
-    use crate::fit::State;
-    let pos = |name: &str| fit.modules.iter().find(|m| is_effect(dogma, m.type_id, name)).map(|m| (m.slot, m.index));
-    let (Some(mwd), Some(ab)) = (pos("moduleBonusMicrowarpdrive"), pos("moduleBonusAfterburner")) else { return false };
-    if let Some(m) = fit.module_mut(ab.0, ab.1) {
-        m.state = State::Online;
+/// A module whose job is to make room on the fit: more powergrid or CPU.
+fn is_fitting_module(dogma: &Dogma, t: TypeId) -> bool {
+    dogma.type_(t).is_some_and(|d| ["Reactor Control Unit", "Co-Processor", "Micro Auxiliary Power Core", "Power Diagnostic System"].iter().any(|n| d.name.contains(n)))
+}
+
+/// What the refits from a fit's cargo came to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Refits {
+    /// Cargo modules no refit used: spares.
+    pub left: Vec<TypeId>,
+    /// Refits that would not fit, by name.
+    pub unfit: Vec<String>,
+}
+
+/// The fit's refits out of its cargo, as variations. A propulsion module of the other kind (an
+/// afterburner beside a fitted microwarpdrive, or both fitted, one run at a time) makes two
+/// categories: the base, named for its own propulsion, and the other. Each ewar or tackle spare
+/// then makes a variation under each category: it takes the place of a fitted module of another
+/// kind in its rack (a point or scram only the fitted point or scram, racial jammers every
+/// jammer of another race), loading a carried script where it takes one. A variation is kept
+/// only where it fits at all skills V, tried against each module it could replace.
+pub fn refits(dogma: &Dogma, fit: &mut Fit) -> Refits {
+    use crate::fit::{Slot, State};
+    let mut out = Refits::default();
+    let spares: Vec<TypeId> = fit.cargo.iter().map(|c| c.type_id).filter(|t| dogma.type_(*t).is_some_and(|d| matches!(place_of(dogma, d), Place::Module(_)))).collect();
+    let fitted_props: Vec<(Slot, u8, TypeId)> = fit.modules.iter().filter(|m| dogma.type_(m.type_id).is_some_and(|t| t.group == PROPULSION_GROUP)).map(|m| (m.slot, m.index, m.type_id)).collect();
+    // The other propulsion: the ops that switch to it, its name and key.
+    let mut alt: Option<(Vec<RefitOp>, &'static str, &'static str)> = None;
+    let mut base_prop: Option<&'static str> = None;
+    let mwd = fitted_props.iter().find(|p| prop_kind(dogma, p.2).is_some_and(|k| k.1 == "prop:mwd"));
+    let ab = fitted_props.iter().find(|p| prop_kind(dogma, p.2).is_some_and(|k| k.1 == "prop:ab"));
+    let mut used: Vec<TypeId> = Vec::new();
+    if let (Some(m), Some(a)) = (mwd, ab) {
+        if let Some(x) = fit.module_mut(a.0, a.1) {
+            x.state = State::Online;
+        }
+        alt = Some((vec![RefitOp::SetState { slot: m.0, index: m.1, state: State::Online }, RefitOp::SetState { slot: a.0, index: a.1, state: State::Active }], "Afterburner", "prop:ab"));
+        base_prop = Some("Microwarpdrive");
+    } else if let Some(&(_, _, own)) = fitted_props.first() {
+        let own_kind = prop_kind(dogma, own);
+        if let Some(spare) = spares.iter().copied().find(|t| dogma.type_(*t).is_some_and(|d| d.group == PROPULSION_GROUP) && prop_kind(dogma, *t).is_some() && prop_kind(dogma, *t) != own_kind) {
+            let (name, key) = prop_kind(dogma, spare).expect("checked");
+            alt = Some((vec![RefitOp::ReplaceWhere { matches: ModulePredicate { group: Some(PROPULSION_GROUP), ..Default::default() }, with: spare }], name, key));
+            base_prop = own_kind.map(|k| k.0);
+            used.push(spare);
+        }
     }
-    let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
-    fit.variations.push(Variation {
-        id,
-        name: "Afterburner".into(),
-        kind: VariationKind::Refit,
-        refit_key: Some("prop:ab".into()),
-        ops: vec![RefitOp::SetState { slot: mwd.0, index: mwd.1, state: State::Online }, RefitOp::SetState { slot: ab.0, index: ab.1, state: State::Active }],
-    });
-    true
+    // Fitting modules carried to make room: each may take the place of a fitted power
+    // diagnostic system, one more at a time, never a tank or damage module.
+    let support: Vec<(TypeId, u32)> = fit.cargo.iter().filter(|c| is_fitting_module(dogma, c.type_id)).map(|c| (c.type_id, c.quantity)).collect();
+    let push = |fit: &mut Fit, name: &str, key: String, group: Option<&str>, ops: Vec<RefitOp>| -> bool {
+        let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
+        let touched: Vec<(Slot, u8)> = ops.iter().filter_map(|o| match o {
+            RefitOp::Replace { slot, index, .. } | RefitOp::SetState { slot, index, .. } | RefitOp::SetCharge { slot, index, .. } => Some((*slot, *index)),
+            _ => None,
+        }).collect();
+        let diagnostics: Vec<(Slot, u8)> = fit.modules.iter().filter(|m| !touched.contains(&(m.slot, m.index)) && dogma.type_(m.type_id).is_some_and(|t| t.name.starts_with("Power Diagnostic System"))).map(|m| (m.slot, m.index)).collect();
+        // Smartbombs a pilot can offline for the room: utility, not what the fit flies for.
+        let smartbombs: Vec<(Slot, u8)> = fit.modules.iter().filter(|m| !touched.contains(&(m.slot, m.index)) && m.state != State::Offline && dogma.type_(m.type_id).is_some_and(|t| t.name.contains("Smartbomb"))).map(|m| (m.slot, m.index)).collect();
+        let offline = |k: usize| smartbombs[..k].iter().map(|(s, i)| RefitOp::SetState { slot: *s, index: *i, state: State::Offline }).collect::<Vec<_>>();
+        let mut fitting: Vec<Vec<RefitOp>> = vec![Vec::new()];
+        for (t, n) in &support {
+            if dogma.type_(*t).is_some_and(|d| d.name.starts_with("Power Diagnostic System")) {
+                continue;
+            }
+            for k in 1..=(*n as usize).min(diagnostics.len()) {
+                fitting.push(diagnostics[..k].iter().map(|(s, i)| RefitOp::Replace { slot: *s, index: *i, with: Some(*t) }).collect());
+            }
+        }
+        // Fewest changes first: the carried fitting modules, then smartbombs offline with them.
+        let mut attempts: Vec<Vec<RefitOp>> = Vec::new();
+        for k in 0..=smartbombs.len() {
+            for f in &fitting {
+                attempts.push(ops.iter().cloned().chain(f.iter().cloned()).chain(offline(k)).collect());
+            }
+        }
+        for attempt in attempts {
+            fit.variations.push(Variation { id, name: name.to_owned(), kind: VariationKind::Refit, refit_key: Some(key.clone()), ops: attempt, group: group.map(str::to_owned) });
+            if variation_fits(dogma, fit, id) {
+                return true;
+            }
+            fit.variations.pop();
+        }
+        false
+    };
+    let alt_ok = match &alt {
+        Some((ops, name, key)) => {
+            let ok = push(fit, name, (*key).to_owned(), Some(name), ops.clone());
+            if !ok {
+                out.unfit.push((*name).to_owned());
+            }
+            ok
+        }
+        None => false,
+    };
+    if alt_ok && fit.base_name.is_none() {
+        fit.base_name = base_prop.map(str::to_owned);
+    }
+    // The ewar kinds the cargo offers, each with the fitted modules it could replace.
+    let fitted: Vec<(Slot, u8, &'static str)> = fit.modules.iter().filter_map(|m| ewar_class(dogma, m.type_id).map(|c| (m.slot, m.index, c))).collect();
+    let mut kinds: Vec<(TypeId, &'static str, Vec<Vec<RefitOp>>)> = Vec::new();
+    for &t in &spares {
+        let Some(class) = ewar_class(dogma, t) else { continue };
+        if kinds.iter().any(|(_, c, _)| *c == class) || fitted.iter().any(|(_, _, c)| *c == class) {
+            continue;
+        }
+        let slot = dogma.slot_of(t);
+        let ecm = class.starts_with("ecm:");
+        let places: Vec<(Slot, u8)> = fitted.iter().filter(|(s, _, c)| Some(*s) == slot && *c != class && is_tackle(c) == is_tackle(class) && (!ecm || c.starts_with("ecm:"))).map(|(s, i, _)| (*s, *i)).collect();
+        if places.is_empty() {
+            continue;
+        }
+        let script = carried_script(dogma, fit, t);
+        let op_for = |(s, i): (Slot, u8)| {
+            let mut ops = vec![RefitOp::Replace { slot: s, index: i, with: Some(t) }];
+            if script.is_some() {
+                ops.push(RefitOp::SetCharge { slot: s, index: i, charge: script });
+            }
+            ops
+        };
+        // Racial jammers swap the whole set; anything else one module, the first that fits.
+        let tries = if ecm { vec![places.iter().flat_map(|p| op_for(*p)).collect()] } else { places.iter().map(|p| op_for(*p)).collect() };
+        kinds.push((t, class, tries));
+    }
+    let base_group = if alt_ok { base_prop } else { None };
+    for (t, class, tries) in &kinds {
+        let name = ewar_name(class);
+        let mut any = false;
+        let label = |group: Option<&str>| group.map_or_else(|| name.to_owned(), |g| format!("{g} · {name}"));
+        if tries.iter().any(|ops| push(fit, name, (*class).to_owned(), base_group, ops.clone())) {
+            any = true;
+        } else {
+            out.unfit.push(label(base_group));
+        }
+        if let (true, Some((prop_ops, prop_name, prop_key))) = (alt_ok, &alt) {
+            let made = tries.iter().any(|ops| push(fit, name, format!("{prop_key}|{class}"), Some(prop_name), prop_ops.iter().cloned().chain(ops.iter().cloned()).collect()));
+            if made {
+                any = true;
+            } else {
+                out.unfit.push(label(Some(prop_name)));
+            }
+        }
+        if any {
+            used.push(*t);
+        }
+    }
+    out.left = spares.into_iter().filter(|t| !used.contains(t)).collect();
+    out
 }
 
 /// Fighters as a carrier launches them: no more squadrons than tubes, nor of a class than its
@@ -494,28 +805,81 @@ pub fn launch_fighters(dogma: &Dogma, fit: &mut Fit) {
     }
 }
 
-const WARP_SCRAMBLER_GROUP: crate::ids::GroupId = 52;
-
-/// A spare warp scrambler beside a fitted disruptor, or the other way round: a keyed variation
-/// swapping one for the other. Returns the spares it did not use.
-pub fn point_refit(dogma: &Dogma, fit: &mut Fit, spares: Vec<TypeId>) -> Vec<TypeId> {
-    let scram = |t: TypeId| dogma.type_(t).is_some_and(|d| d.name.contains("Scrambler"));
-    let in_group = |t: TypeId| dogma.type_(t).is_some_and(|d| d.group == WARP_SCRAMBLER_GROUP);
-    let mut left = Vec::new();
-    let mut made = false;
-    for t in spares {
-        let fitted = fit.modules.iter().find(|m| in_group(m.type_id) && scram(m.type_id) != scram(t)).map(|m| (m.slot, m.index));
-        match fitted {
-            Some((slot, index)) if !made && in_group(t) => {
-                let (name, key) = if scram(t) { ("Warp scrambler", "point:scram") } else { ("Warp disruptor", "point:disruptor") };
-                let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
-                fit.variations.push(Variation { id, name: name.into(), kind: VariationKind::Refit, refit_key: Some(key.into()), ops: vec![RefitOp::Replace { slot, index, with: Some(t) }] });
-                made = true;
+/// What an ewar or tackle module does, by its name: a refit swaps one kind for another.
+pub fn ewar_class(dogma: &Dogma, t: TypeId) -> Option<&'static str> {
+    let name = dogma.type_(t)?.name.as_str();
+    let has = |w: &str| name.contains(w);
+    Some(match () {
+        _ if has("Warp Scrambler") => "point:scram",
+        _ if has("Warp Disruptor") && !has("Field") && !has("Mobile") => "point:disruptor",
+        _ if has("Webifier") || has("Stasis Grappler") => "ewar:web",
+        _ if has("Sensor Dampener") => "ewar:damp",
+        _ if has("Target Painter") => "ewar:paint",
+        _ if has("Tracking Disruptor") => "ewar:td",
+        _ if has("Guidance Disruptor") => "ewar:gd",
+        _ if has("ECM") && !has("Burst") => {
+            if has("Ladar") {
+                "ecm:ladar"
+            } else if has("Magnetometric") {
+                "ecm:magnetometric"
+            } else if has("Radar") {
+                "ecm:radar"
+            } else if has("Gravimetric") {
+                "ecm:gravimetric"
+            } else {
+                "ecm:multispectral"
             }
-            _ => left.push(t),
         }
+        _ => return None,
+    })
+}
+
+fn is_tackle(class: &str) -> bool {
+    class.starts_with("point:")
+}
+
+/// A fit is no worse with the variation on: no more CPU, powergrid, calibration or slots over
+/// than the base, at all skills V.
+pub fn variation_fits(dogma: &Dogma, fit: &Fit, id: u32) -> bool {
+    use crate::warnings::WarningKind as W;
+    let over = |f: &Fit| {
+        let computed = crate::stats::compute(dogma, f, &crate::skills::SkillSet::all_v(), &Default::default());
+        crate::warnings::check(dogma, f, &computed, &[]).into_iter().filter(|w| matches!(w.kind, W::CpuOver { .. } | W::PowerOver { .. } | W::CalibrationOver { .. } | W::SlotsOver { .. } | W::TurretsOver { .. } | W::LaunchersOver { .. })).count()
+    };
+    let mut base = fit.clone();
+    base.active_variations.clear();
+    let mut on = base.clone();
+    crate::variations::activate(&mut on, id);
+    over(&crate::variations::resolve(dogma, &on)) <= over(&base)
+}
+
+/// The script a swapped-in module loads: the first carried one it takes.
+fn carried_script(dogma: &Dogma, fit: &Fit, module: TypeId) -> Option<TypeId> {
+    let scripts = crate::fleet::scripts_of(dogma, module);
+    fit.cargo.iter().map(|c| c.type_id).find(|c| scripts.contains(c))
+}
+
+/// An ewar or tackle key's name, if it is one.
+pub fn ewar_name_of(key: &str) -> Option<&'static str> {
+    (key.starts_with("ewar:") || key.starts_with("ecm:") || key.starts_with("point:")).then(|| ewar_name(key))
+}
+
+/// A variation's name for an ewar or tackle kind.
+pub fn ewar_name(class: &str) -> &'static str {
+    match class {
+        "point:scram" => "Warp scrambler",
+        "point:disruptor" => "Warp disruptor",
+        "ewar:web" => "Webifier",
+        "ewar:damp" => "Sensor dampener",
+        "ewar:paint" => "Target painter",
+        "ewar:td" => "Tracking disruptor",
+        "ewar:gd" => "Guidance disruptor",
+        "ecm:ladar" => "Ladar ECM",
+        "ecm:magnetometric" => "Magnetometric ECM",
+        "ecm:radar" => "Radar ECM",
+        "ecm:gravimetric" => "Gravimetric ECM",
+        _ => "Multispectral ECM",
     }
-    left
 }
 
 /// A refit of one fitted module for a cargo spare, named and keyed by hand.
@@ -531,13 +895,116 @@ pub fn module_refit(fit: &mut Fit, name: &str, key: Option<&str>, replace: TypeI
         vec![RefitOp::Replace { slot, index, with: Some(with) }]
     };
     let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
-    fit.variations.push(Variation { id, name: name.into(), kind: VariationKind::Refit, refit_key: key.map(str::to_owned), ops });
+    fit.variations.push(Variation { id, name: name.into(), kind: VariationKind::Refit, refit_key: key.map(str::to_owned), ops, group: None });
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_written_apart_join_the_fits_they_belong_to() {
+        let d = crate::test_support::dataset();
+        let lines: Vec<String> = [
+            "Implants for the first one",
+            "Zor's Custom Navigation Hyper-Link",
+            "[Rifter, First]",
+            "Damage Control II",
+            "Some words between",
+            "[Rifter, Second]",
+            "Gyrostabilizer II",
+            "Ammo and refits for both",
+            "Spoiler",
+            "EMP S x500",
+            "Stasis Webifier II x1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let (fits, orphans) = read(&d, "1", &lines);
+        assert!(orphans.is_empty());
+        assert_eq!(fits[0].fit.implants, vec![crate::test_support::ids::IMPLANT], "a list above a fit is that fit's");
+        assert!(fits[1].fit.implants.is_empty());
+        for f in &fits {
+            assert!(f.fit.cargo.iter().any(|c| c.type_id == crate::test_support::ids::AMMO && c.quantity == 500));
+            assert!(f.fit.cargo.iter().any(|c| c.type_id == crate::test_support::ids::WEB), "a list after fits is all of theirs");
+        }
+        let (none, orphans) = read(&d, "0", &["Refit modules".to_string(), "Spoiler".to_string(), "Warp Scrambler II x2".to_string()]);
+        assert!(none.is_empty());
+        assert_eq!(orphans[0].heading, "Refit modules", "the heading skips the forum's spoiler line");
+        let hangar: Vec<String> = ["Fleet Hangar", "A long sentence about what the fleet hangar holds, which is not a heading.", "Spoiler", "Racial Lance", "Mobile Thing II x3", "How can I upgrade my damage: Pyro II adds 2% damage", "EMP S x10"].iter().map(|s| s.to_string()).collect();
+        let (_, lists) = read(&d, "0", &hangar);
+        assert_eq!(lists.len(), 2, "{lists:?}");
+        assert_eq!((lists[0].heading.as_str(), lists[0].lines.len()), ("Fleet Hangar", 2), "a placeholder and an unknown item stay in the list");
+    }
+
+    #[test]
+    fn racial_isotopes_are_the_hulls_own_and_fuel_stays_in_the_cargo() {
+        let d = crate::test_support::dataset();
+        let ids = crate::test_support::ids::ISOTOPES;
+        let mut fit = Fit::new(crate::test_support::ids::SHIP, "Jumper");
+        let list = Loose { heading: "Fuel".into(), lines: vec!["Racial Isotopes x150,000".into()] };
+        assert!(add_items(&d, &mut fit, &list).is_empty());
+        assert_eq!((fit.cargo[0].type_id, fit.cargo[0].quantity), (ids, 150_000));
+        let eft = crate::formats::eft::import(&d, "[Rifter, Fuel]\nHelium Isotopes x500\n").unwrap();
+        assert!(eft.unknown.is_empty());
+        assert_eq!((eft.fit.cargo[0].type_id, eft.fit.cargo[0].quantity), (ids, 500));
+    }
+
+    #[test]
+    fn a_racial_lance_matches_the_doomsday_unless_the_titans_own_pack_has_one_and_fuel_goes_in_the_bay() {
+        use crate::test_support::ids;
+        let d = crate::test_support::dataset();
+        let mut fit = Fit::new(ids::SHIP, "Titan");
+        fit.add_module(ids::DOOMSDAY, crate::fit::Slot::High);
+        let common = Loose { heading: "Refit modules".into(), lines: vec!["Racial Lance".into(), "Racial Isotopes x100".into()] };
+        assert!(add_items(&d, &mut fit, &common).is_empty());
+        assert!(fit.cargo.iter().any(|c| c.type_id == ids::LANCE));
+        assert!(add_items(&d, &mut fit, &Loose { heading: String::new(), lines: vec!["Gyrostabilizer x2".into()] }).is_empty(), "a name without its tier reads as Tech II");
+        assert!(fit.cargo.iter().any(|c| c.type_id == ids::GYRO && c.quantity == 2));
+        fuel_to_bay(&d, &mut fit);
+        let fuel = fit.cargo.iter().find(|c| c.type_id == ids::ISOTOPES).unwrap();
+        assert_eq!(fuel.hold, Some(ids::FUEL_BAY));
+        assert!(add_items(&d, &mut fit, &Loose { heading: "Fleet Hangar".into(), lines: vec!["Helium Isotopes x50".into()] }).is_empty());
+        assert_eq!(fit.cargo.iter().filter(|c| c.type_id == ids::ISOTOPES).map(|c| c.quantity).collect::<Vec<_>>(), vec![100], "fuel named twice counts once");
+        let before = fit.cargo.len();
+        assert!(add_items(&d, &mut fit, &Loose { heading: String::new(), lines: vec!["Racial Lance".into()] }).is_empty());
+        assert_eq!(fit.cargo.len(), before, "a lance already carried is the one meant");
+        assert_eq!(fit.cargo.iter().find(|c| c.type_id == ids::LANCE).unwrap().quantity, 1);
+    }
+
+    #[test]
+    fn a_name_the_data_lost_inside_a_rack_keeps_the_fit_going() {
+        let d = crate::test_support::dataset();
+        let lines: Vec<String> = ["[Rifter, Odd]", "Damage Control II", "Large 'Vanished' Thing", "Gyrostabilizer II", "Implants", "Zor's Custom Navigation Hyper-Link"].iter().map(|s| s.to_string()).collect();
+        let (fits, _) = read(&d, "1", &lines);
+        assert_eq!(fits[0].fit.modules.len(), 2, "the rack goes on past the lost name");
+        assert_eq!(fits[0].unknown, vec!["Large 'Vanished' Thing".to_owned()]);
+        assert_eq!(fits[0].fit.implants.len(), 1, "the implants heading ends the fit and its list joins it");
+    }
+
+    #[test]
+    fn fuel_reads_out_of_the_requirements_sentence() {
+        assert_eq!(fuel_in("All dreadnoughts should carry 100,000 of their racial isotopes along with 1500 Strontium Clathrates. Any fuel used"), vec!["Racial Isotopes x100000", "Strontium Clathrates x1500"]);
+        assert_eq!(fuel_in("Your Supercarrier should carry 150,000 Racial Isotopes along with 1,250 Heavy Water."), vec!["Racial Isotopes x150000", "Heavy Water x1250"]);
+        assert_eq!(fuel_in("All Carriers should carry 120K Isotopes."), vec!["Racial Isotopes x120000"]);
+        assert!(fuel_in("Any fuel used on capital ops is reimbursable").is_empty());
+        let d = crate::test_support::dataset();
+        let lines: Vec<String> = ["Fuel Requirements", "Carry 1,000 Racial Isotopes please.", "[Rifter, A]", "Damage Control II"].iter().map(|s| s.to_string()).collect();
+        let (fits, orphans) = read(&d, "1", &lines);
+        assert!(fits[0].fit.cargo.is_empty(), "fuel is the page's, not the next fit's");
+        assert_eq!(orphans, vec![Loose { heading: FUEL.into(), lines: vec!["Racial Isotopes x1000".into()] }]);
+    }
+
+    #[test]
+    fn counts_read_with_thousands_commas() {
+        assert_eq!(count_of("Racial Isotopes x150,000"), Some(150_000));
+        assert_eq!(count_of("Warrior II x5"), Some(5));
+        assert_eq!(count_of("Warrior II"), None);
+        assert_eq!(item_name("Heavy Water x1,250"), "Heavy Water");
+        assert_eq!(item_name("Dual Light Beam Laser II, Aurora S"), "Dual Light Beam Laser II");
+    }
 
     #[test]
     fn dates_read_as_the_forum_writes_them() {

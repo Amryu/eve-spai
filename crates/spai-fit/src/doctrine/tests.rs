@@ -59,47 +59,6 @@ fn a_link_carries_no_fits_of_its_own() {
 }
 
 #[test]
-fn a_prop_refit_in_the_cargo_becomes_a_keyed_variation_and_a_fleet_swaps_on_it() {
-    let d = dataset();
-    let mut fit = rifter("DPS");
-    fit.cargo.push(CargoItem { type_id: ids::AB, quantity: 1, hold: None });
-    fit.cargo.push(CargoItem { type_id: ids::WEB, quantity: 1, hold: None });
-    fit.cargo.push(CargoItem { type_id: ids::AMMO, quantity: 100, hold: None });
-    let left = forum::prop_refit(&d, &mut fit);
-    assert_eq!(left, vec![ids::WEB], "a spare with no fitted twin stays a spare; charges are no refit");
-    assert_eq!(fit.variations.len(), 1);
-    let v = &fit.variations[0];
-    assert_eq!((v.name.as_str(), v.refit_key.as_deref()), ("Afterburner", Some("prop:ab")));
-    let mut on = fit.clone();
-    crate::variations::activate(&mut on, v.id);
-    let flown = crate::variations::resolve(&d, &on);
-    assert!(flown.modules.iter().any(|m| m.type_id == ids::AB) && !flown.modules.iter().any(|m| m.type_id == ids::MWD));
-
-    let mut doctrine = supplied();
-    doctrine.fits[1].fit = Some(fit.clone());
-    assert_eq!(doctrine.refit_keys(&|_| None), vec!["prop:ab".to_owned()]);
-    let lookup = |id: &str| doctrine.fits.iter().find(|f| f.fit_id == id).and_then(|f| f.fit.clone());
-    let mut fleet = doctrine.fleet(&d, &lookup, &crate::skills::SkillSet::all_v());
-    assert_eq!(current_refit(&fleet, &lookup), None);
-    swap_refit(&mut fleet, Some("prop:ab"), &lookup);
-    assert_eq!(fleet.slots[0].variation, Some(v.id));
-    assert_eq!(fleet.slots[1].variation, None, "a fit without the key keeps its base");
-    assert_eq!(current_refit(&fleet, &lookup).as_deref(), Some("prop:ab"));
-    swap_refit(&mut fleet, None, &lookup);
-    assert_eq!(fleet.slots[0].variation, None);
-    assert_eq!(refit_label("prop:ab"), "Afterburner");
-}
-
-#[test]
-fn an_mwd_beside_a_fitted_mwd_is_a_spare_not_a_refit() {
-    let d = dataset();
-    let mut fit = rifter("DPS");
-    fit.cargo.push(CargoItem { type_id: ids::MWD, quantity: 1, hold: None });
-    assert_eq!(forum::prop_refit(&d, &mut fit), vec![ids::MWD]);
-    assert!(fit.variations.is_empty());
-}
-
-#[test]
 fn categories_sort_strategic_first_and_unknown_ones_last() {
     assert!(category_rank("Strategic") < category_rank("peacetime"));
     assert!(category_rank("Retired") < category_rank("Something else"));
@@ -108,38 +67,6 @@ fn categories_sort_strategic_first_and_unknown_ones_last() {
 #[test]
 fn hulls_take_their_role_from_their_group() {
     assert_eq!(FitRole::of_hull(&dataset(), ids::SHIP), FitRole::Line);
-}
-
-#[test]
-fn an_afterburner_beside_a_microwarpdrive_waits_online_and_a_variation_runs_it() {
-    let d = dataset();
-    let mut fit = rifter("Logi");
-    fit.add_module(ids::AB, Slot::Mid);
-    forum::prop_refit(&d, &mut fit);
-    let ab = fit.modules.iter().find(|m| m.type_id == ids::AB).unwrap();
-    assert_eq!(ab.state, crate::fit::State::Online);
-    assert_eq!(fit.variations.len(), 1);
-    assert_eq!(fit.variations[0].refit_key.as_deref(), Some("prop:ab"));
-    let mut on = fit.clone();
-    crate::variations::activate(&mut on, fit.variations[0].id);
-    let flown = crate::variations::resolve(&d, &on);
-    let state = |t| flown.modules.iter().find(|m| m.type_id == t).unwrap().state;
-    assert_eq!((state(ids::AB), state(ids::MWD)), (crate::fit::State::Active, crate::fit::State::Online));
-}
-
-#[test]
-fn a_spare_scrambler_swaps_for_the_fitted_disruptor() {
-    let d = dataset();
-    let mut fit = rifter("Tackle");
-    fit.add_module(ids::POINT, Slot::Mid);
-    let left = forum::point_refit(&d, &mut fit, vec![ids::SCRAM, ids::WEB]);
-    assert_eq!(left, vec![ids::WEB]);
-    assert_eq!(fit.variations[0].refit_key.as_deref(), Some("point:scram"));
-    let mut on = fit.clone();
-    crate::variations::activate(&mut on, fit.variations[0].id);
-    let flown = crate::variations::resolve(&d, &on);
-    assert!(flown.modules.iter().any(|m| m.type_id == ids::SCRAM) && !flown.modules.iter().any(|m| m.type_id == ids::POINT));
-    assert_eq!(refit_label("point:scram"), "Warp scrambler");
 }
 
 #[test]
@@ -167,4 +94,153 @@ fn a_fighter_stack_bigger_than_a_squadron_splits_into_full_ones() {
     fit.fighters.push(crate::fit::FighterSquad { type_id: ids::SUPPORT_FIGHTER, count: 7, active: true });
     forum::launch_fighters(&d, &mut fit);
     assert_eq!(fit.fighters.iter().map(|f| f.count).collect::<Vec<_>>(), vec![3, 3, 1]);
+}
+
+
+fn with_cargo(mut fit: Fit, types: &[crate::ids::TypeId]) -> Fit {
+    fit.cargo.extend(types.iter().map(|t| CargoItem { type_id: *t, quantity: 1, hold: None }));
+    fit
+}
+
+fn flown(d: &crate::Dogma, fit: &Fit, key: &str) -> Fit {
+    let v = fit.variations.iter().find(|v| v.refit_key.as_deref() == Some(key)).unwrap_or_else(|| panic!("no {key} in {:?}", fit.variations));
+    let mut on = fit.clone();
+    crate::variations::activate(&mut on, v.id);
+    crate::variations::resolve(d, &on)
+}
+
+#[test]
+fn a_prop_refit_in_the_cargo_makes_a_category_and_a_fleet_swaps_on_it() {
+    let d = dataset();
+    let mut fit = with_cargo(rifter("DPS"), &[ids::AB, ids::WEB, ids::AMMO]);
+    let made = forum::refits(&d, &mut fit);
+    assert_eq!(made.left, vec![ids::WEB], "a spare with nothing of another kind to replace stays a spare; charges are no refit");
+    assert_eq!(fit.variations.len(), 1);
+    let v = &fit.variations[0];
+    assert_eq!((v.name.as_str(), v.refit_key.as_deref(), v.group.as_deref()), ("Afterburner", Some("prop:ab"), Some("Afterburner")));
+    assert_eq!(fit.base_name.as_deref(), Some("Microwarpdrive"), "the base is its propulsion's category");
+    let ab = flown(&d, &fit, "prop:ab");
+    assert!(ab.modules.iter().any(|m| m.type_id == ids::AB) && !ab.modules.iter().any(|m| m.type_id == ids::MWD));
+
+    let mut doctrine = supplied();
+    doctrine.fits[1].fit = Some(fit.clone());
+    assert_eq!(doctrine.refit_keys(&|_| None), vec!["prop:ab".to_owned()]);
+    let lookup = |id: &str| doctrine.fits.iter().find(|f| f.fit_id == id).and_then(|f| f.fit.clone());
+    let mut fleet = doctrine.fleet(&d, &lookup, &crate::skills::SkillSet::all_v());
+    assert_eq!(current_refit(&fleet, &lookup), None);
+    swap_refit(&mut fleet, Some("prop:ab"), &lookup);
+    assert_eq!(fleet.slots[0].variation, Some(v.id));
+    assert_eq!(fleet.slots[1].variation, None, "a fit without the key keeps its base");
+    assert_eq!(current_refit(&fleet, &lookup).as_deref(), Some("prop:ab"));
+    swap_refit(&mut fleet, None, &lookup);
+    assert_eq!(fleet.slots[0].variation, None);
+    assert_eq!(refit_label("prop:ab"), "Afterburner");
+    assert_eq!(refit_label("prop:ab|ewar:damp"), "Afterburner · Sensor dampener");
+}
+
+#[test]
+fn an_mwd_beside_a_fitted_mwd_is_a_spare_not_a_refit() {
+    let d = dataset();
+    let mut fit = with_cargo(rifter("DPS"), &[ids::MWD]);
+    assert_eq!(forum::refits(&d, &mut fit).left, vec![ids::MWD]);
+    assert!(fit.variations.is_empty() && fit.base_name.is_none());
+}
+
+#[test]
+fn an_afterburner_beside_a_microwarpdrive_waits_online_and_a_variation_runs_it() {
+    let d = dataset();
+    let mut fit = rifter("Logi");
+    fit.add_module(ids::AB, Slot::Mid);
+    forum::refits(&d, &mut fit);
+    assert_eq!(fit.modules.iter().find(|m| m.type_id == ids::AB).unwrap().state, crate::fit::State::Online);
+    let ab = flown(&d, &fit, "prop:ab");
+    let state = |t| ab.modules.iter().find(|m| m.type_id == t).unwrap().state;
+    assert_eq!((state(ids::AB), state(ids::MWD)), (crate::fit::State::Active, crate::fit::State::Online));
+}
+
+#[test]
+fn a_spare_scrambler_swaps_for_the_fitted_disruptor_and_nothing_else() {
+    let d = dataset();
+    let mut fit = rifter("Tackle");
+    fit.add_module(ids::POINT, Slot::Mid);
+    fit.add_module(ids::WEB, Slot::Mid);
+    let mut fit = with_cargo(fit, &[ids::SCRAM, ids::GYRO]);
+    let made = forum::refits(&d, &mut fit);
+    assert_eq!((made.left, made.unfit), (vec![ids::GYRO], vec![]));
+    let v = &fit.variations[0];
+    assert_eq!((v.refit_key.as_deref(), v.group.as_deref()), (Some("point:scram"), None), "no propulsion refit, no categories");
+    let scram = flown(&d, &fit, "point:scram");
+    assert!(scram.modules.iter().any(|m| m.type_id == ids::SCRAM) && !scram.modules.iter().any(|m| m.type_id == ids::POINT));
+    assert!(scram.modules.iter().any(|m| m.type_id == ids::WEB), "the web stays: a scram replaces a point only");
+}
+
+#[test]
+fn an_ewar_spare_replaces_another_kind_and_is_left_out_where_it_does_not_fit() {
+    let d = dataset();
+    let mut fit = rifter("Support");
+    fit.add_module(ids::SCRAM, Slot::Mid);
+    fit.add_module(ids::DAMP, Slot::Mid);
+    let mut fit = with_cargo(fit, &[ids::WEB]);
+    let made = forum::refits(&d, &mut fit);
+    assert!(made.left.is_empty() && made.unfit.is_empty(), "{made:?}");
+    let web = flown(&d, &fit, "ewar:web");
+    assert!(web.modules.iter().any(|m| m.type_id == ids::WEB) && !web.modules.iter().any(|m| m.type_id == ids::DAMP), "the damp makes room, not the scram");
+    assert!(web.modules.iter().any(|m| m.type_id == ids::SCRAM));
+
+    let mut light = rifter("Support");
+    light.add_module(ids::WEB, Slot::Mid);
+    let mut light = with_cargo(light, &[ids::DAMP]);
+    let made = forum::refits(&d, &mut light);
+    assert_eq!((made.left, made.unfit), (vec![ids::DAMP], vec!["Sensor dampener".to_owned()]), "a refit over CPU is left out");
+    assert!(light.variations.is_empty());
+}
+
+#[test]
+fn ewar_refits_sit_under_each_propulsion_and_fit_where_that_propulsion_leaves_room() {
+    let d = dataset();
+    // CPU 130: gyro 30 and the microwarpdrive 25 leave no room for an 80 damp; the afterburner's 20 does.
+    let mut fit = rifter("Support");
+    fit.add_module(ids::WEB, Slot::Mid);
+    let mut fit = with_cargo(fit, &[ids::AB, ids::DAMP_LIGHT]);
+    let made = forum::refits(&d, &mut fit);
+    assert_eq!(made.unfit, vec!["Microwarpdrive · Sensor dampener".to_owned()]);
+    assert!(made.left.is_empty(), "the damp made a variation under one of them");
+    let keys: Vec<(Option<&str>, Option<&str>)> = fit.variations.iter().map(|v| (v.group.as_deref(), v.refit_key.as_deref())).collect();
+    assert_eq!(keys, vec![(Some("Afterburner"), Some("prop:ab")), (Some("Afterburner"), Some("prop:ab|ewar:damp"))]);
+    let both = flown(&d, &fit, "prop:ab|ewar:damp");
+    assert!(both.modules.iter().any(|m| m.type_id == ids::AB) && both.modules.iter().any(|m| m.type_id == ids::DAMP_LIGHT) && !both.modules.iter().any(|m| m.type_id == ids::WEB));
+}
+#[test]
+fn a_refit_that_needs_room_takes_the_carried_fitting_modules_in_place_of_diagnostics() {
+    let d = dataset();
+    // Powergrid 40: the 45 afterburner needs a reactor control unit's 20% over a diagnostic system.
+    let mut fit = rifter("Heavy tackle");
+    fit.add_module(ids::DIAGNOSTIC, Slot::Low);
+    let mut fit = with_cargo(fit, &[ids::AB_BIG, ids::RCU]);
+    let made = forum::refits(&d, &mut fit);
+    assert!(made.unfit.is_empty(), "{made:?}");
+    let ab = flown(&d, &fit, "prop:ab");
+    assert!(ab.modules.iter().any(|m| m.type_id == ids::RCU) && !ab.modules.iter().any(|m| m.type_id == ids::DIAGNOSTIC));
+    assert!(ab.modules.iter().any(|m| m.type_id == ids::GYRO), "the damage module stays");
+
+    let mut bare = with_cargo(rifter("Heavy tackle"), &[ids::AB_BIG, ids::RCU]);
+    assert_eq!(forum::refits(&d, &mut bare).unfit, vec!["Afterburner".to_owned()], "no diagnostic to give up, no room");
+}
+#[test]
+fn a_refit_that_needs_room_offlines_smartbombs_one_at_a_time() {
+    let d = dataset();
+    // Powergrid 40, three 10 smartbombs and the 10 microwarpdrive: the 25 afterburner needs two offline.
+    let mut fit = rifter("Huginn-like");
+    fit.modules.retain(|m| m.type_id != ids::GYRO);
+    for _ in 0..3 {
+        fit.add_module(ids::SMARTBOMB, Slot::High);
+    }
+    let mut fit = with_cargo(fit, &[ids::AB_MID]);
+    let made = forum::refits(&d, &mut fit);
+    assert!(made.unfit.is_empty(), "{made:?}");
+    let ab = flown(&d, &fit, "prop:ab");
+    let off = ab.modules.iter().filter(|m| m.type_id == ids::SMARTBOMB && m.state == crate::fit::State::Offline).count();
+    assert_eq!(off, 2, "as few offline as it takes");
+    let base_off = fit.modules.iter().filter(|m| m.state == crate::fit::State::Offline).count();
+    assert_eq!(base_off, 0, "the base keeps its smartbombs online");
 }

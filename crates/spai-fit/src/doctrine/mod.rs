@@ -207,6 +207,12 @@ pub fn slot_for(dogma: &Dogma, fit_id: &str, ship: crate::ids::TypeId) -> FleetS
 
 /// A refit key's name for people: `prop:ab` reads "Afterburner".
 pub fn refit_label(key: &str) -> String {
+    if key.contains('|') {
+        return key.split('|').map(refit_label).collect::<Vec<_>>().join(" · ");
+    }
+    if let Some(n) = forum::ewar_name_of(key) {
+        return n.to_owned();
+    }
     match key {
         "prop:ab" => "Afterburner".into(),
         "prop:mwd" => "Microwarpdrive".into(),

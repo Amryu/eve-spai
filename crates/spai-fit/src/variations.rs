@@ -71,6 +71,20 @@ pub struct Variation {
     /// Shared across a doctrine: `prop:ab` on every fit's afterburner refit.
     pub refit_key: Option<String>,
     pub ops: Vec<RefitOp>,
+    /// The category it sits under beside others, such as the afterburner refit and the ewar
+    /// refits made on top of it; none for a variation that stands alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+impl Variation {
+    /// Its name with its category in front where that says more: "Afterburner · Webifier".
+    pub fn full_name(&self) -> String {
+        match &self.group {
+            Some(g) if *g != self.name => format!("{g} · {}", self.name),
+            _ => self.name.clone(),
+        }
+    }
 }
 
 /// What a variation touches, for spotting two that fight over the same thing.
@@ -325,6 +339,7 @@ mod tests {
             kind: VariationKind::Refit,
             refit_key: Some("prop:web".into()),
             ops: vec![RefitOp::ReplaceWhere { matches: ModulePredicate { effect: Some("moduleBonusMicrowarpdrive".into()), ..Default::default() }, with: ids::WEB }],
+            group: None,
         });
         assert_eq!(resolve(&d, &f), f, "nothing active, nothing changes");
         f.active_variations.push(1);
@@ -340,9 +355,9 @@ mod tests {
     fn ammo_loads_implant_sets_and_split_guns_are_variations_too() {
         let d = dataset();
         let mut f = base();
-        f.variations.push(Variation { id: 1, name: "Long range".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetChargeWhere { matches: ModulePredicate { group: Some(55), ..Default::default() }, charge: Some(ids::AMMO_LONG) }] });
-        f.variations.push(Variation { id: 2, name: "Split".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 1, charge: Some(ids::AMMO_LONG) }] });
-        f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: None, ops: vec![RefitOp::SetImplants(vec![ids::IMPLANT])] });
+        f.variations.push(Variation { id: 1, name: "Long range".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetChargeWhere { matches: ModulePredicate { group: Some(55), ..Default::default() }, charge: Some(ids::AMMO_LONG) }], group: None });
+        f.variations.push(Variation { id: 2, name: "Split".into(), kind: VariationKind::Ammo, refit_key: None, ops: vec![RefitOp::SetCharge { slot: Slot::High, index: 1, charge: Some(ids::AMMO_LONG) }], group: None });
+        f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: None, ops: vec![RefitOp::SetImplants(vec![ids::IMPLANT])], group: None });
         f.active_variations = vec![2, 3];
         let r = resolve(&d, &f);
         assert_eq!(r.module(Slot::High, 0).unwrap().charge, Some(ids::AMMO));
@@ -356,9 +371,9 @@ mod tests {
     #[test]
     fn refit_keys_switch_a_family_as_one() {
         let mut f = base();
-        f.variations.push(Variation { id: 1, name: "AB".into(), kind: VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
-        f.variations.push(Variation { id: 2, name: "MWD".into(), kind: VariationKind::Refit, refit_key: Some("prop:mwd".into()), ops: vec![] });
-        f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: Some("implants:snake".into()), ops: vec![] });
+        f.variations.push(Variation { id: 1, name: "AB".into(), kind: VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![], group: None });
+        f.variations.push(Variation { id: 2, name: "MWD".into(), kind: VariationKind::Refit, refit_key: Some("prop:mwd".into()), ops: vec![], group: None });
+        f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: Some("implants:snake".into()), ops: vec![], group: None });
         f.active_variations = vec![3, 2];
         assert!(apply_refit_key(&mut f, "prop:ab"));
         assert_eq!(f.active_variations, vec![3, 1]);
@@ -371,7 +386,7 @@ mod tests {
     #[test]
     fn one_variation_of_each_kind_is_on_at_a_time() {
         let mut f = base();
-        let v = |id, kind, key: Option<&str>| Variation { id, name: format!("v{id}"), kind, refit_key: key.map(str::to_owned), ops: vec![] };
+        let v = |id, kind, key: Option<&str>| Variation { id, name: format!("v{id}"), kind, refit_key: key.map(str::to_owned), ops: vec![], group: None };
         f.variations.push(v(1, VariationKind::Ammo, None));
         f.variations.push(v(2, VariationKind::Ammo, None));
         f.variations.push(v(3, VariationKind::Implants, None));
@@ -405,7 +420,7 @@ mod tests {
         let ops = diff(&b, &e);
         assert_eq!(ops.len(), 7, "{ops:?}");
         let mut f = b.clone();
-        f.variations.push(Variation { id: 1, name: "recorded".into(), kind: VariationKind::Custom, refit_key: None, ops });
+        f.variations.push(Variation { id: 1, name: "recorded".into(), kind: VariationKind::Custom, refit_key: None, ops, group: None });
         f.active_variations.push(1);
         let r = resolve(&d, &f);
         assert_eq!(r.modules.len(), e.modules.len());
@@ -421,7 +436,7 @@ mod tests {
     fn replacing_keeps_a_charge_that_still_fits() {
         let d = dataset();
         let mut f = base();
-        f.variations.push(Variation { id: 1, name: "bigger guns".into(), kind: VariationKind::Refit, refit_key: None, ops: vec![RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::HEAVY) }, RefitOp::Replace { slot: Slot::High, index: 1, with: None }] });
+        f.variations.push(Variation { id: 1, name: "bigger guns".into(), kind: VariationKind::Refit, refit_key: None, ops: vec![RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::HEAVY) }, RefitOp::Replace { slot: Slot::High, index: 1, with: None }], group: None });
         f.active_variations.push(1);
         let r = resolve(&d, &f);
         assert_eq!(r.module(Slot::High, 0).map(|m| (m.type_id, m.charge)), Some((ids::HEAVY, Some(ids::AMMO))));

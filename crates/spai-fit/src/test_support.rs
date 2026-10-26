@@ -77,6 +77,16 @@ pub mod ids {
     pub const HARDENER: TypeId = 11269;
     pub const MWD: TypeId = 434;
     pub const AB: TypeId = 438;
+    pub const DAMP: TypeId = 1968;
+    pub const DAMP_LIGHT: TypeId = 5299;
+    pub const DIAGNOSTIC: TypeId = 1541;
+    pub const RCU: TypeId = 11640;
+    pub const AB_BIG: TypeId = 12066;
+    pub const AB_MID: TypeId = 12058;
+    pub const RCU_BONUS: AttrId = 9004;
+    pub const ISOTOPES: TypeId = 16274;
+    pub const JUMP_FUEL: AttrId = 866;
+    pub const FUEL_BAY: AttrId = 1549;
     pub const IMPLANT: TypeId = 10226;
     pub const BOOSTER: TypeId = 28672;
     /// A wormhole weather beacon in the synthetic data.
@@ -201,6 +211,8 @@ pub fn dataset() -> Dogma {
                 (attr::MAX_LOCKED_TARGETS, 4.0),
                 (attr::SCAN_LADAR_STRENGTH, 9.0),
                 (attr::DRONE_BANDWIDTH, 15.0),
+                (JUMP_FUEL, 16274.0),
+                (FUEL_BAY, 1000.0),
                 (attr::DRONE_CAPACITY, 25.0),
             ],
             &[101, 102],
@@ -260,6 +272,13 @@ pub fn dataset() -> Dogma {
             &[],
         ),
         type_def(AB, "1MN Afterburner II", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::SPEED_BOOST_FACTOR, 500_000.0), (attr::CPU, 20.0), (attr::POWER, 1.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
+        type_def(DAMP_LIGHT, "Phased Muon Scoped Sensor Dampener", 208, 7, &[(attr::CPU, 80.0), (attr::POWER, 1.0)], &[323, 330], &[]),
+        type_def(DIAGNOSTIC, "Power Diagnostic System II", 766, 7, &[(attr::CPU, 1.0)], &[322, 330], &[]),
+        type_def(RCU, "Reactor Control Unit II", 339, 7, &[(attr::CPU, 1.0), (RCU_BONUS, 20.0)], &[6303, 322, 330], &[]),
+        type_def(AB_BIG, "10MN Afterburner II", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::CPU, 20.0), (attr::POWER, 45.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
+        type_def(ISOTOPES, "Helium Isotopes", crate::ids::group::ICE_PRODUCT, 4, &[(attr::VOLUME, 0.03)], &[], &[]),
+        type_def(AB_MID, "1MN Monopropellant Enduring Afterburner", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::CPU, 20.0), (attr::POWER, 25.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
+        type_def(DAMP, "Remote Sensor Dampener II", 208, 7, &[(attr::CPU, 200.0), (attr::POWER, 1.0)], &[323, 330], &[]),
         type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0), (attr::IMPLANTNESS, 6.0)], &[308], &[]),
         type_def(GENERATOR, "Amarr Phenomena Generator", 1815, 7, &[(attr::WARFARE_BUFF_1_ID, 12.0), (attr::WARFARE_BUFF_1_VALUE, 15.0), (attr::CPU, 100.0)], &[9002], &[]),
         type_def(BEACON, "Pulsar Effect Beacon Class 1", crate::ids::group::EFFECT_BEACON, 2, &[(BEACON_SPEED, 10.0)], &[9001], &[]),
@@ -325,6 +344,7 @@ pub fn dataset() -> Dogma {
         effect(305, "overloadSelfHardening", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::ARMOR_EM_RESONANCE, attr::OVERLOAD_HARDENING_BONUS, Op::PostPercent)]),
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(306, "moduleBonusMicrowarpdrive", EffectCategory::Active, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(6301, "moduleBonusAfterburner", EffectCategory::Active, vec![]) },
+        effect(6303, "reactorControlUnit", EffectCategory::Online, vec![modifier(Domain::Ship, Func::Item, attr::POWER_OUTPUT, RCU_BONUS, Op::PostPercent)]),
         effect(307, "overloadSelfSpeedBonus", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::SPEED_FACTOR, attr::OVERLOAD_SPEED_FACTOR_BONUS, Op::PostPercent)]),
         effect(308, "implantVelocity", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, attr::MAX_VELOCITY, Op::PostPercent)]),
         effect(309, "boosterArmorRep", EffectCategory::Passive, vec![Modifier { group: Some(62), ..modifier(Domain::Ship, Func::LocationGroup, attr::ARMOR_DAMAGE_AMOUNT, attr::ARMOR_DAMAGE_AMOUNT, Op::PostPercent) }]),
@@ -412,6 +432,8 @@ pub fn dataset() -> Dogma {
         attr_def(FIGHTER_WEB_RANGE, "fighterAbilityStasisWebifierOptimalRange", true, true, 0.0),
         attr_def(FIGHTER_WEB_DURATION, "fighterAbilityStasisWebifierDuration", true, true, 0.0),
         attr_def(SQUADRON_MAX, "fighterSquadronMaxSize", true, true, 0.0),
+        attr_def(JUMP_FUEL, "jumpDriveConsumptionType", true, true, 0.0),
+        attr_def(FUEL_BAY, "specialFuelBayCapacity", true, true, 0.0),
         attr_def(REP_SPOOL_MAX, "repairMultiplierBonusMax", true, true, 0.0),
         attr_def(REP_SPOOL_STEP, "repairMultiplierBonusPerCycle", true, true, 0.0),
         attr_def(CRIT_CHANCE, "miningCritChance", true, true, 0.0),

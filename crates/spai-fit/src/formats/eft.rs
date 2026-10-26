@@ -153,6 +153,8 @@ pub fn import(dogma: &Dogma, text: &str) -> Option<Imported> {
                     m.charge = charge.flatten();
                 }
             }
+            // Fuel and the like travel in the cargo; nothing else of theirs fits a ship.
+            Place::Other if line.counted => out.fit.cargo.push(CargoItem { type_id: t.id, quantity: line.quantity.max(1), hold: None }),
             Place::Other | Place::Ship => out.unknown.push(line.name.to_owned()),
             _ => {
                 add_item(dogma, &mut out.fit, t.id, line.quantity);

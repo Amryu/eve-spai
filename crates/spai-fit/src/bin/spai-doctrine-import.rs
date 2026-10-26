@@ -190,12 +190,25 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
     let utility_page = category == "Utility" || name.to_lowercase().contains("entosis");
     let mut found: Vec<forum::Found> = Vec::new();
     let mut updated: Option<i64> = None;
+    // Lists in the posts before the first fit are what every fit of the page carries.
+    let mut common: Vec<forum::Loose> = Vec::new();
     for post in page.posts.iter().filter(|p| p.author == op) {
-        let fits = forum::fits_in(dogma, &post.id, &post.lines);
+        let (fits, orphans) = forum::read(dogma, &post.id, &post.lines);
+        if found.is_empty() && fits.is_empty() {
+            common.extend(orphans);
+        } else {
+            common.extend(orphans.into_iter().filter(|l| l.heading == forum::FUEL));
+        }
         if !fits.is_empty() {
             updated = updated.max(post.changed());
         }
         found.extend(fits);
+    }
+    for f in &mut found {
+        for list in &common {
+            let unknown = forum::add_items(dogma, &mut f.fit, list);
+            f.unknown.extend(unknown);
+        }
     }
     if found.is_empty() {
         return None;
@@ -237,10 +250,14 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
             eprintln!("   - utility  {hull}: {} (lives in its own doctrine)", fit.name);
             continue;
         }
+        forum::fuel_to_bay(dogma, &mut fit);
         forum::launch_drones(dogma, &mut fit);
         forum::launch_fighters(dogma, &mut fit);
-        let left = forum::prop_refit(dogma, &mut fit);
-        let left = forum::point_refit(dogma, &mut fit, left);
+        let made = forum::refits(dogma, &mut fit);
+        let left = made.left;
+        for name in made.unfit {
+            eprintln!("   ! {} on {}: the refit would not fit", name, fit.name);
+        }
         let refits: Vec<&Refit> = pc.refits.iter().filter(|r| names(dogma, &fit, &r.fit)).collect();
         for r in refits {
             let (Some(a), Some(b)) = (dogma.type_named(&r.replace), dogma.type_named(&r.with)) else {
@@ -287,7 +304,7 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
         }
         let ops = spai_fit::variations::diff(dst, &src);
         let id = dst.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
-        dst.variations.push(spai_fit::variations::Variation { id, name: f.name.clone(), kind: spai_fit::variations::VariationKind::Refit, refit_key: f.key.clone(), ops });
+        dst.variations.push(spai_fit::variations::Variation { id, name: f.name.clone(), kind: spai_fit::variations::VariationKind::Refit, refit_key: f.key.clone(), ops, group: None });
         eprintln!("   ~ folded {} into {} as {}", src.name, dst.name, f.name);
     }
     Some(doctrine)
