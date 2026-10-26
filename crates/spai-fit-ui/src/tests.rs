@@ -1284,6 +1284,55 @@ fn a_group_limit_puts_the_extra_module_offline_and_spares_the_one_just_set() {
 }
 
 #[test]
+fn a_group_limit_holds_through_a_variation_and_leaves_the_base_alone() {
+    use spai_fit::variations::{RefitOp, Variation};
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let d = Arc::new(d.finish());
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(d.clone()));
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::AddModule, 1, |f| {
+        f.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 0).with_state(State::Active));
+        f.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 1).with_state(State::Online));
+        f.variations.push(Variation { id: 7, name: "Both".into(), ops: vec![RefitOp::SetState { slot: Slot::Mid, index: 1, state: State::Active }], ..Default::default() });
+    });
+    let states = |f: &spai_fit::fit::Fit| (0..2).map(|i| f.module(Slot::Mid, i).unwrap().state).collect::<Vec<_>>();
+    s.computed();
+    assert_eq!(states(&s.session().unwrap().fit), vec![State::Active, State::Online], "within the limit as saved");
+    s.edit(EditKind::Variation, 2, |f| spai_fit::variations::activate(f, 7));
+    s.computed();
+    let fit = s.session().unwrap().fit.clone();
+    assert_eq!(states(&spai_fit::variations::resolve(&d, &fit)), vec![State::Active, State::Offline], "the variation's second running one yields");
+    assert_eq!(states(&fit), vec![State::Active, State::Online], "the base fit is not what changed");
+    assert!(s.session().unwrap().warnings.iter().all(|w| !matches!(w.kind, spai_fit::warnings::WarningKind::GroupLimit { .. })), "{:?}", s.session().unwrap().warnings);
+    s.edit(EditKind::Variation, 3, |f| f.active_variations.clear());
+    s.computed();
+    assert_eq!(states(&s.session().unwrap().fit), vec![State::Active, State::Online]);
+}
+
+#[test]
+fn a_fleet_page_switching_one_more_on_than_the_limit_allows_puts_another_off() {
+    use crate::fleet_ships::page_states_after;
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let d = d.finish();
+    let mut base = spai_fit::fit::Fit::new(ids::SHIP, "base");
+    base.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 0).with_state(State::Active));
+    base.modules.push(spai_fit::fit::Module::new(ids::HARDENER, Slot::Mid, 1).with_state(State::Online));
+    base.modules.push(spai_fit::fit::Module::new(ids::GUN, Slot::High, 0).with_state(State::Active));
+    let now = base.clone();
+    assert_eq!(page_states_after(&d, &base, &now, (Slot::High, 0, State::Offline)), vec![(Slot::High, 0, State::Offline)], "an unrelated switch changes that one alone");
+    let after = page_states_after(&d, &base, &now, (Slot::Mid, 1, State::Active));
+    assert_eq!(after, vec![(Slot::Mid, 0, State::Offline), (Slot::Mid, 1, State::Active)], "the one just switched on runs, the other yields");
+    let mut now = base.clone();
+    for (sl, i, st) in &after {
+        now.module_mut(*sl, *i).unwrap().state = *st;
+    }
+    assert_eq!(page_states_after(&d, &base, &now, (Slot::Mid, 1, State::Online)), vec![(Slot::Mid, 0, State::Offline)], "switching it back down leaves the rest as set");
+}
+
+#[test]
 fn fit_tabs_fill_the_bar_and_the_one_on_screen_is_always_on_it() {
     use crate::editor::tabs_that_fit;
     let w = [100.0, 100.0, 100.0, 100.0, 100.0];
@@ -1718,6 +1767,3 @@ fn a_subsystem_lists_the_slots_it_gives() {
     assert_eq!(crate::picker::slots_given(&d, ids::SUBSYSTEM), [2.0, 0.0, 0.0]);
     assert_eq!(crate::picker::slots_given(&d, ids::GUN), [0.0; 3], "a module gives none");
 }
-
-
-

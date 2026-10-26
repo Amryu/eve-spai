@@ -200,7 +200,7 @@ impl Session {
         Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None }
     }
 
-    fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside) {
+    fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside, into_variation: bool) {
         let key = outside.key(&self.fit);
         if self.computed_for == Some((self.rev, profile, key)) {
             return;
@@ -212,7 +212,7 @@ impl Session {
             let computed = spai_fit::stats::compute_with(&calc, &resolved);
             // One more of a group than it may online or run goes offline, as the game refuses
             // it, and the numbers are figured again without it.
-            if spai_fit::calc::yield_to_limits(dogma, &mut self.fit, &resolved, &computed.capped, keep.take()) {
+            if self.yield_to_limits(dogma, &computed.capped, keep.take(), into_variation) {
                 self.rev += 1;
                 continue;
             }
@@ -225,6 +225,26 @@ impl Session {
         self.module_stats = spai_fit::stats::module_stats(&calc, &computed);
         self.computed = Some(Arc::new(computed));
         self.computed_for = Some((self.rev, profile, key));
+    }
+
+    /// Puts what a group limit holds back offline. With a variation on, the change goes through
+    /// the last one switched on, as every edit does while it shows: the base fit may hold the
+    /// module offline already, with the variation switching it on.
+    fn yield_to_limits(&mut self, dogma: &Dogma, capped: &[spai_fit::calc::Capped], keep: Option<(spai_fit::fit::Slot, u8)>, into_variation: bool) -> bool {
+        let shown = spai_fit::variations::resolve(dogma, &self.fit);
+        match self.fit.active_variations.last().copied().filter(|_| into_variation) {
+            Some(target) => {
+                let mut edited = shown.clone();
+                if !spai_fit::calc::yield_to_limits(dogma, &mut edited, &shown, capped, keep) {
+                    return false;
+                }
+                let next = spai_fit::variations::edit_through(dogma, &self.fit, target, &shown, edited);
+                let changed = next != self.fit;
+                self.fit = next;
+                changed
+            }
+            None => spai_fit::calc::yield_to_limits(dogma, &mut self.fit, &shown, capped, keep),
+        }
     }
 }
 
@@ -1202,8 +1222,10 @@ impl SimUi {
         let profile = self.profile;
         let skills = self.skills().clone();
         let outside = self.outside();
+        // A recording goes on in the tab on screen alone.
+        let into_variation = self.recording.is_none() || self.session().is_some_and(|a| a.id != id);
         let s = self.sessions.iter_mut().find(|s| s.id == id)?;
-        s.refresh(&dogma, profile, &skills, &outside);
+        s.refresh(&dogma, profile, &skills, &outside, into_variation);
         s.computed.clone()
     }
 
@@ -1412,8 +1434,9 @@ impl SimUi {
         let profile = self.profile;
         let skills = self.skills().clone();
         let outside = self.outside();
+        let into_variation = self.recording.is_none();
         let s = self.session_mut()?;
-        s.refresh(&dogma, profile, &skills, &outside);
+        s.refresh(&dogma, profile, &skills, &outside, into_variation);
         s.computed.clone()
     }
 

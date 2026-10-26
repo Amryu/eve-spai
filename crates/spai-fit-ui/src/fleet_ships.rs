@@ -1064,15 +1064,32 @@ fn modules_window(ctx: &egui::Context, dogma: &Dogma, st: &mut ShipsState, key: 
     if reset {
         list.clear();
     }
-    if let Some((slot, index, state)) = set {
-        list.retain(|(s, i, _)| !(*s == slot && *i == index));
-        if base.module(slot, index).is_some_and(|b| b.state != state) {
-            list.push((slot, index, state));
-        }
+    if let Some(set) = set {
+        *list = page_states_after(dogma, base, now, set);
     }
     if !open {
         st.modules_open = None;
     }
+}
+
+/// This page's module states once one is set: the differences from the fit, the one just set
+/// among them, and whatever a group limit then holds back offline, as the game would.
+pub(crate) fn page_states_after(dogma: &Dogma, base: &Fit, now: &Fit, (slot, index, state): (Slot, u8, State)) -> Vec<(Slot, u8, State)> {
+    let mut next = now.clone();
+    if let Some(m) = next.module_mut(slot, index) {
+        m.state = state;
+    }
+    let mut keep = Some((slot, index));
+    for _ in 0..4 {
+        let shown = next.clone();
+        let calc = spai_fit::calc::Calc::new(dogma, &shown, &spai_fit::skills::SkillSet::all_v(), &spai_fit::calc::Env::default());
+        if !spai_fit::calc::yield_to_limits(dogma, &mut next, &shown, calc.capped(), keep.take()) {
+            break;
+        }
+    }
+    let mut out: Vec<(Slot, u8, State)> = next.modules.iter().filter(|m| base.module(m.slot, m.index).is_some_and(|b| b.state != m.state)).map(|m| (m.slot, m.index, m.state)).collect();
+    out.sort_by_key(|(s, i, _)| (*s, *i));
+    out
 }
 
 /// A titled box of fixed width, `head` at the right of its title row.
