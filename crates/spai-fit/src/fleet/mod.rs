@@ -862,10 +862,10 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
 pub const SPLIT_GROUPS: u32 = 6;
 
 /// Hull groups by what they do in a fleet.
-const LOGI_GROUPS: [GroupId; 3] = [832, 1527, 1538];
-const COMMAND_GROUPS: [GroupId; 2] = [540, 1534];
-const TACKLE_GROUPS: [GroupId; 2] = [541, 894];
-const EWAR_GROUPS: [GroupId; 3] = [833, 906, 893];
+pub(crate) const LOGI_GROUPS: [GroupId; 3] = [832, 1527, 1538];
+pub(crate) const COMMAND_GROUPS: [GroupId; 2] = [540, 1534];
+pub(crate) const TACKLE_GROUPS: [GroupId; 2] = [541, 894];
+pub(crate) const EWAR_GROUPS: [GroupId; 3] = [833, 906, 893];
 
 /// A hull's size class, as the overview's ship symbols show it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

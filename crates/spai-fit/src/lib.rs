@@ -6,6 +6,7 @@
 pub mod bake;
 pub mod calc;
 pub mod doc;
+pub mod doctrine;
 pub mod dogma;
 pub mod fit;
 pub mod fleet;

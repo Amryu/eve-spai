@@ -76,6 +76,7 @@ pub mod ids {
     pub const GYRO: TypeId = 519;
     pub const HARDENER: TypeId = 11269;
     pub const MWD: TypeId = 434;
+    pub const AB: TypeId = 438;
     pub const IMPLANT: TypeId = 10226;
     pub const BOOSTER: TypeId = 28672;
     /// A wormhole weather beacon in the synthetic data.
@@ -258,6 +259,7 @@ pub fn dataset() -> Dogma {
             &[306, 307, 323, 330],
             &[],
         ),
+        type_def(AB, "1MN Afterburner II", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::SPEED_BOOST_FACTOR, 500_000.0), (attr::CPU, 20.0), (attr::POWER, 1.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
         type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0), (attr::IMPLANTNESS, 6.0)], &[308], &[]),
         type_def(GENERATOR, "Amarr Phenomena Generator", 1815, 7, &[(attr::WARFARE_BUFF_1_ID, 12.0), (attr::WARFARE_BUFF_1_VALUE, 15.0), (attr::CPU, 100.0)], &[9002], &[]),
         type_def(BEACON, "Pulsar Effect Beacon Class 1", crate::ids::group::EFFECT_BEACON, 2, &[(BEACON_SPEED, 10.0)], &[9001], &[]),
@@ -322,6 +324,7 @@ pub fn dataset() -> Dogma {
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(304, "armorHardener", EffectCategory::Active, vec![modifier(Domain::Ship, Func::Item, attr::ARMOR_EM_RESONANCE, attr::ARMOR_EM_RESONANCE, Op::PostPercent)]) },
         effect(305, "overloadSelfHardening", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::ARMOR_EM_RESONANCE, attr::OVERLOAD_HARDENING_BONUS, Op::PostPercent)]),
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(306, "moduleBonusMicrowarpdrive", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(6301, "moduleBonusAfterburner", EffectCategory::Active, vec![]) },
         effect(307, "overloadSelfSpeedBonus", EffectCategory::Overload, vec![modifier(Domain::Item, Func::Item, attr::SPEED_FACTOR, attr::OVERLOAD_SPEED_FACTOR_BONUS, Op::PostPercent)]),
         effect(308, "implantVelocity", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, attr::MAX_VELOCITY, Op::PostPercent)]),
         effect(309, "boosterArmorRep", EffectCategory::Passive, vec![Modifier { group: Some(62), ..modifier(Domain::Ship, Func::LocationGroup, attr::ARMOR_DAMAGE_AMOUNT, attr::ARMOR_DAMAGE_AMOUNT, Op::PostPercent) }]),
