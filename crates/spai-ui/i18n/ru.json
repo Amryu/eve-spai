@@ -2591,6 +2591,7 @@
   "The strongest of each boost applies.": "Из каждого буста действует сильнейший.",
   "The system map is still loading.": "Карта системы ещё загружается.",
   "The talk key works while the game or another X11 window has focus; in EVE Spai, hold the mic button.": "Клавиша речи работает, когда в фокусе игра или другое окно X11; в EVE Spai удерживайте кнопку микрофона.",
+  "The target has no speed to cross with: give the test target some, or add a fit as the target.": "У цели нет скорости для поперечного движения: задайте её тестовой цели или добавьте фит как цель.",
   "The target's effective hit points against this ship's damage with this charge loaded": "Эффективный запас прочности цели против урона этого корабля с этим зарядом",
   "The target's lock range or scan resolution": "Дальность захвата или разрешение сканирования цели",
   "The target's weapons, at their strongest": "Оружие цели, по самому сильному параметру",

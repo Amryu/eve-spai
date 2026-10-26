@@ -104,14 +104,18 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
 
 /// A control of the target row: a label, a slider with no value of its own, and the value in a
 /// box of fixed width beside it, so a large number never pushes the row into wrapping.
-fn control(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: impl Fn(f64) -> String, parse: impl Fn(&str) -> Option<f64>) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn control(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: impl Fn(f64) -> String, parse: impl Fn(&str) -> Option<f64>, enabled: bool) -> (bool, egui::Response) {
     const LABEL_W: f32 = 104.0;
     const VALUE_W: f32 = 96.0;
     // At most the row's width, so a narrow window shrinks the slider instead of the row
     // pushing past the edge.
     let cell = egui::vec2(330.0f32.min(ui.max_rect().width()).max(LABEL_W + VALUE_W + 60.0), 26.0);
     let mut changed = false;
-    ui.allocate_ui_with_layout(cell, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    let r = ui.allocate_ui_with_layout(cell, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        if !enabled {
+            ui.disable();
+        }
         ui.allocate_ui_with_layout(egui::vec2(LABEL_W, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_min_width(LABEL_W);
             ui.add(egui::Label::new(label).truncate().selectable(false));
@@ -128,7 +132,7 @@ fn control(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::Ran
             changed = true;
         }
     });
-    changed
+    (changed, r.response)
 }
 
 /// A number with an optional unit after it, as typed into a value box.
@@ -461,11 +465,11 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
     let metres = |v: f64| text::metres(v);
     let parse_metres = |s: &str| leading_number(s).map(|n| if s.trim().ends_with("km") { n * 1000.0 } else { n });
     let (_, x) = kind.axes();
-    let ctl = |ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: &dyn Fn(f64) -> String, parse: &dyn Fn(&str) -> Option<f64>| {
+    let ctl = |ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: &dyn Fn(f64) -> String, parse: &dyn Fn(&str) -> Option<f64>, enabled: bool| {
         if stacked {
-            control_stacked(ui, label, value, range, log, fmt, parse)
+            control_stacked(ui, label, value, range, log, fmt, parse, enabled)
         } else {
-            control(ui, label, value, range, log, fmt, parse)
+            control(ui, label, value, range, log, fmt, parse, enabled)
         }
     };
     let heading = |ui: &mut egui::Ui, title: &str, note: &str| {
@@ -482,17 +486,17 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
         let note = if kind.is_effective() { tr!("A made-up ship to test against. Fits added as targets use their own signature, speed and resistances.") } else { tr!("A made-up ship to test against. Fits added as targets use their own signature and speed.") };
         heading(ui, tr!("Test target"), note);
         if x != GraphX::TargetSignature {
-            ctl(ui, tr!("Signature"), &mut target.signature, 25.0..=2000.0, true, &|v| format!("{v:.0} m"), &leading_number);
+            ctl(ui, tr!("Signature"), &mut target.signature, 25.0..=2000.0, true, &|v| format!("{v:.0} m"), &leading_number, true);
         }
         if x != GraphX::TargetSpeed {
-            ctl(ui, tr!("Speed"), &mut target.velocity, 0.0..=5000.0, false, &|v| format!("{v:.0} m/s"), &leading_number);
+            ctl(ui, tr!("Speed"), &mut target.velocity, 0.0..=5000.0, false, &|v| format!("{v:.0} m/s"), &leading_number, true);
         }
         if kind.is_effective() {
             let names = [tr!("EM resistance"), tr!("Thermal resistance"), tr!("Kinetic resistance"), tr!("Explosive resistance")];
             if stacked {
                 for (i, name) in names.into_iter().enumerate() {
                     let mut pct = target.resist[i] * 100.0;
-                    if ctl(ui, name, &mut pct, 0.0..=100.0, false, &|v| format!("{v:.0}%"), &leading_number) {
+                    if ctl(ui, name, &mut pct, 0.0..=100.0, false, &|v| format!("{v:.0}%"), &leading_number, true).0 {
                         target.resist[i] = (pct / 100.0).clamp(0.0, 1.0);
                     }
                 }
@@ -506,7 +510,7 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
     }
     heading(ui, tr!("Engagement"), tr!("How far apart and how every attacker and target move, for all of them."));
     if x != GraphX::Distance {
-        ctl(ui, tr!("Distance"), &mut target.distance, 0.0..=250_000.0, false, &metres, &parse_metres);
+        ctl(ui, tr!("Distance"), &mut target.distance, 0.0..=250_000.0, false, &metres, &parse_metres, true);
     }
     if x != GraphX::TargetSpeed {
         if stacked {
@@ -518,12 +522,21 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
             motion_dial(ui, tr!("Target"), &mut m.target);
         });
         let shooter_v = sim.computed().map_or(0.0, |c| c.mobility.max_velocity);
-        let t = sim.graph_motion.apply(target, shooter_v);
+        // The speed the angular velocity is figured from: the test target's while it is on, else
+        // the first fit's on the target list, which the dials move the same way.
+        let fit_v = (!sim.graph_ideal).then(|| sim.graph_targets.first().cloned()).flatten().and_then(|id| sim.computed_of(&id)).map(|c| c.mobility.max_velocity as f32);
+        let moving = spai_fit::fit::TargetProfile { velocity: fit_v.unwrap_or(target.velocity), ..target.clone() };
+        let t = sim.graph_motion.apply(&moving, shooter_v);
         // The circles and this one figure are the same setting: moving it rescales the target's
         // share of speed, moving a circle moves it.
         let mut angular = (f64::from(t.transversal) / f64::from(t.distance).max(1.0)) as f32;
-        if ctl(ui, tr!("Angular velocity"), &mut angular, 0.0..=2.0, false, &|v| format!("{v:.3} rad/s"), &leading_number) {
-            sim.graph_motion.solve_target_share(target, shooter_v, f64::from(angular));
+        let can_move = moving.velocity > 0.0;
+        let (changed, r) = ctl(ui, tr!("Angular velocity"), &mut angular, 0.0..=2.0, false, &|v| format!("{v:.3} rad/s"), &leading_number, can_move);
+        if changed {
+            sim.graph_motion.solve_target_share(&moving, shooter_v, f64::from(angular));
+        }
+        if !can_move {
+            r.on_hover_text(tr!("The target has no speed to cross with: give the test target some, or add a fit as the target."));
         }
     }
     ui.allocate_ui_with_layout(egui::vec2(160.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -559,12 +572,16 @@ fn first_number(s: &str) -> Option<f64> {
 }
 
 /// A label over a slider with its value box, as wide as the column.
-fn control_stacked(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: &dyn Fn(f64) -> String, parse: &dyn Fn(&str) -> Option<f64>) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn control_stacked(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, log: bool, fmt: &dyn Fn(f64) -> String, parse: &dyn Fn(&str) -> Option<f64>, enabled: bool) -> (bool, egui::Response) {
     const VALUE_W: f32 = 84.0;
     let mut changed = false;
     ui.label(label);
     let w = ui.available_width();
-    ui.allocate_ui_with_layout(egui::vec2(w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    let r = ui.allocate_ui_with_layout(egui::vec2(w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        if !enabled {
+            ui.disable();
+        }
         ui.spacing_mut().slider_width = (w - VALUE_W - ui.spacing().item_spacing.x - 2.0).max(40.0);
         let slider = egui::Slider::new(value, range.clone()).show_value(false);
         let slider = if log { slider.logarithmic(true) } else { slider };
@@ -577,7 +594,7 @@ fn control_stacked(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::
         }
     });
     ui.add_space(4.0);
-    changed
+    (changed, r.response)
 }
 
 /// A ship's motion: the circle is its top speed, the point how much of it it

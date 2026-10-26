@@ -2591,6 +2591,7 @@
   "The strongest of each boost applies.": "每种加成取最强者生效。",
   "The system map is still loading.": "星系地图仍在加载。",
   "The talk key works while the game or another X11 window has focus; in EVE Spai, hold the mic button.": "通话键在游戏或其他 X11 窗口获得焦点时有效；在 EVE Spai 中请按住麦克风按钮。",
+  "The target has no speed to cross with: give the test target some, or add a fit as the target.": "目标没有横向移动的速度：给测试目标设置速度，或添加一个配装作为目标。",
   "The target's effective hit points against this ship's damage with this charge loaded": "目标对该舰装填此弹药时伤害的有效血量",
   "The target's lock range or scan resolution": "目标的锁定范围或扫描分辨率",
   "The target's weapons, at their strongest": "目标的武器，取最强一项",
