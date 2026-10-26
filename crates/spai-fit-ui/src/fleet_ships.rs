@@ -57,6 +57,8 @@ pub struct ShipsState {
     pub boosts_at: Option<egui::Pos2>,
     /// Module states flown on this page only, by (theirs, fleet slot).
     pub states: HashMap<(bool, usize), Vec<(Slot, u8, State)>>,
+    /// Scripts flown on this page only, the same way; none is a script taken out.
+    pub scripts: HashMap<(bool, usize), Vec<(Slot, u8, Option<TypeId>)>>,
     /// The module window open on (theirs, fleet slot).
     pub modules_open: Option<(bool, usize)>,
     /// Per ship looked at, how many of each ewar module type count where not all of them do.
@@ -440,6 +442,12 @@ fn gather(sim: &mut SimUi) -> Option<Scene> {
             slot.states = states.clone();
         }
     }
+    for ((theirs, k), scripts) in &sim.fleet_ships.scripts {
+        let f = if *theirs { enemy.as_mut() } else { Some(&mut fleet) };
+        if let Some(slot) = f.and_then(|f| f.slots.get_mut(*k)) {
+            slot.scripts = scripts.clone();
+        }
+    }
     let mine = sim.cached_stats(&fleet);
     let ammo = sim.cached_ammo(&mine);
     let theirs = enemy.as_ref().map(|e| sim.cached_stats(e));
@@ -766,7 +774,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         let toggle = std::cell::Cell::new(None);
         let modules_button = |ui: &mut egui::Ui, key: (bool, usize)| {
             let on = st.modules_open == Some(key);
-            let changed = st.states.get(&key).is_some_and(|v| !v.is_empty());
+            let changed = st.states.get(&key).is_some_and(|v| !v.is_empty()) || st.scripts.get(&key).is_some_and(|v| !v.is_empty());
             let label = format!("{} {}", egui_phosphor::regular::TOGGLE_RIGHT, if changed { tr!("Modules, changed here") } else { tr!("Modules") });
             if ui.add(egui::Button::new(label).selected(on)).on_hover_text(tr!("Switch modules on or off for this page")).clicked() {
                 toggle.set(Some(key));
@@ -1001,6 +1009,11 @@ fn page_fit(sim: &SimUi, dogma: &Dogma, (theirs, k): (bool, usize)) -> Option<(S
             m.state = *state;
         }
     }
+    for (sl, i, script) in sim.fleet_ships.scripts.get(&(theirs, k)).into_iter().flatten() {
+        if let Some(m) = now.module_mut(*sl, *i) {
+            m.charge = *script;
+        }
+    }
     Some((doc.name.clone(), base, now))
 }
 
@@ -1009,11 +1022,13 @@ fn modules_window(ctx: &egui::Context, dogma: &Dogma, st: &mut ShipsState, key: 
     use crate::editor::{gesture_state, state_icon, state_name, states_of, Gesture};
     let mut open = true;
     let mut set: Option<(Slot, u8, State)> = None;
+    let mut set_script: Option<(Slot, u8, Option<TypeId>)> = None;
     let mut reset = false;
     egui::Window::new(trf!("Modules · {name}", name = ship)).id(egui::Id::new("sim_fleet_ships_modules")).default_pos(ctx.content_rect().center() - egui::vec2(170.0, 120.0)).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
-        ui.set_min_width(320.0);
+        let scripted = now.modules.iter().any(|m| !spai_fit::fleet::scripts_of(dogma, m.type_id).is_empty());
+        ui.set_min_width(if scripted { 440.0 } else { 320.0 });
         ui.label(egui::RichText::new(tr!("This page only")).weak());
-        let mut mods: Vec<&spai_fit::fit::Module> = now.modules.iter().filter(|m| states_of(dogma, m.type_id).len() > 1).collect();
+        let mut mods: Vec<&spai_fit::fit::Module> = now.modules.iter().filter(|m| states_of(dogma, m.type_id).len() > 1 || !spai_fit::fleet::scripts_of(dogma, m.type_id).is_empty()).collect();
         mods.sort_by_key(|m| (m.slot, m.index));
         let mut rack = None;
         for m in mods {
@@ -1031,6 +1046,8 @@ fn modules_window(ctx: &egui::Context, dogma: &Dogma, st: &mut ShipsState, key: 
                 rows::heading(ui, title, None, |_| {});
             }
             let changed = base.module(m.slot, m.index).is_some_and(|b| b.state != m.state);
+            let scripts = spai_fit::fleet::scripts_of(dogma, m.type_id);
+            let script_changed = base.module(m.slot, m.index).is_some_and(|b| b.charge != m.charge);
             rows::row(ui, &format!("fleet_ship_modules/{:?}", m.slot), ("sim_fleet_ship_mod", m.slot, m.index), rows::ROW_H, false, |ui| {
                 let glyph = match m.state {
                     State::Overload => egui::RichText::new(state_icon(m.state)).color(ui.visuals().error_fg_color),
@@ -1048,18 +1065,47 @@ fn modules_window(ctx: &egui::Context, dogma: &Dogma, st: &mut ShipsState, key: 
                 crate::icons::type_icon(ui, m.type_id, 18.0);
                 let label = egui::RichText::new(name(dogma, m.type_id));
                 let label = if m.state == State::Offline { label.weak() } else if changed { label.color(ui.visuals().warn_fg_color) } else { label };
-                let w = ui.available_width();
+                let script_w = if scripts.is_empty() { 0.0 } else { 170.0 };
+                let w = (ui.available_width() - script_w).max(60.0);
                 rows::cell(ui, w, label, "");
+                if !scripts.is_empty() {
+                    use spai_ui::widgets::SteadySelect as _;
+                    let current = m.charge.map_or_else(|| tr!("No script").to_owned(), |c| name(dogma, c));
+                    let shown = egui::RichText::new(text::clip(&current, 20));
+                    let shown = if script_changed { shown.color(ui.visuals().warn_fg_color) } else { shown };
+                    egui::ComboBox::from_id_salt(("sim_fleet_ship_script", m.slot, m.index)).selected_text(shown).width(script_w - 12.0).show_ui(ui, |ui| {
+                        if ui.menu_label(m.charge.is_none(), tr!("No script")).clicked() {
+                            set_script = Some((m.slot, m.index, None));
+                        }
+                        for c in &scripts {
+                            if ui.menu_label(m.charge == Some(*c), name(dogma, *c)).clicked() {
+                                set_script = Some((m.slot, m.index, Some(*c)));
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr!("Swap the script for this page; it need not be in the cargo"));
+                }
             });
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if reset_button(ui, st.states.get(&key).is_some_and(|v| !v.is_empty()), tr!("Reset to the fit")) {
+            if reset_button(ui, st.states.get(&key).is_some_and(|v| !v.is_empty()) || st.scripts.get(&key).is_some_and(|v| !v.is_empty()), tr!("Reset to the fit")) {
                 reset = true;
             }
             ui.label(egui::RichText::new(tr!("Reset to the fit")).weak());
         });
     });
+    let scripts = st.scripts.entry(key).or_default();
+    if reset {
+        scripts.clear();
+    }
+    if let Some((slot, index, script)) = set_script {
+        scripts.retain(|(s, i, _)| (*s, *i) != (slot, index));
+        if base.module(slot, index).is_some_and(|b| b.charge != script) {
+            scripts.push((slot, index, script));
+        }
+    }
     let list = st.states.entry(key).or_default();
     if reset {
         list.clear();

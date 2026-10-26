@@ -244,7 +244,7 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let f = s.fleet.as_mut().unwrap();
     f.fleet.size = 20;
     f.fleet.range = 1000.0;
-    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() });
+    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() });
     let (mine, enemy) = s.fleet_stats_settled().unwrap();
     assert_eq!((mine.ships, mine.slots.len()), (20, 1), "the saved fit's document is already at hand");
     assert!(enemy.is_none());

@@ -698,7 +698,7 @@ fn real_data_fleet_race_with_assault_damage_controls() {
     let lib = [ferox, cane];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
+    let fleet = |n: &str| Fleet { size: 30, slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }], ..Fleet::default() };
     let (fa, fb) = (fleet("ferox"), fleet("cane"));
     let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
     let (a, b) = (sweep::Side { fleet: &fa, stats: &sa, ammo: &[] }, sweep::Side { fleet: &fb, stats: &sb, ammo: &[] });
@@ -759,7 +759,7 @@ fn real_data_fleet_analysis_timing() {
     let lib = [ferox, cane];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |n: &str| Fleet { size: 150, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (0.5, 90.0), slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
+    let fleet = |n: &str| Fleet { size: 150, formation: Formation::Flock { sigma_m: 6000.0 }, motion: (0.5, 90.0), slots: vec![FleetSlot { fit_id: n.into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }], ..Fleet::default() };
     let (fa, fb) = (fleet("ferox"), fleet("cane"));
     let t = std::time::Instant::now();
     let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));
@@ -850,7 +850,7 @@ fn real_data_logi_fleet_race() {
     let lib = [ferox, basi];
     let lookup = |n: &str| lib.iter().find(|f| f.name == n).cloned();
     let skills = |_: Option<&str>| SkillSet::all_v();
-    let fleet = |size: u32| Fleet { size, slots: vec![FleetSlot { fit_id: "ferox".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }, FleetSlot { fit_id: "basi".into(), rule: CountRule::Fixed(20), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }], ..Fleet::default() };
+    let fleet = |size: u32| Fleet { size, slots: vec![FleetSlot { fit_id: "ferox".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }, FleetSlot { fit_id: "basi".into(), rule: CountRule::Fixed(20), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }], ..Fleet::default() };
     for (na, nb) in [(170, 170), (170, 140)] {
         let (fa, fb) = (fleet(na), fleet(nb));
         let (sa, sb) = (stats(&d, &fa, &lookup, &skills), stats(&d, &fb, &lookup, &skills));

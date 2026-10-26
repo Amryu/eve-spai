@@ -517,6 +517,7 @@ pub fn dataset() -> Dogma {
         GroupDef { id: crate::ids::group::EFFECT_BEACON, name: "Effect Beacon".into(), category: 2 },
         GroupDef { id: 1815, name: "Titan Phenomena Generator".into(), category: 7 },
         GroupDef { id: 46, name: "Propulsion Module".into(), category: 7 },
+        GroupDef { id: 908, name: "Warp Disruption Script".into(), category: 8 },
         GroupDef { id: 62, name: "Armor Repair Unit".into(), category: 7 },
         GroupDef { id: 55, name: "Projectile Weapon".into(), category: 7 },
         GroupDef { id: GROUP_AMMO, name: "Projectile Ammo".into(), category: 8 },

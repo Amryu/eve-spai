@@ -7,7 +7,7 @@ fn fleet(size: u32, slots: Vec<FleetSlot>) -> Fleet {
 }
 
 fn slot(fit: &str, rule: CountRule) -> FleetSlot {
-    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }
+    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }
 }
 
 #[test]
@@ -730,4 +730,22 @@ fn an_ecm_burst_bonus_does_not_make_a_hull_a_booster() {
     let d = with("bonus to Shield Command and Mining Foreman Burst effect strength and duration");
     assert!(hull_boosts(&d, ids::SHIP, BurstKind::Shield));
     assert!(!hull_boosts(&d, ids::SHIP, BurstKind::Armor), "named for shield only");
+}
+
+#[test]
+fn a_slot_swaps_a_script_where_its_ammunition_stays() {
+    use crate::fit::{Fit, Slot};
+    let d = dataset();
+    assert_eq!(scripts_of(&d, ids::FIELD), vec![ids::FOCUSED_SCRIPT]);
+    assert!(scripts_of(&d, ids::GUN).is_empty(), "ammunition is no script");
+    let mut fit = Fit::new(ids::SHIP, "Bubbler");
+    let i = fit.add_module(ids::FIELD, Slot::High);
+    let mut s = slot("f", CountRule::Fixed(1));
+    s.scripts = vec![(Slot::High, i, Some(ids::FOCUSED_SCRIPT))];
+    assert_eq!(s.adjusted(fit.clone()).module(Slot::High, i).unwrap().charge, Some(ids::FOCUSED_SCRIPT));
+    fit.module_mut(Slot::High, i).unwrap().charge = Some(ids::FOCUSED_SCRIPT);
+    s.scripts = vec![(Slot::High, i, None)];
+    assert_eq!(s.adjusted(fit).module(Slot::High, i).unwrap().charge, None, "a script taken out");
+    let json = serde_json::to_string(&slot("f", CountRule::Fixed(1))).unwrap();
+    assert!(!json.contains("scripts"), "a slot without scripts saves as before");
 }

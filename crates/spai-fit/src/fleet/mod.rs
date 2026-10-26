@@ -48,6 +48,9 @@ pub struct FleetSlot {
     /// Module states it flies with here, by slot and index, over its fit's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<(crate::fit::Slot, u8, crate::fit::State)>,
+    /// Scripts it flies with here, by slot and index, over its fit's; none takes the script out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<(crate::fit::Slot, u8, Option<TypeId>)>,
 }
 
 /// A stack of one weapon type split in two: the first `first` modules (by slot) fire one charge,
@@ -82,6 +85,11 @@ impl FleetSlot {
                 m.state = *state;
             }
         }
+        for (slot, index, script) in &self.scripts {
+            if let Some(m) = fit.module_mut(*slot, *index) {
+                m.charge = *script;
+            }
+        }
         for (weapon, charge) in &self.charges {
             for m in fit.modules.iter_mut().filter(|m| m.type_id == *weapon) {
                 m.charge = Some(*charge);
@@ -103,7 +111,7 @@ impl FleetSlot {
 
 impl Default for FleetSlot {
     fn default() -> Self {
-        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() }
+        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }
     }
 }
 
@@ -926,6 +934,12 @@ pub fn role_rule(dogma: &Dogma, ship: TypeId) -> CountRule {
     }
 }
 
+/// The scripts a module takes, carried or not: the charges of its that are scripts, which a
+/// pilot swaps on the field where ammunition stays as fitted.
+pub fn scripts_of(dogma: &Dogma, module: crate::ids::TypeId) -> Vec<crate::ids::TypeId> {
+    dogma.compatible_charges(module).into_iter().filter(|c| dogma.type_(*c).and_then(|t| dogma.group(t.group)).is_some_and(|g| g.name.contains("Script"))).collect()
+}
+
 /// A fleet from a doctrine's presets: every fit a slot with its role's rule, the first line ship
 /// the main, and the booster fits by the bursts they carry.
 pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: &SkillSet) -> Fleet {
@@ -935,7 +949,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
         if fleet.main.is_none() && matches!(rule, CountRule::Fill { .. }) {
             fleet.main = Some(fleet.slots.len());
         }
-        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new() });
+        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() });
         let calc = Calc::new(dogma, fit, skills, &Env::default());
         for (i, it) in calc.modules() {
             if it.state < State::Active {
