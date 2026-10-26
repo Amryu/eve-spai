@@ -435,12 +435,17 @@ pub fn shortcut_skills(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<crat
 /// The booster the shortcut stands for: the kind's Tech II burst once per charge switched on, on
 /// its hull (or a hull without burst bonuses), with the mindlink if it has one, and its pilot.
 pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<(Fit, SkillSet)> {
-    use crate::fit::{Module, Slot};
     let module = b.module.or_else(|| dogma.type_named(b.kind.module_name()).map(|t| t.id))?;
+    let charges: Vec<crate::ids::TypeId> = burst_charges(dogma, module).into_iter().filter(|c| !b.charges_off.contains(c)).collect();
+    shortcut_booster_with(dogma, b, module, &charges)
+}
+
+fn shortcut_booster_with(dogma: &Dogma, b: &crate::fit::BoostShortcut, module: crate::ids::TypeId, charges: &[crate::ids::TypeId]) -> Option<(Fit, SkillSet)> {
+    use crate::fit::{Module, Slot};
     let hull = b.hull.or_else(|| plain_hull(dogma, b.kind))?;
     let mut fit = Fit::new(hull, "boost");
-    for (i, charge) in burst_charges(dogma, module).into_iter().filter(|c| !b.charges_off.contains(c)).enumerate() {
-        fit.modules.push(Module::new(module, Slot::High, i as u8).with_charge(charge).with_state(State::Active));
+    for (i, charge) in charges.iter().enumerate() {
+        fit.modules.push(Module::new(module, Slot::High, i as u8).with_charge(*charge).with_state(State::Active));
     }
     if b.mindlink {
         fit.implants.extend(dogma.type_named(b.kind.mindlink_name()).map(|t| t.id));
@@ -450,6 +455,20 @@ pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<
         skills.set(*s, *l);
     }
     Some((fit, skills))
+}
+
+/// The buffs the shortcut gives: every charge switched on, each figured as the one burst its
+/// booster runs. The shortcut stands for as many boosters as it takes, so the hull's limit on
+/// bursts does not cut the later charges as it would on one real fit.
+pub fn shortcut_bursts(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<(BuffId, f64)> {
+    let Some(module) = b.module.or_else(|| dogma.type_named(b.kind.module_name()).map(|t| t.id)) else { return Vec::new() };
+    let mut out = Vec::new();
+    for charge in burst_charges(dogma, module).into_iter().filter(|c| !b.charges_off.contains(c)) {
+        if let Some((fit, skills)) = shortcut_booster_with(dogma, b, module, &[charge]) {
+            out.extend(bursts_of(dogma, &fit, &skills));
+        }
+    }
+    out
 }
 
 /// The fit as a slot flies it: the variation picked, or its base, whatever was last switched on
@@ -502,10 +521,8 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
 pub fn env_of(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, skills: &dyn Fn(Option<&str>) -> SkillSet) -> Env {
     let mut env = Env::default();
     for b in fleet.boost_shortcuts.iter().filter(|b| b.active) {
-        if let Some((fit, sk)) = shortcut_booster(dogma, b) {
-            for (id, value) in bursts_of(dogma, &fit, &sk) {
-                env.offer(dogma, id, value);
-            }
+        for (id, value) in shortcut_bursts(dogma, b) {
+            env.offer(dogma, id, value);
         }
     }
     for (_, fit_id) in &fleet.boosters {

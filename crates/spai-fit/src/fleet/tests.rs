@@ -255,6 +255,32 @@ fn a_generic_booster_boosts_everyone_without_flying_in_the_fleet() {
 }
 
 #[test]
+fn a_shortcut_gives_every_charge_though_one_hull_runs_one_burst() {
+    let mut d = dataset();
+    d.types.iter_mut().find(|t| t.id == ids::BURST).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    let mut second = d.type_(ids::BURST_CHARGE).unwrap().clone();
+    second.id = 42831;
+    second.name = "Shield Extension Charge".into();
+    second.attrs.iter_mut().find(|(a, _)| *a == attr::WARFARE_BUFF_1_ID).unwrap().1 = 13.0;
+    d.types.push(second);
+    let d = d.finish();
+    let b = crate::fit::BoostShortcut { kind: BurstKind::Shield, ..Default::default() };
+    let (fit, sk) = shortcut_booster(&d, &b).unwrap();
+    assert_eq!(fit.modules.len(), 2);
+    assert_eq!(bursts_of(&d, &fit, &sk).len(), 1, "one real fit runs one burst on this hull");
+    let mut ids: Vec<u32> = shortcut_bursts(&d, &b).into_iter().map(|(id, _)| u32::from(id)).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![12, 13], "the shortcut stands for as many boosters as its charges take");
+    let mut env = Env::default();
+    for (id, v) in shortcut_bursts(&d, &b) {
+        env.offer(&d, id, v);
+    }
+    let mut me = Fit::new(ids::SHIP, "me");
+    me.boosts.push(b);
+    assert_eq!(crate::projection::expand(&d, &me, &|_| None, &SkillSet::all_v()).1, env, "and a fit's own shortcut gives the same");
+}
+
+#[test]
 fn drones_add_damage_per_second_but_no_alpha_and_switch_off() {
     let d = dataset();
     let mut f = gun_fit("dronie", 1);

@@ -67,10 +67,8 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
     }
     // Boost shortcuts: their bursts as any booster's, the strongest of each buff kept.
     for b in fit.boosts.iter().filter(|b| b.active) {
-        if let Some((booster, pilot)) = crate::fleet::shortcut_booster(dogma, b) {
-            for (id, value) in crate::fleet::bursts_of(dogma, &booster, &pilot) {
-                env.offer(dogma, id, value);
-            }
+        for (id, value) in crate::fleet::shortcut_bursts(dogma, b) {
+            env.offer(dogma, id, value);
         }
     }
     for pf in fit.projected_fits.iter().filter(|p| p.active && p.count > 0) {
@@ -480,6 +478,7 @@ fn real_data_boost_shortcuts() {
     let hull = strength(BoostShortcut { hull: Some(vulture), ..Default::default() });
     let linked = strength(BoostShortcut { hull: Some(vulture), mindlink: true, ..Default::default() });
     println!("plain {plain:?}\nvulture {hull:?}\nlinked {linked:?}");
+    assert!(plain.len() >= 3, "all three charges count, though no hull runs three bursts unrigged: {plain:?}");
     assert_eq!(plain.len(), hull.len());
     assert!(hull.iter().zip(&plain).all(|(h, p)| h.1.abs() > p.1.abs()), "the hull's bonus strengthens every buff");
     assert!(linked.iter().zip(&hull).all(|(l, h)| l.1.abs() > h.1.abs()), "and the mindlink on top");
@@ -944,4 +943,3 @@ fn real_data_fury_is_short_range_ammo() {
     assert!(gap("Scourge Fury Cruise Missile").is_none_or(|(short, _)| !short), "Fury carried: no short-range gap");
     assert_eq!(gap("Scourge Cruise Missile").map(|g| g.0), Some(true), "only T1 carried: Fury is the short-range ammo missing");
 }
-
