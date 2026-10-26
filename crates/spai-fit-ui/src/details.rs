@@ -572,8 +572,8 @@ pub struct SideRow {
 /// The side effects of a booster on the fit on screen.
 pub fn side_rows(sim: &SimUi, type_id: TypeId) -> Vec<SideRow> {
     let (Some(dogma), Some(s)) = (sim.dogma.as_ref(), sim.session()) else { return Vec::new() };
-    let Some(booster) = s.fit.boosters.iter().find(|b| b.type_id == type_id).cloned() else { return Vec::new() };
     let (fit, env) = sim.outside().apply(dogma, &s.fit, sim.skills());
+    let Some(booster) = fit.boosters.iter().find(|b| b.type_id == type_id).cloned() else { return Vec::new() };
     let calc = Calc::new(dogma, &fit, sim.skills(), &env);
     let item = calc.items().iter().position(|i| i.type_id == type_id && i.kind == ItemKind::Booster);
     let Some(t) = dogma.type_(type_id) else { return Vec::new() };

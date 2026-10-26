@@ -1167,7 +1167,9 @@ impl SimUi {
 
     /// What the fit on screen costs at the market's average prices, by part.
     pub fn cost(&self) -> Option<Cost> {
-        let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
+        let dogma = self.dogma.as_ref()?;
+        let fit = self.shown_fit()?;
+        let s = &fit;
         let price = |t: TypeId| self.prices.get(&t).copied();
         let mut c = Cost::default();
         let mut add = |part: &mut f64, t: TypeId, n: f64| match price(t) {
@@ -1175,9 +1177,9 @@ impl SimUi {
             None => c.missing += 1,
         };
         let mut hull = 0.0;
-        add(&mut hull, s.fit.ship, 1.0);
+        add(&mut hull, s.ship, 1.0);
         let (mut modules, mut charges, mut drones, mut worn, mut cargo) = (0.0, 0.0, 0.0, 0.0, 0.0);
-        for m in &s.fit.modules {
+        for m in &s.modules {
             add(&mut modules, m.type_id, 1.0);
             if let Some(ch) = m.charge {
                 // A full load: what the module holds of the charge.
@@ -1187,19 +1189,19 @@ impl SimUi {
                 add(&mut charges, ch, n);
             }
         }
-        for d in &s.fit.drones {
+        for d in &s.drones {
             add(&mut drones, d.type_id, f64::from(d.count));
         }
-        for f in &s.fit.fighters {
+        for f in &s.fighters {
             add(&mut drones, f.type_id, f64::from(f.count));
         }
-        for i in &s.fit.implants {
+        for i in &s.implants {
             add(&mut worn, *i, 1.0);
         }
-        for b in &s.fit.boosters {
+        for b in &s.boosters {
             add(&mut worn, b.type_id, 1.0);
         }
-        for k in &s.fit.cargo {
+        for k in &s.cargo {
             add(&mut cargo, k.type_id, f64::from(k.quantity));
         }
         c.hull = hull;
@@ -1232,6 +1234,13 @@ impl SimUi {
     /// The fit on screen.
     pub fn session(&self) -> Option<&Session> {
         self.sessions.get(self.active)
+    }
+
+    /// The fit on screen as it shows, its active variations applied: what a reader of the slots,
+    /// the cargo or the boosters must look at, since a variation may hold others than the base.
+    pub fn shown_fit(&self) -> Option<Fit> {
+        let (dogma, s) = (self.dogma.as_ref()?, self.session()?);
+        Some(spai_fit::variations::resolve(dogma, &s.fit))
     }
 
     /// The module the pilot just set, so a group limit that has to put one offline spares it.

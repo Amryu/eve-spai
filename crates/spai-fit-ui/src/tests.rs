@@ -1333,6 +1333,53 @@ fn a_fleet_page_switching_one_more_on_than_the_limit_allows_puts_another_off() {
 }
 
 #[test]
+fn the_charge_picker_serves_the_module_the_variation_put_in_the_slot() {
+    use crate::picker::charge_module;
+    use spai_fit::variations::{RefitOp, Variation};
+    let d = Arc::new(dataset());
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(d.clone()));
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::AddModule, 1, |f| {
+        f.modules.push(spai_fit::fit::Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO));
+        f.variations.push(Variation { id: 7, name: "Boost".into(), ops: vec![RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::BURST) }], ..Default::default() });
+    });
+    let target = PickTarget::Charge(Slot::High, 0);
+    assert_eq!(charge_module(&s, target), Some(ids::GUN));
+    assert!(results(&d, target, charge_module(&s, target), "").contains(&ids::AMMO));
+    s.edit(EditKind::Variation, 2, |f| spai_fit::variations::activate(f, 7));
+    assert_eq!(charge_module(&s, target), Some(ids::BURST), "the burst the variation fitted, not the gun under it");
+    let offered = results(&d, target, charge_module(&s, target), "");
+    assert!(offered.contains(&ids::BURST_CHARGE) && !offered.contains(&ids::AMMO), "{offered:?}");
+}
+
+#[test]
+fn a_charge_from_the_browser_loads_the_module_the_variation_fitted_and_the_cost_counts_it() {
+    use crate::browser::quick_add;
+    use spai_fit::variations::{RefitOp, Variation};
+    let d = Arc::new(dataset());
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(d.clone()));
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::AddModule, 1, |f| {
+        f.modules.push(spai_fit::fit::Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO));
+        f.variations.push(Variation { id: 7, name: "Boost".into(), ops: vec![RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::BURST) }], ..Default::default() });
+    });
+    s.edit(EditKind::Variation, 2, |f| spai_fit::variations::activate(f, 7));
+    quick_add(&mut s, ids::BURST_CHARGE, 3);
+    let shown = s.shown_fit().unwrap();
+    assert_eq!(shown.module(Slot::High, 0).map(|m| (m.type_id, m.charge)), Some((ids::BURST, Some(ids::BURST_CHARGE))), "loaded into the burst the variation fitted");
+    assert!(shown.cargo.is_empty(), "not dropped into the cargo for want of a taker: {:?}", shown.cargo);
+    assert_eq!(s.session().unwrap().fit.module(Slot::High, 0).map(|m| (m.type_id, m.charge)), Some((ids::GUN, Some(ids::AMMO))), "the base keeps its gun and ammo");
+    s.prices.insert(ids::BURST, 100.0);
+    s.prices.insert(ids::GUN, 1.0);
+    s.prices.insert(ids::SHIP, 0.0);
+    s.prices.insert(ids::BURST_CHARGE, 0.0);
+    s.prices.insert(ids::AMMO, 0.0);
+    assert_eq!(s.cost().map(|c| c.modules), Some(100.0), "the cost is of the fit as shown");
+}
+
+#[test]
 fn fit_tabs_fill_the_bar_and_the_one_on_screen_is_always_on_it() {
     use crate::editor::tabs_that_fit;
     let w = [100.0, 100.0, 100.0, 100.0, 100.0];

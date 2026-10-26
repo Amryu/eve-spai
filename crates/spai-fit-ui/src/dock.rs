@@ -976,8 +976,8 @@ fn cargo(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         ship_bay(sim, ui, dogma, &bay, now_ms);
         return;
     }
-    let Some(s) = sim.session() else { return };
-    let list: Vec<(usize, TypeId, u32)> = s.fit.cargo.iter().enumerate().filter(|(_, c)| c.hold == hold).map(|(i, c)| (i, c.type_id, c.quantity)).collect();
+    let Some(shown) = sim.shown_fit() else { return };
+    let list: Vec<(usize, TypeId, u32)> = shown.cargo.iter().enumerate().filter(|(_, c)| c.hold == hold).map(|(i, c)| (i, c.type_id, c.quantity)).collect();
     if list.is_empty() {
         empty_note(ui, if hold.is_none() { tr!("Anything carried: spare ammo, paste, cap charges, refits. The warnings read it.") } else { tr!("Nothing in this hold yet. Add or drop items while it is shown.") });
     }

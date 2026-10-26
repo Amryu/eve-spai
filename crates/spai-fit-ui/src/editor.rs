@@ -731,7 +731,7 @@ fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: 
 fn accept_cargo_drop(sim: &mut SimUi, r: &egui::Response, slot: Slot, index: u8, now_ms: u64) {
     let Some(from) = rows::released::<rows::DragCargo>(r) else { return };
     let Some(dogma) = sim.dogma.clone() else { return };
-    let Some(item) = sim.session().and_then(|s| s.fit.cargo.get(from.0).cloned()) else { return };
+    let Some(item) = sim.shown_fit().and_then(|f| f.cargo.get(from.0).cloned()) else { return };
     if dogma.slot_of(item.type_id) != Some(slot) {
         sim.note(trf!("{name} does not go there", name = spai_fit::formats::name_of(&dogma, item.type_id)));
         return;

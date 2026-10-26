@@ -546,12 +546,16 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
     }
 }
 
+/// The module a charge is picked for, as the fit shows it: a variation may have put another in
+/// the slot than the base fit holds.
+pub(crate) fn charge_module(sim: &SimUi, target: PickTarget) -> Option<TypeId> {
+    let PickTarget::Charge(slot, index) = target else { return None };
+    sim.shown_fit()?.module(slot, index).map(|m| m.type_id)
+}
+
 pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     let Some(dogma): Option<Arc<Dogma>> = sim.dogma.clone() else { return };
-    let module_type = match sim.picker.as_ref().map(|p| p.target) {
-        Some(PickTarget::Charge(slot, index)) => sim.session().and_then(|s| s.fit.module(slot, index)).map(|m| m.type_id),
-        _ => None,
-    };
+    let module_type = sim.picker.as_ref().and_then(|p| charge_module(sim, p.target));
     // Figured only when the results are, as it runs the fit's numbers again.
     let stale = sim.picker.as_ref().is_some_and(|p| p.last_query.as_deref() != Some(p.query.as_str()));
     let room = match sim.picker.as_ref().map(|p| p.target) {
@@ -561,7 +565,7 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     // The cargo hold and a fleet hangar can be narrowed to what the fit uses up.
     let fleet_hangar = dogma.attr_named("fleetHangarCapacity").map(|a| a.id);
     let consumable_hold = matches!(sim.picker.as_ref().map(|p| p.target), Some(PickTarget::Cargo)) && (sim.dock.hold.is_none() || sim.dock.hold == fleet_hangar);
-    let useful = if consumable_hold && sim.picker.as_ref().is_some_and(|p| p.consumables) { sim.session().map(|s| consumables_for(&dogma, &s.fit)) } else { None };
+    let useful = if consumable_hold && sim.picker.as_ref().is_some_and(|p| p.consumables) { sim.shown_fit().map(|f| consumables_for(&dogma, &f)) } else { None };
     // A module slot's rows carry their costs; with a module in the slot, what swapping changes.
     let cols: Option<Option<[f64; 3]>> = match sim.picker.as_ref().map(|p| p.target) {
         Some(PickTarget::Module(slot, index)) => Some(sim.session().and_then(|s| spai_fit::variations::resolve(&dogma, &s.fit).module(slot, index).map(|m| row_figures(&dogma, m.type_id, slot == Slot::Subsystem)))),

@@ -219,7 +219,7 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
             });
         }
         Place::Charge => {
-            let takers: Vec<(Slot, u8)> = sim.session().map(|s| s.fit.modules.iter().filter(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id)).map(|m| (m.slot, m.index)).collect()).unwrap_or_default();
+            let takers: Vec<(Slot, u8)> = sim.shown_fit().map(|f| f.modules.iter().filter(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id)).map(|m| (m.slot, m.index)).collect()).unwrap_or_default();
             if takers.is_empty() {
                 sim.edit(EditKind::Cargo, now_ms, |f| {
                     formats::add_item(&dogma, f, type_id, 1);
@@ -284,7 +284,7 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
             true
         }
         (DropTarget::Module(slot, index), Place::Charge) => {
-            let takes = sim.session().and_then(|s| s.fit.module(slot, index)).is_some_and(|m| picker::compatible_charges(&dogma, m.type_id).contains(&type_id));
+            let takes = sim.shown_fit().and_then(|f| f.module(slot, index).map(|m| m.type_id)).is_some_and(|m| picker::compatible_charges(&dogma, m).contains(&type_id));
             if !takes {
                 return false;
             }
