@@ -648,7 +648,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let mut want_all_docs = false;
     let enemy_doctrines: Vec<String> = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().map(|(g, _)| g).collect();
     // Each fit's variations, to fly a slot with one of them.
-    let variations: HashMap<String, Vec<(u32, String)>> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), f.variations.iter().map(|v| (v.id, v.name.clone())).collect())).collect();
+    let variations: HashMap<String, Vec<(u32, String)>> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), f.variations.iter().map(|v| (v.id, v.full_name())).collect())).collect();
     let base_names: HashMap<String, String> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), crate::base_label(f))).collect();
     let Some(session) = sim.fleet.as_mut() else { return };
     let f = &mut session.fleet;

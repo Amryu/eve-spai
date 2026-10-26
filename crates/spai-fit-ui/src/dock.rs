@@ -334,7 +334,7 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
     let list: Vec<(String, u32, bool, Option<u32>)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active, p.variation)).collect();
     for (i, (id, count, active, variation)) in list.into_iter().enumerate() {
         // The source fit's variations, to fly it with one of them.
-        let variations: Vec<(u32, String)> = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map(|f| f.variations.iter().map(|v| (v.id, v.name.clone())).collect()).unwrap_or_default();
+        let variations: Vec<(u32, String)> = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map(|f| f.variations.iter().map(|v| (v.id, v.full_name())).collect()).unwrap_or_default();
         let base = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map_or_else(|| tr!("Base").to_owned(), crate::base_label);
         let flying = variation.and_then(|v| variations.iter().find(|(x, _)| *x == v)).map(|(_, n)| n.clone());
         let mut set_variation: Option<Option<u32>> = None;

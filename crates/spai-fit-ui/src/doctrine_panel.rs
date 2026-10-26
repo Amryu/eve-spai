@@ -557,7 +557,7 @@ fn fit_tip(ui: &mut egui::Ui, f: &DoctrineFit, label: &str) {
         ui.add(egui::Label::new(&f.note).wrap());
     }
     if let Some(fit) = &f.fit {
-        let keys: Vec<String> = fit.variations.iter().map(|v| v.name.clone()).collect();
+        let keys: Vec<String> = fit.variations.iter().map(|v| v.full_name()).collect();
         if !keys.is_empty() {
             ui.label(trf!("Variants: {list}", list = keys.join(", ")));
         }
@@ -780,11 +780,24 @@ pub fn category_name(c: &str) -> &str {
 
 /// A refit key's name in the reader's language.
 pub fn refit_name(key: &str) -> String {
+    if key.contains('|') {
+        return key.split('|').map(refit_name).collect::<Vec<_>>().join(" · ");
+    }
     match key {
         "prop:ab" => tr!("Afterburner").to_owned(),
         "prop:mwd" => tr!("Microwarpdrive").to_owned(),
         "point:scram" => tr!("Warp scrambler").to_owned(),
         "point:disruptor" => tr!("Warp disruptor").to_owned(),
+        "ewar:web" => tr!("Webifier").to_owned(),
+        "ewar:damp" => tr!("Sensor dampener").to_owned(),
+        "ewar:paint" => tr!("Target painter").to_owned(),
+        "ewar:td" => tr!("Tracking disruptor").to_owned(),
+        "ewar:gd" => tr!("Guidance disruptor").to_owned(),
+        "ecm:ladar" => tr!("Ladar ECM").to_owned(),
+        "ecm:magnetometric" => tr!("Magnetometric ECM").to_owned(),
+        "ecm:radar" => tr!("Radar ECM").to_owned(),
+        "ecm:gravimetric" => tr!("Gravimetric ECM").to_owned(),
+        "ecm:multispectral" => tr!("Multispectral ECM").to_owned(),
         "tier:t1" => tr!("T1 fit").to_owned(),
         k => spai_fit::doctrine::refit_label(k),
     }

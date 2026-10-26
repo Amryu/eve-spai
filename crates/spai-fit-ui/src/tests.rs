@@ -199,7 +199,7 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     let mut s = sim();
     let mut fit = Fit::new(ids::SHIP, "Doctrine Rifter");
     fit.add_module(ids::GUN, Slot::High);
-    fit.variations.push(spai_fit::variations::Variation { id: 1, name: "AB".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+    fit.variations.push(spai_fit::variations::Variation { id: 1, name: "AB".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![], group: None });
     let doc: serde_json::Value = serde_json::from_str(&spai_fit::doc::to_json(&fit)).unwrap();
     s.handle(HostEvent::Doctrines(vec![Doctrine { id: "d1".into(), side: DoctrineSide::Imperium, name: "Alpha Rifter".into(), ship: ids::SHIP, tags: vec!["alpha".into()], refit_keys: vec!["prop:ab".into()], rev: 1, doc }]));
     s.open_doctrine("d1", 5);
@@ -1904,7 +1904,7 @@ fn supplied_doctrine(id: &str, alliance: &str, category: &str, name: &str) -> sp
     let mut dps = Fit::new(ids::SHIP, "DPS");
     dps.add_module(ids::GUN, Slot::High);
     dps.add_module(ids::MWD, Slot::Mid);
-    dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+    dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![], group: None });
     let tackle = Fit::new(ids::SHIP, "Tackle");
     let fits = vec![
         DoctrineFit { fit_id: supplied_fit_id(id, "tackle"), fit: Some(tackle), role: FitRole::Tackle, main: false, note: String::new() },

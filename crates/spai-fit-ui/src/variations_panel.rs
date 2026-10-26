@@ -62,7 +62,7 @@ impl SimUi {
         let name = trf!("{kind} {n}", kind = kind_name(kind), n = id);
         self.edit(EditKind::Variation, now_ms, move |f| {
             *f = base;
-            f.variations.push(Variation { id, name, kind, refit_key: None, ops });
+            f.variations.push(Variation { id, name, kind, refit_key: None, ops, group: None });
             variations::activate(f, id);
         });
         self.editing_variation = Some(id);

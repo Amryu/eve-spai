@@ -1053,7 +1053,7 @@ impl SimUi {
         let kind = variations_panel::guess_kind(&ops);
         let name = if imported.name.trim().is_empty() || imported.name == plain.name { trf!("{kind} {n}", kind = variations_panel::kind_name(kind), n = id) } else { imported.name.clone() };
         self.edit(EditKind::Variation, now_ms, move |f| {
-            f.variations.push(spai_fit::variations::Variation { id, name, kind, refit_key: None, ops });
+            f.variations.push(spai_fit::variations::Variation { id, name, kind, refit_key: None, ops, group: None });
             spai_fit::variations::activate(f, id);
         });
     }

@@ -457,6 +457,70 @@ fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let mut record = false;
     let mut keep = false;
     let mut discard = false;
+    // Variations under categories (the propulsion refits, each with its own ewar refits): the
+    // categories on one row, the one open's own variations on the next.
+    let groups: Vec<(u32, Option<String>, String)> = s.fit.variations.iter().map(|v| (v.id, v.group.clone(), v.name.clone())).collect();
+    let grouped = groups.iter().any(|(_, g, _)| g.is_some()) && editing.is_none() && !recording;
+    if grouped {
+        let active = s.fit.active_variations.last().copied();
+        let category_of = |id: Option<u32>| id.and_then(|i| groups.iter().find(|(x, _, _)| *x == i)).and_then(|(_, g, _)| g.clone()).unwrap_or_else(|| base_label.clone());
+        let open = category_of(active);
+        let mut categories: Vec<String> = vec![base_label.clone()];
+        for (_, g, _) in &groups {
+            if let Some(g) = g {
+                if !categories.contains(g) {
+                    categories.push(g.clone());
+                }
+            }
+        }
+        let tab = |ui: &mut egui::Ui, on: bool, label: &str, tip: &str| {
+            let label = text::clip(label, 22);
+            let w = (label.chars().count() as f32 * 7.5 + 20.0).clamp(64.0, 190.0);
+            ui.menu_label_sized(egui::vec2(w, 22.0), on, label).on_hover_text(tip.to_owned())
+        };
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add_space(rows::GAP);
+            for c in &categories {
+                if tab(ui, *c == open, c, tr!("A refit and the variations made on top of it")).clicked() {
+                    // A category opens on its own refit, the base's on the base.
+                    match groups.iter().find(|(_, g, n)| g.as_deref() == Some(c.as_str()) && n == c) {
+                        Some((id, _, _)) => activate = Some((*id, false)),
+                        None => base = true,
+                    }
+                }
+            }
+            if icon_button(ui, icon::PLUS).on_hover_text(tr!("Record a variation: edit the fit, then keep the difference")).clicked() {
+                record = true;
+            }
+        });
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add_space(rows::GAP + 12.0);
+            let head = groups.iter().find(|(_, g, n)| g.as_deref() == Some(open.as_str()) && *n == open).map(|(id, _, _)| *id);
+            let on_head = active == head;
+            if tab(ui, on_head, tr!("Standard"), tr!("The refit alone")).clicked() {
+                match head {
+                    Some(id) => activate = Some((id, false)),
+                    None => base = true,
+                }
+            }
+            let in_open = |g: &Option<String>| match g {
+                Some(g) => *g == open,
+                None => open == base_label,
+            };
+            for (id, _, name) in groups.iter().filter(|(id, g, _)| in_open(g) && Some(*id) != head) {
+                let r = tab(ui, active == Some(*id), name, &trf!("{name}\nRight-click to delete.", name = name));
+                if r.clicked() {
+                    activate = Some((*id, false));
+                }
+                r.context_menu(|ui| {
+                    if ui.button(tr!("Delete")).clicked() {
+                        delete = Some(*id);
+                        ui.close();
+                    }
+                });
+            }
+        });
+    } else {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.add_space(rows::GAP);
         // The base renames in place like a variation, under the id no variation takes.
@@ -538,6 +602,7 @@ fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             record = true;
         }
     });
+    }
     if base {
         sim.edit(EditKind::Variation, now_ms, |f| f.active_variations.clear());
     }

@@ -603,7 +603,7 @@ fn doctrine_fixture(sim: &mut spai_fit_ui::SimUi, extreme: bool) {
         f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
         f.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
         if refit {
-            f.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![] });
+            f.variations.push(spai_fit::variations::Variation { id: 1, name: "Afterburner".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: Some("prop:ab".into()), ops: vec![], group: None });
         }
         f
     };
@@ -2810,9 +2810,9 @@ pub(crate) fn all() -> Vec<Scene> {
         use spai_fit::test_support::ids;
         use spai_fit::variations::{ModulePredicate, RefitOp, Variation, VariationKind};
         sim.edit(spai_fit::history::EditKind::Variation, 0, |f| {
-            f.variations.push(Variation { id: 1, name: "Barrage".into(), kind: VariationKind::Ammo, refit_key: Some("ammo:long".into()), ops: vec![RefitOp::SetChargeWhere { matches: ModulePredicate { group: Some(55), ..Default::default() }, charge: Some(ids::AMMO_LONG) }] });
-            f.variations.push(Variation { id: 2, name: "Web instead of MWD, a long name to cut".into(), kind: VariationKind::Refit, refit_key: Some("prop:web".into()), ops: vec![RefitOp::Replace { slot: Slot::Mid, index: 0, with: Some(ids::WEB) }] });
-            f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: None, ops: vec![RefitOp::SetImplants(vec![ids::IMPLANT])] });
+            f.variations.push(Variation { id: 1, name: "Barrage".into(), kind: VariationKind::Ammo, refit_key: Some("ammo:long".into()), ops: vec![RefitOp::SetChargeWhere { matches: ModulePredicate { group: Some(55), ..Default::default() }, charge: Some(ids::AMMO_LONG) }], group: None });
+            f.variations.push(Variation { id: 2, name: "Web instead of MWD, a long name to cut".into(), kind: VariationKind::Refit, refit_key: Some("prop:web".into()), ops: vec![RefitOp::Replace { slot: Slot::Mid, index: 0, with: Some(ids::WEB) }], group: None });
+            f.variations.push(Variation { id: 3, name: "Snakes".into(), kind: VariationKind::Implants, refit_key: None, ops: vec![RefitOp::SetImplants(vec![ids::IMPLANT])], group: None });
             f.active_variations = vec![1, 3];
         });
         sim.editing_variation = Some(2);
@@ -2854,6 +2854,23 @@ pub(crate) fn all() -> Vec<Scene> {
             spai_fit_ui::Doctrine { id: "d3".into(), side: spai_fit_ui::DoctrineSide::Enemy, name: "Hostile kiting Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Hostile") },
             spai_fit_ui::Doctrine { id: "d4".into(), side: spai_fit_ui::DoctrineSide::Public, name: "Starter Rifter".into(), ship: ids::SHIP, tags: vec![], refit_keys: vec![], rev: 1, doc: doc("Starter") },
         ]));
+    }));
+    v.push(imperium_scene_with("imperium_fit_variation_categories", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::fit::Slot;
+        use spai_fit::test_support::ids;
+        use spai_fit::variations::{RefitOp, Variation, VariationKind};
+        let refit = |id: u32, name: &str, group: &str, key: &str, ops: Vec<RefitOp>| Variation { id, name: name.into(), kind: VariationKind::Refit, refit_key: Some(key.into()), ops, group: Some(group.into()) };
+        let ab = RefitOp::ReplaceWhere { matches: spai_fit::variations::ModulePredicate { group: Some(46), ..Default::default() }, with: ids::AB };
+        let web = RefitOp::Replace { slot: Slot::Mid, index: 1, with: Some(ids::WEB) };
+        sim.edit(spai_fit::history::EditKind::Variation, 1, |f| {
+            f.add_module(ids::SCRAM, Slot::Mid);
+            f.base_name = Some("Microwarpdrive".into());
+            f.variations.push(refit(1, "Afterburner", "Afterburner", "prop:ab", vec![ab.clone()]));
+            f.variations.push(refit(2, "Webifier", "Microwarpdrive", "ewar:web", vec![web.clone()]));
+            f.variations.push(refit(3, "Sensor dampener with a long name", "Microwarpdrive", "ewar:damp", vec![RefitOp::Replace { slot: Slot::Mid, index: 1, with: Some(ids::DAMP_LIGHT) }]));
+            f.variations.push(refit(4, "Webifier", "Afterburner", "prop:ab|ewar:web", vec![ab, web]));
+            f.active_variations = vec![4];
+        });
     }));
     v.push(imperium_scene_with("imperium_doctrine_tree", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
         doctrine_fixture(sim, false);
