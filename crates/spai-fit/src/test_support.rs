@@ -87,6 +87,8 @@ pub mod ids {
     pub const ISOTOPES: TypeId = 16274;
     pub const JUMP_FUEL: AttrId = 866;
     pub const FUEL_BAY: AttrId = 1549;
+    pub const FLEET_HANGAR: AttrId = 912;
+    pub const TITAN: TypeId = 11567;
     pub const IMPLANT: TypeId = 10226;
     pub const BOOSTER: TypeId = 28672;
     /// A wormhole weather beacon in the synthetic data.
@@ -278,6 +280,8 @@ pub fn dataset() -> Dogma {
         type_def(AB_BIG, "10MN Afterburner II", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::CPU, 20.0), (attr::POWER, 45.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
         type_def(ISOTOPES, "Helium Isotopes", crate::ids::group::ICE_PRODUCT, 4, &[(attr::VOLUME, 0.03)], &[], &[]),
         type_def(AB_MID, "1MN Monopropellant Enduring Afterburner", 46, 7, &[(attr::SPEED_FACTOR, 135.0), (attr::CPU, 20.0), (attr::POWER, 25.0), (attr::CAPACITOR_NEED, 5.0), (attr::DURATION, 10_000.0)], &[6301, 323, 330], &[]),
+        // Unpublished: only the hold rules read it, the pickers keep their one hull.
+        TypeDef { published: false, ..type_def(TITAN, "Avatar", 30, 6, &[(attr::HI_SLOTS, 6.0), (attr::MED_SLOTS, 4.0), (attr::LOW_SLOTS, 8.0), (FLEET_HANGAR, 50_000.0), (FUEL_BAY, 60_000.0)], &[], &[]) },
         type_def(DAMP, "Remote Sensor Dampener II", 208, 7, &[(attr::CPU, 200.0), (attr::POWER, 1.0)], &[323, 330], &[]),
         type_def(IMPLANT, "Zor's Custom Navigation Hyper-Link", 300, 20, &[(attr::MAX_VELOCITY, 5.0), (attr::IMPLANTNESS, 6.0)], &[308], &[]),
         type_def(GENERATOR, "Amarr Phenomena Generator", 1815, 7, &[(attr::WARFARE_BUFF_1_ID, 12.0), (attr::WARFARE_BUFF_1_VALUE, 15.0), (attr::CPU, 100.0)], &[9002], &[]),
@@ -434,6 +438,7 @@ pub fn dataset() -> Dogma {
         attr_def(SQUADRON_MAX, "fighterSquadronMaxSize", true, true, 0.0),
         attr_def(JUMP_FUEL, "jumpDriveConsumptionType", true, true, 0.0),
         attr_def(FUEL_BAY, "specialFuelBayCapacity", true, true, 0.0),
+        attr_def(FLEET_HANGAR, "fleetHangarCapacity", true, true, 0.0),
         attr_def(REP_SPOOL_MAX, "repairMultiplierBonusMax", true, true, 0.0),
         attr_def(REP_SPOOL_STEP, "repairMultiplierBonusPerCycle", true, true, 0.0),
         attr_def(CRIT_CHANCE, "miningCritChance", true, true, 0.0),
@@ -536,6 +541,7 @@ pub fn dataset() -> Dogma {
     let groups = vec![
         GroupDef { id: 1, name: "Character".into(), category: 1 },
         GroupDef { id: 25, name: "Frigate".into(), category: 6 },
+        GroupDef { id: 30, name: "Titan".into(), category: 6 },
         GroupDef { id: crate::ids::group::EFFECT_BEACON, name: "Effect Beacon".into(), category: 2 },
         GroupDef { id: 1815, name: "Titan Phenomena Generator".into(), category: 7 },
         GroupDef { id: 46, name: "Propulsion Module".into(), category: 7 },

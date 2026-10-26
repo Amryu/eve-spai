@@ -251,6 +251,7 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
             continue;
         }
         forum::fuel_to_bay(dogma, &mut fit);
+        forum::refits_to_fleet_hangar(dogma, &mut fit);
         forum::launch_drones(dogma, &mut fit);
         forum::launch_fighters(dogma, &mut fit);
         let made = forum::refits(dogma, &mut fit);

@@ -524,15 +524,60 @@ fn racial_lance<'a>(dogma: &'a Dogma, fit: &Fit) -> Option<&'a crate::dogma::Typ
     dogma.types.iter().find(|t| t.published && t.name.ends_with(&suffix) && t.name.starts_with('\''))
 }
 
-/// Fuel in the fuel bay, where the hull has one.
-pub fn fuel_to_bay(dogma: &Dogma, fit: &mut Fit) {
-    let Some(bay) = dogma.attr_named("specialFuelBayCapacity").map(|a| a.id) else { return };
-    if !dogma.type_(fit.ship).and_then(|t| t.attr(bay)).is_some_and(|v| v > 0.0) {
+/// A capital's refit modules in its fleet hangar: its cargo hold is for the charges it fights
+/// with. Hulls without a fleet hangar, and subcapitals, keep their cargo as written.
+pub fn refits_to_fleet_hangar(dogma: &Dogma, fit: &mut Fit) {
+    if crate::fleet::hull_class(dogma, fit.ship) != crate::fleet::HullClass::Capital {
+        return;
+    }
+    let Some(hangar) = dogma.attr_named("fleetHangarCapacity").map(|a| a.id) else { return };
+    if !dogma.type_(fit.ship).and_then(|t| t.attr(hangar)).is_some_and(|v| v > 0.0) {
         return;
     }
     for c in fit.cargo.iter_mut().filter(|c| c.hold.is_none()) {
-        if dogma.type_(c.type_id).is_some_and(|t| t.group == crate::ids::group::ICE_PRODUCT) {
-            c.hold = Some(bay);
+        if dogma.type_(c.type_id).is_some_and(|t| matches!(place_of(dogma, t), Place::Module(_))) {
+            c.hold = Some(hangar);
+        }
+    }
+    // The same module written in both places is one stack.
+    let mut merged: Vec<crate::fit::CargoItem> = Vec::new();
+    for c in std::mem::take(&mut fit.cargo) {
+        match merged.iter_mut().find(|m| m.type_id == c.type_id && m.hold == c.hold) {
+            Some(m) => m.quantity += c.quantity,
+            None => merged.push(c),
+        }
+    }
+    fit.cargo = merged;
+}
+
+/// Fuel in the fuel bay as far as it holds, Strontium and Heavy Water first; what is left over
+/// goes to the fleet hangar where the hull has one.
+pub fn fuel_to_bay(dogma: &Dogma, fit: &mut Fit) {
+    use crate::dogma::attr;
+    let Some(bay) = dogma.attr_named("specialFuelBayCapacity").map(|a| a.id) else { return };
+    let ship = dogma.type_(fit.ship);
+    let Some(mut room) = ship.and_then(|t| t.attr(bay)).filter(|v| *v > 0.0).map(f64::from) else { return };
+    let hangar = dogma.attr_named("fleetHangarCapacity").map(|a| a.id).filter(|h| ship.and_then(|t| t.attr(*h)).is_some_and(|v| v > 0.0));
+    let is_fuel = |t: TypeId| dogma.type_(t).is_some_and(|d| d.group == crate::ids::group::ICE_PRODUCT);
+    let isotopes = |t: TypeId| dogma.type_(t).is_some_and(|d| d.name.ends_with("Isotopes"));
+    let mut fuel: Vec<crate::fit::CargoItem> = Vec::new();
+    fit.cargo.retain(|c| {
+        let take = c.hold.is_none() && is_fuel(c.type_id);
+        if take {
+            fuel.push(c.clone());
+        }
+        !take
+    });
+    fuel.sort_by_key(|c| isotopes(c.type_id));
+    for c in fuel {
+        let each = dogma.type_(c.type_id).and_then(|t| t.attr(attr::VOLUME)).map_or(0.0, f64::from);
+        let fits = if each > 0.0 { ((room / each).floor() as u32).min(c.quantity) } else { c.quantity };
+        room -= f64::from(fits) * each;
+        if fits > 0 {
+            fit.cargo.push(crate::fit::CargoItem { quantity: fits, hold: Some(bay), ..c.clone() });
+        }
+        if c.quantity > fits {
+            fit.cargo.push(crate::fit::CargoItem { quantity: c.quantity - fits, hold: hangar, ..c });
         }
     }
 }
@@ -966,6 +1011,12 @@ mod tests {
         fuel_to_bay(&d, &mut fit);
         let fuel = fit.cargo.iter().find(|c| c.type_id == ids::ISOTOPES).unwrap();
         assert_eq!(fuel.hold, Some(ids::FUEL_BAY));
+        // A titan's 60,000 m3 bay holds two million isotopes at 0.03; the rest goes to the hangar.
+        let mut titan = Fit::new(ids::TITAN, "Titan");
+        titan.cargo.push(crate::fit::CargoItem { type_id: ids::ISOTOPES, quantity: 2_500_000, hold: None });
+        fuel_to_bay(&d, &mut titan);
+        let held: Vec<(u32, Option<crate::ids::AttrId>)> = titan.cargo.iter().map(|c| (c.quantity, c.hold)).collect();
+        assert_eq!(held, vec![(2_000_000, Some(ids::FUEL_BAY)), (500_000, Some(ids::FLEET_HANGAR))]);
         assert!(add_items(&d, &mut fit, &Loose { heading: "Fleet Hangar".into(), lines: vec!["Helium Isotopes x50".into()] }).is_empty());
         assert_eq!(fit.cargo.iter().filter(|c| c.type_id == ids::ISOTOPES).map(|c| c.quantity).collect::<Vec<_>>(), vec![100], "fuel named twice counts once");
         let before = fit.cargo.len();
@@ -995,6 +1046,22 @@ mod tests {
         let (fits, orphans) = read(&d, "1", &lines);
         assert!(fits[0].fit.cargo.is_empty(), "fuel is the page's, not the next fit's");
         assert_eq!(orphans, vec![Loose { heading: FUEL.into(), lines: vec!["Racial Isotopes x1000".into()] }]);
+    }
+
+    #[test]
+    fn a_capitals_refits_go_in_its_fleet_hangar_and_its_charges_stay_in_the_cargo() {
+        use crate::fit::CargoItem;
+        use crate::test_support::ids;
+        let d = crate::test_support::dataset();
+        let cargo = vec![CargoItem { type_id: ids::WEB, quantity: 2, hold: None }, CargoItem { type_id: ids::AMMO, quantity: 500, hold: None }, CargoItem { type_id: ids::WEB, quantity: 1, hold: Some(ids::FLEET_HANGAR) }];
+        let mut titan = Fit::new(ids::TITAN, "Titan");
+        titan.cargo = cargo.clone();
+        refits_to_fleet_hangar(&d, &mut titan);
+        assert_eq!(titan.cargo, vec![CargoItem { type_id: ids::WEB, quantity: 3, hold: Some(ids::FLEET_HANGAR) }, CargoItem { type_id: ids::AMMO, quantity: 500, hold: None }]);
+        let mut rifter = Fit::new(ids::SHIP, "Rifter");
+        rifter.cargo = cargo.clone();
+        refits_to_fleet_hangar(&d, &mut rifter);
+        assert_eq!(rifter.cargo, cargo, "a subcapital keeps its cargo as written");
     }
 
     #[test]
