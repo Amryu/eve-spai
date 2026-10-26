@@ -1211,7 +1211,14 @@ impl SpaiApp {
             return;
         }
         let Some(systems) = self.systems.clone() else { return };
-        self.fleet_trackers.retain(|_, (_, h)| !h.is_finished());
+        let done = &mut self.fleet_tracks_done;
+        self.fleet_trackers.retain(|id, (_, h)| {
+            let finished = h.is_finished();
+            if finished {
+                done.insert(id.clone());
+            }
+            !finished
+        });
         let mut want: Vec<(crate::fleets::model::FleetId, String)> = Vec::new();
         if !self.fleet_tracks_resumed {
             self.fleet_tracks_resumed = true;
@@ -1242,7 +1249,10 @@ impl SpaiApp {
             }
         }
         for (id, name) in want {
-            if self.fleet_trackers.contains_key(&id) || self.fleet_trackers.len() >= MAX_TRACKED {
+            if self.fleet_trackers.contains_key(&id)
+                || self.fleet_tracks_done.contains(&id)
+                || self.fleet_trackers.len() >= MAX_TRACKED
+            {
                 continue;
             }
             let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));

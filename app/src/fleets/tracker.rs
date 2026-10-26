@@ -44,7 +44,7 @@ fn record(id: &FleetId, name: &str, t: &Tracking) {
     store.fleet_track_seen(&id.0, name, now());
     let prior = store.fleet_moves(&id.0);
     let mut rec = Recorder::resume(&prior);
-    if !prior.is_empty() {
+    if prior.last().is_some_and(|e| e.kind != Kind::Resume) {
         store.add_fleet_moves(&id.0, &[MoveEvent::new(now(), Kind::Resume)]);
     }
     let mut holes: (i64, std::collections::HashSet<(i64, i64)>) = (i64::MIN, Default::default());

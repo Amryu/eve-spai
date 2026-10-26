@@ -984,6 +984,9 @@ pub struct SpaiApp {
         (std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>),
     >,
     fleet_tracks_resumed: bool,
+    /// Recordings that ended. The page or live list can still name a fleet after it closed, and
+    /// respawning its tracker every frame loaded its whole record each time.
+    fleet_tracks_done: std::collections::HashSet<crate::fleets::model::FleetId>,
     /// A destructive action waiting to be confirmed: which fleet, what, and how much of the fleet
     /// it takes with it.
     pub(crate) fleet_confirm: Option<(
@@ -1881,6 +1884,7 @@ impl SpaiApp {
             fleet_br: Default::default(),
             fleet_trackers: Default::default(),
             fleet_tracks_resumed: false,
+            fleet_tracks_done: Default::default(),
             fleet_confirm: None,
             fleet_ping_warning: None,
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),

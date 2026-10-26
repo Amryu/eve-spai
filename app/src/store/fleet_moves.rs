@@ -97,5 +97,33 @@ impl Store {
         self.exec_historic("DELETE FROM fleet_moves WHERE at < ?1", params![before]);
         self.exec_historic("DELETE FROM fleet_tracks WHERE seen_at < ?1", params![before]);
         self.exec_historic("DELETE FROM fleet_kills WHERE at < ?1", params![before]);
+        // A resume straight after another says nothing new, and a tracker respawned on every frame
+        // once left 100k of them behind.
+        self.exec_historic(
+            "DELETE FROM fleet_moves WHERE rowid IN (
+                 SELECT rowid FROM (
+                     SELECT rowid, kind, LAG(kind) OVER (PARTITION BY fleet_id ORDER BY at, rowid) AS prev
+                     FROM fleet_moves)
+                 WHERE kind = 'resume' AND prev = 'resume')",
+            [],
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_drops_back_to_back_resumes_and_keeps_the_rest() {
+        let s = Store::mem();
+        let ev = |at: i64, kind: Kind| MoveEvent::new(at, kind);
+        s.add_fleet_moves("f", &[ev(100, Kind::Join), ev(200, Kind::Resume), ev(200, Kind::Resume), ev(201, Kind::Resume)]);
+        s.add_fleet_moves("f", &[ev(300, Kind::Leave), ev(400, Kind::Resume)]);
+        s.add_fleet_moves("g", &[ev(200, Kind::Resume)]);
+        s.prune_fleet_moves(500);
+        let kinds = |id: &str| s.fleet_moves(id).iter().map(|e| (e.at, e.kind)).collect::<Vec<_>>();
+        assert_eq!(kinds("f"), [(100, Kind::Join), (200, Kind::Resume), (300, Kind::Leave), (400, Kind::Resume)]);
+        assert_eq!(kinds("g"), [(200, Kind::Resume)], "another fleet's resume is its own");
     }
 }
