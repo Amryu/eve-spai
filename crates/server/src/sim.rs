@@ -16,6 +16,8 @@ const V: &str = "/api/sim";
 /// A fit document, generously: a fit is a few kilobytes.
 pub const MAX_DOC: usize = 64 * 1024;
 pub const MAX_PER_CHAR: i64 = 500;
+/// A supplied doctrine holds its fits: a dozen of them, under the API's one-megabyte body.
+pub const MAX_SUPPLIED: usize = 768 * 1024;
 
 pub fn routes(state: AppState) -> Router<AppState> {
     let r = |p: &str| format!("{V}{p}");
@@ -26,6 +28,10 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(&r("/doctrines/{id}"), axum::routing::put(put_doctrine).delete(delete_doctrine))
         .route(&r("/fits"), get(|s, me| list(s, me, "sim_fits")))
         .route(&r("/fits/{id}"), get(|s, me, p| fetch(s, me, p, "sim_fits")).put(|s, me, p, body| put(s, me, p, body, "sim_fits")).delete(|s, me, p| delete(s, me, p, "sim_fits")))
+        .route(&r("/supplied"), get(supplied))
+        .route(&r("/supplied/{id}"), axum::routing::put(put_supplied).delete(delete_supplied))
+        .route(&r("/own-doctrines"), get(|s, me| list(s, me, "sim_own_doctrines")))
+        .route(&r("/own-doctrines/{id}"), get(|s, me, p| fetch(s, me, p, "sim_own_doctrines")).put(|s, me, p, body| put(s, me, p, body, "sim_own_doctrines")).delete(|s, me, p| delete(s, me, p, "sim_own_doctrines")))
         .route(&r("/fleets"), get(|s, me| list(s, me, "sim_fleets")))
         .route(&r("/fleets/{id}"), get(|s, me, p| fetch(s, me, p, "sim_fleets")).put(|s, me, p, body| put(s, me, p, body, "sim_fleets")).delete(|s, me, p| delete(s, me, p, "sim_fleets")))
         .layer(axum::middleware::from_fn_with_state(state, crate::whshare::rate_limit))
@@ -86,11 +92,7 @@ fn row_doctrine(r: &sqlx::postgres::PgRow) -> Doctrine {
 
 /// The presets the caller may see; a signed-in Imperium character sees them all.
 async fn doctrines(State(st): State<AppState>, OptionalSessionIdentity(me): OptionalSessionIdentity) -> Result<Json<Vec<Doctrine>>, AppError> {
-    let member = match me {
-        Some(me) => st.imperium.alliance(me.char_id).await?.is_some_and(br_core::packs::is_imperium),
-        None => false,
-    };
-    let sides: Vec<String> = visible_sides(member).iter().map(|s| s.to_string()).collect();
+    let sides: Vec<String> = visible_sides(member(&st, me).await?).iter().map(|s| s.to_string()).collect();
     let rows = sqlx::query("SELECT * FROM sim_doctrines WHERE side = ANY($1) ORDER BY side, name").bind(&sides).fetch_all(&st.db).await?;
     Ok(Json(rows.iter().map(row_doctrine).collect()))
 }
@@ -164,6 +166,96 @@ async fn put_doctrine(State(st): State<AppState>, SessionIdentity(me): SessionId
 async fn delete_doctrine(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
     require_admin(&st, &me)?;
     let n = sqlx::query("DELETE FROM sim_doctrines WHERE id = $1").bind(&id).execute(&st.db).await?.rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Supplied {
+    pub id: String,
+    pub side: String,
+    pub rev: i32,
+    pub updated_at: i64,
+    pub doc: serde_json::Value,
+}
+
+async fn member(st: &AppState, me: Option<crate::auth::Identity>) -> Result<bool, AppError> {
+    Ok(match me {
+        Some(me) => st.imperium.alliance(me.char_id).await?.is_some_and(br_core::packs::is_imperium),
+        None => false,
+    })
+}
+
+/// The supplied doctrines the caller may see, by the same sides as the presets.
+async fn supplied(State(st): State<AppState>, OptionalSessionIdentity(me): OptionalSessionIdentity) -> Result<Json<Vec<Supplied>>, AppError> {
+    let sides: Vec<String> = visible_sides(member(&st, me).await?).iter().map(|s| s.to_string()).collect();
+    let rows = sqlx::query("SELECT id, side, rev, updated_at, doc FROM sim_supplied WHERE side = ANY($1) ORDER BY alliance, category, name").bind(&sides).fetch_all(&st.db).await?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| Supplied { id: r.get("id"), side: r.get("side"), rev: r.get("rev"), updated_at: r.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").timestamp(), doc: r.get("doc") })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct SuppliedIn {
+    pub side: String,
+    pub doc: serde_json::Value,
+}
+
+/// What a supplied doctrine document must hold: its own id, a name, where it nests, and fits
+/// that each carry a fit naming a ship.
+pub fn check_supplied(id: &str, doc: &serde_json::Value) -> Result<(String, String, String), AppError> {
+    if doc.to_string().len() > MAX_SUPPLIED {
+        return Err(AppError::PayloadTooLarge);
+    }
+    let text = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_owned();
+    if text("id") != id {
+        return Err(AppError::BadRequest("the document's id is not the one in the path".into()));
+    }
+    let (name, alliance, category) = (text("name"), text("alliance"), text("category"));
+    if name.is_empty() || name.len() > 120 || alliance.len() > 120 || category.len() > 60 {
+        return Err(AppError::BadRequest("a name of 1 to 120 characters, and an alliance and kind that fit".into()));
+    }
+    let fits = doc.get("fits").and_then(|f| f.as_array()).ok_or_else(|| AppError::BadRequest("the doctrine lists no fits".into()))?;
+    for f in fits {
+        check_doc(f.get("fit").unwrap_or(&serde_json::Value::Null))?;
+    }
+    Ok((name, alliance, category))
+}
+
+async fn put_supplied(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>, Json(d): Json<SuppliedIn>) -> Result<Json<Supplied>, AppError> {
+    require_admin(&st, &me)?;
+    if !["imperium", "enemy", "public"].contains(&d.side.as_str()) {
+        return Err(AppError::BadRequest("side must be imperium, enemy or public".into()));
+    }
+    check_id(&id)?;
+    let (name, alliance, category) = check_supplied(&id, &d.doc)?;
+    let row = sqlx::query(
+        "INSERT INTO sim_supplied (id, side, alliance, category, name, doc, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET side = EXCLUDED.side, alliance = EXCLUDED.alliance, category = EXCLUDED.category,
+             name = EXCLUDED.name, doc = EXCLUDED.doc, updated_by = EXCLUDED.updated_by,
+             rev = sim_supplied.rev + 1, updated_at = now()
+         RETURNING id, side, rev, updated_at, doc",
+    )
+    .bind(&id)
+    .bind(&d.side)
+    .bind(&alliance)
+    .bind(&category)
+    .bind(&name)
+    .bind(&d.doc)
+    .bind(me.char_id)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(Supplied { id: row.get("id"), side: row.get("side"), rev: row.get("rev"), updated_at: row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").timestamp(), doc: row.get("doc") }))
+}
+
+async fn delete_supplied(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    require_admin(&st, &me)?;
+    let n = sqlx::query("DELETE FROM sim_supplied WHERE id = $1").bind(&id).execute(&st.db).await?.rows_affected();
     if n == 0 {
         return Err(AppError::NotFound);
     }
@@ -307,6 +399,23 @@ mod tests {
         assert!(save_allowed(Some(3), 0), "a document first saved elsewhere lands too");
         assert!(!save_allowed(Some(3), 2));
         assert!(!save_allowed(Some(3), 4));
+    }
+
+    #[test]
+    fn a_supplied_doctrine_names_itself_and_its_fits_name_ships() {
+        let fit = serde_json::json!({"v": 1, "ship": 587, "name": "DPS"});
+        let ok = serde_json::json!({"id": "gsf-1", "name": "Rifters", "alliance": "Goonswarm Federation", "category": "Strategic", "fits": [{"fit_id": "gsf-1~rifter", "fit": fit}]});
+        assert_eq!(check_supplied("gsf-1", &ok).unwrap(), ("Rifters".into(), "Goonswarm Federation".into(), "Strategic".into()));
+        assert!(check_supplied("gsf-2", &ok).is_err(), "the id in the path is the document's");
+        let mut no_fits = ok.clone();
+        no_fits["fits"] = serde_json::Value::Null;
+        assert!(check_supplied("gsf-1", &no_fits).is_err());
+        let mut shipless = ok.clone();
+        shipless["fits"][0]["fit"] = serde_json::json!({"v": 1});
+        assert!(check_supplied("gsf-1", &shipless).is_err());
+        let mut unnamed = ok.clone();
+        unnamed["name"] = serde_json::json!(" ");
+        assert!(check_supplied("gsf-1", &unnamed).is_err());
     }
 
     #[test]

@@ -149,7 +149,7 @@ async fn pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new().max_connections(5).connect(&url).await.unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-    sqlx::query("TRUNCATE battle_reports, upload_quota, sim_doctrines, sim_fits, sim_fleets").execute(&pool).await.unwrap();
+    sqlx::query("TRUNCATE battle_reports, upload_quota, sim_doctrines, sim_fits, sim_fleets, sim_supplied, sim_own_doctrines").execute(&pool).await.unwrap();
     Some(pool)
 }
 
@@ -975,4 +975,46 @@ async fn sim_doctrines_are_gated_by_side_and_written_by_admins() {
     assert_eq!(send(&app, "DELETE", "/api/sim/doctrines/imp-1", Some(&member), None).await.0, StatusCode::FORBIDDEN);
     assert_eq!(send(&app, "DELETE", "/api/sim/doctrines/imp-1", Some(&admin), None).await.0, StatusCode::OK);
     assert_eq!(names(&send(&app, "GET", "/api/sim/doctrines", Some(&member), None).await.1), vec!["enemy-1", "pub-1"]);
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn sim_supplied_doctrines_are_gated_by_side_and_own_ones_per_character() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool, base_config(url));
+    let admin = mint(&app, 90000001, "Admin").await;
+    let member = mint(&app, 90000002, "Member").await;
+    let outsider = mint(&app, 90000003, "Outsider").await;
+    let fit = json!({"v": 1, "ship": 587, "name": "DPS", "modules": []});
+    let doc = |id: &str, name: &str| json!({"id": id, "name": name, "alliance": "Goonswarm Federation", "category": "Strategic", "tags": ["Strategic"], "fits": [{"fit_id": format!("{id}~rifter"), "fit": fit, "main": true}]});
+    for (id, side) in [("gsf-1", "imperium"), ("pub-1", "public")] {
+        let (status, body) = send_json(&app, "PUT", &format!("/api/sim/supplied/{id}"), Some(&admin), json!({"side": side, "doc": doc(id, "Rifters")})).await;
+        assert_eq!((status, body["rev"].as_i64()), (StatusCode::OK, Some(1)), "{body:?}");
+    }
+    assert_eq!(send_json(&app, "PUT", "/api/sim/supplied/gsf-1", Some(&member), json!({"side": "imperium", "doc": doc("gsf-1", "x")})).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/supplied/gsf-2", Some(&admin), json!({"side": "imperium", "doc": doc("gsf-1", "x")})).await.0, StatusCode::BAD_REQUEST);
+    let ids = |v: &Value| v.as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(ids(&send(&app, "GET", "/api/sim/supplied", None, None).await.1), vec!["pub-1"]);
+    assert_eq!(ids(&send(&app, "GET", "/api/sim/supplied", Some(&outsider), None).await.1), vec!["pub-1"]);
+    let (status, seen) = send(&app, "GET", "/api/sim/supplied", Some(&member), None).await;
+    assert_eq!((status, seen.as_array().unwrap().len()), (StatusCode::OK, 2));
+    assert_eq!(seen[0]["doc"]["fits"][0]["fit"]["ship"].as_i64(), Some(587));
+    let (_, again) = send_json(&app, "PUT", "/api/sim/supplied/gsf-1", Some(&admin), json!({"side": "imperium", "doc": doc("gsf-1", "Rifters 2")})).await;
+    assert_eq!((again["rev"].as_i64(), again["doc"]["name"].as_str()), (Some(2), Some("Rifters 2")));
+    assert_eq!(send(&app, "DELETE", "/api/sim/supplied/gsf-1", Some(&member), None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "DELETE", "/api/sim/supplied/gsf-1", Some(&admin), None).await.0, StatusCode::OK);
+    assert_eq!(ids(&send(&app, "GET", "/api/sim/supplied", Some(&member), None).await.1), vec!["pub-1"]);
+    assert_eq!(send(&app, "DELETE", "/api/sim/supplied/pub-1", Some(&admin), None).await.0, StatusCode::OK);
+
+    let own = json!({"id": "mine-1", "name": "My Rifters", "alliance": "", "category": "Strategic", "fits": [{"fit_id": "fit-9"}], "origin": "gsf-1"});
+    let (status, saved) = send_json(&app, "PUT", "/api/sim/own-doctrines/mine-1", Some(&member), json!({"name": "My Rifters", "rev": 0, "doc": own})).await;
+    assert_eq!((status, saved["rev"].as_i64()), (StatusCode::OK, Some(1)), "{saved:?}");
+    assert_eq!(send(&app, "GET", "/api/sim/own-doctrines", Some(&member), None).await.1.as_array().unwrap().len(), 1);
+    assert_eq!(send(&app, "GET", "/api/sim/own-doctrines", Some(&outsider), None).await.1.as_array().unwrap().len(), 0);
+    assert_eq!(send(&app, "GET", "/api/sim/own-doctrines", None, None).await.0, StatusCode::UNAUTHORIZED);
+    let (_, got) = send(&app, "GET", "/api/sim/own-doctrines/mine-1", Some(&member), None).await;
+    assert_eq!(got["doc"]["origin"].as_str(), Some("gsf-1"));
+    assert_eq!(send(&app, "DELETE", "/api/sim/own-doctrines/mine-1", Some(&member), None).await.0, StatusCode::OK);
 }
