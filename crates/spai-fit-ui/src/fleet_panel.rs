@@ -685,7 +685,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                         };
                         ui.label(tr!("Refit"));
                         let mut pick: Option<Option<String>> = None;
-                        egui::ComboBox::from_id_salt("sim_fleet_refit").selected_text(shown).width(160.0).show_ui(ui, |ui| {
+                        crate::combo::combo(ui, "sim_fleet_refit", 160.0, shown, |ui| {
                             if ui.menu_label(current == Some(None), tr!("Base fits")).clicked() {
                                 pick = Some(None);
                             }
@@ -726,7 +726,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 let count = counts.get(i).copied().unwrap_or(0);
                 let rule_row = |ui: &mut egui::Ui, slot: &mut FleetSlot, changed: &mut bool| {
                     let mut rule = slot.rule;
-                    egui::ComboBox::from_id_salt(("sim_fleet_rule", i)).selected_text(rule_name(rule)).width(84.0).show_ui(ui, |ui| {
+                    crate::combo::combo(ui, ("sim_fleet_rule", i), 84.0, rule_name(rule), |ui| {
                         for r in [CountRule::Fixed(count.max(1)), CountRule::Percent(10.0), CountRule::Fill { min: 0, max: 1000 }] {
                             if ui.menu_label(std::mem::discriminant(&rule) == std::mem::discriminant(&r), rule_name(r)).clicked() {
                                 rule = r;
@@ -762,7 +762,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                     let base = base_names.get(&slot.fit_id).cloned().unwrap_or_else(|| tr!("Base").to_owned());
                     let flying = slot.variation.and_then(|v| list.iter().find(|(x, _)| *x == v)).map_or_else(|| base.clone(), |(_, n)| n.clone());
                     ui.add_enabled_ui(!list.is_empty(), |ui| {
-                        egui::ComboBox::from_id_salt(("sim_fleet_variation", i)).selected_text(text::clip(&flying, 14)).width(120.0).show_ui(ui, |ui| {
+                        crate::combo::combo(ui, ("sim_fleet_variation", i), 120.0, &flying, |ui| {
                             if ui.menu_label(slot.variation.is_none(), base.as_str()).clicked() {
                                 slot.variation = None;
                                 *changed = true;
@@ -789,7 +789,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                     let fit_name = library.iter().find(|x| x.id == slot.fit_id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(id, _)| *id == slot.fit_id).map(|(_, n)| n.clone())).unwrap_or_else(|| tr!("Choose a fit").to_owned());
                     let rest = if narrow { 40.0 } else { 490.0 };
                     let fit_w = (ui.available_width() - rest).max(100.0);
-                    egui::ComboBox::from_id_salt(("sim_fleet_fit", i)).selected_text(text::clip(&fit_name, 28)).width(fit_w).show_ui(ui, |ui| {
+                    crate::combo::combo(ui, ("sim_fleet_fit", i), fit_w, &fit_name, |ui| {
                         let before = slot.fit_id.clone();
                         for x in &library {
                             changed |= ui.menu_value(&mut slot.fit_id, x.id.clone(), x.name.clone()).changed();
@@ -841,7 +841,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                     Some(id) => id.strip_prefix(ENEMY_DOCTRINE).map(|g| trf!("{name} (enemy doctrine)", name = g)).or_else(|| fleets.iter().find(|x| x.id == id).map(|x| x.name.clone())).unwrap_or_else(|| tr!("none").to_owned()),
                     None => tr!("none").to_owned(),
                 };
-                egui::ComboBox::from_id_salt("sim_fleet_enemy").selected_text(text::clip(&enemy_name, 28)).width(220.0).show_ui(ui, |ui| {
+                crate::combo::combo(ui, "sim_fleet_enemy", 220.0, &enemy_name, |ui| {
                     if ui.menu_label(session.enemy.is_none(), tr!("none")).clicked() {
                         session.enemy = None;
                         f.enemy = None;
@@ -1150,10 +1150,10 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
             use spai_ui::widgets::SteadySelect as _;
             ui.add_space(crate::rows::GAP);
             let w = egui::vec2(((ui.available_width() - crate::rows::GAP * 2.0 - ui.spacing().item_spacing.x) / 2.0).max(60.0), 24.0);
-            // One name a button, the shooter's: two would not fit the column.
-            let chars = ((w.x / 7.5) as usize).saturating_sub(7).max(6);
+            // One name a button, the shooter's: two would not fit the column. The button cuts it to
+            // its width.
             for (dir, (a, b)) in [(0, (&mine.name, &theirs.name)), (1, (&theirs.name, &mine.name))] {
-                let label = trf!("{a} shoots", a = text::clip(a, chars));
+                let label = trf!("{a} shoots", a = a);
                 if ui.menu_label_sized(w, sim.fleet_view == dir, label).on_hover_text(trf!("{a} shooting {b}", a = a, b = b)).clicked() {
                     sim.fleet_view = dir;
                 }
@@ -1551,7 +1551,7 @@ pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, Stri
                     // None clears both; Some(Ok(fit)) a fit; Some(Err(hull)) a generic booster.
                     let mut pick: Option<Option<Result<String, Option<spai_fit::ids::TypeId>>>> = None;
                     let combo_w = (ui.available_width() - 8.0 - if shortcut.is_some() { 4.0 * 26.0 } else { 0.0 }).clamp(120.0, 260.0);
-                    egui::ComboBox::from_id_salt((salt, kind_name(kind))).selected_text(text::clip(&name, 36)).width(combo_w).show_ui(ui, |ui| {
+                    crate::combo::combo(ui, (salt, kind_name(kind)), combo_w, &name, |ui| {
                         want_all_docs = true;
                         if ui.menu_label(current.is_none() && shortcut.is_none(), tr!("none")).clicked() {
                             pick = Some(None);

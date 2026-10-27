@@ -597,7 +597,7 @@ fn publish_window(sim: &mut SimUi, ctx: &egui::Context) {
         ui.add(egui::Label::new(trf!("{n} doctrines go to everyone who sees this side. Publishing one again replaces it, by its id.", n = p.doctrines.len())).wrap());
         ui.horizontal(|ui| {
             ui.label(tr!("Side"));
-            egui::ComboBox::from_id_salt("sim_publish_supplied_side").selected_text(p.side.name()).width(160.0).show_ui(ui, |ui| {
+            crate::combo::combo(ui, "sim_publish_supplied_side", 160.0, p.side.name(), |ui| {
                 for side in DoctrineSide::ALL {
                     ui.menu_value(&mut p.side, side, side.name());
                 }
@@ -701,7 +701,7 @@ fn edit_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                             ui.set_width(w);
                             ui.add(egui::Label::new(labels.get(i).cloned().unwrap_or_default()).truncate());
                         });
-                        egui::ComboBox::from_id_salt(("sim_doctrine_role", i)).selected_text(role_name(f.role)).width(96.0).show_ui(ui, |ui| {
+                        crate::combo::combo(ui, ("sim_doctrine_role", i), 96.0, role_name(f.role), |ui| {
                             for r in FitRole::ALL {
                                 ui.menu_value(&mut f.role, r, role_name(r));
                             }

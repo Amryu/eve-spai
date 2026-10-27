@@ -10054,3 +10054,26 @@ fn uitest_a_projected_supplied_fit_is_named() {
     assert!(h.query_all_by_label_contains("Boost - V25.1").next().is_some(), "the supplied fit's name is on its row");
     assert!(h.query_all_by_label_contains("A fit no longer saved").next().is_none());
 }
+
+/// A dropdown keeps its width whatever its choice: a long one is cut to the box, whole on hover.
+#[test]
+fn uitest_dropdowns_keep_their_width_and_cut_only_what_does_not_fit() {
+    let rects: std::rc::Rc<std::cell::RefCell<Vec<egui::Rect>>> = Default::default();
+    let seen = rects.clone();
+    let long = "A fit name so long that no dropdown could ever hold it without cutting it short".to_owned();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 300.0)).build_ui(move |ui| {
+        let mut out = Vec::new();
+        for text in ["Short", long.as_str()] {
+            ui.horizontal(|ui| {
+                out.push(spai_fit_ui::combo::combo(ui, text, 200.0, text, |ui| ui.label("x")).response.rect);
+                ui.label("after");
+            });
+        }
+        *seen.borrow_mut() = out;
+    });
+    h.run();
+    let r = rects.borrow().clone();
+    assert_eq!(r.len(), 2);
+    assert!((r[0].width() - r[1].width()).abs() < 0.5, "same width: {} vs {}", r[0].width(), r[1].width());
+    assert!(r[1].width() <= 201.0, "no wider than asked: {}", r[1].width());
+}

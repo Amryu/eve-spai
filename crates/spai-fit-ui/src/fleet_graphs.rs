@@ -108,7 +108,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
         use spai_ui::widgets::SteadySelect as _;
         ui.label(tr!("Plot"));
         let buttons_w = if place.is_some() { 5.0 * 28.0 } else { 0.0 };
-        egui::ComboBox::from_id_salt("sim_fleet_graph").selected_text(sim.fleet_graph.name()).width(280.0f32.min(width - 60.0 - buttons_w).max(120.0)).show_ui(ui, |ui| {
+        crate::combo::combo(ui, "sim_fleet_graph", 280.0f32.min(width - 60.0 - buttons_w).max(120.0), sim.fleet_graph.name(), |ui| {
             for g in FleetGraph::ALL {
                 if ui.menu_label(sim.fleet_graph == g, g.name()).clicked() {
                     sim.fleet_graph = g;

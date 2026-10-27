@@ -530,7 +530,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
             ui.set_height(30.0);
             let hull = name(&dogma, s.ship);
             if !wide {
-                egui::ComboBox::from_id_salt("sim_fleet_ships_pick_menu").selected_text(text::clip(&s.name, 20)).width(150.0).show_ui(ui, |ui| {
+                crate::combo::combo(ui, "sim_fleet_ships_pick_menu", 150.0, &s.name, |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     for (_, o) in &ships {
                         if ui.menu_label(o.slot == k, trf!("{name} × {n}", name = o.name, n = o.count)).clicked() {
@@ -567,7 +567,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
                     let n = name(&dogma, m);
                     n.strip_prefix(hull.as_str()).map_or(n.clone(), |r| r.trim().to_owned())
                 };
-                egui::ComboBox::from_id_salt(("sim_fleet_ship_mode", k)).selected_text(flying.map(short).unwrap_or_default()).width(130.0).show_ui(ui, |ui| {
+                crate::combo::combo(ui, ("sim_fleet_ship_mode", k), 130.0, flying.map(short).unwrap_or_default(), |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     for m in &modes {
                         if ui.menu_label(flying == Some(*m), short(*m)).clicked() && flying != Some(*m) {
@@ -589,10 +589,10 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
             } else {
                 ui.label(tr!("Target"));
                 let current = scene.offered.iter().find(|(t, _, _)| Some(t) == st.target.as_ref()).map(|(_, n, _)| n.clone()).unwrap_or_default();
-                egui::ComboBox::from_id_salt("sim_fleet_ships_target").selected_text(text::clip(&current, 30)).width(220.0).show_ui(ui, |ui| {
+                crate::combo::combo(ui, "sim_fleet_ships_target", 220.0, &current, |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     for (t, n, _) in &scene.offered {
-                        if ui.menu_label(st.target.as_ref() == Some(t), text::clip(n, 44)).clicked() {
+                        if ui.menu_label(st.target.as_ref() == Some(t), n.as_str()).clicked() {
                             st.target = Some(t.clone());
                         }
                     }
@@ -1071,9 +1071,9 @@ fn modules_window(ctx: &egui::Context, dogma: &Dogma, st: &mut ShipsState, key: 
                 if !scripts.is_empty() {
                     use spai_ui::widgets::SteadySelect as _;
                     let current = m.charge.map_or_else(|| tr!("No script").to_owned(), |c| name(dogma, c));
-                    let shown = egui::RichText::new(text::clip(&current, 20));
+                    let shown = egui::RichText::new(&current);
                     let shown = if script_changed { shown.color(ui.visuals().warn_fg_color) } else { shown };
-                    egui::ComboBox::from_id_salt(("sim_fleet_ship_script", m.slot, m.index)).selected_text(shown).width(script_w - 12.0).show_ui(ui, |ui| {
+                    crate::combo::combo(ui, ("sim_fleet_ship_script", m.slot, m.index), script_w - 12.0, shown, |ui| {
                         if ui.menu_label(m.charge.is_none(), tr!("No script")).clicked() {
                             set_script = Some((m.slot, m.index, None));
                         }

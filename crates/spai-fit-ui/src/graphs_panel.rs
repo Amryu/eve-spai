@@ -193,7 +193,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         let combo_w = 190.0f32.min(width);
         ui.allocate_ui_with_layout(egui::vec2(combo_w + 160.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.label(tr!("Plot"));
-            egui::ComboBox::from_id_salt("sim_graph_y").selected_text(y_name(y)).width(combo_w - 50.0).show_ui(ui, |ui| {
+            crate::combo::combo(ui, "sim_graph_y", combo_w - 50.0, y_name(y), |ui| {
                 use spai_ui::widgets::SteadySelect as _;
                 for cand in GraphY::ALL {
                     if ui.menu_label(cand == y, y_name(cand)).clicked() && cand != y {
@@ -207,7 +207,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         ui.allocate_ui_with_layout(egui::vec2(combo_w + 40.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.label(tr!("against"));
-            egui::ComboBox::from_id_salt("sim_graph_x").selected_text(x_name(x)).width(combo_w - 30.0).show_ui(ui, |ui| {
+            crate::combo::combo(ui, "sim_graph_x", combo_w - 30.0, x_name(x), |ui| {
                 use spai_ui::widgets::SteadySelect as _;
                 for cand in GraphX::ALL {
                     let fits = GraphKind::from_axes(y, cand);

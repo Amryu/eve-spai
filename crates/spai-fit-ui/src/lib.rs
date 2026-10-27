@@ -15,6 +15,7 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod browser;
+pub mod combo;
 pub mod compare;
 pub mod details;
 pub mod mutation;
@@ -859,7 +860,7 @@ impl SimUi {
                 ui.add(egui::TextEdit::singleline(&mut dialog.name).desired_width(280.0));
                 ui.end_row();
                 ui.label(tr!("Side"));
-                egui::ComboBox::from_id_salt("sim_publish_side").selected_text(dialog.side.name()).width(160.0).show_ui(ui, |ui| {
+                crate::combo::combo(ui, "sim_publish_side", 160.0, dialog.side.name(), |ui| {
                     for side in DoctrineSide::ALL {
                         ui.menu_value(&mut dialog.side, side, side.name());
                     }
@@ -1826,7 +1827,7 @@ impl SimUi {
                 }
                 let name = self.profiles.get(self.profile).map_or(String::new(), |p| p.name.clone());
                 let width = if narrow { 110.0 } else { 180.0 };
-                egui::ComboBox::from_id_salt("sim_profile").selected_text(text::clip(&name, if narrow { 12 } else { 22 })).width(width).show_ui(ui, |ui| {
+                crate::combo::combo(ui, "sim_profile", width, &name, |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     for i in 0..self.profiles.len() {
                         let label = self.profiles[i].name.clone();

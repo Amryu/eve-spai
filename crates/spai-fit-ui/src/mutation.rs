@@ -78,7 +78,7 @@ pub fn window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     egui::Window::new(trf!("{name}: abyssal mutation", name = name)).id(egui::Id::new("sim_mutation")).open(&mut open).collapsible(false).resizable(false).default_width(460.0).show(ctx, |ui| {
         let chosen = mutation.as_ref().map(|m| m.mutaplasmid);
         let label = chosen.and_then(|c| choices.iter().find(|(id, _)| *id == c)).map_or_else(|| tr!("None: the item as it is").to_owned(), |(_, n)| n.clone());
-        egui::ComboBox::from_id_salt("sim_mutaplasmid").width(440.0).selected_text(label).show_ui(ui, |ui| {
+        crate::combo::combo(ui, "sim_mutaplasmid", 440.0, label, |ui| {
             use spai_ui::widgets::SteadySelect as _;
             if ui.menu_label(chosen.is_none(), tr!("None: the item as it is")).clicked() {
                 set = Some(None);
