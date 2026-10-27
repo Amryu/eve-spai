@@ -2052,3 +2052,107 @@ fn update_times_read_as_dates_and_ages() {
     assert_eq!(age(0, 86_400 * 400), "13 months ago");
     assert_eq!(age(0, 86_400 * 800), "2 years ago");
 }
+
+/// Frame times of a big fleet after a layout change, on the real data: `SPAI_DOGMA_BLOB` and
+/// `SPAI_DOCTRINES` (a supplied doctrines bundle) name the files, `SPAI_DOCTRINE` the doctrine.
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB and SPAI_DOCTRINES; prints frame times"]
+fn real_data_fleet_frames_after_a_layout_change() {
+    let dogma = spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let docs: Vec<spai_fit::doctrine::Doctrine> = serde_json::from_str(&std::fs::read_to_string(std::env::var("SPAI_DOCTRINES").unwrap()).unwrap()).unwrap();
+    let want = std::env::var("SPAI_DOCTRINE").unwrap_or_else(|_| "Alpha".into());
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(Arc::new(dogma)));
+    s.handle(HostEvent::Supplied(docs.into_iter().map(|doctrine| SuppliedDoctrine { side: DoctrineSide::Imperium, rev: 1, doctrine }).collect()));
+    let d = s.supplied.iter().find(|x| x.doctrine.name.starts_with(&want)).unwrap().doctrine.clone();
+    s.new_fleet_of(&d, 1);
+    s.fleet.as_mut().unwrap().fleet.size = 250;
+    s.fleet.as_mut().unwrap().enemy = Some(crate::fleet_panel::MIRROR.into());
+    let ctx = egui::Context::default();
+    let mut frame = |s: &mut SimUi, label: &str| {
+        let t = std::time::Instant::now();
+        let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| s.show(ui));
+        });
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if ms > 30.0 {
+            println!("{label}: {ms:.0} ms");
+        }
+        ms
+    };
+    for center in [crate::Center::Fit, crate::Center::Ships, crate::Center::Scene] {
+        s.center = center;
+        s.fleet_graph_open = true;
+        // Settled first: everything worked out.
+        for _ in 0..400 {
+            frame(&mut s, "settle");
+            if !s.fleet_analysis_pending() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        s.fleet.as_mut().unwrap().fleet.slots[0].override_count = Some(37 + center as u32 as u32);
+        let mut worst: f64 = 0.0;
+        for i in 0..200 {
+            s.now_ms += 50;
+            worst = worst.max(frame(&mut s, &format!("{center:?} frame {i} after the change")));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if i > 20 && !s.fleet_analysis_pending() {
+                break;
+            }
+        }
+        println!("{center:?}: worst frame after a layout change {worst:.0} ms");
+    }
+    // The web build's frames hold one step each at most: the dearest step.
+    let fleet = s.fleet.as_ref().unwrap().fleet.clone();
+    let (mine, _) = s.fleet_stats_settled().unwrap();
+    let mut job = crate::fleet_panel::FightJob::new(s.dogma.clone().unwrap(), fleet.clone(), fleet, mine.clone(), mine, Vec::new());
+    let (mut worst, mut steps) = (0.0f64, 0);
+    loop {
+        let t = std::time::Instant::now();
+        let done = job.step();
+        worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
+        steps += 1;
+        if done {
+            break;
+        }
+    }
+    println!("fight in {steps} steps, the dearest {worst:.0} ms");
+}
+
+/// The web build takes a fight a step at a time between frames: the steps add up to the same
+/// fight as one run, and each is a small part of it.
+#[test]
+fn a_fight_taken_step_by_step_is_the_fight_worked_out_at_once() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let fit_id = fit_id.clone();
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+    let fleet = f.fleet.clone();
+    let (mine, _) = s.fleet_stats_settled().unwrap();
+    let job = || crate::fleet_panel::FightJob::new(s.dogma.clone().unwrap(), fleet.clone(), fleet.clone(), mine.clone(), mine.clone(), Vec::new());
+    let (whole, _) = job().run(&|_| {});
+    let mut stepped = job();
+    let mut steps = 0;
+    let mut last = 0.0;
+    while !stepped.step() {
+        steps += 1;
+        assert!(stepped.progress() >= last, "progress only grows");
+        last = stepped.progress();
+    }
+    let (parts, fresh) = stepped.finish();
+    assert!(steps > 3, "split into steps: {steps}");
+    assert_eq!(parts.sweep.points, whole.sweep.points);
+    assert_eq!(parts.race.timeline, whole.race.timeline);
+    assert_eq!(fresh.len(), 1, "the slot's options handed back for the cache, once for both sides");
+}

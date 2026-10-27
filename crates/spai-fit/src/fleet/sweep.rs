@@ -186,19 +186,23 @@ fn held(own: &Side, other: &Side, distance: f64) -> (bool, bool, f64) {
 
 /// Both fleets over `ranges` (ascending, metres).
 pub fn sweep(a: &Side, b: &Side, ranges: &[f64]) -> Sweep {
-    let mut points: Vec<RangePoint> = ranges
-        .iter()
-        .map(|&d| {
-            let (aw, at, an) = held(a, b, d);
-            let (bw, bt, bn) = held(b, a, d);
-            let ((ad, av), (bd, bv)) = (landed(a, b, d), landed(b, a, d));
-            RangePoint {
-                distance: d,
-                a: Facing { applied_dps: ad, applied_volley: av, webbed: aw, tackled: at, neut_pressure: an, score: 0.0 },
-                b: Facing { applied_dps: bd, applied_volley: bv, webbed: bw, tackled: bt, neut_pressure: bn, score: 0.0 },
-            }
-        })
-        .collect();
+    finish(a, b, ranges.iter().map(|&d| point(a, b, d)).collect())
+}
+
+/// Both fleets at one range, unscored: a sweep worked out a few ranges at a time.
+pub fn point(a: &Side, b: &Side, d: f64) -> RangePoint {
+    let (aw, at, an) = held(a, b, d);
+    let (bw, bt, bn) = held(b, a, d);
+    let ((ad, av), (bd, bv)) = (landed(a, b, d), landed(b, a, d));
+    RangePoint {
+        distance: d,
+        a: Facing { applied_dps: ad, applied_volley: av, webbed: aw, tackled: at, neut_pressure: an, score: 0.0 },
+        b: Facing { applied_dps: bd, applied_volley: bv, webbed: bw, tackled: bt, neut_pressure: bn, score: 0.0 },
+    }
+}
+
+/// The sweep of these points, ascending: each scored, the best ranges and the favoured stretches.
+pub fn finish(a: &Side, b: &Side, mut points: Vec<RangePoint>) -> Sweep {
     let a_max = points.iter().map(|p| p.a.applied_dps).fold(0.0, f64::max);
     let b_max = points.iter().map(|p| p.b.applied_dps).fold(0.0, f64::max);
     let ehp = |shooter: &Side, other: &Side| primary(shooter.fleet, other.stats).map_or(0.0, |t| t.computed.tank.ehp);

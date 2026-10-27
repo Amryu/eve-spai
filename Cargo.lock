@@ -5795,6 +5795,7 @@ dependencies = [
  "serde_json",
  "spai-fit",
  "spai-ui",
+ "web-time",
 ]
 
 [[package]]

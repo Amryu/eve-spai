@@ -315,52 +315,6 @@ impl SimUi {
         s
     }
 
-    /// Every weapon's options among its charges. Each recomputes the fit, the dearest part of an
-    /// analysis, so they are kept per fit, skills and boosts: not per fleet, whose size or counts
-    /// change them not.
-    pub(crate) fn cached_ammo(&self, s: &Arc<FleetStats>) -> Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>> {
-        use std::hash::{Hash, Hasher};
-        if let Some((_, a)) = self.fleet_cache.borrow().ammo_of.iter().find(|(k, _)| Arc::ptr_eq(k, s)) {
-            return a.clone();
-        }
-        let Some(dogma) = self.dogma.as_ref() else { return Arc::default() };
-        let _t = spai_ui::timing::span("sim: fleet ammo options");
-        let env = format!("{:?}", s.env);
-        let out: Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>> = s
-            .slots
-            .iter()
-            .map(|x| {
-                // What is loaded changes no option's figures, only which is loaded and carried:
-                // a fit that differs by its charges alone shares the options.
-                let mut bare = x.fit.clone();
-                for m in &mut bare.modules {
-                    m.charge = m.charge.map(|_| 0);
-                }
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                serde_json::to_string(&bare).unwrap_or_default().hash(&mut h);
-                let mut levels: Vec<(u32, u8)> = x.skills.levels.iter().map(|(k, v)| (*k, *v)).collect();
-                levels.sort_unstable();
-                (levels, x.skills.fallback, &env).hash(&mut h);
-                let key = h.finish();
-                let hit = self.fleet_cache.borrow().ammo.iter().find(|(k, _)| *k == key).map(|(_, a)| a.clone());
-                let a = hit.unwrap_or_else(|| {
-                    let a = Arc::new(spai_fit::fleet::ammo::choices(dogma, &x.fit, &x.skills, &s.env));
-                    let mut cache = self.fleet_cache.borrow_mut();
-                    cache.ammo.insert(0, (key, a.clone()));
-                    cache.ammo.truncate(CACHED_SLOTS);
-                    a
-                });
-                let mut a = (*a).clone();
-                relabel(&mut a, &x.fit);
-                a
-            })
-            .collect();
-        let out = Arc::new(out);
-        let mut cache = self.fleet_cache.borrow_mut();
-        cache.ammo_of.insert(0, (s.clone(), out.clone()));
-        cache.ammo_of.truncate(4);
-        out
-    }
 }
 
 /// The options as this fit flies them: the charge each weapon has loaded, and which it carries.
@@ -395,9 +349,6 @@ pub const SETTLE_MS: u64 = 250;
 pub struct FleetCache {
     stats: Vec<(u64, Arc<FleetStats>)>,
     ammo: Vec<(u64, Arc<Vec<spai_fit::fleet::ammo::AmmoChoice>>)>,
-    /// Every slot's options for one fleet's numbers, kept with them so the same numbers are not
-    /// looked through again each frame.
-    ammo_of: Vec<(Arc<FleetStats>, Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>>)>,
     /// Enemy doctrine groups built into fleets, by what they were built from.
     doctrine: Vec<(u64, Fleet)>,
     /// An analysis asked for but not yet worked out, and since when.
@@ -408,10 +359,13 @@ pub struct FleetCache {
     last_of: HashMap<String, Arc<FleetStats>>,
     /// An analysis being worked out on its own thread, by what it is of, and how far along it is
     /// in thousandths.
-    job: Option<(u64, std::sync::mpsc::Receiver<Analysis>, Arc<std::sync::atomic::AtomicU32>)>,
-    /// The web build works an analysis out on the frame after it has said so, so the spinner
-    /// shows before the frame it holds up.
-    announced: Option<u64>,
+    job: Option<(u64, std::sync::mpsc::Receiver<(Analysis, Vec<(u64, Arc<Choices>)>)>, Arc<std::sync::atomic::AtomicU32>)>,
+    /// The web build's run, taken a few steps a frame.
+    local: Option<(u64, FightJob)>,
+    /// Slots' charge options being worked out on their own threads, by `ammo_key`.
+    ammo_jobs: Vec<(u64, std::sync::mpsc::Receiver<Arc<Choices>>)>,
+    /// The web build has slots' options still to work out, one a frame.
+    ammo_waiting: bool,
     /// Per burst kind the fits carrying it, by the fits and documents at hand.
     boosting: Option<(u64, Vec<(BurstKind, Vec<(String, String)>)>)>,
 }
@@ -458,10 +412,20 @@ impl SimUi {
             self.fleet_cache.get_mut().pending = None;
             return cached.map(|(_, a)| a);
         }
+        // The web build's run under way: a few more of its steps this frame.
+        if self.fleet_cache.get_mut().local.as_ref().is_some_and(|(k, _)| *k == key) {
+            return self.step_local(key).or_else(|| cached.map(|(_, a)| a));
+        }
         // A run under way: its result once it is in, the last one until then.
         let done = match &self.fleet_cache.get_mut().job {
             Some((k, rx, _)) if *k == key => match rx.try_recv() {
-                Ok(out) => Some(Some(Arc::new(out))),
+                Ok((out, fresh)) => {
+                    let cache = self.fleet_cache.get_mut();
+                    cache.ammo.extend(fresh);
+                    let over = cache.ammo.len().saturating_sub(CACHED_SLOTS);
+                    cache.ammo.drain(..over);
+                    Some(Some(Arc::new(out)))
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
             },
@@ -500,24 +464,16 @@ impl SimUi {
             return cached.map(|(_, a)| a);
         }
         let fleet = self.fleet.as_ref()?.fleet.clone();
-        // The sweep and the race take long enough to stall a frame: worked out off the frame, the
-        // last analysis shown until they are in. The first one, with nothing to show, and the web
-        // build, which has no threads, work it out here.
-        if cfg!(target_arch = "wasm32") && cached.is_some() && self.fleet_cache.get_mut().announced != Some(key) {
-            let cache = self.fleet_cache.get_mut();
-            cache.announced = Some(key);
-            cache.pending = Some((key, now));
-            return cached.map(|(_, a)| a);
-        }
-        if cfg!(target_arch = "wasm32") {
-            self.fleet_cache.get_mut().pending = None;
-            let ammo = [self.cached_ammo(&mine), self.cached_ammo(&theirs)];
-            let out = Arc::new(work_out(&dogma, fleet, enemy, mine, theirs, Some(ammo), &|_| {}));
-            self.fleet_analysis = Some((key, out.clone()));
-            return Some(out);
-        }
+        let known = self.fleet_cache.borrow().ammo.clone();
+        let job = FightJob::new(dogma, fleet, enemy, mine, theirs, known);
         // Everything dear off the frame, the charges' options too: a big fight held the window
-        // still for seconds. The first one has nothing to show meanwhile but its progress.
+        // still for seconds. The web build has no threads: it takes the steps a few a frame.
+        if cfg!(target_arch = "wasm32") {
+            let cache = self.fleet_cache.get_mut();
+            cache.local = Some((key, job));
+            cache.pending = Some((key, now));
+            return self.step_local(key).or_else(|| cached.map(|(_, a)| a));
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let progress = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let along = progress.clone();
@@ -525,7 +481,7 @@ impl SimUi {
             .name("fleet-analysis".into())
             .spawn(move || {
                 let report = |f: f32| along.store((f.clamp(0.0, 1.0) * 1000.0) as u32, std::sync::atomic::Ordering::Relaxed);
-                let _ = tx.send(work_out(&dogma, fleet, enemy, mine, theirs, None, &report));
+                let _ = tx.send(job.run(&report));
             })
             .ok()?;
         let cache = self.fleet_cache.get_mut();
@@ -533,6 +489,34 @@ impl SimUi {
         // Kept pending, so the host keeps drawing until the result is in.
         cache.pending = Some((key, now));
         cached.map(|(_, a)| a)
+    }
+
+    /// The web build's run, a frame's worth further: steps for a few milliseconds, then the page
+    /// is drawn. The analysis once it is done.
+    fn step_local(&mut self, key: u64) -> Option<Arc<Analysis>> {
+        const BUDGET_MS: u128 = 12;
+        let started = web_time::Instant::now();
+        let cache = self.fleet_cache.get_mut();
+        let (k, job) = cache.local.as_mut()?;
+        if *k != key {
+            return None;
+        }
+        let mut done = false;
+        while !done && started.elapsed().as_millis() < BUDGET_MS {
+            done = job.step();
+        }
+        if !done {
+            return None;
+        }
+        let (_, job) = cache.local.take()?;
+        let (analysis, fresh) = job.finish();
+        cache.ammo.extend(fresh);
+        let over = cache.ammo.len().saturating_sub(CACHED_SLOTS);
+        cache.ammo.drain(..over);
+        cache.pending = None;
+        let out = Arc::new(analysis);
+        self.fleet_analysis = Some((key, out.clone()));
+        Some(out)
     }
 
     /// Whether an analysis waits for the knobs to rest, so the host keeps drawing until it is done.
@@ -552,7 +536,8 @@ impl SimUi {
 
     /// How far along the analysis being worked out is, 0 to 1; none when none is running.
     pub fn fleet_analysis_progress(&self) -> Option<f32> {
-        self.fleet_cache.borrow().job.as_ref().map(|(_, _, p)| p.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0)
+        let cache = self.fleet_cache.borrow();
+        cache.job.as_ref().map(|(_, _, p)| p.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0).or_else(|| cache.local.as_ref().map(|(_, j)| j.progress()))
     }
 
     /// The analysis once the run it starts is in, for tests.
@@ -570,7 +555,66 @@ impl SimUi {
 
     pub fn fleet_analysis_pending(&self) -> bool {
         let cache = self.fleet_cache.borrow();
-        cache.pending.is_some() || !cache.stats_jobs.is_empty()
+        cache.pending.is_some() || !cache.stats_jobs.is_empty() || !cache.ammo_jobs.is_empty() || cache.ammo_waiting
+    }
+
+    /// Every slot's charge options, from those already worked out; a slot not yet has none, and
+    /// is worked out off the frame (on the web, one a frame) for the frames after.
+    pub(crate) fn ammo_for(&mut self, s: &Arc<FleetStats>) -> Arc<Vec<Choices>> {
+        let Some(dogma) = self.dogma.clone() else { return Arc::default() };
+        let env = format!("{:?}", s.env);
+        let cache = self.fleet_cache.get_mut();
+        // Runs that came in.
+        let mut i = 0;
+        while i < cache.ammo_jobs.len() {
+            match cache.ammo_jobs[i].1.try_recv() {
+                Ok(a) => {
+                    let key = cache.ammo_jobs.remove(i).0;
+                    cache.ammo.push((key, a));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => i += 1,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    cache.ammo_jobs.remove(i);
+                }
+            }
+        }
+        let over = cache.ammo.len().saturating_sub(CACHED_SLOTS);
+        cache.ammo.drain(..over);
+        let mut stepped = false;
+        cache.ammo_waiting = false;
+        let out = s
+            .slots
+            .iter()
+            .map(|x| {
+                let key = ammo_key(x, &env);
+                if let Some((_, a)) = cache.ammo.iter().find(|(k, _)| *k == key) {
+                    let mut a = (**a).clone();
+                    relabel(&mut a, &x.fit);
+                    return a;
+                }
+                if cfg!(target_arch = "wasm32") {
+                    if !stepped {
+                        stepped = true;
+                        let a = Arc::new(spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &s.env));
+                        cache.ammo.push((key, a.clone()));
+                        let mut a = (*a).clone();
+                        relabel(&mut a, &x.fit);
+                        return a;
+                    }
+                    cache.ammo_waiting = true;
+                } else if !cache.ammo_jobs.iter().any(|(k, _)| *k == key) {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let (d, fit, skills, env) = (dogma.clone(), x.fit.clone(), x.skills.clone(), s.env.clone());
+                    if std::thread::Builder::new().name("fleet-ammo".into()).spawn(move || {
+                        let _ = tx.send(Arc::new(spai_fit::fleet::ammo::choices(&d, &fit, &skills, &env)));
+                    }).is_ok() {
+                        cache.ammo_jobs.push((key, rx));
+                    }
+                }
+                Vec::new()
+            })
+            .collect();
+        Arc::new(out)
     }
 }
 
@@ -1673,55 +1717,163 @@ pub(crate) fn working_badge(ui: &mut egui::Ui, progress: Option<f32>) {
 
 /// The sweep over the ranges, the race, and each side's charges by range: the analysis of two
 /// fleets whose numbers are worked out.
-/// `ammo` when the frame had it at hand, else worked out here; `report` hears how far along it is.
-fn work_out(dogma: &spai_fit::Dogma, fleet: Fleet, enemy: Fleet, mine: Arc<FleetStats>, theirs: Arc<FleetStats>, ammo: Option<[Arc<Vec<Vec<spai_fit::fleet::ammo::AmmoChoice>>>; 2]>, report: &dyn Fn(f32)) -> Analysis {
-    // The charges' options are most of the work: half the bar, a slot at a time.
-    let ammo = ammo.unwrap_or_else(|| {
-        let total = (mine.slots.len() + theirs.slots.len()).max(1) as f32;
-        let mut done = 0.0;
-        let mut seen: HashMap<String, Arc<Vec<spai_fit::fleet::ammo::AmmoChoice>>> = HashMap::new();
-        [&mine, &theirs].map(|s| {
-            Arc::new(
-                s.slots
-                    .iter()
-                    .map(|x| {
-                        let mut bare = x.fit.clone();
-                        for m in &mut bare.modules {
-                            m.charge = m.charge.map(|_| 0);
-                        }
-                        let mut levels: Vec<(u32, u8)> = x.skills.levels.iter().map(|(k, v)| (*k, *v)).collect();
-                        levels.sort_unstable();
-                        let key = serde_json::to_string(&(&bare, levels, x.skills.fallback)).unwrap_or_default();
-                        let a = seen.entry(key).or_insert_with(|| Arc::new(spai_fit::fleet::ammo::choices(dogma, &x.fit, &x.skills, &s.env))).clone();
-                        done += 1.0;
-                        report(0.5 * done / total);
-                        let mut a = (*a).clone();
-                        relabel(&mut a, &x.fit);
+type Choices = Vec<spai_fit::fleet::ammo::AmmoChoice>;
+
+/// What a slot's charge options depend on: its fit with what it has loaded left out (that changes
+/// which is loaded, not their figures), its pilot and the boosts.
+fn ammo_key(x: &spai_fit::fleet::SlotStats, env: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut bare = x.fit.clone();
+    for m in &mut bare.modules {
+        m.charge = m.charge.map(|_| 0);
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(&bare).unwrap_or_default().hash(&mut h);
+    let mut levels: Vec<(u32, u8)> = x.skills.levels.iter().map(|(k, v)| (*k, *v)).collect();
+    levels.sort_unstable();
+    (levels, x.skills.fallback, env).hash(&mut h);
+    h.finish()
+}
+
+/// Ranges of the sweep worked out in one step.
+const RANGES_A_STEP: usize = 8;
+
+#[derive(Clone, Copy)]
+enum Stage {
+    Ammo(usize, usize),
+    Points(usize),
+    Finish,
+    Race,
+    Bands(usize, usize),
+    Done,
+}
+
+/// The fight between two fleets as steps, each short: a thread runs them all, the web build a few
+/// a frame, so the page is drawn in between.
+pub(crate) struct FightJob {
+    dogma: Arc<spai_fit::Dogma>,
+    fleet: Fleet,
+    enemy: Fleet,
+    mine: Arc<FleetStats>,
+    theirs: Arc<FleetStats>,
+    /// Slot options already worked out, by `ammo_key`; the new ones are handed back for the cache.
+    known: Vec<(u64, Arc<Choices>)>,
+    fresh: Vec<(u64, Arc<Choices>)>,
+    ammo: [Vec<Choices>; 2],
+    ranges: Vec<f64>,
+    points: Vec<spai_fit::fleet::sweep::RangePoint>,
+    sweep: Option<spai_fit::fleet::sweep::Sweep>,
+    race: Option<spai_fit::fleet::race::Race>,
+    bands: [Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)>; 2],
+    stage: Stage,
+    done: usize,
+    total: usize,
+}
+
+impl FightJob {
+    pub(crate) fn new(dogma: Arc<spai_fit::Dogma>, fleet: Fleet, enemy: Fleet, mine: Arc<FleetStats>, theirs: Arc<FleetStats>, known: Vec<(u64, Arc<Choices>)>) -> Self {
+        let mut ranges = spai_fit::fleet::sweep::ranges(&mine, &theirs);
+        ranges.push(f64::from(fleet.range));
+        ranges.sort_by(|x, y| x.total_cmp(y));
+        ranges.dedup();
+        let slots = mine.slots.len() + theirs.slots.len();
+        let total = slots * 2 + ranges.len().div_ceil(RANGES_A_STEP) + 2;
+        FightJob { dogma, fleet, enemy, mine, theirs, known, fresh: Vec::new(), ammo: [Vec::new(), Vec::new()], ranges, points: Vec::new(), sweep: None, race: None, bands: [Vec::new(), Vec::new()], stage: Stage::Ammo(0, 0), done: 0, total }
+    }
+
+    pub(crate) fn progress(&self) -> f32 {
+        self.done as f32 / self.total.max(1) as f32
+    }
+
+    fn stats(&self, side: usize) -> &Arc<FleetStats> {
+        if side == 0 { &self.mine } else { &self.theirs }
+    }
+
+    /// One step; true once all are done.
+    pub(crate) fn step(&mut self) -> bool {
+        use spai_fit::fleet::sweep;
+        let dogma = self.dogma.clone();
+        match self.stage {
+            Stage::Ammo(side, k) => {
+                let stats = self.stats(side).clone();
+                if let Some(x) = stats.slots.get(k) {
+                    let key = ammo_key(x, &format!("{:?}", stats.env));
+                    let found = self.known.iter().chain(&self.fresh).find(|(kk, _)| *kk == key).map(|(_, a)| a.clone());
+                    let a = found.unwrap_or_else(|| {
+                        let a = Arc::new(spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &stats.env));
+                        self.fresh.push((key, a.clone()));
                         a
-                    })
-                    .collect(),
-            )
-        })
-    });
-    let a = spai_fit::fleet::sweep::Side { fleet: &fleet, stats: &mine, ammo: &ammo[0] };
-    let b = spai_fit::fleet::sweep::Side { fleet: &enemy, stats: &theirs, ammo: &ammo[1] };
-    let mut ranges = spai_fit::fleet::sweep::ranges(&mine, &theirs);
-    ranges.push(f64::from(fleet.range));
-    ranges.sort_by(|x, y| x.total_cmp(y));
-    ranges.dedup();
-    let sweep = spai_fit::fleet::sweep::sweep(&a, &b, &ranges);
-    report(0.65);
-    let race = spai_fit::fleet::race::race(dogma, &a, &b, f64::from(fleet.range), f64::from(fleet.race_length_s.max(60.0)));
-    report(0.8);
-    let ranges: Vec<f64> = sweep.points.iter().map(|p| p.distance).collect();
-    let bands_of = |x: &spai_fit::fleet::sweep::Side, y: &spai_fit::fleet::sweep::Side| -> Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)> {
-        let Some(t) = spai_fit::fleet::sweep::primary(x.fleet, y.stats) else { return Vec::new() };
-        (0..x.stats.slots.len()).filter(|k| x.stats.slots[*k].count > 0).flat_map(|k| spai_fit::fleet::sweep::ammo_bands(x, y, k, t, &ranges).into_iter().map(move |(w, b)| (k, w, b))).collect()
-    };
-    let first = bands_of(&a, &b);
-    report(0.9);
-    let ammo_bands = [first, bands_of(&b, &a)];
-    report(1.0);
-    let range = fleet.range;
-    Analysis { fleet, range, mine, theirs, enemy, ammo, sweep, race, ammo_bands }
+                    });
+                    let mut a = (*a).clone();
+                    relabel(&mut a, &x.fit);
+                    self.ammo[side].push(a);
+                    self.done += 1;
+                    self.stage = Stage::Ammo(side, k + 1);
+                } else if side == 0 {
+                    self.stage = Stage::Ammo(1, 0);
+                } else {
+                    self.stage = Stage::Points(0);
+                }
+            }
+            Stage::Points(at) => {
+                let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
+                let b = sweep::Side { fleet: &self.enemy, stats: &self.theirs, ammo: &self.ammo[1] };
+                let to = (at + RANGES_A_STEP).min(self.ranges.len());
+                let new: Vec<sweep::RangePoint> = self.ranges[at..to].iter().map(|&d| sweep::point(&a, &b, d)).collect();
+                self.points.extend(new);
+                self.done += 1;
+                self.stage = if to >= self.ranges.len() { Stage::Finish } else { Stage::Points(to) };
+            }
+            Stage::Finish => {
+                let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
+                let b = sweep::Side { fleet: &self.enemy, stats: &self.theirs, ammo: &self.ammo[1] };
+                self.sweep = Some(sweep::finish(&a, &b, std::mem::take(&mut self.points)));
+                self.done += 1;
+                self.stage = Stage::Race;
+            }
+            Stage::Race => {
+                let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
+                let b = sweep::Side { fleet: &self.enemy, stats: &self.theirs, ammo: &self.ammo[1] };
+                self.race = Some(spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(self.fleet.range), f64::from(self.fleet.race_length_s.max(60.0))));
+                self.done += 1;
+                self.stage = Stage::Bands(0, 0);
+            }
+            Stage::Bands(side, k) => {
+                let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
+                let b = sweep::Side { fleet: &self.enemy, stats: &self.theirs, ammo: &self.ammo[1] };
+                let (x, y) = if side == 0 { (&a, &b) } else { (&b, &a) };
+                if k < x.stats.slots.len() {
+                    let ranges: Vec<f64> = self.sweep.as_ref().map(|s| s.points.iter().map(|p| p.distance).collect()).unwrap_or_default();
+                    let found = match sweep::primary(x.fleet, y.stats) {
+                        Some(t) if x.stats.slots[k].count > 0 => sweep::ammo_bands(x, y, k, t, &ranges).into_iter().map(|(w, b)| (k, w, b)).collect(),
+                        _ => Vec::new(),
+                    };
+                    self.bands[side].extend(found);
+                    self.done += 1;
+                    self.stage = Stage::Bands(side, k + 1);
+                } else if side == 0 {
+                    self.stage = Stage::Bands(1, 0);
+                } else {
+                    self.stage = Stage::Done;
+                }
+            }
+            Stage::Done => return true,
+        }
+        matches!(self.stage, Stage::Done)
+    }
+
+    /// Steps until done, telling `report` how far along.
+    pub(crate) fn run(mut self, report: &dyn Fn(f32)) -> (Analysis, Vec<(u64, Arc<Choices>)>) {
+        while !self.step() {
+            report(self.progress());
+        }
+        self.finish()
+    }
+
+    pub(crate) fn finish(self) -> (Analysis, Vec<(u64, Arc<Choices>)>) {
+        let range = self.fleet.range;
+        let [ma, ta] = self.ammo;
+        let analysis = Analysis { fleet: self.fleet, range, mine: self.mine, theirs: self.theirs, enemy: self.enemy, ammo: [Arc::new(ma), Arc::new(ta)], sweep: self.sweep.unwrap_or_default(), race: self.race.unwrap_or_default(), ammo_bands: self.bands };
+        (analysis, self.fresh)
+    }
 }

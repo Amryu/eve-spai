@@ -196,8 +196,8 @@ fn ewar_markers(an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]) -> Vec<Pl
     out
 }
 
-/// Where each side's primary weapon, the type doing most of its damage, switches to another
-/// carried charge as the range grows, labelled along the bottom.
+/// The charge each side's primary weapon, the type doing most of its damage, starts on and where
+/// it switches to another carried charge as the range grows, labelled along the bottom.
 fn ammo_markers(an: &Analysis, dogma: Option<&spai_fit::Dogma>) -> Vec<PlotMarker> {
     let Some(dogma) = dogma else { return Vec::new() };
     let mut out = Vec::new();
@@ -220,9 +220,10 @@ fn ammo_markers(an: &Analysis, dogma: Option<&spai_fit::Dogma>) -> Vec<PlotMarke
         });
         let Some((k, _)) = slot else { continue };
         let Some((_, _, bands)) = an.ammo_bands[side].iter().find(|(s, w, _)| *s == k && *w == weapon) else { continue };
-        for pair in bands.windows(2) {
-            if pair[1].charge != pair[0].charge {
-                out.push(PlotMarker { x: pair[1].from, label: spai_fit::formats::name_of(dogma, pair[1].charge), color: series_color(side).gamma_multiply(0.9), to: None, fill: false, bottom: true });
+        // The charge it starts on, then each switch.
+        for (i, band) in bands.iter().enumerate() {
+            if i == 0 || band.charge != bands[i - 1].charge {
+                out.push(PlotMarker { x: band.from, label: spai_fit::formats::name_of(dogma, band.charge), color: series_color(side).gamma_multiply(0.9), to: None, fill: false, bottom: true });
             }
         }
     }

@@ -449,7 +449,7 @@ fn gather(sim: &mut SimUi) -> Option<Scene> {
         }
     }
     let mine = sim.cached_stats(&fleet);
-    let ammo = sim.cached_ammo(&mine);
+    let ammo = sim.ammo_for(&mine);
     let theirs = enemy.as_ref().map(|e| sim.cached_stats(e));
     let offered = targets(sim, theirs.as_deref(), enemy.as_ref().map_or("", |e| e.name.as_str()));
     let swapped = fleet.slots.iter().map(|s| !s.charges.is_empty() || s.mode.is_some() || !s.splits.is_empty()).collect();
