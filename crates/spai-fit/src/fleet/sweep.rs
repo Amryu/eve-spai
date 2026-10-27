@@ -143,9 +143,11 @@ pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64
             // distance alone: a spread fleet has ships past a short charge's reach long before
             // the anchors are. Else what it has loaded.
             let options = choices.and_then(|cs| cs.iter().find(|c| c.weapon == w.type_id)).map(|c| c.options.iter().filter(|(_, carried, _)| *carried).map(|(_, _, g)| disrupted(g, &on_a)).collect::<Vec<_>>()).unwrap_or_default();
+            // By how soon it kills: what lands over the target's hit points against its damage
+            // types, so a charge its resists shrug off loses to one of the same raw damage.
             let best = options.into_iter().map(|g| {
                 let shares = shares_of(&g);
-                (mean_dps(&g, &shares), g, shares)
+                (mean_dps(&g, &shares) / ehp_against(&target.computed.tank, &g.volley).max(1.0), g, shares)
             }).max_by(|x, y| x.0.total_cmp(&y.0));
             match best {
                 Some((_, g, shares)) => (g, shares),
@@ -159,15 +161,19 @@ pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64
         .collect()
 }
 
-/// Damage per second and one volley `a` lands on `b`'s primary at `distance`.
+/// Damage per second and one volley `a` lands on `b`'s primary at `distance`, as effective
+/// damage: each weapon's scaled by how the target's resists take its damage types against an even
+/// spread, so a charge picked for the resists shows what it gains.
 fn landed(a: &Side, b: &Side, distance: f64) -> (f64, f64) {
     let Some(target) = primary(a.fleet, b.stats) else { return (0.0, 0.0) };
+    let even = target.computed.tank.ehp;
     let mut out = (0.0, 0.0);
     for (k, s) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
         for (w, f) in weapons_on(a, b, k, target, distance) {
-            out.0 += w.dps * f * f64::from(s.count);
+            let through = if even > 0.0 { even / ehp_against(&target.computed.tank, &w.volley).max(1.0) } else { 1.0 };
+            out.0 += w.dps * f * through * f64::from(s.count);
             if w.alpha() {
-                out.1 += w.volley.total() * f * f64::from(s.count);
+                out.1 += w.volley.total() * f * through * f64::from(s.count);
             }
         }
     }
@@ -353,11 +359,11 @@ pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f6
             (d, probes, on_a)
         })
         .collect();
-    // What a charge lands, averaged over the pairs: the same measure the sweep picks by.
+    // How soon a charge kills, averaged over the pairs: the same measure the sweep picks by.
     let landed = |g: &WeaponGroup, probes: &[TargetProfile], on_a: &EwarOn| {
         let g = disrupted(g, on_a);
         let sum: f64 = probes.iter().map(|t| applied_factor(&g, f64::from(t.distance), t, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range)).sum();
-        g.dps * sum / (probes.len().max(1) as f64)
+        g.dps * sum / (probes.len().max(1) as f64) / ehp_against(&target.computed.tank, &g.volley).max(1.0)
     };
     choices
         .iter()

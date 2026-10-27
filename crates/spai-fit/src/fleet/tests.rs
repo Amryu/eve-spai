@@ -755,3 +755,31 @@ fn a_slot_swaps_a_script_where_its_ammunition_stays() {
     let json = serde_json::to_string(&slot("f", CountRule::Fixed(1))).unwrap();
     assert!(!json.contains("scripts"), "a slot without scripts saves as before");
 }
+
+/// The charge picked is the one that kills soonest: against a target that takes almost none of
+/// one charge's damage type, the other wins though it lands less raw damage, and the graph's
+/// damage is what gets through.
+#[test]
+fn the_charge_picked_kills_soonest_through_the_targets_resists() {
+    use crate::fit::CargoItem;
+    let d = dataset();
+    let mut f = gun_fit("two charges", 2);
+    f.cargo.push(CargoItem { type_id: ids::AMMO_LONG, quantity: 100, hold: None });
+    let lib = vec![f, gun_fit("kiter", 1)];
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 10, slots: vec![slot("two charges", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let b = Fleet { size: 10, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, mut sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let ammo: Vec<Vec<ammo::AmmoChoice>> = sa.slots.iter().map(|x| ammo::choices(&d, &x.fit, &x.skills, &sa.env)).collect();
+    let picked = |sb: &FleetStats| {
+        let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &ammo }, sweep::Side { fleet: &b, stats: sb, ammo: &[] });
+        sweep::weapons_on(&side_a, &side_b, 0, &sb.slots[0], 1_000.0).iter().find_map(|(w, _)| w.charge)
+    };
+    assert_eq!(picked(&sb), Some(ids::AMMO_LONG), "the explosive charge hits harder on an even tank");
+    // Explosive all but shrugged off on every layer: the EM charge kills sooner.
+    let tank = &mut sb.slots[0].computed.tank;
+    for l in [&mut tank.shield, &mut tank.armor, &mut tank.hull] {
+        l.resonance[3] = 0.01;
+    }
+    assert_eq!(picked(&sb), Some(ids::AMMO), "the EM charge, through the resists");
+}

@@ -246,7 +246,7 @@ fn by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]
     let bands = sw.a_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: GOOD }).chain(sw.b_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: BAD })).collect();
     Plot {
         x_label: tr!("Distance").to_owned(),
-        y_label: tr!("DPS on the primary").to_owned(),
+        y_label: tr!("Effective DPS on the primary").to_owned(),
         fmt_x: text::metres,
         series: vec![
             PlotSeries { label: an.mine.name.clone(), color: a, points: sw.points.iter().map(|p| [p.distance, p.a.applied_dps]).collect() },
@@ -276,7 +276,7 @@ fn volley_by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::Remo
     }
     Plot {
         x_label: tr!("Distance").to_owned(),
-        y_label: tr!("Volley on the primary").to_owned(),
+        y_label: tr!("Effective volley on the primary").to_owned(),
         fmt_x: text::metres,
         series,
         markers: std::iter::once(PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color(), to: None, fill: false, bottom: false }).chain(ewar_markers(an, hidden)).collect(),
