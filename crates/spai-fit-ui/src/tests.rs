@@ -2338,3 +2338,29 @@ fn a_late_worker_is_asked_once_and_the_badge_goes_when_it_answers() {
     }
     assert!(!s.fleet_analysis_pending(), "the badge goes once the answers are in: {answered:?}");
 }
+
+/// The trash button asks first, Ctrl+click deletes at once; a fleet the same way.
+#[test]
+fn a_delete_asks_first_unless_ctrl_is_held() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let id = id.clone();
+    s.handle(HostEvent::Saved(id.clone()));
+    let _ = s.take_requests();
+    s.ask_delete(crate::Deleting::Fit, id.clone(), "Mine".into(), false);
+    assert!(s.take_requests().iter().all(|r| !matches!(r, HostRequest::DeleteFit(_))), "nothing deleted before the answer");
+    assert_eq!(s.confirm_delete.as_ref().map(|c| c.1.as_str()), Some(id.as_str()));
+    s.confirm_delete = None;
+    s.ask_delete(crate::Deleting::Fit, id.clone(), "Mine".into(), true);
+    assert!(s.take_requests().iter().any(|r| matches!(r, HostRequest::DeleteFit(x) if *x == id)));
+    assert!(s.confirm_delete.is_none());
+    s.new_fleet(10);
+    let fleet = s.fleet.as_ref().unwrap().id.clone();
+    let _ = s.take_requests();
+    s.ask_delete(crate::Deleting::Fleet, fleet.clone(), "F".into(), true);
+    assert!(s.fleet.is_none());
+    assert!(s.take_requests().iter().any(|r| matches!(r, HostRequest::DeleteFleet(x) if *x == fleet)));
+}

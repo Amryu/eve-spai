@@ -170,7 +170,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let shown = lines(&all, &hull_name, sim.library_state.grouping, &sim.library_state.query, &sim.library_state.folded);
     let mut load: Option<String> = None;
     let mut open_doctrine: Option<String> = None;
-    let mut delete: Option<String> = None;
+    let mut delete: Option<(String, String, bool)> = None;
     let mut toggle: Option<String> = None;
     let mut edit_tags: Option<(String, Vec<String>)> = None;
     let mut copy: Option<String> = None;
@@ -222,8 +222,8 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                         rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| entry_tip(ui, e, &hull_name(e.ship)));
                         if e.doctrine.is_some() {
                             ui.add(egui::Label::new(egui::RichText::new(icon::SEAL_CHECK).color(ui.visuals().hyperlink_color)).selectable(false)).on_hover_text(tr!("A doctrine fit: opens as a copy"));
-                        } else if icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete")).clicked() {
-                            delete = Some(e.id.clone());
+                        } else if icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete; Ctrl+click deletes without asking")).clicked() {
+                            delete = Some((e.id.clone(), e.name.clone(), ui.input(|i| i.modifiers.command)));
                         }
                     });
                     if r.clicked() {
@@ -255,7 +255,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                             ui.close();
                         }
                         if ui.button(tr!("Delete")).clicked() {
-                            delete = Some(e.id.clone());
+                            delete = Some((e.id.clone(), e.name.clone(), ui.input(|i| i.modifiers.command)));
                             ui.close();
                         }
                     });
@@ -289,13 +289,8 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             sim.request(HostRequest::LoadFit(id));
         }
     }
-    if let Some(id) = delete {
-        if current.as_deref() == Some(id.as_str()) {
-            sim.close_id(&id);
-        }
-        sim.library.retain(|e| e.id != id);
-        sim.forget_fit_doc(&id);
-        sim.request(HostRequest::DeleteFit(id));
+    if let Some((id, name, ctrl)) = delete {
+        sim.ask_delete(crate::Deleting::Fit, id, name, ctrl);
     }
 }
 

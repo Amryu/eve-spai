@@ -702,7 +702,7 @@ pub fn library(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let current = sim.fleet.as_ref().map(|f| f.id.clone());
     let entries = sim.fleets.clone();
     let mut load: Option<String> = None;
-    let mut delete: Option<String> = None;
+    let mut delete: Option<(String, String, bool)> = None;
     egui::ScrollArea::vertical().id_salt("sim_fleet_list").auto_shrink([false, false]).show(ui, |ui| {
         if entries.is_empty() {
             ui.label(egui::RichText::new(tr!("No fleets yet. A fleet is a list of saved fits with how many of each fly.")).weak());
@@ -713,8 +713,8 @@ pub fn library(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                 let w = (ui.available_width() - 26.0 - crate::rows::GAP).max(40.0);
                 let label = if selected { egui::RichText::new(&e.name).strong() } else { egui::RichText::new(&e.name) };
                 crate::rows::cell(ui, w, label, &e.name);
-                if icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete")).clicked() {
-                    delete = Some(e.id.clone());
+                if icon_button(ui, icon::TRASH).on_hover_text(tr!("Delete; Ctrl+click deletes without asking")).clicked() {
+                    delete = Some((e.id.clone(), e.name.clone(), ui.input(|i| i.modifiers.command)));
                 }
             });
             if r.clicked() {
@@ -725,13 +725,8 @@ pub fn library(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     if let Some(id) = load {
         sim.request(HostRequest::LoadFleet(id));
     }
-    if let Some(id) = delete {
-        if current.as_deref() == Some(id.as_str()) {
-            sim.fleet = None;
-        }
-        sim.fleets.retain(|e| e.id != id);
-        sim.fleet_docs.remove(&id);
-        sim.request(HostRequest::DeleteFleet(id));
+    if let Some((id, name, ctrl)) = delete {
+        sim.ask_delete(crate::Deleting::Fleet, id, name, ctrl);
     }
 }
 

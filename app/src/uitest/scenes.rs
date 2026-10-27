@@ -2922,6 +2922,9 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.fleet_graph_open = true;
         sim.fleet_graph_place = spai_fit_ui::GraphPlace::Window;
     }));
+    v.push(imperium_scene_with("imperium_confirm_delete", [1000.0, 600.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.confirm_delete = Some((spai_fit_ui::Deleting::Fleet, "f1".into(), "Ferox fleet with a rather long name for the heading".into()));
+    }));
     v.push(imperium_dialog_scene("imperium_details_charge", [560.0, 520.0], |sim| {
         sim.open_details(spai_fit_ui::details::DetailsTarget::Type(spai_fit::test_support::ids::MISSILE));
         sim.details[0].all = true;

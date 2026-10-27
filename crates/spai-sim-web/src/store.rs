@@ -39,6 +39,9 @@ pub struct Library {
     pub fleets: BTreeMap<String, FleetEntry>,
     /// The pilot's own doctrines, the same shape as fleets.
     pub doctrines: BTreeMap<String, FleetEntry>,
+    /// Deleted here, by API path (`/fits/<id>`), until the server has deleted them too: without
+    /// it the next sync brought them back.
+    pub deleted: std::collections::BTreeSet<String>,
 }
 
 impl Library {
@@ -77,6 +80,41 @@ impl Library {
 
     pub fn remove(&mut self, id: &str) {
         self.fits.remove(id);
+        self.deleted.insert(format!("/fits/{id}"));
+    }
+
+    pub fn remove_fleet(&mut self, id: &str) {
+        self.fleets.remove(id);
+        self.deleted.insert(format!("/fleets/{id}"));
+    }
+
+    pub fn remove_doctrine(&mut self, id: &str) {
+        self.doctrines.remove(id);
+        self.deleted.insert(format!("/own-doctrines/{id}"));
+    }
+
+    /// Whether the server's copy at `path` is one deleted here.
+    pub fn is_deleted(&self, path: &str) -> bool {
+        self.deleted.contains(path)
+    }
+
+    /// After a sync that started from `self`: deletes made here meanwhile hold, those the server
+    /// confirmed are forgotten.
+    pub fn merge_deletes(&mut self, stored: &Library, confirmed: &[String]) {
+        self.deleted.extend(stored.deleted.iter().cloned());
+        for p in confirmed {
+            self.deleted.remove(p);
+        }
+        let gone: Vec<String> = self.deleted.iter().cloned().collect();
+        for p in gone {
+            if let Some(id) = p.strip_prefix("/fits/") {
+                self.fits.remove(id);
+            } else if let Some(id) = p.strip_prefix("/fleets/") {
+                self.fleets.remove(id);
+            } else if let Some(id) = p.strip_prefix("/own-doctrines/") {
+                self.doctrines.remove(id);
+            }
+        }
     }
 
     pub fn fleet_summaries(&self) -> Vec<spai_fit_ui::FleetSummary> {
@@ -89,6 +127,27 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A delete holds through a sync that started before it, and is forgotten once the server
+    /// has it.
+    #[test]
+    fn a_delete_outlasts_the_sync_and_the_server_copy() {
+        let mut lib = Library::default();
+        lib.put("a", "A", 1, "{}", 1);
+        lib.put_fleet("f", "F", "{}", 1);
+        let synced = lib.clone();
+        lib.remove_fleet("f");
+        assert!(lib.is_deleted("/fleets/f"));
+        let mut after = synced.clone();
+        after.merge_deletes(&lib, &[]);
+        assert!(!after.fleets.contains_key("f"), "deleted while the sync ran");
+        assert!(after.is_deleted("/fleets/f"));
+        after.merge_deletes(&after.clone(), &["/fleets/f".to_owned()]);
+        assert!(!after.is_deleted("/fleets/f"), "the server has it");
+        assert!(after.fits.contains_key("a"));
+        let back = Library::from_json(&lib.to_json());
+        assert!(back.is_deleted("/fleets/f"), "kept between visits");
+    }
 
     #[test]
     fn the_library_lists_newest_first_and_round_trips() {

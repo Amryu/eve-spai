@@ -467,6 +467,13 @@ pub struct PublishDialog {
     pub tags: String,
 }
 
+/// What a delete waiting for confirmation is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Deleting {
+    Fit,
+    Fleet,
+}
+
 pub struct SimUi {
     pub dogma: Option<Arc<Dogma>>,
     pub dogma_error: Option<String>,
@@ -538,6 +545,8 @@ pub struct SimUi {
     pub import: Option<ImportDialog>,
     /// An imported fit that looks like a variation of a fit already here, waiting for the answer.
     pub import_ask: Option<ImportAsk>,
+    /// A delete waiting for the pilot to confirm it: what, its id and its name.
+    pub confirm_delete: Option<(Deleting, String, String)>,
     /// Set by the Import button; the clipboard's text goes through the dialog when it is not a fit.
     import_from_button: bool,
     /// The clock of the last frame, for what the host answers between frames.
@@ -648,6 +657,7 @@ impl Default for SimUi {
             fleet_view: 0,
             import: None,
             import_ask: None,
+            confirm_delete: None,
             import_from_button: false,
             now_ms: 0,
             graph: spai_fit::graphs::GraphKind::DamageVsDistance,
@@ -1064,6 +1074,67 @@ impl SimUi {
             f.variations.push(spai_fit::variations::Variation { id, name, kind, refit_key: None, ops, group: None });
             spai_fit::variations::activate(f, id);
         });
+    }
+
+    /// A trash button pressed: deleted at once with Ctrl held, asked first otherwise.
+    pub fn ask_delete(&mut self, what: Deleting, id: String, name: String, ctrl: bool) {
+        if ctrl {
+            self.delete_now(what, &id);
+        } else {
+            self.confirm_delete = Some((what, id, name));
+        }
+    }
+
+    fn delete_now(&mut self, what: Deleting, id: &str) {
+        match what {
+            Deleting::Fit => {
+                self.close_id(id);
+                self.library.retain(|e| e.id != id);
+                self.forget_fit_doc(id);
+                self.request(HostRequest::DeleteFit(id.to_owned()));
+            }
+            Deleting::Fleet => {
+                if self.fleet.as_ref().is_some_and(|f| f.id == id) {
+                    self.fleet = None;
+                }
+                self.fleets.retain(|e| e.id != id);
+                self.fleet_docs.remove(id);
+                self.request(HostRequest::DeleteFleet(id.to_owned()));
+            }
+        }
+    }
+
+    fn confirm_delete_window(&mut self, ctx: &egui::Context) {
+        let Some((what, id, name)) = self.confirm_delete.clone() else { return };
+        let mut decided: Option<bool> = None;
+        let r = egui::Modal::new(egui::Id::new("sim_confirm_delete")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(match what {
+                Deleting::Fit => trf!("Delete the fit {name}?", name = name),
+                Deleting::Fleet => trf!("Delete the fleet {name}?", name = name),
+            });
+            ui.label(egui::RichText::new(tr!("This cannot be undone. Ctrl+click the trash button to delete without this question.")).weak());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("Cancel")).clicked() {
+                    decided = Some(false);
+                }
+                if ui.button(egui::RichText::new(tr!("Delete")).color(ui.visuals().error_fg_color)).clicked() {
+                    decided = Some(true);
+                }
+            });
+        });
+        if r.should_close() && decided.is_none() {
+            decided = Some(false);
+        }
+        match decided {
+            Some(true) => {
+                self.confirm_delete = None;
+                self.delete_now(what, &id);
+            }
+            Some(false) => self.confirm_delete = None,
+            None => {}
+        }
     }
 
     fn import_ask_window(&mut self, ctx: &egui::Context, now_ms: u64) {
@@ -1677,6 +1748,7 @@ impl SimUi {
         editor::traits_window(self, ctx);
         library_panel::project_picker(self, ctx, now_ms);
         self.import_ask_window(ctx, now_ms);
+        self.confirm_delete_window(ctx);
         rows::drag_ghost(ctx);
         self.keep_layout(ctx);
     }

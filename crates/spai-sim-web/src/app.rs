@@ -211,6 +211,17 @@ impl SimWebApp {
                 req.headers.insert("Authorization", format!("Bearer {b}"));
                 req
             };
+            // Deletes first, so the listings below do not bring them back.
+            let mut confirmed = Vec::new();
+            for path in lib.deleted.clone() {
+                let mut req = ehttp::Request::get(Self::api(&path));
+                req.method = ehttp::Method::DELETE;
+                if let Ok(r) = ehttp::fetch_async(auth(req)).await {
+                    if r.ok || r.status == 404 {
+                        confirmed.push(path);
+                    }
+                }
+            }
             for (id, e) in lib.fits.clone() {
                 if e.server_rev >= e.rev {
                     continue;
@@ -235,7 +246,7 @@ impl SimWebApp {
                 if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
                     for entry in list {
                         let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
-                        if lib.fits.get(id).is_some_and(|e| e.server_rev >= rev) {
+                        if lib.fits.get(id).is_some_and(|e| e.server_rev >= rev) || lib.is_deleted(&format!("/fits/{id}")) {
                             continue;
                         }
                         let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/fits/{id}"))))).await else { continue };
@@ -274,7 +285,7 @@ impl SimWebApp {
                 if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
                     for entry in list {
                         let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
-                        if lib.fleets.get(id).is_some_and(|e| e.server_rev >= rev) {
+                        if lib.fleets.get(id).is_some_and(|e| e.server_rev >= rev) || lib.is_deleted(&format!("/fleets/{id}")) {
                             continue;
                         }
                         let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/fleets/{id}"))))).await else { continue };
@@ -306,7 +317,7 @@ impl SimWebApp {
                 if let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&r.bytes) {
                     for entry in list {
                         let (Some(id), Some(rev)) = (entry["id"].as_str(), entry["rev"].as_i64()) else { continue };
-                        if lib.doctrines.get(id).is_some_and(|e| e.server_rev >= rev) {
+                        if lib.doctrines.get(id).is_some_and(|e| e.server_rev >= rev) || lib.is_deleted(&format!("/own-doctrines/{id}")) {
                             continue;
                         }
                         let Ok(full) = ehttp::fetch_async(auth(ehttp::Request::get(Self::api(&format!("/own-doctrines/{id}"))))).await else { continue };
@@ -315,6 +326,8 @@ impl SimWebApp {
                     }
                 }
             }
+            let stored = page::load_raw(KEY).map(|t| crate::store::Library::from_json(&t)).unwrap_or_default();
+            lib.merge_deletes(&stored, &confirmed);
             page::save_raw(KEY, &lib.to_json());
             events.lock().unwrap().push(HostEvent::Status("\u{0}reload".into()));
             ctx.request_repaint();
@@ -424,6 +437,7 @@ impl SimWebApp {
                 self.library.remove(&id);
                 page::save_raw(KEY, &self.library.to_json());
                 self.sim.handle(HostEvent::Fits(self.library.summaries()));
+                self.sync(ctx);
             }
             HostRequest::FetchSkills => self.fetch_skills(ctx),
             HostRequest::CopyText(t) => ctx.copy_text(t),
@@ -465,11 +479,9 @@ impl SimWebApp {
                 self.sync(ctx);
             }
             HostRequest::DeleteOwnDoctrine(id) => {
-                self.library.doctrines.remove(&id);
+                self.library.remove_doctrine(&id);
                 page::save_raw(KEY, &self.library.to_json());
-                if self.bearer().is_some() {
-                    self.send(ctx, ehttp::Method::DELETE, format!("/own-doctrines/{id}"), None, "");
-                }
+                self.sync(ctx);
             }
             HostRequest::SyncLibrary => self.sync(ctx),
             HostRequest::FitDocs(ids) => {
@@ -496,9 +508,10 @@ impl SimWebApp {
                 self.sync(ctx);
             }
             HostRequest::DeleteFleet(id) => {
-                self.library.fleets.remove(&id);
+                self.library.remove_fleet(&id);
                 page::save_raw(KEY, &self.library.to_json());
                 self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries()));
+                self.sync(ctx);
             }
         }
     }
