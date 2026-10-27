@@ -437,49 +437,32 @@ pub fn booster_variations(dogma: &Dogma, fit: &mut Fit) {
     }
 }
 
-/// The variation a projected booster flies: its base when that carries a mindlink, else one that
-/// does, so each of its charges runs with its kind's mindlink.
-fn linked_variation(dogma: &Dogma, fit: &Fit) -> Option<u32> {
-    let link = |ids: &[crate::ids::TypeId]| ids.iter().any(|i| dogma.type_(*i).is_some_and(|t| t.name.contains("Command Mindlink")));
-    if link(&fit.implants) {
-        return None;
-    }
-    let carries = |v: &&crate::variations::Variation| v.ops.iter().any(|o| matches!(o, crate::variations::RefitOp::SetImplants(ids) if link(ids)));
-    // The mindlink alone reads plainest; the charges bring their own bursts anyway.
-    fit.variations.iter().filter(carries).find(|v| v.group.as_deref() == Some(MINDLINK_GROUP)).or_else(|| fit.variations.iter().find(carries)).map(|v| v.id)
+/// How much a generic booster of the kind on this hull gives: its buffs' sizes together, with the
+/// mindlink, all V.
+fn shortcut_strength(dogma: &Dogma, kind: BurstKind, hull: crate::ids::TypeId) -> f64 {
+    let b = crate::fit::BoostShortcut { kind, hull: Some(hull), mindlink: true, ..Default::default() };
+    crate::fleet::shortcut_bursts(dogma, &b).iter().map(|(_, v)| v.abs()).sum()
 }
 
-/// The boosters a fleet of the doctrine needs: as few as cover every kind their hulls strengthen,
-/// each covering all the charges its hull can, the ones with more bursts first.
-fn needed_boosters(dogma: &Dogma, doctrine: &Doctrine, boosters: &[usize]) -> Vec<crate::fit::ProjectedFit> {
-    let fits: Vec<(&str, &Fit)> = boosters.iter().filter_map(|&i| doctrine.fits[i].fit.as_ref().map(|f| (doctrine.fits[i].fit_id.as_str(), f))).collect();
-    let kinds: Vec<Vec<BurstKind>> = fits.iter().map(|(_, f)| hull_kinds(dogma, f)).collect();
-    let bursts = |b: usize| fits[b].1.modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()).count();
-    // Few boosters: every subset is tried.
-    let mut best: Option<(usize, std::cmp::Reverse<usize>, usize, u32)> = None;
-    for mask in 1u32..(1 << fits.len().min(16)) {
-        let chosen: Vec<usize> = (0..fits.len()).filter(|b| mask & (1 << b) != 0).collect();
-        let mut covered: Vec<BurstKind> = chosen.iter().flat_map(|b| kinds[*b].iter().copied()).collect();
-        covered.sort_by_key(|k| BurstKind::COMBAT.iter().position(|c| c == k));
-        covered.dedup();
-        let score = (covered.len(), std::cmp::Reverse(chosen.len()), chosen.iter().map(|b| bursts(*b)).sum::<usize>(), u32::MAX - mask);
-        if best.is_none_or(|b| (score.0, score.1, score.2, score.3) > (b.0, b.1, b.2, b.3)) {
-            best = Some(score);
-        }
-    }
-    let Some(best) = best else { return Vec::new() };
-    let mask = u32::MAX - best.3;
-    (0..fits.len())
-        .filter(|b| mask & (1 << b) != 0)
-        .map(|b| {
-            let (id, fit) = fits[b];
-            crate::fit::ProjectedFit { fit_id: id.to_owned(), count: 1, active: true, variation: linked_variation(dogma, fit), charges: crate::fleet::boostable_charges(dogma, fit) }
+/// A generic booster for each kind the doctrine's boosters cover, on the strongest of their hulls
+/// for it, with the mindlink and every charge.
+pub fn doctrine_boosts(dogma: &Dogma, doctrine: &Doctrine) -> Vec<crate::fit::BoostShortcut> {
+    let fits: Vec<&Fit> = doctrine.fits.iter().filter(|f| f.role == FitRole::Command).filter_map(|f| f.fit.as_ref()).filter(|f| !burst_kinds(dogma, f).is_empty()).collect();
+    BurstKind::COMBAT
+        .into_iter()
+        .filter_map(|kind| {
+            let able: Vec<crate::ids::TypeId> = fits.iter().filter(|f| hull_kinds(dogma, f).contains(&kind)).map(|f| f.ship).collect();
+            let best = able.iter().copied().max_by(|a, b| shortcut_strength(dogma, kind, *a).total_cmp(&shortcut_strength(dogma, kind, *b)))?;
+            // A hull that strengthens none of them stands in as no hull bonus.
+            let hull = crate::fleet::hull_boosts(dogma, best, kind).then_some(best);
+            Some(crate::fit::BoostShortcut { kind, hull, mindlink: true, ..Default::default() })
         })
         .collect()
 }
 
-/// The doctrine's command fits as boosters: each gets its mindlink and burst swap variations,
-/// and every fit of the doctrine has the same boosters projected, as many as its boost kinds take.
+/// The doctrine's command fits as boosters: each gets its mindlink and burst swap variations, and
+/// every fit of the doctrine, the boosters too, gets a generic booster for each kind on the
+/// strongest of their hulls for it.
 pub fn project_boosters(dogma: &Dogma, doctrine: &mut Doctrine) {
     let boosters: Vec<usize> = doctrine.fits.iter().enumerate().filter(|(_, f)| f.role == FitRole::Command && f.fit.as_ref().is_some_and(|fit| !burst_kinds(dogma, fit).is_empty())).map(|(i, _)| i).collect();
     for &i in &boosters {
@@ -487,14 +470,14 @@ pub fn project_boosters(dogma: &Dogma, doctrine: &mut Doctrine) {
             booster_variations(dogma, fit);
         }
     }
-    let picked = needed_boosters(dogma, doctrine, &boosters);
+    let boosts = doctrine_boosts(dogma, doctrine);
     let ids: Vec<String> = boosters.iter().map(|&i| doctrine.fits[i].fit_id.clone()).collect();
     for f in &mut doctrine.fits {
-        let own = f.fit_id.clone();
         let Some(fit) = f.fit.as_mut() else { continue };
-        // Its own bursts already reach it.
+        // Generic boosters, not the doctrine's own fits, and on the boosters too, so each has every
+        // boost and not only its own.
         fit.projected_fits.retain(|p| !ids.contains(&p.fit_id));
-        fit.projected_fits.extend(picked.iter().filter(|p| p.fit_id != own).cloned());
+        fit.boosts.clone_from(&boosts);
     }
 }
 
