@@ -45,9 +45,17 @@ pub struct PlotMarker {
     pub x: f64,
     pub label: String,
     pub color: Color32,
-    /// Where a reach fades out, past `x`: an ewar module's falloff, drawn as a band out to it.
+    /// Where a reach is at half strength, past `x`: an ewar module's optimal plus one falloff.
     pub to: Option<f64>,
+    /// A reach from nothing out: full strength to `x`, lighter through `to`, fading until three
+    /// falloffs past `x`, where it stops.
+    pub fill: bool,
+    /// Its label along the bottom rather than the top: an ammo switch, apart from the ewar.
+    pub bottom: bool,
 }
+
+/// How far past its optimal a falloff reach still does anything: three falloffs.
+pub const FALLOFF_REACH: f64 = 3.0;
 
 /// Eight colours apart in hue and legible on the dark and light themes.
 pub fn series_color(i: usize) -> Color32 {
@@ -218,16 +226,20 @@ impl Plot {
         let laid: Vec<(&PlotMarker, f32, Option<f32>, Rect, std::sync::Arc<egui::Galley>)> = self
             .markers
             .iter()
-            .filter(|m| m.x >= x_min && m.x <= x_max)
+            // A reach past the right edge still covers all it shows.
+            .filter(|m| m.x >= x_min && (m.x <= x_max || m.fill))
             .map(|m| {
-                let x = to_screen(m.x, 0.0).x;
+                let x = to_screen(m.x.min(x_max), 0.0).x;
                 let to = m.to.filter(|t| *t > m.x).map(|t| to_screen(t.min(x_max), 0.0).x);
                 let galley = painter.layout_no_wrap(m.label.clone(), font.clone(), m.color);
                 let w = galley.size().x;
                 let left = if x + 4.0 + w > inner.max.x { x - 4.0 - w } else { x + 4.0 };
-                let row = (0..6).find(|r| !placed.iter().any(|(pr, l, rt)| pr == r && left < rt + 6.0 && left + w + 6.0 > *l)).unwrap_or(0);
+                // Rows counted from the top for most, from the bottom for those that sit there.
+                let side = if m.bottom { 100 } else { 0 };
+                let row = (side..side + 6).find(|r| !placed.iter().any(|(pr, l, rt)| pr == r && left < rt + 6.0 && left + w + 6.0 > *l)).unwrap_or(side);
                 placed.push((row, left, left + w));
-                let at = Rect::from_min_size(Pos2::new(left, inner.min.y + 2.0 + row as f32 * line_h), galley.size());
+                let y = if m.bottom { inner.max.y - 2.0 - galley.size().y - (row - side) as f32 * line_h } else { inner.min.y + 2.0 + row as f32 * line_h };
+                let at = Rect::from_min_size(Pos2::new(left, y), galley.size());
                 (m, x, to, at, galley)
             })
             .collect();
@@ -237,8 +249,24 @@ impl Plot {
             let lit = hovered == Some(i);
             let color = if hovered.is_some() && !lit { m.color.gamma_multiply(0.45) } else { m.color };
             let width = if lit { 2.0 } else { 1.0 };
-            if let Some(t) = to {
+            if m.fill {
+                // Full strength from nothing out to its optimal; the falloff lighter, then fading.
+                let shade = |from: f32, to: f32, alpha: f32| clip.rect_filled(Rect::from_min_max(Pos2::new(from, inner.min.y), Pos2::new(to, inner.max.y)), 0.0, m.color.gamma_multiply(if lit { alpha * 2.5 } else { alpha }));
+                shade(inner.min.x, *x, 0.12);
+                if let (Some(t), Some(half)) = (to, m.to) {
+                    shade(*x, *t, 0.06);
+                    let gone = m.x + FALLOFF_REACH * (half - m.x);
+                    let end = to_screen(gone.min(x_max), 0.0).x;
+                    let steps = 6;
+                    for k in 0..steps {
+                        let (a, b) = (*t + (end - *t) * k as f32 / steps as f32, *t + (end - *t) * (k + 1) as f32 / steps as f32);
+                        shade(a, b, 0.04 * (1.0 - k as f32 / steps as f32));
+                    }
+                }
+            } else if let Some(t) = to {
                 clip.rect_filled(Rect::from_min_max(Pos2::new(*x, inner.min.y), Pos2::new(*t, inner.max.y)), 0.0, m.color.gamma_multiply(if lit { 0.22 } else { 0.07 }));
+            }
+            if let Some(t) = to {
                 clip.add(egui::Shape::dotted_line(&[Pos2::new(*t, inner.min.y), Pos2::new(*t, inner.max.y)], color, 6.0, width * 0.75));
             }
             clip.add(egui::Shape::dashed_line(&[Pos2::new(*x, inner.min.y), Pos2::new(*x, inner.max.y)], Stroke::new(width, color), 4.0, 3.0));
@@ -251,6 +279,7 @@ impl Plot {
         if let Some(i) = hovered {
             let (m, ..) = &laid[i];
             let reach = match m.to {
+                Some(t) if t > m.x && m.fill => spai_ui::trf!("{name}: {optimal} + {falloff}, nothing past {gone}", name = m.label, optimal = (self.fmt_x)(m.x), falloff = (self.fmt_x)(t - m.x), gone = (self.fmt_x)(m.x + FALLOFF_REACH * (t - m.x))),
                 Some(t) if t > m.x => format!("{}: {} + {}", m.label, (self.fmt_x)(m.x), (self.fmt_x)(t - m.x)),
                 _ => format!("{}: {}", m.label, (self.fmt_x)(m.x)),
             };

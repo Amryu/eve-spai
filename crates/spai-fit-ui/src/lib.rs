@@ -526,6 +526,8 @@ pub struct SimUi {
     /// Set while the graphs draw in their window, which offers to dock them.
     pub(crate) graph_in_window: bool,
     pub fleet_graph: fleet_graphs::FleetGraph,
+    /// Ewar kinds left off the by-range graphs, to thin them out.
+    pub fleet_graph_hidden_ewar: Vec<spai_fit::stats::RemoteKind>,
     pub fleet_graph_open: bool,
     pub fleet_graph_place: GraphPlace,
     pub fleet_graph_size: Option<f32>,
@@ -635,6 +637,7 @@ impl Default for SimUi {
             graph_dock_w: None,
             graph_in_window: false,
             fleet_graph: fleet_graphs::FleetGraph::default(),
+            fleet_graph_hidden_ewar: Vec::new(),
             fleet_graph_open: false,
             fleet_graph_place: GraphPlace::default(),
             fleet_graph_size: None,

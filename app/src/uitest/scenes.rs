@@ -568,6 +568,8 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
         f
     };
     let mut dps = fit("Alpha Rifter with a long doctrine name", 3);
+    // A long-range charge carried, so the damage graph has an ammo switch to show.
+    dps.cargo.push(spai_fit::fit::CargoItem { type_id: ids::AMMO_LONG, quantity: 1000, hold: None });
     dps.variations.push(spai_fit::variations::Variation { id: 1, name: "Brawl refit with a long name".into(), ..Default::default() });
     // The logistics carry a repairer and a web, so the fleet has support modules and ewar to show.
     let mut logi = fit("Logi Rifter", 0);
