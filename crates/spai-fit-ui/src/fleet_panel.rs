@@ -1569,7 +1569,12 @@ pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, Stri
                                 pick = Some(Some(Err(None)));
                             }
                             for hull in fleet::boosting_hulls(d, kind) {
-                                if ui.menu_label(on_hull(Some(hull)), spai_fit::formats::name_of(d, hull)).clicked() {
+                                let r = ui.menu_label(on_hull(Some(hull)), spai_fit::formats::name_of(d, hull));
+                                let r = match crate::dock::boost_subsystem_hint(d, hull, kind) {
+                                    Some(h) => r.on_hover_text(h),
+                                    None => r,
+                                };
+                                if r.clicked() {
                                     pick = Some(Some(Err(Some(hull))));
                                 }
                             }

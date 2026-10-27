@@ -10008,3 +10008,32 @@ fn uitest_the_nearby_list_hides_what_is_outdated_when_asked() {
     assert_eq!(shown(false), ["319-3D", "7-K5EL"]);
     assert_eq!(shown(true), ["319-3D"], "the hour-old report left out");
 }
+
+/// A projected web's source: the button opens the hulls that bonus it, and picking the strategic
+/// cruiser flies it with the core subsystem that does, named on the row.
+#[test]
+fn uitest_a_projected_module_is_flown_from_a_picked_hull() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = imperium_scene_with("imperium_projected_source", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        spai_fit_ui::browser::add_projected(sim, spai_fit::test_support::ids::WEB, 5);
+        sim.dock.first = 3;
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(4);
+    let button = h.query_all_by_label(egui_phosphor::regular::SLIDERS_HORIZONTAL).next().expect("the source button on the web's row").rect();
+    harness::click_at(&h, button.center());
+    h.run_steps(4);
+    assert!(h.query_by_label("Hull bonuses").is_some(), "the popup opened");
+    let pick = h.query_all_by_label_contains("Loki Core - Immobility Drivers").next().expect("the subsystem that bonuses webs is offered").rect();
+    if std::env::var("SPAI_SHOT_ONLY").is_ok_and(|s| s == "imperium_projected_source") {
+        harness::shot(&mut h, "imperium_projected_source_popup");
+    }
+    harness::click_at(&h, pick.center());
+    h.run_steps(4);
+    assert!(h.query_all_by_label_contains("Stasis Webifier II \u{b7} Loki").next().is_some(), "the row names the hull it now comes from");
+    assert!(h.query_by_label("Subsystems").is_some(), "a strategic cruiser shows its subsystem slots");
+    if std::env::var("SPAI_SHOT_ONLY").is_ok_and(|s| s == "imperium_projected_source") {
+        harness::shot(&mut h, "imperium_projected_source_picked");
+    }
+}

@@ -162,6 +162,23 @@ impl Default for CargoItem {
     }
 }
 
+/// The ship a lone projected module is flown from: a hull for its bonuses (a strategic cruiser's
+/// through its subsystems), and its pilot, all V but for these skills.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectedSource {
+    /// None is a hull without bonuses to it.
+    pub hull: Option<TypeId>,
+    pub subsystems: Vec<TypeId>,
+    pub skills: Vec<(TypeId, u8)>,
+}
+
+impl ProjectedSource {
+    pub fn is_default(&self) -> bool {
+        *self == ProjectedSource::default()
+    }
+}
+
 /// Something another ship does to this one: a web, a painter, a remote repair.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -170,6 +187,8 @@ pub struct Projected {
     pub count: u32,
     pub state: State,
     pub charge: Option<TypeId>,
+    #[serde(skip_serializing_if = "ProjectedSource::is_default")]
+    pub source: ProjectedSource,
     /// From a projected fit: the module's attributes as its own fit makes them (its pilot's
     /// skills, its hull's bonuses, its charge), so they are not figured again on this one.
     #[serde(skip)]
@@ -199,7 +218,7 @@ impl Default for ProjectedFit {
 
 impl Default for Projected {
     fn default() -> Self {
-        Projected { type_id: 0, count: 1, state: State::Active, charge: None, values: Vec::new() }
+        Projected { type_id: 0, count: 1, state: State::Active, charge: None, source: ProjectedSource::default(), values: Vec::new() }
     }
 }
 

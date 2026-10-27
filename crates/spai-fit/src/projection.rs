@@ -49,6 +49,40 @@ pub fn acts_on_others(dogma: &Dogma, fit: &Fit) -> bool {
         || !crate::fleet::bursts_of(dogma, &fit, &SkillSet::all_v()).is_empty()
 }
 
+/// A lone projected module or drone as the ship it comes from makes it: that hull's bonuses, a
+/// strategic cruiser's through its subsystems, and its pilot's skills. Empty for a beacon, which
+/// acts on the system rather than from a ship.
+pub fn source_values(dogma: &Dogma, p: &Projected) -> Vec<(crate::ids::AttrId, f64)> {
+    use crate::fit::{DroneStack, Module, Slot};
+    let Some(t) = dogma.type_(p.type_id) else { return Vec::new() };
+    if t.group == crate::ids::group::EFFECT_BEACON {
+        return Vec::new();
+    }
+    let src = &p.source;
+    let mut fit = Fit::new(src.hull.unwrap_or(0), "source");
+    let groups = src.hull.map(|h| dogma.subsystem_groups(h)).unwrap_or_default();
+    for (i, sub) in src.subsystems.iter().enumerate() {
+        let index = dogma.type_(*sub).and_then(|s| groups.iter().position(|g| *g == s.group)).unwrap_or(i);
+        fit.modules.push(Module::new(*sub, Slot::Subsystem, index as u8).with_state(State::Online));
+    }
+    let mut skills = SkillSet::all_v();
+    for (s, l) in &src.skills {
+        skills.set(*s, *l);
+    }
+    let drone = crate::formats::place_of(dogma, t) == crate::formats::Place::Drone;
+    if drone {
+        fit.drones.push(DroneStack { type_id: p.type_id, count: 1, active: true, launched: None, mutation: None });
+    } else {
+        let slot = dogma.slot_of(p.type_id).unwrap_or(Slot::High);
+        let mut m = Module::new(p.type_id, slot, 0).with_state(p.state);
+        m.charge = p.charge;
+        fit.modules.push(m);
+    }
+    let calc = crate::calc::Calc::new(dogma, &fit, &skills, &Env::default());
+    let item = if drone { calc.drones().find(|(_, it)| it.type_id == p.type_id).map(|(i, _)| i) } else { calc.module(dogma.slot_of(p.type_id).unwrap_or(Slot::High), 0) };
+    item.map(|i| calc.attrs(i).into_iter().map(|a| (a, calc.value(i, a))).collect()).unwrap_or_default()
+}
+
 /// The fit with every switched-on projected fit folded into its `projected` list, and the buffs
 /// their bursts give. `lookup` finds a fit by library id.
 pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, skills: &SkillSet) -> (Fit, Env) {
@@ -61,6 +95,9 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         }
     }
     out.projected.retain(|p| !is_generator(dogma, p.type_id));
+    for p in out.projected.iter_mut().filter(|p| p.values.is_empty()) {
+        p.values = source_values(dogma, p);
+    }
     // Its own command bursts reach it too: a booster is in the fleet it boosts.
     for (id, value) in crate::fleet::bursts_of(dogma, fit, skills) {
         env.offer(dogma, id, value);
@@ -79,11 +116,11 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
         let calc = crate::calc::Calc::new(dogma, &src, skills, &Env::default());
         let values = |i: Option<crate::calc::ItemIdx>| i.map(|i| calc.attrs(i).into_iter().map(|a| (a, calc.value(i, a))).collect()).unwrap_or_default();
         for m in src.modules.iter().filter(|m| m.state >= State::Active && reaches_out(dogma, m.type_id)) {
-            out.projected.push(Projected { type_id: m.type_id, count: pf.count, state: m.state, charge: m.charge, values: values(calc.module(m.slot, m.index)) });
+            out.projected.push(Projected { type_id: m.type_id, count: pf.count, state: m.state, charge: m.charge, source: Default::default(), values: values(calc.module(m.slot, m.index)) });
         }
         for d in src.drones.iter().filter(|d| d.in_space() > 0 && reaches_out(dogma, d.type_id)) {
             let item = calc.drones().find(|(_, it)| it.type_id == d.type_id).map(|(i, _)| i);
-            out.projected.push(Projected { type_id: d.type_id, count: d.in_space() * pf.count, state: State::Active, charge: None, values: values(item) });
+            out.projected.push(Projected { type_id: d.type_id, count: d.in_space() * pf.count, state: State::Active, charge: None, source: Default::default(), values: values(item) });
         }
         for (id, value) in crate::fleet::covered_bursts(dogma, &src, &pf.charges, skills) {
             env.offer(dogma, id, value);

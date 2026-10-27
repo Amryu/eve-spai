@@ -417,9 +417,21 @@ pub fn burst_charges(dogma: &Dogma, module: crate::ids::TypeId) -> Vec<crate::id
     out.into_iter().map(|(_, id)| id).collect()
 }
 
+/// The strategic cruiser subsystem that strengthens the kind's bursts on this hull: one whose
+/// effects raise the kind's burst values.
+pub fn boost_subsystem(dogma: &Dogma, hull: crate::ids::TypeId, kind: BurstKind) -> Option<crate::ids::TypeId> {
+    let module = dogma.type_named(kind.module_name())?;
+    dogma.subsystem_groups(hull).into_iter().flat_map(|g| crate::bonus::subsystems_for(dogma, hull, g)).find(|s| {
+        dogma.type_(*s).is_some_and(|t| t.effects.iter().filter_map(|(e, _)| dogma.effect(*e)).flat_map(|e| e.modifiers.iter()).any(|m| m.modified == attr::WARFARE_BUFF_1_VALUE && crate::bonus::reaches(dogma, m, t.id, module)))
+    })
+}
+
 /// Whether a hull's traits strengthen the kind's bursts: a line on burst strength naming the kind's
-/// command, or no kind at all.
+/// command, or no kind at all. A strategic cruiser does through its subsystem.
 pub fn hull_boosts(dogma: &Dogma, hull: crate::ids::TypeId, kind: BurstKind) -> bool {
+    if boost_subsystem(dogma, hull, kind).is_some() {
+        return true;
+    }
     let Some(t) = dogma.traits_of(hull) else { return false };
     let lines = t.role.iter().chain(t.misc.iter()).chain(t.per_skill.iter().flat_map(|(_, b)| b.iter()));
     let named = BurstKind::ALL.map(|k| k.command_name().to_lowercase());
@@ -433,7 +445,11 @@ pub fn hull_boosts(dogma: &Dogma, hull: crate::ids::TypeId, kind: BurstKind) -> 
 
 /// The hulls that strengthen the kind's bursts, by name.
 pub fn boosting_hulls(dogma: &Dogma, kind: BurstKind) -> Vec<crate::ids::TypeId> {
-    let mut v: Vec<&crate::dogma::TypeDef> = dogma.traits.iter().filter(|t| hull_boosts(dogma, t.type_id, kind)).filter_map(|t| dogma.type_(t.type_id)).filter(|t| t.published && t.category == crate::ids::category::SHIP).collect();
+    let strategic = dogma.types.iter().filter(|t| t.published && t.category == crate::ids::category::SUBSYSTEM).filter_map(|t| crate::bonus::subsystem_hull(dogma, t.id));
+    let mut hulls: Vec<crate::ids::TypeId> = dogma.traits.iter().map(|t| t.type_id).chain(strategic).collect();
+    hulls.sort_unstable();
+    hulls.dedup();
+    let mut v: Vec<&crate::dogma::TypeDef> = hulls.into_iter().filter(|h| hull_boosts(dogma, *h, kind)).filter_map(|h| dogma.type_(h)).filter(|t| t.published && t.category == crate::ids::category::SHIP).collect();
     v.sort_by(|a, b| a.name.cmp(&b.name));
     v.into_iter().map(|t| t.id).collect()
 }
@@ -441,6 +457,14 @@ pub fn boosting_hulls(dogma: &Dogma, kind: BurstKind) -> Vec<crate::ids::TypeId>
 /// The skills the shortcut's pilot has that matter to it: the kind's and the hull's own.
 pub fn shortcut_skills(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<crate::ids::TypeId> {
     let mut v: Vec<crate::ids::TypeId> = b.kind.skill_names().iter().filter_map(|n| dogma.type_named(n)).map(|t| t.id).collect();
+    // A strategic cruiser's bonus grows with its subsystem's skill.
+    if let Some(sub) = b.hull.and_then(|h| boost_subsystem(dogma, h, b.kind)).and_then(|s| dogma.type_(s)) {
+        for (skill, _) in &sub.required_skills {
+            if !v.contains(skill) {
+                v.push(*skill);
+            }
+        }
+    }
     if let Some(t) = b.hull.and_then(|h| dogma.traits_of(h)) {
         for (skill, lines) in &t.per_skill {
             if lines.iter().any(|l| { let t = l.text.to_lowercase(); t.contains("burst") && t.contains("strength") }) && !v.contains(skill) {
@@ -463,6 +487,10 @@ fn shortcut_booster_with(dogma: &Dogma, b: &crate::fit::BoostShortcut, module: c
     use crate::fit::{Module, Slot};
     let hull = b.hull.or_else(|| plain_hull(dogma, b.kind))?;
     let mut fit = Fit::new(hull, "boost");
+    if let Some(sub) = boost_subsystem(dogma, hull, b.kind) {
+        let index = dogma.type_(sub).and_then(|t| dogma.subsystem_groups(hull).iter().position(|g| *g == t.group)).unwrap_or(0) as u8;
+        fit.modules.push(Module::new(sub, Slot::Subsystem, index).with_state(State::Online));
+    }
     for (i, charge) in charges.iter().enumerate() {
         fit.modules.push(Module::new(module, Slot::High, i as u8).with_charge(*charge).with_state(State::Active));
     }
@@ -547,11 +575,14 @@ pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], 
     for &c in charges {
         let Some(at) = fit.modules.iter().position(|m| m.state >= State::Active && is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c)) else { continue };
         let mut one = fit.clone();
+        // The others offline: a hull that runs one burst at a time would cap the loaded one.
         for (i, m) in one.modules.iter_mut().enumerate() {
-            if is_burst(m.type_id) {
-                m.charge = (i == at).then_some(c);
+            if is_burst(m.type_id) && i != at {
+                m.charge = None;
+                m.state = State::Offline;
             }
         }
+        one.modules[at].charge = Some(c);
         out.extend(bursts_of(dogma, &one, skills));
     }
     out

@@ -237,7 +237,12 @@ fn add_projected_menu(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                             for hull in spai_fit::fleet::boosting_hulls(d, kind) {
                                 let item = egui::Button::image_and_text(egui::Image::new(crate::icons::type_icon_uri(hull)).fit_to_exact_size(egui::vec2(16.0, 16.0)), spai_fit::formats::name_of(d, hull)).frame_when_inactive(false);
-                                if ui.add(item).clicked() {
+                                let r = ui.add(item);
+                                let r = match boost_subsystem_hint(d, hull, kind) {
+                                    Some(h) => r.on_hover_text(h),
+                                    None => r,
+                                };
+                                if r.clicked() {
                                     boost = Some((kind, Some(hull)));
                                     ui.close();
                                 }
@@ -442,23 +447,140 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
     }
 }
 
+/// A strategic cruiser runs its bursts with its boosting subsystem.
+pub(crate) fn boost_subsystem_hint(dogma: &Dogma, hull: TypeId, kind: spai_fit::fleet::BurstKind) -> Option<String> {
+    let sub = spai_fit::fleet::boost_subsystem(dogma, hull, kind)?;
+    Some(trf!("Flies with {subsystem}", subsystem = spai_fit::formats::name_of(dogma, sub)))
+}
+
+/// Where a lone projected module comes from: a hull whose bonuses reach it (a strategic cruiser
+/// with its subsystems), and the pilot's skills that matter to it. Returns the new source when
+/// one was picked.
+fn source_popup(button: &egui::Response, dogma: &Dogma, type_id: TypeId, charge: Option<TypeId>, src: &spai_fit::fit::ProjectedSource) -> Option<spai_fit::fit::ProjectedSource> {
+    use spai_ui::widgets::SteadySelect as _;
+    let mut out: Option<spai_fit::fit::ProjectedSource> = None;
+    egui::Popup::menu(button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(300.0);
+        // Every ship and subsystem's effects are read for it: once, not every frame it is open.
+        let key = egui::Id::new(("sim_projected_sources", type_id, charge));
+        let sources: Vec<spai_fit::bonus::BonusSource> = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_insert_with(key, || spai_fit::bonus::bonus_sources(dogma, type_id, charge)).clone());
+        ui.label(egui::RichText::new(tr!("Hull bonuses")).weak());
+        let hull_name = |h: TypeId| spai_fit::formats::name_of(dogma, h);
+        let picked = |b: &spai_fit::bonus::BonusSource| src.hull == Some(b.hull) && b.subsystem.is_none_or(|s| src.subsystems.contains(&s));
+        if ui.menu_label(src.hull.is_none(), tr!("A hull without bonuses to it")).clicked() {
+            out = Some(spai_fit::fit::ProjectedSource { hull: None, subsystems: Vec::new(), ..src.clone() });
+        }
+        egui::ScrollArea::vertical().id_salt("sim_projected_hulls").max_height(220.0).show(ui, |ui| {
+            for b in &sources {
+                let label = match b.subsystem {
+                    Some(sub) => format!("{} \u{b7} {}", hull_name(b.hull), spai_fit::formats::name_of(dogma, sub)),
+                    None => hull_name(b.hull),
+                };
+                if ui.menu_label(picked(b), label).clicked() {
+                    let mut subsystems = spai_fit::bonus::default_subsystems(dogma, b.hull, type_id, charge);
+                    if let Some(sub) = b.subsystem {
+                        let group = dogma.type_(sub).map(|t| t.group);
+                        subsystems.retain(|x| dogma.type_(*x).map(|t| t.group) != group);
+                        subsystems.push(sub);
+                    }
+                    out = Some(spai_fit::fit::ProjectedSource { hull: Some(b.hull), subsystems, ..src.clone() });
+                }
+            }
+        });
+        // A strategic cruiser's subsystems, one a slot.
+        let current = out.clone().unwrap_or_else(|| src.clone());
+        if let Some(hull) = current.hull {
+            let groups = dogma.subsystem_groups(hull);
+            if !groups.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new(tr!("Subsystems")).weak());
+                egui::Grid::new(("sim_projected_subsystems", type_id)).num_columns(2).show(ui, |ui| {
+                    for g in groups {
+                        let options = spai_fit::bonus::subsystems_for(dogma, hull, g);
+                        let fitted = current.subsystems.iter().copied().find(|s| options.contains(s));
+                        let shown = fitted.map_or_else(|| tr!("None").to_owned(), |s| spai_fit::formats::name_of(dogma, s));
+                        ui.label(dogma.group(g).map(|x| x.name.clone()).unwrap_or_default());
+                        ui.menu_button(shown, |ui| {
+                            ui.set_min_width(280.0);
+                            let mut set = |pick: Option<TypeId>| {
+                                let mut next = current.clone();
+                                next.subsystems.retain(|s| !options.contains(s));
+                                next.subsystems.extend(pick);
+                                out = Some(next);
+                            };
+                            if ui.menu_label(fitted.is_none(), tr!("None")).clicked() {
+                                set(None);
+                                ui.close();
+                            }
+                            for o in &options {
+                                if ui.menu_label(fitted == Some(*o), spai_fit::formats::name_of(dogma, *o)).clicked() {
+                                    set(Some(*o));
+                                    ui.close();
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+        let current = out.clone().unwrap_or_else(|| src.clone());
+        let skills = spai_fit::bonus::relevant_skills(dogma, type_id, charge, current.hull, &current.subsystems);
+        if !skills.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new(tr!("Pilot skills")).weak());
+            egui::Grid::new(("sim_projected_skills", type_id)).num_columns(2).show(ui, |ui| {
+                for skill in skills {
+                    let mut level = current.skills.iter().find(|(s, _)| *s == skill).map_or(5, |(_, l)| *l);
+                    ui.label(spai_fit::formats::name_of(dogma, skill));
+                    if ui.add(egui::DragValue::new(&mut level).range(0..=5)).changed() {
+                        let mut next = current.clone();
+                        next.skills.retain(|(s, _)| *s != skill);
+                        if level < 5 {
+                            next.skills.push((skill, level));
+                        }
+                        out = Some(next);
+                    }
+                    ui.end_row();
+                }
+            });
+        }
+        if !current.is_default() {
+            ui.separator();
+            if ui.button(tr!("Reset to all V, no hull")).clicked() {
+                out = Some(spai_fit::fit::ProjectedSource::default());
+            }
+        }
+    });
+    out
+}
+
+/// A lone projected module's source, for its row: its hull, or nothing without one.
+fn source_label(dogma: &Dogma, src: &spai_fit::fit::ProjectedSource) -> Option<String> {
+    src.hull.map(|h| spai_fit::formats::name_of(dogma, h))
+}
+
 fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     projected_fits(sim, ui, dogma, now_ms);
     boost_rows(sim, ui, dogma, now_ms);
     let Some(s) = sim.session() else { return };
-    let list: Vec<(TypeId, u32, spai_fit::fit::State)> = s.fit.projected.iter().map(|p| (p.type_id, p.count, p.state)).collect();
+    let list: Vec<(TypeId, u32, spai_fit::fit::State, Option<TypeId>, spai_fit::fit::ProjectedSource)> = s.fit.projected.iter().map(|p| (p.type_id, p.count, p.state, p.charge, p.source.clone())).collect();
     if list.is_empty() && s.fit.projected_fits.is_empty() && s.fit.boosts.is_empty() {
         empty_note(ui, tr!("Other fits with their webs, reps and boosts, single modules or drones, and wormhole or abyssal weather."));
     }
-    for (i, (type_id, count, state)) in list.into_iter().enumerate() {
-        let name = spai_fit::formats::name_of(dogma, type_id);
+    for (i, (type_id, count, state, charge, source)) in list.into_iter().enumerate() {
         let beacon = dogma.type_(type_id).is_some_and(|t| crate::browser::environment(dogma, t));
+        let name = match source_label(dogma, &source).filter(|_| !beacon) {
+            Some(hull) => format!("{} \u{b7} {hull}", spai_fit::formats::name_of(dogma, type_id)),
+            None => spai_fit::formats::name_of(dogma, type_id),
+        };
         let mut delta: i32 = 0;
         let mut toggle = false;
         let mut remove = false;
+        let mut set_source: Option<spai_fit::fit::ProjectedSource> = None;
         let r = rows::row(ui, "dock/projected", ("sim_projected", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, type_id, 18.0);
-            let w = rows::name_w(ui, 5.0);
+            let w = rows::name_w(ui, if beacon { 5.0 } else { 6.0 });
             let on = if beacon { state != spai_fit::fit::State::Offline } else { state >= spai_fit::fit::State::Active };
             let label = if on { egui::RichText::new(&name) } else { egui::RichText::new(&name).weak() };
             rows::cell(ui, w.max(40.0), label, "").on_hover_ui(|ui| crate::details::type_tip(ui, dogma, type_id, ""));
@@ -471,6 +593,10 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                     toggle = true;
                 }
             } else {
+                let btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::SLIDERS_HORIZONTAL)).on_hover_text(tr!("The hull it comes from and its pilot's skills"));
+                if let Some(next) = source_popup(&btn, dogma, type_id, charge, &source) {
+                    set_source = Some(next);
+                }
                 if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                     delta = -1;
                 }
@@ -508,6 +634,13 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
         });
         if details {
             sim.open_details(crate::details::DetailsTarget::Type(type_id));
+        }
+        if let Some(src) = set_source {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(p) = f.projected.get_mut(i) {
+                    p.source = src;
+                }
+            });
         }
         if delta != 0 || toggle || remove {
             sim.edit(EditKind::Other, now_ms, |f| {

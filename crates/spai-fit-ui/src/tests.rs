@@ -44,7 +44,7 @@ fn edits_recompute_and_undo_restores_the_numbers() {
 #[test]
 fn the_picker_filters_by_what_the_slot_takes() {
     let d = dataset();
-    assert_eq!(results(&d, PickTarget::Ship, None, ""), vec![ids::SHIP]);
+    assert_eq!(results(&d, PickTarget::Ship, None, ""), vec![ids::T3C, ids::SHIP], "by name");
     let mids = results(&d, PickTarget::Module(Slot::Mid, 0), None, "");
     assert!(mids.contains(&ids::MWD) && mids.contains(&ids::WEB) && !mids.contains(&ids::GUN));
     assert_eq!(results(&d, PickTarget::Module(Slot::High, 0), None, "autocannon"), vec![ids::GUN]);

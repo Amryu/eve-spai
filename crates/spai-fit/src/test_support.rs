@@ -142,6 +142,11 @@ pub mod ids {
     pub const TRACKING_BOOST: TypeId = 2104;
     pub const ECM_BURST: TypeId = 22551;
     pub const SKIRM_BURST: TypeId = 43554;
+    /// A strategic cruiser, a core subsystem with a web range bonus and an offensive one with a
+    /// burst strength bonus.
+    pub const T3C: TypeId = 29990;
+    pub const WEB_SUB: TypeId = 45620;
+    pub const BOOST_SUB: TypeId = 45600;
     pub const SKIRM_CHARGE: TypeId = 42836;
     pub const SHIELD_MINDLINK: TypeId = 21888;
     pub const SKIRM_MINDLINK: TypeId = 22798;
@@ -167,6 +172,9 @@ pub mod ids {
 }
 
 pub const SHIP_BONUS_MF: AttrId = 587;
+pub const FITS_TO_SHIP: AttrId = 1380;
+pub const SUB_WEB_BONUS: AttrId = 2990;
+pub const SUB_BURST_BONUS: AttrId = 2991;
 pub const DRONE_DAMAGE_BONUS: AttrId = 1255;
 pub const WEB_SPEED_FACTOR: AttrId = 20;
 pub const BOOSTER_SIDE: AttrId = 1223;
@@ -335,6 +343,9 @@ pub fn dataset() -> Dogma {
         type_def(BURST_CHARGE, "Shield Harmonizing Charge", 1769, 8, &[(attr::WARFARE_BUFF_1_ID, 12.0), (2596, 20.0), (attr::VOLUME, 1.0)], &[347], &[]),
         type_def(SKIRM_BURST, "Skirmish Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1770.0), (attr::CAPACITY, 10.0)], &[9003, 320, 330], &[]),
         type_def(SKIRM_CHARGE, "Rapid Deployment Charge", 1770, 8, &[(attr::WARFARE_BUFF_1_ID, 60.0), (2596, 15.0), (attr::VOLUME, 1.0)], &[347], &[]),
+        type_def(T3C, "Loki", 963, 6, &[], &[], &[]),
+        type_def(WEB_SUB, "Loki Core - Immobility Drivers", 958, 32, &[(FITS_TO_SHIP, T3C as f32), (SUB_WEB_BONUS, 125.0)], &[9004], &[]),
+        type_def(BOOST_SUB, "Loki Offensive - Support Processor", 956, 32, &[(FITS_TO_SHIP, T3C as f32), (SUB_BURST_BONUS, 10.0)], &[9005], &[]),
         type_def(SHIELD_MINDLINK, "Shield Command Mindlink", 1229, 20, &[(attr::IMPLANTNESS, 10.0)], &[], &[]),
         type_def(SKIRM_MINDLINK, "Skirmish Command Mindlink", 1229, 20, &[(attr::IMPLANTNESS, 10.0)], &[], &[]),
     ];
@@ -405,6 +416,8 @@ pub fn dataset() -> Dogma {
         EffectDef { duration_attr: Some(attr::DURATION), ..effect(349, "energyNosferatuFalloff", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(346, "moduleBonusWarfareLinkShield", EffectCategory::Active, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(9003, "moduleBonusWarfareLinkSkirmish", EffectCategory::Active, vec![]) },
+        effect(9004, "subsystemBonusWebRange", EffectCategory::Passive, vec![Modifier { group: Some(65), ..modifier(Domain::Ship, Func::LocationGroup, attr::MAX_RANGE, SUB_WEB_BONUS, Op::PostPercent) }]),
+        effect(9005, "subsystemBonusBursts", EffectCategory::Passive, vec![Modifier { group: Some(316), ..modifier(Domain::Ship, Func::LocationGroup, attr::WARFARE_BUFF_1_VALUE, SUB_BURST_BONUS, Op::PostPercent) }]),
         // The charge names the buff and multiplies the module's strength into its value.
         EffectDef { duration_attr: Some(2906), ..effect(348, "fighterAbilityAttackM", EffectCategory::Target, vec![]) },
         effect(347, "chargeBonusWarfareCharge", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_ID, Op::PostAssign), modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_VALUE, 2596, Op::PostMul)]),
@@ -458,6 +471,9 @@ pub fn dataset() -> Dogma {
         attr_def(attr::DAMAGE_MULTIPLIER, "damageMultiplier", false, true, 1.0),
         attr_def(attr::SKILL_LEVEL, "skillLevel", true, true, 0.0),
         attr_def(SHIP_BONUS_MF, "shipBonusMF2", true, true, 0.0),
+        attr_def(FITS_TO_SHIP, "fitsToShipType", true, true, 0.0),
+        attr_def(SUB_WEB_BONUS, "subsystemBonusWebRange", true, true, 0.0),
+        attr_def(SUB_BURST_BONUS, "subsystemBonusBursts", true, true, 0.0),
         attr_def(DRONE_DAMAGE_BONUS, "droneDamageBonus", true, true, 10.0),
         attr_def(attr::ARMOR_DAMAGE_AMOUNT, "armorDamageAmount", false, true, 0.0),
         attr_def(attr::SPEED_FACTOR, "speedFactor", false, true, 0.0),
@@ -550,6 +566,8 @@ pub fn dataset() -> Dogma {
     let groups = vec![
         GroupDef { id: 1, name: "Character".into(), category: 1 },
         GroupDef { id: 25, name: "Frigate".into(), category: 6 },
+        GroupDef { id: 958, name: "Core Systems".into(), category: 32 },
+        GroupDef { id: 956, name: "Offensive Systems".into(), category: 32 },
         GroupDef { id: 30, name: "Titan".into(), category: 6 },
         GroupDef { id: crate::ids::group::EFFECT_BEACON, name: "Effect Beacon".into(), category: 2 },
         GroupDef { id: 1815, name: "Titan Phenomena Generator".into(), category: 7 },

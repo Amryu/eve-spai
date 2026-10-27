@@ -4,6 +4,7 @@
 
 #[cfg(feature = "bake")]
 pub mod bake;
+pub mod bonus;
 pub mod calc;
 pub mod doc;
 pub mod doctrine;
