@@ -33,6 +33,7 @@ pub mod fleet_ships;
 pub mod graphs_panel;
 pub mod icons;
 pub mod library_panel;
+pub mod offload;
 pub mod picker;
 pub mod plot;
 pub mod rows;
@@ -581,6 +582,8 @@ pub struct SimUi {
     /// The engagement analysis of the open fleet against its opponent, with what it was for.
     pub(crate) fleet_analysis: Option<(u64, std::sync::Arc<fleet_panel::Analysis>)>,
     pub(crate) fleet_cache: std::cell::RefCell<fleet_panel::FleetCache>,
+    /// Where the host runs fleet work off the frame where it has no threads: a web worker.
+    pub(crate) off_frame: Option<std::rc::Rc<dyn offload::OffFrame>>,
     /// The open fleet's content as last edited and since when, and the content last sent to be
     /// saved: it autosaves once edits rest, like a fit.
     pub(crate) fleet_edit: Option<(u64, u64)>,
@@ -674,6 +677,7 @@ impl Default for SimUi {
             fleet_docs: std::collections::HashMap::new(),
             fleet_analysis: None,
             fleet_cache: Default::default(),
+            off_frame: None,
             fleet_edit: None,
             fleet_sent: None,
             fleet_quiet: false,

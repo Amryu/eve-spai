@@ -685,7 +685,7 @@ pub fn env_of(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, 
 }
 
 /// One slot of a fleet, computed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SlotStats {
     pub fit_id: String,
     pub name: String,
@@ -700,7 +700,7 @@ pub struct SlotStats {
     pub skills: SkillSet,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct FleetStats {
     pub name: String,
     /// What the fleet's ships project on one target: every web, painter and disruptor fitted,
@@ -825,7 +825,7 @@ pub fn ewar_on_target(ewar: &Ewar, velocity: f64, signature: f64) -> (f64, f64) 
 }
 
 /// How one side's fire lands on the other's main hull.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Against {
     /// Damage per second that lands on the enemy main hull, the whole fleet.
     pub applied_dps: f64,

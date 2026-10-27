@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>EVE Spai fitting</title>
-  <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
+  <link data-trunk rel="rust" data-bin="spai-sim-web" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
+  <link data-trunk rel="copy-file" href="fleet-worker_loader.js">
+  <link data-trunk rel="rust" data-bin="fleet-worker" data-type="worker" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1e22; }
     canvas { display: block; width: 100%; height: 100%; }

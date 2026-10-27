@@ -244,6 +244,23 @@ impl SimUi {
         })
     }
 
+    /// What a fleet's numbers are worked out from away from the frame: the fleet, the fits it
+    /// names and each slot's pilot.
+    fn stats_inputs(&self, f: &Fleet) -> (Fleet, HashMap<String, Fit>, Vec<(Option<String>, SkillSet)>) {
+        let ids: Vec<&String> = f.slots.iter().map(|s| &s.fit_id).chain(f.boosters.iter().map(|(_, id)| id)).collect();
+        let docs: HashMap<String, Fit> = ids.into_iter().filter_map(|id| self.fit_docs.get(id).map(|d| (id.clone(), d.clone()))).collect();
+        let mut profiles: Vec<Option<String>> = f.slots.iter().map(|s| s.profile.clone()).collect();
+        profiles.push(None);
+        profiles.dedup();
+        let skills = profiles.into_iter().map(|p| (p.clone(), self.fleet_skills(p.as_deref()))).collect();
+        (f.clone(), docs, skills)
+    }
+
+    /// Hands the fleet work to `worker` instead of working it out on the frame.
+    pub fn set_off_frame(&mut self, worker: std::rc::Rc<dyn crate::offload::OffFrame>) {
+        self.off_frame = Some(worker);
+    }
+
     pub(crate) fn cached_stats(&self, f: &Fleet) -> Arc<FleetStats> {
         let key = self.stats_key(f);
         // Which fleet it is, whatever its content: what to show while its numbers are redone.
@@ -276,24 +293,31 @@ impl SimUi {
         }
         let Some(dogma) = self.dogma.clone() else { return Arc::new(FleetStats::default()) };
         let previous = self.fleet_cache.borrow().last_of.get(&lineage).cloned();
+        // A worker takes even a fleet seen for the first time: it shows empty for a moment
+        // rather than hold the page.
+        if let Some(worker) = self.off_frame.as_ref().filter(|w| w.alive()) {
+            let (fleet, docs, skills) = self.stats_inputs(f);
+            let (tx, rx) = std::sync::mpsc::channel();
+            worker.run(crate::offload::WorkRequest::Stats { fleet, fits: docs, skills }, Box::new(move |r| {
+                if let crate::offload::WorkReply::Stats(s) = r {
+                    let _ = tx.send(s);
+                }
+            }));
+            let mut cache = self.fleet_cache.borrow_mut();
+            cache.stats_jobs.push((key, rx));
+            let now = self.now_ms;
+            cache.pending.get_or_insert((key, now));
+            return previous.unwrap_or_default();
+        }
         // A fleet seen before keeps its last numbers on screen while the new ones are worked out
         // on their own thread: a charge swapped redoes every slot, too long for one frame. The web
         // build has no threads, and a fleet seen for the first time has nothing to show.
         if let (Some(previous), false) = (previous, cfg!(target_arch = "wasm32")) {
-            let ids: Vec<&String> = f.slots.iter().map(|s| &s.fit_id).chain(f.boosters.iter().map(|(_, id)| id)).collect();
-            let docs: HashMap<String, Fit> = ids.into_iter().filter_map(|id| self.fit_docs.get(id).map(|d| (id.clone(), d.clone()))).collect();
-            let mut profiles: Vec<Option<String>> = f.slots.iter().map(|s| s.profile.clone()).collect();
-            profiles.push(None);
-            profiles.dedup();
-            let skills: Vec<(Option<String>, SkillSet)> = profiles.into_iter().map(|p| (p.clone(), self.fleet_skills(p.as_deref()))).collect();
-            let fleet = f.clone();
+            let (fleet, docs, skills) = self.stats_inputs(f);
             let dogma = dogma.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             let started = std::thread::Builder::new().name("fleet-stats".into()).spawn(move || {
-                let fits = |id: &str| docs.get(id).cloned();
-                let fallback = skills.iter().find(|(p, _)| p.is_none()).map(|(_, s)| s.clone()).unwrap_or_default();
-                let skill = |p: Option<&str>| skills.iter().find(|(x, _)| x.as_deref() == p).map_or_else(|| fallback.clone(), |(_, s)| s.clone());
-                let _ = tx.send(fleet::stats(&dogma, &fleet, &fits, &skill));
+                let _ = tx.send(crate::offload::stats(&dogma, &fleet, &docs, &skills));
             });
             if started.is_ok() {
                 let mut cache = self.fleet_cache.borrow_mut();
@@ -328,7 +352,7 @@ fn relabel(choices: &mut [spai_fit::fleet::ammo::AmmoChoice], fit: &Fit) {
 }
 
 /// Slots' ammo options kept at once.
-const CACHED_SLOTS: usize = 48;
+pub(crate) const CACHED_SLOTS: usize = 48;
 
 /// A fleet document's content, to tell an edit from what was saved.
 pub fn content_hash(f: &Fleet) -> u64 {
@@ -372,6 +396,7 @@ pub struct FleetCache {
 
 /// The fight between the open fleet and its opponent: ammo per range, the sweep over ranges, and
 /// the race at the fleet's range.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Analysis {
     pub fleet: Fleet,
     pub range: f32,
@@ -468,6 +493,22 @@ impl SimUi {
         }
         let fleet = self.fleet.as_ref()?.fleet.clone();
         let known = self.fleet_cache.borrow().ammo.clone();
+        if let Some(worker) = self.off_frame.clone().filter(|w| w.alive()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let progress = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let along = progress.clone();
+            worker.run(crate::offload::WorkRequest::Fight { fleet, enemy, mine, theirs }, Box::new(move |r| match r {
+                crate::offload::WorkReply::Progress(f) => along.store((f.clamp(0.0, 1.0) * 1000.0) as u32, std::sync::atomic::Ordering::Relaxed),
+                crate::offload::WorkReply::Fight(a, fresh) => {
+                    let _ = tx.send((a, fresh));
+                }
+                _ => {}
+            }));
+            let cache = self.fleet_cache.get_mut();
+            cache.job = Some((key, rx, progress));
+            cache.pending = Some((key, now));
+            return cached.map(|(_, a)| a);
+        }
         let job = FightJob::new(dogma, fleet, enemy, mine, theirs, known);
         // Everything dear off the frame, the charges' options too: a big fight held the window
         // still for seconds. The web build has no threads: it takes the steps a few a frame.
@@ -595,7 +636,17 @@ impl SimUi {
                     relabel(&mut a, &x.fit);
                     return a;
                 }
-                if cfg!(target_arch = "wasm32") {
+                if let Some(worker) = self.off_frame.as_ref().filter(|w| w.alive()) {
+                    if !cache.ammo_jobs.iter().any(|(k, _)| *k == key) {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        worker.run(crate::offload::WorkRequest::Ammo { fit: x.fit.clone(), skills: x.skills.clone(), env: s.env.clone() }, Box::new(move |r| {
+                            if let crate::offload::WorkReply::Ammo(a) = r {
+                                let _ = tx.send(Arc::new(a));
+                            }
+                        }));
+                        cache.ammo_jobs.push((key, rx));
+                    }
+                } else if cfg!(target_arch = "wasm32") {
                     if !stepped {
                         stepped = true;
                         let a = Arc::new(spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &s.env));

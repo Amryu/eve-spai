@@ -46,7 +46,7 @@ pub fn primary<'a>(shooter: &Fleet, other: &'a FleetStats) -> Option<&'a SlotSta
 }
 
 /// What one side does to and suffers from the other at one distance.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Facing {
     /// Damage per second landing on the other's primary, the whole fleet, best carried ammo.
     pub applied_dps: f64,
@@ -62,14 +62,14 @@ pub struct Facing {
     pub score: f64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RangePoint {
     pub distance: f64,
     pub a: Facing,
     pub b: Facing,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sweep {
     pub points: Vec<RangePoint>,
     /// The farthest range each side still lands `BEST_SHARE` of its most at.

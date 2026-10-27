@@ -2208,3 +2208,63 @@ fn the_logi_settings_and_the_race_length_redo_the_fight() {
         last = next;
     }
 }
+
+/// A worker in the test's own thread, every request and reply put through the bytes a web
+/// worker's messages carry.
+struct InlineWorker(std::cell::RefCell<crate::offload::Worker>, std::cell::Cell<usize>);
+
+impl crate::offload::OffFrame for InlineWorker {
+    fn run(&self, request: crate::offload::WorkRequest, mut reply: Box<dyn FnMut(crate::offload::WorkReply)>) {
+        use crate::offload::{decode, encode};
+        self.1.set(self.1.get() + 1);
+        let request = decode(&encode(&request)).expect("the request reads back");
+        self.0.borrow_mut().serve(request, &mut |r| reply(decode(&encode(&r)).expect("the reply reads back")));
+    }
+}
+
+/// Handed to a worker, the fleet's numbers, its ammo and the fight come back as worked out at
+/// home.
+#[test]
+fn a_worker_works_the_fleet_out_as_at_home() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let build = |worker: bool| {
+        let mut s = sim();
+        let w = std::rc::Rc::new(InlineWorker(std::cell::RefCell::new(crate::offload::Worker::new(s.dogma.clone().unwrap())), std::cell::Cell::new(0)));
+        if worker {
+            s.set_off_frame(w.clone());
+        }
+        s.new_fit(ids::SHIP, 0);
+        apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+        apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+        s.save();
+        let reqs = s.take_requests();
+        let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+        let fit_id = fit_id.clone();
+        s.handle(HostEvent::Saved(fit_id.clone()));
+        s.new_fleet(10);
+        let f = s.fleet.as_mut().unwrap();
+        f.fleet.size = 20;
+        f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+        f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
+        let mut out = None;
+        for _ in 0..20 {
+            s.now_ms += 10_000;
+            out = s.fleet_analysis_settled();
+            if out.as_ref().is_some_and(|a| a.mine.ships > 0) {
+                break;
+            }
+        }
+        let stats = s.fleet_stats_settled().unwrap().0;
+        let ammo = s.ammo_for(&stats);
+        (out.expect("an analysis"), stats, ammo, w.1.get())
+    };
+    let (home, home_stats, _, _) = build(false);
+    let (away, away_stats, _, asked) = build(true);
+    assert!(asked >= 2, "the worker took the work: {asked} requests");
+    assert_eq!(away_stats.ships, home_stats.ships);
+    assert_eq!(away_stats.dps, home_stats.dps);
+    assert_eq!(away.race.timeline, home.race.timeline);
+    assert_eq!(away.race.winner, home.race.winner);
+    assert_eq!(away.sweep.points.len(), home.sweep.points.len());
+    assert_eq!(away.ammo_bands, home.ammo_bands);
+}

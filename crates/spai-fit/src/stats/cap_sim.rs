@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 /// Something that cycles against the capacitor.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub cycle_ms: f64,
     /// Drawn at each activation.

@@ -21,6 +21,16 @@ const LAYOUT_KEY: &str = "spai.sim.layout";
 /// Where the fitting data is published, next to the mirrored static data.
 const BLOB_PATH: &str = "/sde/";
 
+/// The worker's loader, which trunk puts next to the page's own script, with that script's build
+/// hash: trunk hashes the page's files but not the worker's.
+fn worker_url() -> Option<String> {
+    let document = web_sys::window()?.document()?;
+    let script = document.query_selector("link[rel=modulepreload]").ok()??.get_attribute("href")?;
+    let (dir, file) = script.rsplit_once('/')?;
+    let build = file.trim_end_matches(".js").rsplit('-').next()?;
+    Some(format!("{dir}/fleet-worker_loader.js?v={build}"))
+}
+
 pub struct SimWebApp {
     sim: SimUi,
     library: Library,
@@ -46,6 +56,10 @@ impl SimWebApp {
             session: page::load::<Session>(SESSION_KEY).filter(|s| s.usable(now)),
             fetching: Default::default(),
         };
+        // The fleet work off the page: a big fight held the frame for seconds.
+        if let Some(w) = worker_url().and_then(|url| crate::worker::FleetWorker::start(&cc.egui_ctx, &url)) {
+            app.sim.set_off_frame(w);
+        }
         app.sim.handle(HostEvent::Fits(app.library.summaries()));
         app.sim.handle(HostEvent::OwnDoctrines(app.library.doctrine_docs()));
         if let Some(layout) = page::load_raw(LAYOUT_KEY) {

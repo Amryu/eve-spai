@@ -10,7 +10,7 @@ use crate::stats::application::applied_factor;
 use crate::stats::WeaponGroup;
 
 /// One weapon type of a fit with each charge it could fire.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AmmoChoice {
     pub weapon: TypeId,
     pub loaded: Option<TypeId>,
@@ -80,7 +80,7 @@ pub fn best_with(choice: &AmmoChoice, distance: f64, target: &TargetProfile, adj
 }
 
 /// A stretch of range where one carried charge is best, with a better uncarried one if any.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Band {
     pub from: f64,
     pub to: f64,

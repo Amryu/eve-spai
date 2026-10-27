@@ -48,7 +48,7 @@ pub fn logi_start(i: usize, n: usize, fleet: &super::Fleet, target: Role, lock: 
     reaction_around(i, n, f64::from(fleet.logi_reaction_s.max(0.0))) + if prelocked { 0.0 } else { lock } + spread + land
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     /// A ship of `slot` died on `side` (0 for `a`, 1 for `b`).
     Kill { side: usize, slot: usize },
@@ -60,7 +60,7 @@ pub enum Event {
     Suppressor { side: usize, slot: usize },
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Race {
     /// (seconds, ships alive on a, on b, damage per second a lands, b lands).
     pub timeline: Vec<(f64, u32, u32, f64, f64)>,
@@ -77,7 +77,7 @@ pub struct Race {
     pub wasted: [f64; 2],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Verdict {
     /// Dead in one volley from full health.
     OneVolley,

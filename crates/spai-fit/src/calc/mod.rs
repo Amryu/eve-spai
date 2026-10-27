@@ -73,14 +73,14 @@ impl Item {
 }
 
 /// A fleet buff in effect on the ship, the strongest of its kind already chosen.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveBuff {
     pub id: BuffId,
     pub value: f64,
 }
 
 /// What surrounds the fit: the fleet's buffs.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Env {
     pub buffs: Vec<ActiveBuff>,
 }
@@ -125,7 +125,7 @@ pub struct Calc<'d> {
 
 /// A running reactive hardener: the armor resonances it adapts against, its starting resistances,
 /// how much it shifts a cycle (zero kept even) and how long a cycle lasts.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rah {
     pub armor_before: [f64; 4],
     pub start: [f64; 4],
@@ -702,7 +702,7 @@ impl<'d> Calc<'d> {
 }
 
 /// Which limit of a module's group holds it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum GroupLimit {
     Fitted,
     Online,
@@ -712,7 +712,7 @@ pub enum GroupLimit {
 /// A module held below the state it is set to by its group's limit (`maxGroupFitted`,
 /// `maxGroupOnline`, `maxGroupActive`): the first ones in rack order keep theirs, as the game
 /// refuses to fit, online or activate one more.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Capped {
     pub slot: crate::fit::Slot,
     pub index: u8,

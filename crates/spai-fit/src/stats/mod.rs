@@ -12,7 +12,7 @@ pub mod application;
 pub mod cap_sim;
 
 /// The four damage types, in EVE's order: em, thermal, kinetic, explosive.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Damage {
     pub em: f64,
     pub thermal: f64,
@@ -47,7 +47,7 @@ impl Damage {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Fitting {
     pub cpu_used: f64,
     pub cpu_total: f64,
@@ -64,7 +64,7 @@ pub struct Fitting {
 }
 
 /// One of shield, armour and hull.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layer {
     pub hp: f64,
     /// em, thermal, kinetic, explosive; a resonance of 0.6 is 40% resistance.
@@ -78,7 +78,7 @@ impl Layer {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Reps {
     /// Hit points per second, reloads counted.
     pub shield: f64,
@@ -89,7 +89,7 @@ pub struct Reps {
     pub armor_burst: f64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tank {
     /// A PANIC core is running: the shield's near total resistances come from a calibrated factor
     /// (`calc::patch::PANIC_SHIELD_RESONANCE`), not from the data.
@@ -107,7 +107,7 @@ pub struct Tank {
     pub reps: Reps,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WeaponKind {
     Turret,
     Missile,
@@ -128,7 +128,7 @@ pub enum WeaponKind {
 /// A breacher pod's damage over time: each second for `duration_s`, the lesser of `per_tick` and
 /// `hp_pct` percent of the target's whole hit points, through no resistance. One runs on a
 /// target at a time.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Dot {
     pub per_tick: f64,
     pub hp_pct: f64,
@@ -142,7 +142,7 @@ impl Dot {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MissileProfile {
     pub velocity: f64,
     pub flight_time_s: f64,
@@ -177,7 +177,7 @@ impl MissileProfile {
 }
 
 /// Identical weapons with the same charge, counted together.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WeaponGroup {
     pub kind: WeaponKind,
     pub type_id: TypeId,
@@ -216,7 +216,7 @@ pub struct WeaponGroup {
     pub dot: Option<Dot>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Drones {
     pub control_range: f64,
     pub bandwidth_used: f64,
@@ -227,7 +227,7 @@ pub struct Drones {
     pub max_active: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Capacitor {
     pub capacity: f64,
     /// The recharge time constant in seconds.
@@ -246,7 +246,7 @@ pub struct Capacitor {
     pub users: Vec<cap_sim::User>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Mobility {
     pub max_velocity: f64,
     pub mass: f64,
@@ -256,7 +256,7 @@ pub struct Mobility {
     pub signature: f64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SensorKind {
     #[default]
     Radar,
@@ -265,7 +265,7 @@ pub enum SensorKind {
     Gravimetric,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sensors {
     pub scan_resolution: f64,
     pub lock_range: f64,
@@ -320,7 +320,7 @@ impl RemoteKind {
 }
 
 /// One active module acting on another ship.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteModule {
     pub type_id: TypeId,
     pub kind: RemoteKind,
@@ -356,7 +356,7 @@ impl RemoteModule {
 }
 
 /// What the fit does to others per second: repairs, capacitor and neuts.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Remote {
     pub armor_rep: f64,
     pub shield_rep: f64,
@@ -381,7 +381,7 @@ pub fn range_factor(distance: f64, optimal: f64, falloff: f64) -> f64 {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Computed {
     /// The fastest drone in space, for how well drones keep up.
     pub drone_speed: Option<f64>,
@@ -412,7 +412,7 @@ pub struct Computed {
 }
 
 /// What the fit mines, in cubic metres a second, critical successes counted at their odds.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Mining {
     pub ore: f64,
     pub ice: f64,
@@ -459,7 +459,7 @@ fn mining(calc: &Calc) -> Mining {
 }
 
 /// A hull's resistance to ewar, as the share of each kind's strength it lets through.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EwarResist {
     pub web: f64,
     pub painter: f64,
@@ -542,7 +542,7 @@ fn resist(calc: &Calc) -> EwarResist {
 }
 
 /// A place things are carried: its capacity with skills and modules counted, and what fills it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Hold {
     /// The ship attribute giving its capacity; none is the cargo hold.
     pub attr: Option<AttrId>,
