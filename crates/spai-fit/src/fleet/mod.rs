@@ -234,8 +234,8 @@ pub struct Fleet {
     /// In a mirror match, the copy's own size and per slot its own typed counts.
     pub mirror_size: Option<u32>,
     pub mirror_counts: Vec<Option<u32>>,
-    /// The share of each logi slot holding the primary locked before it is hurt: they skip the
-    /// lock.
+    /// The share of each logi slot holding the fleet's boosters, recons and tackle locked before
+    /// they are hurt: on those they skip the lock. Damage dealers are locked once hurt.
     pub logi_prelock: f32,
     /// Seconds the logi take to see a ship hurt, at the median; spread like the guns' reactions.
     #[serde(default = "default_logi_reaction")]
@@ -306,7 +306,7 @@ impl Default for Fleet {
             ewar_plan: ewar::EwarPlan::default(),
             mirror_size: None,
             mirror_counts: Vec::new(),
-            logi_prelock: 0.0,
+            logi_prelock: 1.0,
             logi_reaction_s: 1.5,
             logi_spread_s: 3.0,
             enemy: None,

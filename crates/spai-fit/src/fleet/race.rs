@@ -31,12 +31,19 @@ pub fn reaction_around(i: usize, n: usize, median: f64) -> f64 {
     median * (REACTION_SPREAD * z).exp()
 }
 
+/// Whether logi keep a ship of this role locked before it is hurt: the boosters, recons and
+/// other support, and the tackle, not the damage dealers or each other.
+pub fn prelocked_role(role: Role) -> bool {
+    matches!(role, Role::Command | Role::Ewar | Role::Support | Role::Tackle)
+}
+
 /// When the `i`-th of `n` logi ships of a slot lands its first repair, from the primary's first
 /// damage: its reaction about the fleet's median, its lock unless it held the primary locked
-/// already (the first `prelock` share of the slot), its place in the spread of arrivals (shuffled
-/// against the reaction order), and the cycle an armor repair waits for.
-pub fn logi_start(i: usize, n: usize, fleet: &super::Fleet, lock: f64, land: f64) -> f64 {
-    let prelocked = (i as f64) < (f64::from(fleet.logi_prelock.clamp(0.0, 1.0)) * n as f64).round();
+/// already (the first `prelock` share of the slot, on a ship of a role logi keep locked), its
+/// place in the spread of arrivals (shuffled against the reaction order), and the cycle an armor
+/// repair waits for.
+pub fn logi_start(i: usize, n: usize, fleet: &super::Fleet, target: Role, lock: f64, land: f64) -> f64 {
+    let prelocked = prelocked_role(target) && (i as f64) < (f64::from(fleet.logi_prelock.clamp(0.0, 1.0)) * n as f64).round();
     let spread = f64::from(fleet.logi_spread_s.max(0.0)) * ((i as f64 * 0.618_033_988_75) + 0.5).fract();
     reaction_around(i, n, f64::from(fleet.logi_reaction_s.max(0.0))) + if prelocked { 0.0 } else { lock } + spread + land
 }
@@ -546,7 +553,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                     let Some((_, _, land)) = logis[1 - side].iter().find(|(x, _, _)| *x == k) else { return 0 };
                     let n = alive_at[1 - side].get(k).copied().unwrap_or(0);
                     let lock = sides[1 - side].stats.slots[k].computed.sensors.lock_time_s(signature);
-                    (0..n).filter(|i| i % hurt.len() == turn && t >= hit_at + logi_start(*i, n, sides[1 - side].fleet, lock, *land)).count() as u32
+                    let role = fleets[1 - side][p].role;
+                    (0..n).filter(|i| i % hurt.len() == turn && t >= hit_at + logi_start(*i, n, sides[1 - side].fleet, role, lock, *land)).count() as u32
                 }).collect();
                 if active.iter().any(|n| *n > 0) {
                     let since = reps_landed[side][*g].map_or(0.0, |at| t - at);

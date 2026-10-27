@@ -1063,7 +1063,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 ui.label(tr!("Logistics efficiency")).on_hover_text(tr!("The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health"));
                 changed |= ui.add(egui::Slider::new(&mut f.logi_efficiency, 0.1..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
                 ui.end_row();
-                ui.label(tr!("Logi pre-locked")).on_hover_text(tr!("The share of the logistics already holding the primary locked when it is first hurt: they skip the lock"));
+                ui.label(tr!("Logi pre-locked")).on_hover_text(tr!("The share of the logistics holding the fleet's boosters, recons and tackle locked before they are hurt: on those they skip the lock. Damage dealers are locked once hurt."));
                 changed |= ui.add(egui::Slider::new(&mut f.logi_prelock, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed();
                 ui.end_row();
                 ui.label(tr!("Logi reaction")).on_hover_text(tr!("Seconds until the logistics see a ship hurt, at the median; some quicker, a few slower"));

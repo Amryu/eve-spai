@@ -795,3 +795,20 @@ fn an_alpha_fleet_keeps_critical_mass_while_one_volley_still_kills() {
     assert!(race::holds_critical_mass(16_000.0, 18_000.0, 580_000.0, 222_000.0), "outrepaired, but a volley kills two and more of them");
 }
 
+
+/// Logi keep the boosters, recons and tackle locked, not the damage dealers: on those the
+/// pre-locked ones skip the lock, on a damage dealer every logi locks it once it is hurt.
+#[test]
+fn logi_pre_lock_the_support_ships_but_not_the_damage_dealers() {
+    let f = Fleet { logi_prelock: 1.0, logi_spread_s: 0.0, ..Fleet::default() };
+    let (lock, land) = (4.0, 0.0);
+    for role in [Role::Command, Role::Ewar, Role::Support, Role::Tackle] {
+        assert!(race::prelocked_role(role));
+        assert!(race::logi_start(0, 4, &f, role, lock, land) < lock, "{role:?}: no lock to wait for");
+    }
+    for role in [Role::Main, Role::Mainline, Role::Logi] {
+        assert!(!race::prelocked_role(role));
+        assert!(race::logi_start(0, 4, &f, role, lock, land) >= lock, "{role:?}: locked once hurt");
+    }
+    assert_eq!(Fleet::default().logi_prelock, 1.0, "they hold their support ships locked from the start");
+}
