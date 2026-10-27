@@ -508,6 +508,24 @@ fn shortcut_booster_with(dogma: &Dogma, b: &crate::fit::BoostShortcut, module: c
 /// booster runs. The shortcut stands for as many boosters as it takes, so the hull's limit on
 /// bursts does not cut the later charges as it would on one real fit.
 pub fn shortcut_bursts(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<(BuffId, f64)> {
+    // A shortcut's buffs depend on it and the data alone, and every edit of a fit that carries
+    // some figures them again: a doctrine fit's three took most of an edit's time.
+    static KEPT: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<(BuffId, f64)>>>> = std::sync::Mutex::new(None);
+    let key = format!("{}:{}:{}", dogma.sde_build, dogma.types.len(), serde_json::to_string(b).unwrap_or_default());
+    if let Some(hit) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    let out = shortcut_bursts_uncached(dogma, b);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let map = kept.get_or_insert_with(Default::default);
+    if map.len() > 256 {
+        map.clear();
+    }
+    map.insert(key, out.clone());
+    out
+}
+
+fn shortcut_bursts_uncached(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Vec<(BuffId, f64)> {
     let Some(module) = b.module.or_else(|| dogma.type_named(b.kind.module_name()).map(|t| t.id)) else { return Vec::new() };
     let mut out = Vec::new();
     for charge in burst_charges(dogma, module).into_iter().filter(|c| !b.charges_off.contains(c)) {
