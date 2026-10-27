@@ -11,7 +11,7 @@ use crate::store::FleetEntry;
 use spai_ui::{tr, trf};
 use spai_webkit::accounts::{self, Account, SKILLS};
 use spai_webkit::page;
-use spai_webkit::sso::{Pending, Session, ACCOUNTS_KEY, PENDING_KEY, SESSION_KEY};
+use spai_webkit::sso::{Pending, Session, ACCOUNTS_KEY, PENDING_KEY, SESSION_ERROR_KEY, SESSION_KEY};
 
 use crate::store::{Library, KEY};
 
@@ -65,6 +65,11 @@ impl SimWebApp {
             }
         }
         app.load_profiles();
+        // A sign-in whose session the server refused: said once, the skills kept all the same.
+        if let Some(e) = page::load::<String>(SESSION_ERROR_KEY) {
+            page::forget(SESSION_ERROR_KEY);
+            app.sim.handle(HostEvent::Status(trf!("Signed in for skills only, EVE Spai said no: {e}", e = e)));
+        }
         app.fetch_doctrines(&cc.egui_ctx);
         app.sync(&cc.egui_ctx);
         app

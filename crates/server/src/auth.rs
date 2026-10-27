@@ -65,11 +65,18 @@ struct Claims {
     scp: serde_json::Value,
 }
 
-fn no_scopes(scp: &serde_json::Value) -> bool {
+/// No scope that writes: none at all, or only `esi-….read_….v1` ones. The fitting sim's sign-in
+/// reads the character's skills with the same token that makes its session; a token able to
+/// change anything in game is still turned away.
+fn read_only_scopes(scp: &serde_json::Value) -> bool {
+    let read = |s: &str| {
+        let s = s.trim();
+        s.is_empty() || (s.starts_with("esi-") && s.contains(".read_") && !s.contains("write"))
+    };
     match scp {
         serde_json::Value::Null => true,
-        serde_json::Value::String(s) => s.trim().is_empty(),
-        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::String(s) => s.split_whitespace().all(read),
+        serde_json::Value::Array(a) => a.iter().all(|v| v.as_str().is_some_and(read)),
         _ => false,
     }
 }
@@ -87,7 +94,7 @@ enum Source {
 pub struct Verifier {
     source: Source,
     audience: String,
-    /// Other applications allowed to sign in, and only without scopes.
+    /// Other applications allowed to sign in, and only with read-only scopes.
     extras: Vec<String>,
 }
 
@@ -130,8 +137,8 @@ impl Verifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
         let char_id = parse_char_id(&data.claims.sub)?;
         let client = self.client_of(&data.claims)?;
-        if client.is_some() && !no_scopes(&data.claims.scp) {
-            return Err(AuthError::Invalid("this client may only sign in without scopes".into()));
+        if client.is_some() && !read_only_scopes(&data.claims.scp) {
+            return Err(AuthError::Invalid("this client may only sign in with read-only scopes".into()));
         }
         Ok(Identity { char_id, name: data.claims.name, client })
     }
@@ -359,13 +366,16 @@ QxUVZGDK2388KblxKYy3YTE=\n\
     }
 
     #[tokio::test]
-    async fn another_client_signs_in_only_without_scopes() {
+    async fn another_client_signs_in_only_with_read_only_scopes() {
         let v = with_extra();
         let id = v.verify(&sign(extra_claims(json!(null)))).await.unwrap();
         assert_eq!(id.client.as_deref(), Some(EXTRA));
         assert!(v.verify(&sign(extra_claims(json!([])))).await.is_ok());
-        assert!(v.verify(&sign(extra_claims(json!("esi-location.read_location.v1")))).await.is_err(), "one scope");
-        assert!(v.verify(&sign(extra_claims(json!(["esi-location.read_location.v1"])))).await.is_err(), "a list");
+        // The fitting sim's sign-in: the skills it reads come with the session.
+        assert!(v.verify(&sign(extra_claims(json!("esi-skills.read_skills.v1")))).await.is_ok(), "one read scope");
+        assert!(v.verify(&sign(extra_claims(json!(["esi-skills.read_skills.v1", "esi-location.read_location.v1"])))).await.is_ok(), "a list of them");
+        assert!(v.verify(&sign(extra_claims(json!(["esi-skills.read_skills.v1", "esi-fleets.write_fleet.v1"])))).await.is_err(), "one that writes");
+        assert!(v.verify(&sign(extra_claims(json!("esi-ui.open_window.v1")))).await.is_err(), "one that acts in game");
         // Not configured: refused like any other stranger.
         assert!(verifier().verify(&sign(extra_claims(json!(null)))).await.is_err());
     }

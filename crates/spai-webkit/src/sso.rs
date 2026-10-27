@@ -13,6 +13,8 @@ pub const TOKEN: &str = "https://login.eveonline.com/v2/oauth/token";
 
 /// Keys the apps share in the browser's storage.
 pub const SESSION_KEY: &str = "spai.session";
+/// Why the last sign-in got no EVE Spai session, for the page it returns to to say.
+pub const SESSION_ERROR_KEY: &str = "spai.session.error";
 pub const PENDING_KEY: &str = "spai.sso";
 pub const ACCOUNTS_KEY: &str = "spai.accounts";
 

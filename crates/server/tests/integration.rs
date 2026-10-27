@@ -691,13 +691,15 @@ fn scoped_third_party_token(char_id: i64, scp: Value) -> String {
 }
 
 #[tokio::test]
-async fn another_client_mints_a_session_only_without_scopes() {
+async fn another_client_mints_a_session_only_with_read_only_scopes() {
     let app = third_party_app(Default::default());
     let (status, body) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, Value::Null)), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["character_id"], 90000031);
-    let (status, _) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, json!(["esi-location.read_location.v1"]))), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, json!(["esi-fleets.write_fleet.v1"]))), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a scope that writes");
+    let (status, _) = send(&app, "POST", "/api/session", Some(&scoped_third_party_token(90000031, json!(["esi-skills.read_skills.v1"]))), None).await;
+    assert_eq!(status, StatusCode::OK, "the fitting sim's sign-in reads skills with it");
     // EVE Spai's own login, scopes and all, is untouched.
     let (status, _) = send(&app, "POST", "/api/session", Some(&token(90000032, "Spai Pilot")), None).await;
     assert_eq!(status, StatusCode::OK);

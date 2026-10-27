@@ -75,11 +75,11 @@ async fn create_session(
     headers: HeaderMap,
 ) -> Result<Json<SessionResponse>, AppError> {
     let eve_token = session::bearer(&headers)?;
-    let identity = st
-        .verifier
-        .verify(eve_token)
-        .await
-        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+    let identity = st.verifier.verify(eve_token).await.map_err(|e| {
+        // A refusal is no server error, so nothing else logs it; the token never goes in.
+        tracing::warn!(error = %e, "session refused");
+        AppError::Unauthorized(e.to_string())
+    })?;
     let (token, expires_at) = st.session_issuer.issue(&identity)?;
     Ok(Json(SessionResponse {
         token,

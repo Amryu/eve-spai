@@ -51,13 +51,25 @@ pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added
                     let access = t.as_ref().ok().map(|t| t.access_token.clone());
                     let r = t.and_then(|t| crate::accounts::web::add(&accounts, t));
                     // A sign-in that asked for scopes too: the same token makes the session.
+                    // Its failure is kept for the page it returns to: set here only, it was written
+                    // over by the character's own result and a refused session went unseen.
+                    let mut refused = None;
                     if let (true, Some(access)) = (p.session, access) {
                         match spai_webkit::sso::session(&page::origin(), &access).await {
-                            Ok(s) => page::save(SESSION, &s),
-                            Err(e) => *added.borrow_mut() = Some(Err(e)),
+                            Ok(s) => {
+                                page::save(SESSION, &s);
+                                page::forget(spai_webkit::sso::SESSION_ERROR_KEY);
+                            }
+                            Err(e) => {
+                                page::save(spai_webkit::sso::SESSION_ERROR_KEY, &e);
+                                refused = Some(e);
+                            }
                         }
                     }
-                    *added.borrow_mut() = Some(r);
+                    *added.borrow_mut() = Some(match (r, refused) {
+                        (Ok(_), Some(e)) => Err(e),
+                        (r, _) => r,
+                    });
                     // Started by another of our pages (the fitting simulator): back there.
                     if let Some(to) = &p.return_to {
                         page::go(to);
