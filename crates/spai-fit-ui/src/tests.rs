@@ -2268,3 +2268,73 @@ fn a_worker_works_the_fleet_out_as_at_home() {
     assert_eq!(away.sweep.points.len(), home.sweep.points.len());
     assert_eq!(away.ammo_bands, home.ammo_bands);
 }
+
+/// A worker that answers only when told, as a web worker does a few frames later.
+struct LateWorker(std::cell::RefCell<crate::offload::Worker>, std::cell::RefCell<Vec<(crate::offload::WorkRequest, Box<dyn FnMut(crate::offload::WorkReply)>)>>);
+
+impl crate::offload::OffFrame for LateWorker {
+    fn run(&self, request: crate::offload::WorkRequest, reply: Box<dyn FnMut(crate::offload::WorkReply)>) {
+        self.1.borrow_mut().push((request, reply));
+    }
+}
+
+impl LateWorker {
+    fn answer(&self) -> usize {
+        let waiting = std::mem::take(&mut *self.1.borrow_mut());
+        let n = waiting.len();
+        for (request, mut reply) in waiting {
+            self.0.borrow_mut().serve(request, &mut |r| reply(r));
+        }
+        n
+    }
+}
+
+/// Frames that pass while a worker works ask for nothing twice, and once its answers are in the
+/// badge goes: a fleet's numbers asked for every frame left runs nobody collected.
+#[test]
+fn a_late_worker_is_asked_once_and_the_badge_goes_when_it_answers() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let mut s = sim();
+    let w = std::rc::Rc::new(LateWorker(std::cell::RefCell::new(crate::offload::Worker::new(s.dogma.clone().unwrap())), Default::default()));
+    s.set_off_frame(w.clone());
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let fit_id = fit_id.clone();
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+    f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
+    let frame = |s: &mut SimUi| {
+        s.now_ms += 1_000;
+        let _ = s.fleet_stats();
+        let stats = s.fleet_stats().map(|x| x.0);
+        if let Some(st) = stats {
+            let _ = s.ammo_for(&st);
+        }
+        s.fleet_analysis()
+    };
+    let mut answered = Vec::new();
+    let mut done = None;
+    for _ in 0..40 {
+        for _ in 0..3 {
+            done = frame(&mut s);
+        }
+        answered.push(w.answer());
+        if done.as_ref().is_some_and(|a| a.mine.ships > 0) && !s.fleet_analysis_pending() {
+            break;
+        }
+    }
+    let a = done.expect("the fight came in");
+    assert!(a.mine.ships > 0);
+    assert!(answered.iter().all(|n| *n <= 4), "nothing asked again while it waited: {answered:?}");
+    for _ in 0..3 {
+        frame(&mut s);
+    }
+    assert!(!s.fleet_analysis_pending(), "the badge goes once the answers are in: {answered:?}");
+}

@@ -267,28 +267,28 @@ impl SimUi {
         let lineage = format!("{}\u{1f}{}", f.id, f.name);
         {
             let mut cache = self.fleet_cache.borrow_mut();
-            if let Some((_, s)) = cache.stats.iter().find(|(k, _)| *k == key) {
-                return s.clone();
-            }
-            if let Some(i) = cache.stats_jobs.iter().position(|(k, _)| *k == key) {
+            // Every run that came in, this fleet's or not: one left in the list keeps the badge up.
+            let mut i = 0;
+            while i < cache.stats_jobs.len() {
                 match cache.stats_jobs[i].1.try_recv() {
                     Ok(s) => {
-                        let s = Arc::new(s);
-                        cache.stats_jobs.remove(i);
-                        cache.stats.insert(0, (key, s.clone()));
+                        let (k, _) = cache.stats_jobs.remove(i);
+                        cache.stats.insert(0, (k, Arc::new(s)));
                         cache.stats.truncate(CACHED);
-                        cache.last_of.insert(lineage, s.clone());
-                        return s;
                     }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        if let Some(s) = cache.last_of.get(&lineage) {
-                            return s.clone();
-                        }
-                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => i += 1,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         cache.stats_jobs.remove(i);
                     }
                 }
+            }
+            if let Some((_, s)) = cache.stats.iter().find(|(k, _)| *k == key).cloned() {
+                cache.last_of.insert(lineage, s.clone());
+                return s;
+            }
+            // Under way: the last numbers until it is in, never a second run.
+            if cache.stats_jobs.iter().any(|(k, _)| *k == key) {
+                return cache.last_of.get(&lineage).cloned().unwrap_or_default();
             }
         }
         let Some(dogma) = self.dogma.clone() else { return Arc::new(FleetStats::default()) };
