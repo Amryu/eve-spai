@@ -254,10 +254,10 @@ fn booster(name: &str, bursts: &[crate::ids::TypeId]) -> Fit {
     f
 }
 
-/// Boosters get their mindlinks and burst swaps; the doctrine projects as few as cover its boost
-/// kinds, one each, the same on every fit.
+/// The doctrine projects as few boosters as run all its boost kinds, each covering every charge of
+/// its kinds, the same on every fit.
 #[test]
-fn a_doctrine_projects_one_booster_for_each_boost_kind() {
+fn a_doctrine_projects_as_few_boosters_as_cover_its_kinds() {
     let d = dataset();
     let fit = |key: &str, fit: Fit, role: FitRole| DoctrineFit { fit_id: supplied_fit_id("gsf-x", key), fit: Some(fit), role, main: role == FitRole::Line, note: String::new() };
     let mut doc = Doctrine {
@@ -266,7 +266,6 @@ fn a_doctrine_projects_one_booster_for_each_boost_kind() {
             fit("dps", rifter("DPS"), FitRole::Line),
             fit("both", booster("Both", &[ids::BURST, ids::SKIRM_BURST]), FitRole::Command),
             fit("shield", booster("Shield", &[ids::BURST, ids::BURST]), FitRole::Command),
-            fit("spare", booster("Spare", &[ids::BURST]), FitRole::Command),
         ],
         ..Doctrine::default()
     };
@@ -274,35 +273,38 @@ fn a_doctrine_projects_one_booster_for_each_boost_kind() {
     let get = |i: usize| doc.fits[i].fit.clone().unwrap();
     let both = get(1);
     let names: Vec<String> = both.variations.iter().map(|v| v.full_name()).collect();
-    assert_eq!(names, ["Mindlink · Shield", "Mindlink · Skirmish"], "one charge a kind here: a swap would swap nothing");
+    assert_eq!(names, ["Mindlink · Shield", "Mindlink · Skirmish"]);
     assert_eq!(both.modules.iter().map(|m| m.charge).collect::<Vec<_>>(), [Some(ids::BURST_CHARGE), Some(ids::SKIRM_CHARGE)], "empty bursts loaded");
-    let shield = get(2);
-    let want = vec![("gsf-x~shield".to_owned(), shield.variations[0].id, vec![ids::BURST_CHARGE]), ("gsf-x~both".to_owned(), both.variations[1].id, vec![ids::BURST_CHARGE, ids::SKIRM_CHARGE])];
+    let want = vec![("gsf-x~both".to_owned(), both.variations[0].id, vec![ids::BURST_CHARGE, ids::SKIRM_CHARGE])];
     let projected = |i: usize| get(i).projected_fits.into_iter().map(|p| (p.fit_id, p.variation.unwrap(), p.charges)).collect::<Vec<_>>();
-    assert_eq!(projected(0), want, "two shield bursts beat one; the mixed booster takes skirmish and keeps its shield burst; the spare is not needed");
-    assert_eq!(projected(3), want, "the same on every fit");
-    assert_eq!(projected(1), want[..1], "not itself");
+    assert_eq!(projected(0), want, "one booster runs both kinds: the other is not needed");
+    assert_eq!(projected(2), want, "the same on every fit");
+    assert!(projected(1).is_empty(), "not itself");
     let mut again = doc.clone();
     project_boosters(&d, &mut again);
     assert_eq!(again.fits[1].fit.as_ref().unwrap().variations.len(), 2, "running it again adds nothing");
-    assert_eq!(again.fits[0].fit.as_ref().unwrap().projected_fits.len(), 2);
+    assert_eq!(again.fits[0].fit.as_ref().unwrap().projected_fits.len(), 1);
 }
 
-/// A hull that strengthens a kind its fit carries no burst for still gets the swap to it: the
-/// kind's bursts, charges and mindlink.
+/// A hull that strengthens a kind its fit runs no burst of spreads its bursts over its kinds, one
+/// setup a mindlink, so it covers all of them.
 #[test]
-fn a_booster_swaps_to_every_kind_its_hull_strengthens() {
+fn a_booster_spreads_its_bursts_over_the_kinds_its_hull_strengthens() {
     let d = dataset();
     let mut fit = Fit::new(ids::T3C, "T3C");
     fit.modules.push(crate::fit::Module::new(ids::BOOST_SUB, Slot::Subsystem, 2).with_state(crate::fit::State::Online));
     fit.modules.push(crate::fit::Module::new(ids::BURST, Slot::High, 0).with_state(crate::fit::State::Active));
+    fit.modules.push(crate::fit::Module::new(ids::BURST, Slot::High, 1).with_state(crate::fit::State::Active));
     booster_variations(&d, &mut fit);
     let names: Vec<String> = fit.variations.iter().map(|v| v.full_name()).collect();
-    assert_eq!(names, ["Mindlink · Shield", "Bursts · Skirmish"]);
+    assert_eq!(names, ["Bursts · Shield + Skirmish, Shield mindlink", "Bursts · Shield + Skirmish, Skirmish mindlink"]);
+    assert_eq!(booster_variation(&d, &fit, BurstKind::Skirmish), Some(fit.variations[1].id));
     fit.active_variations = vec![fit.variations[1].id];
     let flown = crate::variations::resolve(&d, &fit);
-    assert_eq!(flown.module(Slot::High, 0).map(|m| (m.type_id, m.charge)), Some((ids::SKIRM_BURST, Some(ids::SKIRM_CHARGE))));
-    assert!(flown.implants.contains(&ids::SKIRM_MINDLINK));
+    let highs: Vec<_> = flown.rack(Slot::High).map(|m| (m.type_id, m.charge)).collect();
+    assert_eq!(highs, [(ids::BURST, Some(ids::BURST_CHARGE)), (ids::SKIRM_BURST, Some(ids::SKIRM_CHARGE))]);
+    assert!(flown.implants.contains(&ids::SKIRM_MINDLINK) && !flown.implants.contains(&ids::SHIELD_MINDLINK));
+    assert_eq!(covered_charges(&d, &flown), [ids::BURST_CHARGE, ids::SKIRM_CHARGE]);
 }
 
 /// A projected booster covering charges runs each of them, loaded or not; none covered is what
