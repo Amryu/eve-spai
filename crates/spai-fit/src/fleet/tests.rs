@@ -531,15 +531,16 @@ fn the_summary_and_the_charge_table_count_ships_per_kill_the_same_way() {
 }
 
 #[test]
-fn splitting_fire_kills_weak_targets_faster_when_one_volley_overkills() {
+fn turrets_on_one_primary_clear_weak_targets_as_fast_as_split_fire() {
     let lib = library();
     let tight = Formation::Ball { radius_m: 0.0 };
-    // Forty brawlers on ten of them: one primary at a time throws most of each volley away.
+    // Forty brawlers on ten of them: a turret whose primary is already dead holds its volley for
+    // the next, locked already, so one primary at a time wastes nothing.
     let big = |split: u32| Fleet { size: 40, formation: tight, split_fire: split, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
     let few = Fleet { size: 10, formation: tight, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
     let (one, two) = (race_between(&big(1), &few, &lib, 500.0), race_between(&big(2), &few, &lib, 500.0));
     assert_eq!((one.winner, two.winner), (Some(0), Some(0)));
-    assert!(two.seconds < one.seconds, "two primaries at once clear them sooner: {} against {}", two.seconds, one.seconds);
+    assert!((two.seconds - one.seconds).abs() <= 0.5, "one primary at a time as fast as two: {} against {}", one.seconds, two.seconds);
     // A split too fine for the volley to kill still runs.
     let fine = race_between(&big(10), &few, &lib, 500.0);
     assert!(fine.seconds > 0.0);
@@ -783,3 +784,14 @@ fn the_charge_picked_kills_soonest_through_the_targets_resists() {
     }
     assert_eq!(picked(&sb), Some(ids::AMMO), "the EM charge, through the resists");
 }
+
+/// Critical mass is not only damage over repairs: a fleet whose one volley still kills its
+/// primary from full health keeps it, whatever the logi do.
+#[test]
+fn an_alpha_fleet_keeps_critical_mass_while_one_volley_still_kills() {
+    assert!(race::holds_critical_mass(20_000.0, 0.0, 0.0, 200_000.0), "nothing repairs it");
+    assert!(race::holds_critical_mass(20_000.0, 15_000.0, 0.0, 200_000.0), "the damage beats the reps");
+    assert!(!race::holds_critical_mass(16_000.0, 18_000.0, 150_000.0, 222_000.0), "outrepaired and short of a kill a volley");
+    assert!(race::holds_critical_mass(16_000.0, 18_000.0, 580_000.0, 222_000.0), "outrepaired, but a volley kills two and more of them");
+}
+
