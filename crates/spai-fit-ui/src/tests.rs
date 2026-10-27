@@ -53,7 +53,7 @@ fn the_picker_filters_by_what_the_slot_takes() {
     assert_eq!(charges, vec![ids::AMMO_LONG, ids::AMMO], "by name: Barrage before EMP");
     assert_eq!(results(&d, PickTarget::Charge(Slot::High, 0), Some(ids::AAR), ""), vec![ids::PASTE]);
     assert_eq!(results(&d, PickTarget::Drone, None, ""), vec![ids::WEB_DRONE, ids::LOGI_DRONE, ids::DRONE], "by name");
-    assert_eq!(results(&d, PickTarget::Implant, None, ""), vec![ids::IMPLANT]);
+    assert_eq!(results(&d, PickTarget::Implant, None, ""), vec![ids::SHIELD_MINDLINK, ids::SKIRM_MINDLINK, ids::IMPLANT], "by name");
     assert_eq!(results(&d, PickTarget::Booster, None, ""), vec![ids::BOOSTER]);
     assert!(results(&d, PickTarget::Cargo, None, "").contains(&ids::CAP_CHARGE));
     assert!(results(&d, PickTarget::Ship, None, "zzz").is_empty());

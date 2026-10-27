@@ -346,6 +346,17 @@ pub fn resolve_counts(fleet: &Fleet) -> Vec<u32> {
 }
 
 impl BurstKind {
+    /// The kind's name in stored data, such as a variation's.
+    pub fn label(self) -> &'static str {
+        match self {
+            BurstKind::Shield => "Shield",
+            BurstKind::Armor => "Armor",
+            BurstKind::Skirmish => "Skirmish",
+            BurstKind::Information => "Information",
+            BurstKind::Mining => "Mining",
+        }
+    }
+
     /// The Tech II burst module of the kind, by name.
     pub fn module_name(self) -> &'static str {
         match self {
@@ -521,6 +532,27 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
                 out.push((id as BuffId, calc.value(i, value_attr)));
             }
         }
+    }
+    out
+}
+
+/// The bursts a booster fit gives when it covers these charges: each from one of its active
+/// bursts that takes it, loaded with it alone. No charges is what its bursts have loaded.
+pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], skills: &SkillSet) -> Vec<(BuffId, f64)> {
+    if charges.is_empty() {
+        return bursts_of(dogma, fit, skills);
+    }
+    let is_burst = |t: crate::ids::TypeId| dogma.type_(t).is_some_and(|ty| ty.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| BurstKind::ALL.iter().any(|k| k.effect() == x.name))));
+    let mut out = Vec::new();
+    for &c in charges {
+        let Some(at) = fit.modules.iter().position(|m| m.state >= State::Active && is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c)) else { continue };
+        let mut one = fit.clone();
+        for (i, m) in one.modules.iter_mut().enumerate() {
+            if is_burst(m.type_id) {
+                m.charge = (i == at).then_some(c);
+            }
+        }
+        out.extend(bursts_of(dogma, &one, skills));
     }
     out
 }

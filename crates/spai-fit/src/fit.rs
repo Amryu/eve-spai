@@ -185,11 +185,15 @@ pub struct ProjectedFit {
     pub active: bool,
     /// The variation it flies with; none is its base fit.
     pub variation: Option<u32>,
+    /// The burst charges it covers, each run by one of its bursts that takes it, as a booster
+    /// cycles them; none is what its bursts have loaded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub charges: Vec<TypeId>,
 }
 
 impl Default for ProjectedFit {
     fn default() -> Self {
-        ProjectedFit { fit_id: String::new(), count: 1, active: true, variation: None }
+        ProjectedFit { fit_id: String::new(), count: 1, active: true, variation: None, charges: Vec::new() }
     }
 }
 

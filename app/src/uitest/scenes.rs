@@ -2970,10 +2970,16 @@ pub(crate) fn all() -> Vec<Scene> {
         spai_fit_ui::browser::add_projected(sim, ids::BEACON, 7);
         let me = sim.sessions()[0].id.clone();
         sim.new_fit(ids::SHIP, 8);
+        // A booster, for the charges it covers.
+        sim.edit(spai_fit::history::EditKind::AddModule, 8, |f| {
+            use spai_fit::fit::{Module, Slot, State};
+            f.modules.push(Module::new(ids::BURST, Slot::High, 0).with_state(State::Active));
+            f.modules.push(Module::new(ids::SKIRM_BURST, Slot::High, 1).with_state(State::Active));
+        });
         let other = sim.sessions()[1].id.clone();
         sim.activate(0);
         let _ = me;
-        sim.edit(spai_fit::history::EditKind::Other, 9, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: other, count: 3, active: true, variation: None }));
+        sim.edit(spai_fit::history::EditKind::Other, 9, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: other, count: 3, active: true, variation: None, charges: vec![ids::SKIRM_CHARGE] }));
         sim.dock.first = 3;
     }));
     for (name, size) in [("imperium_graphs_compare", [1440.0, 900.0]), ("imperium_graphs_compare_narrow", [720.0, 900.0])] {

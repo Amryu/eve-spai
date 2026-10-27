@@ -141,6 +141,10 @@ pub mod ids {
     pub const SENSOR_BOOST: TypeId = 1969;
     pub const TRACKING_BOOST: TypeId = 2104;
     pub const ECM_BURST: TypeId = 22551;
+    pub const SKIRM_BURST: TypeId = 43554;
+    pub const SKIRM_CHARGE: TypeId = 42836;
+    pub const SHIELD_MINDLINK: TypeId = 21888;
+    pub const SKIRM_MINDLINK: TypeId = 22798;
     /// Named attributes of the synthetic data with ids of its own.
     pub const ARC_TARGETS: AttrId = 2950;
     pub const ARC_RANGE: AttrId = 2951;
@@ -329,6 +333,10 @@ pub fn dataset() -> Dogma {
         type_def(BURST, "Shield Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1769.0), (attr::CAPACITY, 10.0)], &[346, 320, 330], &[]),
         type_def(FIGHTER, "Templar II", 1652, 87, &[(2901, 20.0), (2902, 10.0), (2903, 0.0), (2904, 0.0), (2905, 1.5), (2906, 4000.0), (2907, 6000.0), (2908, 3000.0), (2909, 40.0), (2910, 200.0), (2911, 0.8), (attr::VOLUME, 5000.0), (attr::MAX_VELOCITY, 4000.0)], &[348], &[]),
         type_def(BURST_CHARGE, "Shield Harmonizing Charge", 1769, 8, &[(attr::WARFARE_BUFF_1_ID, 12.0), (2596, 20.0), (attr::VOLUME, 1.0)], &[347], &[]),
+        type_def(SKIRM_BURST, "Skirmish Command Burst II", 316, 7, &[(attr::DURATION, 60_000.0), (attr::CAPACITOR_NEED, 25.0), (attr::CPU, 55.0), (attr::POWER, 110.0), (attr::WARFARE_BUFF_1_VALUE, 1.25), (attr::CHARGE_GROUP_1, 1770.0), (attr::CAPACITY, 10.0)], &[9003, 320, 330], &[]),
+        type_def(SKIRM_CHARGE, "Rapid Deployment Charge", 1770, 8, &[(attr::WARFARE_BUFF_1_ID, 60.0), (2596, 15.0), (attr::VOLUME, 1.0)], &[347], &[]),
+        type_def(SHIELD_MINDLINK, "Shield Command Mindlink", 1229, 20, &[(attr::IMPLANTNESS, 10.0)], &[], &[]),
+        type_def(SKIRM_MINDLINK, "Skirmish Command Mindlink", 1229, 20, &[(attr::IMPLANTNESS, 10.0)], &[], &[]),
     ];
     let effects = vec![
         effect(101, "shipBonusSPTFalloffMF2", EffectCategory::Passive, vec![Modifier { skill: Some(SkillRef::Of(SKILL_SPT)), ..modifier(Domain::Ship, Func::LocationRequiredSkill, attr::FALLOFF, SHIP_BONUS_MF, Op::PostPercent) }]),
@@ -396,6 +404,7 @@ pub fn dataset() -> Dogma {
         effect(6020, "modeVelocityPostDiv", EffectCategory::Passive, vec![modifier(Domain::Ship, Func::Item, attr::MAX_VELOCITY, 2003, Op::PostDiv)]),
         EffectDef { duration_attr: Some(attr::DURATION), ..effect(349, "energyNosferatuFalloff", EffectCategory::Target, vec![]) },
         EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(346, "moduleBonusWarfareLinkShield", EffectCategory::Active, vec![]) },
+        EffectDef { duration_attr: Some(attr::DURATION), discharge_attr: Some(attr::CAPACITOR_NEED), ..effect(9003, "moduleBonusWarfareLinkSkirmish", EffectCategory::Active, vec![]) },
         // The charge names the buff and multiplies the module's strength into its value.
         EffectDef { duration_attr: Some(2906), ..effect(348, "fighterAbilityAttackM", EffectCategory::Target, vec![]) },
         effect(347, "chargeBonusWarfareCharge", EffectCategory::Passive, vec![modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_ID, Op::PostAssign), modifier(Domain::Other, Func::Item, attr::WARFARE_BUFF_1_VALUE, 2596, Op::PostMul)]),

@@ -308,6 +308,7 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
         dst.variations.push(spai_fit::variations::Variation { id, name: f.name.clone(), kind: spai_fit::variations::VariationKind::Refit, refit_key: f.key.clone(), ops, group: None });
         eprintln!("   ~ folded {} into {} as {}", src.name, dst.name, f.name);
     }
+    spai_fit::doctrine::project_boosters(dogma, &mut doctrine);
     Some(doctrine)
 }
 

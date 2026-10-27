@@ -85,7 +85,7 @@ pub fn expand(dogma: &Dogma, fit: &Fit, lookup: &dyn Fn(&str) -> Option<Fit>, sk
             let item = calc.drones().find(|(_, it)| it.type_id == d.type_id).map(|(i, _)| i);
             out.projected.push(Projected { type_id: d.type_id, count: d.in_space() * pf.count, state: State::Active, charge: None, values: values(item) });
         }
-        for (id, value) in crate::fleet::bursts_of(dogma, &src, skills) {
+        for (id, value) in crate::fleet::covered_bursts(dogma, &src, &pf.charges, skills) {
             env.offer(dogma, id, value);
         }
         for m in src.modules.iter().filter(|m| m.state >= State::Active && is_generator(dogma, m.type_id)) {
@@ -132,7 +132,7 @@ mod tests {
         support.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Active));
         support.modules.push(Module::new(ids::BURST, Slot::High, 0).with_charge(ids::BURST_CHARGE).with_state(State::Active));
         let mut me = Fit::new(ids::SHIP, "me");
-        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 2, active: true, variation: None });
+        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 2, active: true, variation: None, charges: Vec::new() });
         let lookup = |id: &str| (id == "support").then(|| support.clone());
         let (fit, env) = expand(&d, &me, &lookup, &SkillSet::all_v());
         assert_eq!(fit.projected.len(), 1, "the web reaches out, the damage control does not: {:?}", fit.projected);
@@ -162,7 +162,7 @@ mod tests {
         support.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Overload));
         let lookup = |id: &str| (id == "support").then(|| support.clone());
         let mut me = Fit::new(ids::SHIP, "me");
-        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 1, active: true, variation: None });
+        me.projected_fits.push(ProjectedFit { fit_id: "support".into(), count: 1, active: true, variation: None, charges: Vec::new() });
         let (fit, _) = expand(&d, &me, &lookup, &SkillSet::all_v());
         let own = Calc::new(&d, &support, &SkillSet::all_v(), &Env::default());
         let web = own.module(Slot::Mid, 0).unwrap();
@@ -188,7 +188,7 @@ mod tests {
         let mut titan = Fit::new(ids::SHIP, "titan");
         titan.modules.push(Module::new(ids::GENERATOR, Slot::High, 0).with_state(State::Active));
         let mut me = Fit::new(ids::SHIP, "me");
-        me.projected_fits.push(ProjectedFit { fit_id: "titan".into(), count: 1, active: true, variation: None });
+        me.projected_fits.push(ProjectedFit { fit_id: "titan".into(), count: 1, active: true, variation: None, charges: Vec::new() });
         let (_, env) = expand(&d, &me, &|id| (id == "titan").then(|| titan.clone()), &SkillSet::all_v());
         assert_eq!(env.buffs.len(), 1, "the titan's running generator reaches the fit it is projected onto");
     }
@@ -294,7 +294,7 @@ fn real_data_a_projected_web_slows_the_ship() {
     let mut me = Fit::new(rifter, "Me");
     let skills = SkillSet::all_v();
     let alone = crate::stats::compute(&d, &me, &skills, &Env::default()).mobility.max_velocity;
-    me.projected_fits.push(ProjectedFit { fit_id: "w".into(), count: 1, active: true, variation: None });
+    me.projected_fits.push(ProjectedFit { fit_id: "w".into(), count: 1, active: true, variation: None, charges: Vec::new() });
     let lookup = |id: &str| (id == "w").then(|| webber.clone());
     let (expanded, env) = expand(&d, &me, &lookup, &skills);
     println!("projected: {:?}", expanded.projected);

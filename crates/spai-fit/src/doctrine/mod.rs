@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dogma::Dogma;
 use crate::fit::Fit;
-use crate::fleet::{CountRule, Fleet, FleetSlot};
+use crate::fleet::{BurstKind, CountRule, Fleet, FleetSlot};
 use crate::skills::SkillSet;
 
 pub mod forum;
@@ -198,6 +198,135 @@ pub fn current_refit(fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>) -> Optio
         }
     }
     seen.flatten()
+}
+
+/// The group a booster's mindlink variations sit under.
+pub const MINDLINK_GROUP: &str = "Mindlink";
+
+/// Charges an empty burst of the kind loads, first unused first.
+fn default_charges(kind: BurstKind) -> &'static [&'static str] {
+    match kind {
+        BurstKind::Shield => &["Shield Harmonizing Charge", "Shield Extension Charge", "Active Shielding Charge"],
+        BurstKind::Armor => &["Armor Energizing Charge", "Armor Reinforcement Charge", "Rapid Repair Charge"],
+        BurstKind::Skirmish => &["Rapid Deployment Charge", "Interdiction Maneuvers Charge", "Evasive Maneuvers Charge"],
+        BurstKind::Information => &["Sensor Optimization Charge", "Electronic Superiority Charge", "Electronic Hardening Charge"],
+        BurstKind::Mining => &[],
+    }
+}
+
+fn burst_kind(dogma: &Dogma, type_id: crate::ids::TypeId) -> Option<BurstKind> {
+    let t = dogma.type_(type_id)?;
+    BurstKind::COMBAT.into_iter().find(|k| t.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| x.name == k.effect())))
+}
+
+/// The combat burst kinds a fit runs, most bursts first.
+pub fn burst_kinds(dogma: &Dogma, fit: &Fit) -> Vec<BurstKind> {
+    let mut counts: Vec<(BurstKind, usize)> = Vec::new();
+    for k in fit.modules.iter().filter_map(|m| burst_kind(dogma, m.type_id)) {
+        match counts.iter_mut().find(|(c, _)| *c == k) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((k, 1)),
+        }
+    }
+    counts.sort_by_key(|(k, n)| (std::cmp::Reverse(*n), BurstKind::COMBAT.iter().position(|c| c == k)));
+    counts.into_iter().map(|(k, _)| k).collect()
+}
+
+/// Which kind each booster's mindlink covers: a kind no other booster took where it can, so the
+/// fleet's mindlinks spread over its boosts, else the kind it runs most.
+fn assign_kinds(kinds: &[Vec<BurstKind>]) -> Vec<Option<BurstKind>> {
+    let mut order: Vec<usize> = (0..kinds.len()).collect();
+    order.sort_by_key(|&i| kinds[i].len());
+    let mut taken: Vec<BurstKind> = Vec::new();
+    let mut out = vec![None; kinds.len()];
+    for i in order {
+        let pick = kinds[i].iter().find(|k| !taken.contains(k)).or(kinds[i].first()).copied();
+        taken.extend(pick);
+        out[i] = pick;
+    }
+    out
+}
+
+fn mindlink_variation(fit: &Fit, kind: BurstKind) -> Option<u32> {
+    fit.variations.iter().find(|v| v.group.as_deref() == Some(MINDLINK_GROUP) && v.name == kind.label()).map(|v| v.id)
+}
+
+/// A booster's empty bursts loaded and one variation per kind it runs with that kind's Tech II
+/// mindlink.
+pub fn mindlink_variations(dogma: &Dogma, fit: &mut Fit) {
+    let kinds = burst_kinds(dogma, fit);
+    for kind in &kinds {
+        let mut loaded: Vec<crate::ids::TypeId> = fit.modules.iter().filter(|m| burst_kind(dogma, m.type_id) == Some(*kind)).filter_map(|m| m.charge).collect();
+        for m in fit.modules.iter_mut().filter(|m| m.charge.is_none() && burst_kind(dogma, m.type_id) == Some(*kind)) {
+            let fits_in = crate::fleet::burst_charges(dogma, m.type_id);
+            let next = default_charges(*kind).iter().filter_map(|n| dogma.type_named(n)).map(|t| t.id).find(|c| fits_in.contains(c) && !loaded.contains(c));
+            if let Some(c) = next {
+                m.charge = Some(c);
+                loaded.push(c);
+            }
+        }
+    }
+    let slot_ten = |id: &crate::ids::TypeId| dogma.type_(*id).and_then(|t| t.attr(crate::dogma::attr::IMPLANTNESS)) == Some(10.0);
+    for kind in kinds {
+        let Some(link) = dogma.type_named(kind.mindlink_name()) else { continue };
+        if mindlink_variation(fit, kind).is_some() {
+            continue;
+        }
+        let mut implants: Vec<crate::ids::TypeId> = fit.implants.iter().copied().filter(|i| !slot_ten(i)).collect();
+        implants.push(link.id);
+        let id = fit.variations.iter().map(|v| v.id).max().unwrap_or(0) + 1;
+        fit.variations.push(crate::variations::Variation {
+            id,
+            name: kind.label().to_owned(),
+            kind: crate::variations::VariationKind::Implants,
+            refit_key: None,
+            ops: vec![crate::variations::RefitOp::SetImplants(implants)],
+            group: Some(MINDLINK_GROUP.to_owned()),
+        });
+    }
+}
+
+/// Every charge the fit's bursts take, so one booster stands for all of its kinds' boosts.
+pub fn covered_charges(dogma: &Dogma, fit: &Fit) -> Vec<crate::ids::TypeId> {
+    let mut out: Vec<crate::ids::TypeId> = Vec::new();
+    for m in fit.modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()) {
+        for c in dogma.compatible_charges(m.type_id) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The doctrine's command fits as boosters: each gets its mindlink variations, and every fit of the
+/// doctrine has the others in its projected tab, covering all their charges, each on the mindlink
+/// of the kind it covers.
+pub fn project_boosters(dogma: &Dogma, doctrine: &mut Doctrine) {
+    let boosters: Vec<usize> = doctrine.fits.iter().enumerate().filter(|(_, f)| f.role == FitRole::Command && f.fit.as_ref().is_some_and(|fit| !burst_kinds(dogma, fit).is_empty())).map(|(i, _)| i).collect();
+    for &i in &boosters {
+        if let Some(fit) = doctrine.fits[i].fit.as_mut() {
+            mindlink_variations(dogma, fit);
+        }
+    }
+    let kinds: Vec<Vec<BurstKind>> = boosters.iter().map(|&i| doctrine.fits[i].fit.as_ref().map(|f| burst_kinds(dogma, f)).unwrap_or_default()).collect();
+    let picked: Vec<(String, Option<u32>, Vec<crate::ids::TypeId>)> = boosters
+        .iter()
+        .zip(assign_kinds(&kinds))
+        .filter_map(|(&i, kind)| {
+            let f = &doctrine.fits[i];
+            let fit = f.fit.as_ref()?;
+            Some((f.fit_id.clone(), kind.and_then(|k| mindlink_variation(fit, k)), covered_charges(dogma, fit)))
+        })
+        .collect();
+    for f in &mut doctrine.fits {
+        let own = f.fit_id.clone();
+        let Some(fit) = f.fit.as_mut() else { continue };
+        fit.projected_fits.retain(|p| !picked.iter().any(|(id, _, _)| *id == p.fit_id));
+        for (id, variation, charges) in picked.iter().filter(|(id, _, _)| *id != own) {
+            fit.projected_fits.push(crate::fit::ProjectedFit { fit_id: id.clone(), count: 1, active: true, variation: *variation, charges: charges.clone() });
+        }
+    }
 }
 
 /// A slot a doctrine's fit flies in, for a fleet built by hand.

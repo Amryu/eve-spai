@@ -331,8 +331,8 @@ fn boost_rows(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
 /// The fits projected onto this one: a count of ships, on or off, removable.
 fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
     let Some(s) = sim.session() else { return };
-    let list: Vec<(String, u32, bool, Option<u32>)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active, p.variation)).collect();
-    for (i, (id, count, active, variation)) in list.into_iter().enumerate() {
+    let list: Vec<(String, u32, bool, Option<u32>, Vec<TypeId>)> = s.fit.projected_fits.iter().map(|p| (p.fit_id.clone(), p.count, p.active, p.variation, p.charges.clone())).collect();
+    for (i, (id, count, active, variation, charges)) in list.into_iter().enumerate() {
         // The source fit's variations, to fly it with one of them.
         let variations: Vec<(u32, String)> = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map(|f| f.variations.iter().map(|v| (v.id, v.full_name())).collect()).unwrap_or_default();
         let base = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map_or_else(|| tr!("Base").to_owned(), crate::base_label);
@@ -340,12 +340,16 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
         let mut set_variation: Option<Option<u32>> = None;
         let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship)));
         let (name, ship) = found.unwrap_or_else(|| (tr!("A fit no longer saved").to_owned(), 0));
+        let src = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id));
+        let takes = src.map(|f| spai_fit::doctrine::covered_charges(dogma, f)).unwrap_or_default();
+        let loaded: Vec<TypeId> = src.map(|f| f.modules.iter().filter_map(|m| m.charge).filter(|c| takes.contains(c)).collect()).unwrap_or_default();
+        let mut set_charges: Option<Vec<TypeId>> = None;
         let mut delta: i32 = 0;
         let mut toggle = false;
         let mut remove = false;
         let r = rows::row(ui, "dock/projected", ("sim_projected_fit", i), ROW_H, false, |ui| {
             crate::icons::type_icon(ui, ship, 18.0);
-            let w = rows::name_w(ui, 5.0);
+            let w = rows::name_w(ui, if takes.is_empty() { 5.0 } else { 6.0 });
             let shown = match &flying {
                 Some(v) => format!("{name} · {v}"),
                 None => name.clone(),
@@ -360,6 +364,13 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                     ui.label(egui::RichText::new(trf!("Flies as: {v}. Right-click to pick another variation.", v = flying.clone().unwrap_or_else(|| base.clone()))).weak());
                 }
             });
+            if !takes.is_empty() {
+                let btn = rows::slot(ui, 1.0, |ui| icon_button(ui, icon::LIST_CHECKS)).on_hover_text(tr!("The burst charges it covers"));
+                let covered = if charges.is_empty() { loaded.clone() } else { charges.clone() };
+                if let Some(next) = projected_charges_popup(&btn, dogma, &takes, &covered) {
+                    set_charges = Some(next);
+                }
+            }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
                 delta = -1;
             }
@@ -407,6 +418,13 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
             sim.edit(EditKind::Other, now_ms, |f| {
                 if let Some(p) = f.projected_fits.get_mut(i) {
                     p.variation = v;
+                }
+            });
+        }
+        if let Some(c) = set_charges {
+            sim.edit(EditKind::Other, now_ms, |f| {
+                if let Some(p) = f.projected_fits.get_mut(i) {
+                    p.charges = c;
                 }
             });
         }
@@ -1097,6 +1115,36 @@ pub(crate) fn mindlink_hint(on: bool) -> &'static str {
     } else {
         tr!("Without a mindlink")
     }
+}
+
+/// Which of a projected booster's burst charges it covers, by kind; the last one stays on. Returns
+/// the new set when one was ticked.
+fn projected_charges_popup(button: &egui::Response, dogma: &Dogma, takes: &[TypeId], covered: &[TypeId]) -> Option<Vec<TypeId>> {
+    let mut out = None;
+    egui::Popup::menu(button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(260.0);
+        let mut last_kind = None;
+        for &c in takes {
+            let kind = dogma.type_(c).map(|t| t.group);
+            if kind != last_kind {
+                if last_kind.is_some() {
+                    ui.separator();
+                }
+                let group = kind.and_then(|g| dogma.group(g)).map(|g| g.name.clone()).unwrap_or_default();
+                let named = spai_fit::fleet::BurstKind::ALL.into_iter().find(|k| group.starts_with(k.label())).map_or(group, |k| crate::fleet_panel::kind_name(k).to_owned());
+                ui.label(egui::RichText::new(named).weak());
+                last_kind = kind;
+            }
+            let mut on = covered.contains(&c);
+            let only = on && covered.len() == 1;
+            if ui.add_enabled(!only, egui::Checkbox::new(&mut on, spai_fit::formats::name_of(dogma, c))).changed() {
+                let mut next: Vec<TypeId> = takes.iter().copied().filter(|x| if *x == c { on } else { covered.contains(x) }).collect();
+                next.dedup();
+                out = Some(next);
+            }
+        }
+    });
+    out
 }
 
 /// The burst module a shortcut runs and which of its charges.
