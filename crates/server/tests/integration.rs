@@ -1018,3 +1018,33 @@ async fn sim_supplied_doctrines_are_gated_by_side_and_own_ones_per_character() {
     assert_eq!(got["doc"]["origin"].as_str(), Some("gsf-1"));
     assert_eq!(send(&app, "DELETE", "/api/sim/own-doctrines/mine-1", Some(&member), None).await.0, StatusCode::OK);
 }
+
+/// A restart while ESI is down still knows who was in The Imperium: the last answer is kept in
+/// the database and stands in.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn affiliations_outlive_a_restart_while_esi_is_down() {
+    use eve_spai_br::imperium::{AffiliationSource, Fetched, Gate};
+    struct Fixed(bool);
+    impl AffiliationSource for Fixed {
+        fn fetch(&self, chars: Vec<i64>) -> Fetched {
+            let up = self.0;
+            Box::pin(async move {
+                if up {
+                    Ok(chars.into_iter().map(|c| (c, Some(1_354_830_081))).collect())
+                } else {
+                    Err(anyhow::anyhow!("502"))
+                }
+            })
+        }
+    }
+    let Some(db) = pool().await else { return };
+    let char_id = 90_777_001;
+    sqlx::query("DELETE FROM affiliations WHERE character_id = $1").bind(char_id).execute(&db).await.unwrap();
+    let up = Gate::new(Box::new(Fixed(true))).with_db(db.clone());
+    assert_eq!(up.alliance(char_id).await.unwrap(), Some(1_354_830_081));
+    let restarted = Gate::new(Box::new(Fixed(false))).with_db(db.clone());
+    assert_eq!(restarted.alliance(char_id).await.unwrap(), Some(1_354_830_081), "the stored answer stands in");
+    let blank = Gate::new(Box::new(Fixed(false))).with_db(db);
+    assert!(blank.alliance(90_777_002).await.is_err(), "someone never seen still has no answer");
+}

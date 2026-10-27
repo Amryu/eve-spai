@@ -345,36 +345,71 @@ fn spread_ops(dogma: &Dogma, fit: &Fit, kinds: &[BurstKind]) -> Option<Vec<crate
             *slot = Some(*k);
         }
     }
-    let mut ops = Vec::new();
-    for k in kinds {
-        let module = dogma.type_named(k.module_name())?.id;
-        let mut charges = default_charges(*k).iter().filter_map(|n| dogma.type_named(n)).map(|t| t.id).filter(|c| dogma.takes_charge(module, *c));
-        for (m, _) in bursts.iter().zip(&kind_at).filter(|(_, at)| **at == Some(*k)) {
-            if burst_kind(dogma, m.type_id) != Some(*k) {
-                ops.push(RefitOp::Replace { slot: m.slot, index: m.index, with: Some(module) });
+    // Which run at once: one of each kind first, then the rest, as many as the hull lets.
+    let mut order: Vec<usize> = Vec::new();
+    for round in 0..bursts.len() {
+        for k in kinds {
+            if let Some(at) = kind_at.iter().enumerate().filter(|(_, x)| **x == Some(*k)).map(|(i, _)| i).nth(round) {
+                order.push(at);
             }
-            ops.push(RefitOp::SetCharge { slot: m.slot, index: m.index, charge: charges.next() });
-            ops.push(RefitOp::SetState { slot: m.slot, index: m.index, state: crate::fit::State::Active });
         }
     }
-    Some(ops)
+    let build = |running: usize| {
+        let mut ops = Vec::new();
+        for k in kinds {
+            let Some(module) = dogma.type_named(k.module_name()).map(|t| t.id) else { continue };
+            let mut charges = default_charges(*k).iter().filter_map(|n| dogma.type_named(n)).map(|t| t.id).filter(|c| dogma.takes_charge(module, *c));
+            for (at, m) in bursts.iter().enumerate().filter(|(at, _)| kind_at[*at] == Some(*k)) {
+                if burst_kind(dogma, m.type_id) != Some(*k) {
+                    ops.push(RefitOp::Replace { slot: m.slot, index: m.index, with: Some(module) });
+                }
+                ops.push(RefitOp::SetCharge { slot: m.slot, index: m.index, charge: charges.next() });
+                let on = order.iter().position(|o| *o == at).is_some_and(|p| p < running);
+                ops.push(RefitOp::SetState { slot: m.slot, index: m.index, state: if on { crate::fit::State::Active } else { crate::fit::State::Offline } });
+            }
+        }
+        ops
+    };
+    let skills = crate::skills::SkillSet::all_v();
+    let limited = |ops: &Vec<RefitOp>| {
+        let mut x = fit.clone();
+        x.variations = vec![crate::variations::Variation { id: u32::MAX, ops: ops.clone(), ..Default::default() }];
+        x.active_variations = vec![u32::MAX];
+        let flown = crate::variations::resolve(dogma, &x);
+        let stats = crate::stats::compute(dogma, &flown, &skills, &crate::calc::Env::default());
+        crate::warnings::check(dogma, &flown, &stats, &[]).iter().any(|w| matches!(w.kind, crate::warnings::WarningKind::GroupLimit { .. }))
+    };
+    (1..=bursts.len()).rev().map(build).find(|ops| !limited(ops)).or_else(|| Some(build(1)))
 }
 
 fn kinds_label(kinds: &[BurstKind]) -> String {
     kinds.iter().map(|k| k.label()).collect::<Vec<_>>().join(" + ")
 }
 
+/// The kinds a booster can cover: its hull's, where it has a burst for each of them or the room
+/// to spread to them; else only the ones it runs.
+pub fn served_kinds(dogma: &Dogma, fit: &Fit) -> Vec<BurstKind> {
+    let kinds = hull_kinds(dogma, fit);
+    let run = burst_kinds(dogma, fit);
+    let bursts = fit.modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()).count();
+    if kinds.iter().all(|k| run.contains(k)) || bursts >= kinds.len() {
+        kinds
+    } else {
+        run
+    }
+}
+
 /// The variation a booster flies with the kind's mindlink: its bursts spread over its hull's
 /// kinds where the source does not run them all, else its own bursts.
 pub fn booster_variation(dogma: &Dogma, fit: &Fit, kind: BurstKind) -> Option<u32> {
-    let spread = format!("{}, {} mindlink", kinds_label(&hull_kinds(dogma, fit)), kind.label());
+    let spread = format!("{}, {} mindlink", kinds_label(&served_kinds(dogma, fit)), kind.label());
     fit.variations.iter().find(|v| v.group.as_deref() == Some(BURSTS_GROUP) && v.name == spread).map(|v| v.id).or_else(|| mindlink_variation(fit, kind))
 }
 
 /// A booster's variations: for each kind its hull strengthens, that kind's mindlink, on its bursts
 /// spread over all of them where the source fit runs fewer.
 pub fn booster_variations(dogma: &Dogma, fit: &mut Fit) {
-    let kinds = hull_kinds(dogma, fit);
+    let kinds = served_kinds(dogma, fit);
     let Some(ops) = spread_ops(dogma, fit, &kinds) else {
         mindlink_variations(dogma, fit);
         for kind in kinds {
@@ -407,7 +442,7 @@ pub fn booster_variations(dogma: &Dogma, fit: &mut Fit) {
 /// the setups and mindlinks the source fits.
 fn needed_boosters(dogma: &Dogma, doctrine: &Doctrine, boosters: &[usize]) -> Vec<crate::fit::ProjectedFit> {
     let fits: Vec<&Fit> = boosters.iter().filter_map(|&i| doctrine.fits[i].fit.as_ref()).collect();
-    let kinds: Vec<Vec<BurstKind>> = fits.iter().map(|f| hull_kinds(dogma, f)).collect();
+    let kinds: Vec<Vec<BurstKind>> = fits.iter().map(|f| served_kinds(dogma, f)).collect();
     let own: Vec<bool> = fits.iter().zip(&kinds).map(|(f, k)| spread_ops(dogma, f, k).is_none()).collect();
     let linked = |b: usize, k: BurstKind| dogma.type_named(k.mindlink_name()).is_some_and(|l| fits[b].implants.contains(&l.id));
     let bursts = |b: usize| fits[b].modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()).count();

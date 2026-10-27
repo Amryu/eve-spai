@@ -93,14 +93,60 @@ fn look(entry: Option<&(Option<i64>, Instant)>, now: Instant) -> Cached {
     }
 }
 
+/// How old a stored answer may be and still stand in while ESI is down.
+const STORED_DAYS: i32 = 30;
+
 pub struct Gate {
     source: Box<dyn AffiliationSource>,
     cache: Mutex<HashMap<i64, (Option<i64>, Instant)>>,
+    /// Where answers are kept across restarts; none in tests without a database.
+    db: Option<sqlx::PgPool>,
 }
 
 impl Gate {
     pub fn new(source: Box<dyn AffiliationSource>) -> Self {
-        Gate { source, cache: Mutex::new(HashMap::new()) }
+        Gate { source, cache: Mutex::new(HashMap::new()), db: None }
+    }
+
+    pub fn with_db(mut self, db: sqlx::PgPool) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    async fn store(&self, rows: &[(i64, Option<i64>)]) {
+        let Some(db) = &self.db else { return };
+        let (ids, alliances): (Vec<i64>, Vec<Option<i64>>) = rows.iter().copied().unzip();
+        let r = sqlx::query(
+            "INSERT INTO affiliations (character_id, alliance_id, fetched_at) SELECT * , now() FROM UNNEST($1::bigint[], $2::bigint[])
+             ON CONFLICT (character_id) DO UPDATE SET alliance_id = EXCLUDED.alliance_id, fetched_at = now()",
+        )
+        .bind(&ids)
+        .bind(&alliances)
+        .execute(db)
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(error = %e, "storing affiliations failed");
+        }
+    }
+
+    /// The stored answers for characters the memory has none for, put back as stale.
+    async fn recall(&self, chars: &[i64], now: Instant) {
+        let Some(db) = &self.db else { return };
+        let rows = sqlx::query_as::<_, (i64, Option<i64>)>("SELECT character_id, alliance_id FROM affiliations WHERE character_id = ANY($1) AND fetched_at > now() - make_interval(days => $2)")
+            .bind(chars)
+            .bind(STORED_DAYS)
+            .fetch_all(db)
+            .await;
+        match rows {
+            Ok(rows) => {
+                let at = now.checked_sub(YES_TTL + Duration::from_secs(1)).unwrap_or(now);
+                let mut cache = self.cache.lock().unwrap();
+                for (c, a) in rows {
+                    cache.entry(c).or_insert((a, at));
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "reading stored affiliations failed"),
+        }
     }
 
     /// Each character's alliance: from the cache while fresh, the rest in one ESI call. When ESI
@@ -125,16 +171,28 @@ impl Gate {
         }
         match self.source.fetch(ask.clone()).await {
             Ok(rows) => {
-                let mut cache = self.cache.lock().unwrap();
-                if cache.len() > 50_000 {
-                    cache.retain(|_, (_, at)| now.duration_since(*at) < YES_TTL);
+                {
+                    let mut cache = self.cache.lock().unwrap();
+                    if cache.len() > 50_000 {
+                        cache.retain(|_, (_, at)| now.duration_since(*at) < YES_TTL);
+                    }
+                    for &(c, a) in &rows {
+                        cache.insert(c, (a, now));
+                        out.insert(c, a);
+                    }
                 }
-                for (c, a) in rows {
-                    cache.insert(c, (a, now));
-                    out.insert(c, a);
+                self.store(&rows).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "ESI affiliation lookup failed");
+                let unknown: Vec<i64> = {
+                    let cache = self.cache.lock().unwrap();
+                    ask.iter().copied().filter(|c| look(cache.get(c), now) == Cached::Unknown).collect()
+                };
+                if !unknown.is_empty() {
+                    self.recall(&unknown, now).await;
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "ESI affiliation lookup failed"),
         }
         let cache = self.cache.lock().unwrap();
         for c in ask {

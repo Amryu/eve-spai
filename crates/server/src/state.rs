@@ -31,6 +31,7 @@ impl AppState {
         let secret = cfg.session_secret.as_bytes();
         let session_issuer = SessionIssuer::new(secret, cfg.session_ttl_secs);
         let session_verifier = SessionVerifier::new(secret).with_extras(cfg.extra_client_ids.clone());
+        let imperium = Arc::new(crate::imperium::Gate::new(crate::imperium::source()).with_db(db.clone()));
         Self {
             db,
             verifier: Arc::new(verifier),
@@ -40,7 +41,7 @@ impl AppState {
             views: Arc::new(Mutex::new(HashMap::new())),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             ip_buckets: Arc::new(Mutex::new(HashMap::new())),
-            imperium: Arc::new(crate::imperium::Gate::new(crate::imperium::source())),
+            imperium,
         }
     }
 

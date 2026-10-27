@@ -564,8 +564,8 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
     out
 }
 
-/// The bursts a booster fit gives when it covers these charges: each from one of its active
-/// bursts that takes it, loaded with it alone. No charges is what its bursts have loaded.
+/// The bursts a booster fit gives when it covers these charges: each from one of its bursts that
+/// takes it, loaded with it alone and running. No charges is what its bursts have loaded.
 pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], skills: &SkillSet) -> Vec<(BuffId, f64)> {
     if charges.is_empty() {
         return bursts_of(dogma, fit, skills);
@@ -573,7 +573,9 @@ pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], 
     let is_burst = |t: crate::ids::TypeId| dogma.type_(t).is_some_and(|ty| ty.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| BurstKind::ALL.iter().any(|k| k.effect() == x.name))));
     let mut out = Vec::new();
     for &c in charges {
-        let Some(at) = fit.modules.iter().position(|m| m.state >= State::Active && is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c)) else { continue };
+        // Any burst that takes it, offline ones too: a hull that runs fewer at once than it fits
+        // cycles them.
+        let Some(at) = fit.modules.iter().position(|m| m.state > State::Offline && is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c)).or_else(|| fit.modules.iter().position(|m| is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c))) else { continue };
         let mut one = fit.clone();
         // The others offline: a hull that runs one burst at a time would cap the loaded one.
         for (i, m) in one.modules.iter_mut().enumerate() {
@@ -583,6 +585,7 @@ pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], 
             }
         }
         one.modules[at].charge = Some(c);
+        one.modules[at].state = State::Active;
         out.extend(bursts_of(dogma, &one, skills));
     }
     out
