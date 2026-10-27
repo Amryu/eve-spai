@@ -2641,7 +2641,7 @@
   "The saved login could not be read back. A profile copied from another machine or account cannot be opened by design; logging in again replaces it.": "无法读回已保存的登录。从其他机器或账号复制的配置按设计无法打开；重新登录即可替换。",
   "The scan goes to dscan.info, a third-party site, and its link is posted with the hostiles.": "扫描会上传到第三方网站 dscan.info，其链接随敌方信息一起发送。",
   "The server listed no models; type one in Settings": "服务器未列出任何模型；请在设置中输入一个",
-  "The share of its damage that lands: range, tracking or explosion against the target's distance, speed and signature": "命中的伤害比例：射程、跟踪或爆炸对比目标的距离、速度和信号半径",
+  "The share of its listed damage that lands on average: range, tracking or explosion against the target's distance, speed and signature. A turret or drone that always hits lands 101.5%: one shot in a hundred is a wrecking hit for three times the damage.": "平均命中的标称伤害比例：射程、跟踪或爆炸相对目标的距离、速度和信号半径。总能命中的炮塔或无人机为 101.5%：每一百发中有一发是三倍伤害的致命一击。",
   "The share of the listed damage that lands: the weapons' range, tracking or explosion against the target's distance, speed across and signature. Resistances are apart.": "标称伤害中实际命中的比例：武器的射程、跟踪或爆炸对比目标的距离、横向速度和信号。抗性另计。",
   "The share of the logistics already holding the primary locked when it is first hurt: they skip the lock": "首要目标首次受伤时已锁定它的后勤比例：它们跳过锁定",
   "The share of the logistics' repairs that does any good: late locks, the wrong ship, cycles landing on full health": "后勤维修中真正起作用的比例：锁定太晚、修错船、在满血时落下的周期",

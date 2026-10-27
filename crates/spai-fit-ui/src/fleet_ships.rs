@@ -260,7 +260,7 @@ fn head(ui: &mut egui::Ui, c: &Cols, first: &str) {
             rows::head_cell(ui, t, tr!("On target"), true);
         }
         if let Some(x) = c.applied {
-            tip_head(ui, x, tr!("Applied"), tr!("The share of its damage that lands: range, tracking or explosion against the target's distance, speed and signature"));
+            tip_head(ui, x, tr!("Applied"), tr!("The share of its listed damage that lands on average: range, tracking or explosion against the target's distance, speed and signature. A turret or drone that always hits lands 101.5%: one shot in a hundred is a wrecking hit for three times the damage."));
         }
         if let Some(x) = c.ehp {
             tip_head(ui, x, tr!("Target EHP"), tr!("The target's effective hit points against this ship's damage with this charge loaded"));
