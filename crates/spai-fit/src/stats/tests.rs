@@ -330,8 +330,8 @@ fn modules_tell_their_cycle_and_what_one_cycle_does() {
     let of = |slot, index| stats.iter().find(|m| m.slot == slot && m.index == index).unwrap();
     let rep = of(Slot::Low, 0);
     assert!(rep.cycle_s.is_some_and(|s| s > 0.0));
-    assert!(matches!(rep.info, Some(ModuleInfo { kind: InfoKind::ArmorRepair, value }) if value > 0.0));
-    assert!(matches!(of(Slot::Mid, 0).info, Some(ModuleInfo { kind: InfoKind::Web, value }) if value < 0.0));
+    assert!(matches!(rep.info, Some(ModuleInfo { kind: InfoKind::ArmorRepair, value, .. }) if value > 0.0));
+    assert!(matches!(of(Slot::Mid, 0).info, Some(ModuleInfo { kind: InfoKind::Web, value, .. }) if value < 0.0));
     assert!(of(Slot::High, 0).cycle_s.is_some(), "a gun's cycle is its rate of fire");
     assert!(of(Slot::Low, 1).info.is_none() && of(Slot::Low, 1).cycle_s.is_none(), "a damage control does neither");
 }
@@ -764,3 +764,17 @@ fn an_oversized_squadron_counts_at_its_size_and_the_hull_needs_tubes_for_it() {
     assert!(!w.iter().any(|w| matches!(w.kind, WarningKind::FighterClassOver { class: FighterClass::Light, .. })), "it is no light fighter");
 }
 
+
+/// An ancillary repairer tells how long a full load of its charges lasts and the reload after it.
+#[test]
+fn an_ancillary_repairer_counts_its_cycles_a_load() {
+    let d = dataset();
+    let mut f = Fit::new(ids::SHIP, "aar");
+    f.modules.push(Module::new(ids::AAR, Slot::Low, 0).with_charge(ids::PASTE).with_state(State::Active));
+    f.modules.push(Module::new(ids::REPAIRER, Slot::Low, 1).with_state(State::Active));
+    let calc = crate::calc::Calc::new(&d, &f, &SkillSet::all_v(), &Env::default());
+    let stats = module_stats(&calc, &compute_with(&calc, &f));
+    let info = |index| stats.iter().find(|m| m.slot == Slot::Low && m.index == index).and_then(|m| m.info).unwrap();
+    assert_eq!(info(0).per_load, Some((8, 60.0)), "0.08 m3 of 0.01 m3 paste, one a cycle, a minute's reload");
+    assert_eq!(info(1).per_load, None, "a plain repairer burns nothing");
+}

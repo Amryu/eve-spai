@@ -1550,6 +1550,9 @@ fn range_of(calc: &Calc, c: &Computed, i: ItemIdx) -> Option<ModuleRange> {
 pub struct ModuleInfo {
     pub kind: InfoKind,
     pub value: f64,
+    /// A module that burns charges (an ancillary repairer): cycles a full load lasts, and the
+    /// reload after it in seconds.
+    pub per_load: Option<(u32, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1626,7 +1629,15 @@ pub fn module_info(calc: &Calc, i: ItemIdx) -> Option<ModuleInfo> {
     } else {
         return None;
     };
-    (value != 0.0).then_some(ModuleInfo { kind, value })
+    let fueled = has(&["fueledShieldBoosting", "fueledArmorRepair"]);
+    // As many charges as its hold takes, `chargeRate` of them a cycle.
+    let per_load = charged.filter(|_| fueled).and_then(|c| {
+        let room = v(attr::CAPACITY);
+        let each = calc.value(c, attr::VOLUME);
+        let rate = v(attr::CHARGE_RATE).max(1.0);
+        (room > 0.0 && each > 0.0).then(|| (((room / each + 1e-6).floor() / rate) as u32, v(attr::RELOAD_TIME) / 1000.0))
+    });
+    (value != 0.0).then_some(ModuleInfo { kind, value, per_load })
 }
 
 /// Seconds of overload before it burns out, if every overloaded cycle damages it: its hit points

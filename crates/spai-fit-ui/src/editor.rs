@@ -874,6 +874,23 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
     let name = spai_fit::formats::name_of(dogma, type_id);
     let takes_charges = !picker::charge_filter(dogma, type_id).0.is_empty();
     let charge_name = charge.and_then(|c| dogma.type_(c)).map(|t| t.name.clone());
+    // What a repair is worth against the damage set to come in: the layer's resists over it.
+    let through = {
+        let tank = sim.computed().map(|c| c.tank.clone());
+        let weights = sim.session().map(|s| s.fit.damage_profile.weights());
+        move |kind: spai_fit::stats::InfoKind| -> Option<f64> {
+            use spai_fit::stats::InfoKind as K;
+            let (tank, w) = (tank.as_ref()?, weights?);
+            let layer = match kind {
+                K::ShieldBoost => &tank.shield,
+                K::ArmorRepair => &tank.armor,
+                K::HullRepair => &tank.hull,
+                _ => return None,
+            };
+            let t: f64 = (0..4).map(|i| w[i] * layer.resonance[i]).sum();
+            (t > 0.0).then_some(t)
+        }
+    };
     let mut open_picker: Option<PickTarget> = None;
     let mut set_state: Option<State> = None;
     let mut set_charge: Option<Option<TypeId>> = None;
@@ -989,6 +1006,17 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 rows::num_cell(ui, cols.num, s.and_then(|m| m.cycle_s).map_or(String::new(), |c| format!("{}s", text::num(c))), off);
                 let info = s.and_then(|m| m.info);
                 let (shown, hover) = info.map_or((String::new(), ""), |i| info_text(i));
+                let hover = match info.and_then(|i| through(i.kind).map(|t| (i, t))) {
+                    Some((i, t)) => {
+                        let mut lines = vec![hover.to_owned(), trf!("{hp} HP a cycle, {ehp} EHP against the incoming damage", hp = text::num(i.value), ehp = text::num(i.value / t))];
+                        if let Some((cycles, reload)) = i.per_load {
+                            let total = i.value * f64::from(cycles);
+                            lines.push(trf!("A full load: {n} cycles, {hp} HP ({ehp} EHP), then {s} s to reload", n = cycles, hp = text::num(total), ehp = text::num(total / t), s = text::num(reload)));
+                        }
+                        lines.join("\n")
+                    }
+                    None => hover.to_owned(),
+                };
                 // A disintegrator's cell is its spool, set by clicking it, in whole cycles: the
                 // bonus only ever grows a step at a time.
                 let spool = s.and_then(|m| m.spool);
