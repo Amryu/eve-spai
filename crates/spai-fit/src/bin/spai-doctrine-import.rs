@@ -254,6 +254,7 @@ fn build(dogma: &Dogma, page: &forum::Page, pc: &PageCuration, roles: &BTreeMap<
         forum::refits_to_fleet_hangar(dogma, &mut fit);
         forum::launch_drones(dogma, &mut fit);
         forum::launch_fighters(dogma, &mut fit);
+        forum::load_charges(dogma, &mut fit);
         let made = forum::refits(dogma, &mut fit);
         let left = made.left;
         for name in made.unfit {

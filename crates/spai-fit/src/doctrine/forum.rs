@@ -636,6 +636,21 @@ pub fn add_items(dogma: &Dogma, fit: &mut Fit, list: &Loose) -> Vec<String> {
     unknown
 }
 
+/// Weapons the topic lists bare loaded with the charge the fit carries most of that they take:
+/// the EFT block leaves the ammo to the cargo list, and an empty gun does no damage. Scripts are
+/// a choice and stay out; bursts get their charges with the boosts.
+pub fn load_charges(dogma: &Dogma, fit: &mut Fit) {
+    let is_script = |c: TypeId| dogma.type_(c).and_then(|t| dogma.group(t.group)).is_some_and(|g| g.name.contains("Script"));
+    let is_burst = |t: TypeId| is_effect(dogma, t, "moduleBonusWarfareLinkShield") || is_effect(dogma, t, "moduleBonusWarfareLinkArmor") || is_effect(dogma, t, "moduleBonusWarfareLinkSkirmish") || is_effect(dogma, t, "moduleBonusWarfareLinkInfo") || is_effect(dogma, t, "moduleBonusWarfareLinkMining");
+    let cargo = fit.cargo.clone();
+    for m in fit.modules.iter_mut().filter(|m| m.charge.is_none() && !is_burst(m.type_id)) {
+        let best = cargo.iter().filter(|c| !is_script(c.type_id) && dogma.takes_charge(m.type_id, c.type_id)).max_by_key(|c| c.quantity);
+        if let Some(c) = best {
+            m.charge = Some(c.type_id);
+        }
+    }
+}
+
 /// Drones as a pilot launches them: five at most, within the hull's bandwidth, the first stacks
 /// first. A topic lists the whole bay, and counting all of it as out would fly hundreds.
 pub fn launch_drones(dogma: &Dogma, fit: &mut Fit) {
@@ -1062,6 +1077,22 @@ mod tests {
         rifter.cargo = cargo.clone();
         refits_to_fleet_hangar(&d, &mut rifter);
         assert_eq!(rifter.cargo, cargo, "a subcapital keeps its cargo as written");
+    }
+
+    /// The guns a topic lists bare load the ammo the fit carries most of; a module with nothing
+    /// it takes in the cargo stays empty.
+    #[test]
+    fn bare_weapons_load_the_charge_carried_most() {
+        use crate::fit::{CargoItem, Module, Slot};
+        use crate::test_support::ids;
+        let d = crate::test_support::dataset();
+        let mut f = Fit::new(ids::SHIP, "Rifter");
+        f.modules.push(Module::new(ids::GUN, Slot::High, 0));
+        f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO));
+        f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 2));
+        f.cargo = vec![CargoItem { type_id: ids::AMMO, quantity: 100, hold: None }, CargoItem { type_id: ids::AMMO_LONG, quantity: 500, hold: None }];
+        load_charges(&d, &mut f);
+        assert_eq!(f.modules.iter().map(|m| m.charge).collect::<Vec<_>>(), [Some(ids::AMMO_LONG), Some(ids::AMMO), None]);
     }
 
     #[test]
