@@ -141,6 +141,15 @@ impl Doctrine {
             copy.fits.push(DoctrineFit { fit_id, fit: None, ..f.clone() });
             fits.push(fit);
         }
+        // Boosters projected between the doctrine's fits follow them into the library.
+        let moved: Vec<(String, String)> = self.fits.iter().zip(&copy.fits).filter(|(a, _)| a.fit.is_some()).map(|(a, b)| (a.fit_id.clone(), b.fit_id.clone())).collect();
+        for fit in &mut fits {
+            for p in &mut fit.projected_fits {
+                if let Some((_, new)) = moved.iter().find(|(old, _)| *old == p.fit_id) {
+                    p.fit_id = new.clone();
+                }
+            }
+        }
         (copy, fits)
     }
 

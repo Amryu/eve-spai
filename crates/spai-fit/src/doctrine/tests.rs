@@ -316,3 +316,16 @@ fn a_booster_covers_the_charges_picked_for_it() {
     let buffs: Vec<u32> = crate::fleet::covered_bursts(&d, &fit, &[ids::BURST_CHARGE, ids::SKIRM_CHARGE], &skills).into_iter().map(|(id, _)| id as u32).collect();
     assert_eq!(buffs, [12, 60]);
 }
+
+/// A copy's fits project each other, not the supplied fits they came from.
+#[test]
+fn a_copy_projects_its_own_boosters() {
+    let mut doc = supplied();
+    doc.fits[1].fit.as_mut().unwrap().projected_fits.push(crate::fit::ProjectedFit { fit_id: "gsf-rifters~tackle".into(), ..Default::default() });
+    let mut n = 0;
+    let (copy, fits) = doc.copy_into_library(&mut || {
+        n += 1;
+        format!("id{n}")
+    });
+    assert_eq!(fits[1].projected_fits[0].fit_id, copy.fits[0].fit_id);
+}
