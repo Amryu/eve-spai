@@ -118,7 +118,8 @@ fn apply_op(dogma: &Dogma, fit: &mut Fit, op: &RefitOp) {
                     if o.state == State::Offline {
                         m.state = State::Offline;
                     }
-                    if o.charge.is_some_and(|c| crate::formats::place_of(dogma, dogma.type_(c).unwrap_or(dogma.type_(*t).unwrap_or(&dogma.types[0]))) == crate::formats::Place::Charge) {
+                    // A torpedo stays out of the bomb launcher that took its launcher's place.
+                    if o.charge.is_some_and(|c| dogma.takes_charge(*t, c)) {
                         m.charge = o.charge;
                     }
                 }
@@ -219,7 +220,7 @@ pub fn diff(base: &Fit, edited: &Fit) -> Vec<RefitOp> {
             }
             (_, Some(b)) => {
                 ops.push(RefitOp::Replace { slot, index, with: Some(b.type_id) });
-                if b.charge.is_some() {
+                if b.charge.is_some() || a.is_some_and(|a| a.charge.is_some()) {
                     ops.push(RefitOp::SetCharge { slot, index, charge: b.charge });
                 }
                 // Its state too: put back, it would come up in its default one.
@@ -327,6 +328,25 @@ mod tests {
         f.modules.push(Module::new(ids::MWD, Slot::Mid, 0).with_state(State::Active));
         f.modules.push(Module::new(ids::DC, Slot::Low, 0));
         f
+    }
+
+    /// A launcher swapped for a bomb launcher, as a folded T1 fit does it: the missile does not
+    /// ride along into a launcher that cannot take it.
+    #[test]
+    fn a_replaced_module_keeps_only_a_charge_it_takes() {
+        let d = dataset();
+        let mut f = Fit::new(ids::SHIP, "t");
+        f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 0).with_charge(ids::MISSILE).with_state(State::Active));
+        let mut edited = f.clone();
+        edited.modules[0] = Module::new(ids::BOMB_LAUNCHER, Slot::High, 0).with_state(State::Active);
+        let ops = diff(&f, &edited);
+        assert!(ops.contains(&RefitOp::SetCharge { slot: Slot::High, index: 0, charge: None }), "{ops:?}");
+        apply_op(&d, &mut f, &RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::BOMB_LAUNCHER) });
+        assert_eq!(f.module(Slot::High, 0).map(|m| (m.type_id, m.charge)), Some((ids::BOMB_LAUNCHER, None)));
+        let mut g = Fit::new(ids::SHIP, "t");
+        g.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO));
+        apply_op(&d, &mut g, &RefitOp::Replace { slot: Slot::High, index: 0, with: Some(ids::GUN) });
+        assert_eq!(g.modules[0].charge, Some(ids::AMMO), "a charge the new module takes stays");
     }
 
     #[test]
