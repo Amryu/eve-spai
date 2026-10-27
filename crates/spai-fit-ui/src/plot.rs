@@ -104,6 +104,9 @@ fn ticks(from: f64, to: f64, want: usize) -> Vec<f64> {
 /// Where the last plot was drawn, for tests that hold its size steady.
 pub const LAST_RECT: &str = "sim_plot_rect";
 
+/// The share of its range the last plot showed, for tests of its zoom.
+pub const LAST_SPAN: &str = "sim_plot_span";
+
 pub fn last_rect(ctx: &egui::Context) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp(egui::Id::new(LAST_RECT)))
 }
@@ -111,10 +114,15 @@ pub fn last_rect(ctx: &egui::Context) -> Option<egui::Rect> {
 impl Plot {
     pub fn show(&self, ui: &mut egui::Ui, height: f32) {
         let width = ui.available_width();
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LAST_RECT), rect));
-        let painter = ui.painter_at(rect);
-        let visuals = ui.visuals();
+        let (whole, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click_and_drag());
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LAST_RECT), whole));
+        // The overview under the plot: every line over its whole range, the part shown framed.
+        let strip_h = if height >= 160.0 { OVERVIEW_H } else { 0.0 };
+        let rect = Rect::from_min_max(whole.min, Pos2::new(whole.max.x, whole.max.y - strip_h));
+        let strip = Rect::from_min_max(Pos2::new(whole.min.x, rect.max.y + 4.0), whole.max);
+        let zoom_id = ui.id().with(("sim_plot_zoom", &self.x_label, &self.y_label));
+        let painter = ui.painter_at(whole);
+        let visuals = &ui.visuals().clone();
         let text = visuals.text_color();
         let weak = visuals.weak_text_color();
         let font = egui::TextStyle::Body.resolve(ui.style());
@@ -131,6 +139,46 @@ impl Plot {
         if !x_min.is_finite() || x_max <= x_min {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, spai_ui::tr!("Nothing to plot"), font, weak);
             return;
+        }
+        let (full_min, full_max) = (x_min, x_max);
+        let mut zoom: (f64, f64) = ui.ctx().data(|d| d.get_temp(zoom_id)).unwrap_or((0.0, 1.0));
+        if strip_h > 0.0 {
+            zoom = self.overview(ui, strip, zoom_id, zoom, (full_min, full_max));
+        }
+        // On the plot: Ctrl+wheel or a pinch zooms about the pointer, a drag pans, a double click
+        // shows it all.
+        let span = full_max - full_min;
+        if let Some(p) = response.hover_pos() {
+            let z = ui.input(|i| i.zoom_delta());
+            if (z - 1.0).abs() > 1e-3 {
+                let at = zoom.0 + ((p.x - rect.min.x - 58.0) / (rect.width() - 68.0)).clamp(0.0, 1.0) as f64 * (zoom.1 - zoom.0);
+                let w = ((zoom.1 - zoom.0) / f64::from(z)).clamp(MIN_ZOOM, 1.0);
+                let lo = (at - (at - zoom.0) / (zoom.1 - zoom.0) * w).clamp(0.0, 1.0 - w);
+                zoom = (lo, lo + w);
+            }
+        }
+        if response.dragged() && zoom.1 - zoom.0 < 1.0 {
+            let dx = f64::from(response.drag_delta().x / (rect.width() - 68.0).max(1.0)) * (zoom.1 - zoom.0);
+            let w = zoom.1 - zoom.0;
+            let lo = (zoom.0 - dx).clamp(0.0, 1.0 - w);
+            zoom = (lo, lo + w);
+        }
+        if response.double_clicked() {
+            zoom = (0.0, 1.0);
+        }
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(zoom_id, zoom);
+            d.insert_temp(egui::Id::new(LAST_SPAN), zoom.1 - zoom.0);
+        });
+        (x_min, x_max) = (full_min + zoom.0 * span, full_min + zoom.1 * span);
+        if zoom.1 - zoom.0 < 1.0 {
+            // The value axis fits what is in view.
+            y_max = self.series.iter().flat_map(|s| s.points.iter()).filter(|p| p[0] >= x_min && p[0] <= x_max).map(|p| p[1]).fold(0.0, f64::max);
+            for s in &self.series {
+                for x in [x_min, x_max] {
+                    y_max = y_max.max(value_at(&s.points, x).unwrap_or(0.0));
+                }
+            }
         }
         if y_max <= 0.0 {
             y_max = 1.0;
@@ -229,10 +277,10 @@ impl Plot {
             .markers
             .iter()
             // A reach past the right edge still covers all it shows.
-            .filter(|m| m.x >= x_min && (m.x <= x_max || m.fill))
+            .filter(|m| (m.x >= x_min || m.fill) && (m.x <= x_max || m.fill))
             .map(|m| {
-                let x = to_screen(m.x.min(x_max), 0.0).x;
-                let to = m.to.filter(|t| *t > m.x).map(|t| to_screen(t.min(x_max), 0.0).x);
+                let x = to_screen(m.x.clamp(x_min, x_max), 0.0).x;
+                let to = m.to.filter(|t| *t > m.x).map(|t| to_screen(t.clamp(x_min, x_max), 0.0).x);
                 let galley = painter.layout_no_wrap(m.label.clone(), font.clone(), m.color);
                 let w = galley.size().x;
                 let left = if x + 4.0 + w > inner.max.x { x - 4.0 - w } else { x + 4.0 };
@@ -258,7 +306,7 @@ impl Plot {
                 if let (Some(t), Some(half)) = (to, m.to) {
                     shade(*x, *t, 0.06);
                     let gone = m.x + FALLOFF_REACH * (half - m.x);
-                    let end = to_screen(gone.min(x_max), 0.0).x;
+                    let end = to_screen(gone.clamp(x_min, x_max), 0.0).x;
                     let steps = 6;
                     for k in 0..steps {
                         let (a, b) = (*t + (end - *t) * k as f32 / steps as f32, *t + (end - *t) * (k + 1) as f32 / steps as f32);
@@ -278,21 +326,21 @@ impl Plot {
             }
             painter.galley_with_override_text_color(at.min, galley.clone(), color);
         }
-        if let Some(i) = hovered {
+        // A marker under the pointer heads the readout, which still reads every line there.
+        let reach = hovered.map(|i| {
             let (m, ..) = &laid[i];
-            let reach = match m.to {
+            match m.to {
                 Some(t) if t > m.x && m.fill => spai_ui::trf!("{name}: {optimal} + {falloff}, nothing past {gone}", name = m.label, optimal = (self.fmt_x)(m.x), falloff = (self.fmt_x)(t - m.x), gone = (self.fmt_x)(m.x + FALLOFF_REACH * (t - m.x))),
                 Some(t) if t > m.x => format!("{}: {} + {}", m.label, (self.fmt_x)(m.x), (self.fmt_x)(t - m.x)),
                 _ => format!("{}: {}", m.label, (self.fmt_x)(m.x)),
-            };
-            response.clone().on_hover_text_at_pointer(reach);
-            return;
-        }
+            }
+        });
 
         if let Some(pos) = response.hover_pos().filter(|p| inner.contains(*p)) {
             let x = x_min + ((pos.x - inner.min.x) / inner.width()) as f64 * (x_max - x_min);
             painter.line_segment([Pos2::new(pos.x, inner.min.y), Pos2::new(pos.x, inner.max.y)], Stroke::new(1.0, weak));
-            let mut lines = vec![(self.fmt_x)(x)];
+            let mut lines: Vec<String> = reach.into_iter().collect();
+            lines.push((self.fmt_x)(x));
             for s in &self.series {
                 if let Some(y) = value_at(&s.points, x) {
                     lines.push(format!("{}: {}", s.label, (self.fmt_y)(y)));
@@ -310,6 +358,83 @@ impl Plot {
         }
     }
 }
+
+impl Plot {
+    /// The strip under the plot: each line over the whole range, the window shown framed. Drag
+    /// the window to move it, its edges to widen or narrow it; a click outside centres it there.
+    /// The window after this frame, as shares of the range.
+    fn overview(&self, ui: &mut egui::Ui, strip: Rect, id: egui::Id, mut zoom: (f64, f64), (x_min, x_max): (f64, f64)) -> (f64, f64) {
+        let inner = Rect::from_min_max(Pos2::new(strip.min.x + 58.0, strip.min.y), Pos2::new(strip.max.x - 10.0, strip.max.y));
+        let response = ui.interact(inner.expand2(Vec2::new(6.0, 0.0)), id.with("strip"), egui::Sense::click_and_drag());
+        let visuals = ui.visuals();
+        let painter = ui.painter_at(strip);
+        painter.rect_filled(inner, 2.0, visuals.extreme_bg_color);
+        let y_max = self.series.iter().flat_map(|s| s.points.iter()).map(|p| p[1]).fold(0.0f64, f64::max).max(1e-9);
+        let at = |x: f64, y: f64| Pos2::new(inner.min.x + ((x - x_min) / (x_max - x_min)) as f32 * inner.width(), inner.max.y - 2.0 - (y / y_max) as f32 * (inner.height() - 4.0));
+        for s in &self.series {
+            let pts: Vec<Pos2> = s.points.iter().map(|p| at(p[0], p[1])).collect();
+            if pts.len() >= 2 {
+                painter.add(egui::Shape::line(pts, Stroke::new(1.0, s.color.gamma_multiply(0.8))));
+            }
+        }
+        let share = |p: f32| f64::from(((p - inner.min.x) / inner.width()).clamp(0.0, 1.0));
+        let (l, r) = (inner.min.x + zoom.0 as f32 * inner.width(), inner.min.x + zoom.1 as f32 * inner.width());
+        // What a drag holds, from where it began: 0 the window, 1 its left edge, 2 its right.
+        let grip_id = id.with("grip");
+        if response.drag_started() || response.clicked() {
+            // Where the press began: by the time a drag is told from a click it has moved on.
+            if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
+                let grip = if (p.x - l).abs() <= 6.0 { 1u8 } else if (p.x - r).abs() <= 6.0 { 2 } else if p.x > l && p.x < r { 0 } else { 3 };
+                if grip == 3 {
+                    let w = zoom.1 - zoom.0;
+                    let lo = (share(p.x) - w / 2.0).clamp(0.0, 1.0 - w);
+                    zoom = (lo, lo + w);
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(grip_id, if grip == 3 { 0 } else { grip }));
+            }
+        }
+        if response.dragged() {
+            let grip: u8 = ui.ctx().data(|d| d.get_temp(grip_id)).unwrap_or(0);
+            let d = f64::from(response.drag_delta().x / inner.width());
+            zoom = match grip {
+                1 => ((zoom.0 + d).clamp(0.0, zoom.1 - MIN_ZOOM), zoom.1),
+                2 => (zoom.0, (zoom.1 + d).clamp(zoom.0 + MIN_ZOOM, 1.0)),
+                _ => {
+                    let w = zoom.1 - zoom.0;
+                    let lo = (zoom.0 + d).clamp(0.0, 1.0 - w);
+                    (lo, lo + w)
+                }
+            };
+        }
+        if response.double_clicked() {
+            zoom = (0.0, 1.0);
+        }
+        let (l, r) = (inner.min.x + zoom.0 as f32 * inner.width(), inner.min.x + zoom.1 as f32 * inner.width());
+        let shade = visuals.extreme_bg_color.gamma_multiply(0.7);
+        painter.rect_filled(Rect::from_min_max(inner.min, Pos2::new(l, inner.max.y)), 0.0, shade);
+        painter.rect_filled(Rect::from_min_max(Pos2::new(r, inner.min.y), inner.max), 0.0, shade);
+        let hot = response.hovered() || response.dragged();
+        let edge = if hot { visuals.selection.stroke.color } else { visuals.widgets.inactive.fg_stroke.color };
+        let window = Rect::from_min_max(Pos2::new(l, inner.min.y), Pos2::new(r.max(l + 2.0), inner.max.y));
+        painter.rect_stroke(window, 2.0, Stroke::new(1.5, edge), egui::StrokeKind::Inside);
+        for x in [window.min.x + 2.0, window.max.x - 2.0] {
+            painter.line_segment([Pos2::new(x, inner.min.y + inner.height() * 0.3), Pos2::new(x, inner.max.y - inner.height() * 0.3)], Stroke::new(2.0, edge));
+        }
+        if response.hovered() && !response.dragged() {
+            if let Some(p) = response.hover_pos() {
+                let near_edge = (p.x - window.min.x).abs() <= 6.0 || (p.x - window.max.x).abs() <= 6.0;
+                ui.ctx().set_cursor_icon(if near_edge { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab });
+            }
+            response.on_hover_text(spai_ui::tr!("Drag the frame to move what the graph shows, its edges to zoom; Ctrl+wheel on the graph zooms too, a double click shows it all."));
+        }
+        zoom
+    }
+}
+
+/// The overview strip's height.
+const OVERVIEW_H: f32 = 34.0;
+/// The narrowest window, as a share of the range.
+const MIN_ZOOM: f64 = 0.02;
 
 /// The series' value at `x`, read between its points.
 pub fn value_at(points: &[[f64; 2]], x: f64) -> Option<f64> {
@@ -344,5 +469,58 @@ mod tests {
         assert_eq!(value_at(&pts, 15.0), Some(50.0));
         assert_eq!(value_at(&pts, -1.0), Some(0.0));
         assert_eq!(value_at(&pts, 25.0), None);
+    }
+
+    fn plot() -> Plot {
+        Plot {
+            x_label: "x".into(),
+            y_label: "y".into(),
+            series: vec![PlotSeries { label: "a".into(), color: Color32::RED, points: (0..=100).map(|i| [f64::from(i), f64::from(i)]).collect() }],
+            fmt_x: |v| format!("{v:.0}"),
+            fmt_y: |v| format!("{v:.0}"),
+            y_to: None,
+            bands: Vec::new(),
+            markers: Vec::new(),
+            levels: Vec::new(),
+            readout: None,
+        }
+    }
+
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 400.0))), events, ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| plot().show(ui, 360.0));
+        });
+    }
+
+    /// Dragging the overview's right edge in narrows what the graph shows; a double click on the
+    /// strip shows it all again.
+    #[test]
+    fn the_overview_zooms_by_its_edges_and_a_double_click_shows_all() {
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![]);
+        let rect = last_rect(&ctx).expect("drawn");
+        let strip_y = rect.max.y - OVERVIEW_H / 2.0 + 2.0;
+        let right = rect.max.x - 10.0;
+        let press = |pos: Pos2, pressed: bool| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let start = Pos2::new(right - 1.0, strip_y);
+        let end = Pos2::new(right - 300.0, strip_y);
+        frame(&ctx, vec![egui::Event::PointerMoved(start)]);
+        frame(&ctx, vec![press(start, true)]);
+        for k in 1..=10 {
+            frame(&ctx, vec![egui::Event::PointerMoved(start + (end - start) * k as f32 / 10.0)]);
+        }
+        frame(&ctx, vec![press(end, false)]);
+        let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
+        assert!(shown.is_some_and(|w| w < 0.7 && w > 0.3), "narrowed by the drag: {shown:?}");
+        let mid = Pos2::new(rect.center().x, strip_y);
+        frame(&ctx, vec![egui::Event::PointerMoved(mid)]);
+        for _ in 0..2 {
+            frame(&ctx, vec![press(mid, true)]);
+            frame(&ctx, vec![press(mid, false)]);
+        }
+        frame(&ctx, vec![]);
+        let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
+        assert_eq!(shown, Some(1.0), "a double click shows it all");
     }
 }

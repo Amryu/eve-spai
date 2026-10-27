@@ -763,6 +763,7 @@
   "Drag fighter squadrons here.": "Перетащите сюда звенья истребителей.",
   "Drag from one system to another on the map, or right-click a system to start a route.": "Протяните от одной системы к другой на карте или кликните правой кнопкой по системе, чтобы начать маршрут.",
   "Drag onto another squad to move this pilot.": "Перетащите на другой сквад, чтобы переместить пилота.",
+  "Drag the frame to move what the graph shows, its edges to zoom; Ctrl+wheel on the graph zooms too, a double click shows it all.": "Перетащите рамку, чтобы сдвинуть видимую часть графика, её края — чтобы масштабировать; Ctrl+колесо на графике тоже масштабирует, двойной щелчок показывает всё.",
   "Drag to another slot to move it, with Shift to copy it": "Перетащите в другой слот, чтобы переместить, с Shift — чтобы скопировать",
   "Drag to move the overlay": "Перетащите, чтобы сдвинуть оверлей",
   "Drag to move this tile": "Перетащите, чтобы переместить плитку",

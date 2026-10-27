@@ -763,6 +763,7 @@
   "Drag fighter squadrons here.": "将战斗机中队拖到此处。",
   "Drag from one system to another on the map, or right-click a system to start a route.": "在地图上从一个星系拖到另一个星系，或右键点击星系开始规划路线。",
   "Drag onto another squad to move this pilot.": "拖到另一个小队以移动此飞行员。",
+  "Drag the frame to move what the graph shows, its edges to zoom; Ctrl+wheel on the graph zooms too, a double click shows it all.": "拖动框可移动图表显示的范围，拖动其边缘可缩放；在图表上按 Ctrl+滚轮也可缩放，双击显示全部。",
   "Drag to another slot to move it, with Shift to copy it": "拖到另一个槽位以移动，按住 Shift 则复制",
   "Drag to move the overlay": "拖动以移动悬浮层",
   "Drag to move this tile": "拖动以移动此卡片",
